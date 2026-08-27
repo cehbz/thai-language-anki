@@ -1,0 +1,24 @@
+# Thai contrast inventory for minimal-pair coverage. weight ~ difficulty for
+# English speakers (Wayland & Guion 2004: mid-low hardest).
+- {id: "tone:mid-low",      kind: tone,          weight: 5}
+- {id: "tone:mid-high",     kind: tone,          weight: 4}
+- {id: "tone:low-falling",  kind: tone,          weight: 3}
+- {id: "tone:high-rising",  kind: tone,          weight: 3}
+- {id: "tone:falling-rising", kind: tone,        weight: 2}
+- {id: "tone:mid-falling",  kind: tone,          weight: 2}
+- {id: "tone:mid-rising",   kind: tone,          weight: 2}
+- {id: "tone:low-high",     kind: tone,          weight: 2}
+- {id: "tone:low-rising",   kind: tone,          weight: 3}
+- {id: "tone:high-falling", kind: tone,          weight: 2}
+- {id: "aspiration:labial", kind: aspiration,    weight: 4}
+- {id: "aspiration:alveolar", kind: aspiration,  weight: 4}
+- {id: "aspiration:velar",  kind: aspiration,    weight: 4}
+- {id: "aspiration:affricate", kind: aspiration, weight: 3}
+- {id: "vowel_length",      kind: vowel_length,  weight: 4}
+- {id: "consonant:ng-onset", kind: consonant,    weight: 3}
+- {id: "vowel_quality:e-ɛ", kind: vowel_quality, weight: 3}
+- {id: "vowel_quality:o-ɔ", kind: vowel_quality, weight: 3}
+- {id: "vowel_quality:ɯ",   kind: vowel_quality, weight: 3}
+- {id: "vowel_quality:ɤ",   kind: vowel_quality, weight: 2}
+- {id: "consonant:r-l",     kind: consonant,     weight: 1}
+- {id: "final:unreleased",  kind: final,         weight: 2}
