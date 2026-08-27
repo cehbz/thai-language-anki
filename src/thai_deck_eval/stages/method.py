@@ -7,6 +7,24 @@ from ..stages.linguistic import _g2p
 
 _PLACE = {"p": "labial", "t": "alveolar", "k": "velar", "tɕ": "affricate"}
 
+def contrast_id_for(note, ctx) -> str | None:
+    """Resolve a minimal-pair note to its specific contrast inventory id
+    (e.g. "tone:low-rising", "aspiration:velar") via g2p.
+
+    Public API: the authoritative note->contrast attribution. The .apkg
+    compiler stamps `contrast::<id>` card tags from this (via the
+    coverage metric's `by_note` detail or by calling it directly), which
+    the learner-adaptive weighting loop later joins against Anki revlog
+    data. Returns None when the note is unverifiable (g2p-unknown or
+    multi-syllable member) or maps to no inventory entry.
+    """
+    if ctx.g2p is None:
+        return None
+    syls = [_g2p(ctx, m.thai) for m in note.members]
+    if any(s is None or len(s) != 1 for s in syls):
+        return None
+    return _contrast_id(note, syls)
+
 def _contrast_id(note, syls) -> str | None:
     a, b = syls[0][0], syls[1][0]
     if note.contrast == "tone":
@@ -43,20 +61,19 @@ def pair_coverage(ctx):
     if ctx.g2p is None:
         return
     entries = load_contrasts()
-    covered: set[str] = set()
+    by_note: dict[str, str] = {}
     for note in ctx.deck.minimal_pairs:
-        syls = [_g2p(ctx, m.thai) for m in note.members]
-        if any(s is None or len(s) != 1 for s in syls):
-            continue
-        cid = _contrast_id(note, syls)
+        cid = contrast_id_for(note, ctx)
         if cid:
-            covered.add(cid)
+            by_note[note.id] = cid
+    covered = set(by_note.values())
     total = sum(e.weight for e in entries)
     got = sum(e.weight for e in entries if e.id in covered)
     yield Metric(name="coverage/minimal_pairs", value=got / total,
                  detail={"covered": sorted(covered),
                          "missing": sorted(e.id for e in entries
-                                           if e.id not in covered)})
+                                           if e.id not in covered),
+                         "by_note": by_note})
 
 @rule("meth/spelling-coverage", Stage.METHOD, Dimension.METHOD, Severity.INFO)
 def spelling_coverage(ctx):

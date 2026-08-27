@@ -108,3 +108,19 @@ def test_no_personal_connection_is_info(tmp_path):
     res = _run(DeckBuilder(tmp_path).build())  # golden has none filled
     hits = [f for f in res.findings if f.rule == "meth/no-personal-connection"]
     assert len(hits) == 3 and all(f.severity == Severity.INFO for f in hits)
+
+def test_pair_coverage_by_note_attribution(tmp_path):
+    res = _run(DeckBuilder(tmp_path).build())
+    m = _metric(res, "coverage/minimal_pairs")
+    assert m.detail["by_note"] == {"mp-tone-1": "tone:low-rising",
+                                   "mp-asp-1": "aspiration:velar"}
+
+def test_contrast_id_for_public_api(tmp_path):
+    from thai_deck_eval.core.context import EvalContext
+    from thai_deck_eval.model.deck import load_deck
+    from thai_deck_eval.stages.method import contrast_id_for
+    deck = load_deck(DeckBuilder(tmp_path).build())
+    ctx = EvalContext(deck=deck, g2p=G2P)
+    assert contrast_id_for(deck.minimal_pairs[0], ctx) == "tone:low-rising"
+    assert contrast_id_for(deck.minimal_pairs[0],
+                           EvalContext(deck=deck, g2p=None)) is None

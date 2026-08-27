@@ -74,6 +74,15 @@ first thaig2p call downloads a model). `--extra llm` for the API judge.
    category metric tracks semantic spread.
 4. **.apkg compiler** — separate component (genanki was the assumed route);
    card fan-out per note type is specified in the spec §note families.
+   The compiler must stamp `contrast::<id>` tags on minimal-pair cards —
+   the authoritative note→contrast attribution is already exposed: the
+   evaluation report's `coverage/minimal_pairs` metric carries a
+   `by_note: {note_id: contrast_id}` map (or call
+   `thai_deck_eval.stages.method.contrast_id_for(note, ctx)` directly).
+   Those tags later feed the learner-adaptive weighting loop (TODO.md:
+   Anki revlog → per-contrast lapse rates → contrast-weight overrides).
+   A field-mapping reference for reading .apkg files exists in
+   `scripts/import_apkg.py`.
 
 ## Parked until testable (TODO.md)
 
