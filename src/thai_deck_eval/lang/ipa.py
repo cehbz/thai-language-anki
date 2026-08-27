@@ -53,6 +53,14 @@ def parse_ipa(s: str) -> list[IpaSyllable]:
         raise IpaParseError("empty")
     return [_parse_one(p) for p in parts]
 
+_TONE_RENDER = {v: k for k, v in _TONES.items()}
+
+def render_ipa(syls: list[IpaSyllable]) -> str:
+    def one(s: IpaSyllable) -> str:
+        return (s.onset + s.vowel + ("ː" if s.long else "")
+                + (s.coda or "") + _TONE_RENDER[s.tone])
+    return ".".join(one(s) for s in syls)
+
 def diff_features(a: IpaSyllable, b: IpaSyllable) -> set[str]:
     diffs: set[str] = set()
     if a.onset != b.onset:

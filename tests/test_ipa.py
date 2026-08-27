@@ -30,3 +30,8 @@ def test_diff_aspiration():
 def test_diff_length_and_tone():
     a, b = parse_ipa("kʰaːw˥˩")[0], parse_ipa("kʰaw˨˩")[0]
     assert diff_features(a, b) == {"length", "tone"}
+
+def test_render_ipa_round_trips():
+    from thai_deck_eval.lang.ipa import parse_ipa, render_ipa
+    for s in ["kʰaːw˥˩", "naːm˦˥", "ma˧.naːw˧", "kin˧"]:
+        assert render_ipa(parse_ipa(s)) == s

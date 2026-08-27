@@ -1,0 +1,4 @@
+# Curated minimal pairs for contrasts the lexicon can't supply automatically.
+# Shape: contrast_id: [[thai, ipa], [thai, ipa]]
+# Populated at execution time from fill_pairs' blocked-contrast reports.
+{}
