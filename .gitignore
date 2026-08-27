@@ -41,3 +41,5 @@ venv.bak/
 .DS_Store
 .thai-deck-eval-cache.sqlite
 .superpowers/
+docs/superpowers/
+docs/handoff-*.md
