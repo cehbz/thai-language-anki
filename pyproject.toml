@@ -7,9 +7,11 @@ dependencies = ["pydantic>=2.7", "pyyaml>=6", "click>=8.1"]
 [project.optional-dependencies]
 nlp = ["pythainlp>=5", "tltk>=1.9", "torch>=2", "pandas>=2"]  # pandas: undeclared tltk dep
 llm = ["anthropic>=1"]
+gen = ["genanki", "requests", "pillow"]
 
 [project.scripts]
 thai-deck-eval = "thai_deck_eval.cli:main"
+thai-deck-gen = "thai_deck_gen.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -19,7 +21,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/thai_deck_eval"]
+packages = ["src/thai_deck_eval", "src/thai_deck_gen"]
 
 [tool.pytest.ini_options]
 markers = ["integration: real pythainlp/tltk", "live: real LLM calls"]
