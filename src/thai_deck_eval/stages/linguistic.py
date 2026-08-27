@@ -9,6 +9,29 @@ _CONTRAST_FEATURE = {"tone": {"tone"}, "vowel_length": {"length"},
                      "aspiration": {"aspiration"}, "vowel_quality": {"vowel"},
                      "consonant": {"onset"}, "final": {"coda"}}
 
+# Voice-onset-time (VOT) triplets: same place of articulation, unaspirated
+# voiced / unaspirated voiceless / aspirated (e.g. บ/ป/พ, ด/ต/ท). Only
+# labial and alveolar stops have a native 3-way voicing contrast in Thai;
+# velar (ก vs ข/ค) and affricate (จ vs ช) places only ever have 2 members,
+# so an "onset" diff between them is never accepted below.
+_ASPIRATION_PLACE = {"b": "bilabial", "p": "bilabial",
+                     "d": "alveolar", "t": "alveolar"}
+
+def _bare_onset(onset: str) -> str:
+    return onset.replace("ʰ", "")
+
+def _onset_same_place(a_onset: str, b_onset: str) -> bool:
+    place = _ASPIRATION_PLACE.get(_bare_onset(a_onset))
+    return place is not None and place == _ASPIRATION_PLACE.get(_bare_onset(b_onset))
+
+def _minimal_contrast_ok(contrast: str, want: set[str], got: set[str],
+                         a, b) -> bool:
+    if contrast == "aspiration" and got and got <= {"aspiration", "onset"}:
+        if "onset" not in got:
+            return True
+        return _onset_same_place(a.onset, b.onset)
+    return got == want
+
 def _g2p(ctx, word):
     exc = load_g2p_exceptions()
     if word in exc:
@@ -30,7 +53,7 @@ def pair_not_minimal(ctx):
         want = _CONTRAST_FEATURE[note.contrast]
         for (i, a), (j, b) in combinations(enumerate(syls), 2):
             got = diff_features(a[0], b[0])
-            if got != want:
+            if not _minimal_contrast_ok(note.contrast, want, got, a[0], b[0]):
                 yield pair_not_minimal.finding(
                     f"members {note.members[i].thai}/{note.members[j].thai} "
                     f"differ in {sorted(got)}, declared contrast {note.contrast}",
@@ -64,13 +87,16 @@ def ipa_mismatch(ctx):
                 evidence={"rule_override": "lang/ipa-unverifiable"})
             continue
         if got != claimed:
-            severity = Severity.ERROR
+            second = ctx.g2p_second.syllables(word) if ctx.g2p_second is not None else None
             evidence = {"authored": authored, "g2p": [vars(s) for s in got]}
-            if ctx.g2p_second is not None:
-                second = ctx.g2p_second.syllables(word)
-                if second is not None and second != got:
-                    severity = Severity.WARN
-                    evidence["g2p_second"] = [vars(s) for s in second]
+            if second is not None:
+                evidence["g2p_second"] = [vars(s) for s in second]
+            # ERROR only when a second engine corroborates the primary
+            # engine's disagreement with the author; otherwise there's no
+            # corroborating second opinion (engine unavailable, word unknown
+            # to it, or it disagrees with the primary too) so we can't be
+            # confident the author is wrong -> WARN.
+            severity = Severity.ERROR if second is not None and second == got else Severity.WARN
             yield ipa_mismatch.rule_def.finding(
                 f"{word}: authored IPA disagrees with g2p",
                 note_id=note_id, severity=severity, evidence=evidence)

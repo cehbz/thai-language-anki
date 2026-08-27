@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from typing import Callable, Iterable
-from .findings import Dimension, Finding, Metric, Severity, Stage
+from typing import Callable
+from .findings import Dimension, Finding, Severity, Stage
 
 @dataclass
 class RuleDef:

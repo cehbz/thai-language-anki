@@ -23,7 +23,10 @@ def _verdicts(ctx):
 def _findings_for(rule_fn, ctx, rule_id):
     if ctx.judge is None:
         return
-    floor = ctx.config.judge.confidence_floor
+    # ctx.cfg already handles both dict and object configs; guard the
+    # attribute lookup too so a dict config (no "judge" key/object) never
+    # crashes here -- it just falls back to the rulebook default.
+    floor = getattr(ctx.cfg("judge"), "confidence_floor", 0.6)
     for note_id, verdicts in _verdicts(ctx).items():
         for v in verdicts:
             if v.rule == rule_id and not v.passed:

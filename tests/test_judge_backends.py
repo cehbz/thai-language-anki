@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 import pytest
 from thai_deck_eval.config import JudgeConfig
 from thai_deck_eval.judge.cli_judge import CliJudge, JudgeError
@@ -13,8 +14,15 @@ class FakeRun:
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.cmds = []
+        # snapshot of the --add-dir directory's contents at call time (it's
+        # a temp dir the caller cleans up right after this returns)
+        self.add_dir_snapshots = []
     def __call__(self, cmd, **kw):
         self.cmds.append(cmd)
+        if "--add-dir" in cmd:
+            d = Path(cmd[cmd.index("--add-dir") + 1])
+            self.add_dir_snapshots.append(
+                {p.name: p.read_bytes() for p in d.iterdir()} if d.exists() else None)
         class R:
             returncode = 0
             stdout = self.outputs.pop(0)
@@ -36,14 +44,38 @@ def test_cli_judge_retries_then_raises():
         j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
     assert len(runner.cmds) == 2
 
-def test_cli_judge_image_adds_read_tool():
+def test_cli_judge_image_adds_read_tool(tmp_path):
+    img_dir = tmp_path / "orig"
+    img_dir.mkdir()
+    img = img_dir / "img.png"
+    img.write_bytes(b"fake-image-bytes")
     runner = FakeRun([GOOD])
     j = CliJudge(JudgeConfig(), runner=runner)
     j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p",
-                         image_path="/tmp/x/img.png"))
+                         image_path=str(img)))
     cmd = runner.cmds[0]
     assert "--allowedTools" in cmd and "Read" in cmd
     assert any("img.png" in part for part in cmd)
+
+def test_cli_judge_image_scopes_add_dir_to_a_copy(tmp_path):
+    # --add-dir must not be scoped to the deck's whole media directory (which
+    # may hold every other note's image too) -- only a temp copy of the one
+    # image being judged.
+    img_dir = tmp_path / "orig"
+    img_dir.mkdir()
+    (img_dir / "other-note.png").write_bytes(b"unrelated")
+    img = img_dir / "img.png"
+    img.write_bytes(b"fake-image-bytes")
+    runner = FakeRun([GOOD])
+    j = CliJudge(JudgeConfig(), runner=runner)
+    j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p",
+                         image_path=str(img)))
+    cmd = runner.cmds[0]
+    scoped_dir = Path(cmd[cmd.index("--add-dir") + 1])
+    assert scoped_dir != img_dir
+    assert runner.add_dir_snapshots[0] == {"img.png": b"fake-image-bytes"}
+    assert str(scoped_dir) in cmd[2]  # prompt's "Image file to inspect" line
+    assert not scoped_dir.exists()  # cleaned up once judge() returns
 
 class FakeTimeoutRun:
     def __call__(self, cmd, **kw):

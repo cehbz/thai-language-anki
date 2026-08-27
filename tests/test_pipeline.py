@@ -1,3 +1,4 @@
+from pathlib import Path
 from thai_deck_eval.core.findings import Dimension, Severity, Stage
 from thai_deck_eval.core.pipeline import run_pipeline
 from thai_deck_eval.core.registry import _REGISTRY, rule
@@ -7,7 +8,7 @@ from thai_deck_eval.model.notes import DeckMeta, StagePlan
 
 def _deck():
     return Deck(meta=DeckMeta(name="t", version="0",
-                stage_plan=StagePlan(phases=["sounds"])))
+                stage_plan=StagePlan(phases=["sounds"])), root=Path("."))
 
 def _with_rules(rules, fn):
     try:

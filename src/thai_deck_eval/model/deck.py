@@ -20,11 +20,11 @@ class DeckSchemaError(Exception):
 @dataclass
 class Deck:
     meta: DeckMeta
+    root: Path
     minimal_pairs: list[MinimalPairNote] = field(default_factory=list)
     spelling_sound: list[SpellingSoundNote] = field(default_factory=list)
     picture_words: list[PictureWordNote] = field(default_factory=list)
     sentences: list[SentenceNote] = field(default_factory=list)
-    root: Path = Path(".")
 
     def all_notes(self) -> list[tuple[str, object]]:
         out: list[tuple[str, object]] = []

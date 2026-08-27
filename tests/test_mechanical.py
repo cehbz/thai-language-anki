@@ -1,4 +1,3 @@
-import pytest
 import thai_deck_eval.stages.mechanical  # noqa: F401  (registers rules)
 from thai_deck_eval.core.context import EvalContext
 from thai_deck_eval.core.findings import Severity, Stage

@@ -63,6 +63,35 @@ def test_ipa_mismatch_demoted_when_engines_disagree(tmp_path):
     f = next(f for f in res.findings if f.rule == "lang/ipa-mismatch")
     assert f.severity == Severity.WARN
 
+def test_ipa_mismatch_warn_when_second_is_none(tmp_path):
+    # no second engine configured at all (ctx.g2p_second is None)
+    from thai_deck_eval.core.findings import Severity
+    b = DeckBuilder(tmp_path)
+    b.data["picture_words"][0]["ipa"] = "maː˧"
+    res = _run(b.build(), second=None)
+    f = next(f for f in res.findings if f.rule == "lang/ipa-mismatch")
+    assert f.severity == Severity.WARN
+
+def test_ipa_mismatch_warn_when_second_returns_none(tmp_path):
+    # second engine configured but doesn't know the word (returns None)
+    from thai_deck_eval.core.findings import Severity
+    b = DeckBuilder(tmp_path)
+    b.data["picture_words"][0]["ipa"] = "maː˧"
+    second = FakeG2P({})  # unknown to second engine -> syllables() is None
+    res = _run(b.build(), second=second)
+    f = next(f for f in res.findings if f.rule == "lang/ipa-mismatch")
+    assert f.severity == Severity.WARN
+
+def test_ipa_mismatch_error_when_second_corroborates(tmp_path):
+    # second engine agrees with the primary engine, both disagree with author
+    from thai_deck_eval.core.findings import Severity
+    b = DeckBuilder(tmp_path)
+    b.data["picture_words"][0]["ipa"] = "maː˧"
+    second = FakeG2P({"หมา": "maː˨˩˦"})  # agrees with primary (rising)
+    res = _run(b.build(), second=second)
+    f = next(f for f in res.findings if f.rule == "lang/ipa-mismatch")
+    assert f.severity == Severity.ERROR
+
 def test_tone_mismatch_via_tone_engine(tmp_path):
     b = DeckBuilder(tmp_path)
     g2p = FakeG2P({**G2P.table, "หมา": "maː˧"})  # g2p wrong; tone engine says rising
@@ -76,6 +105,21 @@ def test_target_not_token(tmp_path):
     b.data["sentences"][0]["thai"] = "หมามากินข้าว"
     res = _run(b.build())
     assert "lang/target-not-token" in _rules(res)
+
+def test_aspiration_triplet_same_place_passes(tmp_path):
+    b = DeckBuilder(tmp_path)
+    g2p = FakeG2P({**G2P.table, "บา": "baː˧", "ปา": "paː˧", "พา": "pʰaː˧"})
+    b.data["minimal_pairs"].append({
+        "id": "mp-asp-triplet", "contrast": "aspiration", "members": [
+            {"thai": "บา", "ipa": "baː˧",
+             "audio": {"file": "audio/baa.mp3", "source": "native", "speaker": "s1"}},
+            {"thai": "ปา", "ipa": "paː˧",
+             "audio": {"file": "audio/paa.mp3", "source": "native", "speaker": "s2"}},
+            {"thai": "พา", "ipa": "pʰaː˧",
+             "audio": {"file": "audio/phaa.mp3", "source": "native", "speaker": "s3"}},
+        ]})
+    res = _run(b.build(), g2p=g2p)
+    assert "lang/pair-not-minimal" not in _rules(res)
 
 def test_frequency_rank_wrong(tmp_path):
     b = DeckBuilder(tmp_path)

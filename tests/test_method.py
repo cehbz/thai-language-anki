@@ -3,7 +3,7 @@ from thai_deck_eval.core.context import EvalContext
 from thai_deck_eval.core.findings import Severity, Stage
 from thai_deck_eval.core.pipeline import run_pipeline
 from thai_deck_eval.model.deck import load_deck
-from tests.fakes import FakeFreq, FakeG2P, FakeTokenizer
+from tests.fakes import FakeTokenizer
 from tests.helpers import DeckBuilder
 from tests.test_linguistic import FREQ, G2P, TOK
 

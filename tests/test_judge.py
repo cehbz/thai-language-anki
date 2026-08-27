@@ -10,6 +10,16 @@ from tests.helpers import DeckBuilder
 def _ctx(root, judge):
     return EvalContext(deck=load_deck(root), config=RulebookConfig(), judge=judge)
 
+def test_confidence_floor_falls_back_on_dict_config(tmp_path):
+    judge = FakeJudge({"s-1": [Verdict(rule="judge/unnatural-sentence",
+                                       passed=False, confidence=0.3,
+                                       rationale="maybe")]})
+    ctx = EvalContext(deck=load_deck(DeckBuilder(tmp_path).build()),
+                      config={"sentence_base": 2}, judge=judge)
+    res = run_pipeline(ctx, stages=[Stage.JUDGE])
+    f = next(f for f in res.findings if f.rule == "judge/unnatural-sentence")
+    assert f.severity == Severity.INFO  # 0.3 < the 0.6 rulebook default
+
 def test_all_pass_yields_nothing(tmp_path):
     res = run_pipeline(_ctx(DeckBuilder(tmp_path).build(), FakeJudge({})),
                        stages=[Stage.JUDGE])

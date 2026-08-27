@@ -43,11 +43,19 @@ def _build_judge(cfg):
 
 @click.command()
 @click.argument("deck_dir", type=click.Path(exists=True, path_type=Path))
-@click.option("--report", "report_path", type=click.Path(path_type=Path))
-@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
-@click.option("--no-judge", is_flag=True)
-@click.option("--stages", "stages_opt")
-@click.option("--rulebook", type=click.Path(path_type=Path))
+@click.option("--report", "report_path", type=click.Path(path_type=Path),
+             help="Write the full JSON report to this file, in addition to "
+                  "printing it to stdout.")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text",
+             help="Output format for the report printed to stdout.")
+@click.option("--no-judge", is_flag=True,
+             help="Skip the judge (LLM) stage; run only mechanical, "
+                  "linguistic, and method-fidelity checks.")
+@click.option("--stages", "stages_opt",
+             help="Comma-separated list of stages to run "
+                  "(mechanical,linguistic,method,judge), overriding --no-judge.")
+@click.option("--rulebook", type=click.Path(path_type=Path),
+             help="Path to a rulebook YAML config; defaults to built-in defaults.")
 def main(deck_dir, report_path, fmt, no_judge, stages_opt, rulebook):
     try:
         cfg = load_rulebook(rulebook)

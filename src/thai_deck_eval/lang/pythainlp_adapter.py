@@ -52,16 +52,55 @@ the token-per-phone/Chao-letter shape thaig2p emits. In this environment
 tltk itself is broken (`import tltk` fails: `ModuleNotFoundError: No
 module named 'pandas'`, a transitive dependency tltk needs but does not
 declare/that is not part of this project's "nlp" extra), so `tltk_ipa`
-could not be empirically exercised here. TltkG2P still routes through
-the shared `_convert` below per the task brief's sketch; per the task's
-instructions this is acceptable — the port's contract is "never raise",
-not "always succeed" — but note that if tltk becomes usable in this
-environment in the future, `_convert` will likely need a second code
-path for its compact/digit-tone format.
+could not be empirically exercised (run) here. TltkG2P instead routes
+through `_convert_compact` below, whose digit-tone mapping and phone
+alphabet were verified by reading tltk's own installed source
+(`tltk/nlp.py`, present in this environment despite being unimportable)
+rather than by guessing:
+
+  * Digit->tone mapping. `tltk.nlp.th2ipa`'s `NORMALIZE_IPA` table applies
+    the replacements `('4','5'), ('3','4'), ('2','3'), ('1','2'), ('0','1')`
+    in that order (each on the *previous* step's output), which nets out to
+    "every internal tone digit is incremented by one" (0->1, 1->2, 2->3,
+    3->4, 4->5) since later replacements can't re-touch digits already
+    written by earlier ones. `tltk.nlp.ToneAssign` shows the internal digit
+    for a MID-class, LIVE syllable with no tone mark — the textbook "no
+    mark -> mid tone" case — is `'0'`. Internal digits increment through
+    the mid-class live-syllable branch in mai-ek/mai-tho/mai-tri/
+    mai-chattawa order, i.e. `'1'`=low, `'2'`=falling, `'3'`=high,
+    `'4'`=rising (standard Thai tone-mark rules for mid-class consonants).
+    So internal->printed is 0->1, 1->2, 2->3, 3->4, 4->5, giving the
+    printed-digit->tone map used below: 1=mid, 2=low, 3=falling, 4=high,
+    5=rising. Cross-checked against pythainlp's own docstring example
+    `transliterate("สามารถ", engine="tltk_ipa") == 'saː5.maːt3'`: สามารถ is
+    independently known (from the thaig2p example above) to be
+    rising+falling, and 5=rising, 3=falling — confirms the mapping.
+  * Onset/vowel/coda alphabet. `th2ipa` runs two regex passes before its
+    NORMALIZE_IPA character table: doubled vowel letters collapse to
+    `<vowel>ː` (matching `parse_ipa`'s long-vowel convention), and a
+    trailing `h` after p/t/k/c becomes the aspiration diacritic `ʰ`. The
+    NORMALIZE_IPA table itself maps tltk's internal ASCII phone letters to
+    the same Unicode IPA characters `ipa.py` already uses (`O`->ɔ-like,
+    `x`->ɛ, `@`->ɤ, `N`->ŋ, `?`->ʔ, `U`->ɯ), so after normalization most
+    onsets/vowels/codas already match `ipa.py`'s `_ONSETS`/`_VOWELS`/
+    `_CODAS` inventories directly. The one gap: `tltk.nlp`'s own
+    `stable['X']` consonant table maps จ (unaspirated affricate) to ASCII
+    `'c'` and ฉ/ช/ฌ (aspirated) to `'ch'` (-> `'cʰ'` after the aspiration
+    regex), neither of which is in `ipa.py`'s onset set (which spells the
+    affricate `"tɕ"`/`"tɕʰ"` per the thaig2p convention above); the
+    compact-format converter remaps `c`/`cʰ` -> `tɕ`/`tɕʰ` before parsing.
+    Consonant-cluster onsets are unrepresented in this alphabet's design
+    and, like the thaig2p path, simply fail to convert (return None)
+    rather than raising.
+
+Because tltk cannot actually run in this environment, this mapping is
+verified against source + one worked example, not against a broad live
+sample; `test_tltk_g2p_does_not_raise` (integration) only checks the "never
+raise" contract, not conversion correctness, for that reason.
 """
 import re
 
-from .ipa import _CODAS, _ONSETS, _VOWELS, IpaSyllable
+from .ipa import _CODAS, _ONSETS, _VOWELS, IpaParseError, IpaSyllable, parse_ipa
 from .tone import Tone
 
 _TONE_MAP = {
@@ -154,6 +193,51 @@ def _convert(raw: str) -> list[IpaSyllable] | None:
         return None
 
 
+# --- tltk_ipa's compact/digit-tone format --------------------------------
+# See the module docstring for how this digit->tone map and the affricate
+# remap were derived (verified against tltk's own source, not guessed).
+
+_COMPACT_TONE_DIGIT = {"1": Tone.MID, "2": Tone.LOW, "3": Tone.FALLING,
+                       "4": Tone.HIGH, "5": Tone.RISING}
+_COMPACT_SYLLABLE_RE = re.compile(r"^(?P<body>.+?)(?P<tone>[1-5])$")
+# reverse of ipa.py's own letters->Tone map, to hand off to parse_ipa
+_TONE_TO_CHAO_LETTERS = {tone: letters for letters, tone in
+                         {"˧": Tone.MID, "˨˩˦": Tone.RISING, "˨˩": Tone.LOW,
+                          "˥˩": Tone.FALLING, "˦˥": Tone.HIGH}.items()}
+
+
+def _convert_compact_syllable(group: str) -> IpaSyllable:
+    m = _COMPACT_SYLLABLE_RE.match(group)
+    if m is None:
+        raise _ConvertError(f"no digit tone in {group!r}")
+    tone = _COMPACT_TONE_DIGIT.get(m.group("tone"))
+    if tone is None:
+        raise _ConvertError(f"unknown tone digit in {group!r}")
+    # tltk's ASCII affricate codes ('c' unaspirated, 'ch'->'cʰ' aspirated
+    # after the aspiration-diacritic pass) aren't in ipa.py's onset set,
+    # which spells the affricate "tɕ"/"tɕʰ" (matching the thaig2p path).
+    body = m.group("body").replace("cʰ", "tɕʰ").replace("c", "tɕ")
+    try:
+        parsed = parse_ipa(body + _TONE_TO_CHAO_LETTERS[tone])
+    except IpaParseError as e:
+        raise _ConvertError(str(e)) from e
+    if len(parsed) != 1:
+        raise _ConvertError(f"expected one syllable in {group!r}")
+    return parsed[0]
+
+
+def _convert_compact(raw: str) -> list[IpaSyllable] | None:
+    """Convert pythainlp's tltk_ipa-shaped raw string to IpaSyllable list.
+    Never raises: returns None for anything unmappable."""
+    groups = [g for g in _SYLLABLE_SEP.split(raw.strip()) if g.strip()]
+    if not groups:
+        return None
+    try:
+        return [_convert_compact_syllable(g) for g in groups]
+    except _ConvertError:
+        return None
+
+
 class PyThaiNLPG2P:
     def __init__(self):
         from pythainlp.transliterate import transliterate
@@ -171,7 +255,7 @@ class TltkG2P:
     def syllables(self, word: str) -> list[IpaSyllable] | None:
         try:
             from pythainlp.transliterate import transliterate
-            return _convert(transliterate(word, engine="tltk_ipa"))
+            return _convert_compact(transliterate(word, engine="tltk_ipa"))
         except Exception:
             return None
 
