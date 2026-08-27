@@ -1,0 +1,22 @@
+# Rulebook configuration template for Thai Deck Evaluator
+version: "1"  # Configuration schema version
+gates: true  # Enable error gates to stop pipeline on errors
+taper_rank: 300  # Rank threshold for word frequency taper
+sentence_base: 300  # Base sentence count for evaluation
+target_speakers: 3  # Target number of native speakers
+deductions:  # Deduction points by severity level
+  error: 25.0  # Points deducted per error finding
+  warn: 2.0  # Points deducted per warning finding
+  info: 0.0  # Points deducted per info finding
+metric_weights:  # Weights for metric calculations
+  coverage/minimal_pairs: 3.0  # Minimal pairs coverage weight
+  coverage/spelling: 2.0  # Spelling coverage weight
+  coverage/frequency: 3.0  # Frequency coverage weight
+  speakers/minimal_pairs: 1.0  # Minimal pairs speaker weight
+judge:  # Judge configuration for AI-based evaluations
+  backend: cli  # Backend type (cli, api, or fake)
+  model: claude-opus-5  # AI model to use for judging
+  effort: medium  # Effort level (low, medium, high)
+  confidence_floor: 0.6  # Minimum confidence threshold
+  prompt_version: "1"  # Judge prompt version
+  cache_path: .thai-deck-eval-cache.sqlite  # Cache file path
