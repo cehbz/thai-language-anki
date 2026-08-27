@@ -30,6 +30,10 @@ def load_function_words(path: Path | None = None) -> set[str]:
 def load_g2p_exceptions(path: Path | None = None) -> dict[str, str]:
     return yaml.safe_load((path or DATA_DIR / "g2p_exceptions.yaml").read_text()) or {}
 
+@lru_cache
+def load_categories(path: Path | None = None) -> list[str]:
+    return yaml.safe_load((path or DATA_DIR / "categories.yaml").read_text()) or []
+
 class FileFrequencyList:
     def __init__(self, path: Path | None = None):
         lines = (path or DATA_DIR / "frequency_th.txt").read_text().splitlines()

@@ -12,13 +12,20 @@ from .report.model import build_report
 from .report.render import render_text
 from .report.scoring import compute_scores
 
-def _build_language_ports():
-    """Return (g2p, g2p_second, tokenizer, freq); None entries disable checks."""
+def _build_language_ports(vocab: set[str]):
+    """Return (g2p, g2p_second, tokenizer, freq); None entries disable checks.
+
+    `vocab` seeds the tokenizer's custom dictionary with this deck's own
+    vocabulary (picture words + sentence targets) so deck-specific words
+    pythainlp's dictionary doesn't already know still segment as single
+    tokens.
+    """
     g2p = second = tok = freq = None
     try:
         from .lang.pythainlp_adapter import (PyThaiNLPG2P, PyThaiNLPTokenizer,
                                              TltkG2P)
-        g2p, second, tok = PyThaiNLPG2P(), TltkG2P(), PyThaiNLPTokenizer()
+        g2p, second, tok = (PyThaiNLPG2P(), TltkG2P(),
+                            PyThaiNLPTokenizer(extra_words=vocab))
     except ImportError:
         click.echo("warning: pythainlp not installed; linguistic checks skipped",
                    err=True)
@@ -66,7 +73,9 @@ def main(deck_dir, report_path, fmt, no_judge, stages_opt, rulebook):
             stages = [Stage.MECHANICAL, Stage.LINGUISTIC, Stage.METHOD]
 
         def ctx_factory(deck):
-            g2p, second, tok, freq = _build_language_ports()
+            vocab = ({w.thai for w in deck.picture_words}
+                    | {s.target for s in deck.sentences})
+            g2p, second, tok, freq = _build_language_ports(vocab)
             judge = None if no_judge else _build_judge(cfg)
             return EvalContext(deck=deck, config=cfg, g2p=g2p, g2p_second=second,
                                tokenizer=tok, freq=freq, judge=judge)

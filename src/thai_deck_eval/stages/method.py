@@ -1,7 +1,8 @@
 from collections import Counter
 from ..core.findings import Dimension, Metric, Severity, Stage
 from ..core.registry import rule
-from ..data_io import load_contrasts, load_function_words, load_spelling_targets
+from ..data_io import (load_categories, load_contrasts, load_function_words,
+                       load_spelling_targets)
 from ..stages.linguistic import _g2p
 
 _PLACE = {"p": "labial", "t": "alveolar", "k": "velar", "tɕ": "affricate"}
@@ -124,6 +125,10 @@ def premature_sentences(ctx):
             f"{len(ctx.deck.sentences)} sentences atop only "
             f"{len(ctx.deck.picture_words)} picture words (base {base})")
 
+def _boundary_known(tok: str, known: set[str]) -> bool:
+    return tok in known or any(
+        tok.startswith(k) or tok.endswith(k) for k in known)
+
 @rule("meth/new-elements", Stage.METHOD, Dimension.METHOD, Severity.WARN)
 def new_elements(ctx):
     if ctx.tokenizer is None:
@@ -131,12 +136,36 @@ def new_elements(ctx):
     known = {w.thai for w in ctx.deck.picture_words} | load_function_words()
     for note in ctx.deck.sentences:
         toks = ctx.tokenizer.tokens(note.thai)
-        unknown = [t for t in toks if t not in known and t != note.target]
+        unknown = [t for t in toks
+                  if t != note.target and not _boundary_known(t, known)]
         if unknown:
             yield new_elements.finding(
                 f"sentence introduces {len(unknown)} unknown non-target tokens",
                 note_id=note.id, evidence={"unknown": unknown})
         known.add(note.target)
+
+@rule("meth/category-coverage", Stage.METHOD, Dimension.METHOD, Severity.INFO)
+def category_coverage(ctx):
+    categories = load_categories()
+    if not categories:
+        return
+    valid = set(categories)
+    covered = {w.category for w in ctx.deck.picture_words if w.category in valid}
+    yield Metric(name="coverage/categories", value=len(covered) / len(categories),
+                 detail={"covered": sorted(covered),
+                         "missing": sorted(valid - covered)})
+
+@rule("meth/unknown-category", Stage.METHOD, Dimension.METHOD, Severity.WARN)
+def unknown_category(ctx):
+    categories = load_categories()
+    if not categories:
+        return
+    valid = set(categories)
+    for note in ctx.deck.picture_words:
+        if note.category not in valid:
+            yield unknown_category.finding(
+                f"{note.category!r} is not a recognized category",
+                note_id=note.id)
 
 @rule("meth/no-personal-connection", Stage.METHOD, Dimension.METHOD, Severity.INFO)
 def no_personal_connection(ctx):

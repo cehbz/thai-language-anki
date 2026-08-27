@@ -261,6 +261,17 @@ class TltkG2P:
 
 
 class PyThaiNLPTokenizer:
+    def __init__(self, extra_words: set[str] | None = None):
+        self._trie = None
+        if extra_words:
+            from pythainlp.corpus import thai_words
+            from pythainlp.util import dict_trie
+            self._trie = dict_trie(set(thai_words()) | extra_words)
+
     def tokens(self, text: str) -> list[str]:
         from pythainlp.tokenize import word_tokenize
-        return [t for t in word_tokenize(text) if t.strip()]
+        if self._trie is not None:
+            toks = word_tokenize(text, custom_dict=self._trie)
+        else:
+            toks = word_tokenize(text)
+        return [t for t in toks if t.strip()]

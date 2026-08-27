@@ -8,7 +8,7 @@ def _f(dim, sev):
 
 def test_defaults_load():
     cfg = load_rulebook(None)
-    assert cfg.judge.backend == "cli" and cfg.gates is True
+    assert cfg.judge.backend == "cli" and "judge" in cfg.depends_on
 
 def test_deductions():
     res = EvalResult(findings=[_f(Dimension.INTEGRITY, Severity.WARN),

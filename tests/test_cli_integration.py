@@ -16,3 +16,4 @@ def test_golden_deck_passes_gate_with_real_ports(tmp_path):
     r = CliRunner().invoke(main, [str(root), "--no-judge"])
     assert r.exit_code == 0, r.output
     assert "gate: PASS" in r.output
+    assert "lang/target-not-token" not in r.output

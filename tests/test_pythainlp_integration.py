@@ -57,3 +57,38 @@ def test_tokenizer():
     # capability (splitting a sentence into words including "กิน").
     toks = PyThaiNLPTokenizer().tokens("แมวกินปลา")
     assert "กิน" in toks
+
+
+def test_tokenizer_without_extra_words_keeps_dictionary_compound():
+    # กินข้าว is itself a pythainlp dictionary entry; without deck vocabulary
+    # seeded in, newmm's longest-match segmentation keeps it as one token
+    # even though กิน is also independently a word (this is exactly the
+    # false-positive lang/target-not-token case boundary-aligned matching
+    # in the linguistic/method stages is meant to absorb).
+    from thai_deck_eval.lang.pythainlp_adapter import PyThaiNLPTokenizer
+    toks = PyThaiNLPTokenizer().tokens("หมามากินข้าว")
+    assert "กินข้าว" in toks
+    assert "กิน" not in toks
+
+
+def test_tokenizer_extra_words_enables_novel_word_as_single_token():
+    # extra_words' real payoff: deck vocabulary pythainlp's dictionary
+    # doesn't already know (e.g. a target coined for this deck) segments as
+    # one token instead of being split up.
+    from thai_deck_eval.lang.pythainlp_adapter import PyThaiNLPTokenizer
+    novel = "ปูมกวย"  # not in pythainlp.corpus.thai_words()
+    without = PyThaiNLPTokenizer().tokens(f"หมา{novel}มา")
+    assert novel not in without
+    with_extra = PyThaiNLPTokenizer(extra_words={novel}).tokens(f"หมา{novel}มา")
+    assert novel in with_extra
+
+
+def test_tokenizer_caches_trie_on_the_instance():
+    from pythainlp.util import Trie
+    from thai_deck_eval.lang.pythainlp_adapter import PyThaiNLPTokenizer
+    tok = PyThaiNLPTokenizer(extra_words={"ปูมกวย"})
+    assert isinstance(tok._trie, Trie)
+    trie_before = tok._trie
+    tok.tokens("หมามากินข้าว")
+    tok.tokens("แมวกินปลา")
+    assert tok._trie is trie_before

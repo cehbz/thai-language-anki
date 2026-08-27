@@ -131,6 +131,21 @@ def test_api_judge_raises_on_validation_failure():
     with pytest.raises(JudgeError):
         j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
 
+class FakeMessagesRaises:
+    def parse(self, **kw):
+        raise RuntimeError("connection reset")
+
+class FakeClientRaises:
+    def __init__(self):
+        self.messages = FakeMessagesRaises()
+
+def test_api_judge_normalizes_transport_error_to_judge_error():
+    j = ApiJudge(JudgeConfig(), client=FakeClientRaises())
+    with pytest.raises(JudgeError) as exc_info:
+        j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
+    assert "n" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
 def test_api_judge_image_adds_vision_block(tmp_path):
     img = tmp_path / "img.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n")

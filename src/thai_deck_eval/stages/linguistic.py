@@ -138,10 +138,18 @@ def target_not_token(ctx):
         return
     for note in ctx.deck.sentences:
         toks = ctx.tokenizer.tokens(note.thai)
-        if note.target not in toks:
-            yield target_not_token.finding(
-                f"target {note.target!r} is not a token of the sentence",
-                note_id=note.id, evidence={"tokens": toks})
+        if note.target in toks:
+            continue
+        # Boundary-aligned compound membership: the target is still a real
+        # word if it sits at the start or end of a dictionary-compound
+        # token (e.g. target กิน inside token กินข้าว). Only a target
+        # embedded strictly mid-token (neither prefix nor suffix) warns.
+        if any(tok.startswith(note.target) or tok.endswith(note.target)
+              for tok in toks):
+            continue
+        yield target_not_token.finding(
+            f"target {note.target!r} is not a token of the sentence",
+            note_id=note.id, evidence={"tokens": toks})
 
 @rule("lang/frequency-rank-wrong", Stage.LINGUISTIC, Dimension.LANGUAGE, Severity.WARN)
 def frequency_rank_wrong(ctx):

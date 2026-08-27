@@ -36,13 +36,19 @@ class ApiJudge:
         return content
 
     def judge(self, req: JudgeRequest) -> list[Verdict]:
-        response = self.client.messages.parse(
-            model=self.config.model,
-            max_tokens=4096,
-            output_config={"effort": self.config.effort},
-            messages=[{"role": "user", "content": self._content(req)}],
-            output_format=Verdicts,
-        )
+        try:
+            response = self.client.messages.parse(
+                model=self.config.model,
+                max_tokens=4096,
+                output_config={"effort": self.config.effort},
+                messages=[{"role": "user", "content": self._content(req)}],
+                output_format=Verdicts,
+            )
+        except JudgeError:
+            raise
+        except Exception as exc:
+            raise JudgeError(
+                f"api judge failed for note {req.note_id}: {exc}") from exc
         if response.stop_reason == "refusal":
             raise JudgeError(f"API judge refused for note {req.note_id}")
         parsed = response.parsed_output

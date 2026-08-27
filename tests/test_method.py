@@ -75,9 +75,34 @@ def test_new_elements(tmp_path):
     f = next(f for f in res.findings if f.rule == "meth/new-elements")
     assert f.evidence["unknown"] == ["วิ่ง"]
 
+def test_new_elements_boundary_aligned_known(tmp_path):
+    # token กินข้าว is not itself known, but ends with the known word ข้าว
+    # (a picture word in the golden deck) -> boundary-aligned known, not
+    # reported as an unknown element.
+    b = DeckBuilder(tmp_path)
+    tok = FakeTokenizer({"หมามากินข้าว": ["หมา", "มา", "กินข้าว"]})
+    res = _run(b.build(), tokenizer=tok)
+    assert not any(f.rule == "meth/new-elements" for f in res.findings)
+
 def test_speaker_diversity(tmp_path):
     res = _run(DeckBuilder(tmp_path).build())
     assert _metric(res, "speakers/minimal_pairs").value == 1.0  # s1,s2,s3 / 3
+
+def test_category_coverage_metric(tmp_path):
+    res = _run(DeckBuilder(tmp_path).build())
+    m = _metric(res, "coverage/categories")
+    # golden picture words: Animals, Verbs, Food -> 3 of 27 categories
+    assert m.value == 3 / 27
+    assert set(m.detail["covered"]) == {"Animals", "Verbs", "Food"}
+    assert "Body" in m.detail["missing"]
+
+def test_unknown_category_warns(tmp_path):
+    b = DeckBuilder(tmp_path)
+    b.data["picture_words"][0]["category"] = "Bogus"
+    res = _run(b.build())
+    f = next(f for f in res.findings if f.rule == "meth/unknown-category")
+    assert f.severity == Severity.WARN
+    assert f.note_id == "w-dog"
 
 def test_no_personal_connection_is_info(tmp_path):
     res = _run(DeckBuilder(tmp_path).build())  # golden has none filled

@@ -1,6 +1,11 @@
 # Rulebook configuration template for Thai Deck Evaluator
 version: "1"  # Configuration schema version
-gates: true  # Enable error gates to stop pipeline on errors
+depends_on:  # Per-stage dependency DAG: a stage is skipped if any dependency
+             # errored or was itself skipped ("schema" is always satisfied)
+  mechanical: [schema]
+  linguistic: [schema]
+  method: [schema]
+  judge: [schema, mechanical, linguistic]
 taper_rank: 300  # Rank threshold for word frequency taper
 sentence_base: 300  # Base sentence count for evaluation
 target_speakers: 3  # Target number of native speakers
@@ -12,6 +17,7 @@ metric_weights:  # Weights for metric calculations
   coverage/minimal_pairs: 3.0  # Minimal pairs coverage weight
   coverage/spelling: 2.0  # Spelling coverage weight
   coverage/frequency: 3.0  # Frequency coverage weight
+  coverage/categories: 2.0  # Category coverage weight
   speakers/minimal_pairs: 1.0  # Minimal pairs speaker weight
 judge:  # Judge configuration for AI-based evaluations
   backend: cli  # Backend type (cli, api, or fake)

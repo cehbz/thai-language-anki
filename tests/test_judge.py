@@ -7,15 +7,25 @@ from thai_deck_eval.judge.core import CachedJudge, FakeJudge, JudgeRequest, Verd
 from thai_deck_eval.model.deck import load_deck
 from tests.helpers import DeckBuilder
 
+# These tests exercise the JUDGE stage's rules in isolation via
+# `stages=[Stage.JUDGE]`; under the default depends_on DAG, judge depends on
+# mechanical+linguistic, which are excluded by that filter and would count
+# as skipped dependencies (see test_pipeline.py's transitive-skip test) --
+# so judge itself would be transitively skipped. Give judge no dependencies
+# here so these single-stage unit tests stay isolated from whatever other
+# stage rules happen to be registered globally.
+_ISOLATED_JUDGE_CFG = RulebookConfig(depends_on={"judge": []})
+
 def _ctx(root, judge):
-    return EvalContext(deck=load_deck(root), config=RulebookConfig(), judge=judge)
+    return EvalContext(deck=load_deck(root), config=_ISOLATED_JUDGE_CFG, judge=judge)
 
 def test_confidence_floor_falls_back_on_dict_config(tmp_path):
     judge = FakeJudge({"s-1": [Verdict(rule="judge/unnatural-sentence",
                                        passed=False, confidence=0.3,
                                        rationale="maybe")]})
     ctx = EvalContext(deck=load_deck(DeckBuilder(tmp_path).build()),
-                      config={"sentence_base": 2}, judge=judge)
+                      config={"sentence_base": 2, "depends_on": {"judge": []}},
+                      judge=judge)
     res = run_pipeline(ctx, stages=[Stage.JUDGE])
     f = next(f for f in res.findings if f.rule == "judge/unnatural-sentence")
     assert f.severity == Severity.INFO  # 0.3 < the 0.6 rulebook default

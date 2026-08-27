@@ -15,7 +15,11 @@ class JudgeConfig(BaseModel):
 class RulebookConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = "1"
-    gates: bool = True
+    depends_on: dict[str, list[str]] = Field(
+        default_factory=lambda: {"mechanical": ["schema"],
+                                 "linguistic": ["schema"],
+                                 "method": ["schema"],
+                                 "judge": ["schema", "mechanical", "linguistic"]})
     taper_rank: int = 300
     sentence_base: int = 300
     target_speakers: int = 3
@@ -25,6 +29,7 @@ class RulebookConfig(BaseModel):
         default_factory=lambda: {"coverage/minimal_pairs": 3.0,
                                  "coverage/spelling": 2.0,
                                  "coverage/frequency": 3.0,
+                                 "coverage/categories": 2.0,
                                  "speakers/minimal_pairs": 1.0})
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
 

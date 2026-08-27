@@ -14,9 +14,9 @@ G2P = FakeG2P({
 TOK = FakeTokenizer({"หมามากินข้าว": ["หมา", "มา", "กิน", "ข้าว"]})
 FREQ = FakeFreq({"หมา": 120, "มา": 15, "ข้าว": 90})
 
-def _run(root, g2p=G2P, second=None):
+def _run(root, g2p=G2P, second=None, tokenizer=TOK):
     ctx = EvalContext(deck=load_deck(root), g2p=g2p, g2p_second=second,
-                      tokenizer=TOK, freq=FREQ)
+                      tokenizer=tokenizer, freq=FREQ)
     return run_pipeline(ctx, stages=[Stage.LINGUISTIC])
 
 def _rules(res):
@@ -104,6 +104,23 @@ def test_target_not_token(tmp_path):
     b.data["sentences"][0]["target"] = "มาก"  # substring of sentence, not a token
     b.data["sentences"][0]["thai"] = "หมามากินข้าว"
     res = _run(b.build())
+    assert "lang/target-not-token" in _rules(res)
+
+def test_target_not_token_boundary_aligned_compound(tmp_path):
+    # target กิน is not itself a token, but it is the leading substring of
+    # the dictionary-compound token กินข้าว -> boundary-aligned, no warning.
+    b = DeckBuilder(tmp_path)
+    tok = FakeTokenizer({"หมามากินข้าว": ["หมา", "มา", "กินข้าว"]})
+    res = _run(b.build(), tokenizer=tok)
+    assert "lang/target-not-token" not in _rules(res)
+
+def test_target_not_token_mid_token_still_warns(tmp_path):
+    # target นข is embedded strictly mid-token in กินข้าว (not a prefix or
+    # suffix) -> still a warning.
+    b = DeckBuilder(tmp_path)
+    b.data["sentences"][0]["target"] = "นข"
+    tok = FakeTokenizer({"หมามากินข้าว": ["หมา", "มา", "กินข้าว"]})
+    res = _run(b.build(), tokenizer=tok)
     assert "lang/target-not-token" in _rules(res)
 
 def test_aspiration_triplet_same_place_passes(tmp_path):
