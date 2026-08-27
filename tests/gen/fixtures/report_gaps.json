@@ -1,0 +1,18 @@
+{"deck_name": "t", "deck_version": "0.1", "rulebook_version": "1",
+ "stages_run": ["schema", "mechanical", "linguistic", "method"],
+ "stages_skipped": ["judge"],
+ "findings": [
+   {"rule": "mech/media-missing", "severity": "error", "dimension": "integrity",
+    "message": "audio/minimal_pairs/mp-tone-mid-low-1_0.mp3 not found",
+    "note_id": "mp-tone-mid-low-1", "evidence": {}}],
+ "metrics": [
+   {"name": "coverage/minimal_pairs", "value": 0.2, "dimension": "method",
+    "detail": {"covered": ["tone:mid-low"], "missing": ["tone:mid-high", "vowel_length"],
+               "by_note": {"mp-tone-mid-low-1": "tone:mid-low"}}},
+   {"name": "coverage/categories", "value": 0.5, "dimension": "method",
+    "detail": {"covered": ["Food"], "missing": ["Animals", "Colors"]}},
+   {"name": "coverage/frequency", "value": 0.4, "dimension": "method", "detail": {}},
+   {"name": "speakers/minimal_pairs", "value": 0.33, "dimension": "method",
+    "detail": {"distinct": 1}}],
+ "scores": {"integrity": 80, "language": 100, "method": 40, "content": 100},
+ "gate": "fail"}
