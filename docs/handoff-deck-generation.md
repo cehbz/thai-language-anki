@@ -17,6 +17,14 @@ Context for the session that builds the **deck generator** (and eventually the
   gotchas); `TODO.md` (parked work).
 - **Reference deck**: `tests/helpers.py` `DeckBuilder`/`GOLDEN` — a complete
   minimal deck that passes everything; the fastest way to learn the format.
+- **Scale validation**: the evaluator has run a real 1000-word/1000-sentence
+  deck (imported from AnkiWeb's "Thai 1000 Common Words" via
+  `scripts/import_apkg.py`) in ~14s for the non-judge stages — that is the
+  iteration cadence a generation loop can expect. The tone engine went
+  155/155 against independent ground truth on that run. Romanization
+  (Paiboon) proved structurally lossy (59.5% convertibility;
+  identical-romanization minimal pairs exist) — author IPA, never
+  romanization.
 
 ## The generator's job
 
@@ -66,7 +74,11 @@ first thaig2p call downloads a model). `--extra llm` for the API judge.
    biggest open question. Options researched during design: Forvo,
    Rhinospike, commissioned recordings (Fiverr); multi-speaker coverage of
    minimal pairs is a scored metric (`target_speakers: 3`). No pipeline
-   exists yet.
+   exists yet. Possible raw material: the "Thai 1000 Common Words" AnkiWeb
+   deck carries 999 native recordings for common words and
+   `scripts/import_apkg.py` can mine it — but it is single-speaker and its
+   reuse license is unstated (shared AnkiWeb deck), so treat as a
+   personal-use stopgap, not a distribution source.
 2. **Image sourcing** — the judge checks relevance and rejects embedded
    English text (vision), but acquisition/licensing is unsolved.
 3. **Word list** — the FF 625 English list needs Thai adaptation (concept
