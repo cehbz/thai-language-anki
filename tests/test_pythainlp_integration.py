@@ -45,6 +45,26 @@ def test_tltk_g2p_does_not_raise():
     TltkG2P().syllables("มา")  # must not raise
 
 
+@pytest.mark.parametrize("word,tone", [
+    ("ข่าว", Tone.LOW), ("ข้าว", Tone.FALLING), ("ไก่", Tone.LOW),
+    ("มา", Tone.MID), ("หมา", Tone.RISING),
+])
+def test_tltk_g2p_tones(word, tone):
+    # Real tltk (pandas now in the nlp extra): live probe 2026-08-27 gave
+    # ข่าว='kʰaːw2', ข้าว='kʰaːw3', ไก่='kaj2', มา='maː1', หมา='maː5',
+    # น้ำ='naːm4' — confirming the compact parser's digit map
+    # (1=mid 2=low 3=falling 4=high 5=rising) derived from tltk source.
+    from thai_deck_eval.lang.pythainlp_adapter import TltkG2P
+    syls = TltkG2P().syllables(word)
+    assert syls is not None and len(syls) == 1, word
+    assert syls[0].tone == tone
+
+
+def test_tltk_g2p_long_vowel():
+    from thai_deck_eval.lang.pythainlp_adapter import TltkG2P
+    assert TltkG2P().syllables("ขาว")[0].long is True
+
+
 def test_tokenizer():
     from thai_deck_eval.lang.pythainlp_adapter import PyThaiNLPTokenizer
     # NOTE: the brief's original example sentence "หมามากินข้าว" does not

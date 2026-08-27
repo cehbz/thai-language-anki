@@ -48,15 +48,14 @@ Shape of the raw string:
 pythainlp's own docstring for `transliterate(..., engine="tltk_ipa")`
 shows a materially different raw shape: compact per-syllable strings
 with no spaces between phones and a digit tone (e.g. "saː5.maːt3"), not
-the token-per-phone/Chao-letter shape thaig2p emits. In this environment
-tltk itself is broken (`import tltk` fails: `ModuleNotFoundError: No
-module named 'pandas'`, a transitive dependency tltk needs but does not
-declare/that is not part of this project's "nlp" extra), so `tltk_ipa`
-could not be empirically exercised (run) here. TltkG2P instead routes
-through `_convert_compact` below, whose digit-tone mapping and phone
-alphabet were verified by reading tltk's own installed source
-(`tltk/nlp.py`, present in this environment despite being unimportable)
-rather than by guessing:
+the token-per-phone/Chao-letter shape thaig2p emits. tltk does not
+declare its pandas dependency, so this project's "nlp" extra includes
+pandas explicitly. TltkG2P routes through `_convert_compact` below,
+whose digit-tone mapping and phone alphabet were first derived from
+tltk's own source (`tltk/nlp.py`) and then confirmed against live
+tltk_ipa output (2026-08-27 probe: ข่าว='kʰaːw2', ข้าว='kʰaːw3',
+มา='maː1', น้ำ='naːm4', หมา='maː5'; pinned by
+tests/test_pythainlp_integration.py::test_tltk_g2p_tones):
 
   * Digit->tone mapping. `tltk.nlp.th2ipa`'s `NORMALIZE_IPA` table applies
     the replacements `('4','5'), ('3','4'), ('2','3'), ('1','2'), ('0','1')`
