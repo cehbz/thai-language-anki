@@ -50,6 +50,15 @@ class CachedJudge:
                            req.prompt, image_sha], ensure_ascii=False)
         return hashlib.sha256(blob.encode()).hexdigest()
 
+    def close(self) -> None:
+        self._db.close()
+
+    def __enter__(self) -> "CachedJudge":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     def judge(self, req: JudgeRequest) -> list[Verdict]:
         key = self._key(req)
         row = self._db.execute("SELECT payload FROM verdicts WHERE key=?",

@@ -71,3 +71,18 @@ def test_cache_hits_skip_inner(tmp_path):
     cached3 = CachedJudge(Counting(), tmp_path / "c.sqlite", "m", "2")
     cached3.judge(req)
     assert Counting.calls == 2  # prompt_version bump invalidates
+
+def test_cached_judge_close_and_context_manager(tmp_path):
+    import sqlite3
+    import pytest
+
+    class Inner:
+        def judge(self, req):
+            return [Verdict(rule=r, passed=True, confidence=1.0, rationale="")
+                    for r in req.rules]
+
+    req = JudgeRequest(note_id="n", rules=["judge/x"], prompt="p")
+    with CachedJudge(Inner(), tmp_path / "c.sqlite", "m", "1") as cj:
+        assert cj.judge(req)[0].passed is True
+    with pytest.raises(sqlite3.ProgrammingError):
+        cj.judge(req)  # connection closed on context exit

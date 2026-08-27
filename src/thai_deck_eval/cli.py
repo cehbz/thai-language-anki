@@ -72,15 +72,25 @@ def main(deck_dir, report_path, fmt, no_judge, stages_opt, rulebook):
         elif no_judge:
             stages = [Stage.MECHANICAL, Stage.LINGUISTIC, Stage.METHOD]
 
+        built_judges: list = []
+
         def ctx_factory(deck):
             vocab = ({w.thai for w in deck.picture_words}
                     | {s.target for s in deck.sentences})
             g2p, second, tok, freq = _build_language_ports(vocab)
             judge = None if no_judge else _build_judge(cfg)
+            if judge is not None:
+                built_judges.append(judge)
             return EvalContext(deck=deck, config=cfg, g2p=g2p, g2p_second=second,
                                tokenizer=tok, freq=freq, judge=judge)
 
-        result = evaluate_path(deck_dir, ctx_factory, stages=stages)
+        try:
+            result = evaluate_path(deck_dir, ctx_factory, stages=stages)
+        finally:
+            for j in built_judges:
+                close = getattr(j, "close", None)
+                if close is not None:
+                    close()
         scores = compute_scores(result, cfg)
         name, version = "?", "?"
         try:
