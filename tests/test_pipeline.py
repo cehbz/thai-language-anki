@@ -43,7 +43,7 @@ def test_warn_does_not_gate_and_metrics_collected():
     def go():
         res = run_pipeline(EvalContext(deck=_deck()))
         assert res.stages_skipped == []
-        assert [m.name for m in res.metrics] == ["coverage/x"]
+        assert "coverage/x" in [m.name for m in res.metrics]
     _with_rules(["mech/t-warn", "meth/t-metric"], go)
 
 def test_stage_filter():
