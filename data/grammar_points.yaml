@@ -1,0 +1,9 @@
+# Grammar points drilled via the sentence producer (word_form: a marker
+# attached to/near a word; word_order: a structural pattern). One sentence
+# note is generated per entry (target = marker).
+- {id: q-mai, kind: word_order, marker: "ไหม", description: "yes/no question particle"}
+- {id: neg-mai, kind: word_form, marker: "ไม่", description: "negation before verb"}
+- {id: fut-ja, kind: word_form, marker: "จะ", description: "future/irrealis marker"}
+- {id: perf-laew, kind: word_form, marker: "แล้ว", description: "completed aspect"}
+- {id: prog-kamlang, kind: word_form, marker: "กำลัง", description: "progressive marker"}
+- {id: cls-order, kind: word_order, marker: "ตัว", description: "noun + number + classifier order"}
