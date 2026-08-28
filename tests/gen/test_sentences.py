@@ -100,3 +100,23 @@ def test_fill_sentences_judge_regen_resets_audio_and_deletes_media(tmp_path):
     from thai_deck_gen.media.scan import pending_audio
     needs = pending_audio(deck)
     assert any(n.note_id == "sn-w0-1" for n in needs)
+
+def test_fill_sentences_halts_on_llm_error_keeping_progress(tmp_path):
+    from thai_deck_gen.llm import LlmError
+    deck = _deck_with_words(tmp_path, 3)
+    class FlakyLlm:
+        def __init__(self): self.calls = 0
+        def complete(self, producer, version, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return "w0w1"
+            raise LlmError("usage limit reached")
+    tok = FakeTok({"w0w1": ["w0", "w1"]})
+    class Ctx:
+        llm = FlakyLlm(); tokenizer = tok; exemplars = []; config = Cfg()
+        grammar_points = []
+    res = fill_sentences(_gaps([]), deck, Ctx())
+    assert res.added == 1                      # first sentence kept
+    assert len(deck.sentences) == 1
+    assert any("usage limit reached" in b for b in res.blocked)
+    assert Ctx.llm.calls == 2                  # halted, no further attempts

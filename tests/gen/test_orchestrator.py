@@ -73,7 +73,7 @@ def test_generate_dispatch_order_and_stops_on_clean_report(tmp_path, monkeypatch
     summaries = generate(deck, ctx, evaluate=lambda deck_dir: next(reports))
 
     assert calls == ["fill_pairs", "fill_spelling", "fill_words", "fill_sentences"] * 2
-    assert len(writes) == 2                    # deck written each dispatched iteration
+    assert len(writes) == 4                    # written after content and after media, each iteration
     assert len(summaries) == 2
     assert all(set(s.results) == {"pairs", "spelling", "words", "sentences"}
               for s in summaries)
@@ -98,7 +98,7 @@ def test_generate_stops_on_no_progress(tmp_path, monkeypatch):
 
     assert n_evals["n"] == 2                   # detects repeat on the 2nd eval
     assert len(summaries) == 1
-    assert len(writes) == 1
+    assert len(writes) == 2                    # after content, after media
 
 
 def test_generate_stops_at_max_iterations(tmp_path, monkeypatch):
@@ -161,3 +161,18 @@ def test_blocked_summary_mentions_leftover_native_tier_needs(tmp_path):
     msg = orchestrator._blocked_summary(deck, ctx)
 
     assert "audio commission" in msg
+
+
+def test_generate_writes_content_before_media_dispatch(tmp_path, monkeypatch):
+    calls, writes = [], []
+    _stub_producers(monkeypatch, calls)
+    _stub_write(monkeypatch, writes)
+    def boom(gaps, deck, ctx):
+        raise RuntimeError("media filler crashed")
+    monkeypatch.setattr(orchestrator, "_dispatch_media", boom)
+    deck = new_deck(tmp_path / "d", "t", ["sounds", "words", "sentences"])
+    ctx = _ctx(tmp_path)
+    report = _report("fail", missing_contrasts=["vowel_length"])
+    with pytest.raises(RuntimeError):
+        generate(deck, ctx, evaluate=lambda deck_dir: report)
+    assert len(writes) == 1                    # content producers' work persisted

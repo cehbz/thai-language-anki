@@ -147,6 +147,7 @@ def generate(deck: Deck, ctx, evaluate=run_eval) -> list[IterationSummary]:
 
         print(f"iteration {i + 1}:")
         results = _dispatch_content(gaps, deck, ctx)
+        write_deck(deck)   # persist content before media fetchers run
         results.update(_dispatch_media(gaps, deck, ctx))
         write_deck(deck)
         summaries.append(IterationSummary(gaps_fingerprint=fp, results=results))

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from thai_deck_eval.model.deck import Deck
 from thai_deck_eval.model.notes import Audio, SentenceNote
+from thai_deck_gen.llm import LlmError
 from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.report import Gaps
 
@@ -103,7 +104,20 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
         return result
 
     known = known_vocab(deck)
+    # An LlmError means the backend is unavailable (limit hit, CLI down):
+    # keep whatever was generated so far and stop rather than failing
+    # every remaining call one subprocess at a time.
+    try:
+        _add_new_word_sentences(deck, ctx, known, result)
+        _add_grammar_sentences(deck, ctx, known, result)
+        _regenerate_judged(gaps, deck, ctx, known, result)
+    except LlmError as exc:
+        result.blocked.append(f"llm unavailable, sentence generation halted: {exc}")
+    return result
 
+
+def _add_new_word_sentences(deck: Deck, ctx, known: set[str],
+                            result: ProducerResult) -> None:
     have_new_word = {n.target for n in deck.sentences if n.kind == "new_word"}
     for word in deck.picture_words:
         if word.thai in have_new_word:
@@ -115,6 +129,9 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
         deck.sentences.append(_new_note(deck, word.thai, "new_word", thai))
         result.added += 1
 
+
+def _add_grammar_sentences(deck: Deck, ctx, known: set[str],
+                           result: ProducerResult) -> None:
     have_grammar = {(n.target, n.kind) for n in deck.sentences
                     if n.kind in ("word_form", "word_order")}
     for gp in getattr(ctx, "grammar_points", []):
@@ -129,6 +146,9 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             _new_note(deck, marker, kind, thai, grammar_note=gp.get("description")))
         result.added += 1
 
+
+def _regenerate_judged(gaps: Gaps, deck: Deck, ctx, known: set[str],
+                       result: ProducerResult) -> None:
     judge_messages = {f.note_id: f.message for f in gaps.findings_for("judge/")
                       if f.note_id}
     for note in deck.sentences:
@@ -145,8 +165,6 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
         note.thai = thai
         note.audio.speaker = "pending"
         result.changed += 1
-
-    return result
 
 
 def load_exemplars(path: Path) -> list[str]:
