@@ -59,3 +59,17 @@ def _runner_fail_stdout(cmd, **kw):
 def test_cli_backend_failure_reports_stdout_when_stderr_empty():
     with pytest.raises(LlmError, match="usage limit reached"):
         CliBackend(runner=_runner_fail_stdout).complete("hi")
+
+
+def test_gen_config_defaults_to_opus_model():
+    from thai_deck_gen.config import GenConfig
+    assert GenConfig().model == "claude-opus-5"
+
+
+def test_cli_llm_factory_passes_configured_model_to_backend(tmp_path):
+    from thai_deck_gen.cli import _cli_llm
+    from thai_deck_gen.config import GenConfig
+    llm = _cli_llm(tmp_path, GenConfig(model="claude-sonnet-5"))
+    assert llm.inner.model == "claude-sonnet-5"
+    assert llm.model == "claude-sonnet-5"      # cache key namespace follows
+    llm.close()

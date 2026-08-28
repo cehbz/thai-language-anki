@@ -36,6 +36,13 @@ def test_cli_judge_parses():
     assert out[0].passed is True
     assert runner.cmds[0][:2] == ["claude", "-p"]
 
+def test_cli_judge_passes_configured_model():
+    runner = FakeRun([GOOD])
+    j = CliJudge(JudgeConfig(model="claude-sonnet-5"), runner=runner)
+    j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
+    cmd = runner.cmds[0]
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"
+
 def test_cli_judge_failure_reports_stdout_when_stderr_empty():
     def runner(cmd, **kw):
         class R:

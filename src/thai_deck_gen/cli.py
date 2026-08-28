@@ -61,8 +61,12 @@ def _build_ctx(deck_dir: Path, data_dir: Path):
         return build_context(deck_dir, data_dir, _FakeGenLlm(), nlp=False,
                              g2p=_FakeG2P(), tokenizer=_FakeTokenizer(), freq=_FakeFreq(),
                              config=cfg)
-    llm = CachedLlm(CliBackend(), deck_dir / "work" / "llm_cache.sqlite3", model=cfg.model)
-    return build_context(deck_dir, data_dir, llm, nlp=True, config=cfg)
+    return build_context(deck_dir, data_dir, _cli_llm(deck_dir, cfg), nlp=True, config=cfg)
+
+
+def _cli_llm(deck_dir: Path, cfg) -> CachedLlm:
+    return CachedLlm(CliBackend(model=cfg.model),
+                     deck_dir / "work" / "llm_cache.sqlite3", model=cfg.model)
 
 
 def _gaps_for(deck_dir: Path, data_dir: Path):

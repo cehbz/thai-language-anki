@@ -29,7 +29,8 @@ class CliJudge:
                 shutil.copy(src, dst)
                 prompt += f"\nImage file to inspect: {dst}"
             for attempt in range(2):
-                cmd = ["claude", "-p", prompt, "--output-format", "json"]
+                cmd = ["claude", "-p", prompt, "--output-format", "json",
+                       "--model", self.config.model]
                 if image_dir:
                     cmd += ["--allowedTools", "Read", "--add-dir", image_dir]
                 try:
