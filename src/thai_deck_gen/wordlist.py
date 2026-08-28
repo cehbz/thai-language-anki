@@ -126,10 +126,19 @@ def draft_word_list(llm, categories_path: Path, frequency_path: Path,
     return len(entries)
 
 
+FENCE_RE = re.compile(r"^\s*```[\w-]*\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
+
+
+def _strip_fences(response: str) -> str:
+    """Models sometimes wrap the YAML in a markdown code fence regardless."""
+    m = FENCE_RE.match(response)
+    return m.group(1) if m else response
+
+
 def _parse_entries(response: str, category: str, warnings: list[str],
                    emphasis: bool = False) -> list[WordEntry]:
     try:
-        raw = yaml.safe_load(response) or []
+        raw = yaml.safe_load(_strip_fences(response)) or []
     except yaml.YAMLError as exc:
         warnings.append(f"{category}: unparseable response: {exc}")
         return []

@@ -170,3 +170,11 @@ def test_extend_word_list_resumes_skipping_extended_categories(tmp_path):
                              DATA / "frequency_th.txt", out, emphasis)
     assert again.prompts == []                    # Food already extended
     assert count == 1
+
+def test_parse_entries_strips_markdown_code_fences():
+    from thai_deck_gen.wordlist import _parse_entries
+    fenced = "```yaml\n" + _entry("ผัด") + "```\n"
+    warnings = []
+    parsed = _parse_entries(fenced, "Food", warnings)
+    assert [e.thai for e in parsed] == ["ผัด"]
+    assert warnings == []
