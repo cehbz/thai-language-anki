@@ -4,6 +4,12 @@ from thai_deck_gen.llm import CachedLlm, CliBackend, LlmError
 from tests.gen.fakes import FakeLlm
 
 
+def test_cached_llm_creates_missing_parent_dir(tmp_path):
+    fake = FakeLlm(["one"])
+    with CachedLlm(fake, tmp_path / "work" / "c.sqlite", model="m") as llm:
+        assert llm.complete("p", "v1", "hello") == "one"
+
+
 def test_cached_llm_caches_by_content(tmp_path):
     fake = FakeLlm(["one", "two"])
     with CachedLlm(fake, tmp_path / "c.sqlite", model="m") as llm:

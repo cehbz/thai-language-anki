@@ -39,6 +39,7 @@ class CliBackend:
 class CachedLlm:
     def __init__(self, inner: Llm, db_path: Path, model: str):
         self.inner, self.model, self.calls = inner, model, 0
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(db_path)
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS completions (key TEXT PRIMARY KEY, payload TEXT)"
