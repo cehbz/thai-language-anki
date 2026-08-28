@@ -28,7 +28,8 @@ class CliBackend:
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise LlmError(str(exc)) from exc
         if r.returncode != 0:
-            raise LlmError(r.stderr[:500])
+            # in --output-format json mode error detail lands on stdout
+            raise LlmError((r.stderr or r.stdout)[:500])
         try:
             return json.loads(r.stdout)["result"]
         except (json.JSONDecodeError, KeyError) as exc:

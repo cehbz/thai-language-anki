@@ -46,6 +46,52 @@ def test_draft_word_list_writes_entries(tmp_path):
     assert len(fake.prompts) == n_categories
     assert "YAML" in fake.prompts[0]
 
+class _FailAfter:
+    """Yields canned responses, then raises on the next call."""
+    def __init__(self, responses, exc):
+        self.responses = list(responses)
+        self.exc = exc
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise self.exc
+        return self.responses.pop(0)
+
+def _entry(thai):
+    return yaml.safe_dump([
+        {"thai": thai, "gloss": "water", "category": "CAT",
+         "part_of_speech": "noun", "classifier": "แก้ว"}], allow_unicode=True)
+
+def test_draft_word_list_persists_completed_categories_on_failure(tmp_path):
+    from thai_deck_gen.llm import LlmError
+    fake = _FailAfter([_entry("น้ำ"), _entry("นม")], LlmError("limit"))
+    out = tmp_path / "wl.yaml"
+    with pytest.raises(LlmError):
+        draft_word_list(fake, DATA / "categories.yaml",
+                        DATA / "frequency_th.txt", out)
+    saved = yaml.safe_load(out.read_text(encoding="utf-8"))
+    assert len(saved) == 2                # the two completed categories
+    categories = yaml.safe_load((DATA / "categories.yaml").read_text())
+    assert {e["category"] for e in saved} == set(categories[:2])
+
+def test_draft_word_list_resumes_skipping_completed_categories(tmp_path):
+    categories = yaml.safe_load((DATA / "categories.yaml").read_text())
+    out = tmp_path / "wl.yaml"
+    out.write_text(yaml.safe_dump([
+        {"thai": "น้ำ", "gloss": "water", "category": categories[0],
+         "part_of_speech": "noun", "classifier": "แก้ว"}], allow_unicode=True),
+        encoding="utf-8")
+    fake = FakeLlm([_entry("นม")] * (len(categories) - 1))
+    count = draft_word_list(fake, DATA / "categories.yaml",
+                            DATA / "frequency_th.txt", out)
+    assert len(fake.prompts) == len(categories) - 1   # first category skipped
+    assert count == len(categories)                    # existing entry kept
+    saved = yaml.safe_load(out.read_text(encoding="utf-8"))
+    assert {e["category"] for e in saved} == set(categories)
+    assert any(e["thai"] == "น้ำ" for e in saved)
+
 def test_draft_word_list_reports_dropped_entries(tmp_path):
     categories = yaml.safe_load((DATA / "categories.yaml").read_text())
     good = yaml.safe_dump([

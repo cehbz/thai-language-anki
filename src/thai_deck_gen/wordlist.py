@@ -87,7 +87,13 @@ def draft_word_list(llm, categories_path: Path, frequency_path: Path,
     anchors = _load_frequency_anchors(frequency_path)
     per_category = -(-625 // len(categories))
     entries = []
+    if Path(out_path).is_file():
+        existing = yaml.safe_load(Path(out_path).read_text(encoding="utf-8")) or []
+        entries = [WordEntry(**item) for item in existing]
+    done = {e.category for e in entries}
     for category in categories:
+        if category in done:
+            continue
         prompt = WORDLIST_PROMPT.format(
             category=category, count=per_category, anchors=", ".join(anchors))
         response = llm.complete(prompt)
@@ -106,9 +112,14 @@ def draft_word_list(llm, categories_path: Path, frequency_path: Path,
             except ValueError as exc:
                 warnings.append(f"{category}: dropped invalid entry: {exc}")
                 continue
+        _write_entries(entries, out_path)
+    _write_entries(entries, out_path)
+    return len(entries)
+
+
+def _write_entries(entries: list[WordEntry], out_path: Path) -> None:
     entries.sort(key=lambda e: (e.category, e.thai))
     Path(out_path).write_text(
         yaml.safe_dump([e.model_dump(exclude_none=True) for e in entries],
                        allow_unicode=True),
         encoding="utf-8")
-    return len(entries)

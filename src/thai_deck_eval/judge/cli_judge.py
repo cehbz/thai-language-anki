@@ -38,7 +38,9 @@ class CliJudge:
                     raise JudgeError(
                         f"claude -p failed for note {req.note_id}: {exc}") from exc
                 if r.returncode != 0:
-                    raise JudgeError(f"claude -p failed: {r.stderr[:500]}")
+                    # in --output-format json mode error detail lands on stdout
+                    raise JudgeError(
+                        f"claude -p failed: {(r.stderr or r.stdout)[:500]}")
                 try:
                     text = json.loads(r.stdout)["result"]
                     m = re.search(r"\{.*\}", text, re.DOTALL)

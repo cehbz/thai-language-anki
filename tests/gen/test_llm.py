@@ -39,3 +39,17 @@ def test_cli_backend_parses_result():
 def test_cli_backend_normalizes_failure():
     with pytest.raises(LlmError):
         CliBackend(runner=_runner_fail).complete("hi")
+
+
+def _runner_fail_stdout(cmd, **kw):
+    class R:
+        returncode = 1
+        stdout = '{"is_error":true,"result":"usage limit reached"}'
+        stderr = ""
+
+    return R()
+
+
+def test_cli_backend_failure_reports_stdout_when_stderr_empty():
+    with pytest.raises(LlmError, match="usage limit reached"):
+        CliBackend(runner=_runner_fail_stdout).complete("hi")
