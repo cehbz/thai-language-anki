@@ -29,6 +29,32 @@ Instructions:
   picturable (bool, default true), split_of (omit unless splitting a concept).
 """
 
+EXTENSION_PROMPT = """You are extending the Thai vocabulary of a spaced-repetition
+deck based on the Fluent Forever 625-word list, category "{category}".
+The learner's everyday conversations center on: {theme}.
+
+Target: {count} additional entries in this category that are useful in
+that context, colloquial spoken register. Only words that this category
+genuinely admits; skip the category's generic staples.
+
+Already listed in this category (do not repeat):
+{existing}
+
+Top-200 Thai frequency words for anchoring word choice (most common first):
+{anchors}
+
+Instructions:
+- Every noun must include a classifier (Thai measure word).
+- Where a single English concept splits into multiple distinct Thai words
+  (e.g. formality register, physical vs. abstract sense), emit one entry
+  per Thai word and set split_of to the original English concept.
+- Prefer colloquial, everyday spoken Thai over formal/written register.
+- Respond with a YAML list of mappings ONLY, no prose, no code fences.
+  Each mapping has keys: thai, gloss, category, part_of_speech
+  (noun|verb|adjective|other), classifier (required for nouns, else omit),
+  picturable (bool, default true), split_of (omit unless splitting a concept).
+"""
+
 
 class WordEntry(BaseModel):
     thai: str
@@ -38,6 +64,7 @@ class WordEntry(BaseModel):
     classifier: str | None = None
     picturable: bool = True
     split_of: str | None = None
+    emphasis: bool = False         # added by the emphasis extension pass
 
     @field_validator("thai")
     @classmethod
@@ -86,40 +113,86 @@ def draft_word_list(llm, categories_path: Path, frequency_path: Path,
     categories = load_categories(categories_path)
     anchors = _load_frequency_anchors(frequency_path)
     per_category = -(-625 // len(categories))
-    entries = []
-    if Path(out_path).is_file():
-        existing = yaml.safe_load(Path(out_path).read_text(encoding="utf-8")) or []
-        entries = [WordEntry(**item) for item in existing]
+    entries = _load_entries(out_path)
     done = {e.category for e in entries}
     for category in categories:
         if category in done:
             continue
         prompt = WORDLIST_PROMPT.format(
             category=category, count=per_category, anchors=", ".join(anchors))
-        response = llm.complete(prompt)
-        try:
-            raw = yaml.safe_load(response) or []
-        except yaml.YAMLError as exc:
-            warnings.append(f"{category}: unparseable response: {exc}")
-            continue
-        for item in raw:
-            if not isinstance(item, dict):
-                warnings.append(f"{category}: dropped non-mapping entry {item!r}")
-                continue
-            item = dict(item, category=category)
-            try:
-                entries.append(WordEntry(**item))
-            except ValueError as exc:
-                warnings.append(f"{category}: dropped invalid entry: {exc}")
-                continue
+        entries.extend(_parse_entries(llm.complete(prompt), category, warnings))
         _write_entries(entries, out_path)
     _write_entries(entries, out_path)
     return len(entries)
 
 
+def _parse_entries(response: str, category: str, warnings: list[str],
+                   emphasis: bool = False) -> list[WordEntry]:
+    try:
+        raw = yaml.safe_load(response) or []
+    except yaml.YAMLError as exc:
+        warnings.append(f"{category}: unparseable response: {exc}")
+        return []
+    parsed = []
+    for item in raw:
+        if not isinstance(item, dict):
+            warnings.append(f"{category}: dropped non-mapping entry {item!r}")
+            continue
+        item = dict(item, category=category, emphasis=emphasis)
+        try:
+            parsed.append(WordEntry(**item))
+        except ValueError as exc:
+            warnings.append(f"{category}: dropped invalid entry: {exc}")
+    return parsed
+
+
+def _load_entries(out_path: Path) -> list[WordEntry]:
+    if not Path(out_path).is_file():
+        return []
+    existing = yaml.safe_load(Path(out_path).read_text(encoding="utf-8")) or []
+    return [WordEntry(**item) for item in existing]
+
+
 def _write_entries(entries: list[WordEntry], out_path: Path) -> None:
     entries.sort(key=lambda e: (e.category, e.thai))
     Path(out_path).write_text(
-        yaml.safe_dump([e.model_dump(exclude_none=True) for e in entries],
-                       allow_unicode=True),
+        yaml.safe_dump([_dump(e) for e in entries], allow_unicode=True),
         encoding="utf-8")
+
+
+def _dump(entry: WordEntry) -> dict:
+    data = entry.model_dump(exclude_none=True)
+    if not data["emphasis"]:
+        del data["emphasis"]
+    return data
+
+
+def extend_word_list(llm, categories_path: Path, frequency_path: Path,
+                     out_path: Path, emphasis, warnings: list[str] | None = None) -> int:
+    """Add theme-relevant entries on top of an existing base list.
+
+    Per category: extra = round(base_count x (weight - 1)); categories at
+    weight <= 1 are skipped, as are categories that already carry
+    emphasis-tagged entries (resume). Returns the number of emphasis
+    entries in the file afterwards.
+    """
+    if warnings is None:
+        warnings = []
+    categories = load_categories(categories_path)
+    anchors = _load_frequency_anchors(frequency_path)
+    per_category = -(-625 // len(categories))
+    entries = _load_entries(out_path)
+    done = {e.category for e in entries if e.emphasis}
+    for category in categories:
+        extra = round(per_category * (emphasis.weight(category) - 1))
+        if extra <= 0 or category in done:
+            continue
+        existing = [e.thai for e in entries if e.category == category]
+        prompt = EXTENSION_PROMPT.format(
+            category=category, theme=emphasis.theme, count=extra,
+            existing=", ".join(existing) or "(none)", anchors=", ".join(anchors))
+        entries.extend(_parse_entries(llm.complete(prompt), category, warnings,
+                                      emphasis=True))
+        _write_entries(entries, out_path)
+    _write_entries(entries, out_path)
+    return sum(1 for e in entries if e.emphasis)

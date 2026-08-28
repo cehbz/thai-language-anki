@@ -109,3 +109,64 @@ def test_draft_word_list_reports_dropped_entries(tmp_path):
     assert len(warnings) == 1
     assert categories[0] in warnings[0]
     assert "classifier" in warnings[0]
+
+# --- extension pass -------------------------------------------------------
+
+from thai_deck_gen.emphasis import Emphasis
+from thai_deck_gen.wordlist import extend_word_list
+
+def _base_file(tmp_path, categories):
+    out = tmp_path / "wl.yaml"
+    out.write_text(yaml.safe_dump([
+        {"thai": "ข้าว", "gloss": "rice", "category": "Food",
+         "part_of_speech": "noun", "classifier": "จาน"},
+        {"thai": "หมา", "gloss": "dog", "category": "Animals",
+         "part_of_speech": "noun", "classifier": "ตัว"}], allow_unicode=True),
+        encoding="utf-8")
+    return out
+
+def test_load_word_list_keeps_emphasis_tag(tmp_path):
+    p = _write_list(tmp_path, [
+        {"thai": "น้ำ", "gloss": "water", "category": "Beverages",
+         "part_of_speech": "noun", "classifier": "แก้ว", "emphasis": True}])
+    entries = load_word_list(p, DATA / "categories.yaml")
+    assert entries[0].emphasis is True
+
+def test_extend_word_list_adds_tagged_entries_only_for_weighted_categories(tmp_path):
+    categories = yaml.safe_load((DATA / "categories.yaml").read_text())
+    out = _base_file(tmp_path, categories)
+    fake = FakeLlm([_entry("ผัด")])              # one call expected: Food only
+    emphasis = Emphasis(theme="food and cooking",
+                        category_weights={"Food": 2})   # others weight 1 -> 0 extra
+    count = extend_word_list(fake, DATA / "categories.yaml",
+                             DATA / "frequency_th.txt", out, emphasis)
+    assert len(fake.prompts) == 1
+    assert "food and cooking" in fake.prompts[0]
+    assert "ข้าว" in fake.prompts[0]              # existing Food entries are exclusions
+    assert "Already listed" in fake.prompts[0] or "already" in fake.prompts[0].lower()
+    saved = yaml.safe_load(out.read_text(encoding="utf-8"))
+    assert count == 1
+    added = [e for e in saved if e.get("emphasis")]
+    assert [e["thai"] for e in added] == ["ผัด"]
+    assert len(saved) == 3                        # base entries untouched
+
+def test_extend_word_list_requests_weight_scaled_count(tmp_path):
+    categories = yaml.safe_load((DATA / "categories.yaml").read_text())
+    out = _base_file(tmp_path, categories)
+    fake = FakeLlm([_entry("ผัด")])
+    per_category = -(-625 // len(categories))     # 24
+    extend_word_list(fake, DATA / "categories.yaml", DATA / "frequency_th.txt",
+                     out, Emphasis(theme="t", category_weights={"Food": 3}))
+    assert f"Target: {round(per_category * 2)} " in fake.prompts[0]   # 3x -> 48 extra
+
+def test_extend_word_list_resumes_skipping_extended_categories(tmp_path):
+    categories = yaml.safe_load((DATA / "categories.yaml").read_text())
+    out = _base_file(tmp_path, categories)
+    emphasis = Emphasis(theme="t", category_weights={"Food": 2})
+    extend_word_list(FakeLlm([_entry("ผัด")]), DATA / "categories.yaml",
+                     DATA / "frequency_th.txt", out, emphasis)
+    again = FakeLlm([])
+    count = extend_word_list(again, DATA / "categories.yaml",
+                             DATA / "frequency_th.txt", out, emphasis)
+    assert again.prompts == []                    # Food already extended
+    assert count == 1

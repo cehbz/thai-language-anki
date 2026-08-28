@@ -2,11 +2,12 @@ import argparse
 import datetime
 import json
 import os
+import sys
 from pathlib import Path
 
 from thai_deck_eval.model.deck import load_deck
 from thai_deck_gen.compiler.build import compile_deck
-from thai_deck_gen.config import load_config
+from thai_deck_gen.config import GenConfig, load_config
 from thai_deck_gen.context import build_context
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.llm import CachedLlm, CliBackend
@@ -23,7 +24,8 @@ from thai_deck_gen.producers.sentences import fetch_exemplars, fill_sentences
 from thai_deck_gen.producers.spelling import fill_spelling
 from thai_deck_gen.producers.words import fill_words
 from thai_deck_gen.report import parse_report
-from thai_deck_gen.wordlist import draft_word_list
+from thai_deck_gen.emphasis import load_emphasis
+from thai_deck_gen.wordlist import draft_word_list, extend_word_list
 
 DEFAULT_DATA_DIR = Path("data")
 
@@ -81,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     wl = sub.add_parser("wordlist")
+    wl.add_argument("--extend", action="store_true",
+                    help="add theme-relevant entries per data/emphasis.yaml on top of the base list")
     wl.add_argument("--out", type=Path, default=Path("data/word_list_th.yaml"))
 
     init = sub.add_parser("init")
@@ -157,10 +161,21 @@ def main(argv=None) -> int:
 
     if args.command == "wordlist":
         warnings = []
-        count = draft_word_list(CliBackend(), Path("data/categories.yaml"),
-                                Path("data/frequency_th.txt"), args.out,
-                                warnings=warnings)
-        print(f"wrote {count} entries to {args.out}")
+        backend = CliBackend(model=GenConfig().model)
+        if args.extend:
+            emphasis = load_emphasis(Path("data/emphasis.yaml"))
+            if emphasis is None:
+                print("error: data/emphasis.yaml not found", file=sys.stderr)
+                return 2
+            count = extend_word_list(backend, Path("data/categories.yaml"),
+                                     Path("data/frequency_th.txt"), args.out,
+                                     emphasis, warnings=warnings)
+            print(f"{count} emphasis entries in {args.out}")
+        else:
+            count = draft_word_list(backend, Path("data/categories.yaml"),
+                                    Path("data/frequency_th.txt"), args.out,
+                                    warnings=warnings)
+            print(f"wrote {count} entries to {args.out}")
         for w in warnings:
             print(f"warning: {w}")
 
@@ -280,7 +295,8 @@ def main(argv=None) -> int:
         gaps = _gaps_for(args.deck, args.data_dir)
         freq = FileFrequencyList(args.data_dir / "frequency_th.txt")
         base = args.base if args.base is not None else load_config(args.deck).sentence_base
-        compile_deck(deck, manifest, args.out, freq, gaps.pair_by_note, base=base)
+        compile_deck(deck, manifest, args.out, freq, gaps.pair_by_note, base=base,
+                     emphasis=load_emphasis(args.data_dir / "emphasis.yaml"))
         print(f"compiled {args.out}")
 
     return 0

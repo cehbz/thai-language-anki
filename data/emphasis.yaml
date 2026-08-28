@@ -1,0 +1,9 @@
+# Learner emphasis profile: what the learner's colloquial conversations are
+# actually about. Drives the word list extension pass (extra entries per
+# category = base count x (weight - 1)), a second themed sentence per
+# emphasized word, and earlier intro ordering (rank / weight).
+theme: food, cooking, and eating out
+category_weights:
+  default: 1.2
+  Food: 3
+  Beverages: 2

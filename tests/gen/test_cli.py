@@ -86,3 +86,9 @@ def test_generate_cli_runs_one_iteration(tmp_path, monkeypatch):
     rc = main(["generate", str(deck_dir), "--max-iterations", "1"])
     assert rc == 0
     assert (deck_dir / ".last-report.json").exists()
+
+
+def test_parser_accepts_wordlist_extend():
+    from thai_deck_gen.cli import build_parser
+    args = build_parser().parse_args(["wordlist", "--extend"])
+    assert args.command == "wordlist" and args.extend is True
