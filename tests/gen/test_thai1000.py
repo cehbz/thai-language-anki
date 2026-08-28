@@ -18,6 +18,15 @@ def test_audio_index_maps_word_to_bytes(tmp_path):
     index = audio_index(_apkg(tmp_path))
     assert index["w0"] == b"FAKE"
 
+def test_audio_index_strips_bracketed_classifier(tmp_path):
+    path = tmp_path / "thai1000.apkg"
+    build_apkg(path,
+               notes=[["hi", "w0 [classifier]", "phon", "[sound:0.mp3]", "noun",
+                       "sent", "sphon", "seng"]],
+               media={"0.mp3": b"FAKE_BRACKETED"})
+    index = audio_index(path)
+    assert index["w0"] == b"FAKE_BRACKETED"
+
 def _no_ffmpeg(monkeypatch):
     import thai_deck_gen.media.thai1000 as m
     monkeypatch.setattr(m, "normalize_audio",

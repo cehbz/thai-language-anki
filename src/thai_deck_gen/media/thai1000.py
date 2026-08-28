@@ -11,6 +11,16 @@ from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
 
 _SOUND_TAG = re.compile(r"\[sound:(?P<name>[^\]]+)\]")
+_BRACKET_SUFFIX = re.compile(r"\s*\[[^\]]*\]\s*$")
+
+
+def _strip_bracket(s: str) -> str:
+    """Return text with any trailing ' [classifier]' suffix removed."""
+    m = _BRACKET_SUFFIX.search(s)
+    if m is None:
+        return s.strip()
+    return s[: m.start()].strip()
+
 
 def audio_index(apkg: Path) -> dict[str, bytes]:
     with zipfile.ZipFile(apkg) as zf:
@@ -39,7 +49,7 @@ def audio_index(apkg: Path) -> dict[str, bytes]:
             key = reverse.get(m.group("name"))
             if key is None:
                 continue
-            index[word_tha] = zf.read(key)
+            index[_strip_bracket(word_tha)] = zf.read(key)
         return index
 
 def _find_note(deck: Deck, need: AudioNeed):
