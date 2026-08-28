@@ -68,3 +68,9 @@ def test_fake_env_disables_http_get_even_when_images_true(tmp_path, monkeypatch)
     monkeypatch.setenv("THAI_DECK_GEN_FAKE", "1")
     ctx = _build(tmp_path)
     assert ctx.http_get is None
+
+
+def test_context_loads_emphasis_profile(tmp_path):
+    ctx = _build(tmp_path)
+    assert ctx.emphasis is not None
+    assert ctx.emphasis.weight("Food") > 1

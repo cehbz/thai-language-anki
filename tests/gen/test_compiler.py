@@ -176,3 +176,23 @@ def test_compile_deck_missing_media_raises_and_writes_nothing(tmp_path):
 
     assert missing_ref in exc.value.files
     assert not out.exists()
+
+
+def test_compile_deck_forwards_emphasis_to_intro_order(tmp_path, monkeypatch):
+    from thai_deck_gen.compiler import build
+    from thai_deck_gen.deckio import new_deck
+    from thai_deck_gen.emphasis import Emphasis
+    from thai_deck_gen.media.manifest import Manifest
+    from tests.gen.test_words import FakeFreq
+    seen = {}
+    class Stop(Exception): pass
+    def fake_order(deck, freq, base=300, emphasis=None):
+        seen["emphasis"] = emphasis; raise Stop
+    monkeypatch.setattr(build, "intro_order", fake_order)
+    deck = new_deck(tmp_path / "d", "t", ["words"])
+    e = Emphasis(theme="t", category_weights={"Food": 2})
+    import pytest
+    with pytest.raises(Stop):
+        build.compile_deck(deck, Manifest.load(deck.root), tmp_path / "o.apkg",
+                           FakeFreq({}), {}, base=1, emphasis=e)
+    assert seen["emphasis"] is e

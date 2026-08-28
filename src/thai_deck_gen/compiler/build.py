@@ -241,8 +241,8 @@ def _build_notes(family, note, manifest, pair_by_note, basename_of) -> list[gena
 
 
 def compile_deck(deck: Deck, manifest: Manifest, out: Path, freq: FrequencyList,
-                 pair_by_note: dict[str, str], base: int = 300) -> None:
-    order = intro_order(deck, freq, base)
+                 pair_by_note: dict[str, str], base: int = 300, emphasis=None) -> None:
+    order = intro_order(deck, freq, base, emphasis=emphasis)
     basename_of, missing = _resolve_media(deck, order)
     if missing:
         raise CompileError(sorted(set(missing)))

@@ -21,9 +21,10 @@ def member_rank(note, freq: FrequencyList) -> int:
     return rank if rank is not None else UNRANKED
 
 def intro_order(deck: Deck, freq: FrequencyList,
-               base: int = 300) -> list[tuple[str, object]]:
+               base: int = 300, emphasis=None) -> list[tuple[str, object]]:
     """(family, note) sequence: minimal_pairs + spelling_sound merged by
-    member_rank, then picture_words by frequency_rank, sentences interleaved:
+    member_rank, then picture_words by frequency_rank divided by the
+    emphasis category weight (if an emphasis profile is given), sentences interleaved:
     after word #base is introduced, flush (ordered by target rank) each
     sentence whose target word is already introduced; remaining sentences
     are appended at the end."""
@@ -32,8 +33,12 @@ def intro_order(deck: Deck, freq: FrequencyList,
         [("spelling_sound", n) for n in deck.spelling_sound])
     sounds.sort(key=lambda fn: member_rank(fn[1], freq))
 
-    words = sorted(deck.picture_words, key=lambda w: w.frequency_rank)
-    rank_by_thai = {w.thai: w.frequency_rank for w in words}
+    def effective_rank(w) -> float:
+        # emphasized categories surface earlier: rank / weight
+        return w.frequency_rank / (emphasis.weight(w.category) if emphasis else 1.0)
+
+    words = sorted(deck.picture_words, key=effective_rank)
+    rank_by_thai = {w.thai: effective_rank(w) for w in words}
     pending = list(deck.sentences)
 
     result: list[tuple[str, object]] = list(sounds)

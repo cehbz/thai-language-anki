@@ -47,7 +47,7 @@ def check_sentence(thai: str, target: str, known: set[str], tokenizer) -> str | 
 
 
 def _prompt(target: str, known: set[str], exemplars: list[str],
-           feedback: str | None = None) -> str:
+           feedback: str | None = None, theme: str | None = None) -> str:
     sample = sorted(known)[:100]
     lines = [
         f"Target Thai word or grammar marker: {target}",
@@ -59,6 +59,8 @@ def _prompt(target: str, known: set[str], exemplars: list[str],
         "otherwise sticks to the known vocabulary.",
         "Answer with ONLY the Thai sentence.",
     ]
+    if theme:
+        lines.append(f"Where it is natural, set the sentence in the context of {theme}.")
     if feedback:
         lines.append(feedback)
     return "\n".join(lines)
@@ -70,14 +72,15 @@ def _next_note_id(deck: Deck, target: str) -> str:
 
 
 def _generate(ctx, known: set[str], target: str,
-             feedback: str | None = None) -> tuple[str | None, str | None]:
-    prompt = _prompt(target, known, ctx.exemplars, feedback)
+             feedback: str | None = None,
+             theme: str | None = None) -> tuple[str | None, str | None]:
+    prompt = _prompt(target, known, ctx.exemplars, feedback, theme)
     reply = ctx.llm.complete("sentences", PROMPT_VERSION, prompt).strip()
     reason = check_sentence(reply, target, known, ctx.tokenizer)
     if reason is None:
         return reply, None
     prompt = _prompt(target, known, ctx.exemplars,
-                     f"Previous attempt was rejected: {reason}")
+                     f"Previous attempt was rejected: {reason}", theme)
     reply = ctx.llm.complete("sentences", PROMPT_VERSION, prompt).strip()
     reason = check_sentence(reply, target, known, ctx.tokenizer)
     if reason is None:
@@ -86,8 +89,9 @@ def _generate(ctx, known: set[str], target: str,
 
 
 def _new_note(deck: Deck, target: str, kind: str, thai: str,
-             grammar_note: str | None = None) -> SentenceNote:
-    note_id = _next_note_id(deck, target)
+             grammar_note: str | None = None,
+             note_id: str | None = None) -> SentenceNote:
+    note_id = note_id or _next_note_id(deck, target)
     return SentenceNote(
         id=note_id, kind=kind, thai=thai, target=target,
         audio=Audio(file=f"audio/sentences/{note_id}.mp3",
@@ -109,6 +113,7 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
     # every remaining call one subprocess at a time.
     try:
         _add_new_word_sentences(deck, ctx, known, result)
+        _add_themed_sentences(deck, ctx, known, result)
         _add_grammar_sentences(deck, ctx, known, result)
         _regenerate_judged(gaps, deck, ctx, known, result)
     except LlmError as exc:
@@ -127,6 +132,37 @@ def _add_new_word_sentences(deck: Deck, ctx, known: set[str],
             result.blocked.append(f"{word.thai}: {reason}")
             continue
         deck.sentences.append(_new_note(deck, word.thai, "new_word", thai))
+        result.added += 1
+
+
+def _is_emphasized(ctx, word) -> bool:
+    """Weighted category, or an entry the word list extension pass added."""
+    emphasis = getattr(ctx, "emphasis", None)
+    if emphasis is None:
+        return False
+    if emphasis.weight(word.category) > 1:
+        return True
+    return any(e.thai == word.thai and e.emphasis
+               for e in getattr(ctx, "word_list", []))
+
+
+def _add_themed_sentences(deck: Deck, ctx, known: set[str],
+                          result: ProducerResult) -> None:
+    """A second sentence, set in the learner's theme, for emphasized words."""
+    emphasis = getattr(ctx, "emphasis", None)
+    if emphasis is None:
+        return
+    have = {n.id for n in deck.sentences}
+    for word in deck.picture_words:
+        note_id = f"sn-{word.thai}-themed"
+        if note_id in have or not _is_emphasized(ctx, word):
+            continue
+        thai, reason = _generate(ctx, known, word.thai, theme=emphasis.theme)
+        if thai is None:
+            result.blocked.append(f"{word.thai} (themed): {reason}")
+            continue
+        deck.sentences.append(
+            _new_note(deck, word.thai, "new_word", thai, note_id=note_id))
         result.added += 1
 
 

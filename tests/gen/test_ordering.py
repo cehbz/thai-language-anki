@@ -73,3 +73,17 @@ def test_intro_order_appends_unmatched_sentences_at_end(tmp_path):
     order = intro_order(deck, FREQ, base=3)
     ids = [(fam, n.id) for fam, n in order]
     assert ids[-1] == ("sentence", "sn-never")
+
+def test_intro_order_divides_rank_by_emphasis_weight(tmp_path):
+    from thai_deck_gen.emphasis import Emphasis
+    deck = new_deck(tmp_path / "d", "t", ["words"])
+    food = PictureWordNote(id="pw-10", thai="food", image="images/x.jpg",
+                           audio=_audio("f"), frequency_rank=10, category="Food")
+    animal = PictureWordNote(id="pw-4", thai="animal", image="images/x.jpg",
+                             audio=_audio("a"), frequency_rank=4, category="Animals")
+    deck.picture_words = [animal, food]
+    plain = [n.thai for _, n in intro_order(deck, FREQ)]
+    assert plain == ["animal", "food"]
+    weighted = [n.thai for _, n in intro_order(
+        deck, FREQ, emphasis=Emphasis(theme="t", category_weights={"Food": 3}))]
+    assert weighted == ["food", "animal"]          # 10/3 < 4

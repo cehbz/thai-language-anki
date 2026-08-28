@@ -7,6 +7,7 @@ import requests
 import yaml
 
 from thai_deck_gen.config import GenConfig, load_config
+from thai_deck_gen.emphasis import Emphasis, load_emphasis
 from thai_deck_gen.producers.sentences import load_exemplars
 from thai_deck_gen.wordlist import WordEntry, load_word_list
 
@@ -28,6 +29,7 @@ class GenContext:
     data_dir: Path
     adjudication_queue: Path
     targets_path: Path                        # spelling_targets.yaml, for fill_spelling
+    emphasis: Emphasis | None = None          # data/emphasis.yaml, if present
     thai1000_apkg: Path | None = None
     forvo_api_key: str | None = None
     tts_api_key: str | None = None
@@ -114,6 +116,7 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         word_list=word_list, lexicon_words=lexicon_words, exceptions=exceptions,
         pair_seeds=pair_seeds, grammar_points=grammar_points, exemplars=exemplars,
         config=config, data_dir=data_dir,
+        emphasis=load_emphasis(data_dir / "emphasis.yaml"),
         adjudication_queue=deck_root / "work" / "ipa_adjudication.yaml",
         targets_path=data_dir / "spelling_targets.yaml",
         thai1000_apkg=_resolve_thai1000_apkg(deck_root, config),

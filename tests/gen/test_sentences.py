@@ -120,3 +120,47 @@ def test_fill_sentences_halts_on_llm_error_keeping_progress(tmp_path):
     assert len(deck.sentences) == 1
     assert any("usage limit reached" in b for b in res.blocked)
     assert Ctx.llm.calls == 2                  # halted, no further attempts
+
+def test_fill_sentences_adds_themed_sentence_for_emphasized_words(tmp_path):
+    from thai_deck_gen.emphasis import Emphasis
+    deck = _deck_with_words(tmp_path, 3)          # all category "Food"
+    class RecordingLlm:
+        def __init__(self, resp): self.resp = list(resp); self.prompts = []
+        def complete(self, producer, version, prompt):
+            self.prompts.append(prompt); return self.resp.pop(0)
+    tok = FakeTok({"w0w1": ["w0", "w1"], "w1w2": ["w1", "w2"],
+                   "w0w2": ["w0", "w2"]})
+    class Ctx:
+        llm = RecordingLlm(["w0w1", "w1w2", "w0w2"] * 2)
+        tokenizer = tok; exemplars = []; config = Cfg(); grammar_points = []
+        emphasis = Emphasis(theme="food and cooking",
+                            category_weights={"Food": 2})
+        word_list = []
+    res = fill_sentences(_gaps([]), deck, Ctx())
+    assert res.added == 6                          # plain + themed per word
+    themed = [n for n in deck.sentences if n.id.endswith("-themed")]
+    assert [n.target for n in themed] == ["w0", "w1", "w2"]
+    assert all(n.kind == "new_word" for n in themed)
+    themed_prompts = [p for p in Ctx.llm.prompts if "food and cooking" in p]
+    assert len(themed_prompts) == 3
+    assert not any("food and cooking" in p for p in Ctx.llm.prompts[:3])  # plain prompt unchanged
+
+def test_fill_sentences_themed_pass_skips_unweighted_and_is_idempotent(tmp_path):
+    from thai_deck_gen.emphasis import Emphasis
+    deck = _deck_with_words(tmp_path, 3)
+    deck.picture_words[1].category = "Animals"      # weight 1 -> no themed sentence
+    class CachedFake:
+        def __init__(self, resp): self.resp = list(resp)
+        def complete(self, producer, version, prompt): return self.resp.pop(0)
+    tok = FakeTok({"w0w1": ["w0", "w1"], "w1w2": ["w1", "w2"],
+                   "w0w2": ["w0", "w2"]})
+    class Ctx:
+        llm = CachedFake(["w0w1", "w1w2", "w0w2", "w0w1", "w0w2"])
+        tokenizer = tok; exemplars = []; config = Cfg(); grammar_points = []
+        emphasis = Emphasis(theme="t", category_weights={"Food": 2})
+        word_list = []
+    res = fill_sentences(_gaps([]), deck, Ctx())
+    assert res.added == 5                          # 3 plain + 2 themed
+    Ctx.llm = CachedFake([])
+    res2 = fill_sentences(_gaps([]), deck, Ctx())
+    assert res2.added == 0                         # nothing regenerated
