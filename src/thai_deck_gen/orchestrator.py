@@ -7,9 +7,9 @@ from pathlib import Path
 from thai_deck_eval.model.deck import Deck
 from thai_deck_gen.deckio import write_deck
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
-from thai_deck_gen.media.images import fill_images
+from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
 from thai_deck_gen.media.manifest import Manifest
-from thai_deck_gen.media.scan import pending_audio, pending_images
+from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
 from thai_deck_gen.media.thai1000 import audio_index, import_thai1000
 from thai_deck_gen.media.tts import GoogleTts, fill_tts
 from thai_deck_gen.producers import ProducerResult
@@ -48,7 +48,7 @@ def run_eval(deck_dir: Path, runner=subprocess.run) -> dict:
     except json.JSONDecodeError as exc:
         raise EvalError(f"unparseable evaluator output: {exc}") from exc
     (deck_dir / ".last-report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2))
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
@@ -87,7 +87,8 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
 
     if ctx.forvo_api_key:
         client = ForvoClient(ctx.forvo_api_key)
-        res = fetch_forvo(pending_audio(deck), deck, manifest, client, today)
+        forvo_needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
+        res = fetch_forvo(forvo_needs, deck, manifest, client, today)
         results["forvo"] = res
         print(f"  forvo: changed={res.changed} blocked={len(res.blocked)}")
 
@@ -98,7 +99,8 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
         print(f"  tts: changed={res.changed} blocked={len(res.blocked)}")
 
     if ctx.http_get is not None:
-        res = fill_images(pending_images(deck), gaps, deck, manifest, ctx, today)
+        flagged = flagged_image_note_ids(gaps)
+        res = fill_images(pending_images(deck, flagged=flagged), gaps, deck, manifest, ctx, today)
         results["images"] = res
         print(f"  images: changed={res.changed} blocked={len(res.blocked)}")
 
@@ -115,8 +117,13 @@ def _blocked_summary(deck: Deck, ctx) -> str:
         ("tts", bool(ctx.tts_api_key)),
         ("images", ctx.http_get is not None),
     ) if not configured]
-    return (f"blocked: {len(audio_needs)} audio need(s), {len(image_needs)} image need(s) "
-           f"pending; unconfigured channels: {', '.join(unconfigured) or 'none'}")
+    msg = (f"blocked: {len(audio_needs)} audio need(s), {len(image_needs)} image need(s) "
+          f"pending; unconfigured channels: {', '.join(unconfigured) or 'none'}")
+    native_leftover = [n for n in audio_needs if n.family in NATIVE_TIER_FAMILIES]
+    if native_leftover:
+        msg += (f"; {len(native_leftover)} native-tier audio need(s) leftover -- run "
+               f"`thai-deck-gen audio commission --deck <dir>` to queue a commission batch")
+    return msg
 
 
 def generate(deck: Deck, ctx, evaluate=run_eval) -> list[IterationSummary]:

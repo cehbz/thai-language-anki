@@ -28,7 +28,7 @@ class Manifest:
         if not manifest_path.exists():
             return manifest
 
-        data = yaml.safe_load(manifest_path.read_text())
+        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         if data is None:
             return manifest
 
@@ -47,7 +47,7 @@ class Manifest:
             "entries": [entry.model_dump(exclude_none=True) for entry in self.entries.values()]
         }
 
-        with open(manifest_path, "w") as f:
+        with open(manifest_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
     def record(self, entry: MediaEntry) -> None:

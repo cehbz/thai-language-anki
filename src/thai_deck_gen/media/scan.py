@@ -19,6 +19,8 @@ class ImageNeed:
     gloss: str | None
     path: str
 
+NATIVE_TIER_FAMILIES = {"minimal_pair", "picture_word", "spelling_sound"}
+
 def pending_audio(deck: Deck) -> list[AudioNeed]:
     """
     Find all Audio refs where the file is missing under deck.root/media
@@ -92,11 +94,13 @@ def pending_audio(deck: Deck) -> list[AudioNeed]:
 
     return needs
 
-def pending_images(deck: Deck) -> list[ImageNeed]:
+def pending_images(deck: Deck, flagged: set[str] | None = None) -> list[ImageNeed]:
     """
-    Find notes with an image ref whose file is missing.
+    Find notes with an image ref whose file is missing, plus any note whose
+    id is in `flagged` (judge-rejected images) even when the file exists.
     term = note thai (picture words), gloss = note.gloss
     """
+    flagged = flagged or set()
     needs = []
     media_root = deck.root / "media"
 
@@ -105,7 +109,7 @@ def pending_images(deck: Deck) -> list[ImageNeed]:
             # PictureWordNote has image
             image_ref = note.image
             file_path = media_root / image_ref
-            if not file_path.exists():
+            if not file_path.exists() or note.id in flagged:
                 needs.append(ImageNeed(
                     family=family,
                     note_id=note.id,
@@ -119,7 +123,7 @@ def pending_images(deck: Deck) -> list[ImageNeed]:
             if note.image:
                 image_ref = note.image
                 file_path = media_root / image_ref
-                if not file_path.exists():
+                if not file_path.exists() or note.id in flagged:
                     needs.append(ImageNeed(
                         family=family,
                         note_id=note.id,
@@ -132,7 +136,7 @@ def pending_images(deck: Deck) -> list[ImageNeed]:
             # SpellingSoundNote has image
             image_ref = note.image
             file_path = media_root / image_ref
-            if not file_path.exists():
+            if not file_path.exists() or note.id in flagged:
                 needs.append(ImageNeed(
                     family=family,
                     note_id=note.id,

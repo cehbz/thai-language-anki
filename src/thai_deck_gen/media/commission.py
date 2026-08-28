@@ -1,7 +1,7 @@
 import yaml
 from pathlib import Path
 from thai_deck_eval.model.deck import Deck
-from thai_deck_gen.media.ffmpeg import normalize_audio
+from thai_deck_gen.media.ffmpeg import AudioError, normalize_audio
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
@@ -62,16 +62,19 @@ def import_commission(recordings_dir: Path, batch_file: Path, deck: Deck,
             result.blocked.append(item["id"])
             continue
 
-        dst = deck.root / "media" / target.audio.file
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        normalize_audio(rec.read_bytes(), dst)
+        try:
+            dst = deck.root / "media" / target.audio.file
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            normalize_audio(rec.read_bytes(), dst)
 
-        manifest.record(MediaEntry(
-            file=f"media/{target.audio.file}", channel="commissioned",
-            origin=str(Path(batch_file).name),
-            speaker=f"commissioned:{speaker}", fetched=today))
-        target.audio.speaker = f"commissioned:{speaker}"
-        target.audio.source = "native"
-        result.changed += 1
+            manifest.record(MediaEntry(
+                file=f"media/{target.audio.file}", channel="commissioned",
+                origin=str(Path(batch_file).name),
+                speaker=f"commissioned:{speaker}", fetched=today))
+            target.audio.speaker = f"commissioned:{speaker}"
+            target.audio.source = "native"
+            result.changed += 1
+        except AudioError:
+            result.blocked.append(item["id"])
 
     return result

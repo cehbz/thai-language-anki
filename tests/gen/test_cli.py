@@ -1,9 +1,12 @@
 import os
 
 import pytest
+import yaml
 
 from thai_deck_eval.model.deck import load_deck
 from thai_deck_gen.cli import build_parser, main
+from thai_deck_gen.deckio import write_deck
+from tests.gen.test_sentences import _deck_with_words
 
 
 def test_init_creates_loadable_deck(tmp_path):
@@ -41,6 +44,7 @@ def test_parser_accepts_init_args():
     (["audio", "import-commission", "--deck", "d", "--recordings", "r",
      "--batch", "b.yaml", "--speaker", "joe"], "audio"),
     (["audio", "tts", "--deck", "d"], "audio"),
+    (["audio", "commission", "--deck", "d"], "audio"),
     (["images", "--deck", "d"], "images"),
     (["compile", "--deck", "d", "--out", "o.apkg"], "compile"),
     (["wordlist"], "wordlist"),
@@ -48,6 +52,26 @@ def test_parser_accepts_init_args():
 def test_parser_accepts_thin_subcommands(argv, expected_command):
     args = build_parser().parse_args(argv)
     assert args.command == expected_command
+
+
+def test_audio_commission_writes_batch(tmp_path):
+    deck = _deck_with_words(tmp_path / "d", 2)
+    write_deck(deck)
+    rc = main(["audio", "commission", "--deck", str(deck.root)])
+    assert rc == 0
+    batch_path = deck.root / "work" / "commission_batch_001.yaml"
+    assert batch_path.exists()
+    batch = yaml.safe_load(batch_path.read_text())
+    assert {item["note_id"] for item in batch["items"]} == {"pw-0", "pw-1"}
+
+
+def test_audio_commission_no_needs_writes_nothing(tmp_path, capsys):
+    deck_dir = tmp_path / "d"
+    main(["init", str(deck_dir), "--name", "x", "--phases", "sounds"])
+    rc = main(["audio", "commission", "--deck", str(deck_dir)])
+    assert rc == 0
+    assert not (deck_dir / "work").exists() or not list(
+        (deck_dir / "work").glob("commission_batch_*.yaml"))
 
 
 @pytest.mark.integration

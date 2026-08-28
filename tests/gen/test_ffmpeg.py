@@ -10,6 +10,7 @@ def test_normalize_invokes_ffmpeg(tmp_path):
     normalize_audio(b"raw", tmp_path / "out.mp3", runner=runner)
     cmd = calls[0]
     assert cmd[0] == "ffmpeg" and "loudnorm" in " ".join(cmd)
+    assert "-y" in cmd
     assert str(tmp_path / "out.mp3") in cmd
 
 def test_normalize_raises_on_failure(tmp_path):

@@ -15,6 +15,7 @@ def normalize_audio(raw: bytes, dst: Path, runner=subprocess.run) -> None:
     """
     cmd = [
         "ffmpeg",
+        "-y",                 # overwrite destination without prompting
         "-i", "pipe:0",
         "-ac", "1",           # mono
         "-ar", "44100",       # sample rate

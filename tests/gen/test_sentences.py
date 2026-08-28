@@ -1,5 +1,6 @@
-from thai_deck_gen.deckio import new_deck
+from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.producers.sentences import check_sentence, fill_sentences
+from thai_deck_gen.report import GapFinding
 from tests.gen.test_pairs import _gaps
 from tests.gen.fakes import FakeLlm
 
@@ -60,3 +61,42 @@ def test_fill_sentences_generates_and_checks(tmp_path):
     assert res.added == 3
     assert deck.sentences[0].kind == "new_word"
     assert deck.sentences[0].target == "w0"
+
+def test_fill_sentences_judge_regen_resets_audio_and_deletes_media(tmp_path):
+    from thai_deck_eval.model.notes import Audio, SentenceNote
+    deck = _deck_with_words(tmp_path, 3)
+    for i in range(3):
+        deck.sentences.append(SentenceNote(
+            id=f"sn-w{i}-1", kind="new_word", thai=f"w{i}filler", target=f"w{i}",
+            audio=Audio(file=f"audio/sentences/sn-w{i}-1.mp3",
+                        source="tts", speaker="tts:voice")))
+    write_deck(deck)
+    media_path = deck.root / "media" / "audio" / "sentences" / "sn-w0-1.mp3"
+    media_path.parent.mkdir(parents=True, exist_ok=True)
+    media_path.write_bytes(b"OLD")
+
+    class CachedFake:
+        def __init__(self, resp): self.resp = list(resp)
+        def complete(self, producer, version, prompt): return self.resp.pop(0)
+    tok = FakeTok({"w0w2": ["w0", "w2"]})
+    gaps = _gaps([])
+    gaps.findings.append(GapFinding(rule="judge/sentence_mismatch", severity="warn",
+                                    note_id="sn-w0-1", message="doesn't fit"))
+
+    class Ctx:
+        llm = CachedFake(["w0w2"])
+        tokenizer = tok; exemplars = []; config = Cfg()
+    Ctx.grammar_points = []
+
+    res = fill_sentences(gaps, deck, Ctx())
+
+    assert res.changed == 1
+    note = deck.sentences[0]
+    assert note.thai == "w0w2"
+    assert note.audio.speaker == "pending"
+    assert note.audio.source == "tts"
+    assert not media_path.exists()
+
+    from thai_deck_gen.media.scan import pending_audio
+    needs = pending_audio(deck)
+    assert any(n.note_id == "sn-w0-1" for n in needs)

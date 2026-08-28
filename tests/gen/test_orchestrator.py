@@ -5,9 +5,12 @@ import pytest
 from thai_deck_gen import orchestrator
 from thai_deck_gen.config import GenConfig
 from thai_deck_gen.context import GenContext
-from thai_deck_gen.deckio import new_deck
+from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.orchestrator import EvalError, generate
 from thai_deck_gen.producers import ProducerResult
+from tests.gen.test_pairs import _gaps
+from tests.gen.test_sentences import _deck_with_words
+from tests.gen.test_tts import _deck_with_sentence_and_pair
 
 DATA = Path(__file__).parents[2] / "data"
 
@@ -128,3 +131,33 @@ def test_generate_propagates_eval_error(tmp_path, monkeypatch):
 
     with pytest.raises(EvalError):
         generate(deck, ctx, evaluate=evaluate)
+
+
+def test_dispatch_media_filters_forvo_to_native_tier_families(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_fetch_forvo(needs, deck, manifest, client, today, **kw):
+        captured["needs"] = needs
+        return ProducerResult()
+
+    monkeypatch.setattr(orchestrator, "fetch_forvo", fake_fetch_forvo)
+    deck = _deck_with_sentence_and_pair(tmp_path)
+    write_deck(deck)
+    ctx = _ctx(tmp_path)
+    ctx.forvo_api_key = "KEY"
+
+    orchestrator._dispatch_media(_gaps([]), deck, ctx)
+
+    assert captured["needs"]
+    assert all(n.family != "sentence" for n in captured["needs"])
+    assert any(n.family == "minimal_pair" for n in captured["needs"])
+
+
+def test_blocked_summary_mentions_leftover_native_tier_needs(tmp_path):
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    ctx = _ctx(tmp_path)
+
+    msg = orchestrator._blocked_summary(deck, ctx)
+
+    assert "audio commission" in msg

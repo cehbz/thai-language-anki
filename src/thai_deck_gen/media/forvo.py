@@ -2,7 +2,7 @@ from pathlib import Path
 from urllib.parse import quote
 import requests
 from thai_deck_eval.model.deck import Deck
-from thai_deck_gen.media.ffmpeg import normalize_audio
+from thai_deck_gen.media.ffmpeg import AudioError, normalize_audio
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
@@ -38,40 +38,43 @@ def fetch_forvo(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
                 max_speakers: int = 3) -> ProducerResult:
     result = ProducerResult()
     for need in needs:
-        items = client.pronunciations(need.text)
-        if not items:
-            result.blocked.append(need.text)
-            continue
+        try:
+            items = client.pronunciations(need.text)
+            if not items:
+                result.blocked.append(need.text)
+                continue
 
-        target = _find_note(deck, need)
-        dst_path = deck.root / "media" / need.path
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
+            target = _find_note(deck, need)
+            dst_path = deck.root / "media" / need.path
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if need.family == "minimal_pair":
-            picks = items[:max_speakers]
-        else:
-            picks = items[:1]
-
-        for k, item in enumerate(picks):
-            username = item["username"]
-            url = item["pathmp3"]
-            raw = client.download(url)
-            if k == 0:
-                dst = dst_path
-                ref = f"media/{need.path}"
+            if need.family == "minimal_pair":
+                picks = items[:max_speakers]
             else:
-                stem = dst_path.stem
-                variant_name = f"{stem}_s{k}{dst_path.suffix}"
-                dst = dst_path.with_name(variant_name)
-                ref = f"media/{Path(need.path).with_name(variant_name)}"
+                picks = items[:1]
 
-            normalize_audio(raw, dst)
-            manifest.record(MediaEntry(
-                file=ref, channel="forvo", origin=url,
-                speaker=f"forvo:{username}", fetched=today))
+            for k, item in enumerate(picks):
+                username = item["username"]
+                url = item["pathmp3"]
+                raw = client.download(url)
+                if k == 0:
+                    dst = dst_path
+                    ref = f"media/{need.path}"
+                else:
+                    stem = dst_path.stem
+                    variant_name = f"{stem}_s{k}{dst_path.suffix}"
+                    dst = dst_path.with_name(variant_name)
+                    ref = f"media/{Path(need.path).with_name(variant_name)}"
 
-        target.audio.speaker = f"forvo:{picks[0]['username']}"
-        target.audio.source = "native"
-        result.changed += 1
+                normalize_audio(raw, dst)
+                manifest.record(MediaEntry(
+                    file=ref, channel="forvo", origin=url,
+                    speaker=f"forvo:{username}", fetched=today))
+
+            target.audio.speaker = f"forvo:{picks[0]['username']}"
+            target.audio.source = "native"
+            result.changed += 1
+        except (AudioError, requests.RequestException):
+            result.blocked.append(need.text)
 
     return result

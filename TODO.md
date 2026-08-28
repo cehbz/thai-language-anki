@@ -34,3 +34,10 @@
   word list + pairs + media are real, to see actual judge findings/cost
   against real content rather than the `--no-judge` mechanical/linguistic/
   method-only path the e2e test exercises.
+- Wire `duration_ok` into `fetch_forvo` before the first live Forvo run, so
+  clips outside the acceptable duration range are rejected/blocked rather
+  than silently accepted.
+- Decide whether Forvo multi-speaker variant files (`_s1`, `_s2`, ...)
+  should be schema-referenced from the note or dropped -- currently they're
+  written to media and recorded in the manifest but nothing in the note
+  model points at them.

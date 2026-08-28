@@ -5,7 +5,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from thai_deck_eval.model.deck import Deck
-from thai_deck_gen.media.ffmpeg import normalize_audio
+from thai_deck_gen.media.ffmpeg import AudioError, normalize_audio
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
@@ -67,16 +67,19 @@ def import_thai1000(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
         if raw is None:
             continue
 
-        note = _find_note(deck, need)
-        dst = deck.root / "media" / need.path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        normalize_audio(raw, dst)
+        try:
+            note = _find_note(deck, need)
+            dst = deck.root / "media" / need.path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            normalize_audio(raw, dst)
 
-        manifest.record(MediaEntry(
-            file=f"media/{need.path}", channel="thai1000",
-            origin=f"apkg:{need.text}", speaker="thai1000:main", fetched=today))
-        note.audio.speaker = "thai1000:main"
-        note.audio.source = "native"
-        result.changed += 1
+            manifest.record(MediaEntry(
+                file=f"media/{need.path}", channel="thai1000",
+                origin=f"apkg:{need.text}", speaker="thai1000:main", fetched=today))
+            note.audio.speaker = "thai1000:main"
+            note.audio.source = "native"
+            result.changed += 1
+        except AudioError:
+            result.blocked.append(need.note_id)
 
     return result

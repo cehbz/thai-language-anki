@@ -30,7 +30,8 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
 
     adjudication_queue_words = set()
     if ctx.adjudication_queue.exists():
-        existing_queue = yaml.safe_load(ctx.adjudication_queue.read_text()) or []
+        existing_queue = yaml.safe_load(
+            ctx.adjudication_queue.read_text(encoding="utf-8")) or []
         adjudication_queue_words = set(existing_queue)
 
     for rank, entry in ranked_words:
@@ -68,7 +69,8 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
     if adjudication_queue_words:
         ctx.adjudication_queue.parent.mkdir(parents=True, exist_ok=True)
         ctx.adjudication_queue.write_text(
-            yaml.safe_dump(sorted(adjudication_queue_words), allow_unicode=True)
+            yaml.safe_dump(sorted(adjudication_queue_words), allow_unicode=True),
+            encoding="utf-8"
         )
 
     return result

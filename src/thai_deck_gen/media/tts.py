@@ -43,18 +43,21 @@ def fill_tts(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
         if need.native_required or need.family != "sentence":
             continue
 
-        note = _find_note(deck, need)
-        raw = tts.synthesize(need.text)
-        dst = deck.root / "media" / need.path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        normalize_audio(raw, dst)
+        try:
+            note = _find_note(deck, need)
+            raw = tts.synthesize(need.text)
+            dst = deck.root / "media" / need.path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            normalize_audio(raw, dst)
 
-        manifest.record(MediaEntry(
-            file=f"media/{need.path}", channel="tts",
-            origin=f"google-tts:{tts.voice}",
-            speaker=f"tts:{tts.voice}", fetched=today))
-        note.audio.source = "tts"
-        note.audio.speaker = f"tts:{tts.voice}"
-        result.changed += 1
+            manifest.record(MediaEntry(
+                file=f"media/{need.path}", channel="tts",
+                origin=f"google-tts:{tts.voice}",
+                speaker=f"tts:{tts.voice}", fetched=today))
+            note.audio.source = "tts"
+            note.audio.speaker = f"tts:{tts.voice}"
+            result.changed += 1
+        except (AudioError, requests.RequestException):
+            result.blocked.append(need.note_id)
 
     return result

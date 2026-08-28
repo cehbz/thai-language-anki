@@ -139,7 +139,11 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
         if thai is None:
             result.blocked.append(f"{note.id}: {reason}")
             continue
+        old_media = deck.root / "media" / note.audio.file
+        if old_media.exists():
+            old_media.unlink()
         note.thai = thai
+        note.audio.speaker = "pending"
         result.changed += 1
 
     return result

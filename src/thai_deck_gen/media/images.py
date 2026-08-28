@@ -135,14 +135,14 @@ def _escalate(need: ImageNeed, deck: Deck, manifest: Manifest, imagegen: ImageGe
         file=f"media/{need.path}", channel="ai", origin="gpt-image-1", fetched=today))
     result.changed += 1
 
-def _flagged_note_ids(gaps: Gaps) -> set[str]:
+def flagged_image_note_ids(gaps: Gaps) -> set[str]:
     return {f.note_id for f in gaps.findings_for("judge/")
             if f.note_id and "image" in f.rule.lower()}
 
 def fill_images(needs: list[ImageNeed], gaps: Gaps, deck: Deck,
                 manifest: Manifest, ctx, today: str) -> ProducerResult:
     result = ProducerResult()
-    flagged = _flagged_note_ids(gaps)
+    flagged = flagged_image_note_ids(gaps)
 
     for need in needs:
         channel = manifest.channel_of(f"media/{need.path}")

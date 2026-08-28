@@ -51,6 +51,38 @@ def test_fill_tts_fills_sentences_skips_pairs(tmp_path, monkeypatch):
     pair_member = deck.minimal_pairs[0].members[0]
     assert pair_member.audio.speaker == "pending"
 
+def _deck_with_two_sentences(tmp_path):
+    deck = new_deck(tmp_path / "d", "t", ["sentences"])
+    deck.sentences.append(SentenceNote(
+        id="s0", kind="new_word", thai="ฉันกินข้าว", target="กิน",
+        audio=Audio(file="audio/sentences/s0.mp3", source="tts", speaker="pending")))
+    deck.sentences.append(SentenceNote(
+        id="s1", kind="new_word", thai="ฉันนอน", target="นอน",
+        audio=Audio(file="audio/sentences/s1.mp3", source="tts", speaker="pending")))
+    return deck
+
+class FailingTts:
+    voice = "th-TH-Neural2-C"
+    def __init__(self, fail_text): self.fail_text = fail_text
+    def synthesize(self, text):
+        if text == self.fail_text:
+            raise AudioError("tts boom")
+        return b"WAV:" + text.encode()
+
+def test_fill_tts_per_item_error_blocks_and_continues(tmp_path, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_two_sentences(tmp_path)
+    write_deck(deck)
+    from thai_deck_gen.media.scan import pending_audio
+    needs = pending_audio(deck)
+    manifest = Manifest.load(deck.root)
+    res = fill_tts(needs, deck, manifest, FailingTts("ฉันกินข้าว"), "2026-08-27")
+
+    assert "s0" in res.blocked
+    assert res.changed == 1
+    assert deck.sentences[0].audio.speaker == "pending"
+    assert deck.sentences[1].audio.speaker == "tts:th-TH-Neural2-C"
+
 def test_google_tts_parses_base64_response():
     payload = base64.b64encode(b"mp3-bytes").decode()
     def http_post(url, json, timeout=30):

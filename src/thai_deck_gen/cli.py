@@ -10,11 +10,11 @@ from thai_deck_gen.config import load_config
 from thai_deck_gen.context import build_context
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.llm import CachedLlm, CliBackend
-from thai_deck_gen.media.commission import import_commission
+from thai_deck_gen.media.commission import import_commission, write_commission_batch
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
-from thai_deck_gen.media.images import fill_images
+from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
 from thai_deck_gen.media.manifest import Manifest
-from thai_deck_gen.media.scan import pending_audio, pending_images
+from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
 from thai_deck_gen.media.thai1000 import audio_index, import_thai1000
 from thai_deck_gen.media.tts import GoogleTts, fill_tts
 from thai_deck_gen.orchestrator import EvalError, generate, run_eval
@@ -67,7 +67,8 @@ def _build_ctx(deck_dir: Path, data_dir: Path):
 
 def _gaps_for(deck_dir: Path, data_dir: Path):
     last = deck_dir / ".last-report.json"
-    report = json.loads(last.read_text()) if last.exists() else run_eval(deck_dir)
+    report = (json.loads(last.read_text(encoding="utf-8")) if last.exists()
+             else run_eval(deck_dir))
     return parse_report(report, data_dir / "contrasts.yaml")
 
 
@@ -125,6 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tt = au_sub.add_parser("tts")
     tt.add_argument("--deck", type=Path, required=True)
+
+    cm = au_sub.add_parser("commission")
+    cm.add_argument("--deck", type=Path, required=True)
 
     im = sub.add_parser("images")
     im.add_argument("--deck", type=Path, required=True)
@@ -210,7 +214,8 @@ def main(argv=None) -> int:
         deck = load_deck(args.deck)
         manifest = Manifest.load(deck.root)
         client = ForvoClient(os.environ["FORVO_API_KEY"])
-        res = fetch_forvo(pending_audio(deck), deck, manifest, client, _today(),
+        needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
+        res = fetch_forvo(needs, deck, manifest, client, _today(),
                           max_speakers=args.max_speakers)
         write_deck(deck)
         manifest.save(deck.root)
@@ -243,12 +248,23 @@ def main(argv=None) -> int:
         manifest.save(deck.root)
         _report_result("tts", res)
 
+    elif args.command == "audio" and args.audio_command == "commission":
+        deck = load_deck(args.deck)
+        needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
+        path = write_commission_batch(needs, deck.root)
+        if path is None:
+            print("no pending native-tier audio needs; no batch written")
+        else:
+            print(f"wrote commission batch to {path} ({len(needs)} item(s))")
+
     elif args.command == "images":
         deck = load_deck(args.deck)
         ctx = _build_ctx(args.deck, args.data_dir)
         gaps = _gaps_for(args.deck, args.data_dir)
         manifest = Manifest.load(deck.root)
-        res = fill_images(pending_images(deck), gaps, deck, manifest, ctx, _today())
+        flagged = flagged_image_note_ids(gaps)
+        res = fill_images(pending_images(deck, flagged=flagged), gaps, deck, manifest, ctx,
+                          _today())
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("images", res)

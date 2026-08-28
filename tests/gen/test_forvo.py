@@ -1,4 +1,5 @@
 import json
+import requests
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import pending_audio
@@ -36,6 +37,25 @@ def test_fetch_forvo_blocks_missing_word(tmp_path, monkeypatch):
     res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
                       FakeForvo({}), "2026-08-27")
     assert res.blocked == ["w0"]
+
+class FailingForvo:
+    def __init__(self, fail_word): self.fail_word = fail_word
+    def pronunciations(self, word):
+        if word == self.fail_word:
+            raise requests.RequestException("boom")
+        return [{"username": "a", "pathmp3": "http://f/a.mp3"}]
+    def download(self, url): return b"mp3" + url.encode()
+
+def test_fetch_forvo_per_item_error_blocks_and_continues(tmp_path, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 2)
+    write_deck(deck)
+    manifest = Manifest.load(deck.root)
+    res = fetch_forvo(pending_audio(deck), deck, manifest, FailingForvo("w0"),
+                      "2026-08-27")
+    assert "w0" in res.blocked
+    assert res.changed == 1
+    assert deck.picture_words[1].audio.speaker == "forvo:a"
 
 def test_client_parses_api_shape():
     def http_get(url, timeout=30):

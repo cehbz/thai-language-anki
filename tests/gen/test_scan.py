@@ -34,3 +34,13 @@ def test_pending_images(tmp_path):
     write_deck(deck)
     needs = pending_images(deck)
     assert needs[0].term == "w0"
+
+def test_pending_images_includes_flagged_even_when_file_exists(tmp_path):
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    img_path = deck.root / "media" / "images" / "pw-0.jpg"
+    img_path.parent.mkdir(parents=True, exist_ok=True)
+    img_path.write_bytes(b"x")
+    assert pending_images(deck) == []
+    needs = pending_images(deck, flagged={"pw-0"})
+    assert [n.note_id for n in needs] == ["pw-0"]
