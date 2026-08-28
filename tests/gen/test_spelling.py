@@ -26,3 +26,15 @@ def test_fill_spelling_picks_example_word(tmp_path):
     assert note.pattern_kind == "consonant"
     assert note.consonant_class == "mid"
     assert "ก" not in res.blocked
+
+def test_fill_spelling_vowel_pattern_with_placeholder(tmp_path):
+    deck = new_deck(tmp_path / "d", "t", ["sounds"])
+    class Ctx:
+        word_list = [_word("เกา")]  # เ + ก + า; matches pattern เ-
+        targets_path = DATA / "spelling_targets.yaml"
+    res = fill_spelling(_gaps([]), deck, Ctx())
+    note = next(n for n in deck.spelling_sound if n.pattern == "เ-")
+    assert note.example_word == "เกา"
+    assert note.pattern_kind == "vowel"
+    assert note.consonant_class is None
+    assert "เ-" not in res.blocked

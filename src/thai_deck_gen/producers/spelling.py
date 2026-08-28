@@ -1,3 +1,4 @@
+import re
 import yaml
 from pathlib import Path
 from thai_deck_eval.lang.tone import CONSONANT_CLASS, ConsClass
@@ -14,6 +15,23 @@ def missing_patterns(deck: Deck, targets_path: Path) -> list[str]:
         all_patterns.extend(targets.get(section, []))
     existing = {n.pattern for n in deck.spelling_sound}
     return [p for p in all_patterns if p not in existing]
+
+
+def _pattern_matches(pattern: str, word: str) -> bool:
+    """Check if a pattern matches a word.
+
+    Patterns use '-' as a consonant placeholder (e.g., '-ะ', 'เ-', 'เ-อ').
+    Replace each '-' with [ก-ฮ] (Thai consonant range) and escape other chars.
+    """
+    # Build regex by replacing - with Thai consonant class, escaping others
+    parts = []
+    for char in pattern:
+        if char == '-':
+            parts.append('[ก-ฮ]')
+        else:
+            parts.append(re.escape(char))
+    regex = ''.join(parts)
+    return re.search(regex, word) is not None
 
 
 def fill_spelling(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
@@ -45,7 +63,7 @@ def fill_spelling(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
 
             example_word = None
             for word_entry in ctx.word_list:
-                if pattern in word_entry.thai:
+                if _pattern_matches(pattern, word_entry.thai):
                     example_word = word_entry.thai
                     break
 
