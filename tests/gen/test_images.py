@@ -61,7 +61,7 @@ def test_downscale_shrinks_both_axes():
 
 
 def test_openverse_search_parses_results():
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         assert "api.openverse.org" in url
         return R(payload={"results": [{"url": "http://img/a.jpg", "license": "cc0"}]})
     cands = openverse_search("คำ", http_get)
@@ -69,7 +69,7 @@ def test_openverse_search_parses_results():
 
 
 def test_wikimedia_search_parses_results():
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         assert "commons.wikimedia.org" in url
         return R(payload={"query": {"pages": {
             "1": {"imageinfo": [{"url": "http://img/b.jpg"}]}}}})
@@ -85,7 +85,7 @@ def test_fill_images_queries_thai_before_gloss(tmp_path):
     jpeg = _jpeg_bytes()
     calls = []
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         calls.append(url)
         if "api.openverse.org" in url and thai_q in url:
             return R(payload={"results": []})
@@ -117,7 +117,7 @@ def test_fill_images_blocks_when_nothing_found(tmp_path):
     need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
                       gloss="word", path="images/pw-0.jpg")
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         if "api.openverse.org" in url:
             return R(payload={"results": []})
         return R(payload={"query": {"pages": {}}})
@@ -202,7 +202,7 @@ def test_escalation_falls_back_to_term_when_gloss_missing(tmp_path):
 
     fake_gen = FakeImageGen()
     class Ctx:
-        http_get = staticmethod(lambda url, timeout=30: (_ for _ in ()).throw(
+        http_get = staticmethod(lambda url, timeout=30, headers=None: (_ for _ in ()).throw(
             AssertionError("no search expected")))
         imagegen = fake_gen
 
@@ -244,7 +244,7 @@ def test_escalation_imagegen_failure_queues_review_and_continues(tmp_path):
         def generate(self, prompt):
             raise ImageError("quota exceeded")
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         # only need1's plain search fill should reach here
         if "api.openverse.org" in url:
             return R(payload={"results": [{"url": "http://img/y.jpg", "license": "cc0"}]})
@@ -281,7 +281,7 @@ def test_escalation_queues_review_when_imagegen_missing(tmp_path):
     gaps = _judge_gaps("pw-0")
 
     class Ctx:
-        http_get = staticmethod(lambda url, timeout=30: (_ for _ in ()).throw(
+        http_get = staticmethod(lambda url, timeout=30, headers=None: (_ for _ in ()).throw(
             AssertionError("no search expected")))
         imagegen = None
 
@@ -313,7 +313,7 @@ def test_escalation_already_ai_rejects_to_review(tmp_path):
             raise AssertionError("should not be called for an already-ai image")
 
     class Ctx:
-        http_get = staticmethod(lambda url, timeout=30: (_ for _ in ()).throw(
+        http_get = staticmethod(lambda url, timeout=30, headers=None: (_ for _ in ()).throw(
             AssertionError("no search expected")))
         imagegen = FakeImageGen()
 
@@ -351,7 +351,7 @@ def test_fill_images_blocks_on_network_error_and_continues(tmp_path):
     need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
                       gloss="word", path="images/pw-0.jpg")
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         raise requests.ConnectTimeout("api.openverse.org timed out")
 
     class Ctx:
@@ -371,7 +371,7 @@ def test_fill_images_downloads_candidates_through_imgfetch_not_http_get(tmp_path
                       gloss="word", path="images/pw-0.jpg")
     jpeg = _jpeg_bytes()
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         if "api.openverse.org" in url:
             return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
         raise AssertionError(f"http_get must not download images: {url}")
@@ -393,7 +393,7 @@ def test_fill_images_blocks_everything_when_imgfetch_is_missing(tmp_path, capsys
     needs = [ImageNeed(family="picture_word", note_id=f"pw-{i}", term="คำ",
                        gloss="word", path=f"images/pw-{i}.jpg") for i in range(2)]
 
-    def http_get(url, timeout=30):
+    def http_get(url, timeout=30, headers=None):
         return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
 
     class Missing:
@@ -407,3 +407,19 @@ def test_fill_images_blocks_everything_when_imgfetch_is_missing(tmp_path, capsys
     res = fill_images(needs, _gaps([]), deck, Manifest.load(deck.root), Ctx(), "2026-08-27")
     assert res.blocked == ["pw-0", "pw-1"]
     assert "imgfetch not found" in capsys.readouterr().out
+
+
+def test_search_requests_identify_the_tool_with_a_user_agent():
+    # Wikimedia returns 403 to anonymous default agents (robot policy)
+    seen = {}
+    def http_get(url, timeout=30, headers=None):
+        seen["headers"] = headers or {}
+        return R(payload={"query": {"pages": {}}})
+    wikimedia_search("คำ", http_get)
+    assert seen["headers"].get("User-Agent", "").startswith("thai-deck-gen/")
+    assert "github.com/cehbz" in seen["headers"]["User-Agent"]
+    def http_get2(url, timeout=30, headers=None):
+        seen["headers2"] = headers or {}
+        return R(payload={"results": []})
+    openverse_search("คำ", http_get2)
+    assert seen["headers2"].get("User-Agent", "").startswith("thai-deck-gen/")

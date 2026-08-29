@@ -14,6 +14,9 @@ from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.report import Gaps
 
 _SEARCH_CHANNELS = ("openverse", "wikimedia")
+# Wikimedia's robot policy 403s anonymous default agents; identify the tool and a contact.
+SEARCH_HEADERS = {"User-Agent": "thai-deck-gen/1.0 (https://github.com/cehbz/thai-language-anki)",
+                  "Accept": "application/json"}
 
 class ImageError(Exception):
     """Raised when AI image generation fails"""
@@ -47,7 +50,7 @@ class OpenAiImageGen:
 
 def openverse_search(term: str, http_get) -> list[ImageCandidate]:
     url = f"https://api.openverse.org/v1/images/?q={quote(term)}&page_size=5"
-    resp = http_get(url, timeout=30)
+    resp = http_get(url, timeout=30, headers=SEARCH_HEADERS)
     if getattr(resp, "status_code", 200) != 200:
         return []
     data = resp.json() or {}
@@ -57,7 +60,7 @@ def openverse_search(term: str, http_get) -> list[ImageCandidate]:
 def wikimedia_search(term: str, http_get) -> list[ImageCandidate]:
     url = ("https://commons.wikimedia.org/w/api.php?action=query&generator=search"
            f"&gsrsearch={quote(term)}&gsrnamespace=6&prop=imageinfo&iiprop=url&format=json")
-    resp = http_get(url, timeout=30)
+    resp = http_get(url, timeout=30, headers=SEARCH_HEADERS)
     if getattr(resp, "status_code", 200) != 200:
         return []
     data = resp.json() or {}
