@@ -211,3 +211,34 @@ def test_generate_logs_blocked_reasons(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "ก: 2 unknown non-target tokens" in out
     assert "halted" in out
+
+
+def test_dispatch_media_keeps_provenance_for_media_written_before_a_crash(tmp_path, monkeypatch):
+    """The killer case: the process dies INSIDE the long image filler, after
+    it has already written files to disk."""
+    from thai_deck_gen.media.manifest import Manifest, MediaEntry
+
+    def fake_tts(needs, deck, manifest, tts, today):
+        manifest.record(MediaEntry(file="media/audio/sentences/a.mp3", channel="tts",
+                                   origin="google", fetched=today))
+        return ProducerResult(changed=1)
+
+    def fake_images(needs, gaps, deck, manifest, ctx, today):
+        manifest.record(MediaEntry(file="media/images/pw-0.jpg", channel="openverse",
+                                   origin="http://x", fetched=today))
+        raise RuntimeError("killed mid-images, after one image was written")
+
+    monkeypatch.setattr(orchestrator, "fill_tts", fake_tts)
+    monkeypatch.setattr(orchestrator, "fill_images", fake_images)
+    deck = _deck_with_sentence_and_pair(tmp_path)
+    write_deck(deck)
+    ctx = _ctx(tmp_path)
+    ctx.tts_api_key = "KEY"
+    ctx.http_get = lambda *a, **k: None
+
+    with pytest.raises(RuntimeError):
+        orchestrator._dispatch_media(_gaps([]), deck, ctx)
+
+    on_disk = Manifest.load(deck.root)
+    assert on_disk.channel_of("media/audio/sentences/a.mp3") == "tts"
+    assert on_disk.channel_of("media/images/pw-0.jpg") == "openverse"
