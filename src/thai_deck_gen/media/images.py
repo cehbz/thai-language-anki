@@ -103,8 +103,10 @@ def _write_media(deck: Deck, path: str, data: bytes) -> None:
 def _search_fill(need: ImageNeed, deck: Deck, manifest: Manifest, http_get,
                  fetcher, today: str, result: ProducerResult) -> None:
     queries = [need.term] + ([need.gloss] if need.gloss else [])
-    for query in queries:
-        for search_fn in (openverse_search, wikimedia_search):
+    # source-major: exhaust the better source's queries before the weaker one,
+    # whose Thai-term matches are frequently transliteration collisions
+    for search_fn in (openverse_search, wikimedia_search):
+        for query in queries:
             try:
                 candidates = list(search_fn(query, http_get))
             except requests.RequestException:

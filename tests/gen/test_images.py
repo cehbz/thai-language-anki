@@ -106,10 +106,10 @@ def test_fill_images_queries_thai_before_gloss(tmp_path):
     assert res.changed == 1
     assert (deck.root / "media" / "images" / "pw-0.jpg").exists()
     assert manifest.channel_of("media/images/pw-0.jpg") == "openverse"
-    # Thai term queried (both sources) before the gloss fallback
-    assert thai_q in calls[0]
-    assert thai_q in calls[1]
-    assert "word" in calls[2]
+    # Thai term queried before the gloss fallback, within the same source
+    assert thai_q in calls[0] and "api.openverse.org" in calls[0]
+    assert "word" in calls[1] and "api.openverse.org" in calls[1]
+    assert len(calls) == 2               # wikimedia never consulted: openverse answered
 
 
 def test_fill_images_blocks_when_nothing_found(tmp_path):
@@ -423,3 +423,35 @@ def test_search_requests_identify_the_tool_with_a_user_agent():
         return R(payload={"results": []})
     openverse_search("คำ", http_get2)
     assert seen["headers2"].get("User-Agent", "").startswith("thai-deck-gen/")
+
+
+def test_fill_images_prefers_a_later_query_on_the_better_source(tmp_path):
+    # Wikimedia's Thai-term hits are often transliteration junk (จิบ "to sip"
+    # -> Gibberellin diagrams); Openverse must get every query before
+    # Wikimedia is consulted at all.
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+    order = []
+
+    def http_get(url, timeout=30, headers=None):
+        openverse = "api.openverse.org" in url
+        order.append(("openverse" if openverse else "wikimedia", "word" in url))
+        if openverse and "word" in url:          # gloss query on the good source
+            return R(payload={"results": [{"url": "http://img/good.jpg", "license": "cc0"}]})
+        if openverse:
+            return R(payload={"results": []})
+        return R(payload={"query": {"pages": {
+            "1": {"imageinfo": [{"url": "http://img/junk.jpg"}]}}}})
+
+    class Ctx:
+        imagegen = None
+        imgfetch = FakeFetch({"http://img/good.jpg": _jpeg_bytes(),
+                              "http://img/junk.jpg": _jpeg_bytes()})
+    Ctx.http_get = staticmethod(http_get)
+    manifest = Manifest.load(deck.root)
+    res = fill_images([need], _gaps([]), deck, manifest, Ctx(), "2026-08-29")
+    assert res.changed == 1
+    assert Ctx.imgfetch.urls == ["http://img/good.jpg"]
+    assert manifest.channel_of("media/images/pw-0.jpg") == "openverse"
+    assert order[:2] == [("openverse", False), ("openverse", True)]
