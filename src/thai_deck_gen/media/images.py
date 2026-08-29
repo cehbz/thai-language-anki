@@ -100,7 +100,11 @@ def _search_fill(need: ImageNeed, deck: Deck, manifest: Manifest, http_get,
     queries = [need.term] + ([need.gloss] if need.gloss else [])
     for query in queries:
         for search_fn in (openverse_search, wikimedia_search):
-            for candidate in search_fn(query, http_get):
+            try:
+                candidates = list(search_fn(query, http_get))
+            except requests.RequestException:
+                continue          # per-item fault tolerance: a dead source is skipped
+            for candidate in candidates:
                 image = _try_candidate(candidate, http_get)
                 if image is None:
                     continue

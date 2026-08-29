@@ -335,3 +335,22 @@ def test_openai_image_gen_raises_on_error():
     gen = OpenAiImageGen("KEY", http_post=http_post)
     with pytest.raises(ImageError):
         gen.generate("a cat")
+
+
+def test_fill_images_blocks_on_network_error_and_continues(tmp_path):
+    import requests
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+
+    def http_get(url, timeout=30):
+        raise requests.ConnectTimeout("api.openverse.org timed out")
+
+    class Ctx:
+        imagegen = None
+    Ctx.http_get = staticmethod(http_get)
+
+    manifest = Manifest.load(deck.root)
+    res = fill_images([need], _gaps([]), deck, manifest, Ctx(), "2026-08-27")
+    assert res.blocked == ["pw-0"]              # per-item: blocked, not raised
+    assert res.changed == 0
