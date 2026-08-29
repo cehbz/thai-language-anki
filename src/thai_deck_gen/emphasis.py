@@ -20,6 +20,10 @@ class Emphasis(BaseModel):
         return self.category_weights.get(
             category, self.category_weights.get("default", 1.0))
 
+    def emphasized(self, category: str) -> bool:
+        """Weighted above the default: gets themed sentences and earlier intro."""
+        return self.weight(category) > self.category_weights.get("default", 1.0)
+
 
 def load_emphasis(path: Path) -> Emphasis | None:
     path = Path(path)

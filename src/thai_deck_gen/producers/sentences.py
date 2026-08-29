@@ -127,6 +127,7 @@ def _add_new_word_sentences(deck: Deck, ctx, known: set[str],
     for word in deck.picture_words:
         if word.thai in have_new_word:
             continue
+        have_new_word.add(word.thai)      # one sentence per thai, even if the word repeats
         thai, reason = _generate(ctx, known, word.thai)
         if thai is None:
             result.blocked.append(f"{word.thai}: {reason}")
@@ -140,7 +141,7 @@ def _is_emphasized(ctx, word) -> bool:
     emphasis = getattr(ctx, "emphasis", None)
     if emphasis is None:
         return False
-    if emphasis.weight(word.category) > 1:
+    if emphasis.emphasized(word.category):
         return True
     return any(e.thai == word.thai and e.emphasis
                for e in getattr(ctx, "word_list", []))

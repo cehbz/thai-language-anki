@@ -164,3 +164,36 @@ def test_fill_sentences_themed_pass_skips_unweighted_and_is_idempotent(tmp_path)
     Ctx.llm = CachedFake([])
     res2 = fill_sentences(_gaps([]), deck, Ctx())
     assert res2.added == 0                         # nothing regenerated
+
+
+def test_fill_sentences_themed_pass_ignores_default_weighted_categories(tmp_path):
+    from thai_deck_gen.emphasis import Emphasis
+    deck = _deck_with_words(tmp_path, 2)
+    deck.picture_words[1].category = "Colors"
+    class CachedFake:
+        def __init__(self, resp): self.resp = list(resp)
+        def complete(self, producer, version, prompt): return self.resp.pop(0)
+    tok = FakeTok({"w0w1": ["w0", "w1"], "w1w0": ["w1", "w0"]})
+    class Ctx:
+        llm = CachedFake(["w0w1", "w1w0", "w0w1"])
+        tokenizer = tok; exemplars = []; config = type("C", (), {"sentence_base": 2})()
+        grammar_points = []; word_list = []
+        emphasis = Emphasis(theme="t", category_weights={"default": 1.2, "Food": 3})
+    res = fill_sentences(_gaps([]), deck, Ctx())
+    assert res.added == 3                          # 2 plain + themed for the Food word only
+    assert [n.target for n in deck.sentences if n.id.endswith("-themed")] == ["w0"]
+
+
+def test_fill_sentences_one_plain_sentence_per_thai_even_with_duplicate_words(tmp_path):
+    deck = _deck_with_words(tmp_path, 3)
+    deck.picture_words.append(deck.picture_words[0].model_copy(update={"id": "pw-dup"}))
+    class CachedFake:
+        def __init__(self, resp): self.resp = list(resp)
+        def complete(self, producer, version, prompt): return self.resp.pop(0)
+    tok = FakeTok({"w0w1": ["w0", "w1"], "w1w2": ["w1", "w2"], "w0w2": ["w0", "w2"]})
+    class Ctx:
+        llm = CachedFake(["w0w1", "w1w2", "w0w2"])
+        tokenizer = tok; exemplars = []; config = Cfg(); grammar_points = []
+    res = fill_sentences(_gaps([]), deck, Ctx())
+    assert res.added == 3
+    assert [n.target for n in deck.sentences] == ["w0", "w1", "w2"]

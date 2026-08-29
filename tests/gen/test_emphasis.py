@@ -18,3 +18,15 @@ def test_load_emphasis_missing_file_is_none(tmp_path):
 
 def test_emphasis_weight_defaults_to_one_without_default_key():
     assert Emphasis(theme="x", category_weights={"Food": 2}).weight("Verbs") == 1.0
+
+
+def test_emphasized_means_weighted_above_the_default():
+    e = Emphasis(theme="x", category_weights={"default": 1.2, "Food": 3, "Colors": 1.2})
+    assert e.emphasized("Food") is True
+    assert e.emphasized("Verbs") is False        # default weight only
+    assert e.emphasized("Colors") is False       # explicitly at the default
+
+
+def test_emphasized_without_default_key_means_any_weight_above_one():
+    assert Emphasis(theme="x", category_weights={"Food": 2}).emphasized("Food") is True
+    assert Emphasis(theme="x", category_weights={"Food": 2}).emphasized("Verbs") is False
