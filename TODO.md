@@ -11,15 +11,18 @@
 
 ## Execution-time follow-ups (generator is built; these are real runs, not code)
 
-- Run `thai-deck-gen wordlist` against the real LLM backend to draft
-  `data/word_list_th.yaml` (625-word Fluent Forever list), then a human
-  pass to review/correct glosses, categories, classifiers, and
-  register/split_of calls before it feeds `fill_words`.
-- Curate `data/pair_seeds.yaml` for the minimal-pair contrasts the real
-  lexicon can't supply on its own — run `fill_pairs` against the curated
-  word list once it exists, take its `blocked` contrast-id list, and hand-pick
-  a verified real minimal pair (checked against real pythainlp G2P output,
-  the way tests/gen/test_e2e_integration.py's two seed pairs were) for each.
+- Curate `data/pair_seeds.yaml` for `tone:high-falling`, the one contrast
+  the real lexicon can't pair on its own — hand-pick a verified minimal
+  pair (checked against real pythainlp G2P output, the way
+  tests/gen/test_e2e_integration.py's two seed pairs were).
+- Adjudicate the 97 words in `~/decks/thai-ff/work/ipa_adjudication.yaml`
+  into `data/g2p_exceptions.yaml`; never author unverified IPA.
+- Decide what to do about the 146 sentences blocked as "2 unknown
+  non-target tokens" (ถูก, สัปดาห์, ร้อน, ...) — a larger known-vocabulary
+  base, a relaxed new-elements budget, or hand-authoring. They are genuine
+  rejections, not limit halts, so re-running generate will not add them.
+- Migrate FORVO_API_KEY / GOOGLE_TTS_API_KEY / OPENAI_API_KEY out of the
+  environment into gen.yaml, alongside imgfetch and search_proxy.
 - First live Forvo batch (`thai-deck-gen audio fetch-forvo`) against the
   real API key once word/pair/spelling content exists, to validate
   rate-limiting, speaker-diversity behavior, and licensing metadata end to
