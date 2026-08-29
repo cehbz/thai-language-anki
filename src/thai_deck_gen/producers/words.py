@@ -6,25 +6,25 @@ from thai_deck_eval.model.notes import Audio, PictureWordNote
 from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.report import Gaps
 
+UNRANKED_RANK = 10**6   # sentinel frequency_rank for word-list entries absent from the frequency list
+
 
 def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
     result = ProducerResult()
     existing_thai = {n.thai for n in deck.picture_words}
 
     ranked_words = []
+    seen = set(existing_thai)
     for entry in ctx.word_list:
-        if entry.thai in existing_thai:
+        if entry.thai in seen:          # listed in two categories, or already in the deck
             continue
         if not entry.picturable:
             result.blocked.append(f"{entry.thai}: not picturable")
             continue
-
-        rank = ctx.freq.rank(entry.thai)
-        if rank is None:
-            result.blocked.append(f"{entry.thai}: unranked")
-            continue
-
-        ranked_words.append((rank, entry))
+        seen.add(entry.thai)
+        # absent from the frequency list is not a reason to drop a curated word:
+        # it goes in after every ranked one, keyed by its thai
+        ranked_words.append((ctx.freq.rank(entry.thai) or UNRANKED_RANK, entry))
 
     ranked_words.sort(key=lambda x: x[0])
 
@@ -45,12 +45,13 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             else:
                 adjudication_queue_words.add(entry.thai)
 
+        note_id = f"pw-{rank}" if rank != UNRANKED_RANK else f"pw-u-{entry.thai}"
         note = PictureWordNote(
-            id=f"pw-{rank}",
+            id=note_id,
             thai=entry.thai,
-            image=f"images/pw-{rank}.jpg",
+            image=f"images/{note_id}.jpg",
             audio=Audio(
-                file=f"audio/picture_words/pw-{rank}.mp3",
+                file=f"audio/picture_words/{note_id}.mp3",
                 source="native",
                 speaker="pending"
             ),
@@ -61,7 +62,7 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             ipa=ipa,
             test_spelling=rank <= ctx.config.test_spelling_rank,
             personal_connection=None,
-            gloss=entry.gloss
+            gloss=None,          # FF doctrine: no L1 gloss on picture words; image search reads the word list
         )
         deck.picture_words.append(note)
         result.added += 1

@@ -94,13 +94,16 @@ def pending_audio(deck: Deck) -> list[AudioNeed]:
 
     return needs
 
-def pending_images(deck: Deck, flagged: set[str] | None = None) -> list[ImageNeed]:
+def pending_images(deck: Deck, flagged: set[str] | None = None,
+                   glosses: dict[str, str] | None = None) -> list[ImageNeed]:
     """
     Find notes with an image ref whose file is missing, plus any note whose
     id is in `flagged` (judge-rejected images) even when the file exists.
-    term = note thai (picture words), gloss = note.gloss
+    term = note thai (picture words); gloss from `glosses` (thai -> gloss,
+    normally the word list) for picture words, note.gloss for sentences.
     """
     flagged = flagged or set()
+    glosses = glosses or {}
     needs = []
     media_root = deck.root / "media"
 
@@ -114,7 +117,7 @@ def pending_images(deck: Deck, flagged: set[str] | None = None) -> list[ImageNee
                     family=family,
                     note_id=note.id,
                     term=note.thai,
-                    gloss=note.gloss,
+                    gloss=glosses.get(note.thai),
                     path=image_ref
                 ))
 

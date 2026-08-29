@@ -176,3 +176,38 @@ def test_generate_writes_content_before_media_dispatch(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         generate(deck, ctx, evaluate=lambda deck_dir: report)
     assert len(writes) == 1                    # content producers' work persisted
+
+
+def test_dispatch_media_passes_word_list_glosses_to_image_scan(tmp_path, monkeypatch):
+    from thai_deck_gen.wordlist import WordEntry
+    seen = {}
+    def fake_pending_images(deck, flagged=None, glosses=None):
+        seen["glosses"] = glosses
+        return []
+    monkeypatch.setattr(orchestrator, "pending_images", fake_pending_images)
+    monkeypatch.setattr(orchestrator, "fill_images",
+                        lambda needs, gaps, deck, manifest, ctx, today: ProducerResult())
+    deck = _deck_with_sentence_and_pair(tmp_path)
+    write_deck(deck)
+    ctx = _ctx(tmp_path)
+    ctx.http_get = lambda *a, **k: None
+    ctx.word_list = [WordEntry(thai="น้ำ", gloss="water", category="Beverages",
+                               part_of_speech="noun", classifier="แก้ว")]
+    orchestrator._dispatch_media(_gaps([]), deck, ctx)
+    assert seen["glosses"] == {"น้ำ": "water"}
+
+
+def test_generate_logs_blocked_reasons(tmp_path, monkeypatch, capsys):
+    calls, writes = [], []
+    _stub_producers(monkeypatch, calls)
+    _stub_write(monkeypatch, writes)
+    monkeypatch.setattr(orchestrator, "fill_sentences", lambda gaps, deck, ctx: ProducerResult(
+        blocked=["ก: 2 unknown non-target tokens", "ข: unranked",
+                 "llm unavailable, sentence generation halted: usage limit"]))
+    deck = new_deck(tmp_path / "d", "t", ["sounds", "words", "sentences"])
+    ctx = _ctx(tmp_path)
+    reports = iter([_report("fail", missing_contrasts=["vowel_length"]), _report("pass")])
+    generate(deck, ctx, evaluate=lambda deck_dir: next(reports))
+    out = capsys.readouterr().out
+    assert "ก: 2 unknown non-target tokens" in out
+    assert "halted" in out

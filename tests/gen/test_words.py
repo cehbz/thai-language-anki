@@ -1,7 +1,7 @@
 import yaml
 from pathlib import Path
 from thai_deck_gen.deckio import new_deck
-from thai_deck_gen.producers.words import fill_words
+from thai_deck_gen.producers.words import UNRANKED_RANK, fill_words
 from thai_deck_gen.wordlist import WordEntry
 from tests.gen.test_pairs import FakeG2P, _gaps
 
@@ -29,16 +29,21 @@ def _ctx(tmp_path):
 def test_fill_words_orders_by_rank_and_uses_exceptions(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["words"])
     res = fill_words(_gaps([]), deck, _ctx(tmp_path))
-    assert [n.thai for n in deck.picture_words] == ["กิน", "น้ำ"]
+    assert [n.thai for n in deck.picture_words] == ["กิน", "น้ำ", "ๆๆ"]   # unranked last
     assert deck.picture_words[1].ipa == "naːm˦˥"     # exception wins
     assert deck.picture_words[0].test_spelling is True
-    assert res.added == 2
+    assert res.added == 3
 
 def test_fill_words_queues_unrankable(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["words"])
     ctx = _ctx(tmp_path)
     res = fill_words(_gaps([]), deck, ctx)
-    assert any("ๆๆ" in b for b in res.blocked)
+    note = next(n for n in deck.picture_words if n.thai == "ๆๆ")
+    assert note.id == "pw-u-ๆๆ"                      # unranked: stable thai-keyed id
+    assert note.frequency_rank == UNRANKED_RANK
+    assert note.test_spelling is False
+    assert [n.thai for n in deck.picture_words][-1] == "ๆๆ"   # after every ranked word
+    assert not any("ๆๆ" in b for b in res.blocked)
 
 def test_fill_words_queues_g2p_unknown_for_adjudication(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["words"])
@@ -56,3 +61,20 @@ def test_fill_words_idempotent(tmp_path):
     fill_words(_gaps([]), deck, ctx)
     res2 = fill_words(_gaps([]), deck, ctx)
     assert res2.added == 0
+
+
+def test_fill_words_adds_each_thai_once_even_if_listed_in_two_categories(tmp_path):
+    deck = new_deck(tmp_path / "d", "t", ["words"])
+    ctx = _ctx(tmp_path)
+    ctx.word_list = ctx.word_list + [
+        WordEntry(thai="กิน", gloss="eat (Verbs)", category="Verbs",
+                  part_of_speech="verb")]
+    res = fill_words(_gaps([]), deck, ctx)
+    assert [n.thai for n in deck.picture_words].count("กิน") == 1
+    assert len({n.id for n in deck.picture_words}) == len(deck.picture_words)
+
+
+def test_fill_words_keeps_gloss_off_the_note(tmp_path):
+    deck = new_deck(tmp_path / "d", "t", ["words"])
+    fill_words(_gaps([]), deck, _ctx(tmp_path))
+    assert all(n.gloss is None for n in deck.picture_words)

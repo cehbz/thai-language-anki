@@ -44,3 +44,11 @@ def test_pending_images_includes_flagged_even_when_file_exists(tmp_path):
     assert pending_images(deck) == []
     needs = pending_images(deck, flagged={"pw-0"})
     assert [n.note_id for n in needs] == ["pw-0"]
+
+
+def test_pending_images_takes_glosses_from_lookup_not_note(tmp_path):
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    assert pending_images(deck)[0].gloss is None
+    needs = pending_images(deck, glosses={"w0": "word zero"})
+    assert needs[0].gloss == "word zero"

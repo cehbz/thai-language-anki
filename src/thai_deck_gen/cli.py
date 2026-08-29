@@ -282,7 +282,8 @@ def main(argv=None) -> int:
         gaps = _gaps_for(args.deck, args.data_dir)
         manifest = Manifest.load(deck.root)
         flagged = flagged_image_note_ids(gaps)
-        res = fill_images(pending_images(deck, flagged=flagged), gaps, deck, manifest, ctx,
+        glosses = {e.thai: e.gloss for e in ctx.word_list}
+        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses), gaps, deck, manifest, ctx,
                           _today())
         write_deck(deck)
         manifest.save(deck.root)

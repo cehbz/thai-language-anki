@@ -64,7 +64,20 @@ def _dispatch_content(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
         res = producer(gaps, deck, ctx)
         results[name] = res
         print(f"  {name}: +{res.added} changed={res.changed} blocked={len(res.blocked)}")
+        _print_blocked(res.blocked)
     return results
+
+
+def _print_blocked(blocked: list[str], sample: int = 3) -> None:
+    """A few blocked reasons, and every halt notice, so a run log explains itself."""
+    halts = [b for b in blocked if "halted" in b]
+    for b in blocked[:sample]:
+        print(f"      blocked: {b}")
+    if len(blocked) > sample:
+        print(f"      ... {len(blocked) - sample} more")
+    for h in halts:
+        if h not in blocked[:sample]:
+            print(f"      blocked: {h}")
 
 
 def _today() -> str:
@@ -100,7 +113,9 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
 
     if ctx.http_get is not None:
         flagged = flagged_image_note_ids(gaps)
-        res = fill_images(pending_images(deck, flagged=flagged), gaps, deck, manifest, ctx, today)
+        glosses = {e.thai: e.gloss for e in ctx.word_list}
+        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses),
+                          gaps, deck, manifest, ctx, today)
         results["images"] = res
         print(f"  images: changed={res.changed} blocked={len(res.blocked)}")
 
