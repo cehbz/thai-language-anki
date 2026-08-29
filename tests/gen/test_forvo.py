@@ -1,6 +1,7 @@
 import json
+import pytest
 import requests
-from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
+from thai_deck_gen.media.forvo import ForvoClient, ForvoQuotaExceeded, fetch_forvo
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import pending_audio
 from thai_deck_gen.deckio import write_deck
@@ -12,10 +13,11 @@ class FakeForvo:
     def pronunciations(self, word): return self.table.get(word, [])
     def download(self, url): return b"mp3" + url.encode()
 
-def _no_ffmpeg(monkeypatch):
+def _no_ffmpeg(monkeypatch, durations_ok=True):
     import thai_deck_gen.media.forvo as m
     monkeypatch.setattr(m, "normalize_audio",
                         lambda raw, dst, runner=None: dst.write_bytes(raw))
+    monkeypatch.setattr(m, "duration_ok", lambda path: durations_ok)
 
 def test_fetch_forvo_fills_word_audio(tmp_path, monkeypatch):
     _no_ffmpeg(monkeypatch)
@@ -66,3 +68,100 @@ def test_client_parses_api_shape():
         return R()
     c = ForvoClient("KEY", http_get=http_get)
     assert c.pronunciations("คา")[0]["username"] == "a"
+
+
+def test_out_of_range_clip_is_discarded_and_blocks(tmp_path, monkeypatch):
+    _no_ffmpeg(monkeypatch, durations_ok=False)
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    manifest = Manifest.load(deck.root)
+    res = fetch_forvo(pending_audio(deck), deck, manifest, 
+                      FakeForvo({"w0": [{"username": "a", "pathmp3": "http://f/a.mp3"}]}),
+                      "2026-08-27")
+    note = deck.picture_words[0]
+    assert res.blocked == ["w0"]
+    assert res.changed == 0
+    assert not (deck.root / "media" / note.audio.file).exists()
+    assert note.audio.speaker == "pending"
+    assert manifest.channel_of(f"media/{note.audio.file}") is None
+
+
+def test_next_candidate_is_used_when_first_is_out_of_range(tmp_path, monkeypatch):
+    import thai_deck_gen.media.forvo as m
+    _no_ffmpeg(monkeypatch)
+    monkeypatch.setattr(m, "duration_ok", lambda path: path.read_bytes().endswith(b"b.mp3"))
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    client = FakeForvo({"w0": [{"username": "a", "pathmp3": "http://f/a.mp3"},
+                               {"username": "b", "pathmp3": "http://f/b.mp3"}]})
+    manifest = Manifest.load(deck.root)
+    res = fetch_forvo(pending_audio(deck), deck, manifest, client, "2026-08-27")
+    note = deck.picture_words[0]
+    assert res.changed == 1
+    assert note.audio.speaker == "forvo:b"
+    assert (deck.root / "media" / note.audio.file).read_bytes().endswith(b"b.mp3")
+    assert manifest.channel_of(f"media/{note.audio.file}") == "forvo"
+
+
+def test_limit_caps_api_lookups(tmp_path, monkeypatch):
+    """A daily-quota cap leaves the rest pending, not blocked."""
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 3)
+    write_deck(deck)
+    table = {f"w{i}": [{"username": "a", "pathmp3": f"http://f/{i}.mp3"}] for i in range(3)}
+
+    class Counting(FakeForvo):
+        lookups = 0
+        def pronunciations(self, word):
+            Counting.lookups += 1
+            return super().pronunciations(word)
+
+    res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                      Counting(table), "2026-08-27", limit=2)
+    assert Counting.lookups == 2
+    assert res.changed == 2
+    assert res.blocked == []
+    assert deck.picture_words[2].audio.speaker == "pending"
+
+
+def test_quota_exceeded_halts_and_keeps_progress(tmp_path, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 3)
+    write_deck(deck)
+
+    class Quota(FakeForvo):
+        def pronunciations(self, word):
+            if word == "w1":
+                raise ForvoQuotaExceeded("daily limit reached")
+            return super().pronunciations(word)
+
+    table = {f"w{i}": [{"username": "a", "pathmp3": f"http://f/{i}.mp3"}] for i in range(3)}
+    res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                      Quota(table), "2026-08-27")
+    assert res.changed == 1
+    assert res.blocked == []
+    assert deck.picture_words[0].audio.speaker == "forvo:a"
+    assert deck.picture_words[2].audio.speaker == "pending"
+
+
+def test_client_raises_quota_error_on_429():
+    def http_get(url, timeout=30):
+        class R:
+            status_code = 429
+            text = "Limit exceeded"
+        return R()
+    with pytest.raises(ForvoQuotaExceeded):
+        ForvoClient("KEY", http_get=http_get).pronunciations("คา")
+
+
+def test_checkpoint_runs_periodically(tmp_path, monkeypatch):
+    """Deck state is flushed mid-run so a killed run does not re-spend quota."""
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 3)
+    write_deck(deck)
+    table = {f"w{i}": [{"username": "a", "pathmp3": f"http://f/{i}.mp3"}] for i in range(3)}
+    calls = []
+    fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                FakeForvo(table), "2026-08-27",
+                checkpoint=lambda: calls.append(1), checkpoint_every=2)
+    assert len(calls) == 2          # after the 2nd fill, and a final flush

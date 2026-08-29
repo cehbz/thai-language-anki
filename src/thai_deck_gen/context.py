@@ -12,6 +12,7 @@ from thai_deck_gen.config import GenConfig, load_config
 from thai_deck_gen.emphasis import Emphasis, load_emphasis
 from thai_deck_gen.media.imgfetch import ImgFetch
 from thai_deck_gen.producers.sentences import load_exemplars
+from thai_deck_gen.secrets import SecretStore
 from thai_deck_gen.wordlist import WordEntry, load_word_list
 
 
@@ -34,8 +35,7 @@ class GenContext:
     targets_path: Path                        # spelling_targets.yaml, for fill_spelling
     emphasis: Emphasis | None = None          # data/emphasis.yaml, if present
     thai1000_apkg: Path | None = None
-    forvo_api_key: str | None = None
-    tts_api_key: str | None = None
+    secrets: SecretStore = field(default_factory=SecretStore)
     imagegen: object | None = None
     imgfetch: ImgFetch | None = None          # image downloads (whitelistable binary)
     http_get: Callable | None = field(default=requests.get)
@@ -94,11 +94,11 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
     nlp=False requires the caller to inject g2p/tokenizer/freq.
 
     Media channel config is derived here so it's consistent across every
-    caller: forvo_api_key/tts_api_key from FORVO_API_KEY/GOOGLE_TTS_API_KEY,
-    thai1000_apkg from gen.yaml's `thai1000_apkg` key (deck-root-relative
-    unless absolute), and http_get wired only when gen.yaml's `images` key
-    is true (default) and THAI_DECK_GEN_FAKE isn't set (keeps the fake/test
-    seam network-free).
+    caller: API keys from gen.yaml's `secrets:` references (resolved lazily,
+    on first use), thai1000_apkg from gen.yaml's `thai1000_apkg` key
+    (deck-root-relative unless absolute), and http_get wired only when
+    gen.yaml's `images` key is true (default) and THAI_DECK_GEN_FAKE isn't
+    set (keeps the fake/test seam network-free).
     """
     deck_root, data_dir = Path(deck_root), Path(data_dir)
     if nlp:
@@ -144,8 +144,19 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         adjudication_queue=deck_root / "work" / "ipa_adjudication.yaml",
         targets_path=data_dir / "spelling_targets.yaml",
         thai1000_apkg=_resolve_thai1000_apkg(deck_root, config),
-        forvo_api_key=os.environ.get("FORVO_API_KEY"),
-        tts_api_key=os.environ.get("GOOGLE_TTS_API_KEY"),
+        secrets=SecretStore.from_config(config.secrets),
         http_get=http_get,
         imgfetch=ImgFetch(config.imgfetch),
     )
+
+
+def imagegen_for(ctx: GenContext):
+    """AI image generator when `secrets.openai` is configured, else None.
+
+    Built at the image entry points rather than in build_context so that
+    commands which generate no images never resolve the key.
+    """
+    if not ctx.secrets.configured("openai"):
+        return None
+    from thai_deck_gen.media.images import OpenAiImageGen
+    return OpenAiImageGen(ctx.secrets.get("openai"))

@@ -8,7 +8,7 @@ from pathlib import Path
 from thai_deck_eval.model.deck import load_deck
 from thai_deck_gen.compiler.build import compile_deck
 from thai_deck_gen.config import GenConfig, load_config
-from thai_deck_gen.context import build_context
+from thai_deck_gen.context import build_context, imagegen_for
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.llm import CachedLlm, CliBackend
 from thai_deck_gen.media.commission import import_commission, write_commission_batch
@@ -24,6 +24,7 @@ from thai_deck_gen.producers.sentences import fetch_exemplars, fill_sentences
 from thai_deck_gen.producers.spelling import fill_spelling
 from thai_deck_gen.producers.words import fill_words
 from thai_deck_gen.report import parse_report
+from thai_deck_gen.secrets import SecretStore
 from thai_deck_gen.emphasis import load_emphasis
 from thai_deck_gen.wordlist import draft_word_list, extend_word_list
 
@@ -69,6 +70,17 @@ def _build_ctx(deck_dir: Path, data_dir: Path):
 def _cli_llm(deck_dir: Path, cfg) -> CachedLlm:
     return CachedLlm(CliBackend(model=cfg.model),
                      deck_dir / "work" / "llm_cache.sqlite3", model=cfg.model)
+
+
+def _require_secret(deck_dir: Path, name: str) -> str:
+    """Resolve secrets.<name> from the deck's gen.yaml, or explain what's missing."""
+    store = SecretStore.from_config(load_config(deck_dir).secrets)
+    value = store.get(name)
+    if value is None:
+        raise SystemExit(
+            f"{deck_dir}/gen.yaml has no `secrets.{name}`; set it to an "
+            "op://<vault>/<item>/<field> reference or a path to a 0600 key file")
+    return value
 
 
 def _gaps_for(deck_dir: Path, data_dir: Path):
@@ -121,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
     ff = au_sub.add_parser("fetch-forvo")
     ff.add_argument("--deck", type=Path, required=True)
     ff.add_argument("--max-speakers", type=int, default=3)
+    ff.add_argument("--limit", type=int, default=None,
+                    help="cap API lookups this run (default: gen.yaml forvo_request_limit)")
 
     it = au_sub.add_parser("import-thai1000")
     it.add_argument("--deck", type=Path, required=True)
@@ -232,10 +246,13 @@ def main(argv=None) -> int:
     elif args.command == "audio" and args.audio_command == "fetch-forvo":
         deck = load_deck(args.deck)
         manifest = Manifest.load(deck.root)
-        client = ForvoClient(os.environ["FORVO_API_KEY"])
+        client = ForvoClient(_require_secret(args.deck, "forvo"))
         needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
+        limit = (args.limit if args.limit is not None
+                 else load_config(args.deck).forvo_request_limit)
         res = fetch_forvo(needs, deck, manifest, client, _today(),
-                          max_speakers=args.max_speakers)
+                          max_speakers=args.max_speakers, limit=limit,
+                          checkpoint=lambda: write_deck(deck))
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("forvo", res)
@@ -261,7 +278,7 @@ def main(argv=None) -> int:
     elif args.command == "audio" and args.audio_command == "tts":
         deck = load_deck(args.deck)
         manifest = Manifest.load(deck.root)
-        tts = GoogleTts(os.environ["GOOGLE_TTS_API_KEY"])
+        tts = GoogleTts(_require_secret(args.deck, "google_tts"))
         res = fill_tts(pending_audio(deck), deck, manifest, tts, _today())
         write_deck(deck)
         manifest.save(deck.root)
@@ -279,6 +296,7 @@ def main(argv=None) -> int:
     elif args.command == "images":
         deck = load_deck(args.deck)
         ctx = _build_ctx(args.deck, args.data_dir)
+        ctx.imagegen = imagegen_for(ctx)
         gaps = _gaps_for(args.deck, args.data_dir)
         manifest = Manifest.load(deck.root)
         flagged = flagged_image_note_ids(gaps)

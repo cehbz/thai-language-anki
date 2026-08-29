@@ -43,3 +43,8 @@ venv.bak/
 .superpowers/
 docs/superpowers/
 docs/handoff-*.md
+
+# API keys: gen.yaml references them (op://... or a 0600 file); never commit one
+*-api-key.txt
+*.key
+secrets.yaml

@@ -23,26 +23,31 @@ def _build(tmp_path):
 
 
 def test_media_config_defaults_unset(tmp_path, monkeypatch):
-    monkeypatch.delenv("FORVO_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_TTS_API_KEY", raising=False)
     monkeypatch.delenv("THAI_DECK_GEN_FAKE", raising=False)
     ctx = _build(tmp_path)
-    assert ctx.forvo_api_key is None
-    assert ctx.tts_api_key is None
+    assert not ctx.secrets.configured("forvo")
+    assert not ctx.secrets.configured("google_tts")
     assert ctx.thai1000_apkg is None
     assert ctx.http_get is not None                # images default on, no network fired
 
 
-def test_forvo_api_key_from_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("FORVO_API_KEY", "secret-forvo")
+def test_secret_refs_come_from_gen_yaml(tmp_path):
+    key = tmp_path / "forvo.key"
+    key.write_text("secret-forvo\n", encoding="utf-8")
+    key.chmod(0o600)
+    (tmp_path / "gen.yaml").write_text(f"secrets:\n  forvo: {key}\n", encoding="utf-8")
     ctx = _build(tmp_path)
-    assert ctx.forvo_api_key == "secret-forvo"
+    assert ctx.secrets.configured("forvo")
+    assert ctx.secrets.get("forvo") == "secret-forvo"
 
 
-def test_tts_api_key_from_env(tmp_path, monkeypatch):
+def test_env_api_keys_are_ignored(tmp_path, monkeypatch):
+    """Config lives in gen.yaml; the environment is not a config source."""
+    monkeypatch.setenv("FORVO_API_KEY", "secret-forvo")
     monkeypatch.setenv("GOOGLE_TTS_API_KEY", "secret-tts")
     ctx = _build(tmp_path)
-    assert ctx.tts_api_key == "secret-tts"
+    assert ctx.secrets.get("forvo") is None
+    assert ctx.secrets.get("google_tts") is None
 
 
 def test_thai1000_apkg_from_gen_yaml_relative(tmp_path, monkeypatch):

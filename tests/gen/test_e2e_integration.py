@@ -138,8 +138,7 @@ def _fill_pending_media(deck) -> None:
 
 @pytest.fixture
 def _clean_media_env(monkeypatch):
-    for var in ("FORVO_API_KEY", "GOOGLE_TTS_API_KEY", "THAI_DECK_GEN_FAKE"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("THAI_DECK_GEN_FAKE", raising=False)
 
 
 def test_end_to_end_generation(tmp_path, _clean_media_env):

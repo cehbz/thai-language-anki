@@ -8,6 +8,7 @@ from thai_deck_gen.context import GenContext
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.orchestrator import EvalError, generate
 from thai_deck_gen.producers import ProducerResult
+from thai_deck_gen.secrets import SecretStore
 from tests.gen.test_pairs import _gaps
 from tests.gen.test_sentences import _deck_with_words
 from tests.gen.test_tts import _deck_with_sentence_and_pair
@@ -24,7 +25,7 @@ def _ctx(tmp_path, max_iterations=5):
         data_dir=DATA,
         adjudication_queue=tmp_path / "work" / "ipa_adjudication.yaml",
         targets_path=DATA / "spelling_targets.yaml",
-        thai1000_apkg=None, forvo_api_key=None, tts_api_key=None, http_get=None,
+        thai1000_apkg=None, secrets=SecretStore(), http_get=None,
     )
 
 
@@ -144,7 +145,7 @@ def test_dispatch_media_filters_forvo_to_native_tier_families(tmp_path, monkeypa
     deck = _deck_with_sentence_and_pair(tmp_path)
     write_deck(deck)
     ctx = _ctx(tmp_path)
-    ctx.forvo_api_key = "KEY"
+    ctx.secrets = SecretStore.fixed(forvo="KEY")
 
     orchestrator._dispatch_media(_gaps([]), deck, ctx)
 
@@ -233,7 +234,7 @@ def test_dispatch_media_keeps_provenance_for_media_written_before_a_crash(tmp_pa
     deck = _deck_with_sentence_and_pair(tmp_path)
     write_deck(deck)
     ctx = _ctx(tmp_path)
-    ctx.tts_api_key = "KEY"
+    ctx.secrets = SecretStore.fixed(google_tts="KEY")
     ctx.http_get = lambda *a, **k: None
 
     with pytest.raises(RuntimeError):

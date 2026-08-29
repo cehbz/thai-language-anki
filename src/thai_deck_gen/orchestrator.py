@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from thai_deck_eval.model.deck import Deck
+from thai_deck_gen.context import imagegen_for
 from thai_deck_gen.deckio import write_deck
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
 from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
@@ -98,20 +99,23 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
         results["thai1000"] = res
         print(f"  thai1000: changed={res.changed} blocked={len(res.blocked)}")
 
-    if ctx.forvo_api_key:
-        client = ForvoClient(ctx.forvo_api_key)
+    if ctx.secrets.configured("forvo"):
+        client = ForvoClient(ctx.secrets.get("forvo"))
         forvo_needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
-        res = fetch_forvo(forvo_needs, deck, manifest, client, today)
+        res = fetch_forvo(forvo_needs, deck, manifest, client, today,
+                          limit=ctx.config.forvo_request_limit,
+                          checkpoint=lambda: write_deck(deck))
         results["forvo"] = res
         print(f"  forvo: changed={res.changed} blocked={len(res.blocked)}")
 
-    if ctx.tts_api_key:
-        tts = GoogleTts(ctx.tts_api_key)
+    if ctx.secrets.configured("google_tts"):
+        tts = GoogleTts(ctx.secrets.get("google_tts"))
         res = fill_tts(pending_audio(deck), deck, manifest, tts, today)
         results["tts"] = res
         print(f"  tts: changed={res.changed} blocked={len(res.blocked)}")
 
     if ctx.http_get is not None:
+        ctx.imagegen = ctx.imagegen or imagegen_for(ctx)
         flagged = flagged_image_note_ids(gaps)
         glosses = {e.thai: e.gloss for e in ctx.word_list}
         res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses),
@@ -128,8 +132,8 @@ def _blocked_summary(deck: Deck, ctx) -> str:
     image_needs = pending_images(deck)
     unconfigured = [name for name, configured in (
         ("thai1000", ctx.thai1000_apkg is not None),
-        ("forvo", bool(ctx.forvo_api_key)),
-        ("tts", bool(ctx.tts_api_key)),
+        ("forvo", ctx.secrets.configured("forvo")),
+        ("tts", ctx.secrets.configured("google_tts")),
         ("images", ctx.http_get is not None),
     ) if not configured]
     msg = (f"blocked: {len(audio_needs)} audio need(s), {len(image_needs)} image need(s) "
