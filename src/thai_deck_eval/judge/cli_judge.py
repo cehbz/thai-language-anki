@@ -10,6 +10,17 @@ from ..config import JudgeConfig
 class JudgeError(Exception):
     pass
 
+
+def _failure_detail(stdout: str, stderr: str, limit: int = 500) -> str:
+    """In --output-format json mode the error text is the `result` field on stdout."""
+    try:
+        result = json.loads(stdout).get("result")
+        if result:
+            return str(result)[:limit]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return (stderr or stdout)[:limit]
+
 class CliJudge:
     def __init__(self, config: JudgeConfig, runner=subprocess.run):
         self.config = config
@@ -39,9 +50,7 @@ class CliJudge:
                     raise JudgeError(
                         f"claude -p failed for note {req.note_id}: {exc}") from exc
                 if r.returncode != 0:
-                    # in --output-format json mode error detail lands on stdout
-                    raise JudgeError(
-                        f"claude -p failed: {(r.stderr or r.stdout)[:500]}")
+                    raise JudgeError(f"claude -p failed: {_failure_detail(r.stdout, r.stderr)}")
                 try:
                     text = json.loads(r.stdout)["result"]
                     m = re.search(r"\{.*\}", text, re.DOTALL)

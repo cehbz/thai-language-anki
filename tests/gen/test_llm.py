@@ -73,3 +73,18 @@ def test_cli_llm_factory_passes_configured_model_to_backend(tmp_path):
     assert llm.inner.model == "claude-sonnet-5"
     assert llm.model == "claude-sonnet-5"      # cache key namespace follows
     llm.close()
+
+
+def _runner_fail_json(cmd, **kw):
+    class R:
+        returncode = 1
+        stdout = ('{"type":"result","is_error":true,"duration_api_ms":0,"usage":{"input_tokens":0},'
+                  '"result":"You have hit your usage limit. Resets at 8:10pm."}')
+        stderr = ""
+
+    return R()
+
+
+def test_cli_backend_failure_reports_the_result_text_from_json_stdout():
+    with pytest.raises(LlmError, match=r"^You have hit your usage limit"):
+        CliBackend(runner=_runner_fail_json).complete("hi")

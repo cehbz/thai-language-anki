@@ -54,6 +54,17 @@ def test_cli_judge_failure_reports_stdout_when_stderr_empty():
     with pytest.raises(JudgeError, match="usage limit reached"):
         j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
 
+def test_cli_judge_failure_reports_the_result_text_from_json_stdout():
+    def runner(cmd, **kw):
+        class R:
+            returncode = 1
+            stdout = '{"type":"result","is_error":true,"result":"You have hit your usage limit."}'
+            stderr = ""
+        return R()
+    j = CliJudge(JudgeConfig(), runner=runner)
+    with pytest.raises(JudgeError, match=r"claude -p failed: You have hit your usage limit"):
+        j.judge(JudgeRequest(note_id="n", rules=["judge/x"], prompt="p"))
+
 def test_cli_judge_retries_then_raises():
     runner = FakeRun([json.dumps({"result": "not json"}),
                       json.dumps({"result": "still not"})])

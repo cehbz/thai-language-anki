@@ -10,6 +10,18 @@ class LlmError(Exception):
     pass
 
 
+def cli_failure_detail(stdout: str, stderr: str, limit: int = 500) -> str:
+    """Readable reason for a failed `claude -p`: in --output-format json mode
+    the error text is the `result` field on stdout, not stderr."""
+    try:
+        result = json.loads(stdout).get("result")
+        if result:
+            return str(result)[:limit]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return (stderr or stdout)[:limit]
+
+
 class Llm(Protocol):
     def complete(self, prompt: str) -> str:
         ...
@@ -28,8 +40,7 @@ class CliBackend:
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise LlmError(str(exc)) from exc
         if r.returncode != 0:
-            # in --output-format json mode error detail lands on stdout
-            raise LlmError((r.stderr or r.stdout)[:500])
+            raise LlmError(cli_failure_detail(r.stdout, r.stderr))
         try:
             return json.loads(r.stdout)["result"]
         except (json.JSONDecodeError, KeyError) as exc:
