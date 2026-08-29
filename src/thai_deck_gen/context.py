@@ -1,3 +1,5 @@
+import functools
+import importlib.util
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +39,26 @@ class GenContext:
     imagegen: object | None = None
     imgfetch: ImgFetch | None = None          # image downloads (whitelistable binary)
     http_get: Callable | None = field(default=requests.get)
+
+
+def _have_pysocks() -> bool:
+    return importlib.util.find_spec("socks") is not None
+
+
+def proxied_get(proxy: str | None, getter: Callable = requests.get) -> Callable:
+    """`getter` with every request routed through `proxy`.
+
+    Image search only: api.openverse.org answers this network's egress with
+    a Cloudflare challenge, so searches go out through a SOCKS tunnel to a
+    host with a clean address. Downloads keep going direct via imgfetch.
+    """
+    if not proxy:
+        return getter
+    if proxy.startswith("socks") and not _have_pysocks():
+        raise RuntimeError(
+            f"search_proxy {proxy!r} needs PySocks: install the `gen` extra "
+            "(requests[socks]), or drop search_proxy from gen.yaml")
+    return functools.partial(getter, proxies={"http": proxy, "https": proxy})
 
 
 def _load_frequency_words(path: Path, top_n: int) -> list[str]:
@@ -111,7 +133,7 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
     exemplars = load_exemplars(exemplars_path) if exemplars_path.exists() else []
 
     fake = os.environ.get("THAI_DECK_GEN_FAKE") == "1"
-    http_get = requests.get if (config.images and not fake) else None
+    http_get = proxied_get(config.search_proxy) if (config.images and not fake) else None
 
     return GenContext(
         g2p=g2p, tokenizer=tokenizer, freq=freq, llm=llm,

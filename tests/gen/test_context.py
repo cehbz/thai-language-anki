@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from thai_deck_gen.context import build_context
@@ -89,3 +90,42 @@ def test_context_builds_imgfetch_from_config(tmp_path):
 def test_gen_config_imgfetch_defaults_to_path_lookup():
     from thai_deck_gen.config import GenConfig
     assert GenConfig().imgfetch == "imgfetch"
+
+
+def test_gen_config_search_proxy_defaults_to_none():
+    from thai_deck_gen.config import GenConfig
+    assert GenConfig().search_proxy is None
+
+
+def test_proxied_get_returns_the_plain_getter_without_a_proxy():
+    from thai_deck_gen.context import proxied_get
+    def getter(url, **kw): return url
+    assert proxied_get(None, getter) is getter
+
+
+def test_proxied_get_sends_both_schemes_through_the_proxy():
+    from thai_deck_gen.context import proxied_get
+    seen = {}
+    def getter(url, **kw):
+        seen.update(kw)
+        return "ok"
+    assert proxied_get("socks5h://127.0.0.1:1080", getter)("https://x", timeout=5) == "ok"
+    assert seen["proxies"] == {"http": "socks5h://127.0.0.1:1080",
+                               "https": "socks5h://127.0.0.1:1080"}
+    assert seen["timeout"] == 5
+
+
+def test_proxied_get_rejects_a_socks_proxy_without_pysocks(monkeypatch):
+    import thai_deck_gen.context as context
+    from thai_deck_gen.context import proxied_get
+    monkeypatch.setattr(context, "_have_pysocks", lambda: False)
+    with pytest.raises(RuntimeError, match="PySocks"):
+        proxied_get("socks5h://127.0.0.1:1080", lambda url, **kw: None)
+
+
+def test_context_routes_image_search_through_the_configured_proxy(tmp_path):
+    from thai_deck_gen.config import GenConfig
+    ctx = build_context(tmp_path, DATA, llm=None, nlp=False,
+                        g2p=_Fake(), tokenizer=_Fake(), freq=_Fake(),
+                        config=GenConfig(search_proxy="socks5h://127.0.0.1:1080"))
+    assert ctx.http_get.keywords["proxies"]["https"] == "socks5h://127.0.0.1:1080"
