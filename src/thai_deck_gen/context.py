@@ -8,6 +8,7 @@ import yaml
 
 from thai_deck_gen.config import GenConfig, load_config
 from thai_deck_gen.emphasis import Emphasis, load_emphasis
+from thai_deck_gen.media.imgfetch import ImgFetch
 from thai_deck_gen.producers.sentences import load_exemplars
 from thai_deck_gen.wordlist import WordEntry, load_word_list
 
@@ -34,6 +35,7 @@ class GenContext:
     forvo_api_key: str | None = None
     tts_api_key: str | None = None
     imagegen: object | None = None
+    imgfetch: ImgFetch | None = None          # image downloads (whitelistable binary)
     http_get: Callable | None = field(default=requests.get)
 
 
@@ -123,4 +125,5 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         forvo_api_key=os.environ.get("FORVO_API_KEY"),
         tts_api_key=os.environ.get("GOOGLE_TTS_API_KEY"),
         http_get=http_get,
+        imgfetch=ImgFetch(config.imgfetch),
     )

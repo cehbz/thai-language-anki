@@ -14,6 +14,15 @@ from tests.gen.test_pairs import _gaps
 from thai_deck_eval.model.notes import Audio, PictureWordNote
 import pytest
 
+class FakeFetch:
+    """Stands in for ImgFetch: serves canned bytes per URL, records requests."""
+    def __init__(self, by_url):
+        self.by_url, self.urls = by_url, []
+    def fetch(self, url):
+        self.urls.append(url)
+        return self.by_url.get(url)
+
+
 
 def _jpeg_bytes(size=(1200, 800)) -> bytes:
     img = Image.new("RGB", size, color=(200, 50, 50))
@@ -84,12 +93,11 @@ def test_fill_images_queries_thai_before_gloss(tmp_path):
             return R(payload={"query": {"pages": {}}})
         if "api.openverse.org" in url and "word" in url:
             return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
-        if url == "http://img/x.jpg":
-            return R(content=jpeg)
         raise AssertionError(f"unexpected url {url}")
 
     class Ctx:
         imagegen = None
+        imgfetch = FakeFetch({"http://img/x.jpg": jpeg})
     Ctx.http_get = staticmethod(http_get)
 
     manifest = Manifest.load(deck.root)
@@ -116,6 +124,7 @@ def test_fill_images_blocks_when_nothing_found(tmp_path):
 
     class Ctx:
         imagegen = None
+        imgfetch = FakeFetch({})
     Ctx.http_get = staticmethod(http_get)
 
     manifest = Manifest.load(deck.root)
@@ -239,11 +248,10 @@ def test_escalation_imagegen_failure_queues_review_and_continues(tmp_path):
         # only need1's plain search fill should reach here
         if "api.openverse.org" in url:
             return R(payload={"results": [{"url": "http://img/y.jpg", "license": "cc0"}]})
-        if url == "http://img/y.jpg":
-            return R(content=_jpeg_bytes())
         return R(payload={"query": {"pages": {}}})
 
     class Ctx:
+        imgfetch = FakeFetch({"http://img/y.jpg": _jpeg_bytes()})
         imagegen = FailingImageGen()
     Ctx.http_get = staticmethod(http_get)
 
@@ -348,9 +356,54 @@ def test_fill_images_blocks_on_network_error_and_continues(tmp_path):
 
     class Ctx:
         imagegen = None
+        imgfetch = FakeFetch({})
     Ctx.http_get = staticmethod(http_get)
 
     manifest = Manifest.load(deck.root)
     res = fill_images([need], _gaps([]), deck, manifest, Ctx(), "2026-08-27")
     assert res.blocked == ["pw-0"]              # per-item: blocked, not raised
     assert res.changed == 0
+
+
+def test_fill_images_downloads_candidates_through_imgfetch_not_http_get(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+    jpeg = _jpeg_bytes()
+
+    def http_get(url, timeout=30):
+        if "api.openverse.org" in url:
+            return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
+        raise AssertionError(f"http_get must not download images: {url}")
+
+    class Ctx:
+        imagegen = None
+        imgfetch = FakeFetch({"http://img/x.jpg": jpeg})
+    Ctx.http_get = staticmethod(http_get)
+    manifest = Manifest.load(deck.root)
+    res = fill_images([need], _gaps([]), deck, manifest, Ctx(), "2026-08-27")
+    assert res.changed == 1
+    assert Ctx.imgfetch.urls == ["http://img/x.jpg"]
+    assert (deck.root / "media" / "images" / "pw-0.jpg").exists()
+
+
+def test_fill_images_blocks_everything_when_imgfetch_is_missing(tmp_path, capsys):
+    from thai_deck_gen.media.imgfetch import ImgFetchUnavailable
+    deck = _deck_with_pw(tmp_path)
+    needs = [ImageNeed(family="picture_word", note_id=f"pw-{i}", term="คำ",
+                       gloss="word", path=f"images/pw-{i}.jpg") for i in range(2)]
+
+    def http_get(url, timeout=30):
+        return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
+
+    class Missing:
+        def fetch(self, url):
+            raise ImgFetchUnavailable("imgfetch not found at /nope/imgfetch")
+
+    class Ctx:
+        imagegen = None
+        imgfetch = Missing()
+    Ctx.http_get = staticmethod(http_get)
+    res = fill_images(needs, _gaps([]), deck, Manifest.load(deck.root), Ctx(), "2026-08-27")
+    assert res.blocked == ["pw-0", "pw-1"]
+    assert "imgfetch not found" in capsys.readouterr().out

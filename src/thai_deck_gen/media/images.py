@@ -7,6 +7,7 @@ import requests
 import yaml
 from PIL import Image
 from thai_deck_eval.model.deck import Deck
+from thai_deck_gen.media.imgfetch import ImgFetchUnavailable
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import ImageNeed
 from thai_deck_gen.producers import ProducerResult
@@ -78,15 +79,16 @@ def downscale(raw: bytes, max_px: int = 600) -> bytes:
     img.save(out, format="JPEG")
     return out.getvalue()
 
-def _try_candidate(candidate: ImageCandidate, http_get) -> bytes | None:
+def _try_candidate(candidate: ImageCandidate, fetcher) -> bytes | None:
     # Trying several search candidates is the whole point of the fallback
-    # chain: any failure (network, 404, unparseable image) just means "try
+    # chain: a refused download or an undecodable image just means "try
     # the next candidate", surfaced overall via ProducerResult.blocked.
+    # ImgFetchUnavailable is not a per-candidate condition and propagates.
+    raw = fetcher.fetch(candidate.url)
+    if raw is None:
+        return None
     try:
-        resp = http_get(candidate.url, timeout=30)
-        if getattr(resp, "status_code", 200) != 200:
-            return None
-        return downscale(resp.content)
+        return downscale(raw)
     except Exception:
         return None
 
@@ -96,7 +98,7 @@ def _write_media(deck: Deck, path: str, data: bytes) -> None:
     dst.write_bytes(data)
 
 def _search_fill(need: ImageNeed, deck: Deck, manifest: Manifest, http_get,
-                 today: str, result: ProducerResult) -> None:
+                 fetcher, today: str, result: ProducerResult) -> None:
     queries = [need.term] + ([need.gloss] if need.gloss else [])
     for query in queries:
         for search_fn in (openverse_search, wikimedia_search):
@@ -105,7 +107,7 @@ def _search_fill(need: ImageNeed, deck: Deck, manifest: Manifest, http_get,
             except requests.RequestException:
                 continue          # per-item fault tolerance: a dead source is skipped
             for candidate in candidates:
-                image = _try_candidate(candidate, http_get)
+                image = _try_candidate(candidate, fetcher)
                 if image is None:
                     continue
                 _write_media(deck, need.path, image)
@@ -160,6 +162,13 @@ def fill_images(needs: list[ImageNeed], gaps: Gaps, deck: Deck,
                 result.blocked.append(need.note_id)
             continue
 
-        _search_fill(need, deck, manifest, ctx.http_get, today, result)
+        try:
+            _search_fill(need, deck, manifest, ctx.http_get, ctx.imgfetch, today, result)
+        except ImgFetchUnavailable as exc:
+            # not per-item: without the binary no download can succeed
+            print(f"warning: {exc}; blocking all remaining image needs")
+            result.blocked.append(need.note_id)
+            result.blocked.extend(n.note_id for n in needs[needs.index(need) + 1:])
+            return result
 
     return result

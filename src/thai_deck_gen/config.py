@@ -11,6 +11,7 @@ class GenConfig(BaseModel):
     max_iterations: int = 5
     model: str = "claude-opus-5"   # passed to claude -p --model; also the cache key namespace
     images: bool = True            # wire live image search (openverse/wikimedia)
+    imgfetch: str = "imgfetch"     # path to the imgfetch binary (tools/imgfetch); bare name = PATH lookup
     thai1000_apkg: str | None = None  # path to a thai1000 apkg, deck-root-relative
 
 

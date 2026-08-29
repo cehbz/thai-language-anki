@@ -74,3 +74,18 @@ def test_context_loads_emphasis_profile(tmp_path):
     ctx = _build(tmp_path)
     assert ctx.emphasis is not None
     assert ctx.emphasis.weight("Food") > 1
+
+
+def test_context_builds_imgfetch_from_config(tmp_path):
+    from thai_deck_gen.config import GenConfig
+    from thai_deck_gen.media.imgfetch import ImgFetch
+    ctx = build_context(tmp_path, DATA, llm=None, nlp=False,
+                        g2p=_Fake(), tokenizer=_Fake(), freq=_Fake(),
+                        config=GenConfig(imgfetch="/opt/bin/imgfetch"))
+    assert isinstance(ctx.imgfetch, ImgFetch)
+    assert ctx.imgfetch.binary == "/opt/bin/imgfetch"
+
+
+def test_gen_config_imgfetch_defaults_to_path_lookup():
+    from thai_deck_gen.config import GenConfig
+    assert GenConfig().imgfetch == "imgfetch"
