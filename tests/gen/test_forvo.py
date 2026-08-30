@@ -165,3 +165,81 @@ def test_checkpoint_runs_periodically(tmp_path, monkeypatch):
                 FakeForvo(table), "2026-08-27",
                 checkpoint=lambda: calls.append(1), checkpoint_every=2)
     assert len(calls) == 2          # after the 2nd fill, and a final flush
+
+
+# --- lookup memoization: a request buys an answer, not just audio ---
+
+def test_memoized_miss_is_not_looked_up_again(tmp_path, monkeypatch):
+    from thai_deck_gen.media.forvo_memo import ForvoMemo
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    memo = ForvoMemo.load(deck.root)
+    memo.record("w0", [], "2026-08-29")
+
+    class Counting(FakeForvo):
+        lookups = 0
+        def pronunciations(self, word):
+            Counting.lookups += 1
+            return super().pronunciations(word)
+
+    res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                      Counting({"w0": [{"username": "a", "pathmp3": "u"}]}),
+                      "2026-08-30", memo=ForvoMemo.load(deck.root))
+    assert Counting.lookups == 0
+    assert res.blocked == ["w0"]
+
+
+def test_memoized_hit_fills_without_an_api_call(tmp_path, monkeypatch):
+    from thai_deck_gen.media.forvo_memo import ForvoMemo
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    memo = ForvoMemo.load(deck.root)
+    memo.record("w0", [{"username": "a", "pathmp3": "http://f/a.mp3"}], "2026-08-29")
+
+    class NoLookup(FakeForvo):
+        def pronunciations(self, word):
+            raise AssertionError("should not spend a request")
+
+    res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                      NoLookup({}), "2026-08-30", memo=ForvoMemo.load(deck.root))
+    assert res.changed == 1
+    assert deck.picture_words[0].audio.speaker == "forvo:a"
+
+
+def test_new_lookups_are_recorded_and_reloaded(tmp_path, monkeypatch):
+    from thai_deck_gen.media.forvo_memo import ForvoMemo
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 2)
+    write_deck(deck)
+    table = {"w0": [{"username": "a", "pathmp3": "http://f/a.mp3"}]}   # w1 misses
+    fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                FakeForvo(table), "2026-08-30", memo=ForvoMemo.load(deck.root))
+
+    reloaded = ForvoMemo.load(deck.root)
+    assert reloaded.seen("w0") and reloaded.seen("w1")
+    assert reloaded.items("w0")[0]["username"] == "a"
+    assert reloaded.items("w1") == []
+
+
+def test_memoized_words_do_not_consume_the_request_limit(tmp_path, monkeypatch):
+    from thai_deck_gen.media.forvo_memo import ForvoMemo
+    _no_ffmpeg(monkeypatch)
+    deck = _deck_with_words(tmp_path, 3)
+    write_deck(deck)
+    memo = ForvoMemo.load(deck.root)
+    memo.record("w0", [], "2026-08-29")          # known miss, costs nothing
+
+    class Counting(FakeForvo):
+        lookups = 0
+        def pronunciations(self, word):
+            Counting.lookups += 1
+            return super().pronunciations(word)
+
+    table = {f"w{i}": [{"username": "a", "pathmp3": f"http://f/{i}.mp3"}] for i in (1, 2)}
+    res = fetch_forvo(pending_audio(deck), deck, Manifest.load(deck.root),
+                      Counting(table), "2026-08-30", limit=2,
+                      memo=ForvoMemo.load(deck.root))
+    assert Counting.lookups == 2                  # the limit funds two real words
+    assert res.changed == 2

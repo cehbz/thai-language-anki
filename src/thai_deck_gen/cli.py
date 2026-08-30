@@ -13,6 +13,7 @@ from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.llm import CachedLlm, CliBackend
 from thai_deck_gen.media.commission import import_commission, write_commission_batch
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
+from thai_deck_gen.media.forvo_memo import ForvoMemo
 from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
@@ -252,7 +253,8 @@ def main(argv=None) -> int:
                  else load_config(args.deck).forvo_request_limit)
         res = fetch_forvo(needs, deck, manifest, client, _today(),
                           max_speakers=args.max_speakers, limit=limit,
-                          checkpoint=lambda: write_deck(deck))
+                          checkpoint=lambda: write_deck(deck),
+                          memo=ForvoMemo.load(deck.root))
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("forvo", res)

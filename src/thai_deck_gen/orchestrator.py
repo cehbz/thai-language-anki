@@ -8,6 +8,7 @@ from thai_deck_eval.model.deck import Deck
 from thai_deck_gen.context import imagegen_for
 from thai_deck_gen.deckio import write_deck
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
+from thai_deck_gen.media.forvo_memo import ForvoMemo
 from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
@@ -104,7 +105,8 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
         forvo_needs = [n for n in pending_audio(deck) if n.family in NATIVE_TIER_FAMILIES]
         res = fetch_forvo(forvo_needs, deck, manifest, client, today,
                           limit=ctx.config.forvo_request_limit,
-                          checkpoint=lambda: write_deck(deck))
+                          checkpoint=lambda: write_deck(deck),
+                          memo=ForvoMemo.load(deck.root))
         results["forvo"] = res
         print(f"  forvo: changed={res.changed} blocked={len(res.blocked)}")
 

@@ -3,6 +3,7 @@ from urllib.parse import quote
 import requests
 from thai_deck_eval.model.deck import Deck
 from thai_deck_gen.media.ffmpeg import AudioError, duration_ok, normalize_audio
+from thai_deck_gen.media.forvo_memo import ForvoMemo
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
@@ -42,7 +43,8 @@ def _find_note(deck: Deck, need: AudioNeed):
 def fetch_forvo(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
                 client: ForvoClient, today: str,
                 max_speakers: int = 3, limit: int | None = None,
-                checkpoint=None, checkpoint_every: int = 25) -> ProducerResult:
+                checkpoint=None, checkpoint_every: int = 25,
+                memo: ForvoMemo | None = None) -> ProducerResult:
     """Fill native-tier audio from Forvo.
 
     `limit` caps API lookups for this run (the free tier is a daily request
@@ -52,17 +54,26 @@ def fetch_forvo(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
     `checkpoint` (typically write_deck) is called every `checkpoint_every`
     filled needs and once at the end: a long run killed mid-flight keeps the
     audio it already paid for.
+
+    `memo` replays earlier lookups instead of re-spending a request on them,
+    misses included, and only un-memoized words draw on `limit`.
     """
     result = ProducerResult()
     lookups = 0
-    for need in needs:
-        if limit is not None and lookups >= limit:
+    for i, need in enumerate(needs):
+        memoized = memo is not None and memo.seen(need.text)
+        if not memoized and limit is not None and lookups >= limit:
             print(f"  forvo: stopping at the {limit}-lookup limit; "
-                  f"{len(needs) - lookups} need(s) left pending")
+                  f"{len(needs) - i} need(s) left pending")
             break
         try:
-            lookups += 1
-            items = client.pronunciations(need.text)
+            if memoized:
+                items = memo.items(need.text)
+            else:
+                lookups += 1
+                items = client.pronunciations(need.text)
+                if memo is not None:
+                    memo.record(need.text, items, today)
             if not items:
                 result.blocked.append(need.text)
                 continue
@@ -109,7 +120,7 @@ def fetch_forvo(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
             if checkpoint and result.changed % checkpoint_every == 0:
                 checkpoint()
         except ForvoQuotaExceeded as exc:
-            print(f"  forvo: {exc}; {len(needs) - lookups} need(s) left pending")
+            print(f"  forvo: {exc}; {len(needs) - i} need(s) left pending")
             break
         except (AudioError, requests.RequestException):
             result.blocked.append(need.text)
