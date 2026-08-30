@@ -18,6 +18,8 @@ class ImageNeed:
     term: str
     gloss: str | None
     path: str
+    category: str | None = None   # FF category, for query disambiguation
+    image_query: str | None = None  # phrase describing what a photo looks like
 
 NATIVE_TIER_FAMILIES = {"minimal_pair", "picture_word", "spelling_sound"}
 
@@ -95,7 +97,8 @@ def pending_audio(deck: Deck) -> list[AudioNeed]:
     return needs
 
 def pending_images(deck: Deck, flagged: set[str] | None = None,
-                   glosses: dict[str, str] | None = None) -> list[ImageNeed]:
+                   glosses: dict[str, str] | None = None,
+                   image_queries: dict[str, str] | None = None) -> list[ImageNeed]:
     """
     Find notes with an image ref whose file is missing, plus any note whose
     id is in `flagged` (judge-rejected images) even when the file exists.
@@ -104,6 +107,7 @@ def pending_images(deck: Deck, flagged: set[str] | None = None,
     """
     flagged = flagged or set()
     glosses = glosses or {}
+    image_queries = image_queries or {}
     needs = []
     media_root = deck.root / "media"
 
@@ -118,7 +122,9 @@ def pending_images(deck: Deck, flagged: set[str] | None = None,
                     note_id=note.id,
                     term=note.thai,
                     gloss=glosses.get(note.thai),
-                    path=image_ref
+                    path=image_ref,
+                    category=note.category,
+                    image_query=image_queries.get(note.thai)
                 ))
 
         elif family == "sentence":

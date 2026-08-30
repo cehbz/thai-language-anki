@@ -92,3 +92,49 @@ def test_parser_accepts_wordlist_extend():
     from thai_deck_gen.cli import build_parser
     args = build_parser().parse_args(["wordlist", "--extend"])
     assert args.command == "wordlist" and args.extend is True
+
+
+def test_approve_records_a_waiver_against_the_current_image(tmp_path, monkeypatch):
+    """The approval names the image it approved, so a later re-fetch cannot
+    inherit it."""
+    import hashlib
+    from thai_deck_eval.waivers import load_waivers
+    from thai_deck_gen.cli import main
+    from tests.gen.test_images import _deck_with_pw
+
+    deck = _deck_with_pw(tmp_path)
+    img = deck.root / "media" / "images" / "pw-0.jpg"
+    img.parent.mkdir(parents=True, exist_ok=True)
+    img.write_bytes(b"jpegbytes")
+
+    rc = main(["approve", "--deck", str(deck.root), "--note", "pw-0",
+               "--rule", "judge/image-embedded-text",
+               "--reason", "the expiry date is the point of the card"])
+    assert rc == 0
+
+    waivers = load_waivers(deck.root)
+    assert len(waivers) == 1
+    assert waivers[0].note_id == "pw-0"
+    assert waivers[0].rule == "judge/image-embedded-text"
+    assert waivers[0].sha == hashlib.sha256(b"jpegbytes").hexdigest()
+    assert waivers[0].reason.startswith("the expiry date")
+
+
+def test_approve_replaces_an_earlier_waiver_for_the_same_rule(tmp_path):
+    from thai_deck_eval.waivers import load_waivers
+    from thai_deck_gen.cli import main
+    from tests.gen.test_images import _deck_with_pw
+
+    deck = _deck_with_pw(tmp_path)
+    img = deck.root / "media" / "images" / "pw-0.jpg"
+    img.parent.mkdir(parents=True, exist_ok=True)
+    img.write_bytes(b"first")
+    main(["approve", "--deck", str(deck.root), "--note", "pw-0",
+          "--rule", "judge/image-embedded-text", "--reason", "first pass"])
+    img.write_bytes(b"second")
+    main(["approve", "--deck", str(deck.root), "--note", "pw-0",
+          "--rule", "judge/image-embedded-text", "--reason", "re-reviewed"])
+
+    waivers = load_waivers(deck.root)
+    assert len(waivers) == 1
+    assert waivers[0].reason == "re-reviewed"

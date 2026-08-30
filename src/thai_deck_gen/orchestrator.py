@@ -13,7 +13,7 @@ from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
 from thai_deck_gen.media.thai1000 import audio_index, import_thai1000
-from thai_deck_gen.media.tts import GoogleTts, fill_tts
+from thai_deck_gen.media.tts import THAI_VOICES, GoogleTts, fill_tts
 from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.producers.pairs import fill_pairs
 from thai_deck_gen.producers.sentences import fill_sentences
@@ -112,7 +112,8 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
 
     if ctx.secrets.configured("google_tts"):
         tts = GoogleTts(ctx.secrets.get("google_tts"))
-        res = fill_tts(pending_audio(deck), deck, manifest, tts, today)
+        res = fill_tts(pending_audio(deck), deck, manifest, tts, today,
+                       voices=THAI_VOICES)
         results["tts"] = res
         print(f"  tts: changed={res.changed} blocked={len(res.blocked)}")
 
@@ -120,7 +121,9 @@ def _dispatch_media(gaps: Gaps, deck: Deck, ctx) -> dict[str, ProducerResult]:
         ctx.imagegen = ctx.imagegen or imagegen_for(ctx)
         flagged = flagged_image_note_ids(gaps)
         glosses = {e.thai: e.gloss for e in ctx.word_list}
-        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses),
+        queries = {e.thai: e.image_query for e in ctx.word_list if e.image_query}
+        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses,
+                                         image_queries=queries),
                           gaps, deck, manifest, ctx, today)
         results["images"] = res
         print(f"  images: changed={res.changed} blocked={len(res.blocked)}")

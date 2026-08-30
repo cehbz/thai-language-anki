@@ -7,19 +7,21 @@ import sys
 from pathlib import Path
 
 from thai_deck_eval.model.deck import load_deck
+from thai_deck_eval.waivers import Waiver, image_sha, load_waivers, save_waivers
 from thai_deck_gen.compiler.build import compile_deck
 from thai_deck_gen.config import GenConfig, load_config
-from thai_deck_gen.context import build_context, imagegen_for
+from thai_deck_gen.context import build_context, image_judge_for, imagegen_for
 from thai_deck_gen.deckio import new_deck, write_deck
-from thai_deck_gen.llm import CachedLlm, CliBackend
+from thai_deck_gen.llm import ApiBackend, CachedLlm, CliBackend
 from thai_deck_gen.media.commission import import_commission, write_commission_batch
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
 from thai_deck_gen.media.forvo_memo import ForvoMemo
-from thai_deck_gen.media.images import fill_images, flagged_image_note_ids
+from thai_deck_gen.media.images import (fill_images, flagged_image_note_ids,
+                                        search_reachable)
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
 from thai_deck_gen.media.thai1000 import audio_index, import_thai1000
-from thai_deck_gen.media.tts import GoogleTts, fill_tts
+from thai_deck_gen.media.tts import THAI_VOICES, GoogleTts, fill_tts
 from thai_deck_gen.orchestrator import EvalError, generate, run_eval
 from thai_deck_gen.producers.pairs import fill_pairs
 from thai_deck_gen.producers.sentences import fetch_exemplars, fill_sentences
@@ -28,7 +30,8 @@ from thai_deck_gen.producers.words import fill_words
 from thai_deck_gen.report import parse_report
 from thai_deck_eval.secrets import SecretStore
 from thai_deck_gen.emphasis import load_emphasis
-from thai_deck_gen.wordlist import draft_word_list, extend_word_list
+from thai_deck_gen.wordlist import (draft_image_queries, draft_word_list,
+                                    extend_word_list)
 
 DEFAULT_DATA_DIR = Path("data")
 
@@ -69,8 +72,22 @@ def _build_ctx(deck_dir: Path, data_dir: Path):
     return build_context(deck_dir, data_dir, _cli_llm(deck_dir, cfg), nlp=True, config=cfg)
 
 
+def _drafting_backend(deck_dir: Path, cfg):
+    """The `claude` CLI unless gen.yaml asks for the API.
+
+    Subscription tokens are a flat monthly cost that mostly goes unspent;
+    API tokens are incremental cash. So the CLI is the default even though
+    it drags a 35K-token harness prompt into every call -- that overhead is
+    free. `llm_backend: api` is for work the CLI genuinely cannot do.
+    """
+    store = SecretStore.from_config(cfg.secrets)
+    if cfg.llm_backend == "api" and store.configured("anthropic"):
+        return ApiBackend(model=cfg.model, api_key=store.get("anthropic"))
+    return CliBackend(model=cfg.model)
+
+
 def _cli_llm(deck_dir: Path, cfg) -> CachedLlm:
-    return CachedLlm(CliBackend(model=cfg.model),
+    return CachedLlm(_drafting_backend(deck_dir, cfg),
                      deck_dir / "work" / "llm_cache.sqlite3", model=cfg.model)
 
 
@@ -154,9 +171,23 @@ def build_parser() -> argparse.ArgumentParser:
     cm = au_sub.add_parser("commission")
     cm.add_argument("--deck", type=Path, required=True)
 
+    ap = sub.add_parser("approve",
+                        help="record that a finding was reviewed and accepted")
+    ap.add_argument("--deck", type=Path, required=True)
+    ap.add_argument("--note", required=True)
+    ap.add_argument("--rule", required=True)
+    ap.add_argument("--reason", required=True)
+
+    st = sub.add_parser("search-terms")
+    st.add_argument("--deck", type=Path, required=True)
+    st.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+
     im = sub.add_parser("images")
     im.add_argument("--deck", type=Path, required=True)
     im.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    im.add_argument("--no-verify", action="store_true",
+                    help="accept the first search hit instead of judging "
+                         "several candidates (gen.yaml `rulebook` supplies the judge)")
 
     cp = sub.add_parser("compile")
     cp.add_argument("--deck", type=Path, required=True)
@@ -244,7 +275,7 @@ def main(argv=None) -> int:
         deck = load_deck(args.deck)
         ctx = _build_ctx(args.deck, args.data_dir)
         gaps = _gaps_for(args.deck, args.data_dir)
-        res = fill_sentences(gaps, deck, ctx)
+        res = fill_sentences(gaps, deck, ctx, checkpoint=lambda: write_deck(deck))
         write_deck(deck)
         _report_result("sentences", res)
 
@@ -285,7 +316,8 @@ def main(argv=None) -> int:
         deck = load_deck(args.deck)
         manifest = Manifest.load(deck.root)
         tts = GoogleTts(_require_secret(args.deck, "google_tts"))
-        res = fill_tts(pending_audio(deck), deck, manifest, tts, _today())
+        res = fill_tts(pending_audio(deck), deck, manifest, tts, _today(),
+                       voices=THAI_VOICES)
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("tts", res)
@@ -299,6 +331,25 @@ def main(argv=None) -> int:
         else:
             print(f"wrote commission batch to {path} ({len(needs)} item(s))")
 
+    elif args.command == "approve":
+        deck = load_deck(args.deck)
+        waivers = [w for w in load_waivers(deck.root)
+                   if not (w.note_id == args.note and w.rule == args.rule)]
+        waivers.append(Waiver(note_id=args.note, rule=args.rule,
+                              reason=args.reason, date=_today(),
+                              sha=image_sha(deck, args.note)))
+        save_waivers(deck.root, waivers)
+        print(f"waived {args.rule} for {args.note}")
+
+    elif args.command == "search-terms":
+        cfg = load_config(args.deck)
+        warnings: list[str] = []
+        n = draft_image_queries(_drafting_backend(args.deck, cfg),
+                                args.data_dir / "word_list_th.yaml", warnings)
+        for w in warnings:
+            print(f"warning: {w}")
+        print(f"drafted {n} image query phrase(s)")
+
     elif args.command == "images":
         deck = load_deck(args.deck)
         ctx = _build_ctx(args.deck, args.data_dir)
@@ -307,8 +358,15 @@ def main(argv=None) -> int:
         manifest = Manifest.load(deck.root)
         flagged = flagged_image_note_ids(gaps)
         glosses = {e.thai: e.gloss for e in ctx.word_list}
-        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses), gaps, deck, manifest, ctx,
-                          _today())
+        unreachable = search_reachable(ctx.http_get) if ctx.http_get else None
+        if unreachable:
+            print(f"error: {unreachable}", file=sys.stderr)
+            print("       (search_proxy in gen.yaml needs its ssh tunnel up)",
+                  file=sys.stderr)
+            return 2
+        judge = None if args.no_verify else image_judge_for(args.deck, ctx.config)
+        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses), gaps,
+                          deck, manifest, ctx, _today(), judge=judge)
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("images", res)

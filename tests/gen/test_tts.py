@@ -15,7 +15,7 @@ def _no_ffmpeg(monkeypatch):
 
 class FakeTts:
     voice = "th-TH-Neural2-C"
-    def synthesize(self, text): return b"WAV:" + text.encode()
+    def synthesize(self, text, voice=None): return b"WAV:" + text.encode()
 
 def _deck_with_sentence_and_pair(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["sentences", "sounds"])
@@ -64,7 +64,7 @@ def _deck_with_two_sentences(tmp_path):
 class FailingTts:
     voice = "th-TH-Neural2-C"
     def __init__(self, fail_text): self.fail_text = fail_text
-    def synthesize(self, text):
+    def synthesize(self, text, voice=None):
         if text == self.fail_text:
             raise AudioError("tts boom")
         return b"WAV:" + text.encode()
@@ -102,3 +102,14 @@ def test_google_tts_raises_on_error():
     tts = GoogleTts("KEY", http_post=http_post)
     with pytest.raises(AudioError):
         tts.synthesize("สวัสดี")
+
+
+def test_voice_varies_across_notes_but_is_stable_per_note(tmp_path, monkeypatch):
+    """One synthetic voice for 732 listening cards trains the ear on that
+    voice; the choice must still be stable so re-runs don't re-synthesize."""
+    from thai_deck_gen.media.tts import fill_tts, pick_voice
+    voices = ["th-TH-Neural2-C", "th-TH-Standard-A", "th-TH-Neural2-B"]
+    picks = {f"sn-{i}": pick_voice(f"sn-{i}", voices) for i in range(30)}
+    assert len(set(picks.values())) > 1               # not all the same
+    assert all(v in voices for v in picks.values())
+    assert pick_voice("sn-3", voices) == picks["sn-3"]   # stable

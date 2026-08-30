@@ -245,7 +245,9 @@ def _word_note(note, manifest, basename_of) -> genanki.Note:
 
 
 def _sentence_note(note, manifest, basename_of) -> genanki.Note:
-    tags = _base_tags("sentence") + _src_tags(manifest, "audio", note.audio.file)
+    tags = (_base_tags("sentence")
+            + [f"usage::{getattr(note, 'usage', 'production')}"]
+            + _src_tags(manifest, "audio", note.audio.file))
     if note.image:
         tags += _src_tags(manifest, "img", note.image)
     fields = [note.thai.replace(note.target, "___"), note.target,

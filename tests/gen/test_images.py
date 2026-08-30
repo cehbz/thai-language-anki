@@ -77,7 +77,9 @@ def test_wikimedia_search_parses_results():
     assert cands == [ImageCandidate(url="http://img/b.jpg", source="wikimedia", license=None)]
 
 
-def test_fill_images_queries_thai_before_gloss(tmp_path):
+def test_fill_images_queries_the_gloss_before_the_thai_term(tmp_path):
+    """Openverse indexes English metadata: a Thai query matches only the few
+    Thai-captioned items it holds, which are posters and book covers."""
     deck = _deck_with_pw(tmp_path)
     need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
                       gloss="word", path="images/pw-0.jpg")
@@ -87,16 +89,13 @@ def test_fill_images_queries_thai_before_gloss(tmp_path):
 
     def http_get(url, timeout=30, headers=None):
         calls.append(url)
-        if "api.openverse.org" in url and thai_q in url:
-            return R(payload={"results": []})
-        if "commons.wikimedia.org" in url and thai_q in url:
-            return R(payload={"query": {"pages": {}}})
         if "api.openverse.org" in url and "word" in url:
             return R(payload={"results": [{"url": "http://img/x.jpg", "license": "cc0"}]})
-        raise AssertionError(f"unexpected url {url}")
+        return R(payload={"results": []})
 
     class Ctx:
         imagegen = None
+        image_query_hints = {}
         imgfetch = FakeFetch({"http://img/x.jpg": jpeg})
     Ctx.http_get = staticmethod(http_get)
 
@@ -104,12 +103,35 @@ def test_fill_images_queries_thai_before_gloss(tmp_path):
     res = fill_images([need], _gaps([]), deck, manifest, Ctx(), "2026-08-27")
 
     assert res.changed == 1
-    assert (deck.root / "media" / "images" / "pw-0.jpg").exists()
     assert manifest.channel_of("media/images/pw-0.jpg") == "openverse"
-    # Thai term queried before the gloss fallback, within the same source
-    assert thai_q in calls[0] and "api.openverse.org" in calls[0]
-    assert "word" in calls[1] and "api.openverse.org" in calls[1]
-    assert len(calls) == 2               # wikimedia never consulted: openverse answered
+    assert "word" in calls[0] and "api.openverse.org" in calls[0]
+    assert thai_q not in calls[0]        # the gloss goes first now
+    assert len(calls) == 1
+
+
+def test_category_qualifier_disambiguates_the_gloss(tmp_path):
+    """'orange' alone returns an orange tabby cat; 'orange food' does not."""
+    deck = _deck_with_pw(tmp_path, term="ส้ม", gloss="orange")
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="ส้ม",
+                      gloss="orange", category="Food", path="images/pw-0.jpg")
+    calls = []
+
+    def http_get(url, timeout=30, headers=None):
+        calls.append(url)
+        return R(payload={"results": []})
+
+    class Ctx:
+        imagegen = None
+        image_query_hints = {"Food": "food"}
+        imgfetch = FakeFetch({})
+    Ctx.http_get = staticmethod(http_get)
+
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root), Ctx(), "2026-08-27")
+
+    openverse = [c for c in calls if "api.openverse.org" in c]
+    assert quote("orange food") in openverse[0]
+    assert "orange" in openverse[1] and quote("orange food") not in openverse[1]
+    assert quote("ส้ม") in openverse[2]      # Thai last, for culture-specific terms
 
 
 def test_fill_images_blocks_when_nothing_found(tmp_path):
@@ -436,8 +458,9 @@ def test_fill_images_prefers_a_later_query_on_the_better_source(tmp_path):
 
     def http_get(url, timeout=30, headers=None):
         openverse = "api.openverse.org" in url
-        order.append(("openverse" if openverse else "wikimedia", "word" in url))
-        if openverse and "word" in url:          # gloss query on the good source
+        is_gloss = "word" in url
+        order.append(("openverse" if openverse else "wikimedia", is_gloss))
+        if openverse and not is_gloss:           # only the Thai query hits here
             return R(payload={"results": [{"url": "http://img/good.jpg", "license": "cc0"}]})
         if openverse:
             return R(payload={"results": []})
@@ -446,6 +469,7 @@ def test_fill_images_prefers_a_later_query_on_the_better_source(tmp_path):
 
     class Ctx:
         imagegen = None
+        image_query_hints = {}
         imgfetch = FakeFetch({"http://img/good.jpg": _jpeg_bytes(),
                               "http://img/junk.jpg": _jpeg_bytes()})
     Ctx.http_get = staticmethod(http_get)
@@ -454,4 +478,236 @@ def test_fill_images_prefers_a_later_query_on_the_better_source(tmp_path):
     assert res.changed == 1
     assert Ctx.imgfetch.urls == ["http://img/good.jpg"]
     assert manifest.channel_of("media/images/pw-0.jpg") == "openverse"
-    assert order[:2] == [("openverse", False), ("openverse", True)]
+    # every Openverse query is spent before Wikimedia is consulted at all
+    assert order == [("openverse", True), ("openverse", False)]
+
+
+# --- candidate verification: judge several, keep the one that passes ---
+
+from thai_deck_eval.judge.core import Verdict
+
+
+class FakeBatchJudge:
+    """Judge port stand-in: verdicts keyed by candidate request id."""
+
+    def __init__(self, passing: set[str]):
+        self.passing, self.seen = passing, []
+
+    def judge_many(self, reqs):
+        self.seen = [r.note_id for r in reqs]
+        out = {}
+        for r in reqs:
+            ok = r.note_id in self.passing
+            out[r.note_id] = [
+                Verdict(rule=rule, passed=ok, confidence=0.9,
+                        rationale="" if ok else "unrelated image")
+                for rule in r.rules]
+        return out
+
+
+def _five_results(prefix="http://img"):
+    return {"results": [{"url": f"{prefix}/{i}.jpg", "license": "cc0"} for i in range(5)]}
+
+
+def _verify_ctx(passing, urls=5):
+    jpeg = _jpeg_bytes()
+
+    class Ctx:
+        imagegen = None
+        image_query_hints = {}
+        image_candidates = 5
+        imgfetch = FakeFetch({f"http://img/{i}.jpg": jpeg for i in range(urls)})
+    Ctx.http_get = staticmethod(
+        lambda url, timeout=30, headers=None:
+        R(payload=_five_results()) if "openverse" in url else R(payload={"results": []}))
+    return Ctx()
+
+
+def test_every_candidate_is_judged_and_the_passing_one_is_kept(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+    judge = FakeBatchJudge({"pw-0#2"})          # only the third candidate is relevant
+    manifest = Manifest.load(deck.root)
+
+    res = fill_images([need], _gaps([]), deck, manifest, _verify_ctx(judge),
+                      "2026-08-30", judge=judge)
+
+    assert res.changed == 1
+    assert judge.seen == [f"pw-0#{i}" for i in range(5)]
+    assert manifest.entries["media/images/pw-0.jpg"].origin == "http://img/2.jpg"
+    assert (deck.root / "media" / "images" / "pw-0.jpg").exists()
+
+
+def test_all_candidates_rejected_queues_review(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+    res = fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                      _verify_ctx(judge), "2026-08-30", judge=judge)
+
+    assert res.blocked == ["pw-0"]
+    assert not (deck.root / "media" / "images" / "pw-0.jpg").exists()
+    review = yaml.safe_load((deck.root / "work" / "image_review.yaml").read_text())
+    assert review["items"][0]["note_id"] == "pw-0"
+
+
+def test_rejected_candidate_files_are_cleaned_up(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                      gloss="word", path="images/pw-0.jpg")
+    judge = FakeBatchJudge({"pw-0#0"})
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-30", judge=judge)
+    leftovers = list((deck.root / "work" / "candidates").rglob("*.jpg"))
+    assert leftovers == []
+
+
+def test_gloss_is_reduced_to_a_searchable_head_term():
+    """Word-list glosses are learner definitions ('I (female speaker, or
+    casual general)'); the parenthetical returns nothing from an image search."""
+    from thai_deck_gen.media.images import _queries
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="ฉัน",
+                     gloss="I (female speaker, or casual general)",
+                     category="Pronouns", path="images/pw-0.jpg")
+    assert _queries(need, {}) == ["I", "ฉัน"]
+
+    need = ImageNeed(family="picture_word", note_id="pw-1", term="ส้ม",
+                     gloss="orange, mandarin", category="Food",
+                     path="images/pw-1.jpg")
+    assert _queries(need, {"Food": "food"}) == ["orange food", "orange", "ส้ม"]
+
+
+# --- attempt memo: a note given up on is not re-searched from scratch ---
+
+def test_a_note_is_not_retried_with_the_same_queries(tmp_path):
+    """Re-running must not re-spend on a note whose search found nothing
+    acceptable, unless the queries themselves changed."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+    ctx = _verify_ctx(judge)
+
+    first = fill_images([need], _gaps([]), deck, Manifest.load(deck.root), ctx,
+                        "2026-08-30", judge=judge)
+    assert first.blocked == ["pw-0"]
+    assert judge.seen                                  # candidates were judged
+
+    second_judge = FakeBatchJudge(set())
+    ctx2 = _verify_ctx(second_judge)
+    second = fill_images([need], _gaps([]), deck, Manifest.load(deck.root), ctx2,
+                         "2026-08-31", judge=second_judge)
+    assert second.blocked == ["pw-0"]
+    assert second_judge.seen == []                     # nothing re-judged
+    assert ctx2.imgfetch.urls == []                    # nothing re-downloaded
+
+
+def test_a_changed_query_retries_the_note(tmp_path):
+    """A new search phrase is new information: try again."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-30", judge=judge)
+
+    retried = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                        gloss="word", category="Food",
+                        image_query="a written word on paper",
+                        path="images/pw-0.jpg")
+    judge2 = FakeBatchJudge({"pw-0#0"})
+    res = fill_images([retried], _gaps([]), deck, Manifest.load(deck.root),
+                      _verify_ctx(judge2), "2026-08-31", judge=judge2)
+    assert res.changed == 1
+    assert judge2.seen                                 # the new phrase was tried
+
+
+def test_candidate_downloads_resume_after_a_stopped_run(tmp_path):
+    """Collection is the slow half of an image run; a run stopped partway
+    must reuse what it already fetched, provenance included."""
+    from thai_deck_gen.media.images import _collect_candidates
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food", path="images/pw-0.jpg")
+
+    work = deck.root / "work" / "candidates" / "pw-0"
+    work.mkdir(parents=True)
+    for i in range(2):
+        (work / f"{i}.jpg").write_bytes(_jpeg_bytes())
+    (work / "candidates.yaml").write_text(yaml.safe_dump([
+        {"file": "0.jpg", "url": "http://img/0.jpg", "source": "openverse",
+         "license": "cc0"},
+        {"file": "1.jpg", "url": "http://img/1.jpg", "source": "wikimedia",
+         "license": None}], allow_unicode=True), encoding="utf-8")
+
+    def no_search(*a, **k):
+        raise AssertionError("must not search again")
+
+    class NoFetch:
+        def fetch(self, url):
+            raise AssertionError("must not download again")
+
+    cands = _collect_candidates(need, deck, no_search, NoFetch(), {}, 5)
+    assert [c.url for c in cands] == ["http://img/0.jpg", "http://img/1.jpg"]
+    assert cands[0].source == "openverse" and cands[1].source == "wikimedia"
+
+
+def test_partial_candidate_dir_is_refetched(tmp_path):
+    """A manifest row whose file is missing means the run died mid-write."""
+    from thai_deck_gen.media.images import _cached_candidates
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", path="images/pw-0.jpg")
+    work = tmp_path / "candidates" / "pw-0"
+    work.mkdir(parents=True)
+    (work / "candidates.yaml").write_text(yaml.safe_dump([
+        {"file": "0.jpg", "url": "u", "source": "openverse"}]), encoding="utf-8")
+    assert _cached_candidates(work, need, 5) == []
+
+
+def test_a_note_with_no_candidates_is_not_marked_exhausted(tmp_path):
+    """Zero candidates means the search or the network failed, not that the
+    queries were tried and found wanting. A sleeping laptop must not
+    blacklist a note forever."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+
+    class DeadNetwork:
+        imagegen = None
+        image_query_hints = {}
+        image_candidates = 5
+        imgfetch = FakeFetch({})
+        http_get = staticmethod(
+            lambda url, timeout=30, headers=None: R(status_code=503, payload={}))
+
+    res = fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                      DeadNetwork(), "2026-08-30", judge=judge)
+    assert res.blocked == ["pw-0"]
+    review = deck.root / "work" / "image_review.yaml"
+    if review.exists():
+        items = yaml.safe_load(review.read_text())["items"]
+        assert all("queries" not in it for it in items)   # nothing memoized
+
+    # a later run with a working network must try again
+    good = _verify_ctx(FakeBatchJudge({"pw-0#0"}))
+    judge2 = FakeBatchJudge({"pw-0#0"})
+    res2 = fill_images([need], _gaps([]), deck, Manifest.load(deck.root), good,
+                       "2026-08-31", judge=judge2)
+    assert res2.changed == 1
+
+
+def test_search_preflight_detects_a_dead_proxy():
+    """A run that walks 500 notes against a dead tunnel wastes an hour and
+    teaches nothing; check once, up front."""
+    from thai_deck_gen.media.images import search_reachable
+    ok = search_reachable(lambda url, timeout=30, headers=None:
+                          R(payload={"results": [{"url": "u"}]}))
+    assert ok is None
+
+    import requests as _rq
+    def dead(url, timeout=30, headers=None):
+        raise _rq.RequestException("tunnel down")
+    assert "unreachable" in search_reachable(dead).lower()

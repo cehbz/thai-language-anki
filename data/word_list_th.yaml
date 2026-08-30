@@ -3,11 +3,13 @@
   part_of_speech: adjective
   picturable: true
   thai: ช้า
+  image_query: snail crawling slowly on pavement
 - category: Adjectives
   gloss: loud
   part_of_speech: adjective
   picturable: true
   thai: ดัง
+  image_query: person shouting into a megaphone
 - category: Adjectives
   gloss: good
   part_of_speech: adjective
@@ -18,120 +20,142 @@
   part_of_speech: adjective
   picturable: true
   thai: ถูก
+  image_query: hand holding few coins at market
 - category: Adjectives
   gloss: long
   part_of_speech: adjective
   picturable: true
   thai: ยาว
+  image_query: woman with very long hair
 - category: Adjectives
   gloss: hot
   part_of_speech: adjective
   picturable: true
   thai: ร้อน
+  image_query: steaming boiling pot on stove
 - category: Adjectives
   gloss: dirty
   part_of_speech: adjective
   picturable: true
   thai: สกปรก
+  image_query: muddy hands and filthy clothes
 - category: Adjectives
   gloss: beautiful
   part_of_speech: adjective
   picturable: true
   thai: สวย
+  image_query: smiling woman with flowers
 - category: Adjectives
   gloss: short (length)
   part_of_speech: adjective
   picturable: true
   thai: สั้น
+  image_query: short pencil beside long pencil
 - category: Adjectives
   gloss: tall / high
   part_of_speech: adjective
   picturable: true
   thai: สูง
+  image_query: tall skyscraper towering above street
 - category: Adjectives
   gloss: cold (feeling cold, cold weather)
   part_of_speech: adjective
   picturable: true
   split_of: cold
   thai: หนาว
+  image_query: shivering person bundled in snow
 - category: Adjectives
   emphasis: true
   gloss: sweet
   part_of_speech: adjective
   picturable: true
   thai: หวาน
+  image_query: sugar cubes and colorful candy
 - category: Adjectives
   emphasis: true
   gloss: delicious, tasty
   part_of_speech: adjective
   picturable: true
   thai: อร่อย
+  image_query: person savoring a tasty meal
 - category: Adjectives
   emphasis: true
   gloss: full, had enough to eat
   part_of_speech: adjective
   picturable: true
   thai: อิ่ม
+  image_query: satisfied man patting full belly
 - category: Adjectives
   gloss: old (things)
   part_of_speech: adjective
   picturable: true
   split_of: old
   thai: เก่า
+  image_query: worn rusty antique furniture
 - category: Adjectives
   emphasis: true
   gloss: salty
   part_of_speech: adjective
   picturable: true
   thai: เค็ม
+  image_query: salt being sprinkled on food
 - category: Adjectives
   gloss: quiet
   part_of_speech: adjective
   picturable: true
   thai: เงียบ
+  image_query: finger pressed to lips shushing
 - category: Adjectives
   gloss: short (height)
   part_of_speech: adjective
   picturable: true
   thai: เตี้ย
+  image_query: short person beside tall person
 - category: Adjectives
   gloss: wet
   part_of_speech: adjective
   picturable: true
   thai: เปียก
+  image_query: soaked person dripping in rain
 - category: Adjectives
   emphasis: true
   gloss: spicy (chili-hot)
   part_of_speech: adjective
   picturable: true
   thai: เผ็ด
+  image_query: red chili peppers on plate
 - category: Adjectives
   gloss: cold / cool (objects, drinks, air)
   part_of_speech: adjective
   picturable: true
   split_of: cold
   thai: เย็น
+  image_query: iced drink with condensation drops
 - category: Adjectives
   gloss: fast
   part_of_speech: adjective
   picturable: true
   thai: เร็ว
+  image_query: race car speeding motion blur
 - category: Adjectives
   gloss: small
   part_of_speech: adjective
   picturable: true
   thai: เล็ก
+  image_query: tiny kitten held in palm
 - category: Adjectives
   gloss: old (people, age)
   part_of_speech: adjective
   picturable: true
   split_of: old
   thai: แก่
+  image_query: elderly wrinkled man with cane
 - category: Adjectives
   gloss: expensive
   part_of_speech: adjective
   picturable: true
   thai: แพง
+  image_query: luxury jewelry in glass case
 - category: Adjectives
   gloss: bad
   part_of_speech: adjective
@@ -142,16 +166,19 @@
   part_of_speech: adjective
   picturable: true
   thai: แห้ง
+  image_query: cracked dry parched earth
 - category: Adjectives
   gloss: big
   part_of_speech: adjective
   picturable: true
   thai: ใหญ่
+  image_query: elephant beside a small child
 - category: Adjectives
   gloss: new
   part_of_speech: adjective
   picturable: true
   thai: ใหม่
+  image_query: shiny new shoes in box
 - category: Animals
   classifier: ตัว
   emphasis: true
@@ -159,6 +186,7 @@
   part_of_speech: noun
   picturable: true
   thai: กบ
+  image_query: green frog sitting on lily pad
 - category: Animals
   classifier: ตัว
   emphasis: true
@@ -166,36 +194,42 @@
   part_of_speech: noun
   picturable: true
   thai: กุ้ง
+  image_query: raw prawns on ice
 - category: Animals
   classifier: ตัว
   gloss: water buffalo
   part_of_speech: noun
   picturable: true
   thai: ควาย
+  image_query: water buffalo standing in mud
 - category: Animals
   classifier: ตัว
   gloss: snake
   part_of_speech: noun
   picturable: true
   thai: งู
+  image_query: snake coiled on the ground
 - category: Animals
   classifier: ตัว
   gloss: elephant
   part_of_speech: noun
   picturable: true
   thai: ช้าง
+  image_query: elephant walking in grassland
 - category: Animals
   classifier: ตัว
   gloss: bird
   part_of_speech: noun
   picturable: true
   thai: นก
+  image_query: small bird perched on branch
 - category: Animals
   classifier: ตัว
   gloss: fish
   part_of_speech: noun
   picturable: true
   thai: ปลา
+  image_query: fish swimming underwater
 - category: Animals
   classifier: ตัว
   emphasis: true
@@ -203,12 +237,14 @@
   part_of_speech: noun
   picturable: true
   thai: ปลาหมึก
+  image_query: squid swimming in the sea
 - category: Animals
   classifier: ข้าง
   gloss: wing
   part_of_speech: noun
   picturable: true
   thai: ปีก
+  image_query: outstretched bird wing feathers closeup
 - category: Animals
   classifier: ตัว
   emphasis: true
@@ -216,42 +252,49 @@
   part_of_speech: noun
   picturable: true
   thai: ปู
+  image_query: crab on wet sand
 - category: Animals
   classifier: ตัว
   gloss: ant
   part_of_speech: noun
   picturable: true
   thai: มด
+  image_query: ants crawling on a leaf
 - category: Animals
   classifier: ตัว
   gloss: horse
   part_of_speech: noun
   picturable: true
   thai: ม้า
+  image_query: horse galloping in a field
 - category: Animals
   classifier: ตัว
   gloss: mosquito
   part_of_speech: noun
   picturable: true
   thai: ยุง
+  image_query: mosquito biting human skin
 - category: Animals
   classifier: ตัว
   gloss: monkey
   part_of_speech: noun
   picturable: true
   thai: ลิง
+  image_query: monkey sitting in a tree
 - category: Animals
   classifier: ตัว
   gloss: cow
   part_of_speech: noun
   picturable: true
   thai: วัว
+  image_query: cow grazing in pasture
 - category: Animals
   classifier: ตัว
   gloss: animal
   part_of_speech: noun
   picturable: true
   thai: สัตว์
+  image_query: many different animals together outdoors
 - category: Animals
   classifier: ตัว
   gloss: dog (formal)
@@ -259,12 +302,14 @@
   picturable: true
   split_of: dog
   thai: สุนัข
+  image_query: dog sitting on green grass
 - category: Animals
   classifier: ตัว
   gloss: mouse / rat
   part_of_speech: noun
   picturable: true
   thai: หนู
+  image_query: small brown mouse on floor
 - category: Animals
   classifier: ตัว
   gloss: dog (colloquial)
@@ -272,18 +317,21 @@
   picturable: true
   split_of: dog
   thai: หมา
+  image_query: dog running outdoors
 - category: Animals
   classifier: ตัว
   gloss: bear
   part_of_speech: noun
   picturable: true
   thai: หมี
+  image_query: brown bear in the forest
 - category: Animals
   classifier: ตัว
   gloss: pig
   part_of_speech: noun
   picturable: true
   thai: หมู
+  image_query: pink pig on a farm
 - category: Animals
   classifier: ตัว
   emphasis: true
@@ -291,60 +339,70 @@
   part_of_speech: noun
   picturable: true
   thai: หอย
+  image_query: clams and seashells on sand
 - category: Animals
   classifier: หาง
   gloss: tail
   part_of_speech: noun
   picturable: true
   thai: หาง
+  image_query: closeup of a cat's tail
 - category: Animals
   classifier: ตัว
   gloss: duck
   part_of_speech: noun
   picturable: true
   thai: เป็ด
+  image_query: duck swimming on a pond
 - category: Animals
   classifier: ตัว
   gloss: tiger
   part_of_speech: noun
   picturable: true
   thai: เสือ
+  image_query: tiger walking in the jungle
 - category: Animals
   classifier: ตัว
   gloss: insect
   part_of_speech: noun
   picturable: true
   thai: แมลง
+  image_query: beetle insect on a leaf
 - category: Animals
   classifier: ตัว
   gloss: fly (insect)
   part_of_speech: noun
   picturable: true
   thai: แมลงวัน
+  image_query: housefly resting on a surface
 - category: Animals
   classifier: ตัว
   gloss: cat
   part_of_speech: noun
   picturable: true
   thai: แมว
+  image_query: cat sitting and looking up
 - category: Animals
   classifier: ตัว
   gloss: chicken
   part_of_speech: noun
   picturable: true
   thai: ไก่
+  image_query: chicken standing in a yard
 - category: Art
   classifier: ใบ
   gloss: drum
   part_of_speech: noun
   picturable: true
   thai: กลอง
+  image_query: drum set with drumsticks
 - category: Art
   classifier: ตัว
   gloss: camera
   part_of_speech: noun
   picturable: true
   thai: กล้อง
+  image_query: digital camera held in hands
 - category: Art
   classifier: ชุด
   emphasis: true
@@ -353,18 +411,21 @@
   picturable: true
   split_of: performance
   thai: การแสดง
+  image_query: performers on stage under spotlights
 - category: Art
   classifier: ตัว
   gloss: guitar
   part_of_speech: noun
   picturable: true
   thai: กีตาร์
+  image_query: acoustic guitar leaning against chair
 - category: Art
   classifier: แนว
   gloss: music
   part_of_speech: noun
   picturable: true
   thai: ดนตรี
+  image_query: musicians playing instruments together
 - category: Art
   classifier: วง
   emphasis: true
@@ -372,6 +433,7 @@
   part_of_speech: noun
   picturable: true
   thai: ดนตรีสด
+  image_query: band performing live on small stage
 - category: Art
   classifier: คน
   gloss: actor / celebrity (colloquial)
@@ -379,23 +441,27 @@
   picturable: true
   split_of: actor
   thai: ดารา
+  image_query: celebrity posing on red carpet
 - category: Art
   emphasis: true
   gloss: to decorate (a shop, a table, a plate of food)
   part_of_speech: verb
   picturable: true
   thai: ตกแต่ง
+  image_query: hands decorating a festive table
 - category: Art
   gloss: to take a photo
   part_of_speech: verb
   picturable: true
   thai: ถ่ายรูป
+  image_query: person photographing scenery with camera
 - category: Art
   classifier: คน
   gloss: singer
   part_of_speech: noun
   picturable: true
   thai: นักร้อง
+  image_query: woman singing into microphone
 - category: Art
   classifier: คน
   gloss: actor (performer)
@@ -403,6 +469,7 @@
   picturable: true
   split_of: actor
   thai: นักแสดง
+  image_query: actor performing on theater stage
 - category: Art
   classifier: เรื่อง
   gloss: movie (formal)
@@ -410,63 +477,74 @@
   picturable: true
   split_of: movie
   thai: ภาพยนตร์
+  image_query: cinema screen with rows of seats
 - category: Art
   classifier: ภาพ
   gloss: painting
   part_of_speech: noun
   picturable: true
   thai: ภาพวาด
+  image_query: framed painting hanging on wall
 - category: Art
   gloss: to paint (apply color)
   part_of_speech: verb
   picturable: true
   thai: ระบายสี
+  image_query: child painting with brush and watercolors
 - category: Art
   classifier: รูป
   gloss: picture
   part_of_speech: noun
   picturable: true
   thai: รูป
+  image_query: framed picture on a shelf
 - category: Art
   classifier: ใบ
   gloss: photograph
   part_of_speech: noun
   picturable: true
   thai: รูปถ่าย
+  image_query: printed photo held in hand
 - category: Art
   gloss: to sing
   part_of_speech: verb
   picturable: true
   thai: ร้องเพลง
+  image_query: man singing with open mouth
 - category: Art
   classifier: เรื่อง
   gloss: TV drama / play
   part_of_speech: noun
   picturable: true
   thai: ละคร
+  image_query: actors performing scene on stage
 - category: Art
   classifier: วง
   gloss: band (musical group)
   part_of_speech: noun
   picturable: true
   thai: วงดนตรี
+  image_query: rock band playing on stage
 - category: Art
   gloss: to draw
   part_of_speech: verb
   picturable: true
   thai: วาดรูป
+  image_query: hand sketching with pencil on paper
 - category: Art
   classifier: แขนง
   gloss: art
   part_of_speech: noun
   picturable: true
   thai: ศิลปะ
+  image_query: gallery wall with artworks displayed
 - category: Art
   classifier: คน
   gloss: artist
   part_of_speech: noun
   picturable: true
   thai: ศิลปิน
+  image_query: painter working at an easel
 - category: Art
   classifier: เรื่อง
   gloss: movie (colloquial)
@@ -474,34 +552,40 @@
   picturable: true
   split_of: movie
   thai: หนัง
+  image_query: audience watching film in theater
 - category: Art
   classifier: ชิ้น
   gloss: musical instrument
   part_of_speech: noun
   picturable: true
   thai: เครื่องดนตรี
+  image_query: violin trumpet and guitar together
 - category: Art
   gloss: to dance
   part_of_speech: verb
   picturable: true
   thai: เต้น
+  image_query: dancers moving on dance floor
 - category: Art
   classifier: เพลง
   gloss: song
   part_of_speech: noun
   picturable: true
   thai: เพลง
+  image_query: person singing with headphones on
 - category: Art
   gloss: to play music
   part_of_speech: verb
   picturable: true
   thai: เล่นดนตรี
+  image_query: man playing guitar and singing
 - category: Art
   emphasis: true
   gloss: to carve (fruit or vegetable carving)
   part_of_speech: verb
   picturable: true
   thai: แกะสลัก
+  image_query: hands carving a melon with knife
 - category: Art
   classifier: ชุด
   emphasis: true
@@ -510,6 +594,7 @@
   picturable: true
   split_of: performance
   thai: โชว์
+  image_query: singer performing at restaurant stage
 - category: Beverages
   classifier: ใบ
   emphasis: true
@@ -517,12 +602,14 @@
   part_of_speech: noun
   picturable: true
   thai: กระป๋อง
+  image_query: aluminum drink can close-up
 - category: Beverages
   classifier: แก้ว
   gloss: coffee
   part_of_speech: noun
   picturable: true
   thai: กาแฟ
+  image_query: hot black coffee in cup
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -530,36 +617,42 @@
   part_of_speech: noun
   picturable: true
   thai: กาแฟเย็น
+  image_query: iced coffee with milk swirl
 - category: Beverages
   gloss: to drink (colloquial, also "eat")
   part_of_speech: verb
   picturable: true
   split_of: drink
   thai: กิน
+  image_query: person drinking from a glass
 - category: Beverages
   classifier: ใบ
   gloss: bottle
   part_of_speech: noun
   picturable: true
   thai: ขวด
+  image_query: glass bottle of beverage
 - category: Beverages
   emphasis: true
   gloss: to sip
   part_of_speech: verb
   picturable: true
   thai: จิบ
+  image_query: woman sipping from a mug
 - category: Beverages
   emphasis: true
   gloss: to clink glasses, toast
   part_of_speech: verb
   picturable: true
   thai: ชนแก้ว
+  image_query: friends clinking glasses together
 - category: Beverages
   classifier: แก้ว
   gloss: tea
   part_of_speech: noun
   picturable: true
   thai: ชา
+  image_query: cup of hot tea brewing
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -567,6 +660,7 @@
   part_of_speech: noun
   picturable: true
   thai: ชานมไข่มุก
+  image_query: bubble tea with tapioca pearls
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -574,6 +668,7 @@
   part_of_speech: noun
   picturable: true
   thai: ชามะนาว
+  image_query: iced lemon tea with slices
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -581,18 +676,21 @@
   part_of_speech: noun
   picturable: true
   thai: ชาเขียว
+  image_query: green tea in ceramic cup
 - category: Beverages
   classifier: แก้ว
   gloss: Thai iced tea
   part_of_speech: noun
   picturable: true
   thai: ชาเย็น
+  image_query: orange Thai iced tea glass
 - category: Beverages
   gloss: to drink
   part_of_speech: verb
   picturable: true
   split_of: drink
   thai: ดื่ม
+  image_query: man drinking water from glass
 - category: Beverages
   classifier: ใบ
   emphasis: true
@@ -600,6 +698,7 @@
   part_of_speech: noun
   picturable: true
   thai: ถุง
+  image_query: drink in plastic bag with straw
 - category: Beverages
   classifier: ใบ
   emphasis: true
@@ -608,12 +707,14 @@
   picturable: true
   split_of: cup
   thai: ถ้วย
+  image_query: small ceramic teacup on saucer
 - category: Beverages
   classifier: แก้ว
   gloss: milk
   part_of_speech: noun
   picturable: true
   thai: นม
+  image_query: glass of white milk
 - category: Beverages
   classifier: กระป๋อง
   emphasis: true
@@ -621,30 +722,35 @@
   part_of_speech: noun
   picturable: true
   thai: นมข้นหวาน
+  image_query: condensed milk poured thick stream
 - category: Beverages
   classifier: ขวด
   gloss: yogurt drink
   part_of_speech: noun
   picturable: true
   thai: นมเปรี้ยว
+  image_query: small yogurt drink bottles
 - category: Beverages
   classifier: แก้ว
   gloss: water
   part_of_speech: noun
   picturable: true
   thai: น้ำ
+  image_query: clear water poured into glass
 - category: Beverages
   classifier: แก้ว
   gloss: smoothie, blended drink
   part_of_speech: noun
   picturable: true
   thai: น้ำปั่น
+  image_query: blended fruit smoothie in glass
 - category: Beverages
   classifier: แก้ว
   gloss: fruit juice
   part_of_speech: noun
   picturable: true
   thai: น้ำผลไม้
+  image_query: fruit juice glass with fruits
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -652,24 +758,28 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำมะนาว
+  image_query: limeade glass with lime slices
 - category: Beverages
   classifier: ลูก
   gloss: coconut water
   part_of_speech: noun
   picturable: true
   thai: น้ำมะพร้าว
+  image_query: young coconut with straw
 - category: Beverages
   classifier: แก้ว
   gloss: orange juice
   part_of_speech: noun
   picturable: true
   thai: น้ำส้ม
+  image_query: glass of fresh orange juice
 - category: Beverages
   classifier: กระป๋อง
   gloss: soda, soft drink
   part_of_speech: noun
   picturable: true
   thai: น้ำอัดลม
+  image_query: fizzy soft drink with bubbles
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -677,6 +787,7 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำอ้อย
+  image_query: sugarcane juice glass with stalks
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -684,6 +795,7 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำเก๊กฮวย
+  image_query: chrysanthemum flower tea drink
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -691,6 +803,7 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำเต้าหู้
+  image_query: soy milk glass with soybeans
 - category: Beverages
   classifier: ขวด
   gloss: plain drinking water
@@ -698,12 +811,14 @@
   picturable: true
   split_of: water
   thai: น้ำเปล่า
+  image_query: plain drinking water in glass
 - category: Beverages
   classifier: ก้อน
   gloss: ice
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็ง
+  image_query: ice cubes in a pile
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -711,6 +826,7 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็งเปล่า
+  image_query: plastic cup filled with ice
 - category: Beverages
   emphasis: true
   gloss: to pour gently, serve a drink into a glass
@@ -718,17 +834,20 @@
   picturable: true
   split_of: pour
   thai: ริน
+  image_query: pouring drink into a glass
 - category: Beverages
   classifier: อัน
   gloss: drinking straw
   part_of_speech: noun
   picturable: true
   thai: หลอด
+  image_query: colorful drinking straws bundle
 - category: Beverages
   gloss: thirsty
   part_of_speech: adjective
   picturable: true
   thai: หิวน้ำ
+  image_query: sweaty man gulping water bottle
 - category: Beverages
   emphasis: true
   gloss: to pour out, tip out
@@ -736,12 +855,14 @@
   picturable: true
   split_of: pour
   thai: เท
+  image_query: liquid tipped out of glass
 - category: Beverages
   classifier: ขวด
   gloss: beer
   part_of_speech: noun
   picturable: true
   thai: เบียร์
+  image_query: beer glass with foam head
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -749,12 +870,14 @@
   part_of_speech: noun
   picturable: true
   thai: เบียร์สด
+  image_query: draft beer from tap
 - category: Beverages
   emphasis: true
   gloss: drunk, tipsy
   part_of_speech: adjective
   picturable: true
   thai: เมา
+  image_query: tipsy man slumped over drinks
 - category: Beverages
   classifier: ใบ
   emphasis: true
@@ -762,12 +885,14 @@
   part_of_speech: noun
   picturable: true
   thai: เหยือก
+  image_query: pitcher jug of cold drink
 - category: Beverages
   classifier: ขวด
   gloss: liquor, booze
   part_of_speech: noun
   picturable: true
   thai: เหล้า
+  image_query: liquor bottle with shot glass
 - category: Beverages
   classifier: ขวด
   emphasis: true
@@ -775,24 +900,28 @@
   part_of_speech: noun
   picturable: true
   thai: เหล้าขาว
+  image_query: clear rice liquor small bottle
 - category: Beverages
   classifier: ใบ
   gloss: glass (drinking)
   part_of_speech: noun
   picturable: true
   thai: แก้ว
+  image_query: empty drinking glass on table
 - category: Beverages
   classifier: แก้ว
   gloss: hot chocolate, cocoa
   part_of_speech: noun
   picturable: true
   thai: โกโก้
+  image_query: mug of hot chocolate
 - category: Beverages
   classifier: ขวด
   gloss: cola (Coke)
   part_of_speech: noun
   picturable: true
   thai: โค้ก
+  image_query: cola glass with ice cubes
 - category: Beverages
   classifier: ขวด
   emphasis: true
@@ -800,6 +929,7 @@
   part_of_speech: noun
   picturable: true
   thai: โซดา
+  image_query: sparkling soda water glass
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -807,6 +937,7 @@
   part_of_speech: noun
   picturable: true
   thai: โอวัลติน
+  image_query: malted chocolate drink in mug
 - category: Beverages
   classifier: แก้ว
   emphasis: true
@@ -814,18 +945,21 @@
   part_of_speech: noun
   picturable: true
   thai: โอเลี้ยง
+  image_query: iced black coffee tall glass
 - category: Beverages
   classifier: แก้ว
   gloss: wine
   part_of_speech: noun
   picturable: true
   thai: ไวน์
+  image_query: red wine glass and bottle
 - category: Body
   classifier: ชิ้น
   gloss: bone
   part_of_speech: noun
   picturable: true
   thai: กระดูก
+  image_query: human skeleton bone on display
 - category: Body
   classifier: เส้น
   gloss: hair (body hair, fur)
@@ -833,24 +967,28 @@
   picturable: true
   split_of: hair
   thai: ขน
+  image_query: close-up of hairy human forearm
 - category: Body
   classifier: ข้าง
   gloss: leg
   part_of_speech: noun
   picturable: true
   thai: ขา
+  image_query: bare human legs standing
 - category: Body
   classifier: คอ
   gloss: neck
   part_of_speech: noun
   picturable: true
   thai: คอ
+  image_query: close-up of person's neck
 - category: Body
   classifier: จมูก
   gloss: nose
   part_of_speech: noun
   picturable: true
   thai: จมูก
+  image_query: close-up of human nose
 - category: Body
   classifier: ชิ้น
   emphasis: true
@@ -858,12 +996,14 @@
   part_of_speech: noun
   picturable: true
   thai: ตับ
+  image_query: raw liver on cutting board
 - category: Body
   classifier: ข้าง
   gloss: eye
   part_of_speech: noun
   picturable: true
   thai: ตา
+  image_query: extreme close-up human eye
 - category: Body
   classifier: ท้อง
   emphasis: true
@@ -872,24 +1012,28 @@
   picturable: true
   split_of: stomach
   thai: ท้อง
+  image_query: hands resting on bare stomach
 - category: Body
   classifier: นิ้ว
   gloss: finger
   part_of_speech: noun
   picturable: true
   thai: นิ้ว
+  image_query: hand with one finger pointing
 - category: Body
   classifier: นิ้ว
   gloss: toe
   part_of_speech: noun
   picturable: true
   thai: นิ้วเท้า
+  image_query: close-up of bare toes
 - category: Body
   classifier: ปาก
   gloss: mouth
   part_of_speech: noun
   picturable: true
   thai: ปาก
+  image_query: close-up of open mouth
 - category: Body
   classifier: เส้น
   gloss: hair (on the head)
@@ -897,12 +1041,14 @@
   picturable: true
   split_of: hair
   thai: ผม
+  image_query: long hair on woman's head
 - category: Body
   classifier: ผืน
   gloss: skin
   part_of_speech: noun
   picturable: true
   thai: ผิว
+  image_query: close-up of smooth skin texture
 - category: Body
   classifier: พุง
   emphasis: true
@@ -911,18 +1057,21 @@
   picturable: true
   split_of: stomach
   thai: พุง
+  image_query: man's round belly hanging over belt
 - category: Body
   classifier: ซี่
   gloss: tooth
   part_of_speech: noun
   picturable: true
   thai: ฟัน
+  image_query: close-up smile showing white teeth
 - category: Body
   classifier: ข้าง
   gloss: hand
   part_of_speech: noun
   picturable: true
   thai: มือ
+  image_query: open human hand palm up
 - category: Body
   classifier: ข้าง
   emphasis: true
@@ -930,30 +1079,35 @@
   part_of_speech: noun
   picturable: true
   thai: ริมฝีปาก
+  image_query: close-up of red lips
 - category: Body
   classifier: ลิ้น
   gloss: tongue
   part_of_speech: noun
   picturable: true
   thai: ลิ้น
+  image_query: person sticking out tongue
 - category: Body
   classifier: หน้า
   gloss: face
   part_of_speech: noun
   picturable: true
   thai: หน้า
+  image_query: close-up of smiling human face
 - category: Body
   classifier: หลัง
   gloss: back (of the body)
   part_of_speech: noun
   picturable: true
   thai: หลัง
+  image_query: bare back of person standing
 - category: Body
   classifier: หัว
   gloss: head
   part_of_speech: noun
   picturable: true
   thai: หัว
+  image_query: head and shoulders of person
 - category: Body
   classifier: ดวง
   gloss: heart (the organ)
@@ -961,24 +1115,28 @@
   picturable: true
   split_of: heart
   thai: หัวใจ
+  image_query: anatomical human heart model
 - category: Body
   classifier: ข้าง
   gloss: ear
   part_of_speech: noun
   picturable: true
   thai: หู
+  image_query: close-up of person's ear
 - category: Body
   classifier: ข้าง
   gloss: foot
   part_of_speech: noun
   picturable: true
   thai: เท้า
+  image_query: bare feet on floor
 - category: Body
   classifier: หยด
   gloss: blood
   part_of_speech: noun
   picturable: true
   thai: เลือด
+  image_query: drop of blood on fingertip
 - category: Body
   classifier: ข้าง
   emphasis: true
@@ -986,12 +1144,14 @@
   part_of_speech: noun
   picturable: true
   thai: แก้ม
+  image_query: close-up of child's rosy cheek
 - category: Body
   classifier: ข้าง
   gloss: arm
   part_of_speech: noun
   picturable: true
   thai: แขน
+  image_query: bare outstretched human arm
 - category: Body
   classifier: ดวง
   gloss: heart (mind, feelings)
@@ -1005,59 +1165,69 @@
   part_of_speech: noun
   picturable: true
   thai: ไหล่
+  image_query: close-up of bare shoulder
 - category: Clothing
   classifier: เม็ด
   gloss: button (on clothing)
   part_of_speech: noun
   picturable: true
   thai: กระดุม
+  image_query: close-up buttons on shirt front
 - category: Clothing
   classifier: ใบ
   gloss: pocket (also bag)
   part_of_speech: noun
   picturable: true
   thai: กระเป๋า
+  image_query: close-up pocket on jeans
 - category: Clothing
   classifier: ตัว
   gloss: skirt
   part_of_speech: noun
   picturable: true
   thai: กระโปรง
+  image_query: pleated skirt on woman
 - category: Clothing
   classifier: ตัว
   gloss: pants, trousers
   part_of_speech: noun
   picturable: true
   thai: กางเกง
+  image_query: pair of trousers on hanger
 - category: Clothing
   classifier: ตัว
   gloss: shorts
   part_of_speech: noun
   picturable: true
   thai: กางเกงขาสั้น
+  image_query: denim shorts worn in summer
 - category: Clothing
   classifier: ตัว
   gloss: underwear, underpants
   part_of_speech: noun
   picturable: true
   thai: กางเกงใน
+  image_query: cotton underpants folded on bed
 - category: Clothing
   emphasis: true
   gloss: tight, too snug (of clothes, e.g. after a big meal)
   part_of_speech: adjective
   picturable: true
   thai: คับ
+  image_query: too-tight jeans straining at waist
 - category: Clothing
   classifier: อัน
   gloss: zipper
   part_of_speech: noun
   picturable: true
   thai: ซิป
+  image_query: close-up zipper on jacket
 - category: Clothing
   gloss: to take off (clothing)
   part_of_speech: verb
   picturable: true
   thai: ถอด
+  image_query: man pulling sweater over head
 - category: Clothing
   classifier: คู่
   emphasis: true
@@ -1065,12 +1235,14 @@
   part_of_speech: noun
   picturable: true
   thai: ถุงมือ
+  image_query: oven mitts holding hot dish
 - category: Clothing
   classifier: คู่
   gloss: socks
   part_of_speech: noun
   picturable: true
   thai: ถุงเท้า
+  image_query: pair of folded cotton socks
 - category: Clothing
   classifier: ผืน
   emphasis: true
@@ -1079,48 +1251,56 @@
   picturable: true
   split_of: apron
   thai: ผ้ากันเปื้อน
+  image_query: cook wearing apron in kitchen
 - category: Clothing
   classifier: คู่
   gloss: shoes
   part_of_speech: noun
   picturable: true
   thai: รองเท้า
+  image_query: pair of leather shoes
 - category: Clothing
   classifier: คู่
   gloss: sandals, flip-flops
   part_of_speech: noun
   picturable: true
   thai: รองเท้าแตะ
+  image_query: rubber flip-flops on floor
 - category: Clothing
   classifier: รอย
   gloss: stain
   part_of_speech: noun
   picturable: true
   thai: รอยเปื้อน
+  image_query: coffee stain on white shirt
 - category: Clothing
   classifier: ชุด
   gloss: suit
   part_of_speech: noun
   picturable: true
   thai: สูท
+  image_query: man in tailored business suit
 - category: Clothing
   classifier: ใบ
   gloss: hat, cap
   part_of_speech: noun
   picturable: true
   thai: หมวก
+  image_query: baseball cap on table
 - category: Clothing
   classifier: เส้น
   gloss: belt
   part_of_speech: noun
   picturable: true
   thai: เข็มขัด
+  image_query: leather belt with metal buckle
 - category: Clothing
   classifier: ตัว
   gloss: dress
   part_of_speech: noun
   picturable: true
   thai: เดรส
+  image_query: woman wearing summer dress
 - category: Clothing
   classifier: ตัว
   gloss: shirt, top (any upper-body garment)
@@ -1128,6 +1308,7 @@
   picturable: true
   split_of: shirt
   thai: เสื้อ
+  image_query: plain top on clothes hanger
 - category: Clothing
   classifier: ตัว
   gloss: coat, jacket, sweater (any warm outer layer)
@@ -1135,24 +1316,28 @@
   picturable: true
   split_of: coat
   thai: เสื้อกันหนาว
+  image_query: person wearing warm knitted sweater
 - category: Clothing
   classifier: ตัว
   gloss: bra
   part_of_speech: noun
   picturable: true
   thai: เสื้อชั้นใน
+  image_query: bra on white background
 - category: Clothing
   classifier: ชุด
   gloss: clothing, clothes
   part_of_speech: noun
   picturable: true
   thai: เสื้อผ้า
+  image_query: clothes hanging in open closet
 - category: Clothing
   classifier: ตัว
   gloss: T-shirt
   part_of_speech: noun
   picturable: true
   thai: เสื้อยืด
+  image_query: plain white t-shirt flat
 - category: Clothing
   classifier: ตัว
   gloss: shirt (button-up, collared)
@@ -1160,6 +1345,7 @@
   picturable: true
   split_of: shirt
   thai: เสื้อเชิ้ต
+  image_query: collared button-up shirt hanging
 - category: Clothing
   classifier: ตัว
   gloss: coat, overcoat
@@ -1167,6 +1353,7 @@
   picturable: true
   split_of: coat
   thai: เสื้อโค้ท
+  image_query: long wool overcoat on person
 - category: Clothing
   classifier: ตัว
   emphasis: true
@@ -1175,6 +1362,7 @@
   picturable: true
   split_of: apron
   thai: เอี๊ยม
+  image_query: baby wearing bib eating
 - category: Clothing
   classifier: ข้าง
   emphasis: true
@@ -1182,136 +1370,162 @@
   part_of_speech: noun
   picturable: true
   thai: แขนเสื้อ
+  image_query: rolled-up shirt sleeve on arm
 - category: Clothing
   gloss: to wear, to put on
   part_of_speech: verb
   picturable: true
   thai: ใส่
+  image_query: woman putting on a jacket
 - category: Colors
   emphasis: true
   gloss: cloudy, murky (of water, soup, oil)
   part_of_speech: adjective
   picturable: true
   thai: ขุ่น
+  image_query: murky brown water in glass
 - category: Colors
   gloss: pale / faded (color)
   part_of_speech: adjective
   picturable: true
   thai: ซีด
+  image_query: faded pale washed-out fabric
 - category: Colors
   classifier: ตัว
   gloss: rainbow
   part_of_speech: noun
   picturable: true
   thai: รุ้ง
+  image_query: rainbow arching over green fields
 - category: Colors
   gloss: bright / vivid (color)
   part_of_speech: adjective
   picturable: true
   thai: สด
+  image_query: vivid saturated fresh flower petals
 - category: Colors
   classifier: สี
   gloss: color
   part_of_speech: noun
   picturable: true
   thai: สี
+  image_query: paint swatches in many colors
 - category: Colors
   gloss: navy blue
   part_of_speech: adjective
   picturable: true
   thai: สีกรมท่า
+  image_query: navy blue school uniform blazer
 - category: Colors
   gloss: white
   part_of_speech: adjective
   picturable: true
   thai: สีขาว
+  image_query: plain white wall and sheets
 - category: Colors
   gloss: cream / beige
   part_of_speech: adjective
   picturable: true
   thai: สีครีม
+  image_query: beige cream colored linen cloth
 - category: Colors
   gloss: pink
   part_of_speech: adjective
   picturable: true
   thai: สีชมพู
+  image_query: pink roses close up
 - category: Colors
   gloss: black
   part_of_speech: adjective
   picturable: true
   thai: สีดำ
+  image_query: solid black leather surface
 - category: Colors
   gloss: gold (color)
   part_of_speech: adjective
   picturable: true
   thai: สีทอง
+  image_query: shiny gold metal bars
 - category: Colors
   gloss: brown
   part_of_speech: adjective
   picturable: true
   thai: สีน้ำตาล
+  image_query: brown wooden table surface
 - category: Colors
   gloss: blue (dark/navy blue)
   part_of_speech: adjective
   picturable: true
   split_of: blue
   thai: สีน้ำเงิน
+  image_query: deep blue painted wall
 - category: Colors
   gloss: blue (light/sky blue)
   part_of_speech: adjective
   picturable: true
   split_of: blue
   thai: สีฟ้า
+  image_query: clear light blue sky
 - category: Colors
   gloss: purple
   part_of_speech: adjective
   picturable: true
   thai: สีม่วง
+  image_query: purple lavender flower field
 - category: Colors
   gloss: orange (color)
   part_of_speech: adjective
   picturable: true
   thai: สีส้ม
+  image_query: bright orange painted wall
 - category: Colors
   gloss: green
   part_of_speech: adjective
   picturable: true
   thai: สีเขียว
+  image_query: green grass lawn closeup
 - category: Colors
   gloss: silver (color)
   part_of_speech: adjective
   picturable: true
   thai: สีเงิน
+  image_query: polished silver metal surface
 - category: Colors
   gloss: gray
   part_of_speech: adjective
   picturable: true
   thai: สีเทา
+  image_query: gray concrete wall texture
 - category: Colors
   gloss: skin tone / nude (color)
   part_of_speech: adjective
   picturable: true
   thai: สีเนื้อ
+  image_query: nude beige nail polish hands
 - category: Colors
   gloss: yellow
   part_of_speech: adjective
   picturable: true
   thai: สีเหลือง
+  image_query: yellow sunflower petals closeup
 - category: Colors
   gloss: red
   part_of_speech: adjective
   picturable: true
   thai: สีแดง
+  image_query: bright red painted wall
 - category: Colors
   gloss: colorful / multicolored
   part_of_speech: adjective
   picturable: true
   thai: หลากสี
+  image_query: multicolored balloons and umbrellas
 - category: Colors
   gloss: light (shade of color)
   part_of_speech: adjective
   picturable: true
   thai: อ่อน
+  image_query: pale pastel light color swatch
 - category: Colors
   emphasis: true
   gloss: charred brown, crisped dark (grilled meat, fried garlic)
@@ -1319,23 +1533,27 @@
   picturable: true
   split_of: burnt
   thai: เกรียม
+  image_query: charred grilled meat crispy edges
 - category: Colors
   gloss: dark (shade of color)
   part_of_speech: adjective
   picturable: true
   thai: เข้ม
+  image_query: deep dark rich color swatch
 - category: Colors
   emphasis: true
   gloss: bright vivid red (chilies, chili sauce)
   part_of_speech: adjective
   picturable: true
   thai: แดงแจ๋
+  image_query: bright red chili peppers pile
 - category: Colors
   emphasis: true
   gloss: clear, transparent (of broth, soup, drinks)
   part_of_speech: adjective
   picturable: true
   thai: ใส
+  image_query: clear transparent water in glass
 - category: Colors
   emphasis: true
   gloss: burnt, blackened (food scorched in the pan)
@@ -1343,6 +1561,7 @@
   picturable: true
   split_of: burnt
   thai: ไหม้
+  image_query: burnt blackened food in pan
 - category: Days of the week
   emphasis: true
   gloss: tonight (later, after dark)
@@ -1350,6 +1569,7 @@
   picturable: true
   split_of: tonight
   thai: คืนนี้
+  image_query: dark night sky over houses
 - category: Days of the week
   classifier: วัน
   gloss: tomorrow
@@ -1366,25 +1586,25 @@
   classifier: วัน
   gloss: day
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วัน
 - category: Days of the week
   classifier: วัน
   gloss: Monday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันจันทร์
 - category: Days of the week
   classifier: วัน
   gloss: date (calendar date)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันที่
 - category: Days of the week
   classifier: วัน
   gloss: weekday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันธรรมดา
 - category: Days of the week
   classifier: วัน
@@ -1399,31 +1619,32 @@
   part_of_speech: noun
   picturable: true
   thai: วันพระ
+  image_query: people offering food to monks
 - category: Days of the week
   classifier: วัน
   gloss: Thursday (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: Thursday
   thai: วันพฤหัส
 - category: Days of the week
   classifier: วัน
   gloss: Thursday (full form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: Thursday
   thai: วันพฤหัสบดี
 - category: Days of the week
   classifier: วัน
   gloss: Wednesday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันพุธ
 - category: Days of the week
   classifier: วัน
   gloss: Friday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันศุกร์
 - category: Days of the week
   classifier: วัน
@@ -1432,12 +1653,14 @@
   part_of_speech: noun
   picturable: true
   thai: วันหมดอายุ
+  image_query: shopper inspecting milk carton closely
 - category: Days of the week
   classifier: วัน
   gloss: holiday / day off
   part_of_speech: noun
   picturable: true
   thai: วันหยุด
+  image_query: person relaxing in hammock outdoors
 - category: Days of the week
   classifier: วัน
   gloss: weekend (formal)
@@ -1445,17 +1668,18 @@
   picturable: true
   split_of: weekend
   thai: วันหยุดสุดสัปดาห์
+  image_query: family picnicking together in park
 - category: Days of the week
   classifier: วัน
   gloss: Tuesday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันอังคาร
 - category: Days of the week
   classifier: วัน
   gloss: Sunday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันอาทิตย์
 - category: Days of the week
   classifier: วัน
@@ -1463,6 +1687,7 @@
   part_of_speech: noun
   picturable: true
   thai: วันเกิด
+  image_query: birthday cake with lit candles
 - category: Days of the week
   classifier: วัน
   emphasis: true
@@ -1470,24 +1695,25 @@
   part_of_speech: noun
   picturable: true
   thai: วันเงินเดือนออก
+  image_query: hand receiving envelope of cash
 - category: Days of the week
   classifier: วัน
   gloss: Saturday
   part_of_speech: noun
-  picturable: true
+  picturable: false
   thai: วันเสาร์
 - category: Days of the week
   classifier: สัปดาห์
   gloss: week (formal)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: week
   thai: สัปดาห์
 - category: Days of the week
   classifier: อาทิตย์
   gloss: week (colloquial)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: week
   thai: อาทิตย์
 - category: Days of the week
@@ -1521,6 +1747,7 @@
   picturable: true
   split_of: tonight
   thai: เย็นนี้
+  image_query: family eating dinner at dusk
 - category: Days of the week
   classifier: วัน
   gloss: weekend (colloquial)
@@ -1528,55 +1755,65 @@
   picturable: true
   split_of: weekend
   thai: เสาร์อาทิตย์
+  image_query: friends lounging on beach chairs
 - category: Directions
   gloss: right (side)
   part_of_speech: adjective
   picturable: true
   thai: ขวา
+  image_query: hand pointing to the right
 - category: Directions
   gloss: go up / ascend
   part_of_speech: verb
   picturable: true
   split_of: up
   thai: ขึ้น
+  image_query: person climbing stairs upward
 - category: Directions
   gloss: outside
   part_of_speech: other
   picturable: true
   thai: ข้างนอก
+  image_query: child playing outdoors beyond doorway
 - category: Directions
   gloss: up / above (location)
   part_of_speech: other
   picturable: true
   split_of: up
   thai: ข้างบน
+  image_query: ceiling lamp high above room
 - category: Directions
   gloss: down / below (location)
   part_of_speech: other
   picturable: true
   split_of: down
   thai: ข้างล่าง
+  image_query: view looking down from balcony
 - category: Directions
   gloss: in front / ahead
   part_of_speech: other
   picturable: true
   thai: ข้างหน้า
+  image_query: empty road ahead of walker
 - category: Directions
   gloss: behind / at the back
   part_of_speech: other
   picturable: true
   thai: ข้างหลัง
+  image_query: person standing behind another person
 - category: Directions
   gloss: inside
   part_of_speech: other
   picturable: true
   thai: ข้างใน
+  image_query: interior view inside a room
 - category: Directions
   emphasis: true
   gloss: next to, beside
   part_of_speech: other
   picturable: true
   thai: ข้างๆ
+  image_query: two chairs side by side
 - category: Directions
   classifier: ซอย
   emphasis: true
@@ -1584,57 +1821,67 @@
   part_of_speech: noun
   picturable: true
   thai: ซอย
+  image_query: narrow residential side street
 - category: Directions
   gloss: left (side)
   part_of_speech: adjective
   picturable: true
   thai: ซ้าย
+  image_query: hand pointing to the left
 - category: Directions
   gloss: opposite / across from
   part_of_speech: other
   picturable: true
   thai: ตรงข้าม
+  image_query: two people facing each other across table
 - category: Directions
   gloss: there (that spot)
   part_of_speech: other
   picturable: true
   split_of: there
   thai: ตรงนั้น
+  image_query: man pointing at distant spot
 - category: Directions
   gloss: right here (this spot)
   part_of_speech: other
   picturable: true
   split_of: here
   thai: ตรงนี้
+  image_query: finger pointing down at ground
 - category: Directions
   gloss: straight ahead
   part_of_speech: other
   picturable: true
   thai: ตรงไป
+  image_query: straight road stretching forward
 - category: Directions
   classifier: ทิศ
   gloss: west
   part_of_speech: noun
   picturable: true
   thai: ทิศตะวันตก
+  image_query: sun setting over ocean horizon
 - category: Directions
   classifier: ทิศ
   gloss: east
   part_of_speech: noun
   picturable: true
   thai: ทิศตะวันออก
+  image_query: sunrise over distant horizon
 - category: Directions
   classifier: ทิศ
   gloss: north
   part_of_speech: noun
   picturable: true
   thai: ทิศเหนือ
+  image_query: compass needle in open hand
 - category: Directions
   classifier: ทิศ
   gloss: south
   part_of_speech: noun
   picturable: true
   thai: ทิศใต้
+  image_query: compass lying on hiking map
 - category: Directions
   gloss: here (this place)
   part_of_speech: other
@@ -1649,18 +1896,21 @@
   picturable: true
   split_of: corner
   thai: มุม
+  image_query: corner of an empty room
 - category: Directions
   gloss: go down / descend
   part_of_speech: verb
   picturable: true
   split_of: down
   thai: ลง
+  image_query: person descending a staircase
 - category: Directions
   classifier: แยก
   gloss: intersection (crossroads)
   part_of_speech: noun
   picturable: true
   thai: สี่แยก
+  image_query: busy four way crossroads aerial
 - category: Directions
   classifier: มุม
   emphasis: true
@@ -1669,39 +1919,46 @@
   picturable: true
   split_of: corner
   thai: หัวมุม
+  image_query: street corner of city building
 - category: Directions
   gloss: turn (change direction)
   part_of_speech: verb
   picturable: true
   thai: เลี้ยว
+  image_query: car turning around road bend
 - category: Directions
   emphasis: true
   gloss: around here, in this area
   part_of_speech: other
   picturable: true
   thai: แถวนี้
+  image_query: neighborhood street with nearby shops
 - category: Directions
   gloss: over there (far)
   part_of_speech: other
   picturable: true
   split_of: there
   thai: โน่น
+  image_query: person pointing at faraway mountain
 - category: Directions
   gloss: near
   part_of_speech: adjective
   picturable: true
   thai: ใกล้
+  image_query: two cups very close together
 - category: Directions
   gloss: far
   part_of_speech: adjective
   picturable: true
   thai: ไกล
+  image_query: lone tree on distant horizon
 - category: Electronics
   classifier: ตัว
   gloss: camera
   part_of_speech: noun
   picturable: true
   thai: กล้อง
+  image_query: black DSLR camera on table
 - category: Electronics
   classifier: เครื่อง
   gloss: computer (colloquial)
@@ -1709,6 +1966,7 @@
   picturable: true
   split_of: computer
   thai: คอม
+  image_query: desktop computer with monitor keyboard
 - category: Electronics
   classifier: เครื่อง
   gloss: computer
@@ -1716,17 +1974,20 @@
   picturable: true
   split_of: computer
   thai: คอมพิวเตอร์
+  image_query: desktop computer tower and monitor
 - category: Electronics
   classifier: จอ
   gloss: screen, monitor
   part_of_speech: noun
   picturable: true
   thai: จอ
+  image_query: computer monitor screen on desk
 - category: Electronics
   gloss: to charge (a battery)
   part_of_speech: verb
   picturable: true
   thai: ชาร์จ
+  image_query: phone charging cable plugged in
 - category: Electronics
   classifier: ตู้
   emphasis: true
@@ -1734,36 +1995,42 @@
   part_of_speech: noun
   picturable: true
   thai: ตู้เย็น
+  image_query: refrigerator standing in kitchen
 - category: Electronics
   classifier: เครื่อง
   gloss: television, TV
   part_of_speech: noun
   picturable: true
   thai: ทีวี
+  image_query: flat screen television in living room
 - category: Electronics
   classifier: อัน
   gloss: charger
   part_of_speech: noun
   picturable: true
   thai: ที่ชาร์จ
+  image_query: white phone charger adapter cable
 - category: Electronics
   classifier: เรือน
   gloss: clock, watch
   part_of_speech: noun
   picturable: true
   thai: นาฬิกา
+  image_query: wall clock showing the time
 - category: Electronics
   classifier: ตัว
   gloss: plug, power socket
   part_of_speech: noun
   picturable: true
   thai: ปลั๊ก
+  image_query: electrical plug near wall socket
 - category: Electronics
   classifier: ตัว
   gloss: fan (electric)
   part_of_speech: noun
   picturable: true
   thai: พัดลม
+  image_query: electric floor fan spinning
 - category: Electronics
   classifier: เครื่อง
   gloss: cell phone (colloquial)
@@ -1771,24 +2038,28 @@
   picturable: true
   split_of: cell phone
   thai: มือถือ
+  image_query: hand holding a smartphone
 - category: Electronics
   classifier: อัน
   gloss: remote control
   part_of_speech: noun
   picturable: true
   thai: รีโมต
+  image_query: hand holding television remote control
 - category: Electronics
   classifier: ตัว
   gloss: speaker (audio)
   part_of_speech: noun
   picturable: true
   thai: ลำโพง
+  image_query: bluetooth speaker on desk
 - category: Electronics
   classifier: เครื่อง
   gloss: radio
   part_of_speech: noun
   picturable: true
   thai: วิทยุ
+  image_query: old portable radio receiver
 - category: Electronics
   classifier: ใบ
   emphasis: true
@@ -1796,12 +2067,14 @@
   part_of_speech: noun
   picturable: true
   thai: หม้อหุงข้าว
+  image_query: electric rice cooker with rice
 - category: Electronics
   classifier: อัน
   gloss: headphones, earphones
   part_of_speech: noun
   picturable: true
   thai: หูฟัง
+  image_query: headphones resting on wooden table
 - category: Electronics
   classifier: เครื่อง
   emphasis: true
@@ -1809,6 +2082,7 @@
   part_of_speech: noun
   picturable: true
   thai: เครื่องปั่น
+  image_query: kitchen blender with fruit smoothie
 - category: Electronics
   classifier: เครือข่าย
   gloss: internet, network (colloquial)
@@ -1820,18 +2094,21 @@
   part_of_speech: verb
   picturable: true
   thai: เสียบ
+  image_query: hand inserting plug into outlet
 - category: Electronics
   classifier: ก้อน
   gloss: battery (colloquial)
   part_of_speech: noun
   picturable: true
   thai: แบต
+  image_query: battery pack and charging indicator
 - category: Electronics
   classifier: ตัว
   gloss: app
   part_of_speech: noun
   picturable: true
   thai: แอป
+  image_query: finger tapping phone screen icons
 - category: Electronics
   classifier: เครื่อง
   emphasis: true
@@ -1839,12 +2116,14 @@
   part_of_speech: noun
   picturable: true
   thai: แอร์
+  image_query: wall mounted air conditioner unit
 - category: Electronics
   classifier: โคม
   gloss: lamp
   part_of_speech: noun
   picturable: true
   thai: โคมไฟ
+  image_query: lit table lamp beside bed
 - category: Electronics
   classifier: เครื่อง
   gloss: telephone, phone
@@ -1852,12 +2131,14 @@
   picturable: true
   split_of: cell phone
   thai: โทรศัพท์
+  image_query: person talking on telephone
 - category: Electronics
   classifier: เครื่อง
   gloss: laptop
   part_of_speech: noun
   picturable: true
   thai: โน้ตบุ๊ก
+  image_query: open laptop computer on desk
 - category: Electronics
   classifier: โปรแกรม
   gloss: program, software
@@ -1871,12 +2152,14 @@
   part_of_speech: noun
   picturable: true
   thai: ไมโครเวฟ
+  image_query: microwave oven on kitchen counter
 - category: Electronics
   classifier: ตัว
   gloss: Wi-Fi
   part_of_speech: noun
   picturable: true
   thai: ไวไฟ
+  image_query: wireless router with blinking lights
 - category: Food
   classifier: ใบ
   emphasis: true
@@ -1884,6 +2167,7 @@
   part_of_speech: noun
   picturable: true
   thai: กระทะ
+  image_query: black steel wok on stove
 - category: Food
   classifier: กลีบ
   emphasis: true
@@ -1891,12 +2175,14 @@
   part_of_speech: noun
   picturable: true
   thai: กระเทียม
+  image_query: whole garlic bulbs and cloves
 - category: Food
   classifier: ลูก
   gloss: banana
   part_of_speech: noun
   picturable: true
   thai: กล้วย
+  image_query: bunch of ripe yellow bananas
 - category: Food
   classifier: กระป๋อง
   emphasis: true
@@ -1904,6 +2190,7 @@
   part_of_speech: noun
   picturable: true
   thai: กะทิ
+  image_query: coconut milk poured into bowl
 - category: Food
   classifier: แก้ว
   emphasis: true
@@ -1911,6 +2198,7 @@
   part_of_speech: noun
   picturable: true
   thai: กาแฟ
+  image_query: hot coffee cup with saucer
 - category: Food
   emphasis: true
   gloss: to eat (casual)
@@ -1918,6 +2206,7 @@
   picturable: true
   split_of: eat
   thai: กิน
+  image_query: person eating noodles with chopsticks
 - category: Food
   classifier: ตัว
   emphasis: true
@@ -1925,6 +2214,7 @@
   part_of_speech: noun
   picturable: true
   thai: กุ้ง
+  image_query: raw pink shrimp on ice
 - category: Food
   classifier: ชาม
   emphasis: true
@@ -1933,18 +2223,21 @@
   picturable: true
   split_of: noodles
   thai: ก๋วยเตี๋ยว
+  image_query: bowl of rice noodle soup
 - category: Food
   classifier: แผ่น
   gloss: bread
   part_of_speech: noun
   picturable: true
   thai: ขนมปัง
+  image_query: sliced loaf of bread
 - category: Food
   classifier: จาน
   gloss: rice (cooked)
   part_of_speech: noun
   picturable: true
   thai: ข้าว
+  image_query: bowl of steamed white rice
 - category: Food
   classifier: จาน
   emphasis: true
@@ -1952,24 +2245,28 @@
   part_of_speech: noun
   picturable: true
   thai: ข้าวผัด
+  image_query: plate of Thai fried rice
 - category: Food
   classifier: มื้อ
   gloss: breakfast
   part_of_speech: noun
   picturable: true
   thai: ข้าวเช้า
+  image_query: breakfast table with eggs toast
 - category: Food
   classifier: มื้อ
   gloss: lunch
   part_of_speech: noun
   picturable: true
   thai: ข้าวเที่ยง
+  image_query: midday lunch plate on table
 - category: Food
   classifier: มื้อ
   gloss: dinner
   part_of_speech: noun
   picturable: true
   thai: ข้าวเย็น
+  image_query: evening dinner table with dishes
 - category: Food
   classifier: ห่อ
   emphasis: true
@@ -1977,18 +2274,21 @@
   part_of_speech: noun
   picturable: true
   thai: ข้าวเหนียว
+  image_query: sticky rice in bamboo basket
 - category: Food
   classifier: ฝัก
   gloss: corn
   part_of_speech: noun
   picturable: true
   thai: ข้าวโพด
+  image_query: yellow corn cobs husked
 - category: Food
   classifier: ใบ
   gloss: plate
   part_of_speech: noun
   picturable: true
   thai: จาน
+  image_query: empty white dinner plate
 - category: Food
   emphasis: true
   gloss: bland, not salty enough
@@ -2003,18 +2303,21 @@
   picturable: true
   split_of: bowl
   thai: ชาม
+  image_query: large empty noodle bowl
 - category: Food
   emphasis: true
   gloss: to taste, to try a bite
   part_of_speech: verb
   picturable: true
   thai: ชิม
+  image_query: cook tasting soup from spoon
 - category: Food
   classifier: คัน
   gloss: spoon
   part_of_speech: noun
   picturable: true
   thai: ช้อน
+  image_query: metal spoon on table
 - category: Food
   classifier: ขวด
   emphasis: true
@@ -2022,12 +2325,14 @@
   part_of_speech: noun
   picturable: true
   thai: ซีอิ๊ว
+  image_query: dark soy sauce in dish
 - category: Food
   classifier: ถ้วย
   gloss: soup
   part_of_speech: noun
   picturable: true
   thai: ซุป
+  image_query: bowl of hot soup steaming
 - category: Food
   classifier: คู่
   emphasis: true
@@ -2035,12 +2340,14 @@
   part_of_speech: noun
   picturable: true
   thai: ตะเกียบ
+  image_query: pair of wooden chopsticks
 - category: Food
   emphasis: true
   gloss: to boil
   part_of_speech: verb
   picturable: true
   thai: ต้ม
+  image_query: pot of boiling water bubbling
 - category: Food
   classifier: ถ้วย
   emphasis: true
@@ -2048,6 +2355,7 @@
   part_of_speech: noun
   picturable: true
   thai: ต้มยำ
+  image_query: spicy tom yum shrimp soup
 - category: Food
   classifier: ใบ
   emphasis: true
@@ -2056,6 +2364,7 @@
   picturable: true
   split_of: bowl
   thai: ถ้วย
+  image_query: small ceramic bowl empty
 - category: Food
   emphasis: true
   gloss: to deep-fry
@@ -2063,6 +2372,7 @@
   picturable: true
   split_of: fry
   thai: ทอด
+  image_query: chicken frying in hot oil
 - category: Food
   emphasis: true
   gloss: to eat (polite)
@@ -2070,18 +2380,21 @@
   picturable: true
   split_of: eat
   thai: ทาน
+  image_query: family eating meal politely together
 - category: Food
   emphasis: true
   gloss: to steam
   part_of_speech: verb
   picturable: true
   thai: นึ่ง
+  image_query: bamboo steamer with rising steam
 - category: Food
   classifier: ช้อน
   gloss: sugar
   part_of_speech: noun
   picturable: true
   thai: น้ำตาล
+  image_query: white sugar in bowl spoon
 - category: Food
   classifier: ขวด
   emphasis: true
@@ -2089,12 +2402,14 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำปลา
+  image_query: fish sauce bottle small dish
 - category: Food
   classifier: ขวด
   gloss: oil (cooking)
   part_of_speech: noun
   picturable: true
   thai: น้ำมัน
+  image_query: cooking oil poured into pan
 - category: Food
   classifier: ก้อน
   emphasis: true
@@ -2102,6 +2417,7 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็ง
+  image_query: ice cubes in glass
 - category: Food
   classifier: ชาม
   emphasis: true
@@ -2110,6 +2426,7 @@
   picturable: true
   split_of: noodles
   thai: บะหมี่
+  image_query: yellow egg noodles nest
 - category: Food
   classifier: ใบ
   emphasis: true
@@ -2117,6 +2434,7 @@
   part_of_speech: noun
   picturable: true
   thai: บิล
+  image_query: restaurant check on table tray
 - category: Food
   classifier: ตัว
   emphasis: true
@@ -2124,6 +2442,7 @@
   part_of_speech: noun
   picturable: true
   thai: ปลา
+  image_query: grilled whole fish on plate
 - category: Food
   classifier: อย่าง
   emphasis: true
@@ -2131,6 +2450,7 @@
   part_of_speech: noun
   picturable: true
   thai: ผัก
+  image_query: pile of fresh mixed vegetables
 - category: Food
   emphasis: true
   gloss: to stir-fry
@@ -2138,6 +2458,7 @@
   picturable: true
   split_of: fry
   thai: ผัด
+  image_query: vegetables stir-frying in wok
 - category: Food
   classifier: จาน
   emphasis: true
@@ -2145,6 +2466,7 @@
   part_of_speech: noun
   picturable: true
   thai: ผัดไทย
+  image_query: pad thai noodles with lime
 - category: Food
   classifier: เม็ด
   emphasis: true
@@ -2152,12 +2474,14 @@
   part_of_speech: noun
   picturable: true
   thai: พริก
+  image_query: red and green chili peppers
 - category: Food
   classifier: ลูก
   gloss: lime (used for lemon)
   part_of_speech: noun
   picturable: true
   thai: มะนาว
+  image_query: green limes halved on board
 - category: Food
   classifier: ลูก
   emphasis: true
@@ -2165,18 +2489,21 @@
   part_of_speech: noun
   picturable: true
   thai: มะม่วง
+  image_query: ripe mango sliced open
 - category: Food
   classifier: เล่ม
   gloss: knife
   part_of_speech: noun
   picturable: true
   thai: มีด
+  image_query: kitchen knife on cutting board
 - category: Food
   emphasis: true
   gloss: to grill
   part_of_speech: verb
   picturable: true
   thai: ย่าง
+  image_query: meat skewers grilling over charcoal
 - category: Food
   classifier: คัน
   emphasis: true
@@ -2184,6 +2511,7 @@
   part_of_speech: noun
   picturable: true
   thai: รถเข็น
+  image_query: Thai street food cart vendor
 - category: Food
   classifier: ร้าน
   emphasis: true
@@ -2191,18 +2519,21 @@
   part_of_speech: noun
   picturable: true
   thai: ร้านอาหาร
+  image_query: restaurant dining room with tables
 - category: Food
   emphasis: true
   gloss: to order (food)
   part_of_speech: verb
   picturable: true
   thai: สั่ง
+  image_query: customer ordering from waiter table
 - category: Food
   classifier: ลูก
   gloss: orange
   part_of_speech: noun
   picturable: true
   thai: ส้ม
+  image_query: orange fruit peeled segments
 - category: Food
   classifier: จาน
   emphasis: true
@@ -2210,84 +2541,98 @@
   part_of_speech: noun
   picturable: true
   thai: ส้มตำ
+  image_query: green papaya salad in mortar
 - category: Food
   classifier: คัน
   gloss: fork
   part_of_speech: noun
   picturable: true
   thai: ส้อม
+  image_query: metal fork on table
 - category: Food
   classifier: ชิ้น
   gloss: pork
   part_of_speech: noun
   picturable: true
   thai: หมู
+  image_query: raw pork cuts on board
 - category: Food
   emphasis: true
   gloss: sweet
   part_of_speech: adjective
   picturable: true
   thai: หวาน
+  image_query: dessert with sugar and honey
 - category: Food
   emphasis: true
   gloss: to slice, to chop
   part_of_speech: verb
   picturable: true
   thai: หั่น
+  image_query: hands slicing vegetables with knife
 - category: Food
   emphasis: true
   gloss: hungry
   part_of_speech: adjective
   picturable: true
   thai: หิว
+  image_query: person holding empty stomach hungry
 - category: Food
   emphasis: true
   gloss: to wrap up, to get it to go
   part_of_speech: verb
   picturable: true
   thai: ห่อ
+  image_query: food wrapped in takeaway package
 - category: Food
   emphasis: true
   gloss: delicious
   part_of_speech: adjective
   picturable: true
   thai: อร่อย
+  image_query: person smiling enjoying tasty food
 - category: Food
   classifier: จาน
   gloss: food
   part_of_speech: noun
   picturable: true
   thai: อาหาร
+  image_query: table full of various dishes
 - category: Food
   emphasis: true
   gloss: full (after eating)
   part_of_speech: adjective
   picturable: true
   thai: อิ่ม
+  image_query: satisfied person leaning back full
 - category: Food
   classifier: ช้อน
   gloss: salt
   part_of_speech: noun
   picturable: true
   thai: เกลือ
+  image_query: coarse salt in small bowl
 - category: Food
   emphasis: true
   gloss: salty
   part_of_speech: adjective
   picturable: true
   thai: เค็ม
+  image_query: salt sprinkled onto food
 - category: Food
   classifier: ชิ้น
   gloss: cake
   part_of_speech: noun
   picturable: true
   thai: เค้ก
+  image_query: frosted layer cake slice
 - category: Food
   classifier: ชิ้น
   gloss: beef (colloquial; lit. "meat")
   part_of_speech: noun
   picturable: true
   thai: เนื้อ
+  image_query: raw red beef steak
 - category: Food
   classifier: ขวด
   emphasis: true
@@ -2295,18 +2640,21 @@
   part_of_speech: noun
   picturable: true
   thai: เบียร์
+  image_query: glass of beer with foam
 - category: Food
   emphasis: true
   gloss: sour
   part_of_speech: adjective
   picturable: true
   thai: เปรี้ยว
+  image_query: person puckering face biting lemon
 - category: Food
   emphasis: true
   gloss: spicy
   part_of_speech: adjective
   picturable: true
   thai: เผ็ด
+  image_query: fiery chili dish red peppers
 - category: Food
   classifier: เล่ม
   emphasis: true
@@ -2314,6 +2662,7 @@
   part_of_speech: noun
   picturable: true
   thai: เมนู
+  image_query: person holding restaurant menu book
 - category: Food
   classifier: ถ้วย
   emphasis: true
@@ -2321,24 +2670,28 @@
   part_of_speech: noun
   picturable: true
   thai: แกง
+  image_query: bowl of Thai curry
 - category: Food
   classifier: ใบ
   gloss: cup / glass (for drinking)
   part_of_speech: noun
   picturable: true
   thai: แก้ว
+  image_query: drinking glass of water
 - category: Food
   classifier: ลูก
   gloss: apple
   part_of_speech: noun
   picturable: true
   thai: แอปเปิ้ล
+  image_query: red apple whole fruit
 - category: Food
   classifier: ชิ้น
   gloss: chicken (meat)
   part_of_speech: noun
   picturable: true
   thai: ไก่
+  image_query: raw chicken pieces on board
 - category: Food
   classifier: ฟอง
   emphasis: true
@@ -2346,12 +2699,14 @@
   part_of_speech: noun
   picturable: true
   thai: ไข่
+  image_query: eggs in carton cracked one
 - category: Home
   classifier: แผ่น
   gloss: paper
   part_of_speech: noun
   picturable: true
   thai: กระดาษ
+  image_query: blank white paper sheets stacked
 - category: Home
   classifier: ใบ
   emphasis: true
@@ -2359,6 +2714,7 @@
   part_of_speech: noun
   picturable: true
   thai: กระทะ
+  image_query: black wok on stove
 - category: Home
   classifier: ด้าน
   gloss: wall (exterior, fence wall)
@@ -2366,24 +2722,28 @@
   picturable: true
   split_of: wall
   thai: กำแพง
+  image_query: brick garden boundary wall outside
 - category: Home
   classifier: ดอก
   gloss: key
   part_of_speech: noun
   picturable: true
   thai: กุญแจ
+  image_query: metal house key in hand
 - category: Home
   classifier: เรื่อง
   gloss: dream
   part_of_speech: noun
   picturable: true
   thai: ความฝัน
+  image_query: person sleeping peacefully with clouds
 - category: Home
   classifier: ฉบับ
   gloss: letter (mail)
   part_of_speech: noun
   picturable: true
   thai: จดหมาย
+  image_query: sealed envelope in mailbox
 - category: Home
   classifier: ใบ
   emphasis: true
@@ -2392,6 +2752,7 @@
   picturable: true
   split_of: bowl
   thai: ชาม
+  image_query: ceramic bowl of noodle soup
 - category: Home
   classifier: คัน
   emphasis: true
@@ -2399,12 +2760,14 @@
   part_of_speech: noun
   picturable: true
   thai: ช้อน
+  image_query: metal spoon on table
 - category: Home
   classifier: แท่ง
   gloss: pencil
   part_of_speech: noun
   picturable: true
   thai: ดินสอ
+  image_query: yellow wooden pencil sharpened
 - category: Home
   classifier: ตู้
   emphasis: true
@@ -2412,6 +2775,7 @@
   part_of_speech: noun
   picturable: true
   thai: ตู้เย็น
+  image_query: refrigerator in modern kitchen
 - category: Home
   classifier: ใบ
   emphasis: true
@@ -2420,18 +2784,21 @@
   picturable: true
   split_of: bowl
   thai: ถ้วย
+  image_query: small dipping sauce cup
 - category: Home
   classifier: บาน
   gloss: door
   part_of_speech: noun
   picturable: true
   thai: ประตู
+  image_query: wooden door of house
 - category: Home
   classifier: ด้าม
   gloss: pen
   part_of_speech: noun
   picturable: true
   thai: ปากกา
+  image_query: ballpoint pen on desk
 - category: Home
   classifier: ด้าน
   gloss: wall (interior, of a room)
@@ -2439,126 +2806,147 @@
   picturable: true
   split_of: wall
   thai: ผนัง
+  image_query: empty painted interior room wall
 - category: Home
   classifier: อัน
   gloss: shower (head)
   part_of_speech: noun
   picturable: true
   thai: ฝักบัว
+  image_query: chrome shower head spraying water
 - category: Home
   classifier: พื้น
   gloss: floor
   part_of_speech: noun
   picturable: true
   thai: พื้น
+  image_query: wooden floor of empty room
 - category: Home
   classifier: ใบ
   gloss: photograph
   part_of_speech: noun
   picturable: true
   thai: รูป
+  image_query: printed photograph held in hand
 - category: Home
   classifier: ก้อน
   gloss: soap
   part_of_speech: noun
   picturable: true
   thai: สบู่
+  image_query: bar of soap in dish
 - category: Home
   classifier: กระป๋อง
   gloss: paint
   part_of_speech: noun
   picturable: true
   thai: สี
+  image_query: paint cans with brush
 - category: Home
   classifier: เล่ม
   gloss: book
   part_of_speech: noun
   picturable: true
   thai: หนังสือ
+  image_query: open book on table
 - category: Home
   classifier: บาน
   gloss: window
   part_of_speech: noun
   picturable: true
   thai: หน้าต่าง
+  image_query: window with curtains in room
 - category: Home
   classifier: ห้อง
   gloss: kitchen
   part_of_speech: noun
   picturable: true
   thai: ห้องครัว
+  image_query: kitchen with counter and cabinets
 - category: Home
   classifier: ห้อง
   gloss: bedroom
   part_of_speech: noun
   picturable: true
   thai: ห้องนอน
+  image_query: bedroom with bed and nightstand
 - category: Home
   classifier: ห้อง
   gloss: bathroom
   part_of_speech: noun
   picturable: true
   thai: ห้องน้ำ
+  image_query: bathroom with sink and toilet
 - category: Home
   classifier: ตัว
   gloss: chair
   part_of_speech: noun
   picturable: true
   thai: เก้าอี้
+  image_query: wooden chair standing alone
 - category: Home
   classifier: หลัง
   gloss: bed
   part_of_speech: noun
   picturable: true
   thai: เตียง
+  image_query: bed with pillows and blanket
 - category: Home
   classifier: ลูก
   gloss: lock (padlock)
   part_of_speech: noun
   picturable: true
   thai: แม่กุญแจ
+  image_query: padlock hanging on gate
 - category: Home
   classifier: ดวง
   gloss: lamp
   part_of_speech: noun
   picturable: true
   thai: โคมไฟ
+  image_query: lit table lamp with shade
 - category: Home
   classifier: ตัว
   gloss: table
   part_of_speech: noun
   picturable: true
   thai: โต๊ะ
+  image_query: wooden dining table with chairs
 - category: Home
   classifier: เครื่อง
   gloss: telephone
   part_of_speech: noun
   picturable: true
   thai: โทรศัพท์
+  image_query: telephone handset on desk
 - category: Jobs
   classifier: กอง
   gloss: army
   part_of_speech: noun
   picturable: true
   thai: กองทัพ
+  image_query: rows of soldiers marching formation
 - category: Jobs
   classifier: คน
   gloss: driver
   part_of_speech: noun
   picturable: true
   thai: คนขับ
+  image_query: man driving car behind wheel
 - category: Jobs
   classifier: คน
   gloss: patient
   part_of_speech: noun
   picturable: true
   thai: คนไข้
+  image_query: patient lying in hospital bed
 - category: Jobs
   classifier: คน
   gloss: teacher
   part_of_speech: noun
   picturable: true
   thai: ครู
+  image_query: teacher standing before school blackboard
 - category: Jobs
   classifier: คน
   gloss: star / celebrity actor
@@ -2566,30 +2954,35 @@
   picturable: true
   split_of: actor
   thai: ดารา
+  image_query: celebrity posing on red carpet
 - category: Jobs
   classifier: คน
   gloss: police officer
   part_of_speech: noun
   picturable: true
   thai: ตำรวจ
+  image_query: police officer in uniform patrolling
 - category: Jobs
   classifier: คน
   gloss: lawyer
   part_of_speech: noun
   picturable: true
   thai: ทนาย
+  image_query: lawyer in suit inside courtroom
 - category: Jobs
   classifier: คน
   gloss: soldier
   part_of_speech: noun
   picturable: true
   thai: ทหาร
+  image_query: soldier in camouflage uniform saluting
 - category: Jobs
   classifier: คน
   gloss: reporter
   part_of_speech: noun
   picturable: true
   thai: นักข่าว
+  image_query: reporter with microphone facing camera
 - category: Jobs
   classifier: คน
   gloss: student (university)
@@ -2597,24 +2990,28 @@
   picturable: true
   split_of: student
   thai: นักศึกษา
+  image_query: university student with backpack campus
 - category: Jobs
   classifier: คน
   gloss: author / writer
   part_of_speech: noun
   picturable: true
   thai: นักเขียน
+  image_query: writer typing at desk thoughtfully
 - category: Jobs
   classifier: คน
   gloss: student (school)
   part_of_speech: noun
   picturable: true
   thai: นักเรียน
+  image_query: schoolchildren in uniform with books
 - category: Jobs
   classifier: คน
   gloss: actor / actress
   part_of_speech: noun
   picturable: true
   thai: นักแสดง
+  image_query: actor performing on theater stage
 - category: Jobs
   classifier: คน
   gloss: priest (Christian)
@@ -2622,18 +3019,21 @@
   picturable: true
   split_of: priest
   thai: บาทหลวง
+  image_query: catholic priest in church vestments
 - category: Jobs
   classifier: คน
   gloss: manager
   part_of_speech: noun
   picturable: true
   thai: ผู้จัดการ
+  image_query: manager leading office team meeting
 - category: Jobs
   classifier: คน
   gloss: nurse
   part_of_speech: noun
   picturable: true
   thai: พยาบาล
+  image_query: nurse in scrubs with stethoscope
 - category: Jobs
   classifier: รูป
   gloss: monk (Buddhist)
@@ -2641,6 +3041,7 @@
   picturable: true
   split_of: priest
   thai: พระ
+  image_query: buddhist monk in orange robes
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2649,24 +3050,28 @@
   picturable: true
   split_of: cook
   thai: พ่อครัว
+  image_query: male chef cooking in kitchen
 - category: Jobs
   classifier: คน
   gloss: artist
   part_of_speech: noun
   picturable: true
   thai: ศิลปิน
+  image_query: artist painting canvas with brush
 - category: Jobs
   classifier: คน
   gloss: doctor
   part_of_speech: noun
   picturable: true
   thai: หมอ
+  image_query: doctor in white coat stethoscope
 - category: Jobs
   classifier: คน
   gloss: boss / chief
   part_of_speech: noun
   picturable: true
   thai: หัวหน้า
+  image_query: boss at head of table
 - category: Jobs
   classifier: คน
   gloss: teacher (university / formal)
@@ -2674,6 +3079,7 @@
   picturable: true
   split_of: teacher
   thai: อาจารย์
+  image_query: professor lecturing university lecture hall
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2681,12 +3087,14 @@
   part_of_speech: noun
   picturable: true
   thai: เจ้าของร้าน
+  image_query: shop owner standing in storefront
 - category: Jobs
   classifier: คน
   gloss: officer / official / staff member
   part_of_speech: noun
   picturable: true
   thai: เจ้าหน้าที่
+  image_query: uniformed official at service counter
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2694,18 +3102,21 @@
   part_of_speech: noun
   picturable: true
   thai: เชฟ
+  image_query: chef plating dish restaurant kitchen
 - category: Jobs
   classifier: คน
   gloss: waiter
   part_of_speech: noun
   picturable: true
   thai: เด็กเสิร์ฟ
+  image_query: waiter carrying tray of food
 - category: Jobs
   classifier: คน
   gloss: secretary
   part_of_speech: noun
   picturable: true
   thai: เลขา
+  image_query: secretary at desk answering phone
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2714,6 +3125,7 @@
   picturable: true
   split_of: cook
   thai: แม่ครัว
+  image_query: woman cooking pot in kitchen
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2721,6 +3133,7 @@
   part_of_speech: noun
   picturable: true
   thai: แม่ค้า
+  image_query: woman selling food market stall
 - category: Jobs
   classifier: คน
   emphasis: true
@@ -2728,6 +3141,7 @@
   part_of_speech: noun
   picturable: true
   thai: ไรเดอร์
+  image_query: motorbike rider with delivery box
 - category: Locations
   classifier: ห้อง
   emphasis: true
@@ -2735,12 +3149,14 @@
   part_of_speech: noun
   picturable: true
   thai: ครัว
+  image_query: home kitchen with stove counters
 - category: Locations
   classifier: ห้อง
   gloss: apartment (condo)
   part_of_speech: noun
   picturable: true
   thai: คอนโด
+  image_query: high-rise apartment condominium tower
 - category: Locations
   classifier: ซอย
   gloss: lane, side street (soi)
@@ -2748,12 +3164,14 @@
   picturable: true
   split_of: street
   thai: ซอย
+  image_query: narrow residential side lane
 - category: Locations
   classifier: แห่ง
   gloss: market
   part_of_speech: noun
   picturable: true
   thai: ตลาด
+  image_query: busy fresh food market stalls
 - category: Locations
   classifier: แห่ง
   emphasis: true
@@ -2762,60 +3180,70 @@
   picturable: true
   split_of: market
   thai: ตลาดนัด
+  image_query: outdoor weekend market tent stalls
 - category: Locations
   classifier: ตึก
   gloss: building
   part_of_speech: noun
   picturable: true
   thai: ตึก
+  image_query: tall concrete office building
 - category: Locations
   classifier: สาย
   gloss: street, road
   part_of_speech: noun
   picturable: true
   thai: ถนน
+  image_query: paved road with traffic lanes
 - category: Locations
   classifier: ร้าน
   gloss: bar
   part_of_speech: noun
   picturable: true
   thai: บาร์
+  image_query: bar counter with stools bottles
 - category: Locations
   classifier: หลัง
   gloss: house
   part_of_speech: noun
   picturable: true
   thai: บ้าน
+  image_query: single family house exterior
 - category: Locations
   classifier: ประเทศ
   gloss: country
   part_of_speech: noun
   picturable: true
   thai: ประเทศ
+  image_query: world globe showing continents
 - category: Locations
   classifier: แห่ง
   gloss: university
   part_of_speech: noun
   picturable: true
   thai: มหาลัย
+  image_query: university campus main building students
 - category: Locations
   classifier: ร้าน
   gloss: shop, store
   part_of_speech: noun
   picturable: true
   thai: ร้าน
+  image_query: small storefront with goods displayed
 - category: Locations
   classifier: ร้าน
   gloss: restaurant
   part_of_speech: noun
   picturable: true
   thai: ร้านอาหาร
+  image_query: restaurant dining room with tables
 - category: Locations
   classifier: วัด
   gloss: temple
   part_of_speech: noun
   picturable: true
   thai: วัด
+  image_query: golden Thai Buddhist temple
 - category: Locations
   classifier: แห่ง
   emphasis: true
@@ -2823,36 +3251,42 @@
   part_of_speech: noun
   picturable: true
   thai: ศูนย์อาหาร
+  image_query: food court seating with stalls
 - category: Locations
   classifier: สถานี
   gloss: train station
   part_of_speech: noun
   picturable: true
   thai: สถานีรถไฟ
+  image_query: train platform with waiting passengers
 - category: Locations
   classifier: แห่ง
   gloss: airport
   part_of_speech: noun
   picturable: true
   thai: สนามบิน
+  image_query: airport terminal with airplanes
 - category: Locations
   classifier: แห่ง
   gloss: park
   part_of_speech: noun
   picturable: true
   thai: สวนสาธารณะ
+  image_query: green public park with benches
 - category: Locations
   classifier: สะพาน
   gloss: bridge
   part_of_speech: noun
   picturable: true
   thai: สะพาน
+  image_query: long bridge crossing a river
 - category: Locations
   classifier: ห้อง
   gloss: room
   part_of_speech: noun
   picturable: true
   thai: ห้อง
+  image_query: empty room with furniture
 - category: Locations
   classifier: ห้าง
   emphasis: true
@@ -2860,12 +3294,14 @@
   part_of_speech: noun
   picturable: true
   thai: ห้าง
+  image_query: shopping mall interior atrium
 - category: Locations
   classifier: แห่ง
   gloss: office
   part_of_speech: noun
   picturable: true
   thai: ออฟฟิศ
+  image_query: office with desks and computers
 - category: Locations
   classifier: ร้าน
   emphasis: true
@@ -2873,42 +3309,49 @@
   part_of_speech: noun
   picturable: true
   thai: เซเว่น
+  image_query: convenience store aisle with shelves
 - category: Locations
   classifier: เมือง
   gloss: city
   part_of_speech: noun
   picturable: true
   thai: เมือง
+  image_query: city skyline with skyscrapers
 - category: Locations
   classifier: แห่ง
   gloss: bank
   part_of_speech: noun
   picturable: true
   thai: แบงก์
+  image_query: bank teller counter with customers
 - category: Locations
   classifier: แห่ง
   gloss: hospital
   part_of_speech: noun
   picturable: true
   thai: โรงพยาบาล
+  image_query: hospital building with ambulance
 - category: Locations
   classifier: โรง
   gloss: cinema, movie theater
   part_of_speech: noun
   picturable: true
   thai: โรงหนัง
+  image_query: movie theater seats and screen
 - category: Locations
   classifier: โรง
   gloss: school
   part_of_speech: noun
   picturable: true
   thai: โรงเรียน
+  image_query: school building with children
 - category: Locations
   classifier: แห่ง
   gloss: hotel
   part_of_speech: noun
   picturable: true
   thai: โรงแรม
+  image_query: hotel lobby with reception desk
 - category: Materials
   classifier: บาน
   gloss: glass pane / window glass / mirror
@@ -2916,24 +3359,28 @@
   picturable: true
   split_of: glass
   thai: กระจก
+  image_query: clear glass window pane
 - category: Materials
   classifier: แผ่น
   gloss: paper
   part_of_speech: noun
   picturable: true
   thai: กระดาษ
+  image_query: blank sheets of white paper
 - category: Materials
   classifier: ก้อน
   gloss: soil / earth / dirt
   part_of_speech: noun
   picturable: true
   thai: ดิน
+  image_query: dark garden soil in hands
 - category: Materials
   classifier: ก้อน
   gloss: clay
   part_of_speech: noun
   picturable: true
   thai: ดินเหนียว
+  image_query: wet clay on pottery wheel
 - category: Materials
   classifier: ก้อน
   emphasis: true
@@ -2941,24 +3388,28 @@
   part_of_speech: noun
   picturable: true
   thai: ถ่าน
+  image_query: black charcoal lumps pile
 - category: Materials
   classifier: เม็ด
   gloss: sand
   part_of_speech: noun
   picturable: true
   thai: ทราย
+  image_query: fine sand dune close up
 - category: Materials
   classifier: แท่ง
   gloss: gold
   part_of_speech: noun
   picturable: true
   thai: ทอง
+  image_query: gold bars and nuggets
 - category: Materials
   classifier: ชิ้น
   gloss: copper
   part_of_speech: noun
   picturable: true
   thai: ทองแดง
+  image_query: copper pipes and sheet
 - category: Materials
   classifier: ก้อน
   emphasis: true
@@ -2966,30 +3417,35 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็ง
+  image_query: ice cubes melting closeup
 - category: Materials
   classifier: ก้อน
   gloss: cement / concrete / mortar
   part_of_speech: noun
   picturable: true
   thai: ปูน
+  image_query: wet cement being smoothed
 - category: Materials
   classifier: ผืน
   gloss: cloth / fabric
   part_of_speech: noun
   picturable: true
   thai: ผ้า
+  image_query: folded fabric cloth swatches
 - category: Materials
   classifier: เม็ด
   gloss: dust
   part_of_speech: noun
   picturable: true
   thai: ฝุ่น
+  image_query: dust on furniture surface
 - category: Materials
   classifier: ชิ้น
   gloss: plastic
   part_of_speech: noun
   picturable: true
   thai: พลาสติก
+  image_query: plastic bottles and containers
 - category: Materials
   classifier: แผ่น
   emphasis: true
@@ -2997,48 +3453,56 @@
   part_of_speech: noun
   picturable: true
   thai: ฟอยล์
+  image_query: crumpled aluminium foil sheet
 - category: Materials
   classifier: ชิ้น
   gloss: rubber
   part_of_speech: noun
   picturable: true
   thai: ยาง
+  image_query: black rubber tire texture
 - category: Materials
   classifier: ชิ้น
   gloss: stainless steel
   part_of_speech: noun
   picturable: true
   thai: สแตนเลส
+  image_query: brushed stainless steel surface
 - category: Materials
   classifier: ผืน
   gloss: leather (also means "movie")
   part_of_speech: noun
   picturable: true
   thai: หนัง
+  image_query: brown leather hide texture
 - category: Materials
   classifier: ก้อน
   gloss: stone / rock
   part_of_speech: noun
   picturable: true
   thai: หิน
+  image_query: gray rocks and stones pile
 - category: Materials
   classifier: ก้อน
   gloss: brick
   part_of_speech: noun
   picturable: true
   thai: อิฐ
+  image_query: stack of red bricks
 - category: Materials
   classifier: ชิ้น
   gloss: silver (the metal; also means "money")
   part_of_speech: noun
   picturable: true
   thai: เงิน
+  image_query: silver bars and ingots
 - category: Materials
   classifier: เม็ด
   gloss: diamond
   part_of_speech: noun
   picturable: true
   thai: เพชร
+  image_query: cut diamond gemstone sparkling
 - category: Materials
   classifier: ชิ้น
   gloss: iron / steel (colloquially any hard metal)
@@ -3046,6 +3510,7 @@
   picturable: true
   split_of: metal
   thai: เหล็ก
+  image_query: steel beams and rods
 - category: Materials
   classifier: ชิ้น
   gloss: glass (the material; also a drinking glass)
@@ -3053,6 +3518,7 @@
   picturable: true
   split_of: glass
   thai: แก้ว
+  image_query: empty clear drinking glass
 - category: Materials
   classifier: ถัง
   emphasis: true
@@ -3060,12 +3526,14 @@
   part_of_speech: noun
   picturable: true
   thai: แก๊ส
+  image_query: blue gas stove flame
 - category: Materials
   classifier: ชิ้น
   gloss: styrofoam / foam
   part_of_speech: noun
   picturable: true
   thai: โฟม
+  image_query: white styrofoam packing blocks
 - category: Materials
   classifier: ชนิด
   gloss: metal (general term)
@@ -3073,6 +3541,7 @@
   picturable: true
   split_of: metal
   thai: โลหะ
+  image_query: assorted metal sheets and bars
 - category: Materials
   classifier: ใบ
   emphasis: true
@@ -3080,18 +3549,21 @@
   part_of_speech: noun
   picturable: true
   thai: ใบตอง
+  image_query: green banana leaf wrapping food
 - category: Materials
   classifier: ท่อน
   gloss: wood
   part_of_speech: noun
   picturable: true
   thai: ไม้
+  image_query: wooden planks grain texture
 - category: Materials
   classifier: ลำ
   gloss: bamboo
   part_of_speech: noun
   picturable: true
   thai: ไม้ไผ่
+  image_query: green bamboo stalks grove
 - category: Math/Measurements
   classifier: ขีด
   emphasis: true
@@ -3099,16 +3571,19 @@
   part_of_speech: noun
   picturable: true
   thai: ขีด
+  image_query: small meat portion on kitchen scale
 - category: Math/Measurements
   gloss: half
   part_of_speech: other
   picturable: true
   thai: ครึ่ง
+  image_query: apple cut into two halves
 - category: Math/Measurements
   gloss: to weigh
   part_of_speech: verb
   picturable: true
   thai: ชั่ง
+  image_query: vendor weighing vegetables on scale
 - category: Math/Measurements
   classifier: คัน
   emphasis: true
@@ -3116,6 +3591,7 @@
   part_of_speech: noun
   picturable: true
   thai: ช้อนโต๊ะ
+  image_query: tablespoon heaped with white sugar
 - category: Math/Measurements
   emphasis: true
   gloss: to measure out by volume (scoop into a cup/spoon)
@@ -3123,6 +3599,7 @@
   picturable: true
   split_of: measure
   thai: ตวง
+  image_query: pouring rice into measuring cup
 - category: Math/Measurements
   classifier: ที่
   emphasis: true
@@ -3130,91 +3607,109 @@
   part_of_speech: noun
   picturable: true
   thai: ที่
+  image_query: single plate of noodles served
 - category: Math/Measurements
   gloss: to count
   part_of_speech: verb
   picturable: true
   thai: นับ
+  image_query: person counting coins by hand
 - category: Math/Measurements
   gloss: thousand
   part_of_speech: other
   picturable: true
   thai: พัน
+  image_query: thick stack of paper banknotes
 - category: Math/Measurements
   gloss: twenty
   part_of_speech: other
   picturable: true
   thai: ยี่สิบ
+  image_query: twenty coins laid on table
 - category: Math/Measurements
   gloss: hundred
   part_of_speech: other
   picturable: true
   thai: ร้อย
+  image_query: hundred coins spread across table
 - category: Math/Measurements
   gloss: million
   part_of_speech: other
   picturable: true
   thai: ล้าน
+  image_query: packed stadium crowd of people
 - category: Math/Measurements
   gloss: to measure
   part_of_speech: verb
   picturable: true
   thai: วัด
+  image_query: tape measure across wooden plank
 - category: Math/Measurements
   gloss: zero
   part_of_speech: other
   picturable: true
   thai: ศูนย์
+  image_query: hand making a circle gesture
 - category: Math/Measurements
   gloss: two
   part_of_speech: other
   picturable: true
   thai: สอง
+  image_query: two fingers raised on hand
 - category: Math/Measurements
   gloss: three
   part_of_speech: other
   picturable: true
   thai: สาม
+  image_query: three fingers raised on hand
 - category: Math/Measurements
   gloss: ten
   part_of_speech: other
   picturable: true
   thai: สิบ
+  image_query: ten fingers spread both hands
 - category: Math/Measurements
   gloss: four
   part_of_speech: other
   picturable: true
   thai: สี่
+  image_query: four fingers raised on hand
 - category: Math/Measurements
   gloss: six
   part_of_speech: other
   picturable: true
   thai: หก
+  image_query: six eggs in a carton
 - category: Math/Measurements
   gloss: one
   part_of_speech: other
   picturable: true
   thai: หนึ่ง
+  image_query: single index finger raised up
 - category: Math/Measurements
   gloss: ten thousand
   part_of_speech: other
   picturable: true
   thai: หมื่น
+  image_query: huge crowd filling a street
 - category: Math/Measurements
   gloss: five
   part_of_speech: other
   picturable: true
   thai: ห้า
+  image_query: open palm showing five fingers
 - category: Math/Measurements
   gloss: nine
   part_of_speech: other
   picturable: true
   thai: เก้า
+  image_query: nine cupcakes arranged on tray
 - category: Math/Measurements
   gloss: seven
   part_of_speech: other
   picturable: true
   thai: เจ็ด
+  image_query: seven colored pencils in row
 - category: Math/Measurements
   classifier: เบอร์
   gloss: number (phone, ID, size)
@@ -3222,18 +3717,21 @@
   picturable: true
   split_of: number
   thai: เบอร์
+  image_query: hand pressing telephone keypad buttons
 - category: Math/Measurements
   classifier: เมตร
   gloss: meter (unit of length)
   part_of_speech: noun
   picturable: true
   thai: เมตร
+  image_query: extended metal tape measure ruler
 - category: Math/Measurements
   emphasis: true
   gloss: a lot, plenty (colloquial)
   part_of_speech: adjective
   picturable: true
   thai: เยอะ
+  image_query: huge heaped pile of fruit
 - category: Math/Measurements
   classifier: ตัว
   gloss: number (numeral, digit)
@@ -3241,17 +3739,20 @@
   picturable: true
   split_of: number
   thai: เลข
+  image_query: wooden abacus with counting beads
 - category: Math/Measurements
   gloss: eight
   part_of_speech: other
   picturable: true
   thai: แปด
+  image_query: eight billiard balls arranged together
 - category: Math/Measurements
   classifier: โล
   gloss: kilogram (colloquial)
   part_of_speech: noun
   picturable: true
   thai: โล
+  image_query: rice bag on weighing scale
 - category: Miscellaneous Nouns
   classifier: บาน
   gloss: glass (pane, window glass, mirror)
@@ -3259,12 +3760,14 @@
   picturable: true
   split_of: glass
   thai: กระจก
+  image_query: sunlit window pane glass reflection
 - category: Miscellaneous Nouns
   classifier: แผ่น
   gloss: paper
   part_of_speech: noun
   picturable: true
   thai: กระดาษ
+  image_query: blank white paper sheets stacked
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: bag (handbag, backpack, suitcase)
@@ -3272,36 +3775,42 @@
   picturable: true
   split_of: bag
   thai: กระเป๋า
+  image_query: leather handbag and suitcase together
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: box
   part_of_speech: noun
   picturable: true
   thai: กล่อง
+  image_query: brown cardboard box open
 - category: Miscellaneous Nouns
   classifier: ดอก
   gloss: key
   part_of_speech: noun
   picturable: true
   thai: กุญแจ
+  image_query: metal keys on keyring closeup
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: bottle
   part_of_speech: noun
   picturable: true
   thai: ขวด
+  image_query: glass bottle on table
 - category: Miscellaneous Nouns
   classifier: ชิ้น
   gloss: thing, stuff, belongings
   part_of_speech: noun
   picturable: true
   thai: ของ
+  image_query: personal belongings spread on table
 - category: Miscellaneous Nouns
   classifier: ชิ้น
   gloss: gift, present
   part_of_speech: noun
   picturable: true
   thai: ของขวัญ
+  image_query: wrapped gift box with ribbon
 - category: Miscellaneous Nouns
   classifier: ใบ
   emphasis: true
@@ -3309,6 +3818,7 @@
   part_of_speech: noun
   picturable: true
   thai: จาน
+  image_query: empty white ceramic dinner plate
 - category: Miscellaneous Nouns
   classifier: คัน
   emphasis: true
@@ -3316,12 +3826,14 @@
   part_of_speech: noun
   picturable: true
   thai: ช้อน
+  image_query: silver spoon on tablecloth
 - category: Miscellaneous Nouns
   classifier: แท่ง
   gloss: pencil
   part_of_speech: noun
   picturable: true
   thai: ดินสอ
+  image_query: yellow wooden pencil sharpened tip
 - category: Miscellaneous Nouns
   classifier: คู่
   emphasis: true
@@ -3329,6 +3841,7 @@
   part_of_speech: noun
   picturable: true
   thai: ตะเกียบ
+  image_query: wooden chopsticks holding noodles
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: bag (plastic/paper bag, sack)
@@ -3336,12 +3849,14 @@
   picturable: true
   split_of: bag
   thai: ถุง
+  image_query: plastic shopping bag being carried
 - category: Miscellaneous Nouns
   classifier: เรือน
   gloss: clock, watch
   part_of_speech: noun
   picturable: true
   thai: นาฬิกา
+  image_query: round wall clock and wristwatch
 - category: Miscellaneous Nouns
   classifier: ใบ
   emphasis: true
@@ -3349,18 +3864,21 @@
   part_of_speech: noun
   picturable: true
   thai: บิล
+  image_query: restaurant check on small tray
 - category: Miscellaneous Nouns
   classifier: ด้าม
   gloss: pen
   part_of_speech: noun
   picturable: true
   thai: ปากกา
+  image_query: ballpoint pen held in hand
 - category: Miscellaneous Nouns
   classifier: ป้าย
   gloss: sign, signboard
   part_of_speech: noun
   picturable: true
   thai: ป้าย
+  image_query: roadside signboard on post
 - category: Miscellaneous Nouns
   classifier: ภาพ
   gloss: picture, image, painting
@@ -3368,6 +3886,7 @@
   picturable: true
   split_of: picture
   thai: ภาพ
+  image_query: framed painting hanging on wall
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: picture, photo (colloquial)
@@ -3375,24 +3894,28 @@
   picturable: true
   split_of: picture
   thai: รูป
+  image_query: printed photographs spread out
 - category: Miscellaneous Nouns
   classifier: คัน
   gloss: umbrella
   part_of_speech: noun
   picturable: true
   thai: ร่ม
+  image_query: open umbrella in the rain
 - category: Miscellaneous Nouns
   classifier: หน้า
   gloss: page
   part_of_speech: noun
   picturable: true
   thai: หน้า
+  image_query: hand turning open book page
 - category: Miscellaneous Nouns
   classifier: เครื่อง
   gloss: machine, appliance
   part_of_speech: noun
   picturable: true
   thai: เครื่อง
+  image_query: washing machine in laundry room
 - category: Miscellaneous Nouns
   classifier: เล่ม
   emphasis: true
@@ -3400,6 +3923,7 @@
   part_of_speech: noun
   picturable: true
   thai: เมนู
+  image_query: diner holding restaurant menu booklet
 - category: Miscellaneous Nouns
   classifier: เสียง
   gloss: sound, noise, voice
@@ -3413,6 +3937,7 @@
   picturable: true
   split_of: money
   thai: เหรียญ
+  image_query: pile of shiny coins
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: glass (drinking glass)
@@ -3420,6 +3945,7 @@
   picturable: true
   split_of: glass
   thai: แก้ว
+  image_query: clear drinking glass with water
 - category: Miscellaneous Nouns
   classifier: ใบ
   gloss: banknote, bill (colloquial)
@@ -3427,58 +3953,61 @@
   picturable: true
   split_of: money
   thai: แบงก์
+  image_query: fanned paper money in hand
 - category: Miscellaneous Nouns
   classifier: แผ่น
   gloss: map
   part_of_speech: noun
   picturable: true
   thai: แผนที่
+  image_query: folded paper map unfolded outdoors
 - category: Miscellaneous Nouns
   classifier: วง
   gloss: ring (jewelry)
   part_of_speech: noun
   picturable: true
   thai: แหวน
+  image_query: gold ring on finger
 - category: Months
   classifier: เดือน
   gloss: July (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: July
   thai: กรกฎา
 - category: Months
   classifier: เดือน
   gloss: July
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: July
   thai: กรกฎาคม
 - category: Months
   classifier: เดือน
   gloss: September (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: September
   thai: กันยา
 - category: Months
   classifier: เดือน
   gloss: September
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: September
   thai: กันยายน
 - category: Months
   classifier: เดือน
   gloss: February (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: February
   thai: กุมภา
 - category: Months
   classifier: เดือน
   gloss: February
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: February
   thai: กุมภาพันธ์
 - category: Months
@@ -3487,32 +4016,33 @@
   part_of_speech: adjective
   picturable: true
   thai: ตามฤดูกาล
+  image_query: farmers market stall piled with ripe produce
 - category: Months
   classifier: เดือน
   gloss: October (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: October
   thai: ตุลา
 - category: Months
   classifier: เดือน
   gloss: October
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: October
   thai: ตุลาคม
 - category: Months
   classifier: เดือน
   gloss: December (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: December
   thai: ธันวา
 - category: Months
   classifier: เดือน
   gloss: December
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: December
   thai: ธันวาคม
 - category: Months
@@ -3521,88 +4051,89 @@
   part_of_speech: adjective
   picturable: true
   thai: นอกฤดู
+  image_query: lone greenhouse tomatoes amid winter snow
 - category: Months
   classifier: เดือน
   gloss: November (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: November
   thai: พฤศจิกา
 - category: Months
   classifier: เดือน
   gloss: November
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: November
   thai: พฤศจิกายน
 - category: Months
   classifier: เดือน
   gloss: May (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: May
   thai: พฤษภา
 - category: Months
   classifier: เดือน
   gloss: May
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: May
   thai: พฤษภาคม
 - category: Months
   classifier: เดือน
   gloss: January (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: January
   thai: มกรา
 - category: Months
   classifier: เดือน
   gloss: January
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: January
   thai: มกราคม
 - category: Months
   classifier: เดือน
   gloss: June (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: June
   thai: มิถุนา
 - category: Months
   classifier: เดือน
   gloss: June
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: June
   thai: มิถุนายน
 - category: Months
   classifier: เดือน
   gloss: March (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: March
   thai: มีนา
 - category: Months
   classifier: เดือน
   gloss: March
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: March
   thai: มีนาคม
 - category: Months
   classifier: เดือน
   gloss: August (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: August
   thai: สิงหา
 - category: Months
   classifier: เดือน
   gloss: August
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: August
   thai: สิงหาคม
 - category: Months
@@ -3618,6 +4149,7 @@
   part_of_speech: noun
   picturable: true
   thai: หน้าทุเรียน
+  image_query: durian fruits heaped at market stall
 - category: Months
   classifier: ฤดู
   emphasis: true
@@ -3625,18 +4157,19 @@
   part_of_speech: noun
   picturable: true
   thai: หน้ามะม่วง
+  image_query: baskets of ripe mangoes under mango tree
 - category: Months
   classifier: เดือน
   gloss: April (colloquial short form)
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: April
   thai: เมษา
 - category: Months
   classifier: เดือน
   gloss: April
   part_of_speech: noun
-  picturable: true
+  picturable: false
   split_of: April
   thai: เมษายน
 - category: Nature
@@ -3646,48 +4179,56 @@
   part_of_speech: noun
   picturable: true
   thai: ควัน
+  image_query: smoke rising from a campfire
 - category: Nature
   classifier: ดอก
   gloss: flower
   part_of_speech: noun
   picturable: true
   thai: ดอกไม้
+  image_query: a blooming flower close up
 - category: Nature
   classifier: ดวง
   gloss: star
   part_of_speech: noun
   picturable: true
   thai: ดาว
+  image_query: bright stars in night sky
 - category: Nature
   classifier: ดวง
   gloss: planet
   part_of_speech: noun
   picturable: true
   thai: ดาวเคราะห์
+  image_query: a planet floating in space
 - category: Nature
   classifier: ต้น
   gloss: tree
   part_of_speech: noun
   picturable: true
   thai: ต้นไม้
+  image_query: a large tree in field
 - category: Nature
   classifier: แห่ง
   gloss: sea
   part_of_speech: noun
   picturable: true
   thai: ทะเล
+  image_query: sea waves along a shoreline
 - category: Nature
   classifier: แห่ง
   gloss: lake
   part_of_speech: noun
   picturable: true
   thai: ทะเลสาบ
+  image_query: calm lake surrounded by mountains
 - category: Nature
   classifier: ผืน
   gloss: sky
   part_of_speech: noun
   picturable: true
   thai: ท้องฟ้า
+  image_query: wide blue sky above horizon
 - category: Nature
   classifier: แหล่ง
   emphasis: true
@@ -3696,6 +4237,7 @@
   picturable: true
   split_of: water
   thai: น้ำ
+  image_query: clear river water flowing over rocks
 - category: Nature
   classifier: แก้ว
   emphasis: true
@@ -3704,42 +4246,49 @@
   picturable: true
   split_of: water
   thai: น้ำเปล่า
+  image_query: glass of drinking water
 - category: Nature
   classifier: ก้อน
   gloss: ice
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็ง
+  image_query: ice cubes melting close up
 - category: Nature
   classifier: ผืน
   gloss: forest
   part_of_speech: noun
   picturable: true
   thai: ป่า
+  image_query: dense green forest of trees
 - category: Nature
   classifier: ห่า
   gloss: rain
   part_of_speech: noun
   picturable: true
   thai: ฝน
+  image_query: heavy rain falling on street
 - category: Nature
   classifier: ดวง
   gloss: moon
   part_of_speech: noun
   picturable: true
   thai: พระจันทร์
+  image_query: full moon in dark sky
 - category: Nature
   classifier: ดวง
   gloss: sun
   part_of_speech: noun
   picturable: true
   thai: พระอาทิตย์
+  image_query: bright sun in clear sky
 - category: Nature
   classifier: ผืน
   gloss: ground
   part_of_speech: noun
   picturable: true
   thai: พื้นดิน
+  image_query: bare soil ground surface closeup
 - category: Nature
   classifier: ดุ้น
   emphasis: true
@@ -3747,66 +4296,77 @@
   part_of_speech: noun
   picturable: true
   thai: ฟืน
+  image_query: stacked firewood logs pile
 - category: Nature
   classifier: ลูก
   gloss: mountain
   part_of_speech: noun
   picturable: true
   thai: ภูเขา
+  image_query: tall rocky mountain peak
 - category: Nature
   classifier: แห่ง
   gloss: ocean
   part_of_speech: noun
   picturable: true
   thai: มหาสมุทร
+  image_query: vast open ocean from above
 - category: Nature
   classifier: สาย
   gloss: wind
   part_of_speech: noun
   picturable: true
   thai: ลม
+  image_query: wind bending trees and grass
 - category: Nature
   classifier: ต้น
   gloss: grass
   part_of_speech: noun
   picturable: true
   thai: หญ้า
+  image_query: green grass field close up
 - category: Nature
   classifier: ก้อน
   gloss: stone / rock
   part_of_speech: noun
   picturable: true
   thai: หิน
+  image_query: gray rocks and stones outdoors
 - category: Nature
   classifier: เกล็ด
   gloss: snow
   part_of_speech: noun
   picturable: true
   thai: หิมะ
+  image_query: snow covering trees and ground
 - category: Nature
   classifier: ลูก
   gloss: hill
   part_of_speech: noun
   picturable: true
   thai: เนินเขา
+  image_query: rolling green grassy hill
 - category: Nature
   classifier: ก้อน
   gloss: cloud
   part_of_speech: noun
   picturable: true
   thai: เมฆ
+  image_query: white clouds in blue sky
 - category: Nature
   classifier: สาย
   gloss: river
   part_of_speech: noun
   picturable: true
   thai: แม่น้ำ
+  image_query: river flowing through green valley
 - category: Nature
   classifier: ใบ
   gloss: world / Earth
   part_of_speech: noun
   picturable: true
   thai: โลก
+  image_query: planet Earth seen from space
 - category: Nature
   classifier: ใบ
   emphasis: true
@@ -3814,12 +4374,14 @@
   part_of_speech: noun
   picturable: true
   thai: ใบไม้
+  image_query: single green leaf close up
 - category: Nature
   classifier: กอง
   gloss: fire
   part_of_speech: noun
   picturable: true
   thai: ไฟ
+  image_query: burning flames of a fire
 - category: Numbers
   emphasis: true
   gloss: how many
@@ -3833,11 +4395,13 @@
   part_of_speech: noun
   picturable: true
   thai: ขีด
+  image_query: butcher scale weighing small meat portion
 - category: Numbers
   gloss: half
   part_of_speech: other
   picturable: true
   thai: ครึ่ง
+  image_query: apple sliced into two halves
 - category: Numbers
   classifier: ที่
   emphasis: true
@@ -3845,102 +4409,122 @@
   part_of_speech: noun
   picturable: true
   thai: ที่
+  image_query: two identical plates of food served
 - category: Numbers
   gloss: second (ordinal)
   part_of_speech: adjective
   picturable: true
   thai: ที่สอง
+  image_query: athlete standing on silver medal podium
 - category: Numbers
   gloss: first (number one, ranked)
   part_of_speech: adjective
   picturable: true
   split_of: first
   thai: ที่หนึ่ง
+  image_query: athlete on gold medal podium
 - category: Numbers
   gloss: thousand
   part_of_speech: other
   picturable: true
   thai: พัน
+  image_query: thick bundled stack of banknotes
 - category: Numbers
   gloss: twenty
   part_of_speech: other
   picturable: true
   thai: ยี่สิบ
+  image_query: twenty coins arranged on table
 - category: Numbers
   gloss: hundred
   part_of_speech: other
   picturable: true
   thai: ร้อย
+  image_query: hundred coins spread across table
 - category: Numbers
   gloss: million
   part_of_speech: other
   picturable: true
   thai: ล้าน
+  image_query: room piled high with money
 - category: Numbers
   gloss: zero
   part_of_speech: other
   picturable: true
   thai: ศูนย์
+  image_query: completely empty white plate
 - category: Numbers
   gloss: two
   part_of_speech: other
   picturable: true
   thai: สอง
+  image_query: two red apples on table
 - category: Numbers
   gloss: three
   part_of_speech: other
   picturable: true
   thai: สาม
+  image_query: three lemons in a row
 - category: Numbers
   gloss: ten
   part_of_speech: other
   picturable: true
   thai: สิบ
+  image_query: two open hands showing fingers
 - category: Numbers
   gloss: twelve
   part_of_speech: other
   picturable: true
   thai: สิบสอง
+  image_query: twelve eggs in a carton
 - category: Numbers
   gloss: eleven
   part_of_speech: other
   picturable: true
   thai: สิบเอ็ด
+  image_query: eleven football players lined up
 - category: Numbers
   gloss: four
   part_of_speech: other
   picturable: true
   thai: สี่
+  image_query: four oranges arranged on table
 - category: Numbers
   gloss: six
   part_of_speech: other
   picturable: true
   thai: หก
+  image_query: six eggs in a tray
 - category: Numbers
   gloss: one
   part_of_speech: other
   picturable: true
   thai: หนึ่ง
+  image_query: single apple on wooden table
 - category: Numbers
   gloss: ten thousand
   part_of_speech: other
   picturable: true
   thai: หมื่น
+  image_query: packed stadium crowd from above
 - category: Numbers
   gloss: five
   part_of_speech: other
   picturable: true
   thai: ห้า
+  image_query: open hand with fingers spread
 - category: Numbers
   gloss: nine
   part_of_speech: other
   picturable: true
   thai: เก้า
+  image_query: nine colorful balls arranged neatly
 - category: Numbers
   gloss: seven
   part_of_speech: other
   picturable: true
   thai: เจ็ด
+  image_query: seven candles on a cake
 - category: Numbers
   emphasis: true
   gloss: how much (price, quantity)
@@ -3953,22 +4537,26 @@
   part_of_speech: noun
   picturable: true
   thai: เลข
+  image_query: wooden abacus beads close up
 - category: Numbers
   gloss: eight
   part_of_speech: other
   picturable: true
   thai: แปด
+  image_query: eight billiard balls on table
 - category: Numbers
   gloss: first (initial, earliest)
   part_of_speech: adjective
   picturable: true
   split_of: first
   thai: แรก
+  image_query: baby taking first wobbly steps
 - category: Numbers
   gloss: hundred thousand
   part_of_speech: other
   picturable: true
   thai: แสน
+  image_query: aerial view of massive crowd
 - category: Numbers
   classifier: โหล
   emphasis: true
@@ -3976,18 +4564,21 @@
   part_of_speech: noun
   picturable: true
   thai: โหล
+  image_query: box holding twelve doughnuts
 - category: People
   classifier: คน
   gloss: person
   part_of_speech: noun
   picturable: true
   thai: คน
+  image_query: single person standing outdoors portrait
 - category: People
   classifier: ครอบครัว
   gloss: family
   part_of_speech: noun
   picturable: true
   thai: ครอบครัว
+  image_query: parents and children posing together
 - category: People
   classifier: คน
   gloss: grandfather (mother's side)
@@ -3995,6 +4586,7 @@
   picturable: true
   split_of: grandfather
   thai: ตา
+  image_query: elderly man with young grandchild
 - category: People
   classifier: คน
   gloss: younger brother
@@ -4002,6 +4594,7 @@
   picturable: true
   split_of: brother
   thai: น้องชาย
+  image_query: small boy beside older sibling
 - category: People
   classifier: คน
   gloss: younger sister
@@ -4009,6 +4602,7 @@
   picturable: true
   split_of: sister
   thai: น้องสาว
+  image_query: small girl beside older sibling
 - category: People
   classifier: คน
   gloss: grandfather (father's side)
@@ -4016,24 +4610,28 @@
   picturable: true
   split_of: grandfather
   thai: ปู่
+  image_query: elderly man holding grandchild's hand
 - category: People
   classifier: คน
   gloss: man
   part_of_speech: noun
   picturable: true
   thai: ผู้ชาย
+  image_query: adult man standing casual portrait
 - category: People
   classifier: คน
   gloss: woman
   part_of_speech: noun
   picturable: true
   thai: ผู้หญิง
+  image_query: adult woman standing casual portrait
 - category: People
   classifier: คน
   gloss: adult
   part_of_speech: noun
   picturable: true
   thai: ผู้ใหญ่
+  image_query: grown adult standing beside child
 - category: People
   classifier: คน
   gloss: older brother
@@ -4041,6 +4639,7 @@
   picturable: true
   split_of: brother
   thai: พี่ชาย
+  image_query: teenage boy hugging younger sibling
 - category: People
   classifier: คน
   gloss: older sister
@@ -4048,12 +4647,14 @@
   picturable: true
   split_of: sister
   thai: พี่สาว
+  image_query: teenage girl hugging younger sibling
 - category: People
   classifier: คน
   gloss: father
   part_of_speech: noun
   picturable: true
   thai: พ่อ
+  image_query: father carrying his young child
 - category: People
   classifier: คน
   emphasis: true
@@ -4061,6 +4662,7 @@
   part_of_speech: noun
   picturable: true
   thai: พ่อครัว
+  image_query: chef cooking in restaurant kitchen
 - category: People
   classifier: คน
   emphasis: true
@@ -4069,12 +4671,14 @@
   picturable: true
   split_of: vendor
   thai: พ่อค้า
+  image_query: man selling produce at market
 - category: People
   classifier: คน
   gloss: wife
   part_of_speech: noun
   picturable: true
   thai: ภรรยา
+  image_query: married woman with wedding ring
 - category: People
   classifier: คน
   gloss: grandmother (mother's side)
@@ -4082,6 +4686,7 @@
   picturable: true
   split_of: grandmother
   thai: ยาย
+  image_query: elderly woman hugging young grandchild
 - category: People
   classifier: คน
   gloss: grandmother (father's side)
@@ -4089,6 +4694,7 @@
   picturable: true
   split_of: grandmother
   thai: ย่า
+  image_query: smiling elderly woman with grandchildren
 - category: People
   classifier: คน
   gloss: child (one's offspring)
@@ -4096,6 +4702,7 @@
   picturable: true
   split_of: child
   thai: ลูก
+  image_query: parents holding their small child
 - category: People
   classifier: คน
   emphasis: true
@@ -4103,24 +4710,28 @@
   part_of_speech: noun
   picturable: true
   thai: ลูกค้า
+  image_query: shopper paying cashier at counter
 - category: People
   classifier: คน
   gloss: son
   part_of_speech: noun
   picturable: true
   thai: ลูกชาย
+  image_query: boy standing with his parents
 - category: People
   classifier: คน
   gloss: daughter
   part_of_speech: noun
   picturable: true
   thai: ลูกสาว
+  image_query: girl standing with her parents
 - category: People
   classifier: คน
   gloss: husband
   part_of_speech: noun
   picturable: true
   thai: สามี
+  image_query: married man with wedding ring
 - category: People
   classifier: คน
   gloss: child (young person, kid)
@@ -4128,18 +4739,21 @@
   picturable: true
   split_of: child
   thai: เด็ก
+  image_query: young kid playing outdoors
 - category: People
   classifier: คน
   gloss: boy
   part_of_speech: noun
   picturable: true
   thai: เด็กผู้ชาย
+  image_query: young boy smiling outdoors
 - category: People
   classifier: คน
   gloss: girl
   part_of_speech: noun
   picturable: true
   thai: เด็กผู้หญิง
+  image_query: young girl smiling outdoors
 - category: People
   classifier: คน
   emphasis: true
@@ -4147,18 +4761,21 @@
   part_of_speech: noun
   picturable: true
   thai: เด็กเสิร์ฟ
+  image_query: server carrying tray of food
 - category: People
   classifier: คน
   gloss: friend
   part_of_speech: noun
   picturable: true
   thai: เพื่อน
+  image_query: two friends laughing together
 - category: People
   classifier: คน
   gloss: mother
   part_of_speech: noun
   picturable: true
   thai: แม่
+  image_query: mother holding her young child
 - category: People
   classifier: คน
   emphasis: true
@@ -4167,6 +4784,7 @@
   picturable: true
   split_of: vendor
   thai: แม่ค้า
+  image_query: woman selling food at stall
 - category: Pronouns
   gloss: each other / together
   part_of_speech: other
@@ -4178,18 +4796,21 @@
   picturable: true
   split_of: you (singular)
   thai: คุณ
+  image_query: person pointing finger at viewer
 - category: Pronouns
   gloss: I (female speaker, or casual general)
   part_of_speech: other
   picturable: true
   split_of: I
   thai: ฉัน
+  image_query: woman pointing at her own chest
 - category: Pronouns
   gloss: I (female speaker, polite)
   part_of_speech: other
   picturable: true
   split_of: I
   thai: ดิฉัน
+  image_query: businesswoman in suit gesturing to herself
 - category: Pronouns
   gloss: oneself / yourself
   part_of_speech: other
@@ -4201,22 +4822,26 @@
   picturable: true
   split_of: you (singular)
   thai: ท่าน
+  image_query: young man bowing to elderly official
 - category: Pronouns
   gloss: that (one)
   part_of_speech: other
   picturable: true
   thai: นั่น
+  image_query: hand pointing at distant object
 - category: Pronouns
   gloss: you (casual, to a male friend)
   part_of_speech: other
   picturable: true
   split_of: you (singular)
   thai: นาย
+  image_query: young man greeting male friend
 - category: Pronouns
   gloss: this (one)
   part_of_speech: other
   picturable: true
   thai: นี่
+  image_query: hand holding object close up
 - category: Pronouns
   emphasis: true
   gloss: you (to a younger person; how you call a waiter or server)
@@ -4224,6 +4849,7 @@
   picturable: true
   split_of: you (addressing a stranger by age)
   thai: น้อง
+  image_query: customer waving to young waiter
 - category: Pronouns
   emphasis: true
   gloss: you/she (to an older woman; how you address a market or food-stall auntie)
@@ -4231,53 +4857,62 @@
   picturable: true
   split_of: you (addressing a stranger by age)
   thai: ป้า
+  image_query: older woman at market stall
 - category: Pronouns
   gloss: I (male speaker)
   part_of_speech: other
   picturable: true
   split_of: I
   thai: ผม
+  image_query: man pointing at his own chest
 - category: Pronouns
   gloss: you (plural, polite)
   part_of_speech: other
   picturable: true
   split_of: you (plural)
   thai: พวกคุณ
+  image_query: speaker gesturing toward seated audience
 - category: Pronouns
   gloss: they (things or animals; dismissive for people)
   part_of_speech: other
   picturable: true
   split_of: they
   thai: พวกมัน
+  image_query: group of stray dogs together
 - category: Pronouns
   gloss: they
   part_of_speech: other
   picturable: true
   split_of: they
   thai: พวกเขา
+  image_query: group of people standing together
 - category: Pronouns
   gloss: you (plural, casual)
   part_of_speech: other
   picturable: true
   split_of: you (plural)
   thai: พวกเธอ
+  image_query: teenager pointing at friend group
 - category: Pronouns
   gloss: we (explicitly plural, our group)
   part_of_speech: other
   picturable: true
   split_of: we
   thai: พวกเรา
+  image_query: friends arms around each other smiling
 - category: Pronouns
   gloss: you (to someone slightly older)
   part_of_speech: other
   picturable: true
   split_of: you (singular)
   thai: พี่
+  image_query: young woman greeting slightly older woman
 - category: Pronouns
   gloss: it
   part_of_speech: other
   picturable: true
   thai: มัน
+  image_query: single object on plain table
 - category: Pronouns
   emphasis: true
   gloss: you/he (to an older man; how you address a male vendor or cook)
@@ -4285,12 +4920,14 @@
   picturable: true
   split_of: you (addressing a stranger by age)
   thai: ลุง
+  image_query: older man cooking at food stall
 - category: Pronouns
   gloss: I (child or young woman speaking to an elder)
   part_of_speech: other
   picturable: true
   split_of: I
   thai: หนู
+  image_query: little girl talking to grandmother
 - category: Pronouns
   emphasis: true
   gloss: what (as in "what are you eating?")
@@ -4309,30 +4946,35 @@
   picturable: true
   split_of: he
   thai: เขา
+  image_query: hand pointing at man nearby
 - category: Pronouns
   gloss: he / she (colloquial spoken form)
   part_of_speech: other
   picturable: true
   split_of: he
   thai: เค้า
+  image_query: friends chatting pointing at someone
 - category: Pronouns
   gloss: you (intimate, to a close friend or partner)
   part_of_speech: other
   picturable: true
   split_of: you (singular)
   thai: เธอ
+  image_query: couple gazing at each other closely
 - category: Pronouns
   gloss: we (also casual "I")
   part_of_speech: other
   picturable: true
   split_of: we
   thai: เรา
+  image_query: two friends pointing at themselves
 - category: Pronouns
   gloss: you (very casual, close friends)
   part_of_speech: other
   picturable: true
   split_of: you (singular)
   thai: แก
+  image_query: close friends joking and pointing
 - category: Pronouns
   gloss: who / someone
   part_of_speech: other
@@ -4344,70 +4986,82 @@
   part_of_speech: adjective
   picturable: true
   thai: ชื้น
+  image_query: damp mossy wall with condensation
 - category: Seasons
   emphasis: true
   gloss: to dry in the sun, sun-dry
   part_of_speech: verb
   picturable: true
   thai: ตากแดด
+  image_query: laundry drying on sunny clothesline
 - category: Seasons
   classifier: ครั้ง
   gloss: flood
   part_of_speech: noun
   picturable: true
   thai: น้ำท่วม
+  image_query: flooded street with submerged cars
 - category: Seasons
   classifier: ก้อน
   gloss: ice
   part_of_speech: noun
   picturable: true
   thai: น้ำแข็ง
+  image_query: ice cubes in clear glass
 - category: Seasons
   classifier: ห่า
   gloss: rain
   part_of_speech: noun
   picturable: true
   thai: ฝน
+  image_query: raindrops falling on wet pavement
 - category: Seasons
   gloss: to rain
   part_of_speech: verb
   picturable: true
   thai: ฝนตก
+  image_query: person with umbrella in downpour
 - category: Seasons
   classifier: ดวง
   gloss: sun
   part_of_speech: noun
   picturable: true
   thai: พระอาทิตย์
+  image_query: bright sun in blue sky
 - category: Seasons
   classifier: ลูก
   gloss: storm
   part_of_speech: noun
   picturable: true
   thai: พายุ
+  image_query: dark storm clouds over ocean
 - category: Seasons
   classifier: ครั้ง
   gloss: thunder
   part_of_speech: noun
   picturable: true
   thai: ฟ้าร้อง
+  image_query: thunderclouds rumbling over dark landscape
 - category: Seasons
   classifier: ครั้ง
   gloss: lightning
   part_of_speech: noun
   picturable: true
   thai: ฟ้าแลบ
+  image_query: lightning bolt striking night sky
 - category: Seasons
   classifier: ตัว
   gloss: rainbow
   part_of_speech: noun
   picturable: true
   thai: รุ้ง
+  image_query: rainbow arching over green field
 - category: Seasons
   gloss: hot (weather)
   part_of_speech: adjective
   picturable: true
   thai: ร้อน
+  image_query: sweating man under scorching sun
 - category: Seasons
   classifier: ฤดู
   gloss: season (formal)
@@ -4421,23 +5075,27 @@
   part_of_speech: noun
   picturable: true
   thai: ฤดูใบไม้ผลิ
+  image_query: blossoming trees and spring flowers
 - category: Seasons
   classifier: ฤดู
   gloss: autumn, fall
   part_of_speech: noun
   picturable: true
   thai: ฤดูใบไม้ร่วง
+  image_query: orange fallen leaves in forest
 - category: Seasons
   classifier: กระแส
   gloss: wind
   part_of_speech: noun
   picturable: true
   thai: ลม
+  image_query: wind bending trees and grass
 - category: Seasons
   gloss: cold (weather)
   part_of_speech: adjective
   picturable: true
   thai: หนาว
+  image_query: shivering person in winter coat
 - category: Seasons
   classifier: หน้า
   gloss: season (colloquial, as in หน้าร้อน)
@@ -4452,24 +5110,28 @@
   part_of_speech: noun
   picturable: true
   thai: หน้าทุเรียน
+  image_query: durian fruit piled at market
 - category: Seasons
   classifier: หน้า
   gloss: rainy season
   part_of_speech: noun
   picturable: true
   thai: หน้าฝน
+  image_query: monsoon rain flooding tropical street
 - category: Seasons
   classifier: หน้า
   gloss: hot season, summer
   part_of_speech: noun
   picturable: true
   thai: หน้าร้อน
+  image_query: sunny beach in bright summer
 - category: Seasons
   classifier: หน้า
   gloss: cool season, winter
   part_of_speech: noun
   picturable: true
   thai: หน้าหนาว
+  image_query: misty cool morning mountain landscape
 - category: Seasons
   classifier: หน้า
   emphasis: true
@@ -4477,12 +5139,14 @@
   part_of_speech: noun
   picturable: true
   thai: หน้าแล้ง
+  image_query: cracked dry earth parched field
 - category: Seasons
   classifier: เกล็ด
   gloss: snow
   part_of_speech: noun
   picturable: true
   thai: หิมะ
+  image_query: snow covering trees and ground
 - category: Seasons
   emphasis: true
   gloss: muggy, sweltering (humid heat)
@@ -4496,57 +5160,67 @@
   part_of_speech: noun
   picturable: true
   thai: อากาศ
+  image_query: sky with clouds over landscape
 - category: Seasons
   gloss: warm
   part_of_speech: adjective
   picturable: true
   thai: อุ่น
+  image_query: hands holding warm mug outdoors
 - category: Seasons
   classifier: ก้อน
   gloss: cloud
   part_of_speech: noun
   picturable: true
   thai: เมฆ
+  image_query: white fluffy clouds in sky
 - category: Seasons
   gloss: cool (weather)
   part_of_speech: adjective
   picturable: true
   thai: เย็น
+  image_query: person enjoying cool breezy morning
 - category: Society
   classifier: ตัว
   gloss: camera
   part_of_speech: noun
   picturable: true
   thai: กล้อง
+  image_query: black DSLR camera on table
 - category: Society
   classifier: ชนิด
   gloss: sport
   part_of_speech: noun
   picturable: true
   thai: กีฬา
+  image_query: athletes playing soccer on field
 - category: Society
   classifier: เครื่อง
   gloss: computer
   part_of_speech: noun
   picturable: true
   thai: คอม
+  image_query: desktop computer with keyboard screen
 - category: Society
   classifier: แห่ง
   gloss: prison
   part_of_speech: noun
   picturable: true
   thai: คุก
+  image_query: prison cell with iron bars
 - category: Society
   gloss: kill (murder)
   part_of_speech: verb
   picturable: true
   thai: ฆ่า
+  image_query: masked man strangling a victim
 - category: Society
   classifier: งาน
   gloss: wedding
   part_of_speech: noun
   picturable: true
   thai: งานแต่ง
+  image_query: bride and groom wedding ceremony
 - category: Society
   classifier: แห่ง
   emphasis: true
@@ -4554,23 +5228,27 @@
   part_of_speech: noun
   picturable: true
   thai: ตลาด
+  image_query: outdoor fresh vegetable market stalls
 - category: Society
   gloss: die (death)
   part_of_speech: verb
   picturable: true
   thai: ตาย
+  image_query: grieving family beside a gravestone
 - category: Society
   classifier: ทีม
   gloss: team
   part_of_speech: noun
   picturable: true
   thai: ทีม
+  image_query: sports team huddling together
 - category: Society
   classifier: ขุม
   gloss: hell
   part_of_speech: noun
   picturable: true
   thai: นรก
+  image_query: dark cave with burning flames
 - category: Society
   classifier: ใบ
   emphasis: true
@@ -4578,12 +5256,14 @@
   part_of_speech: noun
   picturable: true
   thai: บิล
+  image_query: waiter handing receipt to diner
 - category: Society
   classifier: กระบอก
   gloss: gun
   part_of_speech: noun
   picturable: true
   thai: ปืน
+  image_query: handgun lying on wooden table
 - category: Society
   classifier: เครื่อง
   gloss: mobile phone
@@ -4591,12 +5271,14 @@
   picturable: true
   split_of: phone
   thai: มือถือ
+  image_query: hand holding a smartphone
 - category: Society
   classifier: เม็ด
   gloss: medicine
   part_of_speech: noun
   picturable: true
   thai: ยา
+  image_query: pills and medicine bottles
 - category: Society
   classifier: ร้าน
   emphasis: true
@@ -4605,36 +5287,42 @@
   picturable: true
   split_of: store
   thai: ร้าน
+  image_query: small corner shop storefront
 - category: Society
   classifier: ลูก
   gloss: ball
   part_of_speech: noun
   picturable: true
   thai: ลูกบอล
+  image_query: soccer ball on green grass
 - category: Society
   classifier: ศาสนา
   gloss: religion
   part_of_speech: noun
   picturable: true
   thai: ศาสนา
+  image_query: monks praying inside temple
 - category: Society
   classifier: ครั้ง
   gloss: war
   part_of_speech: noun
   picturable: true
   thai: สงคราม
+  image_query: soldiers with tanks in battle
 - category: Society
   classifier: ชั้น
   gloss: heaven
   part_of_speech: noun
   picturable: true
   thai: สวรรค์
+  image_query: sunbeams through clouds bright sky
 - category: Society
   classifier: ฉบับ
   gloss: newspaper
   part_of_speech: noun
   picturable: true
   thai: หนังสือพิมพ์
+  image_query: man reading folded newspaper
 - category: Society
   classifier: แห่ง
   emphasis: true
@@ -4643,45 +5331,53 @@
   picturable: true
   split_of: store
   thai: ห้าง
+  image_query: shopping mall interior with escalators
 - category: Society
   gloss: exercise
   part_of_speech: verb
   picturable: true
   thai: ออกกำลังกาย
+  image_query: woman lifting weights in gym
 - category: Society
   classifier: เกม
   gloss: game
   part_of_speech: noun
   picturable: true
   thai: เกม
+  image_query: friends playing board game together
 - category: Society
   classifier: บาท
   gloss: money
   part_of_speech: noun
   picturable: true
   thai: เงิน
+  image_query: stacks of coins and cash
 - category: Society
   emphasis: true
   gloss: to treat someone, pay for someone's meal
   part_of_speech: verb
   picturable: true
   thai: เลี้ยง
+  image_query: man paying restaurant bill for friends
 - category: Society
   gloss: race, compete
   part_of_speech: verb
   picturable: true
   thai: แข่ง
+  image_query: runners racing toward finish line
 - category: Society
   gloss: get married (marriage)
   part_of_speech: verb
   picturable: true
   thai: แต่งงาน
+  image_query: couple exchanging rings at altar
 - category: Society
   classifier: ใบ
   gloss: banknote (bill)
   part_of_speech: noun
   picturable: true
   thai: แบงค์
+  image_query: fanned stack of paper banknotes
 - category: Society
   classifier: เครื่อง
   gloss: telephone
@@ -4689,12 +5385,14 @@
   picturable: true
   split_of: phone
   thai: โทรศัพท์
+  image_query: old landline telephone with handset
 - category: Time
   classifier: คืน
   gloss: night (nighttime)
   part_of_speech: noun
   picturable: true
   thai: กลางคืน
+  image_query: dark city skyline under stars
 - category: Time
   classifier: ขวบ
   gloss: year (of age, for children)
@@ -4716,6 +5414,7 @@
   picturable: true
   split_of: night
   thai: คืน
+  image_query: hotel bed lit at night
 - category: Time
   classifier: ตอน
   gloss: evening (after dark, dusk)
@@ -4723,18 +5422,21 @@
   picturable: true
   split_of: evening
   thai: ค่ำ
+  image_query: dusky sky after sunset
 - category: Time
   classifier: ชั่วโมง
   gloss: hour (duration)
   part_of_speech: noun
   picturable: true
   thai: ชั่วโมง
+  image_query: hourglass with sand flowing
 - category: Time
   emphasis: true
   gloss: late at night
   part_of_speech: adjective
   picturable: true
   thai: ดึก
+  image_query: person awake in dark bedroom
 - category: Time
   gloss: now
   part_of_speech: other
@@ -4746,6 +5448,7 @@
   part_of_speech: noun
   picturable: true
   thai: นาที
+  image_query: kitchen egg timer on counter
 - category: Time
   emphasis: true
   gloss: (for) a long time
@@ -4758,18 +5461,21 @@
   part_of_speech: noun
   picturable: true
   thai: นาฬิกา
+  image_query: round wall clock and wristwatch
 - category: Time
   classifier: ตอน
   gloss: afternoon
   part_of_speech: noun
   picturable: true
   thai: บ่าย
+  image_query: sunny park with long afternoon shadows
 - category: Time
   classifier: ปี
   gloss: year
   part_of_speech: noun
   picturable: true
   thai: ปี
+  image_query: same tree in four seasons
 - category: Time
   gloss: tomorrow
   part_of_speech: other
@@ -4782,12 +5488,14 @@
   part_of_speech: noun
   picturable: true
   thai: มื้อ
+  image_query: family sharing a meal together
 - category: Time
   classifier: วัน
   gloss: day
   part_of_speech: noun
   picturable: true
   thai: วัน
+  image_query: bright daytime sky over field
 - category: Time
   gloss: today
   part_of_speech: other
@@ -4799,6 +5507,7 @@
   part_of_speech: noun
   picturable: true
   thai: วินาที
+  image_query: stopwatch held in hand
 - category: Time
   classifier: สัปดาห์
   gloss: week (formal)
@@ -4806,18 +5515,21 @@
   picturable: true
   split_of: week
   thai: สัปดาห์
+  image_query: hands flipping desk calendar pages
 - category: Time
   classifier: อาทิตย์
   gloss: week (colloquial)
   part_of_speech: noun
   picturable: true
   thai: อาทิตย์
+  image_query: finger marking days on calendar
 - category: Time
   classifier: ตอน
   gloss: morning
   part_of_speech: noun
   picturable: true
   thai: เช้า
+  image_query: sunrise over misty green field
 - category: Time
   emphasis: true
   gloss: in a moment, just a sec
@@ -4830,12 +5542,14 @@
   part_of_speech: noun
   picturable: true
   thai: เดือน
+  image_query: wall calendar page with dates
 - category: Time
   classifier: ตอน
   gloss: noon
   part_of_speech: noun
   picturable: true
   thai: เที่ยง
+  image_query: sun directly overhead at midday
 - category: Time
   emphasis: true
   gloss: a moment ago, just now
@@ -4853,6 +5567,7 @@
   part_of_speech: noun
   picturable: true
   thai: เย็น
+  image_query: golden sunset over city rooftops
 - category: Time
   classifier: ช่วง
   gloss: time (abstract, clock time)
@@ -4866,6 +5581,7 @@
   picturable: true
   split_of: hour
   thai: โมง
+  image_query: close-up clock face hands
 - category: Transportation
   classifier: ครั้ง
   gloss: transportation; travel (getting from place to place)
@@ -4879,12 +5595,14 @@
   part_of_speech: noun
   picturable: true
   thai: คนขับ
+  image_query: man driving car behind steering wheel
 - category: Transportation
   classifier: คัน
   gloss: bicycle
   part_of_speech: noun
   picturable: true
   thai: จักรยาน
+  image_query: bicycle parked on street
 - category: Transportation
   classifier: ซอย
   emphasis: true
@@ -4893,24 +5611,28 @@
   picturable: true
   split_of: street
   thai: ซอย
+  image_query: narrow alley between shophouses
 - category: Transportation
   classifier: ใบ
   gloss: ticket
   part_of_speech: noun
   picturable: true
   thai: ตั๋ว
+  image_query: paper ticket held in hand
 - category: Transportation
   classifier: คัน
   gloss: tuk-tuk
   part_of_speech: noun
   picturable: true
   thai: ตุ๊กตุ๊ก
+  image_query: three-wheeled tuk-tuk on street
 - category: Transportation
   classifier: สาย
   gloss: road; street
   part_of_speech: noun
   picturable: true
   thai: ถนน
+  image_query: paved road with lane markings
 - category: Transportation
   classifier: ที่
   emphasis: true
@@ -4918,24 +5640,28 @@
   part_of_speech: noun
   picturable: true
   thai: ที่จอดรถ
+  image_query: empty marked parking space
 - category: Transportation
   classifier: ลิตร
   gloss: gasoline; fuel
   part_of_speech: noun
   picturable: true
   thai: น้ำมัน
+  image_query: fuel nozzle filling car tank
 - category: Transportation
   classifier: คัน
   gloss: motorcycle
   part_of_speech: noun
   picturable: true
   thai: มอเตอร์ไซค์
+  image_query: motorcycle parked on roadside
 - category: Transportation
   classifier: เส้น
   gloss: tire
   part_of_speech: noun
   picturable: true
   thai: ยางรถ
+  image_query: close-up of car tire
 - category: Transportation
   classifier: คัน
   gloss: car (everyday generic word for a vehicle)
@@ -4943,6 +5669,7 @@
   picturable: true
   split_of: car
   thai: รถ
+  image_query: car on a street
 - category: Transportation
   classifier: คัน
   gloss: pickup truck
@@ -4950,12 +5677,14 @@
   picturable: true
   split_of: truck
   thai: รถกระบะ
+  image_query: pickup truck with open bed
 - category: Transportation
   classifier: คัน
   gloss: van; minibus
   part_of_speech: noun
   picturable: true
   thai: รถตู้
+  image_query: white passenger van
 - category: Transportation
   classifier: คัน
   gloss: bus (long-distance coach)
@@ -4963,6 +5692,7 @@
   picturable: true
   split_of: bus
   thai: รถทัวร์
+  image_query: long-distance coach bus on highway
 - category: Transportation
   classifier: คัน
   gloss: truck (large cargo truck / lorry)
@@ -4970,6 +5700,7 @@
   picturable: true
   split_of: truck
   thai: รถบรรทุก
+  image_query: large cargo truck on highway
 - category: Transportation
   classifier: คัน
   gloss: car (sedan / passenger car specifically)
@@ -4977,6 +5708,7 @@
   picturable: true
   split_of: car
   thai: รถเก๋ง
+  image_query: four-door sedan car
 - category: Transportation
   classifier: คัน
   emphasis: true
@@ -4984,6 +5716,7 @@
   part_of_speech: noun
   picturable: true
   thai: รถเข็น
+  image_query: street food push cart
 - category: Transportation
   classifier: คัน
   gloss: bus (city bus)
@@ -4991,60 +5724,70 @@
   picturable: true
   split_of: bus
   thai: รถเมล์
+  image_query: city bus at bus stop
 - category: Transportation
   classifier: ขบวน
   gloss: train
   part_of_speech: noun
   picturable: true
   thai: รถไฟ
+  image_query: train on railway tracks
 - category: Transportation
   classifier: ขบวน
   gloss: skytrain; electric train (BTS/MRT)
   part_of_speech: noun
   picturable: true
   thai: รถไฟฟ้า
+  image_query: elevated electric train on rails
 - category: Transportation
   classifier: สถานี
   gloss: station (train/bus)
   part_of_speech: noun
   picturable: true
   thai: สถานี
+  image_query: train station platform with tracks
 - category: Transportation
   classifier: แห่ง
   gloss: airport
   part_of_speech: noun
   picturable: true
   thai: สนามบิน
+  image_query: airport terminal with planes outside
 - category: Transportation
   classifier: คัน
   gloss: songthaew (shared pickup-truck taxi)
   part_of_speech: noun
   picturable: true
   thai: สองแถว
+  image_query: pickup truck with bench seats passengers
 - category: Transportation
   classifier: ลำ
   gloss: airplane
   part_of_speech: noun
   picturable: true
   thai: เครื่องบิน
+  image_query: airplane flying in sky
 - category: Transportation
   classifier: เครื่อง
   gloss: engine
   part_of_speech: noun
   picturable: true
   thai: เครื่องยนต์
+  image_query: open car hood showing engine
 - category: Transportation
   classifier: ลำ
   gloss: boat; ship
   part_of_speech: noun
   picturable: true
   thai: เรือ
+  image_query: wooden boat on water
 - category: Transportation
   classifier: คัน
   gloss: taxi
   part_of_speech: noun
   picturable: true
   thai: แท็กซี่
+  image_query: colorful taxi cab on street
 - category: Transportation
   classifier: คน
   emphasis: true
@@ -5052,63 +5795,75 @@
   part_of_speech: noun
   picturable: true
   thai: ไรเดอร์
+  image_query: motorbike rider with food delivery box
 - category: Verbs
   gloss: eat
   part_of_speech: verb
   picturable: true
   thai: กิน
+  image_query: person eating food with spoon
 - category: Verbs
   gloss: drive (a car)
   part_of_speech: verb
   picturable: true
   thai: ขับรถ
+  image_query: person driving car steering wheel
 - category: Verbs
   gloss: sell
   part_of_speech: verb
   picturable: true
   thai: ขาย
+  image_query: vendor handing goods to customer
 - category: Verbs
   gloss: ride (astride — bicycle, motorbike, horse)
   part_of_speech: verb
   picturable: true
   split_of: ride
   thai: ขี่
+  image_query: person riding motorbike down road
 - category: Verbs
   gloss: think
   part_of_speech: verb
   picturable: true
   thai: คิด
+  image_query: person with hand on chin thinking
 - category: Verbs
   gloss: kill
   part_of_speech: verb
   picturable: true
   thai: ฆ่า
+  image_query: hunter aiming rifle at prey
 - category: Verbs
   gloss: pay
   part_of_speech: verb
   picturable: true
   thai: จ่าย
+  image_query: hand giving cash to cashier
 - category: Verbs
   emphasis: true
   gloss: to taste, to try a bite
   part_of_speech: verb
   picturable: true
   thai: ชิม
+  image_query: chef tasting soup from spoon
 - category: Verbs
   gloss: buy
   part_of_speech: verb
   picturable: true
   thai: ซื้อ
+  image_query: shopper buying fruit at market
 - category: Verbs
   gloss: drink
   part_of_speech: verb
   picturable: true
   thai: ดื่ม
+  image_query: woman drinking water from glass
 - category: Verbs
   gloss: follow
   part_of_speech: verb
   picturable: true
   thai: ตาม
+  image_query: ducklings following mother duck
 - category: Verbs
   emphasis: true
   gloss: to deep-fry
@@ -5116,34 +5871,40 @@
   picturable: true
   split_of: fry
   thai: ทอด
+  image_query: chicken frying in hot oil
 - category: Verbs
   emphasis: true
   gloss: to cook (make a meal)
   part_of_speech: verb
   picturable: true
   thai: ทำกับข้าว
+  image_query: woman cooking meal in kitchen
 - category: Verbs
   gloss: work
   part_of_speech: verb
   picturable: true
   thai: ทำงาน
+  image_query: man working at office desk
 - category: Verbs
   gloss: ride (as a passenger — bus, taxi, train); sit
   part_of_speech: verb
   picturable: true
   split_of: ride
   thai: นั่ง
+  image_query: passengers sitting on a bus
 - category: Verbs
   gloss: say, tell (someone something)
   part_of_speech: verb
   picturable: true
   split_of: speak/say
   thai: บอก
+  image_query: woman whispering into man's ear
 - category: Verbs
   gloss: fly
   part_of_speech: verb
   picturable: true
   thai: บิน
+  image_query: bird flying in the sky
 - category: Verbs
   emphasis: true
   gloss: to stir-fry
@@ -5151,60 +5912,72 @@
   picturable: true
   split_of: fry
   thai: ผัด
+  image_query: vegetables tossed in hot wok
 - category: Verbs
   gloss: speak, talk
   part_of_speech: verb
   picturable: true
   split_of: speak/say
   thai: พูด
+  image_query: two people talking together
 - category: Verbs
   gloss: smile
   part_of_speech: verb
   picturable: true
   thai: ยิ้ม
+  image_query: woman smiling at camera
 - category: Verbs
   gloss: cry
   part_of_speech: verb
   picturable: true
   thai: ร้องไห้
+  image_query: child crying with tears
 - category: Verbs
   gloss: run
   part_of_speech: verb
   picturable: true
   thai: วิ่ง
+  image_query: man running on a track
 - category: Verbs
   gloss: swim
   part_of_speech: verb
   picturable: true
   thai: ว่ายน้ำ
+  image_query: swimmer swimming in pool
 - category: Verbs
   emphasis: true
   gloss: to order (food, in a restaurant)
   part_of_speech: verb
   picturable: true
   thai: สั่ง
+  image_query: diner ordering from restaurant waiter
 - category: Verbs
   gloss: stop
   part_of_speech: verb
   picturable: true
   thai: หยุด
+  image_query: traffic officer raising palm halt
 - category: Verbs
   gloss: laugh
   part_of_speech: verb
   picturable: true
   thai: หัวเราะ
+  image_query: friends laughing out loud together
 - category: Verbs
   gloss: walk
   part_of_speech: verb
   picturable: true
   thai: เดิน
+  image_query: person walking along a path
 - category: Verbs
   gloss: play
   part_of_speech: verb
   picturable: true
   thai: เล่น
+  image_query: children playing with ball outdoors
 - category: Verbs
   gloss: go
   part_of_speech: verb
   picturable: true
   thai: ไป
+  image_query: person walking away down road

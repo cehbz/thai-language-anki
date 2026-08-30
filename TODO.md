@@ -9,6 +9,33 @@
   and generation — track the learner's actual confusions, with raised
   speaker-diversity targets on confused contrasts.
 
+## Thai register questions needing expert input (not code)
+
+These were decided provisionally so generation could continue; each needs
+deeper analysis by fable, and likely research plus a local speaker.
+
+- **Politeness particle spelling.** The generator wrote คับ at the end of
+  152 sentences; those are normalized to ครับ and `lang/nonstandard-particle`
+  now enforces it. Provisional reasoning: the deck teaches reading, and TTS
+  pronounces ครับ with the natural reduction anyway. Open: whether the káp
+  reduction heard around Chiang Mai is general colloquial Thai or a Northern
+  feature, and whether a deck aimed at colloquial daily speech should ever
+  show the chat spelling. Investigate current Northern Thai pedagogy: what do
+  Chiang Mai language schools put on the page?
+- **First-person register.** ~204 sentences use ฉัน, which the word list
+  glosses "female speaker, or casual general"; production cards are being
+  regenerated with ผม and a `usage` field splits production from
+  comprehension. Open: whether ฉัน is genuinely register-neutral in casual
+  Northern speech, and what proportion of comprehension-only material a deck
+  should carry.
+- **Female particles.** 33 sentences end in ค่ะ, kept as comprehension
+  examples. Open: whether comprehension-only cards should differ in card
+  template (recognition only, never a production prompt), and whether other
+  gendered forms need the same treatment.
+- **Kam Mueang vs Central Thai.** The deck teaches Central Thai to a learner
+  living in a Kam Mueang-speaking region. Nothing in the pipeline knows this.
+  Worth deciding deliberately rather than by default.
+
 ## Execution-time follow-ups (generator is built; these are real runs, not code)
 
 - Curate `data/pair_seeds.yaml` for `tone:high-falling`, the one contrast

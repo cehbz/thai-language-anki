@@ -251,3 +251,16 @@ def test_incomplete_media_still_raises_without_the_flag(tmp_path):
     _write_media(deck, skip="images/pw-1.jpg")
     with pytest.raises(CompileError):
         compile_deck(deck, _manifest(), tmp_path / "o.apkg", FREQ, PAIR_BY_NOTE, base=0)
+
+
+def test_sentence_cards_are_tagged_with_their_usage(tmp_path):
+    """Comprehension-only sentences must be filterable in Anki: they model
+    speech to recognize, not to rehearse saying."""
+    deck = _deck(tmp_path)
+    deck.sentences[0].usage = "comprehension"
+    _write_media(deck)
+    out = tmp_path / "usage.apkg"
+    compile_deck(deck, _manifest(), out, FREQ, PAIR_BY_NOTE, base=0)
+    data = read_apkg(out)
+    tags = " ".join(n["tags"] for n in data["notes"])
+    assert "usage::comprehension" in tags

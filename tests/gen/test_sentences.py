@@ -197,3 +197,91 @@ def test_fill_sentences_one_plain_sentence_per_thai_even_with_duplicate_words(tm
     res = fill_sentences(_gaps([]), deck, Ctx())
     assert res.added == 3
     assert [n.target for n in deck.sentences] == ["w0", "w1", "w2"]
+
+
+def test_prompt_pins_standard_particle_spelling_and_collocation():
+    """54 of 140 judge rejections were the chat spelling คับ for ครับ, and
+    most of the rest were unnatural collocations or verbless clauses."""
+    from thai_deck_gen.producers.sentences import _prompt
+    prompt = _prompt("กิน", {"ข้าว"}, ["ตัวอย่าง"])
+    assert "ครับ" in prompt and "คับ" in prompt      # names the defect explicitly
+    assert "collocation" in prompt.lower()
+    assert "verb" in prompt.lower()
+
+
+def test_normalizes_the_chat_particle_to_the_standard_spelling():
+    """คับ at the end of an utterance is the chat spelling of ครับ. Elsewhere
+    it is the ordinary word for "tight", which must survive untouched."""
+    from thai_deck_gen.producers.sentences import normalize_particles
+    assert normalize_particles("ผมกินข้าวคับ") == "ผมกินข้าวครับ"
+    assert normalize_particles("ผมกินข้าวครับ") == "ผมกินข้าวครับ"
+    assert normalize_particles("รองเท้าของฉันคับค่ะ") == "รองเท้าของฉันคับค่ะ"
+    assert normalize_particles("เสื้อตัวนี้คับ") == "เสื้อตัวนี้ครับ"   # ambiguous: particle wins
+
+
+def test_prompt_varies_its_vocabulary_sample_per_target():
+    """Handing every call the same sorted first-100 known words is why 43%
+    of the deck opened with one of two frames."""
+    from thai_deck_gen.producers.sentences import _prompt
+    known = {f"w{i}" for i in range(200)}
+    a = _prompt("กิน", known, ["ตัวอย่าง"])
+    b = _prompt("ซื้อ", known, ["ตัวอย่าง"])
+    assert a != b
+    sample_a = a.split("Known vocabulary (sample): ")[1].split("\n")[0]
+    sample_b = b.split("Known vocabulary (sample): ")[1].split("\n")[0]
+    assert sample_a != sample_b                    # different words offered
+    assert _prompt("กิน", known, ["ตัวอย่าง"]) == a   # stable for one target
+
+
+def test_prompt_states_the_production_register():
+    from thai_deck_gen.producers.sentences import _prompt
+    prompt = _prompt("กิน", {"ข้าว"}, ["ตัวอย่าง"])
+    assert "ผม" in prompt and "ครับ" in prompt
+
+
+def test_prompt_lists_frames_to_avoid():
+    from thai_deck_gen.producers.sentences import _prompt
+    prompt = _prompt("กิน", {"ข้าว"}, ["ตัวอย่าง"], avoid=["คืนนี้ผมกินข้าว"])
+    assert "คืนนี้ผมกินข้าว" in prompt
+    assert "avoid" in prompt.lower() or "vary" in prompt.lower()
+
+
+def test_generation_offers_only_vocabulary_known_at_that_position(tmp_path):
+    """The generator must build from what the learner has met by the time
+    the sentence appears, or every sentence it writes fails the rule."""
+    from thai_deck_gen.producers.sentences import vocabulary_by_position
+    from thai_deck_eval.model.notes import Audio, PictureWordNote
+
+    def _w(thai, rank):
+        return PictureWordNote(
+            id=f"pw-{rank}", thai=thai, image="i.jpg",
+            audio=Audio(file="a.mp3", source="native", speaker="pending"),
+            frequency_rank=rank, category="Food")
+
+    words = [_w("ก", 3), _w("ข", 1), _w("ค", 2), _w("ง", 4)]
+    known_for = vocabulary_by_position(words, base=2)
+    assert known_for["ข"] == {"ข", "ค"}            # base of 2: the first two
+    assert known_for["ก"] == {"ข", "ค", "ก"}       # third word: itself included
+    assert known_for["ง"] == {"ข", "ค", "ก", "ง"}
+
+
+def test_vocabulary_sample_order_varies_per_target():
+    """Position in a long list is a bias: the same words at the top produce
+    the same sentences. Order is shuffled per target, not just membership."""
+    from thai_deck_gen.producers.sentences import _vocab_sample
+    known = {f"w{i:03d}" for i in range(300)}
+    a = _vocab_sample(known, "กิน")
+    b = _vocab_sample(known, "ซื้อ")
+    assert a != sorted(a)                       # not alphabetical
+    assert a != b
+    assert _vocab_sample(known, "กิน") == a     # deterministic per target
+
+
+def test_exemplars_vary_per_target():
+    """Showing every prompt the same three style references is uniformity
+    by construction."""
+    from thai_deck_gen.producers.sentences import _pick_exemplars
+    pool = [f"ประโยค{i}" for i in range(40)]
+    assert _pick_exemplars(pool, "กิน") != _pick_exemplars(pool, "ซื้อ")
+    assert _pick_exemplars(pool, "กิน") == _pick_exemplars(pool, "กิน")
+    assert len(_pick_exemplars(pool, "กิน")) == 3

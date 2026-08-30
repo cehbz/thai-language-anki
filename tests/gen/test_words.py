@@ -78,3 +78,21 @@ def test_fill_words_keeps_gloss_off_the_note(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["words"])
     fill_words(_gaps([]), deck, _ctx(tmp_path))
     assert all(n.gloss is None for n in deck.picture_words)
+
+
+def test_fill_words_honours_the_picturable_flag(tmp_path):
+    """A month name has no photograph, but "durian season" in the same
+    category does: picturable is per word, never per category."""
+    deck = new_deck(tmp_path / "d", "t", ["words"])
+    ctx = _ctx(tmp_path)
+    ctx.word_list = ctx.word_list + [
+        WordEntry(thai="มกรา", gloss="January", category="Months",
+                  part_of_speech="noun", classifier="เดือน", picturable=False)]
+    ctx.word_list = ctx.word_list + [
+        WordEntry(thai="หน้าทุเรียน", gloss="durian season", category="Months",
+                  part_of_speech="noun", classifier="หน้า")]
+    res = fill_words(_gaps([]), deck, ctx)
+    thai = [n.thai for n in deck.picture_words]
+    assert "มกรา" not in thai            # January: nothing to photograph
+    assert "หน้าทุเรียน" in thai          # durian season: photograph the durians
+    assert res.added == 4

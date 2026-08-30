@@ -9,7 +9,7 @@ from thai_deck_gen.llm import LlmError
 from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.report import Gaps
 
-PROMPT_VERSION = "sn1"
+PROMPT_VERSION = "sn2"
 
 # OPUS OpenSubtitles v2018 Thai monolingual corpus, hosted on CSC's object
 # storage (the canonical download path for OPUS mono corpora). Used as a
@@ -19,9 +19,46 @@ EXEMPLAR_URL = ("https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/"
                 "th.txt.gz")
 
 
+# Chat spellings of the polite particles. Only utterance-final position is
+# rewritten: คับ mid-sentence is the ordinary word for "tight".
+PARTICLE_FIXES = {"คับ": "ครับ", "คร้าบ": "ครับ", "ค๊าบ": "ครับ", "ค้าบ": "ครับ"}
+
+
+def normalize_particles(thai: str) -> str:
+    """Standard particle spelling, whatever register the model wrote in.
+
+    The deck teaches reading as well as listening, so the written form is
+    the standard one even where speech reduces it.
+    """
+    text = thai.rstrip()
+    for chat, standard in PARTICLE_FIXES.items():
+        if text.endswith(chat):
+            return text[: -len(chat)] + standard
+    return thai
+
+
 def known_vocab(deck: Deck) -> set[str]:
     """Picture-word thais introduced so far."""
     return {n.thai for n in deck.picture_words}
+
+
+def vocabulary_by_position(picture_words: list, base: int) -> dict[str, set[str]]:
+    """For each word, the vocabulary the learner has met when its sentence
+    appears.
+
+    Sentences start once `base` words are known and are scheduled after
+    their own target is introduced, so the vocabulary available to a
+    sentence is the first max(base, position) words of the introduction
+    order -- not the whole deck, which is what made every sentence a
+    potential wall of unseen words.
+    """
+    ranked = sorted(picture_words,
+                    key=lambda w: (w.frequency_rank is None, w.frequency_rank or 0))
+    out: dict[str, set[str]] = {}
+    for index, word in enumerate(ranked):
+        position = max(base, index + 1)
+        out[word.thai] = {w.thai for w in ranked[:position]}
+    return out
 
 
 def _matches_target(tok: str, target: str) -> bool:
@@ -46,19 +83,67 @@ def check_sentence(thai: str, target: str, known: set[str], tokenizer) -> str | 
     return None
 
 
+def _vocab_sample(known: set[str], target: str, size: int = 80) -> list[str]:
+    """A per-target slice of the known vocabulary.
+
+    Offering every call the same sorted first-100 words gave the model the
+    same raw material each time, and it built the same sentences out of it.
+    Seeded by target, so a given word's prompt is stable across runs.
+    """
+    words = sorted(known)
+    rng = random.Random(target)
+    if len(words) <= size:
+        rng.shuffle(words)
+        return words
+    sample = rng.sample(words, size)
+    rng.shuffle(sample)          # order is a bias too: the top of a long list
+    return sample                # is what the model reaches for first
+
+
+def _pick_exemplars(exemplars: list[str], target: str, count: int = 3) -> list[str]:
+    """A per-target draw from the exemplar pool.
+
+    Every prompt seeing the same three reference sentences is uniformity
+    built into the corpus before the model writes a word.
+    """
+    if len(exemplars) <= count:
+        return list(exemplars)
+    return random.Random(f"ex:{target}").sample(exemplars, count)
+
+
 def _prompt(target: str, known: set[str], exemplars: list[str],
-           feedback: str | None = None, theme: str | None = None) -> str:
-    sample = sorted(known)[:100]
+           feedback: str | None = None, theme: str | None = None,
+           avoid: list[str] | None = None) -> str:
+    sample = _vocab_sample(known, target)
     lines = [
         f"Target Thai word or grammar marker: {target}",
         f"Known vocabulary (sample): {', '.join(sample)}",
         "Exemplar sentences (register/style reference):",
-        *[f"- {e}" for e in exemplars[:3]],
+        *[f"- {e}" for e in _pick_exemplars(exemplars, target)],
         "Write ONE natural sentence in colloquial spoken Thai, "
         "informal-polite register, that uses the target word or marker and "
         "otherwise sticks to the known vocabulary.",
+        # Every constraint below is a defect the judge actually found in the
+        # first 732 sentences, not a precaution.
+        "Spell politeness particles the standard way: ครับ and ค่ะ. Never the "
+        "chat spellings คับ, คร้าบ, ค่า, ค๊า -- the deck teaches written "
+        "standard forms even in colloquial register.",
+        "Use collocations a native actually says: pair each verb with the "
+        "noun it normally takes, rather than a literal translation that is "
+        "merely grammatical.",
+        "The sentence must be a complete clause with a verb; do not juxtapose "
+        "a noun and a place adverb with the linking verb left out.",
+        "Say something a person would plausibly say. Avoid contrived "
+        "statements built only to contain the target word.",
+        "The learner speaks as a man: use ผม for \"I\" and ครับ as the "
+        "politeness particle, never ฉัน or ค่ะ.",
+        "Vary the sentence frame. Do not open with the same word or "
+        "construction as the sentences listed under 'Already in the deck'.",
         "Answer with ONLY the Thai sentence.",
     ]
+    if avoid:
+        lines.append("Already in the deck (do not echo these frames):")
+        lines.extend(f"- {a}" for a in avoid[:8])
     if theme:
         lines.append(f"Where it is natural, set the sentence in the context of {theme}.")
     if feedback:
@@ -71,17 +156,33 @@ def _next_note_id(deck: Deck, target: str) -> str:
     return f"sn-{target}-{n}"
 
 
+def recent_frames(deck: Deck, limit: int = 8) -> list[str]:
+    """A spread of sentences already in the deck, as frames to avoid.
+
+    Sampled across the deck rather than taken from one end, so the model
+    sees the shapes that actually recur.
+    """
+    sents = [n.thai for n in deck.sentences]
+    if len(sents) <= limit:
+        return sents
+    step = len(sents) // limit
+    return [sents[i * step] for i in range(limit)]
+
+
 def _generate(ctx, known: set[str], target: str,
              feedback: str | None = None,
-             theme: str | None = None) -> tuple[str | None, str | None]:
-    prompt = _prompt(target, known, ctx.exemplars, feedback, theme)
-    reply = ctx.llm.complete("sentences", PROMPT_VERSION, prompt).strip()
+             theme: str | None = None,
+             avoid: list[str] | None = None) -> tuple[str | None, str | None]:
+    prompt = _prompt(target, known, ctx.exemplars, feedback, theme, avoid)
+    reply = normalize_particles(ctx.llm.complete("sentences", PROMPT_VERSION,
+                                                 prompt).strip())
     reason = check_sentence(reply, target, known, ctx.tokenizer)
     if reason is None:
         return reply, None
     prompt = _prompt(target, known, ctx.exemplars,
-                     f"Previous attempt was rejected: {reason}", theme)
-    reply = ctx.llm.complete("sentences", PROMPT_VERSION, prompt).strip()
+                     f"Previous attempt was rejected: {reason}", theme, avoid)
+    reply = normalize_particles(ctx.llm.complete("sentences", PROMPT_VERSION,
+                                                 prompt).strip())
     reason = check_sentence(reply, target, known, ctx.tokenizer)
     if reason is None:
         return reply, None
@@ -99,7 +200,8 @@ def _new_note(deck: Deck, target: str, kind: str, thai: str,
         grammar_note=grammar_note)
 
 
-def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
+def fill_sentences(gaps: Gaps, deck: Deck, ctx,
+                   checkpoint=None, checkpoint_every: int = 25) -> ProducerResult:
     result = ProducerResult()
     base = ctx.config.sentence_base
     if len(deck.picture_words) < base:
@@ -108,6 +210,10 @@ def fill_sentences(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
         return result
 
     known = known_vocab(deck)
+    known_at = vocabulary_by_position(deck.picture_words, base)
+    ctx.known_at = known_at
+    ctx.checkpoint = checkpoint
+    ctx.checkpoint_every = checkpoint_every
     # An LlmError means the backend is unavailable (limit hit, CLI down):
     # keep whatever was generated so far and stop rather than failing
     # every remaining call one subprocess at a time.
@@ -128,12 +234,24 @@ def _add_new_word_sentences(deck: Deck, ctx, known: set[str],
         if word.thai in have_new_word:
             continue
         have_new_word.add(word.thai)      # one sentence per thai, even if the word repeats
-        thai, reason = _generate(ctx, known, word.thai)
+        at_position = getattr(ctx, "known_at", {}).get(word.thai, known)
+        thai, reason = _generate(ctx, at_position, word.thai,
+                                 avoid=recent_frames(deck))
         if thai is None:
             result.blocked.append(f"{word.thai}: {reason}")
             continue
         deck.sentences.append(_new_note(deck, word.thai, "new_word", thai))
         result.added += 1
+        _checkpoint(ctx, result)
+
+
+def _checkpoint(ctx, result: ProducerResult) -> None:
+    """Flush the deck periodically: these runs take hours and a kill that
+    loses every sentence generated so far is the expensive failure."""
+    fn = getattr(ctx, "checkpoint", None)
+    every = getattr(ctx, "checkpoint_every", 25)
+    if fn and result.added and result.added % every == 0:
+        fn()
 
 
 def _is_emphasized(ctx, word) -> bool:
@@ -158,7 +276,9 @@ def _add_themed_sentences(deck: Deck, ctx, known: set[str],
         note_id = f"sn-{word.thai}-themed"
         if note_id in have or not _is_emphasized(ctx, word):
             continue
-        thai, reason = _generate(ctx, known, word.thai, theme=emphasis.theme)
+        at_position = getattr(ctx, "known_at", {}).get(word.thai, known)
+        thai, reason = _generate(ctx, at_position, word.thai, theme=emphasis.theme,
+                                 avoid=recent_frames(deck))
         if thai is None:
             result.blocked.append(f"{word.thai} (themed): {reason}")
             continue
@@ -175,7 +295,8 @@ def _add_grammar_sentences(deck: Deck, ctx, known: set[str],
         marker, kind = gp["marker"], gp["kind"]
         if (marker, kind) in have_grammar:
             continue
-        thai, reason = _generate(ctx, known, marker)
+        thai, reason = _generate(ctx, known, marker,
+                                 avoid=recent_frames(deck))
         if thai is None:
             result.blocked.append(f"{marker}: {reason}")
             continue
@@ -191,8 +312,10 @@ def _regenerate_judged(gaps: Gaps, deck: Deck, ctx, known: set[str],
     for note in deck.sentences:
         if note.id not in judge_messages:
             continue
-        thai, reason = _generate(ctx, known, note.target,
-                                 feedback=f"Judge feedback: {judge_messages[note.id]}")
+        at_position = getattr(ctx, "known_at", {}).get(note.target, known)
+        thai, reason = _generate(ctx, at_position, note.target,
+                                 feedback=f"Judge feedback: {judge_messages[note.id]}",
+                                 avoid=recent_frames(deck))
         if thai is None:
             result.blocked.append(f"{note.id}: {reason}")
             continue

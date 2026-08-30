@@ -13,6 +13,7 @@ class SecretsConfig(BaseModel):
     forvo: str | None = None        # forvo pronunciations (native audio)
     google_tts: str | None = None   # google cloud text-to-speech (sentence audio)
     openai: str | None = None       # gpt-image-1 fallback for unillustrated words
+    anthropic: str | None = None    # api drafting, off the subscription quota
 
 
 class GenConfig(BaseModel):
@@ -26,6 +27,10 @@ class GenConfig(BaseModel):
     search_proxy: str | None = None   # e.g. socks5h://127.0.0.1:1080; image SEARCH only (Openverse blocks this egress)
     thai1000_apkg: str | None = None  # path to a thai1000 apkg, deck-root-relative
     forvo_request_limit: int | None = None  # max forvo lookups per run (free tier: 500/day)
+    image_candidates: int = 5      # candidates judged per picture word before one is kept
+    rulebook: str | None = None    # evaluator rulebook supplying the judge for image checks
+    llm_backend: str = "cli"       # cli spends subscription tokens (already paid for);
+                                   # api spends cash, for work the CLI can't do
     secrets: SecretsConfig = SecretsConfig()
 
 

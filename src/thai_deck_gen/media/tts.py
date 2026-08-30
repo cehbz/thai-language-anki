@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from pathlib import Path
 from typing import Protocol
 import requests
@@ -8,9 +9,20 @@ from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import AudioNeed
 from thai_deck_gen.producers import ProducerResult
 
+# Google's Thai voices. A deck whose every listening card speaks in one
+# synthetic voice teaches that voice, so sentences are spread across them.
+THAI_VOICES = ["th-TH-Neural2-C", "th-TH-Standard-A"]
+
+
+def pick_voice(note_id: str, voices: list[str]) -> str:
+    """Deterministic per note, so a re-run never re-synthesizes."""
+    digest = hashlib.sha256(note_id.encode()).digest()
+    return voices[digest[0] % len(voices)]
+
+
 class Tts(Protocol):
     voice: str
-    def synthesize(self, text: str) -> bytes: ...
+    def synthesize(self, text: str, voice: str | None = None) -> bytes: ...
 
 class GoogleTts:
     def __init__(self, api_key: str, voice: str = "th-TH-Neural2-C",
@@ -19,11 +31,11 @@ class GoogleTts:
         self.voice = voice
         self.http_post = http_post
 
-    def synthesize(self, text: str) -> bytes:
+    def synthesize(self, text: str, voice: str | None = None) -> bytes:
         url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={self.api_key}"
         body = {
             "input": {"text": text},
-            "voice": {"languageCode": "th-TH", "name": self.voice},
+            "voice": {"languageCode": "th-TH", "name": voice or self.voice},
             "audioConfig": {"audioEncoding": "MP3"},
         }
         resp = self.http_post(url, json=body, timeout=30)
@@ -37,7 +49,7 @@ def _find_note(deck: Deck, need: AudioNeed):
             return note
 
 def fill_tts(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
-            tts: Tts, today: str) -> ProducerResult:
+            tts: Tts, today: str, voices: list[str] | None = None) -> ProducerResult:
     result = ProducerResult()
     for need in needs:
         if need.native_required or need.family != "sentence":
@@ -45,17 +57,18 @@ def fill_tts(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
 
         try:
             note = _find_note(deck, need)
-            raw = tts.synthesize(need.text)
+            voice = pick_voice(need.note_id, voices) if voices else tts.voice
+            raw = tts.synthesize(need.text, voice)
             dst = deck.root / "media" / need.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             normalize_audio(raw, dst)
 
             manifest.record(MediaEntry(
                 file=f"media/{need.path}", channel="tts",
-                origin=f"google-tts:{tts.voice}",
-                speaker=f"tts:{tts.voice}", fetched=today))
+                origin=f"google-tts:{voice}",
+                speaker=f"tts:{voice}", fetched=today))
             note.audio.source = "tts"
-            note.audio.speaker = f"tts:{tts.voice}"
+            note.audio.speaker = f"tts:{voice}"
             result.changed += 1
         except (AudioError, requests.RequestException):
             result.blocked.append(need.note_id)

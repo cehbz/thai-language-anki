@@ -63,6 +63,7 @@ class WordEntry(BaseModel):
     part_of_speech: Literal["noun", "verb", "adjective", "other"]
     classifier: str | None = None
     picturable: bool = True
+    image_query: str | None = None   # what a photo of this word looks like
     split_of: str | None = None
     emphasis: bool = False         # added by the emphasis extension pass
 
@@ -205,3 +206,68 @@ def extend_word_list(llm, categories_path: Path, frequency_path: Path,
         _write_entries(entries, out_path)
     _write_entries(entries, out_path)
     return sum(1 for e in entries if e.emphasis)
+
+
+IMAGE_QUERY_PROMPT = """You are writing image-search phrases for a Thai
+vocabulary deck, category "{category}".
+
+For each word below, give an English phrase that describes WHAT A PHOTOGRAPH
+OF THAT CONCEPT LOOKS LIKE -- not the word itself. The phrase is fed to a
+stock-photo search, so it must name something a camera can capture.
+
+- Concrete words: name the object plus enough context to disambiguate the
+  sense ("orange" is a fruit here, not a colour or a phone network).
+- Abstract words, pronouns and verbs: describe a scene that depicts them.
+  "I" -> a person pointing at their own chest. "go" -> a person walking away
+  down a road. "tomorrow" -> a calendar page being turned.
+- Never ask for text, writing, captions or logos in the image.
+- 3 to 7 words. English only.
+
+Words:
+{words}
+
+Respond with a YAML mapping ONLY (no prose, no code fences), Thai word as
+the key and the phrase as the value.
+"""
+
+
+def draft_image_queries(llm, word_list_path: Path,
+                        warnings: list[str] | None = None) -> int:
+    """Fill in `image_query` for picturable entries that lack one.
+
+    Drafted per category and written back after each, so a run killed by a
+    session limit keeps everything it has already drafted. Existing phrases
+    are never redrafted -- the word list stays a hand-editable artifact.
+    """
+    warnings = warnings if warnings is not None else []
+    path = Path(word_list_path)
+    rows = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    by_category: dict[str, list[dict]] = {}
+    for row in rows:
+        if row.get("image_query") or not row.get("picturable", True):
+            continue
+        by_category.setdefault(row.get("category", ""), []).append(row)
+
+    filled = 0
+    for category, pending in by_category.items():
+        listing = "\n".join(
+            f"- {r['thai']}: {r.get('gloss', '')} ({r.get('part_of_speech', '')})"
+            for r in pending)
+        response = llm.complete(
+            IMAGE_QUERY_PROMPT.format(category=category, words=listing))
+        try:
+            drafted = yaml.safe_load(_strip_fences(response)) or {}
+        except yaml.YAMLError as exc:
+            warnings.append(f"{category}: unparseable image-query response: {exc}")
+            continue
+        if not isinstance(drafted, dict):
+            warnings.append(f"{category}: image-query response was not a mapping")
+            continue
+        for row in pending:
+            phrase = drafted.get(row["thai"])
+            if isinstance(phrase, str) and phrase.strip():
+                row["image_query"] = phrase.strip()
+                filled += 1
+        path.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8")
+    return filled

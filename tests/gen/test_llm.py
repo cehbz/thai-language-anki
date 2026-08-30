@@ -88,3 +88,47 @@ def _runner_fail_json(cmd, **kw):
 def test_cli_backend_failure_reports_the_result_text_from_json_stdout():
     with pytest.raises(LlmError, match=r"^You have hit your usage limit"):
         CliBackend(runner=_runner_fail_json).complete("hi")
+
+
+# --- API backend: keeps drafting off the subscription quota ---
+
+class _Block:
+    type = "text"
+    def __init__(self, text): self.text = text
+
+
+class _Msg:
+    def __init__(self, text): self.content = [_Block(text)]
+
+
+class FakeAnthropic:
+    def __init__(self, reply="ok"):
+        self.calls = []
+        outer = self
+        class _Messages:
+            def create(self, **kw):
+                outer.calls.append(kw)
+                return _Msg(reply)
+        self.messages = _Messages()
+
+
+def test_api_backend_returns_text_and_passes_the_model():
+    from thai_deck_gen.llm import ApiBackend
+    client = FakeAnthropic("drafted")
+    out = ApiBackend(model="claude-sonnet-5", client=client).complete("prompt")
+    assert out == "drafted"
+    assert client.calls[0]["model"] == "claude-sonnet-5"
+    assert client.calls[0]["messages"][0]["content"] == "prompt"
+
+
+def test_api_backend_surfaces_failures_as_llm_error():
+    from thai_deck_gen.llm import ApiBackend, LlmError
+
+    class Boom:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("no credit")
+
+    with pytest.raises(LlmError):
+        ApiBackend(model="claude-sonnet-5", client=Boom()).complete("p")

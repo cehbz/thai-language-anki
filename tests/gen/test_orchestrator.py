@@ -182,7 +182,7 @@ def test_generate_writes_content_before_media_dispatch(tmp_path, monkeypatch):
 def test_dispatch_media_passes_word_list_glosses_to_image_scan(tmp_path, monkeypatch):
     from thai_deck_gen.wordlist import WordEntry
     seen = {}
-    def fake_pending_images(deck, flagged=None, glosses=None):
+    def fake_pending_images(deck, flagged=None, glosses=None, image_queries=None):
         seen["glosses"] = glosses
         return []
     monkeypatch.setattr(orchestrator, "pending_images", fake_pending_images)
@@ -219,7 +219,7 @@ def test_dispatch_media_keeps_provenance_for_media_written_before_a_crash(tmp_pa
     it has already written files to disk."""
     from thai_deck_gen.media.manifest import Manifest, MediaEntry
 
-    def fake_tts(needs, deck, manifest, tts, today):
+    def fake_tts(needs, deck, manifest, tts, today, voices=None):
         manifest.record(MediaEntry(file="media/audio/sentences/a.mp3", channel="tts",
                                    origin="google", fetched=today))
         return ProducerResult(changed=1)

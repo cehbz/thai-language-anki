@@ -34,6 +34,8 @@ class GenContext:
     adjudication_queue: Path
     targets_path: Path                        # spelling_targets.yaml, for fill_spelling
     emphasis: Emphasis | None = None          # data/emphasis.yaml, if present
+    image_query_hints: dict[str, str] = field(default_factory=dict)
+    image_candidates: int = 5
     thai1000_apkg: Path | None = None
     secrets: SecretStore = field(default_factory=SecretStore)
     imagegen: object | None = None
@@ -129,6 +131,10 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
     grammar_points = (yaml.safe_load(grammar_points_path.read_text(encoding="utf-8")) or []
                       if grammar_points_path.exists() else [])
 
+    hints_path = data_dir / "image_query_hints.yaml"
+    image_query_hints = (yaml.safe_load(hints_path.read_text(encoding="utf-8")) or {}
+                        if hints_path.exists() else {})
+
     exemplars_path = deck_root / "work" / "exemplars.txt"
     exemplars = load_exemplars(exemplars_path) if exemplars_path.exists() else []
 
@@ -141,6 +147,8 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         pair_seeds=pair_seeds, grammar_points=grammar_points, exemplars=exemplars,
         config=config, data_dir=data_dir,
         emphasis=load_emphasis(data_dir / "emphasis.yaml"),
+        image_query_hints=image_query_hints,
+        image_candidates=config.image_candidates,
         adjudication_queue=deck_root / "work" / "ipa_adjudication.yaml",
         targets_path=data_dir / "spelling_targets.yaml",
         thai1000_apkg=_resolve_thai1000_apkg(deck_root, config),
@@ -148,6 +156,22 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         http_get=http_get,
         imgfetch=ImgFetch(config.imgfetch),
     )
+
+
+def image_judge_for(deck_root: Path, config: GenConfig):
+    """Judge that vets image candidates, or None when no rulebook is configured.
+
+    Built from the evaluator's rulebook so judge model, backend and key live
+    in one place rather than being restated in gen.yaml.
+    """
+    if not config.rulebook:
+        return None
+    from thai_deck_eval.cli import build_judge
+    from thai_deck_eval.config import load_rulebook
+    path = Path(config.rulebook).expanduser()
+    if not path.is_absolute():
+        path = Path(deck_root) / path
+    return build_judge(load_rulebook(path))
 
 
 def imagegen_for(ctx: GenContext):

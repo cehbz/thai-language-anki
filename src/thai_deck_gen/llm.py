@@ -47,6 +47,32 @@ class CliBackend:
             raise LlmError(f"unparseable claude output: {exc}") from exc
 
 
+class ApiBackend:
+    """Drafting through the Anthropic API rather than the `claude` CLI.
+
+    The CLI path spends subscription quota and drags its whole harness
+    prompt into every call; this one sends the prompt and nothing else.
+    """
+
+    def __init__(self, model: str, api_key: str | None = None, client=None):
+        self.model = model
+        if client is None:
+            import anthropic
+            client = (anthropic.Anthropic(api_key=api_key) if api_key
+                      else anthropic.Anthropic())
+        self.client = client
+
+    def complete(self, prompt: str) -> str:
+        try:
+            message = self.client.messages.create(
+                model=self.model, max_tokens=8192,
+                messages=[{"role": "user", "content": prompt}])
+        except Exception as exc:
+            raise LlmError(f"api backend failed: {exc}") from exc
+        return "".join(b.text for b in message.content
+                       if getattr(b, "type", None) == "text")
+
+
 class CachedLlm:
     def __init__(self, inner: Llm, db_path: Path, model: str):
         self.inner, self.model, self.calls = inner, model, 0

@@ -1,0 +1,25 @@
+# Category qualifiers appended to the English gloss when searching for images.
+# The gloss alone conflates senses ("orange" returns an orange tabby cat);
+# the category the word already carries disambiguates it.
+Animals: animal
+Art: art
+Beverages: drink
+Body: body part
+Clothing: clothing
+Colors: color
+Directions: direction
+Electronics: device
+Food: food
+Home: household
+Jobs: occupation
+Locations: place
+Materials: material
+Math/Measurements: measurement
+Nature: nature
+People: person
+Plants: plant
+Society: society
+Sports: sport
+Time: time
+Transportation: vehicle
+Weather: weather
