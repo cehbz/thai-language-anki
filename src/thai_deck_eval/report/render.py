@@ -10,6 +10,9 @@ def render_text(rep: Report) -> str:
              f"stages  ran: {', '.join(rep.stages_run) or '-'}"
              + (f"   skipped: {', '.join(rep.stages_skipped)}"
                 if rep.stages_skipped else "")]
+    if rep.waived:
+        lines.append(f"waived  {len(rep.waived)} finding(s) reviewed and accepted "
+                     f"(waivers.yaml)")
     for sev in (Severity.ERROR, Severity.WARN, Severity.INFO):
         fs = [f for f in rep.findings if f.severity == sev]
         if fs:

@@ -50,3 +50,14 @@ def test_malformed_rulebook_exit_2(tmp_path, monkeypatch):
     assert r.exit_code == 2
     assert "error:" in r.output
     assert "Traceback" not in r.output
+
+
+def test_build_judge_wires_each_backend():
+    """The CLI's judge construction has no other test: a rename here breaks
+    every real run while the unit suite stays green."""
+    from thai_deck_eval.cli import build_judge
+    from thai_deck_eval.config import JudgeConfig, RulebookConfig
+    from thai_deck_eval.judge.core import FakeJudge
+
+    cfg = RulebookConfig(judge=JudgeConfig(backend="fake"))
+    assert isinstance(build_judge(cfg), FakeJudge)

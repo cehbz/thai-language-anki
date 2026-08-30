@@ -4,6 +4,7 @@ from .context import EvalContext
 from .findings import Dimension, Finding, Metric, Severity, Stage
 from .registry import rules_for
 from ..model.deck import DeckSchemaError, load_deck
+from ..waivers import load_waivers, partition
 
 ORDER = [Stage.MECHANICAL, Stage.LINGUISTIC, Stage.METHOD, Stage.JUDGE]
 
@@ -23,6 +24,7 @@ class EvalResult:
     metrics: list[Metric] = field(default_factory=list)
     stages_run: list[Stage] = field(default_factory=list)
     stages_skipped: list[Stage] = field(default_factory=list)
+    waived: list[Finding] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -49,12 +51,24 @@ def run_pipeline(ctx: EvalContext, stages: list[Stage] | None = None) -> EvalRes
             res.stages_skipped.append(stage)
             skipped.add(stage.value)
             continue
-        start = len(res.findings)
+        produced: list[Finding] = []
         for rd in rules_for(stage):
             for item in rd.fn(ctx) or []:
-                (res.metrics if isinstance(item, Metric) else res.findings).append(item)
+                (res.metrics if isinstance(item, Metric) else produced).append(item)
+
+        # Waivers apply before the gate check, so a reviewed-and-accepted
+        # error blocks neither the gate nor the stages that depend on it.
+        kept, waived, stale = partition(produced, ctx.deck, ctx.waivers)
+        res.findings.extend(kept)
+        res.waived.extend(waived)
+        for waiver in stale:
+            res.findings.append(Finding(
+                rule="waiver/stale", severity=Severity.INFO,
+                dimension=Dimension.INTEGRITY, note_id=waiver.note_id,
+                message=(f"waiver for {waiver.rule} no longer matches this note's "
+                         f"image; re-review it or drop the waiver")))
         res.stages_run.append(stage)
-        if any(f.severity == Severity.ERROR for f in res.findings[start:]):
+        if any(f.severity == Severity.ERROR for f in kept):
             errored.add(stage.value)
     return res
 
@@ -67,4 +81,7 @@ def evaluate_path(path: Path, ctx_factory, stages=None) -> EvalResult:
                                 dimension=Dimension.INTEGRITY, message=i)
                         for i in e.issues]
         return res
-    return run_pipeline(ctx_factory(deck), stages=stages)
+    ctx = ctx_factory(deck)
+    if not ctx.waivers:
+        ctx.waivers = load_waivers(deck.root)
+    return run_pipeline(ctx, stages=stages)

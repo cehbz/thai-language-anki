@@ -146,20 +146,55 @@ def _boundary_known(tok: str, known: set[str]) -> bool:
     return tok in known or any(
         tok.startswith(k) or tok.endswith(k) for k in known)
 
+def introduction_order(deck) -> list:
+    """Picture words in the order the learner meets them.
+
+    Frequency rank is the same signal the compiler orders cards by; unranked
+    words come last, as they do there.
+    """
+    return sorted(deck.picture_words,
+                  key=lambda w: (w.frequency_rank is None, w.frequency_rank or 0))
+
+
+def vocabulary_at(ranked: list, position: int) -> set[str]:
+    return {w.thai for w in ranked[:position]}
+
+
 @rule("meth/new-elements", Stage.METHOD, Dimension.METHOD, Severity.WARN)
 def new_elements(ctx):
+    """Words a sentence uses before the learner has met them.
+
+    Seeding this with the whole finished deck made the rule vacuous: a
+    sentence scheduled for week one could borrow a word from month six and
+    nothing objected. The vocabulary is the one available at the sentence's
+    own position -- its target's place in the introduction order, or the
+    sentence base, whichever comes later.
+    """
     if ctx.tokenizer is None:
         return
-    known = {w.thai for w in ctx.deck.picture_words} | load_function_words()
+    ranked = introduction_order(ctx.deck)
+    at = {w.thai: i for i, w in enumerate(ranked)}
+    base = ctx.cfg("sentence_base", 300)
+    function_words = load_function_words()
+    earlier_targets: set[str] = set()
+
     for note in ctx.deck.sentences:
+        index = at.get(note.target)
+        # A target that is not a picture word (a grammar marker) rides at the
+        # base, where sentences start.
+        position = max(base, index + 1) if index is not None else base
+        known = (vocabulary_at(ranked, position) | function_words
+                 | earlier_targets)
         toks = ctx.tokenizer.tokens(note.thai)
         unknown = [t for t in toks
                   if t != note.target and not _boundary_known(t, known)]
         if unknown:
             yield new_elements.finding(
-                f"sentence introduces {len(unknown)} unknown non-target tokens",
-                note_id=note.id, evidence={"unknown": unknown})
-        known.add(note.target)
+                f"sentence uses {len(unknown)} word(s) not introduced by its "
+                f"position ({position})",
+                note_id=note.id,
+                evidence={"unknown": unknown, "position": position})
+        earlier_targets.add(note.target)
 
 @rule("meth/category-coverage", Stage.METHOD, Dimension.METHOD, Severity.INFO)
 def category_coverage(ctx):
@@ -200,3 +235,31 @@ def speaker_diversity(ctx):
     yield Metric(name="speakers/minimal_pairs",
                  value=min(1.0, len(speakers) / target),
                  detail={"distinct": len(speakers)})
+
+
+FRAME_LEN = 6          # leading characters that identify a sentence frame
+
+
+@rule("meth/frame-diversity", Stage.METHOD, Dimension.METHOD, Severity.WARN)
+def frame_diversity(ctx):
+    """How many distinct shapes the sentence corpus actually has.
+
+    Judge rules read one card at a time and are blind to a corpus where
+    hundreds of sentences share an opening; this is the only check that can
+    see it.
+    """
+    sentences = ctx.deck.sentences
+    if not sentences:
+        return
+    frames = Counter(n.thai[:FRAME_LEN] for n in sentences)
+    yield Metric(name="diversity/sentence_frames",
+                 value=len(frames) / len(sentences),
+                 detail={"most_common": frames.most_common(5),
+                         "sentences": len(sentences)})
+    share_limit = 0.05
+    for frame, count in frames.items():
+        if count / len(sentences) > share_limit:
+            yield frame_diversity.finding(
+                f"{count} sentences ({count * 100 // len(sentences)}%) open "
+                f"with {frame!r}; the corpus is repeating one frame",
+                evidence={"frame": frame, "count": count})

@@ -7,11 +7,12 @@ from tests.fakes import FakeTokenizer
 from tests.helpers import DeckBuilder
 from tests.test_linguistic import FREQ, G2P, TOK
 
-def _run(root, **ctx_kw):
+def _run(root, config=None, **ctx_kw):
     kw = dict(g2p=G2P, tokenizer=TOK, freq=FREQ)
     kw.update(ctx_kw)
-    return run_pipeline(EvalContext(deck=load_deck(root), config={"sentence_base": 2},
-                                    **kw), stages=[Stage.METHOD])
+    return run_pipeline(EvalContext(deck=load_deck(root),
+                                    config=config or {"sentence_base": 2}, **kw),
+                        stages=[Stage.METHOD])
 
 def _metric(res, name):
     return next(m for m in res.metrics if m.name == name)
@@ -124,3 +125,40 @@ def test_contrast_id_for_public_api(tmp_path):
     assert contrast_id_for(deck.minimal_pairs[0], ctx) == "tone:low-rising"
     assert contrast_id_for(deck.minimal_pairs[0],
                            EvalContext(deck=deck, g2p=None)) is None
+
+
+# The golden sentence is หมามากินข้าว -> [หมา, มา, กิน, ข้าว], target กิน.
+
+def test_new_elements_measures_vocabulary_known_at_the_sentence_position(tmp_path):
+    """A sentence must use what the learner has met by the time it appears,
+    not everything the finished deck will eventually contain."""
+    b = DeckBuilder(tmp_path)
+    ranks = {"มา": 1, "หมา": 2, "ข้าว": 900}
+    for w in b.data["picture_words"]:
+        w["frequency_rank"] = ranks[w["thai"]]
+    # position comes from the base: only the first two words are known there
+    res = _run(b.build(), config={"sentence_base": 2})
+    finding = next(f for f in res.findings if f.rule == "meth/new-elements")
+    assert finding.evidence["unknown"] == ["ข้าว"]      # rank 900, not yet met
+    assert finding.evidence["position"] == 2
+
+
+def test_new_elements_allows_words_introduced_earlier(tmp_path):
+    b = DeckBuilder(tmp_path)
+    for w in b.data["picture_words"]:
+        w["frequency_rank"] = {"มา": 1, "หมา": 2, "ข้าว": 3}[w["thai"]]
+    res = _run(b.build(), config={"sentence_base": 3})
+    assert not [f for f in res.findings if f.rule == "meth/new-elements"]
+
+
+def test_frame_diversity_metric_counts_distinct_openings(tmp_path):
+    """43% of the first corpus opened with one of two frames and nothing
+    reported it: per-card rules cannot see a corpus-level defect."""
+    b = DeckBuilder(tmp_path)
+    sent = b.data["sentences"][0]
+    b.data["sentences"] = [dict(sent, id=f"sn-{i}", thai="หมามากินข้าว")
+                           for i in range(4)]
+    res = _run(b.build())
+    m = _metric(res, "diversity/sentence_frames")
+    assert m.value == 0.25                      # one frame across four sentences
+    assert m.detail["most_common"][0][1] == 4

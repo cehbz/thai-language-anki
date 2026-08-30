@@ -10,6 +10,7 @@ class Report(BaseModel):
     stages_run: list[str]
     stages_skipped: list[str]
     findings: list[Finding]
+    waived: list[Finding] = []   # reviewed and accepted (see waivers.yaml)
     metrics: list[Metric]
     scores: Scores
     gate: Literal["pass", "fail"]
@@ -20,5 +21,6 @@ def build_report(name, version, result, scores, config) -> Report:
         rulebook_version=config.version,
         stages_run=[str(s) for s in result.stages_run],
         stages_skipped=[str(s) for s in result.stages_skipped],
-        findings=result.findings, metrics=result.metrics, scores=scores,
+        findings=result.findings, waived=result.waived,
+        metrics=result.metrics, scores=scores,
         gate="fail" if result.has_errors else "pass")

@@ -47,7 +47,7 @@ def _api_client(cfg):
     key = SecretStore(specs={"judge.api_key": cfg.judge.api_key}).get("judge.api_key")
     return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
 
-def _build_judge(cfg):
+def build_judge(cfg):
     if cfg.judge.backend == "fake":
         return FakeJudge({})
     if cfg.judge.backend == "api":
@@ -93,7 +93,7 @@ def main(deck_dir, report_path, fmt, no_judge, stages_opt, rulebook):
             vocab = ({w.thai for w in deck.picture_words}
                     | {s.target for s in deck.sentences})
             g2p, second, tok, freq = _build_language_ports(vocab)
-            judge = None if no_judge else _build_judge(cfg)
+            judge = None if no_judge else build_judge(cfg)
             if judge is not None:
                 built_judges.append(judge)
             return EvalContext(deck=deck, config=cfg, g2p=g2p, g2p_second=second,

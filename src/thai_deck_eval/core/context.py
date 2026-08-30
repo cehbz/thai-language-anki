@@ -11,6 +11,7 @@ class EvalContext:
     tokenizer: Any = None
     freq: Any = None
     judge: Any = None
+    waivers: list = field(default_factory=list)  # reviewed-and-accepted findings
 
     def cfg(self, key: str, default=None):
         if isinstance(self.config, dict):

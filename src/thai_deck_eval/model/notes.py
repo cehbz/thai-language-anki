@@ -51,6 +51,10 @@ class SentenceNote(_Model):
     thai: str
     target: str
     audio: Audio
+    # Whose speech the card models: "production" is the learner's own, and
+    # must match their speaking register; "comprehension" is speech they
+    # only need to understand (a woman's ค่ะ, a register they never use).
+    usage: Literal["production", "comprehension"] = "production"
     image: str | None = None
     definition: str | None = None
     gloss: str | None = None

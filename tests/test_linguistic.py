@@ -143,3 +143,36 @@ def test_frequency_rank_wrong(tmp_path):
     b.data["picture_words"][0]["frequency_rank"] = 4000
     res = _run(b.build())
     assert "lang/frequency-rank-wrong" in _rules(res)
+
+
+def test_nonstandard_particle_is_flagged(tmp_path):
+    """A fixed-form defect deserves a rule: the LLM judge caught this one in
+    only 54 of the 152 sentences that had it."""
+    b = DeckBuilder(tmp_path)
+    b.data["sentences"][0]["thai"] = b.data["sentences"][0]["thai"] + "คับ"
+    res = _run(b.build())
+    assert any(f.rule == "lang/nonstandard-particle" for f in res.findings)
+
+
+def test_standard_particle_is_not_flagged(tmp_path):
+    b = DeckBuilder(tmp_path)
+    b.data["sentences"][0]["thai"] = b.data["sentences"][0]["thai"] + "ครับ"
+    res = _run(b.build())
+    assert not any(f.rule == "lang/nonstandard-particle" for f in res.findings)
+
+
+def test_female_particle_on_a_production_sentence_is_flagged(tmp_path):
+    """ค่ะ is a woman's particle: fine to understand, wrong to rehearse
+    saying if the learner's production register is male."""
+    b = DeckBuilder(tmp_path)
+    b.data["sentences"][0]["thai"] = b.data["sentences"][0]["thai"] + "ค่ะ"
+    res = _run(b.build())
+    assert any(f.rule == "lang/particle-register" for f in res.findings)
+
+
+def test_female_particle_on_a_comprehension_sentence_is_fine(tmp_path):
+    b = DeckBuilder(tmp_path)
+    b.data["sentences"][0]["thai"] = b.data["sentences"][0]["thai"] + "ค่ะ"
+    b.data["sentences"][0]["usage"] = "comprehension"
+    res = _run(b.build())
+    assert not any(f.rule == "lang/particle-register" for f in res.findings)

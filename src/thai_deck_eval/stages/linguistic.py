@@ -166,3 +166,52 @@ def frequency_rank_wrong(ctx):
             yield frequency_rank_wrong.finding(
                 f"{note.thai}: declared rank {note.frequency_rank}, reference {ref}",
                 note_id=note.id, evidence={"reference": ref})
+
+
+# Chat spellings of the polite particles, in utterance-final position only
+# (คับ elsewhere is the ordinary word for "tight").
+NONSTANDARD_PARTICLES = {"คับ": "ครับ", "คร้าบ": "ครับ", "ค๊าบ": "ครับ",
+                         "ค้าบ": "ครับ", "ค่าา": "ค่ะ"}
+
+
+@rule("lang/nonstandard-particle", Stage.LINGUISTIC, Dimension.LANGUAGE,
+      Severity.WARN)
+def nonstandard_particle(ctx):
+    """Chat spellings of ครับ/ค่ะ at the end of a sentence.
+
+    A fixed-form defect the LLM judge reported on only a third of the
+    sentences that had it; a rule catches all of them for nothing.
+    """
+    for note in ctx.deck.sentences:
+        text = (note.thai or "").rstrip()
+        for chat, standard in NONSTANDARD_PARTICLES.items():
+            if text.endswith(chat):
+                yield nonstandard_particle.finding(
+                    f"sentence ends with the chat spelling {chat!r}; "
+                    f"the standard written form is {standard!r}",
+                    note_id=note.id,
+                    evidence={"found": chat, "expected": standard})
+                break
+
+
+# Particles that mark the speaker as female. Understanding them matters;
+# rehearsing them does not, when the learner's production register is male.
+FEMALE_PARTICLES = ("ค่ะ", "คะ", "ค่า")
+
+
+@rule("lang/particle-register", Stage.LINGUISTIC, Dimension.LANGUAGE,
+      Severity.WARN)
+def particle_register(ctx):
+    """A production sentence ending in a woman's politeness particle."""
+    for note in ctx.deck.sentences:
+        if getattr(note, "usage", "production") != "production":
+            continue
+        text = (note.thai or "").rstrip()
+        for particle in FEMALE_PARTICLES:
+            if text.endswith(particle):
+                yield particle_register.finding(
+                    f"production sentence ends with {particle!r}, a female "
+                    f"speaker's particle; mark it usage: comprehension or "
+                    f"rewrite it with ครับ",
+                    note_id=note.id, evidence={"particle": particle})
+                break

@@ -33,3 +33,20 @@ def test_rulebook_file(tmp_path):
     p.write_text("taper_rank: 100\njudge:\n  backend: fake\n")
     cfg = load_rulebook(p)
     assert cfg.taper_rank == 100 and cfg.judge.backend == "fake"
+
+
+def test_report_carries_waived_findings(tmp_path):
+    """A waived finding must stay visible: silently vanishing evidence is
+    how a deck ends up passing on rules nobody remembers accepting."""
+    from thai_deck_eval.core.findings import Dimension, Finding, Severity
+    from thai_deck_eval.report.model import build_report
+    from thai_deck_eval.report.render import render_text
+
+    waived = Finding(rule="judge/image-embedded-text", severity=Severity.WARN,
+                     dimension=Dimension.CONTENT, message="text in image",
+                     note_id="pw-1")
+    res = EvalResult(waived=[waived])
+    rep = build_report("d", "1", res, compute_scores(res, RulebookConfig()),
+                       RulebookConfig())
+    assert rep.waived == [waived]
+    assert "waived" in render_text(rep)
