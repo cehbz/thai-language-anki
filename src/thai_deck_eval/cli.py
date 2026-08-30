@@ -36,12 +36,27 @@ def _build_language_ports(vocab: set[str]):
         click.echo("warning: frequency list missing", err=True)
     return g2p, second, tok, freq
 
+def _api_client(cfg):
+    """Anthropic client for the api/batch backends.
+
+    `judge.api_key` is a reference (op:// or a 0600 file), resolved here;
+    unset falls through to the SDK's own credential resolution.
+    """
+    import anthropic
+    from .secrets import SecretStore
+    key = SecretStore(specs={"judge.api_key": cfg.judge.api_key}).get("judge.api_key")
+    return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+
 def _build_judge(cfg):
     if cfg.judge.backend == "fake":
         return FakeJudge({})
     if cfg.judge.backend == "api":
         from .judge.api_judge import ApiJudge
-        inner = ApiJudge(cfg.judge)
+        inner = ApiJudge(cfg.judge, client=_api_client(cfg))
+    elif cfg.judge.backend == "batch":
+        from .judge.batch_judge import BatchJudge
+        inner = BatchJudge(cfg.judge, client=_api_client(cfg),
+                           state_path=Path(f"{cfg.judge.cache_path}.batch.json"))
     else:
         from .judge.cli_judge import CliJudge
         inner = CliJudge(cfg.judge)

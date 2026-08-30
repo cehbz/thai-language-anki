@@ -5,12 +5,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class JudgeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    backend: Literal["cli", "api", "fake"] = "cli"
+    backend: Literal["cli", "api", "batch", "fake"] = "cli"
     model: str = "claude-opus-5"
     effort: str = "medium"
     confidence_floor: float = 0.6
     prompt_version: str = "1"
     cache_path: str = ".thai-deck-eval-cache.sqlite"
+    api_key: str | None = None     # secret reference for the api/batch backends:
+                                   # op://<vault>/<item>/<field>, or a 0600 file path
 
 class RulebookConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

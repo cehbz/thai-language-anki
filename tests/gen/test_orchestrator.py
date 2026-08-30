@@ -8,7 +8,7 @@ from thai_deck_gen.context import GenContext
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.orchestrator import EvalError, generate
 from thai_deck_gen.producers import ProducerResult
-from thai_deck_gen.secrets import SecretStore
+from thai_deck_eval.secrets import SecretStore
 from tests.gen.test_pairs import _gaps
 from tests.gen.test_sentences import _deck_with_words
 from tests.gen.test_tts import _deck_with_sentence_and_pair

@@ -12,7 +12,7 @@ from thai_deck_gen.config import GenConfig, load_config
 from thai_deck_gen.emphasis import Emphasis, load_emphasis
 from thai_deck_gen.media.imgfetch import ImgFetch
 from thai_deck_gen.producers.sentences import load_exemplars
-from thai_deck_gen.secrets import SecretStore
+from thai_deck_eval.secrets import SecretStore
 from thai_deck_gen.wordlist import WordEntry, load_word_list
 
 

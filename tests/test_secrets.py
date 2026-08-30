@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from thai_deck_gen.secrets import SecretError, SecretStore, resolve_secret
+from thai_deck_eval.secrets import SecretError, SecretStore, resolve_secret
 
 
 def _key_file(tmp_path, text="k3y\n", mode=0o600):

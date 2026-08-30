@@ -1,6 +1,7 @@
-"""API-key resolution for gen.yaml's `secrets:` block.
+"""API-key resolution for the config files' secret references.
 
-gen.yaml holds a *reference* to each secret, never the secret itself:
+A config file (the generator's gen.yaml, the evaluator's rulebook) holds a
+*reference* to each secret, never the secret itself:
 either a 1Password secret reference (`op://<vault>/<item>/<field>`) or a
 path to an owner-only file. An inline literal is refused, so a deck
 directory never becomes a place secrets accumulate.

@@ -8,7 +8,7 @@ class SecretsConfig(BaseModel):
     """References to API keys, never the keys themselves.
 
     Each value is an `op://<vault>/<item>/<field>` 1Password reference or a
-    path to an owner-only (0600) file. See thai_deck_gen.secrets.
+    path to an owner-only (0600) file. See thai_deck_eval.secrets.
     """
     forvo: str | None = None        # forvo pronunciations (native audio)
     google_tts: str | None = None   # google cloud text-to-speech (sentence audio)

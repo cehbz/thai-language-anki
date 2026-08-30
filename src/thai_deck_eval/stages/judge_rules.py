@@ -7,16 +7,19 @@ from ..judge.prompts import (PICTURE_RULES, SENTENCE_RULES,
 def _verdicts(ctx):
     if getattr(ctx, "_judge_verdicts", None) is not None:
         return ctx._judge_verdicts
-    out: dict[str, list] = {}
-    for note in ctx.deck.sentences:
-        req = JudgeRequest(note_id=note.id, rules=list(SENTENCE_RULES),
-                           prompt=build_sentence_prompt(note))
-        out[note.id] = ctx.judge.judge(req)
-    for note in ctx.deck.picture_words:
-        req = JudgeRequest(note_id=note.id, rules=list(PICTURE_RULES),
-                           prompt=build_picture_prompt(note),
-                           image_path=str(ctx.deck.root / "media" / note.image))
-        out[note.id] = ctx.judge.judge(req)
+    reqs = [JudgeRequest(note_id=note.id, rules=list(SENTENCE_RULES),
+                         prompt=build_sentence_prompt(note))
+            for note in ctx.deck.sentences]
+    reqs += [JudgeRequest(note_id=note.id, rules=list(PICTURE_RULES),
+                          prompt=build_picture_prompt(note),
+                          image_path=str(ctx.deck.root / "media" / note.image))
+             for note in ctx.deck.picture_words]
+
+    judge_many = getattr(ctx.judge, "judge_many", None)
+    if judge_many is not None:
+        out = judge_many(reqs)
+    else:
+        out = {req.note_id: ctx.judge.judge(req) for req in reqs}
     ctx._judge_verdicts = out
     return out
 

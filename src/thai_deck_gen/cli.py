@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import datetime
 import json
 import os
@@ -25,7 +26,7 @@ from thai_deck_gen.producers.sentences import fetch_exemplars, fill_sentences
 from thai_deck_gen.producers.spelling import fill_spelling
 from thai_deck_gen.producers.words import fill_words
 from thai_deck_gen.report import parse_report
-from thai_deck_gen.secrets import SecretStore
+from thai_deck_eval.secrets import SecretStore
 from thai_deck_gen.emphasis import load_emphasis
 from thai_deck_gen.wordlist import draft_word_list, extend_word_list
 
@@ -163,6 +164,9 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     cp.add_argument("--base", type=int, default=None,
                     help="defaults to gen.yaml's sentence_base")
+    cp.add_argument("--skip-incomplete", action="store_true",
+                    help="drop notes whose essential media is missing instead "
+                         "of failing; optional media compiles as an empty field")
 
     return p
 
@@ -316,8 +320,14 @@ def main(argv=None) -> int:
         gaps = _gaps_for(args.deck, args.data_dir)
         freq = FileFrequencyList(args.data_dir / "frequency_th.txt")
         base = args.base if args.base is not None else load_config(args.deck).sentence_base
-        compile_deck(deck, manifest, args.out, freq, gaps.pair_by_note, base=base,
-                     emphasis=load_emphasis(args.data_dir / "emphasis.yaml"))
+        dropped = compile_deck(deck, manifest, args.out, freq, gaps.pair_by_note,
+                               base=base,
+                               emphasis=load_emphasis(args.data_dir / "emphasis.yaml"),
+                               skip_incomplete=args.skip_incomplete)
+        if dropped:
+            by_family = Counter(family for family, _ in dropped)
+            print(f"skipped {len(dropped)} note(s) missing essential media: "
+                  + ", ".join(f"{fam} {n}" for fam, n in sorted(by_family.items())))
         print(f"compiled {args.out}")
 
     return 0

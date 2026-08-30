@@ -196,3 +196,58 @@ def test_compile_deck_forwards_emphasis_to_intro_order(tmp_path, monkeypatch):
         build.compile_deck(deck, Manifest.load(deck.root), tmp_path / "o.apkg",
                            FakeFreq({}), {}, base=1, emphasis=e)
     assert seen["emphasis"] is e
+
+
+# --- partial compile: a testable deck before every recording exists ---
+
+def _compile_partial(tmp_path, skip_ref):
+    deck = _deck(tmp_path)
+    _write_media(deck, skip=skip_ref)
+    out = tmp_path / "partial.apkg"
+    dropped = compile_deck(deck, _manifest(), out, FREQ, PAIR_BY_NOTE, base=0,
+                           skip_incomplete=True)
+    return read_apkg(out), dropped
+
+
+def test_picture_word_without_its_image_is_dropped(tmp_path):
+    data, dropped = _compile_partial(tmp_path, "images/pw-1.jpg")
+    assert ("picture_word", "pw-1") in dropped
+    assert len(data["notes"]) == 5                    # 6 minus the dropped word
+    assert all("pw-1" not in "".join(n["flds"]) for n in data["notes"])
+
+
+def test_picture_word_without_audio_is_kept_with_an_empty_sound_field(tmp_path):
+    data, dropped = _compile_partial(tmp_path, "audio/picture_words/pw-1.mp3")
+    assert dropped == []
+    assert len(data["notes"]) == 6
+    word = next(n for n in data["notes"] if n["flds"][0] == "one")
+    assert word["flds"][2] == ""                      # Audio field blank, card still works
+    assert "pw-1.jpg" in word["flds"][1]
+
+
+def test_sentence_without_audio_keeps_its_reading_card(tmp_path):
+    data, dropped = _compile_partial(tmp_path, "audio/sentences/sn-1.mp3")
+    assert dropped == []
+    sentence = next(n for n in data["notes"] if n["flds"][1] == "one")
+    assert sentence["flds"][2] == ""
+    # the {{#Audio}} listening card must not generate without audio
+    cards = [c for c in data["cards"] if c["nid"] == sentence["id"]]
+    assert len(cards) == 1
+
+
+def test_minimal_pair_is_dropped_when_a_member_has_no_audio(tmp_path):
+    data, dropped = _compile_partial(tmp_path, "audio/minimal_pairs/mp-1_0.mp3")
+    assert ("minimal_pair", "mp-1") in dropped
+    assert all(n["flds"][1] not in ("a1", "a2") for n in data["notes"])
+
+
+def test_dropped_notes_media_is_not_bundled(tmp_path):
+    data, _ = _compile_partial(tmp_path, "images/pw-1.jpg")
+    assert not any("pw-1.mp3" in name for name in data["media"])
+
+
+def test_incomplete_media_still_raises_without_the_flag(tmp_path):
+    deck = _deck(tmp_path)
+    _write_media(deck, skip="images/pw-1.jpg")
+    with pytest.raises(CompileError):
+        compile_deck(deck, _manifest(), tmp_path / "o.apkg", FREQ, PAIR_BY_NOTE, base=0)

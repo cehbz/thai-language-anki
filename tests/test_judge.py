@@ -86,3 +86,68 @@ def test_cached_judge_close_and_context_manager(tmp_path):
         assert cj.judge(req)[0].passed is True
     with pytest.raises(sqlite3.ProgrammingError):
         cj.judge(req)  # connection closed on context exit
+
+
+# --- batched judging: the cache must not defeat the single-submission shape ---
+
+class _BatchSpy:
+    """Inner judge exposing judge_many, recording what reached the API."""
+
+    def __init__(self):
+        self.seen: list[list[str]] = []
+
+    def judge(self, req):
+        raise AssertionError("judge_many should be preferred")
+
+    def judge_many(self, reqs):
+        self.seen.append([r.note_id for r in reqs])
+        return {r.note_id: [Verdict(rule=r.rules[0], passed=True,
+                                    confidence=1.0, rationale="")]
+                for r in reqs}
+
+
+def test_cached_judge_many_submits_once_and_caches(tmp_path):
+    from thai_deck_eval.judge.core import CachedJudge, JudgeRequest
+    inner = _BatchSpy()
+    reqs = [JudgeRequest(note_id=f"sn-{i}", rules=["judge/unnatural-sentence"],
+                         prompt=f"p{i}") for i in range(3)]
+    with CachedJudge(inner, tmp_path / "c.sqlite", "m", "1") as judge:
+        first = judge.judge_many(reqs)
+    assert set(first) == {"sn-0", "sn-1", "sn-2"}
+    assert inner.seen == [["sn-0", "sn-1", "sn-2"]]
+
+    with CachedJudge(_BatchSpy(), tmp_path / "c.sqlite", "m", "1") as judge:
+        again = judge.judge_many(reqs)          # every verdict served from cache
+    assert set(again) == {"sn-0", "sn-1", "sn-2"}
+
+
+def test_cached_judge_many_only_sends_uncached_cards(tmp_path):
+    from thai_deck_eval.judge.core import CachedJudge, JudgeRequest
+    reqs = [JudgeRequest(note_id=f"sn-{i}", rules=["judge/unnatural-sentence"],
+                         prompt=f"p{i}") for i in range(3)]
+    with CachedJudge(_BatchSpy(), tmp_path / "c.sqlite", "m", "1") as judge:
+        judge.judge_many(reqs[:2])
+    inner = _BatchSpy()
+    with CachedJudge(inner, tmp_path / "c.sqlite", "m", "1") as judge:
+        out = judge.judge_many(reqs)
+    assert inner.seen == [["sn-2"]]
+    assert set(out) == {"sn-0", "sn-1", "sn-2"}
+
+
+def test_cached_judge_many_falls_back_to_per_card_backends(tmp_path):
+    from thai_deck_eval.judge.core import CachedJudge, JudgeRequest
+
+    class PerCard:
+        def __init__(self): self.calls = 0
+        def judge(self, req):
+            self.calls += 1
+            return [Verdict(rule=req.rules[0], passed=True, confidence=1.0,
+                            rationale="")]
+
+    inner = PerCard()
+    reqs = [JudgeRequest(note_id=f"sn-{i}", rules=["judge/unnatural-sentence"],
+                         prompt=f"p{i}") for i in range(2)]
+    with CachedJudge(inner, tmp_path / "c.sqlite", "m", "1") as judge:
+        out = judge.judge_many(reqs)
+    assert inner.calls == 2
+    assert set(out) == {"sn-0", "sn-1"}

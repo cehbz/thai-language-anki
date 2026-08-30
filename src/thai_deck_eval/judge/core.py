@@ -25,6 +25,10 @@ class JudgeRequest:
 class Judge(Protocol):
     def judge(self, req: JudgeRequest) -> list[Verdict]: ...
 
+    # Optional: backends that answer a whole deck in one submission (see
+    # BatchJudge) implement judge_many; CachedJudge falls back to judge().
+
+
 class FakeJudge:
     def __init__(self, verdicts: dict[str, list[Verdict]]):
         self._v = verdicts
@@ -59,15 +63,51 @@ class CachedJudge:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def judge(self, req: JudgeRequest) -> list[Verdict]:
-        key = self._key(req)
+    def judge_many(self, reqs: list[JudgeRequest]) -> dict[str, list[Verdict]]:
+        """Verdicts by note id, cached cards served from sqlite and only the
+        rest handed to the backend -- in one call when it supports batching."""
+        out: dict[str, list[Verdict]] = {}
+        pending: list[JudgeRequest] = []
+        for req in reqs:
+            cached = self._cached(self._key(req))
+            if cached is None:
+                pending.append(req)
+            else:
+                out[req.note_id] = cached
+        if not pending:
+            return out
+
+        inner_many = getattr(self.inner, "judge_many", None)
+        if inner_many is None:
+            for req in pending:
+                out[req.note_id] = self.judge(req)
+            return out
+
+        fresh = inner_many(pending)
+        keys = {req.note_id: self._key(req) for req in pending}
+        for note_id, verdicts in fresh.items():
+            self.calls += 1
+            self._store(keys[note_id], verdicts)
+            out[note_id] = verdicts
+        self._db.commit()
+        return out
+
+    def _cached(self, key: str) -> list[Verdict] | None:
         row = self._db.execute("SELECT payload FROM verdicts WHERE key=?",
                                (key,)).fetchone()
-        if row:
-            return Verdicts.model_validate_json(row[0]).verdicts
+        return Verdicts.model_validate_json(row[0]).verdicts if row else None
+
+    def _store(self, key: str, verdicts: list[Verdict]) -> None:
+        self._db.execute("INSERT OR REPLACE INTO verdicts VALUES (?,?)",
+                         (key, Verdicts(verdicts=verdicts).model_dump_json()))
+
+    def judge(self, req: JudgeRequest) -> list[Verdict]:
+        key = self._key(req)
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
         out = self.inner.judge(req)
         self.calls += 1
-        self._db.execute("INSERT OR REPLACE INTO verdicts VALUES (?,?)",
-                         (key, Verdicts(verdicts=out).model_dump_json()))
+        self._store(key, out)
         self._db.commit()
         return out

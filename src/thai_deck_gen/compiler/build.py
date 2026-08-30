@@ -125,6 +125,22 @@ def _refs(family: str, note) -> list[str]:
     return []
 
 
+def _required_refs(family: str, note) -> list[str]:
+    """Media the card is *about*: without it there is no card to study.
+
+    A picture word is its image, a spelling note and a minimal pair are
+    their audio. Everything else degrades to a working card with an empty
+    field, so a sentence still teaches reading before its recording lands.
+    """
+    if family == "minimal_pair":
+        return [m.audio.file for m in note.members]
+    if family == "spelling_sound":
+        return [note.audio.file]
+    if family == "picture_word":
+        return [note.image]
+    return []
+
+
 def _resolve_media(deck: Deck, order: list[tuple[str, object]]
                    ) -> tuple[dict[str, str], list[str]]:
     """Deck-relative ref -> basename to use in the package; and missing refs."""
@@ -174,6 +190,18 @@ def _src_tags(manifest: Manifest, kind: str, *refs: str | None) -> list[str]:
     return tags
 
 
+def _sound(basename_of, ref) -> str:
+    """`[sound:...]` for a staged file; empty when the recording isn't there
+    yet, which leaves audio-gated cards ungenerated rather than broken."""
+    base = basename_of.get(ref) if ref else None
+    return f"[sound:{base}]" if base else ""
+
+
+def _img(basename_of, ref) -> str:
+    base = basename_of.get(ref) if ref else None
+    return f'<img src="{base}">' if base else ""
+
+
 def _pair_notes(note, manifest, pair_by_note, basename_of) -> list[genanki.Note]:
     tags = _base_tags("minimal_pair")
     contrast_id = pair_by_note.get(note.id)
@@ -183,7 +211,7 @@ def _pair_notes(note, manifest, pair_by_note, basename_of) -> list[genanki.Note]
     for k, member in enumerate(note.members):
         others = [m for i, m in enumerate(note.members) if i != k]
         fields = [str(k), member.thai, member.ipa,
-                 f"[sound:{basename_of[member.audio.file]}]",
+                 _sound(basename_of, member.audio.file),
                  " / ".join(m.thai for m in others),
                  " / ".join(m.ipa for m in others)]
         member_tags = tags + _src_tags(manifest, "audio", member.audio.file)
@@ -198,8 +226,8 @@ def _spelling_note(note, manifest, basename_of) -> genanki.Note:
            + _src_tags(manifest, "audio", note.audio.file)
            + _src_tags(manifest, "img", note.image))
     fields = [note.pattern, note.example_word,
-             f"[sound:{basename_of[note.audio.file]}]",
-             f'<img src="{basename_of[note.image]}">']
+             _sound(basename_of, note.audio.file),
+             _img(basename_of, note.image)]
     return genanki.Note(model=MODELS["spelling_sound"], fields=fields, tags=tags,
                         guid=note_guid(GUID_FAMILY["spelling_sound"], note.id))
 
@@ -208,8 +236,8 @@ def _word_note(note, manifest, basename_of) -> genanki.Note:
     tags = (_base_tags("picture_word")
            + _src_tags(manifest, "audio", note.audio.file)
            + _src_tags(manifest, "img", note.image))
-    fields = [note.thai, f'<img src="{basename_of[note.image]}">',
-             f"[sound:{basename_of[note.audio.file]}]",
+    fields = [note.thai, _img(basename_of, note.image),
+             _sound(basename_of, note.audio.file),
              note.ipa or "", note.classifier or "",
              "1" if note.test_spelling else ""]
     return genanki.Note(model=MODELS["picture_word"], fields=fields, tags=tags,
@@ -221,8 +249,8 @@ def _sentence_note(note, manifest, basename_of) -> genanki.Note:
     if note.image:
         tags += _src_tags(manifest, "img", note.image)
     fields = [note.thai.replace(note.target, "___"), note.target,
-             f"[sound:{basename_of[note.audio.file]}]",
-             f'<img src="{basename_of[note.image]}">' if note.image else "",
+             _sound(basename_of, note.audio.file),
+             _img(basename_of, note.image),
              note.gloss or "", note.grammar_note or ""]
     return genanki.Note(model=MODELS["sentence"], fields=fields, tags=tags,
                         guid=note_guid(GUID_FAMILY["sentence"], note.id))
@@ -241,11 +269,31 @@ def _build_notes(family, note, manifest, pair_by_note, basename_of) -> list[gena
 
 
 def compile_deck(deck: Deck, manifest: Manifest, out: Path, freq: FrequencyList,
-                 pair_by_note: dict[str, str], base: int = 300, emphasis=None) -> None:
+                 pair_by_note: dict[str, str], base: int = 300, emphasis=None,
+                 skip_incomplete: bool = False) -> list[tuple[str, str]]:
+    """Write `out`; return the (family, note_id) pairs left out.
+
+    Missing media is an error by default. `skip_incomplete` instead drops
+    the notes whose essential media is absent and empties the optional
+    fields of the rest, so a half-recorded deck still compiles to something
+    studiable. Guids are stable, so a later full compile updates those same
+    notes in place.
+    """
     order = intro_order(deck, freq, base, emphasis=emphasis)
     basename_of, missing = _resolve_media(deck, order)
-    if missing:
+    dropped: list[tuple[str, str]] = []
+    if missing and not skip_incomplete:
         raise CompileError(sorted(set(missing)))
+    if skip_incomplete and missing:
+        gone = set(missing)
+        kept = []
+        for family, note in order:
+            if gone.intersection(_required_refs(family, note)):
+                dropped.append((family, note.id))
+            else:
+                kept.append((family, note))
+        order = kept
+        basename_of, _ = _resolve_media(deck, order)   # don't bundle orphaned media
 
     out = Path(out)
     with tempfile.TemporaryDirectory() as tmp:
@@ -264,6 +312,7 @@ def compile_deck(deck: Deck, manifest: Manifest, out: Path, freq: FrequencyList,
                         media_files=[str(p) for p in media_paths]).write_to_file(str(out))
 
     stamp_due(out, guid_order)
+    return dropped
 
 
 def stamp_due(apkg: Path, guid_order: list[str]) -> None:
