@@ -9,6 +9,51 @@
   and generation — track the learner's actual confusions, with raised
   speaker-diversity targets on confused contrasts.
 
+## Architecture simplification pass
+
+The codebase grew by accretion: every problem this arc hit was answered by
+adding a mechanism beside the existing ones. The spec suites
+(`tests/spec/`) are implementation-independent, so they are the safety net
+for restructuring. Evidence gathered while writing them:
+
+- **Five memoization mechanisms, five formats, five invalidation rules.**
+  Forvo lookups (`work/forvo_lookups.jsonl`, append-only, never expires),
+  image candidates (`work/candidates/*/candidates.yaml`, invalidated by
+  corpus set), exhausted searches (`work/image_review.yaml`, invalidated by
+  queries + rubric + corpora), judge verdicts (sqlite, keyed by rules +
+  prompt + model + image sha), LLM completions (sqlite, keyed by producer +
+  prompt version + model + prompt). They answer the same question — has
+  this exact work already been done — and each learned invalidation
+  separately and late. One concept with one fingerprint rule would remove
+  three of the five bugs this arc produced.
+- **`fill_words` and `fill_spelling` ignore the `gaps` they are handed.**
+  The loop gates on gaps (`_fillable`) but two of four producers derive
+  everything from the word list, so "gap-driven" describes the loop and not
+  the producers. Either they should consume gaps or they should not be in
+  the gap loop.
+- **`media/images.py` is 586 lines** doing search, ordering, download,
+  verification, memoization, proposals and the review queue. The largest
+  module and the one every bug landed in.
+- **Two config surfaces that reference each other.** `gen.yaml` carries a
+  `rulebook:` pointer so the generator can borrow the evaluator's judge, and
+  secrets live in both. The judge is configured in one file and consumed in
+  two.
+- **Two notions of known vocabulary**: `known_vocab` (whole deck) and
+  `vocabulary_by_position` (progressive). The first is now only used as a
+  fallback and is what made `meth/new-elements` vacuous.
+- **`ImageNeed` duplicates the note.** It carries category, gloss and
+  image_query, all of which now live on `PictureWordNote`; `pending_images`
+  needs three lookup maps passed in to rebuild what the deck already knows.
+- **Each media filler re-implements the same pattern**: per-item fault
+  tolerance, periodic checkpoint, provenance record, blocked list. Forvo,
+  TTS, images and thai1000 each have their own copy, and the checkpoint was
+  added to two of them only after a killed run lost work.
+- **Dead test seam**: `THAI_DECK_GEN_FAKE` and the fake port classes in
+  `cli.py` predate the fake-world harness in `tests/spec/world.py` and are
+  no longer exercised by anything but themselves.
+- **CLI inconsistency**: `init` and `generate` take a positional `dir`;
+  every other command takes `--deck`.
+
 ## Thai register questions needing expert input (not code)
 
 These were decided provisionally so generation could continue; each needs
@@ -35,6 +80,12 @@ deeper analysis by fable, and likely research plus a local speaker.
 - **Kam Mueang vs Central Thai.** The deck teaches Central Thai to a learner
   living in a Kam Mueang-speaking region. Nothing in the pipeline knows this.
   Worth deciding deliberately rather than by default.
+
+- **new-element tolerance mismatch.** `check_sentence` in the generator
+  accepts one unknown non-target token; `meth/new-elements` accepts none.
+  26 of 480 sentences sit in that gap. FF's one-new-element principle says
+  the rule is right, but tightening the generator raises the block rate --
+  decide deliberately rather than leaving the two out of step.
 
 ## Execution-time follow-ups (generator is built; these are real runs, not code)
 
