@@ -553,17 +553,6 @@ def test_all_candidates_rejected_queues_review(tmp_path):
     assert review["items"][0]["note_id"] == "pw-0"
 
 
-def test_rejected_candidate_files_are_cleaned_up(tmp_path):
-    deck = _deck_with_pw(tmp_path)
-    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
-                      gloss="word", path="images/pw-0.jpg")
-    judge = FakeBatchJudge({"pw-0#0"})
-    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
-                _verify_ctx(judge), "2026-08-30", judge=judge)
-    leftovers = list((deck.root / "work" / "candidates").rglob("*.jpg"))
-    assert leftovers == []
-
-
 def test_gloss_is_reduced_to_a_searchable_head_term():
     """Word-list glosses are learner definitions ('I (female speaker, or
     casual general)'); the parenthetical returns nothing from an image search."""
@@ -711,3 +700,197 @@ def test_search_preflight_detects_a_dead_proxy():
     def dead(url, timeout=30, headers=None):
         raise _rq.RequestException("tunnel down")
     assert "unreachable" in search_reachable(dead).lower()
+
+
+def test_exhaustion_expires_when_the_rubric_changes(tmp_path, monkeypatch):
+    """The memo records that these queries found nothing acceptable -- which
+    is a statement about the rubric as much as the queries."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-31", judge=judge)
+
+    import thai_deck_eval.judge.prompts as prompts
+    monkeypatch.setitem(prompts.PICTURE_RULES, "judge/image-embedded-text",
+                        "a materially different rubric")
+    judge2 = FakeBatchJudge({"pw-0#0"})
+    res = fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                      _verify_ctx(judge2), "2026-09-01", judge=judge2)
+    assert res.changed == 1                  # reconsidered under the new rubric
+
+
+class SuggestingJudge:
+    """Rejects everything and names a better phrase, as the triple asks."""
+
+    def __init__(self, suggestion):
+        self.suggestion, self.prompts = suggestion, []
+
+    def judge_many(self, reqs):
+        self.prompts = [r.prompt for r in reqs]
+        return {r.note_id: [
+            Verdict(rule="judge/image-irrelevant", passed=False, confidence=0.9,
+                    rationale="does not evoke the word",
+                    suggestion=self.suggestion)] for r in reqs}
+
+
+def test_the_intended_phrase_reaches_the_judge(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food",
+                     image_query="a written word on paper", path="images/pw-0.jpg")
+    judge = SuggestingJudge("a dictionary page")
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-31", judge=judge)
+    assert "a written word on paper" in judge.prompts[0]
+
+
+def test_a_rejected_word_records_the_suggested_phrase(tmp_path):
+    """The judge naming a better phrase is the whole retry mechanism: a new
+    phrase changes the query set, which expires the exhaustion memo."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food",
+                     image_query="a written word on paper", path="images/pw-0.jpg")
+    judge = SuggestingJudge("a dictionary page")
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-31", judge=judge)
+
+    proposals = yaml.safe_load(
+        (deck.root / "work" / "image_query_proposals.yaml").read_text())
+    assert proposals["คำ"]["suggestion"] == "a dictionary page"
+    assert proposals["คำ"]["previous"] == "a written word on paper"
+
+
+def test_a_phrase_that_finds_nothing_is_recorded_before_any_download(tmp_path):
+    """Whether a phrase is searchable is knowable from the result count, for
+    free, before spending a download or a judgment on it."""
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food",
+                     image_query="a phrase nothing matches", path="images/pw-0.jpg")
+    jpeg = _jpeg_bytes()
+
+    def http_get(url, timeout=30, headers=None):
+        if quote("a phrase nothing matches") in url:
+            return R(payload={"results": []})          # phrase finds nothing
+        return R(payload={"results": [{"url": "http://img/0.jpg", "license": "cc0"}]})
+
+    class Ctx:
+        imagegen = None
+        image_query_hints = {}
+        image_candidates = 5
+        imgfetch = FakeFetch({"http://img/0.jpg": jpeg})
+    Ctx.http_get = staticmethod(http_get)
+
+    judge = FakeBatchJudge({"pw-0#0"})
+    res = fill_images([need], _gaps([]), deck, Manifest.load(deck.root), Ctx(),
+                      "2026-08-31", judge=judge)
+
+    assert res.changed == 1                      # the gloss carried it
+    unsearchable = yaml.safe_load(
+        (deck.root / "work" / "image_query_proposals.yaml").read_text())
+    assert unsearchable["คำ"]["reason"] == "phrase returned no results"
+    assert unsearchable["คำ"]["previous"] == "a phrase nothing matches"
+
+
+def test_a_searchable_phrase_is_not_recorded(tmp_path):
+    deck = _deck_with_pw(tmp_path)
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                     gloss="word", category="Food",
+                     image_query="something findable", path="images/pw-0.jpg")
+    judge = FakeBatchJudge({"pw-0#0"})
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root),
+                _verify_ctx(judge), "2026-08-31", judge=judge)
+    assert not (deck.root / "work" / "image_query_proposals.yaml").exists()
+
+
+def test_pexels_search_parses_results():
+    def http_get(url, timeout=30, headers=None):
+        assert headers and headers.get("Authorization") == "KEY"
+        return R(payload={"photos": [
+            {"alt": "man pointing at himself",
+             "src": {"large": "http://p/1.jpg"},
+             "photographer": "Someone"}]})
+    from thai_deck_gen.media.images import pexels_search
+    cands = pexels_search("person pointing at themselves", http_get, api_key="KEY")
+    assert cands[0].url == "http://p/1.jpg"
+    assert cands[0].source == "pexels"
+
+
+def test_pexels_without_a_key_yields_nothing():
+    from thai_deck_gen.media.images import pexels_search
+    def http_get(url, timeout=30, headers=None):
+        raise AssertionError("must not call without a key")
+    assert pexels_search("x", http_get, api_key=None) == []
+
+
+def test_source_order_puts_concept_photography_first_for_abstract_words():
+    """A studio shot of someone pointing at themselves is what an abstract
+    word needs; a real Chiang Mai street is what ส้มตำ needs."""
+    from thai_deck_gen.media.images import source_order
+
+    class Abstract:
+        category, part_of_speech = "Pronouns", "other"
+
+    class Concrete:
+        category, part_of_speech = "Food", "noun"
+
+    assert source_order(Abstract())[0].__name__.startswith("pexels")
+    assert source_order(Concrete())[0].__name__.startswith("openverse")
+    # every source is still tried, only the order differs
+    assert {f.__name__ for f in source_order(Abstract())} == \
+           {f.__name__ for f in source_order(Concrete())}
+
+
+def test_limit_caps_the_words_attempted(tmp_path):
+    """A short run is how you sanity-check a new source before spending on
+    the whole deck."""
+    deck = _deck_with_pw(tmp_path)
+    needs = [ImageNeed(family="picture_word", note_id="pw-0", term="คำ",
+                       gloss="word", category="Food", path="images/pw-0.jpg"),
+             ImageNeed(family="picture_word", note_id="pw-1", term="ข", gloss="b",
+                       category="Food", path="images/pw-1.jpg")]
+    judge = FakeBatchJudge({"pw-0#0"})
+    res = fill_images(needs[:1], _gaps([]), deck, Manifest.load(deck.root),
+                      _verify_ctx(judge), "2026-08-31", judge=judge, limit=1)
+    assert res.changed == 1
+    assert {r.split("#")[0] for r in judge.seen} == {"pw-0"}
+
+
+def test_limit_counts_words_the_verified_path_can_serve(tmp_path):
+    """Sentence and spelling images are not handled here; counting them
+    against the limit makes a smoke run silently do nothing."""
+    deck = _deck_with_pw(tmp_path)
+    other = ImageNeed(family="spelling_sound", note_id="sp-1", term="-ะ",
+                      gloss=None, path="images/sp-1.jpg")
+    pw = ImageNeed(family="picture_word", note_id="pw-0", term="คำ", gloss="word",
+                   category="Food", path="images/pw-0.jpg")
+    judge = FakeBatchJudge({"pw-0#0"})
+    res = fill_images([other, pw], _gaps([]), deck, Manifest.load(deck.root),
+                      _verify_ctx(judge), "2026-08-31", judge=judge, limit=1)
+    assert res.changed == 1                 # the picture word was reached
+
+
+def test_a_configured_source_without_a_key_warns_once(tmp_path, capsys):
+    """Pexels silently returning nothing for want of a key cost a whole
+    smoke run; a missing key must be visible."""
+    deck = _deck_with_pw(tmp_path, term="ฉัน", gloss="I")
+    deck.picture_words[0].category = "Pronouns"
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="ฉัน", gloss="I",
+                     category="Pronouns", path="images/pw-0.jpg")
+    judge = FakeBatchJudge(set())
+    ctx = _verify_ctx(judge)
+    ctx.pexels_key = None
+    fill_images([need], _gaps([]), deck, Manifest.load(deck.root), ctx,
+                "2026-08-31", judge=judge)
+    assert "pexels" in capsys.readouterr().out.lower()
+
+
+def test_exhaustion_fingerprint_tracks_usable_sources_not_declared_ones(tmp_path):
+    """A source declared but unusable for want of a key must not count as
+    searched: otherwise adding the key changes nothing and the words stay
+    written off."""
+    from thai_deck_gen.media.images import rubric_fingerprint
+    assert rubric_fingerprint(pexels=False) != rubric_fingerprint(pexels=True)

@@ -151,3 +151,36 @@ def test_cached_judge_many_falls_back_to_per_card_backends(tmp_path):
         out = judge.judge_many(reqs)
     assert inner.calls == 2
     assert set(out) == {"sn-0", "sn-1"}
+
+
+def test_verdict_carries_an_optional_suggestion():
+    """A rejection that names a better search phrase turns a dead end into
+    the next attempt."""
+    v = Verdict(rule="judge/image-irrelevant", passed=False, confidence=0.9,
+                rationale="a street scene does not evoke 'year'",
+                suggestion="birthday cake with candles")
+    assert v.suggestion == "birthday cake with candles"
+    assert Verdict(rule="r", passed=True, confidence=1.0,
+                   rationale="").suggestion is None
+
+
+def test_judge_stage_passes_the_note_image_query(tmp_path):
+    """The off-phrase check is inert unless the phrase reaches the judge."""
+    from thai_deck_eval.core.context import EvalContext
+    from thai_deck_eval.stages.judge_rules import _verdicts
+    from tests.helpers import DeckBuilder
+
+    b = DeckBuilder(tmp_path)
+    b.data["picture_words"][0]["image_query"] = "a dog on a lead"
+    deck = load_deck(b.build())
+
+    seen = []
+
+    class Spy:
+        def judge_many(self, reqs):
+            seen.extend(r.prompt for r in reqs)
+            return {r.note_id: [] for r in reqs}
+
+    ctx = EvalContext(deck=deck, config={}, judge=Spy())
+    _verdicts(ctx)
+    assert any("a dog on a lead" in p for p in seen)

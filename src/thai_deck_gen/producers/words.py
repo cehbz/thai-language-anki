@@ -34,6 +34,16 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             ctx.adjudication_queue.read_text(encoding="utf-8")) or []
         adjudication_queue_words = set(existing_queue)
 
+    # Keep existing notes' search phrase in step with the word list, which
+    # is where phrases are curated and where the judge's proposals land.
+    phrases = {e.thai: e.image_query for e in ctx.word_list if e.image_query}
+    for note in deck.picture_words:
+        phrase = phrases.get(note.thai)
+        if phrase and note.image_query != phrase:
+            note.image_query = phrase
+            result.changed += 1
+
+    taken = {n.id for n in deck.picture_words}
     for rank, entry in ranked_words:
         ipa = None
         if entry.thai in ctx.exceptions:
@@ -45,7 +55,13 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             else:
                 adjudication_queue_words.add(entry.thai)
 
-        note_id = f"pw-{rank}" if rank != UNRANKED_RANK else f"pw-u-{entry.thai}"
+        # Rank alone is not an identity: a frequency list with ties would
+        # give two words one id, one image path and one Anki guid. The thai
+        # is what actually distinguishes them.
+        note_id = (f"pw-{rank}" if rank != UNRANKED_RANK else f"pw-u-{entry.thai}")
+        if note_id in taken:
+            note_id = f"pw-{rank}-{entry.thai}"
+        taken.add(note_id)
         note = PictureWordNote(
             id=note_id,
             thai=entry.thai,
@@ -61,6 +77,7 @@ def fill_words(gaps: Gaps, deck: Deck, ctx) -> ProducerResult:
             classifier=entry.classifier,
             ipa=ipa,
             test_spelling=rank <= ctx.config.test_spelling_rank,
+            image_query=entry.image_query,
             personal_connection=None,
             gloss=None,          # FF doctrine: no L1 gloss on picture words; image search reads the word list
         )

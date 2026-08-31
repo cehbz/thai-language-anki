@@ -14,3 +14,11 @@
 - "นี้"
 - "นั้น"
 - "ๆ"
+# Politeness particles are grammar, not vocabulary -- and the sentence
+# producer is required to end production sentences with ครับ, so counting
+# it as an unseen word made the rule flag the deck's own convention.
+- "ครับ"
+- "ค่ะ"
+- "คะ"
+- "นะ"
+- "กับ"

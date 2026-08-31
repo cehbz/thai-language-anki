@@ -36,6 +36,7 @@ class GenContext:
     emphasis: Emphasis | None = None          # data/emphasis.yaml, if present
     image_query_hints: dict[str, str] = field(default_factory=dict)
     image_candidates: int = 5
+    pexels_key: str | None = None
     thai1000_apkg: Path | None = None
     secrets: SecretStore = field(default_factory=SecretStore)
     imagegen: object | None = None
@@ -149,6 +150,7 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         emphasis=load_emphasis(data_dir / "emphasis.yaml"),
         image_query_hints=image_query_hints,
         image_candidates=config.image_candidates,
+        pexels_key=SecretStore.from_config(config.secrets).get("pexels"),
         adjudication_queue=deck_root / "work" / "ipa_adjudication.yaml",
         targets_path=data_dir / "spelling_targets.yaml",
         thai1000_apkg=_resolve_thai1000_apkg(deck_root, config),

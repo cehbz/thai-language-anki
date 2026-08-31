@@ -30,8 +30,8 @@ from thai_deck_gen.producers.words import fill_words
 from thai_deck_gen.report import parse_report
 from thai_deck_eval.secrets import SecretStore
 from thai_deck_gen.emphasis import load_emphasis
-from thai_deck_gen.wordlist import (draft_image_queries, draft_word_list,
-                                    extend_word_list)
+from thai_deck_gen.wordlist import (apply_query_proposals, draft_image_queries,
+                                    draft_word_list, extend_word_list)
 
 DEFAULT_DATA_DIR = Path("data")
 
@@ -181,10 +181,15 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("search-terms")
     st.add_argument("--deck", type=Path, required=True)
     st.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    st.add_argument("--apply-proposals", action="store_true",
+                    help="adopt the phrases the judge proposed for words whose "
+                         "images it rejected (work/image_query_proposals.yaml)")
 
     im = sub.add_parser("images")
     im.add_argument("--deck", type=Path, required=True)
     im.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    im.add_argument("--limit", type=int, default=None,
+                    help="attempt only the first N words (smoke runs)")
     im.add_argument("--no-verify", action="store_true",
                     help="accept the first search hit instead of judging "
                          "several candidates (gen.yaml `rulebook` supplies the judge)")
@@ -341,6 +346,11 @@ def main(argv=None) -> int:
         save_waivers(deck.root, waivers)
         print(f"waived {args.rule} for {args.note}")
 
+    elif args.command == "search-terms" and args.apply_proposals:
+        n = apply_query_proposals(args.data_dir / "word_list_th.yaml",
+                                  args.deck / "work" / "image_query_proposals.yaml")
+        print(f"adopted {n} judge-proposed image phrase(s)")
+
     elif args.command == "search-terms":
         cfg = load_config(args.deck)
         warnings: list[str] = []
@@ -358,6 +368,7 @@ def main(argv=None) -> int:
         manifest = Manifest.load(deck.root)
         flagged = flagged_image_note_ids(gaps)
         glosses = {e.thai: e.gloss for e in ctx.word_list}
+        queries = {e.thai: e.image_query for e in ctx.word_list if e.image_query}
         unreachable = search_reachable(ctx.http_get) if ctx.http_get else None
         if unreachable:
             print(f"error: {unreachable}", file=sys.stderr)
@@ -365,8 +376,10 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return 2
         judge = None if args.no_verify else image_judge_for(args.deck, ctx.config)
-        res = fill_images(pending_images(deck, flagged=flagged, glosses=glosses), gaps,
-                          deck, manifest, ctx, _today(), judge=judge)
+        res = fill_images(
+            pending_images(deck, flagged=flagged, glosses=glosses,
+                           image_queries=queries),
+            gaps, deck, manifest, ctx, _today(), judge=judge, limit=args.limit)
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("images", res)

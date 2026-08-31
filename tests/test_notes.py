@@ -41,3 +41,19 @@ def test_sentence_usage_defaults_to_production():
                         audio=audio).usage == "production"
     assert SentenceNote(id="sn-2", kind="new_word", thai="ก", target="ก",
                         audio=audio, usage="comprehension").usage == "comprehension"
+
+
+def test_picture_word_carries_its_image_query():
+    """The phrase the image was searched for belongs on the note: the
+    evaluator cannot reach the generator's word list."""
+    from thai_deck_eval.model.notes import Audio, PictureWordNote
+    note = PictureWordNote(
+        id="pw-1", thai="ฉัน", image="i.jpg",
+        audio=Audio(file="a.mp3", source="native", speaker="pending"),
+        frequency_rank=1, category="Pronouns",
+        image_query="woman pointing at her own chest")
+    assert note.image_query == "woman pointing at her own chest"
+    assert PictureWordNote(
+        id="pw-2", thai="หมา", image="i.jpg",
+        audio=Audio(file="a.mp3", source="native", speaker="pending"),
+        frequency_rank=2, category="Animals").image_query is None

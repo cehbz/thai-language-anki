@@ -271,3 +271,33 @@ def draft_image_queries(llm, word_list_path: Path,
         path.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
                         encoding="utf-8")
     return filled
+
+
+def apply_query_proposals(word_list_path: Path, proposals_path: Path) -> int:
+    """Adopt judge-proposed image phrases, marking them as machine-written.
+
+    A phrase you wrote by hand is never overwritten: `image_query_source:
+    human` is the opt-out, and everything a judge wrote carries `judge` so
+    the two are always tellable apart.
+    """
+    proposals_path, word_list_path = Path(proposals_path), Path(word_list_path)
+    if not proposals_path.exists():
+        return 0
+    proposals = yaml.safe_load(proposals_path.read_text(encoding="utf-8")) or {}
+    rows = yaml.safe_load(word_list_path.read_text(encoding="utf-8")) or []
+    applied = 0
+    for row in rows:
+        proposal = proposals.get(row.get("thai"))
+        if not proposal or row.get("image_query_source") == "human":
+            continue
+        phrase = (proposal.get("suggestion") or "").strip()
+        if not phrase or phrase == row.get("image_query"):
+            continue
+        row["image_query"] = phrase
+        row["image_query_source"] = "judge"
+        applied += 1
+    if applied:
+        word_list_path.write_text(
+            yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+    return applied

@@ -87,3 +87,40 @@ def test_draft_writes_after_each_category(tmp_path):
     out = {r["thai"]: r.get("image_query")
            for r in yaml.safe_load(path.read_text(encoding="utf-8"))}
     assert out["ส้ม"] == "orange fruit"        # the first category survived
+
+
+def test_apply_proposals_marks_them_as_judge_written(tmp_path):
+    """A phrase a judge wrote must be distinguishable from one you wrote."""
+    from thai_deck_gen.wordlist import apply_query_proposals
+    rows = [{"thai": "ปี", "gloss": "year", "category": "Time",
+             "part_of_speech": "noun", "classifier": "ปี",
+             "image_query": "same tree in four seasons"}]
+    path = _list(tmp_path, rows)
+    proposals = tmp_path / "image_query_proposals.yaml"
+    proposals.write_text(yaml.safe_dump(
+        {"ปี": {"suggestion": "birthday cake with candles",
+                "previous": "same tree in four seasons"}},
+        allow_unicode=True), encoding="utf-8")
+
+    n = apply_query_proposals(path, proposals)
+
+    out = yaml.safe_load(path.read_text(encoding="utf-8"))[0]
+    assert n == 1
+    assert out["image_query"] == "birthday cake with candles"
+    assert out["image_query_source"] == "judge"
+
+
+def test_apply_proposals_leaves_a_hand_written_phrase_alone(tmp_path):
+    """The word list is curated: a machine does not overwrite your wording."""
+    from thai_deck_gen.wordlist import apply_query_proposals
+    rows = [{"thai": "ปี", "gloss": "year", "category": "Time",
+             "part_of_speech": "noun", "classifier": "ปี",
+             "image_query": "rings in a cut tree stump",
+             "image_query_source": "human"}]
+    path = _list(tmp_path, rows)
+    proposals = tmp_path / "p.yaml"
+    proposals.write_text(yaml.safe_dump({"ปี": {"suggestion": "a calendar"}},
+                                        allow_unicode=True), encoding="utf-8")
+    assert apply_query_proposals(path, proposals) == 0
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))[0]["image_query"] \
+        == "rings in a cut tree stump"

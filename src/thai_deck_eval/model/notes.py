@@ -35,6 +35,9 @@ class PictureWordNote(_Model):
     id: str
     thai: str
     image: str
+    # The phrase the image was searched for, so the judge can ask
+    # whether the search found what it was told to look for.
+    image_query: str | None = None
     audio: Audio
     frequency_rank: int
     category: str

@@ -11,6 +11,9 @@ class Verdict(BaseModel):
     passed: bool
     confidence: float
     rationale: str
+    # On a rejection the judge may name what should have been searched for
+    # instead; a dead end then becomes the next attempt.
+    suggestion: str | None = None
 
 class Verdicts(BaseModel):
     verdicts: list[Verdict]

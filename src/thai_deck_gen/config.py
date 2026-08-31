@@ -14,6 +14,7 @@ class SecretsConfig(BaseModel):
     google_tts: str | None = None   # google cloud text-to-speech (sentence audio)
     openai: str | None = None       # gpt-image-1 fallback for unillustrated words
     anthropic: str | None = None    # api drafting, off the subscription quota
+    pexels: str | None = None       # posed concept photography for abstract words
 
 
 class GenConfig(BaseModel):

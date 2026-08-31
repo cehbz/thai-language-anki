@@ -4,7 +4,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 Channel = Literal["thai1000", "forvo", "commissioned", "tts",
-                  "openverse", "wikimedia", "ai", "manual"]
+                  "openverse", "pexels", "wikimedia", "ai", "manual"]
 
 class MediaEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")

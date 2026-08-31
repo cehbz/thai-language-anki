@@ -138,3 +138,40 @@ def test_approve_replaces_an_earlier_waiver_for_the_same_rule(tmp_path):
     waivers = load_waivers(deck.root)
     assert len(waivers) == 1
     assert waivers[0].reason == "re-reviewed"
+
+
+def test_images_command_passes_the_search_phrases(tmp_path, monkeypatch):
+    """The CLI is where the phrase reaches the search and the judge; a unit
+    test on fill_images cannot see this wiring, and it was missing."""
+    import thai_deck_gen.cli as cli
+    from thai_deck_gen.wordlist import WordEntry
+    from tests.gen.test_images import _deck_with_pw
+
+    deck = _deck_with_pw(tmp_path, term="ส้ม", gloss="orange")
+    captured = {}
+
+    def fake_pending_images(deck_, flagged=None, glosses=None, image_queries=None):
+        captured["image_queries"] = image_queries
+        return []
+
+    class Ctx:
+        word_list = [WordEntry(thai="ส้ม", gloss="orange", category="Food",
+                               part_of_speech="noun", classifier="ลูก",
+                               image_query="orange fruit on a market stall")]
+        http_get = None
+        imagegen = None
+        config = cli.GenConfig()
+
+    monkeypatch.setattr(cli, "pending_images", fake_pending_images)
+    monkeypatch.setattr(cli, "_build_ctx", lambda *a, **k: Ctx())
+    monkeypatch.setattr(cli, "imagegen_for", lambda ctx: None)
+    monkeypatch.setattr(cli, "image_judge_for", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_gaps_for", lambda *a, **k: __import__(
+        "tests.gen.test_pairs", fromlist=["_gaps"])._gaps([]))
+    monkeypatch.setattr(cli, "fill_images",
+                        lambda *a, **k: __import__(
+                            "thai_deck_gen.producers", fromlist=["ProducerResult"]
+                        ).ProducerResult())
+
+    cli.main(["images", "--deck", str(deck.root)])
+    assert captured["image_queries"] == {"ส้ม": "orange fruit on a market stall"}

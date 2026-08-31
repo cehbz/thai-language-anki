@@ -11,7 +11,8 @@ def _verdicts(ctx):
                          prompt=build_sentence_prompt(note))
             for note in ctx.deck.sentences]
     reqs += [JudgeRequest(note_id=note.id, rules=list(PICTURE_RULES),
-                          prompt=build_picture_prompt(note),
+                          prompt=build_picture_prompt(
+                              note, getattr(note, "image_query", None)),
                           image_path=str(ctx.deck.root / "media" / note.image))
              for note in ctx.deck.picture_words]
 
