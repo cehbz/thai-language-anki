@@ -91,8 +91,11 @@ def test_images_forwards_glosses_phrases_judge_and_limit(deck, calls, monkeypatc
     seen, spy = calls
     captured = {}
 
-    def fake_pending(deck_, flagged=None, glosses=None, image_queries=None):
-        captured.update(flagged=flagged, glosses=glosses, image_queries=image_queries)
+    def fake_pending(deck_, flagged=None, glosses=None, image_queries=None,
+                     include_present=False):
+        captured.update(flagged=flagged, glosses=glosses,
+                        image_queries=image_queries,
+                        include_present=include_present)
         return []
 
     monkeypatch.setattr(cli, "pending_images", fake_pending)
@@ -109,6 +112,9 @@ def test_images_forwards_glosses_phrases_judge_and_limit(deck, calls, monkeypatc
     assert captured["glosses"] == {"ส้ม": "orange"}
     assert captured["image_queries"] == {"ส้ม": "orange fruit on a stall"}
     assert captured["flagged"] == {"pw-0"}
+    # A verifying run decides for itself; the report's flags are the fallback
+    # for a run with no judge, which cannot.
+    assert captured["include_present"] is True
     assert seen["fill_images"]["kwargs"]["judge"] == "JUDGE"
     assert seen["fill_images"]["kwargs"]["limit"] == 7
 
@@ -326,10 +332,44 @@ def test_search_terms_apply_proposals_uses_the_deck_proposals(deck, monkeypatch,
 def test_search_terms_drafts_into_the_word_list(deck, monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(cli, "draft_image_queries",
-                        lambda backend, path, warnings: captured.setdefault("path", path) or 5)
+                        lambda backend, path, warnings, hints=None:
+                        captured.update(path=path, hints=hints) or 5)
     monkeypatch.setattr(cli, "_drafting_backend", lambda d, cfg: "BACKEND")
+    monkeypatch.setattr(cli, "load_image_query_hints", lambda d: {"Colors": "color"})
     cli.main(["search-terms", "--deck", str(deck.root), "--data-dir", str(tmp_path / "dd")])
     assert captured["path"] == tmp_path / "dd" / "word_list_th.yaml"
+    # The model is shown the query the ladder builds, so it can tell whether
+    # overriding it would help.
+    assert captured["hints"] == {"Colors": "color"}
+
+
+def test_search_terms_audit_puts_the_written_off_words_to_the_corpora(
+        deck, monkeypatch, tmp_path, capsys):
+    """A word marked unphotographable was never searched for. The audit is
+    how that claim gets tested rather than inherited."""
+    captured = {}
+
+    class Picture:
+        source, url = "openverse", "http://openverse/img.jpg"
+
+    def fake_audit(entries, deck_, ctx, judge, hints):
+        captured.update(thai=[e.thai for e in entries], judge=judge)
+        return {"\u0e2a\u0e35\u0e41\u0e14\u0e07": Picture()}
+
+    monkeypatch.setattr(cli, "audit_picturable", fake_audit)
+    monkeypatch.setattr(cli, "_build_ctx", lambda *a, **k: _ctx())
+    monkeypatch.setattr(cli, "load_deck", lambda p: deck)
+    monkeypatch.setattr(cli, "image_judge_for", lambda *a, **k: "JUDGE")
+
+    cli.main(["search-terms", "--deck", str(deck.root), "--audit-picturable",
+              "--data-dir", str(tmp_path / "dd")])
+
+    assert captured["thai"] == ["\u0e2a\u0e49\u0e21"]
+    # A count says a word is findable; only the judge says what came back
+    # depicts it.
+    assert captured["judge"] == "JUDGE"
+    out = capsys.readouterr().out
+    assert "\u0e2a\u0e35\u0e41\u0e14\u0e07" in out and "openverse" in out
 
 
 def test_init_creates_a_deck_with_name_and_phases(tmp_path, monkeypatch):

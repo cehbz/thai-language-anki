@@ -132,9 +132,7 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
     grammar_points = (yaml.safe_load(grammar_points_path.read_text(encoding="utf-8")) or []
                       if grammar_points_path.exists() else [])
 
-    hints_path = data_dir / "image_query_hints.yaml"
-    image_query_hints = (yaml.safe_load(hints_path.read_text(encoding="utf-8")) or {}
-                        if hints_path.exists() else {})
+    image_query_hints = load_image_query_hints(data_dir)
 
     exemplars_path = deck_root / "work" / "exemplars.txt"
     exemplars = load_exemplars(exemplars_path) if exemplars_path.exists() else []
@@ -158,6 +156,14 @@ def build_context(deck_root: Path, data_dir: Path, llm, nlp: bool,
         http_get=http_get,
         imgfetch=ImgFetch(config.imgfetch),
     )
+
+
+def load_image_query_hints(data_dir: Path) -> dict[str, str]:
+    """Category -> qualifier appended to the gloss when searching."""
+    path = Path(data_dir) / "image_query_hints.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def image_judge_for(deck_root: Path, config: GenConfig):

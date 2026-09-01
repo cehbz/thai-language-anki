@@ -41,6 +41,7 @@ def rubric_fingerprint(pexels: bool = False, corpora: list[str] | None = None) -
     blob = json.dumps([PICTURE_RULES, usable], sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 from thai_deck_eval.model.deck import Deck
+from thai_deck_eval.model.notes import Audio, PictureWordNote
 from thai_deck_gen.media.imgfetch import ImgFetchUnavailable
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import ImageNeed
@@ -194,9 +195,14 @@ def _head_term(gloss: str) -> str:
     """The searchable core of a learner gloss.
 
     Glosses carry sense notes and synonyms -- "I (female speaker, or casual
-    general)", "orange, mandarin" -- which match nothing in an image index.
+    general)", "orange, mandarin", "soil / earth / dirt" -- which match
+    nothing in an image index. The first alternative is the head term; a
+    multi-word one stays whole, since "navy blue" cut to "navy" is a fleet.
     """
-    return gloss.split("(")[0].split(",")[0].split(";")[0].strip()
+    head = gloss.split("(")[0]
+    for separator in (",", ";", "/"):
+        head = head.split(separator)[0]
+    return head.strip()
 
 
 def _queries(need: ImageNeed, hints: dict[str, str]) -> list[str]:
@@ -426,8 +432,85 @@ def _cached_candidates(work: Path, need: ImageNeed, limit: int,
     return out
 
 
-def _passes(verdicts) -> bool:
-    return bool(verdicts) and all(v.passed for v in verdicts)
+def _passes(verdicts, waived: frozenset[str] = frozenset()) -> bool:
+    return bool(verdicts) and all(v.passed or v.rule in waived for v in verdicts)
+
+
+def _waived_rules(deck: Deck) -> dict[str, frozenset[str]]:
+    """Per note, the rules its current image has been approved on.
+
+    A waiver names the sha it was granted against, so swapping the file drops
+    the approval; without this a run that scores the deck's own pictures would
+    overturn every decision a person made about them.
+    """
+    from thai_deck_eval.waivers import image_sha, load_waivers
+    out: dict[str, set[str]] = {}
+    sha_cache: dict[str, str | None] = {}
+    for waiver in load_waivers(deck.root):
+        if waiver.note_id not in sha_cache:
+            sha_cache[waiver.note_id] = image_sha(deck, waiver.note_id)
+        if waiver.sha is not None and sha_cache[waiver.note_id] != waiver.sha:
+            continue                      # approval was of a different picture
+        out.setdefault(waiver.note_id, set()).add(waiver.rule)
+    return {note_id: frozenset(rules) for note_id, rules in out.items()}
+
+
+def _search_and_judge(needs: list[ImageNeed], deck: Deck, ctx, notes: dict,
+                      hints: dict[str, str], per_word: int,
+                      corpora: list[str] | None, judge):
+    """Download candidates for each need and judge them all in one batch.
+
+    The single place a picture is looked for and scored; callers decide what
+    to do with the outcome. ImgFetchUnavailable propagates, since without the
+    binary no download can succeed and blocking one item is not the answer.
+    """
+    pool: dict[str, list[Candidate]] = {}
+    for need in needs:
+        pool[need.note_id] = _collect_candidates(
+            need, deck, ctx.http_get, ctx.imgfetch, hints, per_word,
+            note=notes[need.note_id],
+            pexels_key=getattr(ctx, "pexels_key", None), corpora=corpora)
+    phrases = {n.note_id: n.image_query for n in needs}
+    reqs = [JudgeRequest(note_id=c.request_id, rules=list(PICTURE_RULES),
+                         prompt=build_picture_prompt(notes[c.note_id],
+                                                     phrases.get(c.note_id)),
+                         image_path=str(c.path))
+            for cands in pool.values() for c in cands]
+    return pool, (judge.judge_many(reqs) if reqs else {})
+
+
+def audit_picturable(entries, deck: Deck, ctx, judge,
+                     hints: dict[str, str]) -> dict[str, Candidate]:
+    """Written-off words that a search and the judge between them can serve.
+
+    `picturable: false` is a claim about the corpora, written at drafting
+    time by a model that queried neither. A result count cannot answer it --
+    "Monday" is findable and what comes back is a calendar -- so this puts
+    real candidates to the same judge the deck uses, and reports the picture
+    that passed. Silence is the claim standing.
+    """
+    written_off = [e for e in entries if not e.picturable]
+    if not written_off:
+        return {}
+    # Stand-in notes: these words have no card, which is what is in question.
+    notes = {e.thai: PictureWordNote(
+        id=e.thai, thai=e.thai, image=f"images/{e.thai}.jpg", gloss=e.gloss,
+        category=e.category, frequency_rank=0,
+        audio=Audio(file=f"audio/picture_words/{e.thai}.mp3", source="native",
+                    speaker="pending")) for e in written_off}
+    needs = [ImageNeed(family="picture_word", note_id=e.thai, term=e.thai,
+                       gloss=e.gloss, category=e.category, path="",
+                       image_query=e.image_query) for e in written_off]
+    pool, verdicts = _search_and_judge(
+        needs, deck, ctx, notes, hints, getattr(ctx, "image_candidates", 5),
+        usable_corpora(ctx), judge)
+    found = {}
+    for note_id, cands in pool.items():
+        winner = next((c for c in cands if _passes(verdicts.get(c.request_id))),
+                      None)
+        if winner is not None:
+            found[note_id] = winner
+    return found
 
 
 def _fill_verified(needs: list[ImageNeed], gaps: Gaps, deck: Deck,
@@ -437,7 +520,10 @@ def _fill_verified(needs: list[ImageNeed], gaps: Gaps, deck: Deck,
     the one that passes. Search quality stops being load-bearing: a bad
     result is caught before it enters the deck rather than a judge pass later."""
     result = ProducerResult()
-    limit = getattr(ctx, "image_candidates", 5)
+    # Two different quantities: how many words this run attempts, and how
+    # many candidates each word gets. Sharing a name made every full run
+    # quietly do five words.
+    per_word = getattr(ctx, "image_candidates", 5)
     hints = getattr(ctx, "image_query_hints", None) or {}
     notes = {n.id: n for n in deck.picture_words}
 
@@ -447,33 +533,46 @@ def _fill_verified(needs: list[ImageNeed], gaps: Gaps, deck: Deck,
         print("warning: no pexels key configured (gen.yaml secrets.pexels); "
               "concept photography for abstract words is unavailable")
 
-    pool: dict[str, list[Candidate]] = {}
     exhausted: list[str] = []
     # Count against the limit only what this path can actually serve.
     servable = [n for n in needs if n.note_id in notes]
     needs = servable[:limit] if limit is not None else servable
+    phrases = {n.note_id: n.image_query for n in needs}
+
+    # The picture the deck already carries is candidate zero. Judging it here
+    # rather than trusting the last report's flags is what makes a changed
+    # rubric or a changed phrase reach the deck in one run: the verdict cache
+    # keys on both, so a settled word costs nothing and a changed one is
+    # re-scored now instead of next cycle.
+    standing_reqs = [
+        JudgeRequest(note_id=f"{n.note_id}#current", rules=list(PICTURE_RULES),
+                     prompt=build_picture_prompt(notes[n.note_id],
+                                                 phrases.get(n.note_id)),
+                     image_path=str(deck.root / "media" / n.path))
+        for n in needs if (deck.root / "media" / n.path).is_file()]
+    standing = judge.judge_many(standing_reqs) if standing_reqs else {}
+    waived = _waived_rules(deck)
+    settled = {n.note_id for n in needs
+               if _passes(standing.get(f"{n.note_id}#current"),
+                          waived.get(n.note_id, frozenset()))}
+    if settled:
+        print(f"  images: {len(settled)} word(s) still pass on the picture "
+              f"they already have")
+    needs = [n for n in needs if n.note_id not in settled]
+
+    searchable = []
     for need in needs:
         if _exhausted(deck.root, need, _queries(need, hints), corpora=corpora):
             exhausted.append(need.note_id)
-            continue
-        try:
-            pool[need.note_id] = _collect_candidates(
-                need, deck, ctx.http_get, ctx.imgfetch, hints, limit,
-                note=notes[need.note_id],
-                pexels_key=getattr(ctx, "pexels_key", None),
-                corpora=corpora)
-        except ImgFetchUnavailable as exc:
-            print(f"warning: {exc}; blocking all remaining image needs")
-            result.blocked.extend(n.note_id for n in needs)
-            return result
-
-    phrases = {n.note_id: n.image_query for n in needs}
-    reqs = [JudgeRequest(note_id=c.request_id, rules=list(PICTURE_RULES),
-                         prompt=build_picture_prompt(notes[c.note_id],
-                                                     phrases.get(c.note_id)),
-                         image_path=str(c.path))
-            for cands in pool.values() for c in cands]
-    verdicts = judge.judge_many(reqs) if reqs else {}
+        else:
+            searchable.append(need)
+    try:
+        pool, verdicts = _search_and_judge(searchable, deck, ctx, notes, hints,
+                                           per_word, corpora, judge)
+    except ImgFetchUnavailable as exc:
+        print(f"warning: {exc}; blocking all remaining image needs")
+        result.blocked.extend(n.note_id for n in needs)
+        return result
 
     by_note = {n.note_id: n for n in needs}
     result.blocked.extend(exhausted)

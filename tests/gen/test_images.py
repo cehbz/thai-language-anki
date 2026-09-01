@@ -568,6 +568,31 @@ def test_gloss_is_reduced_to_a_searchable_head_term():
     assert _queries(need, {"Food": "food"}) == ["orange food", "orange", "ส้ม"]
 
 
+def test_a_gloss_of_alternatives_searches_on_the_first_one(tmp_path):
+    """A slash is the gloss listing synonyms, not part of any of them:
+    "soil / earth / dirt material" is a query no index answers, and the words
+    that carry no drafted phrase depend on this rung being searchable."""
+    from thai_deck_gen.media.images import _queries
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="\u0e14\u0e34\u0e19",
+                     gloss="soil / earth / dirt", category="Materials",
+                     path="images/pw-0.jpg")
+    assert _queries(need, {"Materials": "material"})[0] == "soil material"
+
+    need = ImageNeed(family="picture_word", note_id="pw-1", term="\u0e0b\u0e35\u0e14",
+                     gloss="pale / faded (color)", category="Colors",
+                     path="images/pw-1.jpg")
+    assert _queries(need, {"Colors": "color"})[0] == "pale color"
+
+
+def test_a_multi_word_gloss_is_left_whole(tmp_path):
+    """Reduction is of alternatives, not of the term: "navy blue" is one
+    colour and cutting it to "navy" searches for a fleet."""
+    from thai_deck_gen.media.images import _queries
+    need = ImageNeed(family="picture_word", note_id="pw-0", term="\u0e2a\u0e35\u0e01\u0e23\u0e21\u0e17\u0e48\u0e32",
+                     gloss="navy blue", category="Colors", path="images/pw-0.jpg")
+    assert _queries(need, {"Colors": "color"})[0] == "navy blue color"
+
+
 # --- attempt memo: a note given up on is not re-searched from scratch ---
 
 def test_a_note_is_not_retried_with_the_same_queries(tmp_path):

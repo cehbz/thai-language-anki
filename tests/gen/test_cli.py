@@ -150,7 +150,8 @@ def test_images_command_passes_the_search_phrases(tmp_path, monkeypatch):
     deck = _deck_with_pw(tmp_path, term="ส้ม", gloss="orange")
     captured = {}
 
-    def fake_pending_images(deck_, flagged=None, glosses=None, image_queries=None):
+    def fake_pending_images(deck_, flagged=None, glosses=None, image_queries=None,
+                            include_present=False):
         captured["image_queries"] = image_queries
         return []
 

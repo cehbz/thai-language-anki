@@ -10,13 +10,15 @@ from thai_deck_eval.model.deck import load_deck
 from thai_deck_eval.waivers import Waiver, image_sha, load_waivers, save_waivers
 from thai_deck_gen.compiler.build import compile_deck
 from thai_deck_gen.config import GenConfig, load_config
-from thai_deck_gen.context import build_context, image_judge_for, imagegen_for
+from thai_deck_gen.context import (build_context, image_judge_for, imagegen_for,
+                                   load_image_query_hints)
 from thai_deck_gen.deckio import new_deck, write_deck
 from thai_deck_gen.llm import ApiBackend, CachedLlm, CliBackend
 from thai_deck_gen.media.commission import import_commission, write_commission_batch
 from thai_deck_gen.media.forvo import ForvoClient, fetch_forvo
 from thai_deck_gen.media.forvo_memo import ForvoMemo
-from thai_deck_gen.media.images import (fill_images, flagged_image_note_ids,
+from thai_deck_gen.media.images import (audit_picturable, fill_images,
+                                        flagged_image_note_ids,
                                         search_reachable)
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
@@ -184,6 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--apply-proposals", action="store_true",
                     help="adopt the phrases the judge proposed for words whose "
                          "images it rejected (work/image_query_proposals.yaml)")
+    st.add_argument("--audit-picturable", action="store_true",
+                    help="search for the words marked picturable: false and "
+                         "report the ones a query still reaches")
 
     im = sub.add_parser("images")
     im.add_argument("--deck", type=Path, required=True)
@@ -346,6 +351,24 @@ def main(argv=None) -> int:
         save_waivers(deck.root, waivers)
         print(f"waived {args.rule} for {args.note}")
 
+    elif args.command == "search-terms" and args.audit_picturable:
+        deck = load_deck(args.deck)
+        ctx = _build_ctx(args.deck, args.data_dir)
+        unreachable = search_reachable(ctx.http_get) if ctx.http_get else None
+        if unreachable:
+            print(f"error: {unreachable}", file=sys.stderr)
+            return 2
+        judge = image_judge_for(args.deck, ctx.config)
+        if judge is None:
+            print("error: no judge configured (gen.yaml rulebook:); a result "
+                  "count cannot tell a picture from a calendar", file=sys.stderr)
+            return 2
+        found = audit_picturable(ctx.word_list, deck, ctx, judge,
+                                 getattr(ctx, "image_query_hints", None) or {})
+        for thai, picture in found.items():
+            print(f"{thai}: {picture.source} {picture.url}")
+        print(f"{len(found)} word(s) written off that a picture can serve")
+
     elif args.command == "search-terms" and args.apply_proposals:
         n = apply_query_proposals(args.data_dir / "word_list_th.yaml",
                                   args.deck / "work" / "image_query_proposals.yaml")
@@ -355,7 +378,8 @@ def main(argv=None) -> int:
         cfg = load_config(args.deck)
         warnings: list[str] = []
         n = draft_image_queries(_drafting_backend(args.deck, cfg),
-                                args.data_dir / "word_list_th.yaml", warnings)
+                                args.data_dir / "word_list_th.yaml", warnings,
+                                hints=load_image_query_hints(args.data_dir))
         for w in warnings:
             print(f"warning: {w}")
         print(f"drafted {n} image query phrase(s)")
@@ -376,9 +400,12 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return 2
         judge = None if args.no_verify else image_judge_for(args.deck, ctx.config)
+        # With a judge the run scores the deck's own pictures, so it needs all
+        # of them; without one it can only act on what the last report flagged.
         res = fill_images(
             pending_images(deck, flagged=flagged, glosses=glosses,
-                           image_queries=queries),
+                           image_queries=queries,
+                           include_present=judge is not None),
             gaps, deck, manifest, ctx, _today(), judge=judge, limit=args.limit)
         write_deck(deck)
         manifest.save(deck.root)

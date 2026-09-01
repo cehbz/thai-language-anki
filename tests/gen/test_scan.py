@@ -46,6 +46,19 @@ def test_pending_images_includes_flagged_even_when_file_exists(tmp_path):
     assert [n.note_id for n in needs] == ["pw-0"]
 
 
+def test_pending_images_can_include_the_pictures_the_deck_already_has(tmp_path):
+    """A verifying run judges what is there, so it must be handed every note
+    that should have a picture -- not only the ones a report flagged."""
+    deck = _deck_with_words(tmp_path, 1)
+    write_deck(deck)
+    img_path = deck.root / "media" / "images" / "pw-0.jpg"
+    img_path.parent.mkdir(parents=True, exist_ok=True)
+    img_path.write_bytes(b"x")
+    assert pending_images(deck) == []
+    needs = pending_images(deck, include_present=True)
+    assert [n.note_id for n in needs] == ["pw-0"]
+
+
 def test_pending_images_takes_glosses_from_lookup_not_note(tmp_path):
     deck = _deck_with_words(tmp_path, 1)
     write_deck(deck)

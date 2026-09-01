@@ -98,10 +98,14 @@ def pending_audio(deck: Deck) -> list[AudioNeed]:
 
 def pending_images(deck: Deck, flagged: set[str] | None = None,
                    glosses: dict[str, str] | None = None,
-                   image_queries: dict[str, str] | None = None) -> list[ImageNeed]:
+                   image_queries: dict[str, str] | None = None,
+                   include_present: bool = False) -> list[ImageNeed]:
     """
     Find notes with an image ref whose file is missing, plus any note whose
     id is in `flagged` (judge-rejected images) even when the file exists.
+    `include_present` returns every note that should have a picture, whatever
+    state it is in: a run that judges for itself needs the pictures the deck
+    already has, not the previous report's opinion of them.
     term = note thai (picture words); gloss from `glosses` (thai -> gloss,
     normally the word list) for picture words, note.gloss for sentences.
     """
@@ -116,7 +120,7 @@ def pending_images(deck: Deck, flagged: set[str] | None = None,
             # PictureWordNote has image
             image_ref = note.image
             file_path = media_root / image_ref
-            if not file_path.exists() or note.id in flagged:
+            if include_present or not file_path.exists() or note.id in flagged:
                 needs.append(ImageNeed(
                     family=family,
                     note_id=note.id,
@@ -132,7 +136,7 @@ def pending_images(deck: Deck, flagged: set[str] | None = None,
             if note.image:
                 image_ref = note.image
                 file_path = media_root / image_ref
-                if not file_path.exists() or note.id in flagged:
+                if include_present or not file_path.exists() or note.id in flagged:
                     needs.append(ImageNeed(
                         family=family,
                         note_id=note.id,
@@ -145,7 +149,7 @@ def pending_images(deck: Deck, flagged: set[str] | None = None,
             # SpellingSoundNote has image
             image_ref = note.image
             file_path = media_root / image_ref
-            if not file_path.exists() or note.id in flagged:
+            if include_present or not file_path.exists() or note.id in flagged:
                 needs.append(ImageNeed(
                     family=family,
                     note_id=note.id,

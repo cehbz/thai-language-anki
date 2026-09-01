@@ -16,6 +16,11 @@ adding a mechanism beside the existing ones. The spec suites
 (`tests/spec/`) are implementation-independent, so they are the safety net
 for restructuring. Evidence gathered while writing them:
 
+- **Decide the memoization question first.** Whether the five mechanisms
+  below become one is the change the spec suites most directly protect, and
+  three of this arc's bugs came from them disagreeing about what
+  invalidates them. Settle it early in the session rather than after other
+  restructuring has moved the code around it.
 - **Five memoization mechanisms, five formats, five invalidation rules.**
   Forvo lookups (`work/forvo_lookups.jsonl`, append-only, never expires),
   image candidates (`work/candidates/*/candidates.yaml`, invalidated by
@@ -26,6 +31,18 @@ for restructuring. Evidence gathered while writing them:
   this exact work already been done — and each learned invalidation
   separately and late. One concept with one fingerprint rule would remove
   three of the five bugs this arc produced.
+- **A summary line cannot distinguish success from doing almost nothing.**
+  `_fill_verified` reported `changed=4 blocked=1` and exited 0 while
+  silently processing five words of six hundred, which is indistinguishable
+  from a successful small run; three runs went by before the arithmetic
+  stopped adding up. Every run should report what it attempted against what
+  was available. `search-terms --audit-picturable` has the same shape: it
+  prints nothing until the last of ~900 requests returns.
+- **`generate` still fetches images without a judge.** The orchestrator
+  calls `fill_images` with no `judge`, so the loop takes the unverified
+  path and still depends on the previous report's flags -- the two-cycle
+  lag the standalone `images` command no longer has. Either the loop
+  verifies too, or the unverified path goes.
 - **`fill_words` and `fill_spelling` ignore the `gaps` they are handed.**
   The loop gates on gaps (`_fillable`) but two of four producers derive
   everything from the word list, so "gap-driven" describes the loop and not

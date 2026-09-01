@@ -215,36 +215,70 @@ For each word below, give an English phrase that describes WHAT A PHOTOGRAPH
 OF THAT CONCEPT LOOKS LIKE -- not the word itself. The phrase is fed to a
 stock-photo search, so it must name something a camera can capture.
 
-- Concrete words: name the object plus enough context to disambiguate the
-  sense ("orange" is a fruit here, not a colour or a phone network).
-- Abstract words, pronouns and verbs: describe a scene that depicts them.
-  "I" -> a person pointing at their own chest. "go" -> a person walking away
-  down a road. "tomorrow" -> a calendar page being turned.
+Each word below is listed with the query the search would use if you write
+no phrase. Your phrase REPLACES that query, so a needless phrase makes the
+search worse: "a red apple" cues apple where "red color" cued red.
+
+- If that query is already the picture, LEAVE IT EMPTY. Give the word an
+  empty value. Most attributes and plain concrete nouns are this case.
+- Write a phrase only where that query is not a photograph of the word:
+  - a sense it conflates ("orange" the fruit, not the colour)
+  - two words in this list whose queries came out the same; each needs a
+    phrase that tells them apart
+  - an abstract word, pronoun or verb that needs a scene depicting it.
+    "I" -> a person pointing at their own chest. "go" -> a person walking
+    away down a road. "tomorrow" -> a calendar page being turned.
+  - a relation or quantity, which must be shown: "one cup beside three
+    cups", "a person standing behind another".
 - Never ask for text, writing, captions or logos in the image.
-- 3 to 7 words. English only.
+- 3 to 7 words, or empty. English only.
 
 Words:
 {words}
 
 Respond with a YAML mapping ONLY (no prose, no code fences), Thai word as
-the key and the phrase as the value.
+the key and the phrase as the value. Include EVERY word: an empty value is
+the answer "the qualified gloss is enough".
 """
 
 
+def _ladder_query(row: dict, hints: dict[str, str]) -> str:
+    """The query the image search builds for a row with no drafted phrase.
+
+    Shown to the drafting model so it is deciding whether to override a
+    concrete query rather than guessing at one it cannot see -- two glosses
+    reducing to the same query is invisible any other way.
+    """
+    from thai_deck_gen.media.images import _queries
+    from thai_deck_gen.media.scan import ImageNeed
+    need = ImageNeed(family="picture_word", note_id=row["thai"],
+                     term=row["thai"], gloss=row.get("gloss"),
+                     category=row.get("category"), path="")
+    return _queries(need, hints)[0]
+
+
 def draft_image_queries(llm, word_list_path: Path,
-                        warnings: list[str] | None = None) -> int:
+                        warnings: list[str] | None = None,
+                        hints: dict[str, str] | None = None) -> int:
     """Fill in `image_query` for picturable entries that lack one.
+
+    An entry the model answers with an empty phrase is marked
+    `image_query_source: gloss` -- the category-qualified gloss is the query
+    and no phrase should shadow it.
 
     Drafted per category and written back after each, so a run killed by a
     session limit keeps everything it has already drafted. Existing phrases
     are never redrafted -- the word list stays a hand-editable artifact.
     """
     warnings = warnings if warnings is not None else []
+    hints = hints or {}
     path = Path(word_list_path)
     rows = yaml.safe_load(path.read_text(encoding="utf-8")) or []
     by_category: dict[str, list[dict]] = {}
     for row in rows:
-        if row.get("image_query") or not row.get("picturable", True):
+        if (row.get("image_query")
+                or row.get("image_query_source") == "gloss"
+                or not row.get("picturable", True)):
             continue
         by_category.setdefault(row.get("category", ""), []).append(row)
 
@@ -252,6 +286,7 @@ def draft_image_queries(llm, word_list_path: Path,
     for category, pending in by_category.items():
         listing = "\n".join(
             f"- {r['thai']}: {r.get('gloss', '')} ({r.get('part_of_speech', '')})"
+            f" -- search would use: {_ladder_query(r, hints)}"
             for r in pending)
         response = llm.complete(
             IMAGE_QUERY_PROMPT.format(category=category, words=listing))
@@ -264,10 +299,17 @@ def draft_image_queries(llm, word_list_path: Path,
             warnings.append(f"{category}: image-query response was not a mapping")
             continue
         for row in pending:
+            if row["thai"] not in drafted:
+                continue                  # unanswered, not declined: ask again
             phrase = drafted.get(row["thai"])
             if isinstance(phrase, str) and phrase.strip():
                 row["image_query"] = phrase.strip()
                 filled += 1
+            else:
+                # An empty answer is a decision -- the category-qualified
+                # gloss is already the query -- and is recorded so that
+                # later runs stop re-asking it.
+                row["image_query_source"] = "gloss"
         path.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
                         encoding="utf-8")
     return filled
