@@ -48,8 +48,13 @@ def test_embedded_text_rubric_targets_the_answer_not_all_text():
     from thai_deck_eval.judge.prompts import PICTURE_RULES
     rubric = PICTURE_RULES["judge/image-embedded-text"]
     assert "gives away" in rubric or "reveals" in rubric
-    assert "watermark" in rubric.lower()
     assert "NO English" not in rubric
+    # The categories that produced the 590: named so a future edit that
+    # tightens the rule has to delete an assertion rather than drift.
+    lowered = rubric.lower()
+    for permitted in ("watermark", "photographer credit", "signage",
+                      "packaging"):
+        assert permitted in lowered, f"{permitted} must stay permitted"
 
 
 def test_picture_prompt_carries_the_intended_phrase_and_asks_the_triple():
@@ -74,3 +79,38 @@ def test_picture_prompt_without_a_phrase_still_works():
         thai, category, part_of_speech, classifier = "หมา", "Animals", "noun", "ตัว"
 
     assert "หมา" in build_picture_prompt(N())
+
+
+def test_picture_prompt_tells_the_judge_the_card_shows_a_gloss():
+    """A card carrying a gloss does not need its picture to carry the whole
+    meaning. The judge cannot apply the softer bar without being told."""
+    from thai_deck_eval.judge.prompts import build_picture_prompt
+
+    class N:
+        thai, category, part_of_speech, classifier = "เดี๋ยว", "Time", "other", None
+        gloss = "in a moment, just a sec"
+
+    prompt = build_picture_prompt(N(), phrase="person glancing at a wristwatch")
+    assert "in a moment, just a sec" in prompt
+
+
+def test_picture_prompt_says_no_gloss_when_the_card_carries_none():
+    """Silence would let the judge assume a gloss it cannot see; the absence
+    is what makes the unaided bar the right one."""
+    from thai_deck_eval.judge.prompts import build_picture_prompt
+
+    class N:
+        thai, category, part_of_speech, classifier = "หมา", "Animals", "noun", "ตัว"
+
+    prompt = build_picture_prompt(N())
+    assert "gloss" in prompt.lower()
+    assert "(none)" in prompt
+
+
+def test_relevance_rubric_scales_the_bar_to_whether_a_gloss_is_shown():
+    """Picture-only is the harder test and the weaker method: the card that
+    shows a gloss needs an image that supports it, not one that replaces it."""
+    from thai_deck_eval.judge.prompts import PICTURE_RULES
+    rubric = PICTURE_RULES["judge/image-irrelevant"].lower()
+    assert "gloss" in rubric
+    assert "evoke" in rubric        # the unaided bar survives for glossless cards

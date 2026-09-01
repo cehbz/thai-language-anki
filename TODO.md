@@ -2,6 +2,16 @@
 
 - Spec-deferred: Message Batches sweep mode, STT audio↔text verification,
   .apkg structural validation.
+- **`ApiJudge(config)` ignores `config.api_key`.** Constructed without an
+  injected client it builds a bare `anthropic.Anthropic()`, which falls back
+  to `ANTHROPIC_API_KEY` and fails with "Could not resolve authentication
+  method" when the key lives in a file, as it does here. Production is
+  unaffected -- `build_judge` passes a client from `_api_client(cfg)` -- but
+  `tests/test_judge_live.py::test_api_judge_live` constructs it directly and
+  cannot pass. Either `ApiJudge` resolves the reference itself, or the live
+  test goes through `build_judge` like production does. The second is
+  probably right: a test that builds its subject differently from production
+  is testing something production never runs.
 - **Learner-adaptive contrast weights (HVPT loop)** — unblocked now that the
   compiler stamps `contrast::<id>` tags on minimal-pair cards; a
   stats script reads Anki revlog (AnkiConnect) and emits per-contrast

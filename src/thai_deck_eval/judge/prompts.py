@@ -28,8 +28,13 @@ PICTURE_RULES = {
         "Would this image, as a picture on a flashcard, evoke the word for a "
         "learner? An abstract word is served by a scene that cues it, not by "
         "a literal depiction -- a person pointing at their own chest evokes "
-        "\"I\", two apples evoke \"two\". If it fails, give a `suggestion`: "
-        "the search phrase that would have found a better picture.",
+        "\"I\", two apples evoke \"two\". Scale the bar to the card: when a "
+        "gloss is shown the image only has to support it, so an image that "
+        "fits the glossed sense passes even if it would not have evoked the "
+        "word unaided; when no gloss is shown the image carries the meaning "
+        "alone and must evoke the word by itself. If it fails, give a "
+        "`suggestion`: the search phrase that would have found a better "
+        "picture.",
     "judge/image-embedded-text":
         "Fail only if text in the image reveals the answer: the Thai word "
         "itself, its English translation, or a romanized spelling of it. "
@@ -65,12 +70,19 @@ def build_picture_prompt(note, phrase: str | None = None) -> str:
     it was told to find, or the phrase was the wrong thing to look for. Only
     the second is worth another round, and the judge is asked to name the
     phrase it would have used.
+
+    The gloss goes in because it changes what the picture has to accomplish:
+    a card showing one needs an image that supports it, not one that replaces
+    it. Absence is stated rather than omitted, so the unaided bar is chosen
+    on evidence rather than on the field being missing.
     """
     return (f"You are evaluating a Thai picture-word flashcard (image attached "
             f"or at path).\n{_UNTRUSTED_NOTICE}\n"
             f"Word: {_field(note.thai)}\nCategory: {_field(note.category)}\n"
             f"Part of speech: {_field(note.part_of_speech)}\n"
             f"Classifier: {_field(note.classifier or '(none)')}\n"
+            f"Gloss shown on the card: "
+            f"{_field(getattr(note, 'gloss', None) or '(none)')}\n"
             f"Phrase the image was searched for: "
             f"{_field(phrase or '(none given)')}\n\n"
             f"Judge these rules:\n{_rules_block(PICTURE_RULES)}\n\n{_SCHEMA}")
