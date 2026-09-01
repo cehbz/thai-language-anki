@@ -85,23 +85,6 @@
   image_query: sugar cubes and colorful candy
   id: sweet
 - category: Adjectives
-  emphasis: true
-  gloss: delicious, tasty
-  part_of_speech: adjective
-  picturable: true
-  thai: อร่อย
-  image_query: person savoring a tasty meal
-  id: delicious
-- category: Adjectives
-  emphasis: true
-  gloss: full, had enough to eat
-  part_of_speech: adjective
-  picturable: true
-  thai: อิ่ม
-  image_query: person patting full stomach after eating
-  image_query_source: judge
-  id: full
-- category: Adjectives
   gloss: old (things)
   part_of_speech: adjective
   picturable: true
@@ -220,15 +203,6 @@
   thai: กบ
   image_query: green frog sitting on lily pad
   id: frog
-- category: Animals
-  classifier: ตัว
-  emphasis: true
-  gloss: shrimp/prawn
-  part_of_speech: noun
-  picturable: true
-  thai: กุ้ง
-  image_query: raw prawns on ice
-  id: shrimp
 - category: Animals
   classifier: ตัว
   gloss: water buffalo
@@ -808,9 +782,8 @@
   part_of_speech: noun
   picturable: true
   thai: ถุง
-  image_query: person carrying a plastic shopping bag
-  image_query_source: judge
   id: plastic-bag
+  image_query: iced drink in clear plastic bag with straw
 - category: Beverages
   classifier: ใบ
   emphasis: true
@@ -1887,7 +1860,7 @@
   picturable: false
   split_of: Thursday
   thai: วันพฤหัส
-  id: thursday-colloquial-short-form
+  id: thursday
 - category: Days of the week
   classifier: วัน
   gloss: Thursday (full form)
@@ -2282,7 +2255,7 @@
   split_of: computer
   thai: คอมพิวเตอร์
   image_query: desktop computer tower and monitor
-  id: computer
+  id: computer-long
 - category: Electronics
   classifier: จอ
   gloss: screen, monitor
@@ -3043,14 +3016,6 @@
   image_query: bowl of Thai curry
   id: curry
 - category: Food
-  classifier: ใบ
-  gloss: cup / glass (for drinking)
-  part_of_speech: noun
-  picturable: true
-  thai: แก้ว
-  image_query: drinking glass of water
-  id: cup-for-drinking
-- category: Food
   classifier: ลูก
   gloss: apple
   part_of_speech: noun
@@ -3135,15 +3100,6 @@
   image_query: yellow wooden pencil sharpened
   id: pencil
 - category: Home
-  classifier: ตู้
-  emphasis: true
-  gloss: refrigerator, fridge
-  part_of_speech: noun
-  picturable: true
-  thai: ตู้เย็น
-  image_query: refrigerator in modern kitchen
-  id: refrigerator
-- category: Home
   classifier: ใบ
   emphasis: true
   gloss: small bowl, cup (for soup or dipping sauce)
@@ -3196,15 +3152,6 @@
   image_query: wooden floor of empty room
   id: floor
 - category: Home
-  classifier: ใบ
-  gloss: photograph
-  part_of_speech: noun
-  picturable: true
-  thai: รูป
-  image_query: stack of printed photographs on a table
-  image_query_source: judge
-  id: photograph-2
-- category: Home
   classifier: ก้อน
   gloss: soap
   part_of_speech: noun
@@ -3243,7 +3190,7 @@
   picturable: true
   thai: ห้องครัว
   image_query: kitchen with counter and cabinets
-  id: kitchen
+  id: kitchen-room
 - category: Home
   classifier: ห้อง
   gloss: bedroom
@@ -3293,14 +3240,6 @@
   thai: โต๊ะ
   image_query: wooden dining table with chairs
   id: table
-- category: Home
-  classifier: เครื่อง
-  gloss: telephone
-  part_of_speech: noun
-  picturable: true
-  thai: โทรศัพท์
-  image_query: telephone handset on desk
-  id: telephone-2
 - category: Jobs
   classifier: กอง
   gloss: army
@@ -3336,13 +3275,13 @@
   id: teacher
 - category: Jobs
   classifier: คน
-  gloss: star / celebrity actor
+  gloss: celebrity, star actor
   part_of_speech: noun
   picturable: true
   split_of: actor
   thai: ดารา
   image_query: celebrity posing on red carpet
-  id: star
+  id: celebrity
 - category: Jobs
   classifier: คน
   gloss: police officer
@@ -3448,14 +3387,14 @@
 - category: Jobs
   classifier: คน
   emphasis: true
-  gloss: cook / chef (male)
+  gloss: cook, chef (male)
   part_of_speech: noun
   picturable: true
   split_of: cook
   thai: พ่อครัว
   image_query: chef cooking in restaurant kitchen
   image_query_source: judge
-  id: cook-male
+  id: cook
 - category: Jobs
   classifier: คน
   gloss: doctor
@@ -3485,13 +3424,13 @@
 - category: Jobs
   classifier: คน
   emphasis: true
-  gloss: shop / restaurant owner
+  gloss: shop owner, restaurant owner
   part_of_speech: noun
   picturable: true
   thai: เจ้าของร้าน
   image_query: smiling shopkeeper standing behind counter in store
   image_query_source: judge
-  id: shop
+  id: shop-owner
 - category: Jobs
   classifier: คน
   gloss: officer / official / staff member
@@ -3562,7 +3501,7 @@
   picturable: true
   thai: ครัว
   image_query: home kitchen with stove counters
-  id: kitchen-2
+  id: kitchen
 - category: Locations
   classifier: ห้อง
   gloss: apartment (condo)
@@ -3649,13 +3588,13 @@
   id: university
 - category: Locations
   classifier: ร้าน
-  gloss: shop, store
+  gloss: shop, store (also 'restaurant' in speech)
   part_of_speech: noun
   picturable: true
   thai: ร้าน
   image_query: small corner shop storefront exterior
   image_query_source: judge
-  id: shop-2
+  id: shop
 - category: Locations
   classifier: วัด
   gloss: temple
@@ -3791,15 +3730,6 @@
   image_query: hotel lobby with reception desk interior
   image_query_source: judge
   id: hotel
-- category: Materials
-  classifier: บาน
-  gloss: glass pane / window glass / mirror
-  part_of_speech: noun
-  picturable: true
-  split_of: glass
-  thai: กระจก
-  image_query: a pane of window glass
-  id: glass-pane-2
 - category: Materials
   classifier: ก้อน
   gloss: soil / earth / dirt
@@ -4278,15 +4208,6 @@
   id: gift
 - category: Miscellaneous Nouns
   classifier: ใบ
-  emphasis: true
-  gloss: plate, dish
-  part_of_speech: noun
-  picturable: true
-  thai: จาน
-  image_query: empty white ceramic dinner plate
-  id: plate-2
-- category: Miscellaneous Nouns
-  classifier: ใบ
   gloss: bag (plastic/paper bag, sack)
   part_of_speech: noun
   picturable: true
@@ -4314,23 +4235,13 @@
   id: sign
 - category: Miscellaneous Nouns
   classifier: ภาพ
-  gloss: picture, image, painting
+  gloss: image, picture, painting (formal)
   part_of_speech: noun
   picturable: true
   split_of: picture
   thai: ภาพ
   image_query: framed painting hanging on wall
-  id: picture-2
-- category: Miscellaneous Nouns
-  classifier: ใบ
-  gloss: picture, photo (colloquial)
-  part_of_speech: noun
-  picturable: true
-  split_of: picture
-  thai: รูป
-  image_query: stack of printed photographs on a table
-  image_query_source: judge
-  id: picture-colloquial
+  id: image
 - category: Miscellaneous Nouns
   classifier: คัน
   gloss: umbrella
@@ -4374,15 +4285,6 @@
   id: coin
 - category: Miscellaneous Nouns
   classifier: ใบ
-  gloss: glass (drinking glass)
-  part_of_speech: noun
-  picturable: true
-  split_of: glass
-  thai: แก้ว
-  image_query: clear drinking glass with water
-  id: glass-drinking-glass
-- category: Miscellaneous Nouns
-  classifier: ใบ
   gloss: banknote, bill (colloquial)
   part_of_speech: noun
   picturable: true
@@ -4414,7 +4316,7 @@
   picturable: false
   split_of: July
   thai: กรกฎา
-  id: july-colloquial-short-form
+  id: july
 - category: Months
   classifier: เดือน
   gloss: July
@@ -4422,7 +4324,7 @@
   picturable: false
   split_of: July
   thai: กรกฎาคม
-  id: july
+  id: july-long
 - category: Months
   classifier: เดือน
   gloss: September (colloquial short form)
@@ -4430,7 +4332,7 @@
   picturable: false
   split_of: September
   thai: กันยา
-  id: september-colloquial-short-form
+  id: september
 - category: Months
   classifier: เดือน
   gloss: September
@@ -4438,7 +4340,7 @@
   picturable: false
   split_of: September
   thai: กันยายน
-  id: september
+  id: september-long
 - category: Months
   classifier: เดือน
   gloss: February (colloquial short form)
@@ -4446,7 +4348,7 @@
   picturable: false
   split_of: February
   thai: กุมภา
-  id: february-colloquial-short-form
+  id: february
 - category: Months
   classifier: เดือน
   gloss: February
@@ -4454,7 +4356,7 @@
   picturable: false
   split_of: February
   thai: กุมภาพันธ์
-  id: february
+  id: february-long
 - category: Months
   emphasis: true
   gloss: in season (seasonal produce)
@@ -4470,7 +4372,7 @@
   picturable: false
   split_of: October
   thai: ตุลา
-  id: october-colloquial-short-form
+  id: october
 - category: Months
   classifier: เดือน
   gloss: October
@@ -4478,7 +4380,7 @@
   picturable: false
   split_of: October
   thai: ตุลาคม
-  id: october
+  id: october-long
 - category: Months
   classifier: เดือน
   gloss: December (colloquial short form)
@@ -4486,7 +4388,7 @@
   picturable: false
   split_of: December
   thai: ธันวา
-  id: december-colloquial-short-form
+  id: december
 - category: Months
   classifier: เดือน
   gloss: December
@@ -4494,7 +4396,7 @@
   picturable: false
   split_of: December
   thai: ธันวาคม
-  id: december
+  id: december-long
 - category: Months
   emphasis: true
   gloss: out of season (fruit/vegetables)
@@ -4510,7 +4412,7 @@
   picturable: false
   split_of: November
   thai: พฤศจิกา
-  id: november-colloquial-short-form
+  id: november
 - category: Months
   classifier: เดือน
   gloss: November
@@ -4518,7 +4420,7 @@
   picturable: false
   split_of: November
   thai: พฤศจิกายน
-  id: november
+  id: november-long
 - category: Months
   classifier: เดือน
   gloss: May (colloquial short form)
@@ -4526,7 +4428,7 @@
   picturable: false
   split_of: May
   thai: พฤษภา
-  id: may-colloquial-short-form
+  id: may
 - category: Months
   classifier: เดือน
   gloss: May
@@ -4534,7 +4436,7 @@
   picturable: false
   split_of: May
   thai: พฤษภาคม
-  id: may
+  id: may-long
 - category: Months
   classifier: เดือน
   gloss: January (colloquial short form)
@@ -4542,7 +4444,7 @@
   picturable: false
   split_of: January
   thai: มกรา
-  id: january-colloquial-short-form
+  id: january
 - category: Months
   classifier: เดือน
   gloss: January
@@ -4550,7 +4452,7 @@
   picturable: false
   split_of: January
   thai: มกราคม
-  id: january
+  id: january-long
 - category: Months
   classifier: เดือน
   gloss: June (colloquial short form)
@@ -4558,7 +4460,7 @@
   picturable: false
   split_of: June
   thai: มิถุนา
-  id: june-colloquial-short-form
+  id: june
 - category: Months
   classifier: เดือน
   gloss: June
@@ -4566,7 +4468,7 @@
   picturable: false
   split_of: June
   thai: มิถุนายน
-  id: june
+  id: june-long
 - category: Months
   classifier: เดือน
   gloss: March (colloquial short form)
@@ -4574,7 +4476,7 @@
   picturable: false
   split_of: March
   thai: มีนา
-  id: march-colloquial-short-form
+  id: march
 - category: Months
   classifier: เดือน
   gloss: March
@@ -4582,7 +4484,7 @@
   picturable: false
   split_of: March
   thai: มีนาคม
-  id: march
+  id: march-long
 - category: Months
   classifier: เดือน
   gloss: August (colloquial short form)
@@ -4590,7 +4492,7 @@
   picturable: false
   split_of: August
   thai: สิงหา
-  id: august-colloquial-short-form
+  id: august
 - category: Months
   classifier: เดือน
   gloss: August
@@ -4598,7 +4500,7 @@
   picturable: false
   split_of: August
   thai: สิงหาคม
-  id: august
+  id: august-long
 - category: Months
   emphasis: true
   gloss: end of the month (broke, eating cheap)
@@ -4631,7 +4533,7 @@
   picturable: false
   split_of: April
   thai: เมษา
-  id: april-colloquial-short-form
+  id: april
 - category: Months
   classifier: เดือน
   gloss: April
@@ -4639,7 +4541,7 @@
   picturable: false
   split_of: April
   thai: เมษายน
-  id: april
+  id: april-long
 - category: Nature
   classifier: กลุ่ม
   emphasis: true
@@ -4665,7 +4567,7 @@
   picturable: true
   thai: ดาว
   image_query: bright stars in night sky
-  id: star-2
+  id: star
 - category: Nature
   classifier: ดวง
   gloss: planet
@@ -5058,15 +4960,6 @@
 - category: People
   classifier: คน
   emphasis: true
-  gloss: cook, chef
-  part_of_speech: noun
-  picturable: true
-  thai: พ่อครัว
-  image_query: chef cooking in restaurant kitchen
-  id: cook
-- category: People
-  classifier: คน
-  emphasis: true
   gloss: male vendor, market/food-stall seller
   part_of_speech: noun
   picturable: true
@@ -5171,16 +5064,6 @@
   id: girl
 - category: People
   classifier: คน
-  emphasis: true
-  gloss: waiter, server
-  part_of_speech: noun
-  picturable: true
-  thai: เด็กเสิร์ฟ
-  image_query: waiter carrying tray of food in restaurant
-  image_query_source: judge
-  id: waiter-2
-- category: People
-  classifier: คน
   gloss: friend
   part_of_speech: noun
   picturable: true
@@ -5195,16 +5078,6 @@
   thai: แม่
   image_query: mother holding her young child
   id: mother
-- category: People
-  classifier: คน
-  emphasis: true
-  gloss: female vendor, market/food-stall seller
-  part_of_speech: noun
-  picturable: true
-  split_of: vendor
-  thai: แม่ค้า
-  image_query: woman selling food at stall
-  id: female-vendor-2
 - category: Pronouns
   gloss: each other / together
   part_of_speech: other
@@ -5622,14 +5495,14 @@
   thai: กีฬา
   image_query: athletes playing soccer on field
   id: sport
-- category: Society
+- category: Electronics
   classifier: เครื่อง
   gloss: computer
   part_of_speech: noun
   picturable: true
   thai: คอม
   image_query: desktop computer with keyboard screen
-  id: computer-2
+  id: computer
 - category: Society
   classifier: แห่ง
   gloss: prison
@@ -5639,14 +5512,6 @@
   image_query: prison cell with iron bars
   id: prison
 - category: Society
-  gloss: kill (murder)
-  part_of_speech: verb
-  picturable: true
-  thai: ฆ่า
-  image_query: hunter aiming rifle at prey
-  image_query_source: judge
-  id: kill-murder
-- category: Society
   classifier: งาน
   gloss: wedding
   part_of_speech: noun
@@ -5654,15 +5519,6 @@
   thai: งานแต่ง
   image_query: bride and groom wedding ceremony
   id: wedding
-- category: Society
-  classifier: แห่ง
-  emphasis: true
-  gloss: market (fresh market)
-  part_of_speech: noun
-  picturable: true
-  thai: ตลาด
-  image_query: outdoor fresh vegetable market stalls
-  id: market-fresh-market
 - category: Society
   gloss: die (death)
   part_of_speech: verb
@@ -5721,17 +5577,6 @@
   thai: ยา
   image_query: pills and medicine bottles
   id: medicine
-- category: Society
-  classifier: ร้าน
-  emphasis: true
-  gloss: shop, small store (also "restaurant" in speech)
-  part_of_speech: noun
-  picturable: true
-  split_of: store
-  thai: ร้าน
-  image_query: small corner shop storefront exterior
-  image_query_source: judge
-  id: shop-also-restaurant-in-speech
 - category: Society
   classifier: ลูก
   gloss: ball
@@ -6274,12 +6119,12 @@
   image_query: person with hand on chin thinking
   id: think
 - category: Verbs
-  gloss: kill
+  gloss: to kill (a mosquito, germs)
   part_of_speech: verb
   picturable: true
   thai: ฆ่า
-  image_query: hunter aiming rifle at prey
   id: kill
+  image_query: a hand swatting a mosquito
 - category: Verbs
   gloss: pay
   part_of_speech: verb
@@ -6383,15 +6228,6 @@
   thai: ว่ายน้ำ
   image_query: swimmer swimming in pool
   id: swim
-- category: Verbs
-  emphasis: true
-  gloss: to order (food, in a restaurant)
-  part_of_speech: verb
-  picturable: true
-  thai: สั่ง
-  image_query: customer pointing at menu telling waiter their order
-  image_query_source: judge
-  id: to-order-food-in-a-restaurant
 - category: Verbs
   gloss: stop
   part_of_speech: verb
