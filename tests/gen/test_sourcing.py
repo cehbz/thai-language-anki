@@ -4,7 +4,7 @@ The record is a decision log over subjects: what was tried to picture one,
 and how it ended. Nothing here needs a network, a judge, or a deck.
 """
 from thai_deck_gen.media.sourcing import (Attempt, Candidate, Decision,
-                                          SourcingLog)
+                                          Record, SourcingLog, next_mechanism)
 
 
 def _attempt(query="red color", passed=False, dated="2026-09-01"):
@@ -115,3 +115,72 @@ def test_an_unknown_decision_kind_is_refused(tmp_path):
                             Decision(kind="probably-fine", file=None,
                                      reason=None, dated="2026-09-01"))
 
+
+# --- which mechanism a subject is owed, derived from its record ---
+
+RUBRIC = "abc123"
+
+
+def _tried(query, source="gloss", rubric=RUBRIC):
+    return Attempt(query=query, query_source=source, corpora=("openverse",),
+                   rubric=rubric, candidates=(), dated="2026-09-01")
+
+
+def test_a_subject_never_attempted_is_searched():
+    assert next_mechanism(Record("picture_word", "a"), ["red color"],
+                          RUBRIC) == "search"
+
+
+def test_a_query_that_has_not_been_tried_earns_a_search():
+    """A new phrase is new information. This is what makes editing the word
+    list take effect without a flag to reset."""
+    record = Record("picture_word", "a", attempts=[_tried("red color")])
+    assert next_mechanism(record, ["red color", "crimson"], RUBRIC) == "search"
+
+
+def test_a_changed_rubric_reopens_a_subject_already_searched():
+    """Relaxing what disqualifies an image makes yesterday's rejections worth
+    reconsidering; so does adding a library nobody had searched."""
+    record = Record("picture_word", "a", attempts=[_tried("red color")])
+    assert next_mechanism(record, ["red color"], "different") == "search"
+
+
+def test_exhausted_queries_move_the_subject_to_rephrase():
+    record = Record("picture_word", "a", attempts=[_tried("red color")])
+    assert next_mechanism(record, ["red color"], RUBRIC) == "rephrase"
+
+
+def test_a_failed_rephrase_moves_the_subject_to_consult():
+    """Rephrase gets one turn. A second is the same model with the same
+    evidence, and paying twice for that is the loop this replaces."""
+    record = Record("picture_word", "a", attempts=[
+        _tried("red color"), _tried("crimson swatch", source="judge")])
+    assert next_mechanism(record, ["red color", "crimson swatch"],
+                          RUBRIC) == "consult"
+
+
+def test_a_consulted_subject_waits_for_the_human():
+    record = Record("picture_word", "a", attempts=[
+        _tried("red color"), _tried("crimson swatch", source="judge"),
+        _tried("scarlet paint", source="human")])
+    assert next_mechanism(record, ["red color", "crimson swatch",
+                                   "scarlet paint"], RUBRIC) == "waiting"
+
+
+def test_any_decision_settles_the_subject():
+    for kind in ("judge-accepted", "human-accepted", "human-supplied",
+                 "human-unpicturable"):
+        record = Record("picture_word", "a", attempts=[_tried("red color")],
+                        decision=Decision(kind=kind, file=None, reason=None,
+                                          dated="2026-09-01"))
+        assert next_mechanism(record, ["red color", "new"], RUBRIC) == "settled", kind
+
+
+def test_a_human_decision_outranks_an_untried_query():
+    """An automated rule may warn about a human decision. It may never
+    reverse one, and a new query is not grounds to reopen it."""
+    record = Record("picture_word", "a",
+                    decision=Decision(kind="human-unpicturable", file=None,
+                                      reason="no photograph serves this",
+                                      dated="2026-09-01"))
+    assert next_mechanism(record, ["anything at all"], RUBRIC) == "settled"

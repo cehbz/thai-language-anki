@@ -184,3 +184,26 @@ class SourcingLog:
             "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events),
             encoding="utf-8")
 
+
+def next_mechanism(record: Record, queries: list[str], rubric: str) -> str:
+    """Which mechanism a subject is owed, derived from its record.
+
+    Never stored: a status field beside the evidence is a field that can
+    disagree with it. `queries` is the current query sequence and `rubric`
+    the current rubric fingerprint, so a new phrase or a relaxed rule reopens
+    a subject without anyone resetting anything.
+    """
+    if record.decision is not None:
+        return "settled"
+
+    # Attempts made under a different rubric say nothing about this one: a
+    # relaxed rule or a new corpus makes those rejections worth revisiting.
+    current = [a for a in record.attempts if a.rubric == rubric]
+    tried = {a.query for a in current}
+    if not current or any(query not in tried for query in queries):
+        return "search"
+    if not any(a.query_source == "judge" for a in current):
+        return "rephrase"
+    if not any(a.query_source == "human" for a in current):
+        return "consult"
+    return "waiting"
