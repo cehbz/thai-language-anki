@@ -358,9 +358,8 @@
   part_of_speech: noun
   picturable: true
   thai: หนู
-  image_query: little girl talking to grandmother
-  image_query_source: judge
   id: mouse
+  image_query_source: gloss
 - category: Animals
   classifier: ตัว
   gloss: dog (colloquial)
@@ -1268,9 +1267,8 @@
   part_of_speech: noun
   picturable: true
   thai: หน้า
-  image_query: open book showing pages
-  image_query_source: judge
   id: face
+  image_query: a close-up of a person's face
 - category: Body
   classifier: หลัง
   gloss: back (of the body)
@@ -4390,9 +4388,8 @@
   picturable: true
   split_of: money
   thai: แบงก์
-  image_query: exterior of a bank building with sign
-  image_query_source: judge
   id: banknote-colloquial
+  image_query_source: gloss
 - category: Miscellaneous Nouns
   classifier: แผ่น
   gloss: map
@@ -4977,9 +4974,8 @@
   picturable: true
   split_of: grandfather
   thai: ตา
-  image_query: close-up of a human eye
-  image_query_source: judge
   id: grandfather-mother-s-side
+  image_query_source: gloss
 - category: People
   classifier: คน
   gloss: younger brother
@@ -5304,9 +5300,8 @@
   picturable: true
   split_of: I
   thai: ผม
-  image_query: close-up of a person's hair
-  image_query_source: judge
   id: i-male-speaker
+  image_query: a man pointing at his own chest
 - category: Pronouns
   gloss: you (plural, polite)
   part_of_speech: other
@@ -5546,8 +5541,6 @@
   picturable: false
   split_of: season
   thai: หน้า
-  image_query: open book showing pages
-  image_query_source: judge
   id: season-colloquial
 - category: Seasons
   classifier: หน้า
@@ -6082,9 +6075,8 @@
   part_of_speech: noun
   picturable: true
   thai: น้ำมัน
-  image_query: bottle of cooking oil
-  image_query_source: judge
   id: gasoline
+  image_query: fuel nozzle filling a car
 - category: Transportation
   classifier: คัน
   gloss: motorcycle
