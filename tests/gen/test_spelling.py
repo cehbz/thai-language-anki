@@ -7,8 +7,9 @@ from tests.gen.test_pairs import _gaps
 DATA = Path(__file__).parents[2] / "data"
 
 def _word(thai):
-    return WordEntry(thai=thai, gloss="x", category="Food",
-                     part_of_speech="other")
+    # ids are ascii; a deterministic per-string one keeps two words apart
+    return WordEntry(id="w-" + "-".join(str(ord(c)) for c in thai),
+                     thai=thai, gloss="x", category="Food", part_of_speech="other")
 
 def test_missing_patterns_lists_uncovered(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["sounds"])

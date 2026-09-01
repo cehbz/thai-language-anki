@@ -13,11 +13,11 @@ def _ctx(tmp_path):
     class Cfg: test_spelling_rank = 300
     class Ctx:
         word_list = [
-            WordEntry(thai="น้ำ", gloss="water", category="Beverages",
+            WordEntry(id="water", thai="น้ำ", gloss="water", category="Beverages",
                       part_of_speech="noun", classifier="แก้ว"),
-            WordEntry(thai="กิน", gloss="eat", category="Food",
+            WordEntry(id="eat", thai="กิน", gloss="eat", category="Food",
                       part_of_speech="verb"),
-            WordEntry(thai="ๆๆ", gloss="mystery", category="Food",
+            WordEntry(id="mystery", thai="ๆๆ", gloss="mystery", category="Food",
                       part_of_speech="other")]
         freq = FakeFreq({"น้ำ": 5, "กิน": 2})
         g2p = FakeG2P({"กิน": "kin˧"})
@@ -67,7 +67,7 @@ def test_fill_words_adds_each_thai_once_even_if_listed_in_two_categories(tmp_pat
     deck = new_deck(tmp_path / "d", "t", ["words"])
     ctx = _ctx(tmp_path)
     ctx.word_list = ctx.word_list + [
-        WordEntry(thai="กิน", gloss="eat (Verbs)", category="Verbs",
+        WordEntry(id="eat-verbs", thai="กิน", gloss="eat (Verbs)", category="Verbs",
                   part_of_speech="verb")]
     res = fill_words(_gaps([]), deck, ctx)
     assert [n.thai for n in deck.picture_words].count("กิน") == 1
@@ -86,10 +86,10 @@ def test_fill_words_honours_the_picturable_flag(tmp_path):
     deck = new_deck(tmp_path / "d", "t", ["words"])
     ctx = _ctx(tmp_path)
     ctx.word_list = ctx.word_list + [
-        WordEntry(thai="มกรา", gloss="January", category="Months",
+        WordEntry(id="january", thai="มกรา", gloss="January", category="Months",
                   part_of_speech="noun", classifier="เดือน", picturable=False)]
     ctx.word_list = ctx.word_list + [
-        WordEntry(thai="หน้าทุเรียน", gloss="durian season", category="Months",
+        WordEntry(id="durian-season", thai="หน้าทุเรียน", gloss="durian season", category="Months",
                   part_of_speech="noun", classifier="หน้า")]
     res = fill_words(_gaps([]), deck, ctx)
     thai = [n.thai for n in deck.picture_words]

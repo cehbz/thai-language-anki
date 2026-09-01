@@ -192,7 +192,7 @@ def test_dispatch_media_passes_word_list_glosses_to_image_scan(tmp_path, monkeyp
     write_deck(deck)
     ctx = _ctx(tmp_path)
     ctx.http_get = lambda *a, **k: None
-    ctx.word_list = [WordEntry(thai="น้ำ", gloss="water", category="Beverages",
+    ctx.word_list = [WordEntry(id="water", thai="น้ำ", gloss="water", category="Beverages",
                                part_of_speech="noun", classifier="แก้ว")]
     orchestrator._dispatch_media(_gaps([]), deck, ctx)
     assert seen["glosses"] == {"น้ำ": "water"}

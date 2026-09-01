@@ -39,10 +39,10 @@ class World:
         self.config = GenConfig(**{"sentence_base": 0, "max_iterations": 3,
                                    **config})
         self.words = words or [
-            WordEntry(thai="ข้าว", gloss="rice", category="Food",
+            WordEntry(id="rice", thai="ข้าว", gloss="rice", category="Food",
                       part_of_speech="noun", classifier="จาน",
                       image_query="a plate of rice"),
-            WordEntry(thai="หมา", gloss="dog", category="Animals",
+            WordEntry(id="dog", thai="หมา", gloss="dog", category="Animals",
                       part_of_speech="noun", classifier="ตัว",
                       image_query="a dog on a lead"),
         ]

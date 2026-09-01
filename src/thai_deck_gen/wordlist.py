@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
@@ -56,7 +57,99 @@ Instructions:
 """
 
 
+def head_term(gloss: str) -> str:
+    """The core of a learner gloss: first alternative, parenthetical cut.
+
+    "I (female speaker, or casual general)" -> "I"; "soil / earth / dirt" ->
+    "soil"; "navy blue" stays whole, since "navy" alone is a fleet.
+    """
+    # A leading parenthetical is a prefix note -- "(for) a long time" -- not
+    # a sense note; cutting at it leaves nothing.
+    gloss = re.sub(r"^\s*\([^)]*\)\s*", "", gloss)
+    head = gloss.split("(")[0]
+    for separator in (",", ";", "/"):
+        head = head.split(separator)[0]
+    return head.strip()
+
+
+def slug(text: str) -> str:
+    """Lowercase words joined by hyphens; empty when nothing survives."""
+    return "-".join(re.findall(r"[a-z0-9]+", head_term(text).lower()))
+
+
+def _qualifiers(gloss: str) -> list[str]:
+    """Progressively longer slugs of the gloss's parenthetical.
+
+    "(female speaker, polite)" -> ["female-speaker", "female-speaker-polite"],
+    so a collision on the first phrase is told apart by the next before a
+    number is reached for.
+    """
+    m = re.search(r"\(([^)]*)\)", gloss)
+    if not m:
+        return []
+    phrases = [pp for pp in re.split(r"[,;/]", m.group(1)) if pp.strip()]
+    out, acc = [], []
+    for phrase in phrases:
+        acc.extend(re.findall(r"[a-z0-9]+", phrase.lower()))
+        if acc:
+            out.append("-".join(acc))
+    return out
+
+
+def assign_ids(rows: list[dict],
+               taken: set[str] | None = None) -> tuple[list[dict], list[str]]:
+    """Seed an id on every row that lacks one; drop exact duplicates.
+
+    Ids are seeded from the gloss's head term. Rows that already carry an id
+    keep it -- identity is stored, never derived, so a later gloss edit does
+    not move it. On collision the qualifier is the gloss's parenthetical
+    ("week (formal)" -> week-formal); a number only when there is none. A
+    row whose gloss yields nothing is left without an id and reported.
+    `taken` holds ids already in use elsewhere (an existing list the rows
+    are joining).
+    """
+    notes: list[str] = []
+    kept: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        pair = (row["thai"], row["gloss"])
+        if pair in seen_pairs:
+            notes.append(f"duplicate removed: {row['gloss']!r}")
+            continue
+        seen_pairs.add(pair)
+        kept.append(dict(row))
+
+    taken = set(taken or ()) | {r["id"] for r in kept if r.get("id")}
+    by_slug: dict[str, list[dict]] = defaultdict(list)
+    for row in kept:
+        if row.get("id"):
+            continue
+        s = slug(row["gloss"])
+        if not s:
+            notes.append(f"no id could be seeded for gloss {row['gloss']!r}")
+            continue
+        by_slug[s].append(row)
+
+    for s, group in by_slug.items():
+        if len(group) == 1 and s not in taken:
+            group[0]["id"] = s
+            taken.add(s)
+            continue
+        for row in group:
+            options = [f"{s}-{q}" for q in _qualifiers(row["gloss"])] or [s]
+            candidate = next((o for o in options if o not in taken), None)
+            n = 2
+            while candidate is None or candidate in taken:
+                candidate = f"{s}-{n}"
+                n += 1
+            row["id"] = candidate
+            taken.add(candidate)
+        notes.append(f"collision on {s!r}: " + ", ".join(r["id"] for r in group))
+    return kept, notes
+
+
 class WordEntry(BaseModel):
+    id: str                          # readable, seeded from the gloss, immutable
     thai: str
     gloss: str
     category: str
@@ -64,8 +157,16 @@ class WordEntry(BaseModel):
     classifier: str | None = None
     picturable: bool = True
     image_query: str | None = None   # what a photo of this word looks like
+    image_query_source: Literal["human", "judge", "gloss"] | None = None
     split_of: str | None = None
     emphasis: bool = False         # added by the emphasis extension pass
+
+    @field_validator("id")
+    @classmethod
+    def _id_shape(cls, v: str) -> str:
+        if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", v):
+            raise ValueError("id must be lowercase words joined by hyphens")
+        return v
 
     @field_validator("thai")
     @classmethod
@@ -86,11 +187,20 @@ def load_word_list(path: Path, categories_path: Path) -> list[WordEntry]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or []
     errors = []
     entries = []
+    seen_ids: dict[str, int] = {}
     for i, item in enumerate(raw):
         category = item.get("category")
         if category not in categories:
             errors.append(f"entry {i}: unknown category {category!r}")
             continue
+        rid = item.get("id")
+        if rid is None:
+            errors.append(f"entry {i}: missing id")
+            continue
+        if rid in seen_ids:
+            errors.append(f"entry {i}: duplicate id {rid!r} (also entry {seen_ids[rid]})")
+            continue
+        seen_ids[rid] = i
         try:
             entries.append(WordEntry(**item))
         except ValueError as exc:
@@ -121,7 +231,8 @@ def draft_word_list(llm, categories_path: Path, frequency_path: Path,
             continue
         prompt = WORDLIST_PROMPT.format(
             category=category, count=per_category, anchors=", ".join(anchors))
-        entries.extend(_parse_entries(llm.complete(prompt), category, warnings))
+        entries.extend(_parse_entries(llm.complete(prompt), category, warnings,
+                                      taken={e.id for e in entries}))
         _write_entries(entries, out_path)
     _write_entries(entries, out_path)
     return len(entries)
@@ -137,18 +248,30 @@ def _strip_fences(response: str) -> str:
 
 
 def _parse_entries(response: str, category: str, warnings: list[str],
-                   emphasis: bool = False) -> list[WordEntry]:
+                   emphasis: bool = False,
+                   taken: set[str] | None = None) -> list[WordEntry]:
+    """Drafted rows become entries here, so this is where an id is born:
+    seeded from the gloss against `taken`, the ids already in the list."""
     try:
         raw = yaml.safe_load(_strip_fences(response)) or []
     except yaml.YAMLError as exc:
         warnings.append(f"{category}: unparseable response: {exc}")
         return []
-    parsed = []
+    rows = []
     for item in raw:
         if not isinstance(item, dict):
             warnings.append(f"{category}: dropped non-mapping entry {item!r}")
             continue
-        item = dict(item, category=category, emphasis=emphasis)
+        if "thai" not in item or "gloss" not in item:
+            warnings.append(f"{category}: dropped invalid entry: missing thai or gloss")
+            continue
+        rows.append(dict(item, category=category, emphasis=emphasis))
+    rows, notes = assign_ids(rows, taken)
+    warnings.extend(f"{category}: {n}" for n in notes if "no id" in n)
+    parsed = []
+    for item in rows:
+        if not item.get("id"):
+            continue
         try:
             parsed.append(WordEntry(**item))
         except ValueError as exc:
@@ -202,7 +325,8 @@ def extend_word_list(llm, categories_path: Path, frequency_path: Path,
             category=category, theme=emphasis.theme, count=extra,
             existing=", ".join(existing) or "(none)", anchors=", ".join(anchors))
         entries.extend(_parse_entries(llm.complete(prompt), category, warnings,
-                                      emphasis=True))
+                                      emphasis=True,
+                                      taken={e.id for e in entries}))
         _write_entries(entries, out_path)
     _write_entries(entries, out_path)
     return sum(1 for e in entries if e.emphasis)

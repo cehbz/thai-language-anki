@@ -4,6 +4,8 @@ import datetime
 import json
 import os
 import sys
+
+import yaml
 from pathlib import Path
 
 from thai_deck_eval.model.deck import load_deck
@@ -33,7 +35,8 @@ from thai_deck_gen.report import parse_report
 from thai_deck_eval.secrets import SecretStore
 from thai_deck_gen.emphasis import load_emphasis
 from thai_deck_gen.wordlist import (apply_query_proposals, draft_image_queries,
-                                    draft_word_list, extend_word_list)
+                                    draft_word_list, extend_word_list,
+                                     assign_ids)
 
 DEFAULT_DATA_DIR = Path("data")
 
@@ -119,6 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     wl.add_argument("--extend", action="store_true",
                     help="add theme-relevant entries per data/emphasis.yaml on top of the base list")
     wl.add_argument("--out", type=Path, default=Path("data/word_list_th.yaml"))
+    wl.add_argument("--assign-ids", action="store_true",
+                    help="seed an id on every row lacking one, remove exact "
+                         "duplicate rows, and report collisions")
 
     init = sub.add_parser("init")
     init.add_argument("dir", type=Path)
@@ -218,6 +224,17 @@ def _report_result(name: str, res) -> None:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "wordlist" and args.assign_ids:
+        rows = yaml.safe_load(args.out.read_text(encoding="utf-8")) or []
+        rows, notes = assign_ids(rows)
+        args.out.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+                            encoding="utf-8")
+        for note in notes:
+            print(note)
+        missing = [r["gloss"] for r in rows if not r.get("id")]
+        print(f"{len(rows)} row(s); {len(missing)} without an id")
+        return 1 if missing else 0
 
     if args.command == "wordlist":
         warnings = []

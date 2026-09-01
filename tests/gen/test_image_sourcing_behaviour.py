@@ -280,7 +280,9 @@ def test_an_approval_does_not_transfer_to_a_different_picture(tmp_path):
 
 def _written_off(thai="ฤดู", gloss="season", category="Time"):
     from thai_deck_gen.wordlist import WordEntry
-    return WordEntry(thai=thai, gloss=gloss, category=category,
+    import re
+    return WordEntry(id=re.sub(r"[^a-z0-9]+", "-", gloss.lower()).strip("-"),
+                     thai=thai, gloss=gloss, category=category,
                      part_of_speech="noun", classifier="ฤดู", picturable=False)
 
 
@@ -318,7 +320,7 @@ def test_the_audit_leaves_alone_the_words_that_already_have_cards(tmp_path):
     deck = _deck(tmp_path)
     world = RecordingWorld(serving={"openverse"})
 
-    audit_picturable([WordEntry(thai="หมา", gloss="dog", category="Animals",
+    audit_picturable([WordEntry(id="dog", thai="หมา", gloss="dog", category="Animals",
                                 part_of_speech="noun", classifier="ตัว")],
                      deck, world, Judge(accept=True), {})
 

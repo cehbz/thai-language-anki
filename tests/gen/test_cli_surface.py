@@ -40,7 +40,7 @@ def _ctx(**kw):
     from thai_deck_gen.wordlist import WordEntry
 
     class Ctx:
-        word_list = [WordEntry(thai="ส้ม", gloss="orange", category="Food",
+        word_list = [WordEntry(id="orange", thai="ส้ม", gloss="orange", category="Food",
                                part_of_speech="noun", classifier="ลูก",
                                image_query="orange fruit on a stall")]
         config = GenConfig(**kw)

@@ -12,21 +12,21 @@ def _write_list(tmp_path, entries):
 
 def test_load_valid_word_list(tmp_path):
     p = _write_list(tmp_path, [
-        {"thai": "น้ำ", "gloss": "water", "category": "Beverages",
+        {"id": "water", "thai": "น้ำ", "gloss": "water", "category": "Beverages",
          "part_of_speech": "noun", "classifier": "แก้ว"}])
     entries = load_word_list(p, DATA / "categories.yaml")
     assert entries[0].thai == "น้ำ"
 
 def test_load_rejects_unknown_category(tmp_path):
     p = _write_list(tmp_path, [
-        {"thai": "น้ำ", "gloss": "water", "category": "Nope",
+        {"id": "water", "thai": "น้ำ", "gloss": "water", "category": "Nope",
          "part_of_speech": "noun", "classifier": "แก้ว"}])
     with pytest.raises(ValueError, match="category"):
         load_word_list(p, DATA / "categories.yaml")
 
 def test_load_rejects_noun_without_classifier(tmp_path):
     p = _write_list(tmp_path, [
-        {"thai": "น้ำ", "gloss": "water", "category": "Beverages",
+        {"id": "water", "thai": "น้ำ", "gloss": "water", "category": "Beverages",
          "part_of_speech": "noun"}])
     with pytest.raises(ValueError, match="classifier"):
         load_word_list(p, DATA / "categories.yaml")
@@ -80,7 +80,7 @@ def test_draft_word_list_resumes_skipping_completed_categories(tmp_path):
     categories = yaml.safe_load((DATA / "categories.yaml").read_text())
     out = tmp_path / "wl.yaml"
     out.write_text(yaml.safe_dump([
-        {"thai": "น้ำ", "gloss": "water", "category": categories[0],
+        {"id": "water", "thai": "น้ำ", "gloss": "water", "category": categories[0],
          "part_of_speech": "noun", "classifier": "แก้ว"}], allow_unicode=True),
         encoding="utf-8")
     fake = FakeLlm([_entry("นม")] * (len(categories) - 1))
@@ -118,16 +118,16 @@ from thai_deck_gen.wordlist import extend_word_list
 def _base_file(tmp_path, categories):
     out = tmp_path / "wl.yaml"
     out.write_text(yaml.safe_dump([
-        {"thai": "ข้าว", "gloss": "rice", "category": "Food",
+        {"id": "rice", "thai": "ข้าว", "gloss": "rice", "category": "Food",
          "part_of_speech": "noun", "classifier": "จาน"},
-        {"thai": "หมา", "gloss": "dog", "category": "Animals",
+        {"id": "dog", "thai": "หมา", "gloss": "dog", "category": "Animals",
          "part_of_speech": "noun", "classifier": "ตัว"}], allow_unicode=True),
         encoding="utf-8")
     return out
 
 def test_load_word_list_keeps_emphasis_tag(tmp_path):
     p = _write_list(tmp_path, [
-        {"thai": "น้ำ", "gloss": "water", "category": "Beverages",
+        {"id": "water", "thai": "น้ำ", "gloss": "water", "category": "Beverages",
          "part_of_speech": "noun", "classifier": "แก้ว", "emphasis": True}])
     entries = load_word_list(p, DATA / "categories.yaml")
     assert entries[0].emphasis is True

@@ -45,6 +45,7 @@ from thai_deck_eval.model.notes import Audio, PictureWordNote
 from thai_deck_gen.media.imgfetch import ImgFetchUnavailable
 from thai_deck_gen.media.manifest import Manifest, MediaEntry
 from thai_deck_gen.media.scan import ImageNeed
+from thai_deck_gen.wordlist import head_term
 from thai_deck_gen.producers import ProducerResult
 from thai_deck_gen.report import Gaps
 
@@ -191,20 +192,6 @@ def _write_media(deck: Deck, path: str, data: bytes) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 
-def _head_term(gloss: str) -> str:
-    """The searchable core of a learner gloss.
-
-    Glosses carry sense notes and synonyms -- "I (female speaker, or casual
-    general)", "orange, mandarin", "soil / earth / dirt" -- which match
-    nothing in an image index. The first alternative is the head term; a
-    multi-word one stays whole, since "navy blue" cut to "navy" is a fleet.
-    """
-    head = gloss.split("(")[0]
-    for separator in (",", ";", "/"):
-        head = head.split(separator)[0]
-    return head.strip()
-
-
 def _queries(need: ImageNeed, hints: dict[str, str]) -> list[str]:
     """Search terms in the order worth trying.
 
@@ -218,7 +205,7 @@ def _queries(need: ImageNeed, hints: dict[str, str]) -> list[str]:
     queries = []
     if need.image_query:
         queries.append(need.image_query)
-    gloss = _head_term(need.gloss) if need.gloss else ""
+    gloss = head_term(need.gloss) if need.gloss else ""
     if gloss:
         hint = hints.get(need.category or "")
         if hint:

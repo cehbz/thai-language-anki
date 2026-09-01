@@ -156,7 +156,7 @@ def test_images_command_passes_the_search_phrases(tmp_path, monkeypatch):
         return []
 
     class Ctx:
-        word_list = [WordEntry(thai="ส้ม", gloss="orange", category="Food",
+        word_list = [WordEntry(id="orange", thai="ส้ม", gloss="orange", category="Food",
                                part_of_speech="noun", classifier="ลูก",
                                image_query="orange fruit on a market stall")]
         http_get = None
