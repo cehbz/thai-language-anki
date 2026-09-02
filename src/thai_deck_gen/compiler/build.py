@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -41,10 +42,26 @@ def _deck_id(name: str) -> int:
     return int(hashlib.sha256(f"thai-deck-gen::{name}".encode()).hexdigest()[:8], 16)
 
 
+CARD_CSS = """
+.card { font-family: sans-serif; font-size: 24px; text-align: center;
+        color: #222; background: #fff; }
+img { max-width: 100%; max-height: 55vh; width: auto; height: auto; }
+.thai, .cloze, .pattern { font-size: 52px; }
+.choices { font-size: 44px; }
+.ipa { font-size: 22px; color: #666; }
+.answer { font-weight: bold; }
+.other { color: #888; }
+.target { font-size: 44px; }
+.gloss, .grammar, .classifier { font-size: 20px; color: #555; }
+.nightMode .card { color: #ddd; background: #2f2f31; }
+.nightMode .ipa, .nightMode .other { color: #999; }
+"""
+
+
 def _model(name: str, fields: list[str], templates: list[dict]) -> genanki.Model:
     return genanki.Model(_model_id(name), name,
                          fields=[{"name": f} for f in fields],
-                         templates=templates)
+                         templates=templates, css=CARD_CSS)
 
 
 def _base_tags(family: str) -> list[str]:
@@ -54,7 +71,7 @@ def _base_tags(family: str) -> list[str]:
 MODELS: dict[str, genanki.Model] = {
     "minimal_pair": _model(
         "minimal_pair",
-        ["MemberIndex", "Thai", "Ipa", "Audio", "OtherThai", "OtherIpa"],
+        ["MemberIndex", "Thai", "Ipa", "Audio", "OtherThai", "OtherIpa", "ReviewNote"],
         [{
             "name": "Recognition",
             "qfmt": '{{Audio}}<div>Which word did you hear?</div>'
@@ -65,19 +82,22 @@ MODELS: dict[str, genanki.Model] = {
         }]),
     "spelling_sound": _model(
         "spelling_sound",
-        ["Pattern", "ExampleWord", "Audio", "Image"],
+        ["Pattern", "ExampleWord", "KeywordGloss", "Audio", "Image", "ReviewNote"],
         [{
             "name": "PatternToSound",
             "qfmt": '<div class="pattern">{{Pattern}}</div>',
-            "afmt": '{{FrontSide}}<hr id="answer">{{Audio}}<div>{{ExampleWord}}</div>{{Image}}',
+            "afmt": '{{FrontSide}}<hr id="answer">{{Audio}}<div>{{ExampleWord}}</div>'
+                   '{{#KeywordGloss}}<div class="gloss">{{KeywordGloss}}</div>{{/KeywordGloss}}{{Image}}',
         }, {
             "name": "SoundToPattern",
             "qfmt": '{{Audio}}{{Image}}',
-            "afmt": '{{FrontSide}}<hr id="answer"><div class="pattern">{{Pattern}}</div>',
+            "afmt": '{{FrontSide}}<hr id="answer"><div class="pattern">{{Pattern}}</div>'
+                   '<div>{{ExampleWord}}</div>'
+                   '{{#KeywordGloss}}<div class="gloss">{{KeywordGloss}}</div>{{/KeywordGloss}}',
         }]),
     "picture_word": _model(
         "picture_word",
-        ["Thai", "Image", "Audio", "Ipa", "Classifier", "TestSpelling"],
+        ["Thai", "Image", "Audio", "Ipa", "Classifier", "TestSpelling", "ReviewNote"],
         [{
             "name": "Comprehension",
             "qfmt": '{{Image}}{{Audio}}',
@@ -96,7 +116,7 @@ MODELS: dict[str, genanki.Model] = {
         }]),
     "sentence": _model(
         "sentence",
-        ["ThaiCloze", "Target", "Audio", "Image", "Gloss", "GrammarNote"],
+        ["ThaiCloze", "Target", "Audio", "Image", "Gloss", "GrammarNote", "ReviewNote"],
         [{
             "name": "Cloze",
             "qfmt": '<div class="cloze">{{ThaiCloze}}</div>',
@@ -213,7 +233,7 @@ def _pair_notes(note, manifest, pair_by_note, basename_of) -> list[genanki.Note]
         fields = [str(k), member.thai, member.ipa,
                  _sound(basename_of, member.audio.file),
                  " / ".join(m.thai for m in others),
-                 " / ".join(m.ipa for m in others)]
+                 " / ".join(m.ipa for m in others), ""]
         member_tags = tags + _src_tags(manifest, "audio", member.audio.file)
         notes.append(genanki.Note(
             model=MODELS["minimal_pair"], fields=fields, tags=member_tags,
@@ -221,13 +241,14 @@ def _pair_notes(note, manifest, pair_by_note, basename_of) -> list[genanki.Note]
     return notes
 
 
-def _spelling_note(note, manifest, basename_of) -> genanki.Note:
+def _spelling_note(note, manifest, basename_of, gloss_of=None) -> genanki.Note:
     tags = (_base_tags("spelling_sound")
            + _src_tags(manifest, "audio", note.audio.file)
            + _src_tags(manifest, "img", note.image))
     fields = [note.pattern, note.example_word,
+             (gloss_of or {}).get(note.example_word, ""),
              _sound(basename_of, note.audio.file),
-             _img(basename_of, note.image)]
+             _img(basename_of, note.image), ""]
     return genanki.Note(model=MODELS["spelling_sound"], fields=fields, tags=tags,
                         guid=note_guid(GUID_FAMILY["spelling_sound"], note.id))
 
@@ -239,7 +260,7 @@ def _word_note(note, manifest, basename_of) -> genanki.Note:
     fields = [note.thai, _img(basename_of, note.image),
              _sound(basename_of, note.audio.file),
              note.ipa or "", note.classifier or "",
-             "1" if note.test_spelling else ""]
+             "1" if note.test_spelling else "", ""]
     return genanki.Note(model=MODELS["picture_word"], fields=fields, tags=tags,
                         guid=note_guid(GUID_FAMILY["picture_word"], note.id))
 
@@ -253,16 +274,17 @@ def _sentence_note(note, manifest, basename_of) -> genanki.Note:
     fields = [note.thai.replace(note.target, "___"), note.target,
              _sound(basename_of, note.audio.file),
              _img(basename_of, note.image),
-             note.gloss or "", note.grammar_note or ""]
+             note.gloss or "", note.grammar_note or "", ""]
     return genanki.Note(model=MODELS["sentence"], fields=fields, tags=tags,
                         guid=note_guid(GUID_FAMILY["sentence"], note.id))
 
 
-def _build_notes(family, note, manifest, pair_by_note, basename_of) -> list[genanki.Note]:
+def _build_notes(family, note, manifest, pair_by_note, basename_of,
+                 gloss_of=None) -> list[genanki.Note]:
     if family == "minimal_pair":
         return _pair_notes(note, manifest, pair_by_note, basename_of)
     if family == "spelling_sound":
-        return [_spelling_note(note, manifest, basename_of)]
+        return [_spelling_note(note, manifest, basename_of, gloss_of)]
     if family == "picture_word":
         return [_word_note(note, manifest, basename_of)]
     if family == "sentence":
@@ -272,7 +294,8 @@ def _build_notes(family, note, manifest, pair_by_note, basename_of) -> list[gena
 
 def compile_deck(deck: Deck, manifest: Manifest, out: Path, freq: FrequencyList,
                  pair_by_note: dict[str, str], base: int = 300, emphasis=None,
-                 skip_incomplete: bool = False) -> list[tuple[str, str]]:
+                 skip_incomplete: bool = False,
+                 gloss_of: dict[str, str] | None = None) -> list[tuple[str, str]]:
     """Write `out`; return the (family, note_id) pairs left out.
 
     Missing media is an error by default. `skip_incomplete` instead drops
@@ -304,16 +327,22 @@ def compile_deck(deck: Deck, manifest: Manifest, out: Path, freq: FrequencyList,
         genanki_deck = genanki.Deck(_deck_id(deck.meta.name), deck.meta.name)
         guid_order: list[str] = []
         for pos, (family, note) in enumerate(order):
-            for gnote in _build_notes(family, note, manifest, pair_by_note, basename_of):
+            for gnote in _build_notes(family, note, manifest, pair_by_note,
+                                      basename_of, gloss_of):
                 gnote.due = pos
                 genanki_deck.add_note(gnote)
                 guid_order.append(gnote.guid)
 
         out.parent.mkdir(parents=True, exist_ok=True)
+        # fresh file + os.replace: atomic, and the birth date a file picker
+        # shows always matches this compile
+        tmp_out = out.with_suffix(out.suffix + ".tmp")
         genanki.Package(genanki_deck,
-                        media_files=[str(p) for p in media_paths]).write_to_file(str(out))
+                        media_files=[str(p) for p in media_paths]).write_to_file(str(tmp_out))
+        stamp_due(tmp_out, guid_order)
+        os.replace(tmp_out, out)
 
-    stamp_due(out, guid_order)
+    return dropped
     return dropped
 
 

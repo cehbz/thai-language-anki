@@ -435,8 +435,12 @@ def main(argv=None) -> int:
         gaps = _gaps_for(args.deck, args.data_dir)
         freq = FileFrequencyList(args.data_dir / "frequency_th.txt")
         base = args.base if args.base is not None else load_config(args.deck).sentence_base
+        wl_rows = yaml.safe_load((args.data_dir / "word_list_th.yaml").read_text()) or []
+        gloss_of = {}
+        for row in wl_rows:
+            gloss_of.setdefault(row.get("thai", ""), row.get("gloss", ""))
         dropped = compile_deck(deck, manifest, args.out, freq, gaps.pair_by_note,
-                               base=base,
+                               base=base, gloss_of=gloss_of,
                                emphasis=load_emphasis(args.data_dir / "emphasis.yaml"),
                                skip_incomplete=args.skip_incomplete)
         if dropped:
