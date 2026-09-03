@@ -1,24 +1,33 @@
-"""Tests for wiring.py: build_provider/build_assessor/default_budgets/
-load_syllabus -- assembling spec 3's backend rosters from
+"""Tests for wiring.py: build_provider/build_assessor/build_sourcing/
+default_budgets/load_syllabus -- assembling spec 3's backend rosters from
 curated/providers.yaml and spec 1/2's Syllabus from a deck directory. No
 network, no subprocess, no pythainlp/anthropic import; secret files are
 real tmp 0600 files whose reads are tracked to prove lazy resolution.
 
 build_levers/Lever are gone (Task 10 replaced the lever-escalation shape
-with attempts.attempt() + attempts.SOURCES); Task 11 rewires this module
-around build_sourcing.
+with attempts.attempt() + attempts.SOURCES); this module is rewired
+around build_sourcing (Task 11).
 """
 from __future__ import annotations
 
 import textwrap
+from datetime import date
 from pathlib import Path
 
 import pytest
 import yaml
 
 from thai_syllabus import secrets as secrets_mod
-from thai_syllabus.assessor import Assessor
-from thai_syllabus.curated import ProvidersConfig, load_providers_config
+from thai_syllabus.assessor import Assessor, Price
+from thai_syllabus.curated import (
+    CuratedBundle,
+    JudgeConfig,
+    ProvidersConfig,
+    RulebookConfig,
+    load_providers_config,
+    save_curated,
+)
+from thai_syllabus.profile import Profile
 from thai_syllabus.provider import Provider, Question
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -27,11 +36,12 @@ from thai_syllabus.wiring import (
     _DbMediaIndex,
     build_assessor,
     build_provider,
+    build_sourcing,
     default_budgets,
     load_syllabus,
 )
 
-from .builders import PROV, syl, pron, word
+from .builders import PROV, syl, pron, target, word
 
 
 # --- fixtures ----------------------------------------------------------
@@ -217,26 +227,67 @@ def test_no_llm_backends_registered_for_batch_transport(cfg, db, media_store):
 
 # --- build_assessor -------------------------------------------------------
 
-def test_build_assessor_registers_judge(cfg, db):
-    assessor = build_assessor(cfg, db)
-    assert isinstance(assessor, Assessor)
-    assert "judge" in assessor._backends
+def test_build_assessor_registers_judge_and_mechanical(cfg, db, media_store):
+    a = build_assessor(cfg, db, media_store)
+    assert set(a._backends) >= {"judge", "mechanical"}
+    assert isinstance(a, Assessor)
 
 
-def test_build_assessor_building_the_roster_reads_no_secret_files(cfg, db, monkeypatch):
+def test_build_assessor_building_the_roster_reads_no_secret_files(cfg, db, media_store, monkeypatch):
     calls = _track_reads(monkeypatch)
-    build_assessor(cfg, db)
+    build_assessor(cfg, db, media_store)
     assert calls == []
 
 
-def test_judge_backend_cli_transport_never_touches_a_secret(cfg, db, monkeypatch):
-    from thai_syllabus.curated import JudgeConfig
+def test_judge_backend_cli_transport_never_touches_a_secret(cfg, db, media_store, monkeypatch):
     cfg2 = ProvidersConfig(secrets=cfg.secrets, judge=JudgeConfig(transport="cli", model="m"))
     calls = _track_reads(monkeypatch)
-    assessor = build_assessor(cfg2, db)
+    assessor = build_assessor(cfg2, db, media_store)
     judge = assessor._backends["judge"]
     assert judge.transport == "cli"
     assert calls == []
+
+
+def test_judge_backend_carries_price_and_resolves_media_paths(db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          judge=JudgeConfig(transport="api", model="m", price_per_mtok=(2.0, 10.0)))
+    a = build_assessor(cfg, db, media_store)
+    jb = a._backends["judge"]
+    assert jb.price == Price(2.0, 10.0)
+    sha = media_store.write(b"img", "jpg")
+    db.add_media(sha=sha, kind="picture", ext="jpg", source="t", origin="", licence="?",
+                acquired=date(2026, 1, 1))
+    assert jb.resolve_path(sha) == media_store.path_for(sha, "jpg")
+    assert jb.resolve_path("nope") is None
+
+
+def test_judge_backend_quota_cost_is_flat_for_cli_zero_otherwise(db, media_store, secret_paths):
+    secrets = {n: str(p) for n, p in secret_paths.items()}
+    cli_assessor = build_assessor(ProvidersConfig(secrets=secrets,
+                                                  judge=JudgeConfig(transport="cli", model="m")),
+                                  db, media_store)
+    api_assessor = build_assessor(ProvidersConfig(secrets=secrets,
+                                                  judge=JudgeConfig(transport="api", model="m")),
+                                  db, media_store)
+    assert cli_assessor._backends["judge"].quota_cost_per_call == 1.0
+    assert api_assessor._backends["judge"].quota_cost_per_call == 0.0
+
+
+# --- build_provider: imgfetch/audiofetch as peer fetch backends -----------
+
+def test_build_provider_registers_imgfetch_and_audiofetch_as_peers(db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          imgfetch_path="/opt/bin/imgfetch", audiofetch_path="/opt/bin/audiofetch")
+    backends = build_provider(cfg, db, media_store)._backends
+    assert type(backends["imgfetch"]) is type(backends["audiofetch"])
+
+
+def test_build_provider_omits_a_fetch_backend_without_a_path(cfg, db, media_store):
+    # `cfg` sets imgfetch_path but not audiofetch_path -- the omission is
+    # per-backend, not "no fetch backend was configured at all".
+    backends = build_provider(cfg, db, media_store)._backends
+    assert "imgfetch" in backends
+    assert "audiofetch" not in backends
 
 
 # --- default_budgets -----------------------------------------------------
@@ -308,14 +359,21 @@ def test_load_syllabus_sentences_come_from_the_db(tmp_path):
 
 
 def test_load_syllabus_media_index_reflects_current_best(tmp_path):
+    from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
+
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
     db.append(port="provide", backend="openverse", key="openverse:rice",
              subject="rice", question={"provides": "picture", "params": {}},
              answer={"items": [{"sha": "abc"}]}, cost=0.0)
+    # rubric must match load_syllabus's own rubrics_for(rules) (the default
+    # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
+    # threads current_rubric through current_best (Task 11), so a verdict
+    # under a stale/mismatched rubric would not count.
     db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
              subject="rice",
-             question={"role": "picture-for-word", "artifact_sha": "abc", "rubric": None},
+             question={"role": "picture-for-word", "artifact_sha": "abc",
+                      "rubric": PICTURE_FIT_RUBRIC},
              answer={"value": True}, cost=0.0)
     syllabus = load_syllabus(root)
     assert syllabus.media.has_picture("rice") is True
@@ -359,8 +417,18 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
     assert media.recording_provenance("near") is None
 
 
-def test_db_media_index_rendition_provenance_reflects_current_best(db):
-    from datetime import date
+# --- _DbMediaIndex: rendition_provenance/rendition_speakers's two-level read
+#
+# A pair's rendition is current-best under its OWN subject (the pair id,
+# role "rendition-for-pair" -- attempts._record_rendition's mechanical row);
+# that row's params["members"] names which per-member recording actually
+# backs it. Only absent a pair-level rendition row does rendition_provenance
+# fall back to each member's own current-best recording -- and
+# rendition_speakers deliberately skips that fallback (class docstring), so
+# a mixed-speaker/partial pair stays in Syllabus.gaps().missing_renditions
+# even though the deck still compiles with a warning.
+
+def _tone_pair(db=None):
     from thai_syllabus.entities import MinimalPair, SoundConfusion
     from thai_syllabus.ids import ConfusionId, PairId
 
@@ -370,26 +438,92 @@ def test_db_media_index_rendition_provenance_reflects_current_best(db):
     far = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
     pair = MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=confusion,
                               members=(near, far))
+    return confusion, pair
 
-    def seed_recording(subject, sha, speaker_id):
-        db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
-                 subject=subject, question={"provides": "recording", "params": {}},
-                 answer={"items": [{"sha": sha}]}, cost=0.0)
-        db.append(port="assess", backend="judge", key=f"judge:x:{sha}:recording-for-word",
-                 subject=subject,
-                 question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None},
-                 answer={"value": True}, cost=0.0)
-        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
-                    origin="https://forvo.com/x", licence="cc-by",
-                    acquired=date(2026, 1, 1), speaker_id=speaker_id, speaker_kind="native")
 
-    seed_recording("near", "sha-near", "somchai")
-    seed_recording("far", "sha-far", "malee")
+def _seed_member_recording(db, subject, sha, speaker_id):
+    db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
+             subject=subject, question={"provides": "recording", "params": {}},
+             answer={"items": [{"sha": sha}]}, cost=0.0)
+    db.append(port="assess", backend="judge", key=f"judge:x:{sha}:recording-for-word",
+             subject=subject,
+             question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id=speaker_id, speaker_kind="native")
+
+
+def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_row(db):
+    confusion, pair = _tone_pair(db)
+    # Members' own current-best recordings would say "malee"/"somchai" (two
+    # different speakers) -- the pair-level rendition row's own members
+    # (both "somchai") must win over that when one is current-best.
+    _seed_member_recording(db, "near", "sha-near-own", "malee")
+    _seed_member_recording(db, "far", "sha-far-own", "somchai")
+    db.add_media(sha="sha-near-rendition", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+    db.add_media(sha="sha-far-rendition", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+
+    # attempts._record_rendition's own row shape.
+    db.append(port="assess", backend="mechanical",
+             key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
+                      "rubric": None,
+                      "params": {"members": {"near": "sha-near-rendition",
+                                             "far": "sha-far-rendition"}}},
+             answer={"value": True}, cost=0.0)
+
+    media = _DbMediaIndex(db=db, pairs=(pair,))
+    rows = media.rendition_provenance(pair.id)
+    assert {r["speaker_id"] for r in rows} == {"somchai"}
+    assert media.rendition_speakers(confusion.id) == frozenset({"somchai"})
+
+
+def test_db_media_index_rendition_provenance_falls_back_to_member_recordings_without_a_rendition_row(db):
+    confusion, pair = _tone_pair(db)
+    _seed_member_recording(db, "near", "sha-near", "somchai")
+    _seed_member_recording(db, "far", "sha-far", "malee")
 
     media = _DbMediaIndex(db=db, pairs=(pair,))
     rows = media.rendition_provenance(pair.id)
     assert {r["speaker_id"] for r in rows} == {"somchai", "malee"}
     assert media.rendition_provenance("no-such-pair") == ()
+    # rendition_speakers skips the fallback -- a partial/mixed-speaker pair
+    # with no pair-level rendition row must not read as "covered".
+    assert media.rendition_speakers(confusion.id) == frozenset()
+
+
+def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_the_fallback(db):
+    real_confusion, real_pair = _tone_pair(db)
+    _seed_member_recording(db, "near", "sha-near-own", "somchai")
+    _seed_member_recording(db, "far", "sha-far-own", "somchai")
+    db.append(port="assess", backend="mechanical",
+             key=f"mech:rendition:v1:{real_pair.id}:joined", subject=real_pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
+                      "rubric": None,
+                      "params": {"members": {"near": "sha-near-own", "far": "sha-far-own"}}},
+             answer={"value": True}, cost=0.0)
+
+    from thai_syllabus.entities import MinimalPair, SoundConfusion
+    from thai_syllabus.ids import ConfusionId, PairId
+    fallback_confusion = SoundConfusion(id=ConfusionId("vowel:a-aa"), dimension="length",
+                                        sounds=("short", "long"))
+    short = word("short", "กะ", syllables=(syl(vowel="a", length="short"),))
+    long_ = word("long", "กา", syllables=(syl(vowel="a", length="long"),))
+    fallback_pair = MinimalPair.create(id=PairId("vowel:a-aa/ka"), confusion=fallback_confusion,
+                                       members=(short, long_))
+    _seed_member_recording(db, "short", "sha-short", "somchai")
+    _seed_member_recording(db, "long", "sha-long", "malee")
+
+    media = _DbMediaIndex(db=db, pairs=(real_pair, fallback_pair))
+    syllabus = Syllabus(confusions=(real_confusion, fallback_confusion), media=media)
+    gaps = syllabus.gaps()
+    assert real_confusion.id not in gaps.missing_renditions
+    assert fallback_confusion.id in gaps.missing_renditions
 
 
 def test_load_syllabus_default_tokenizer_is_whitespace_when_pythainlp_absent(
@@ -421,3 +555,40 @@ def test_load_syllabus_reads_a_frequency_file_when_present(tmp_path):
     syllabus = load_syllabus(root)
     assert syllabus.frequency["rice"] == 1
     assert syllabus.frequency["near"] == 2
+
+
+# --- load_syllabus: rulebook overlay + build_sourcing ---------------------
+
+def _minimal_deck(tmp_path):
+    root = tmp_path / "deck"
+    save_curated(root / "curated", CuratedBundle(
+        words=(word("slow", "ช้า", "slow"),), targets=(target("slow/receptive", "slow"),),
+        graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
+        rulebook=RulebookConfig()))
+    return root
+
+
+def test_load_syllabus_applies_severity_overlay(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "rulebook.yaml").write_text(
+        "severities: {target/picture-required: warn}\n", encoding="utf-8")
+    syl_ = load_syllabus(root)
+    assert {r.id: r.severity for r in syl_.rules}["target/picture-required"] == "warn"
+
+
+def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text("image_candidates: 2\n", encoding="utf-8")
+    ctx = build_sourcing(root)
+    assert ctx.image_candidates == 2 and "picture-for-word" in ctx.rubrics
+    assert ctx.provenance_prior == ("commission", "forvo", "tts")
+
+
+def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
+    # load_syllabus, left to open its own SyllabusDb, would give
+    # Sourcing.db and syllabus.assessments/media.db two separate
+    # connections -- e.g. set_pair_confusions would land on only one.
+    # build_sourcing must open db/bundle once and inject them.
+    root = _minimal_deck(tmp_path)
+    ctx = build_sourcing(root)
+    assert ctx.db is ctx.syllabus.assessments

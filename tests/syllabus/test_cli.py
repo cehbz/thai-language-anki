@@ -10,9 +10,8 @@ already fully covered by test_compile.py -- this file only needs to prove
 the CLI plumbs `--force` through and reports a refusal correctly. `run`'s
 tests monkeypatch the wiring calls entirely (no network, no subprocess,
 no pythainlp): the point here is that main(argv) parses flags and wires
-load_syllabus/build_provider/build_assessor/default_budgets/run_pipeline
-together into a Sourcing ctx + budgets correctly, not that a real
-Provider backend does anything.
+build_sourcing/default_budgets/run_pipeline together into a Sourcing ctx
++ budgets correctly, not that a real Provider backend does anything.
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ from thai_syllabus import cli
 from thai_syllabus.attempts import Sourcing
 from thai_syllabus.compile import GateRefusal
 from thai_syllabus.rules import Compile, CompileReport, Finding, Report
-from thai_syllabus.run import Budget, RunReport, Spend
+from thai_syllabus.run import RunReport, Spend
 
 
 def _write_curated_dir(root):
@@ -52,6 +51,7 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # satisfied and the gate opens on its own, with no --force needed.
     from datetime import date
 
+    from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
     from thai_syllabus.store import SyllabusDb
 
     root = _write_curated_dir(tmp_path / "deck")
@@ -60,9 +60,13 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     db.append(port="provide", backend="openverse", key="openverse:rice",
              subject="rice", question={"provides": "picture", "params": {}},
              answer={"items": [{"sha": "pic1"}]}, cost=0.0)
+    # rubric must match load_syllabus's own rubrics_for(rules) (the default
+    # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
+    # threads current_rubric through current_best (Task 11).
     db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
              subject="rice",
-             question={"role": "picture-for-word", "artifact_sha": "pic1", "rubric": None},
+             question={"role": "picture-for-word", "artifact_sha": "pic1",
+                      "rubric": PICTURE_FIT_RUBRIC},
              answer={"value": True}, cost=0.0)
     db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
                 origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
@@ -152,14 +156,15 @@ def test_compile_force_flag_is_threaded_to_compile_syllabus(tmp_path, monkeypatc
     assert calls == [True]
 
 
-# --- run: wiring plumbing (monkeypatched) ----------------------------------
+# --- run: wiring plumbing (monkeypatched run_pipeline only) ----------------
 #
-# build_levers/Lever are gone (Task 10); cli._cmd_run builds a Sourcing
-# inline until Task 11 lands wiring.build_sourcing -- this one test proves
-# main(argv) parses flags and wires load_syllabus/build_provider/
-# build_assessor/default_budgets/run_pipeline together into that Sourcing
-# ctx + budgets, not that a real Provider backend does anything. Task 11
-# replaces it with a build_sourcing-patching version.
+# build_levers/Lever are gone (Task 10); cli._cmd_run now wires its Sourcing
+# ctx via wiring.build_sourcing (Task 11) rather than constructing one
+# inline. This test lets build_sourcing run for real against the fixture
+# deck (no network/subprocess -- it only builds lazy backend rosters) and
+# only monkeypatches run_pipeline, proving main(argv) parses flags, builds
+# a real Sourcing ctx whose judge_model/image_candidates come from the
+# deck's own providers.yaml, and layers --backend-cap onto default_budgets.
 
 @pytest.fixture
 def deck(tmp_path):
@@ -171,23 +176,8 @@ def deck(tmp_path):
     return root
 
 
-class _FakeSyllabusForRun:
-    """`_cmd_run` reads `.rules` off whatever load_syllabus returns (for
-    rubrics_for) -- a bare `object()` stand-in doesn't have one."""
-    rules = ()
-
-
 def test_run_wires_a_sourcing_ctx_and_budgets_into_run_pipeline(deck, monkeypatch, capsys):
     calls = {}
-
-    fake_syllabus = _FakeSyllabusForRun()
-    fake_provider = object()
-    fake_assessor = object()
-    monkeypatch.setattr(cli, "load_syllabus", lambda root: fake_syllabus)
-    monkeypatch.setattr(cli, "build_provider", lambda cfg, db, media_store: fake_provider)
-    monkeypatch.setattr(cli, "build_assessor", lambda cfg, db: fake_assessor)
-    monkeypatch.setattr(cli, "default_budgets",
-                        lambda cfg: {"forvo": Budget(max_asks=450)})
 
     def fake_run(ctx, budgets, **kwargs):
         calls["ctx"] = ctx
@@ -202,9 +192,6 @@ def test_run_wires_a_sourcing_ctx_and_budgets_into_run_pipeline(deck, monkeypatc
     assert rc == 0
     ctx = calls["ctx"]
     assert isinstance(ctx, Sourcing)
-    assert ctx.syllabus is fake_syllabus
-    assert ctx.provider is fake_provider
-    assert ctx.assessor is fake_assessor
     # drawn from the deck's own (non-default) providers.yaml, not a bare
     # Sourcing dataclass default.
     assert ctx.judge_model == "claude-run-test"

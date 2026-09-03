@@ -584,10 +584,13 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
     """Spec 5 section 3: per-session (answered/queued, per-confusion drill
     accuracy, exhausted-remaining count) and per-deck (current-best
     coverage per need, learner good/acceptable/unacceptable counts).
-    RunReport history is NOT included: run.py (spec 3 section 4) does not
-    persist RunReport anywhere this server can read it back from -- a gap
-    between spec 3 and spec 5's stats section left for whoever wires
-    run.py's persistence, out of this deliverable's scope.
+    `pending`/`sentences_adopted` come from the newest run.py
+    (port="run", backend="runreport") row when one exists, else 0 -- the
+    same row run._persist_report appends after every run() call.
+    `run_report_history` stays empty: run._persist_report DOES append one
+    row per run() call (a real per-run history sits in the cache table),
+    but this module's read side only reads the newest one back -- no
+    aggregation over the full history is implemented here yet.
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -614,6 +617,9 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
             else:
                 ratings["unacceptable"] += 1
 
+    runreport = cache.latest("run", "runreport", "runreport")
+    runreport_answer = runreport.answer if runreport else {}
+
     return {
         "session": {"answered": session.answered if session else 0,
                    "queued": session.queued if session else 0},
@@ -621,6 +627,8 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
         "coverage": coverage,
         "ratings": ratings,
         "drills": _drill_stats(cache, syllabus),
+        "pending": runreport_answer.get("pending", 0),
+        "sentences_adopted": runreport_answer.get("sentences_adopted", 0),
         "run_report_history": [],
     }
 

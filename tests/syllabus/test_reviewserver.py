@@ -363,6 +363,21 @@ def test_compute_stats_counts_ratings_coverage_exhausted_and_drills(syllabus, db
     assert stats["coverage"]["picture"]["total"] == 2
     assert stats["drills"][confusion.id] == {"correct": 1, "total": 2}
     assert stats["run_report_history"] == []
+    assert stats["pending"] == 0
+    assert stats["sentences_adopted"] == 0
+
+
+def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runreport(
+        syllabus, db):
+    # run.py's _persist_report convention: port="run", backend="runreport",
+    # key="runreport", subject="run" -- one row per run() call, newest wins.
+    db.append(port="run", backend="runreport", key="runreport", subject="run",
+             question={}, answer={"attempted": 1, "improved": 0, "exhausted": 0,
+                                  "available": 2, "pending": 3, "sentences_adopted": 4},
+             cost=0.0)
+    stats = rs.compute_stats(syllabus, db)
+    assert stats["pending"] == 3
+    assert stats["sentences_adopted"] == 4
 
 
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------

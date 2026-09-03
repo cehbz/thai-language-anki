@@ -398,7 +398,12 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Ou
 def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
                       passed: Mapping[str, bool], context: str) -> None:
     """value is True only if every member's mechanical verdict passed;
-    otherwise False, with the failing members named in evidence.
+    otherwise False, with the failing members named in evidence. This
+    row's own `params["members"]` is what wiring._DbMediaIndex.
+    rendition_provenance reads FIRST (the shas that actually made up
+    THIS rendition attempt) -- it falls back to each member's own
+    current-best recording only when no such pair-level row is
+    current-best yet.
     """
     joined = ",".join(members[m] for m in sorted(members))
     ok = all(passed.values())
