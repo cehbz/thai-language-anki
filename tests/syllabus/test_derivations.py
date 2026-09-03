@@ -12,9 +12,16 @@ from thai_syllabus.derivations import (
     confusion_weights,
     current_best,
     exhausted,
+    pending,
     queue,
 )
 from thai_syllabus.ports import Answer
+from thai_syllabus.store import SyllabusDb
+
+
+@pytest.fixture
+def db(tmp_path):
+    return SyllabusDb(tmp_path / "syllabus.db")
 
 
 class FakeCache:
@@ -314,3 +321,99 @@ def test_confusion_weights_increases_with_lapse_rate():
     reader = _FakeStudyReader({"tone:mid-low": records})
     weights = confusion_weights({"tone:mid-low": 1.0}, reader, ["tone:mid-low"])
     assert weights["tone:mid-low"] == pytest.approx(1.0 * (1 + 2 / 3))
+
+
+# --- authority-driven current_best, preference, provenance prior, pending -
+#
+# These exercise the real SyllabusDb (the `db` fixture) rather than
+# FakeCache: they need genuine `assessments_of` ordering/newest-wins and
+# `latest()` lookups for `pending()`'s marker-row check.
+
+def _provide(db, subject, kind, backend, shas, ts=None):
+    db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{len(shas)}",
+              subject=subject, question={"provides": kind, "params": {}},
+              answer={"items": [{"sha": s} for s in shas]}, ts=ts)
+
+
+def _verdict(db, subject, backend, role, sha, value, rubric="r"):
+    db.append(port="assess", backend=backend, key=f"{backend}:{rubric}:{sha}:{role}",
+              subject=subject, question={"role": role, "artifact_sha": sha, "rubric": rubric},
+              answer={"value": value})
+
+
+def test_mechanical_pass_ranks_a_recording(db):
+    _provide(db, "w", "recording", "forvo", ["s1"])
+    _verdict(db, "w", "mechanical", "recording-for-word", "s1", True, rubric=None)
+    best = current_best(db, "w", "recording")
+    assert best.artifact_sha == "s1" and best.rank == 50.0 and best.source == "mechanical"
+
+
+def test_mechanical_never_ranks_a_picture(db):
+    _provide(db, "w", "picture", "openverse", ["s1"])
+    _verdict(db, "w", "mechanical", "picture-for-word", "s1", True, rubric=None)
+    assert current_best(db, "w", "picture").artifact_sha is None
+
+
+def test_preference_orders_passing_pictures(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b", "c"])
+    for s in "abc":
+        _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
+    db.append(port="assess", backend="judge", key="judge:x:abc:picture-preference", subject="w",
+              question={"role": "picture-preference", "artifact_sha": None, "rubric": "pref",
+                        "params": {"candidates": ["a", "b", "c"]}},
+              answer={"value": ["b", "c", "a"]})
+    best = current_best(db, "w", "picture",
+                        current_rubric={"picture-for-word": "fit", "picture-preference": "pref"})
+    assert best.artifact_sha == "b" and 50.0 < best.rank <= 70.0
+
+
+def test_provenance_prior_breaks_ties_below_one_rank_point(db):
+    _provide(db, "w", "recording", "tts", ["t"])
+    _provide(db, "w", "recording", "forvo", ["f"])
+    for s in ("t", "f"):
+        _verdict(db, "w", "mechanical", "recording-for-word", s, True, rubric=None)
+    prov = {"t": {"source": "tts"}, "f": {"source": "forvo"}}
+    best = current_best(db, "w", "recording", provenance_prior=("commission", "forvo", "tts"),
+                        provenance=prov.get)
+    assert best.artifact_sha == "f" and 50.0 < best.rank < 51.0
+
+
+def test_role_scoped_rubric_mapping_marks_only_that_role_stale(db):
+    _provide(db, "w", "picture", "openverse", ["a"])
+    _verdict(db, "w", "judge", "picture-for-word", "a", True, rubric="old")
+    assert current_best(db, "w", "picture", current_rubric={"picture-for-word": "new"}).artifact_sha is None
+    assert current_best(db, "w", "picture", current_rubric={"sentence-for-target": "x"}).artifact_sha == "a"
+
+
+def test_pending_when_a_batch_marker_key_has_no_verdict_yet(db):
+    _provide(db, "w", "picture", "openverse", ["a"])
+    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
+              question={"keys": ["judge:r:a:picture-for-word"]},
+              answer={"kind": "batch-pending", "batch_id": "b1"})
+    assert pending(db, "w", "picture") is True
+    db.append(port="assess", backend="judge", key="judge:r:a:picture-for-word", subject="w",
+              question={"role": "picture-for-word", "artifact_sha": "a", "rubric": "r"},
+              answer={"value": True})
+    assert pending(db, "w", "picture") is False
+
+
+def test_batch_pending_marker_row_never_ranks_or_counts_as_an_attempt(db):
+    # The marker row's question has neither "provides" nor "role", so
+    # _matches_kind already excludes it from _rows_for -- it must not
+    # contribute a rank, a source, or an attempt count.
+    _provide(db, "w", "picture", "openverse", ["a"])
+    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
+              question={"keys": ["judge:r:a:picture-for-word"]},
+              answer={"kind": "batch-pending", "batch_id": "b1"})
+    best = current_best(db, "w", "picture")
+    assert best.artifact_sha is None
+    status = exhausted(db, "w", "picture", attempt_cap=1)
+    assert status.attempts == 1  # only the real provide row, not the marker
+
+
+def test_queue_excludes_pending_needs(db):
+    syl = _FakeSyllabus(_FakeGaps(words_missing_pictures=("w", "v")))
+    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
+              question={"keys": ["judge:r:a:picture-for-word"]},
+              answer={"kind": "batch-pending", "batch_id": "b1"})
+    assert [e.subject for e in queue(syl, db)] == ["v"]

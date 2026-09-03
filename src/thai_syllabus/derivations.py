@@ -29,18 +29,27 @@ injected CacheReader, testable with synthetic rows and no real store).
 """
 from __future__ import annotations
 
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Union
 
+from .assessor import AUTHORITY_ORDER, ROLE_FOR_KIND
 from .ports import Answer, CacheReader, StudyReader
 
 __all__ = [
     "CurrentBest", "current_best",
     "ExhaustedStatus", "exhausted",
     "QueueEntry", "queue",
+    "pending",
     "confusion_weights",
     "LEARNER_RANK",
 ]
+
+# A rubric filter: None matches every rubric; a str applies to every role
+# (old, pre-authority-table behavior); a role -> rubric mapping is
+# role-scoped (a verdict for a role absent from the mapping is never
+# stale on that account).
+Rubric = Union[str, Mapping[str, str], None]
 
 # Learner rating -> a numeric rank on the same scale judge verdicts use,
 # so current_best's regression guard ("never below an artifact the
@@ -85,20 +94,100 @@ def _rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
     return [r for r in cache.assessments_of(subject) if _matches_kind(r.question, kind)]
 
 
-def _judge_ranks(rows: Sequence[Answer], current_rubric: str | None) -> dict[str, float]:
-    ranks: dict[str, float] = {}
+def _stale(row: Answer, current_rubric: Rubric) -> bool:
+    """True when a verdict row's rubric no longer matches -- a str rubric
+    applies to every role (old behavior); a role -> rubric mapping only
+    stales the roles it names (a role absent from the mapping is never
+    stale on that account).
+    """
+    if current_rubric is None:
+        return False
+    role = row.question.get("role")
+    if isinstance(current_rubric, str):
+        return row.question.get("rubric") != current_rubric
+    if role in current_rubric:
+        return row.question.get("rubric") != current_rubric[role]
+    return False
+
+
+def _machine_ranks(rows: Sequence[Answer], kind: str,
+                   current_rubric: Rubric) -> tuple[dict[str, float], dict[str, str]]:
+    """Authority-driven machine rank per artifact (spec 3 section 3
+    amendment): for the kind's role, walk AUTHORITY_ORDER[role] skipping
+    "learner" (the learner is folded in separately by current_best); the
+    first backend in that order with a verdict row for an artifact
+    decides its rank. Returns (ranks, sources) -- sources names the
+    deciding backend per sha, for CurrentBest.source. Pictures additionally
+    fold in preference-row bonuses (_apply_preference).
+    """
+    role = ROLE_FOR_KIND.get(kind, kind)
+    order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
+    by_backend: dict[str, dict[str, float]] = {}
     for r in rows:
-        if r.port != "assess" or r.backend != "judge":
+        if r.port != "assess" or r.backend not in order or _stale(r, current_rubric):
             continue
-        if current_rubric is not None and r.question.get("rubric") != current_rubric:
-            continue  # a stale-rubric verdict does not rank a candidate
-        artifact_sha = r.question.get("artifact_sha")
-        if not artifact_sha:
+        if r.question.get("role") != role:
+            continue
+        sha_ = r.question.get("artifact_sha")
+        if not sha_:
             continue
         rank = _judge_rank(r.answer.get("value"))
-        if artifact_sha not in ranks or rank > ranks[artifact_sha]:
-            ranks[artifact_sha] = rank
-    return ranks
+        ranks = by_backend.setdefault(r.backend, {})
+        if sha_ not in ranks or rank > ranks[sha_]:
+            ranks[sha_] = rank
+    out: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    shas = {s for ranks in by_backend.values() for s in ranks}
+    for s in shas:
+        for backend in order:               # most authoritative first
+            if s in by_backend.get(backend, {}):
+                out[s] = by_backend[backend][s]
+                sources[s] = backend
+                break
+    if kind == "picture":
+        _apply_preference(rows, out, current_rubric)
+    return out, sources
+
+
+def _apply_preference(rows: Sequence[Answer], ranks: dict[str, float],
+                      current_rubric: Rubric) -> None:
+    """The newest picture-preference row under the current rubric whose
+    candidates all pass adds a positional bonus (spec 3 section 3
+    amendment), 20.0 * (n - 1 - i) / max(n - 1, 1) at rank position i.
+    """
+    passing = {s for s, r in ranks.items() if r > _JUDGE_FAIL_RANK}
+    prefs = [r for r in rows if r.port == "assess" and r.backend == "judge"
+            and r.question.get("role") == "picture-preference" and not _stale(r, current_rubric)
+            and set(r.question.get("params", {}).get("candidates", [])) <= passing]
+    if not prefs:
+        return
+    newest = max(prefs, key=lambda r: r.ts)
+    ranking = [s for s in newest.answer.get("value", []) if s in passing]
+    n = len(ranking)
+    for i, s in enumerate(ranking):
+        ranks[s] += 20.0 * (n - 1 - i) / max(n - 1, 1)
+
+
+def _apply_prior(ranks: dict[str, float], provenance_prior: Sequence[str],
+                 provenance: Callable[[str], Mapping | None] | None) -> None:
+    """Provenance-prior tie-break (spec 3 section 3 amendment): for
+    artifacts still passing, rank += (len(prior) - index) / (len(prior) +
+    1), where index is the artifact's provenance source's position in
+    provenance_prior (a source absent from the prior gets no bonus). Only
+    applied to already-passing ranks, and always < 1.0 so it can only
+    break ties, never outrank a genuinely better machine verdict.
+    """
+    if not provenance_prior or provenance is None:
+        return
+    for s, r in list(ranks.items()):
+        if r <= _JUDGE_FAIL_RANK:
+            continue
+        prov = provenance(s) or {}
+        try:
+            idx = list(provenance_prior).index(prov.get("source"))
+        except ValueError:
+            continue
+        ranks[s] = r + (len(provenance_prior) - idx) / (len(provenance_prior) + 1)
 
 
 def _learner_ratings(rows: Sequence[Answer]) -> dict[str, tuple[int, str]]:
@@ -124,16 +213,20 @@ def _learner_ratings(rows: Sequence[Answer]) -> dict[str, tuple[int, str]]:
 @dataclass(frozen=True)
 class CurrentBest:
     artifact_sha: str | None
-    source: str          # "learner" | "judge" | "none"
+    source: str          # "learner" | the deciding machine backend (e.g. "judge",
+                         # "mechanical") | "none"
     rank: float
     challenger: str | None = None  # an unrated artifact ranking higher, presented not swapped
 
 
 def current_best(cache: CacheReader, subject: str, kind: str, *,
-                 current_rubric: str | None = None) -> CurrentBest:
+                 current_rubric: Rubric = None,
+                 provenance_prior: Sequence[str] = (),
+                 provenance: Callable[[str], Mapping | None] | None = None) -> CurrentBest:
     rows = _rows_for(cache, subject, kind)
     learner_ratings = _learner_ratings(rows)
-    judge_ranks = _judge_ranks(rows, current_rubric)
+    machine_ranks, machine_sources = _machine_ranks(rows, kind, current_rubric)
+    _apply_prior(machine_ranks, provenance_prior, provenance)
 
     latest_learner_row = max(
         (r for r in rows if r.port == "assess" and r.backend == "learner"
@@ -156,33 +249,34 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
         artifact_sha = (latest_learner_row.question.get("artifact_sha")
                         or latest_learner_row.answer.get("artifact_sha"))
         rank = max(LEARNER_RANK[rating], floor if floor is not None else -1.0)
-        challenger = _best_challenger(judge_ranks, learner_ratings)
+        challenger = _best_challenger(machine_ranks, learner_ratings)
         return CurrentBest(artifact_sha=artifact_sha, source="learner", rank=rank,
                            challenger=challenger)
 
-    # Only a genuinely passing judge verdict (rank above the fail floor)
+    # Only a genuinely passing machine verdict (rank above the fail floor)
     # counts as a usable current_best -- an all-failing history must read
     # the same as "no candidate at all" (rank -1.0), not as "improved"
     # over none, or a subsequent real pass would never register as an
     # improvement (it would already be numerically <= a failed 0.0... and
     # worse, a fail alone would look like progress over nothing).
-    passing = {s: r for s, r in judge_ranks.items() if r > _JUDGE_FAIL_RANK}
+    passing = {s: r for s, r in machine_ranks.items() if r > _JUDGE_FAIL_RANK}
     if passing:
         best_sha = max(passing, key=passing.get)
-        return CurrentBest(artifact_sha=best_sha, source="judge", rank=passing[best_sha])
+        return CurrentBest(artifact_sha=best_sha, source=machine_sources.get(best_sha, "none"),
+                           rank=passing[best_sha])
 
     return CurrentBest(artifact_sha=None, source="none", rank=-1.0)
 
 
-def _best_challenger(judge_ranks: Mapping[str, float],
+def _best_challenger(machine_ranks: Mapping[str, float],
                      learner_ratings: Mapping[str, tuple]) -> str | None:
-    """Any judge-passed artifact the learner hasn't rated is an eligible
+    """Any machine-passed artifact the learner hasn't rated is an eligible
     challenger -- presented, never silently swapped in (spec 3 section 3).
     Not gated on out-ranking the current pick: the point is to surface a
     challenger for the learner to look at, not to pre-judge it against
     their existing choice.
     """
-    candidates = [(sha, rank) for sha, rank in judge_ranks.items()
+    candidates = [(sha, rank) for sha, rank in machine_ranks.items()
                  if sha not in learner_ratings and rank > _JUDGE_FAIL_RANK]
     if not candidates:
         return None
@@ -199,7 +293,7 @@ class ExhaustedStatus:
 
 
 def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
-             attempt_cap: int = 8, current_rubric: str | None = None) -> ExhaustedStatus:
+             attempt_cap: int = 8, current_rubric: Rubric = None) -> ExhaustedStatus:
     rows = _rows_for(cache, subject, kind)
     provide_rows = sorted((r for r in rows if r.port == "provide"), key=lambda r: r.ts)
     attempts = len(provide_rows)
@@ -220,16 +314,16 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
     # BEFORE them, not against current_best (which already folds them in
     # -- comparing against itself would make "the last attempt IS the
     # best" look like it never out-ranked anything).
-    judge_ranks = _judge_ranks(rows, current_rubric)
+    machine_ranks, _sources = _machine_ranks(rows, kind, current_rubric)
     learner_ratings = _learner_ratings(rows)
-    prior_judge_best = max((r for s, r in judge_ranks.items() if s not in last_k_shas),
-                           default=-1.0)
+    prior_machine_best = max((r for s, r in machine_ranks.items() if s not in last_k_shas),
+                             default=-1.0)
     prior_learner_best = max((LEARNER_RANK[rating] for s, (_, rating) in learner_ratings.items()
                               if s not in last_k_shas and rating in ("good", "acceptable")),
                              default=-1.0)
-    prior_best_rank = max(prior_judge_best, prior_learner_best)
+    prior_best_rank = max(prior_machine_best, prior_learner_best)
 
-    if any(judge_ranks.get(s, -1.0) > prior_best_rank for s in last_k_shas):
+    if any(machine_ranks.get(s, -1.0) > prior_best_rank for s in last_k_shas):
         return ExhaustedStatus(exhausted=False, attempts=attempts,
                                reason="a recent attempt out-ranks the prior current_best")
     return ExhaustedStatus(exhausted=True, attempts=attempts)
@@ -265,27 +359,52 @@ def _gap_candidates(syllabus) -> list[tuple[str, str]]:
     return out
 
 
-def _has_untried_lever(rows: Sequence[Answer], current_rubric: str | None,
-                       known_backends: Container[str] | None) -> bool:
+def pending(cache: CacheReader, subject: str, kind: str) -> bool:
+    """True while a judge batch is out and hasn't resolved every key this
+    kind's role cares about (spec 3 section 3 amendment): the newest
+    `judge-batch-pending:{subject}` marker row (Task 8's convention --
+    written by the batch path, matches neither "provides" nor "role" so
+    _matches_kind already excludes it from _rows_for/current_best/
+    exhausted) names the keys a batch submitted; any of those keys, whose
+    role matches this kind, still lacking a verdict row means the batch
+    hasn't come back yet.
+    """
+    marker = cache.latest("assess", "judge", f"judge-batch-pending:{subject}")
+    if marker is None:
+        return False
+    role = ROLE_FOR_KIND.get(kind, kind)
+    roles = {role, "picture-preference"} if kind == "picture" else {role}
+    for key in marker.question.get("keys", []):
+        if key.rsplit(":", 1)[-1] not in roles:
+            continue
+        if cache.latest("assess", "judge", key) is None:
+            return True
+    return False
+
+
+def _has_untried_option(rows: Sequence[Answer], current_rubric: Rubric,
+                        known_sources: Container[str] | None) -> bool:
     judge_rows = [r for r in rows if r.port == "assess" and r.backend == "judge"]
     if judge_rows and current_rubric is not None:
-        if any(r.question.get("rubric") != current_rubric for r in judge_rows):
+        if any(_stale(r, current_rubric) for r in judge_rows):
             return True  # rubric changed since verdicts -- machine verdicts re-rank
     provide_ts = max((r.ts for r in rows if r.port == "provide"), default=-1)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
         return True  # a judge suggestion has not been followed by a new attempt
-    if known_backends is not None:
+    if known_sources is not None:
         tried = {r.backend for r in rows if r.port == "provide"}
-        if set(known_backends) - tried:
-            return True  # an unsearched backend remains
+        if set(known_sources) - tried:
+            return True  # an unsearched source remains
     return False
 
 
 def queue(syllabus, cache: CacheReader, *, budgets: Mapping[str, object] | None = None,
-         current_rubric: str | None = None,
-         known_backends: Mapping[str, Container[str]] | None = None) -> list[QueueEntry]:
+         current_rubric: Rubric = None,
+         known_sources: Mapping[str, Container[str]] | None = None) -> list[QueueEntry]:
     entries: list[QueueEntry] = []
     for subject, kind in _gap_candidates(syllabus):
+        if pending(cache, subject, kind):
+            continue  # a batch is still out -- don't re-queue while awaiting it
         rows = _rows_for(cache, subject, kind)
         best = current_best(cache, subject, kind, current_rubric=current_rubric)
         status = exhausted(cache, subject, kind, current_rubric=current_rubric)
@@ -295,8 +414,8 @@ def queue(syllabus, cache: CacheReader, *, budgets: Mapping[str, object] | None 
         attempts = len([r for r in rows if r.port == "provide"])
         if best.artifact_sha is None or best.source != "learner" or best.rank < _ACCEPTABLE_FLOOR:
             bucket = 1
-        elif _has_untried_lever(rows, current_rubric,
-                                (known_backends or {}).get(kind)):
+        elif _has_untried_option(rows, current_rubric,
+                                 (known_sources or {}).get(kind)):
             bucket = 2
         else:
             bucket = 3

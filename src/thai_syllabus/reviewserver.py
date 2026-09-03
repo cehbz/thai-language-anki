@@ -217,7 +217,7 @@ def _latest_query(rows: Sequence[Answer]) -> str | None:
 
 
 def _judge_verdict_line(rows: Sequence[Answer], artifact_sha: str | None,
-                        current_rubric: str | None) -> str | None:
+                        current_rubric: str | Mapping[str, str] | None) -> str | None:
     if not artifact_sha:
         return None
     matches = [r for r in rows if r.port == "assess" and r.backend == "judge"
@@ -241,7 +241,7 @@ def _artifact(sha: str | None) -> dict[str, str] | None:
 
 def _rate_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: str,
                    *, directed: bool = False, rank: float = 0.0, attempts: int = 0,
-                   current_rubric: str | None = None) -> dict[str, Any]:
+                   current_rubric: str | Mapping[str, str] | None = None) -> dict[str, Any]:
     rows = _rows_for(cache, subject, kind)
     best = current_best(cache, subject, kind, current_rubric=current_rubric)
     current = _artifact(best.artifact_sha)
@@ -293,7 +293,7 @@ def _challenger_question(syllabus: Syllabus, subject: str, kind: str, best) -> d
 
 
 def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
-                     *, current_rubric: str | None = None) -> list[dict[str, Any]]:
+                     *, current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for confusion in syllabus.confusions:
         records = study.records(confusion.id)
@@ -319,7 +319,8 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
 
 
 def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
-                budget: int = DEFAULT_LEARNER_BUDGET, current_rubric: str | None = None,
+                budget: int = DEFAULT_LEARNER_BUDGET,
+                current_rubric: str | Mapping[str, str] | None = None,
                 k: int = 2, attempt_cap: int = 8) -> list[dict[str, Any]]:
     """The question session (spec 5 section 1): four kinds, data-driven
     from derivations.py, capped by the session-wide learner-attention
@@ -371,7 +372,7 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
 # else here.
 
 def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
-                     current_rubric: str | None = None) -> list[dict[str, Any]]:
+                     current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     words_by_id = {w.id: w for w in syllabus.words}
     pairs_by_id = {p.id: p for p in syllabus.pairs}
     graphemes_by_symbol = {g.symbol: g for g in syllabus.graphemes}
@@ -579,7 +580,7 @@ def _drill_stats(cache: CacheReader, syllabus: Syllabus) -> dict[str, dict[str, 
 
 def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
                   session: SessionStats | None = None,
-                  current_rubric: str | None = None) -> dict[str, Any]:
+                  current_rubric: str | Mapping[str, str] | None = None) -> dict[str, Any]:
     """Spec 5 section 3: per-session (answered/queued, per-confusion drill
     accuracy, exhausted-remaining count) and per-deck (current-best
     coverage per need, learner good/acceptable/unacceptable counts).
@@ -639,7 +640,7 @@ class ReviewContext:
     media_store: MediaStore
     study: StudyReader | None = None
     learner_budget: int = DEFAULT_LEARNER_BUDGET
-    current_rubric: str | None = None
+    current_rubric: str | Mapping[str, str] | None = None
     url_fetcher: Callable[[str], tuple[bytes, str]] | None = None
     cards_provider: Callable[..., list[dict[str, Any]]] = field(default=simplified_cards)
     session: SessionStats = field(default_factory=SessionStats)

@@ -12,6 +12,7 @@ from datetime import date
 
 import pytest
 
+from thai_syllabus.assessor import ROLE_FOR_KIND
 from thai_syllabus.compile import GateRefusal, compile_syllabus, thai_cloze
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
@@ -89,7 +90,8 @@ class Fixture:
         # resolve these fixture artifacts.
         self.db.append(port="assess", backend="judge",
                        key=f"judge:seed:{sha}:{kind}", subject=subject,
-                       question={"role": kind, "artifact_sha": sha, "rubric": "seed"},
+                       question={"role": ROLE_FOR_KIND.get(kind, kind), "artifact_sha": sha,
+                                "rubric": "seed"},
                        answer={"value": True})
 
     def seed_recording(self, subject: str, text: str, speaker="somchai") -> str:
