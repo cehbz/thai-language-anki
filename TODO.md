@@ -1,160 +1,68 @@
 # TODO
 
-- Spec-deferred: Message Batches sweep mode, STT audio↔text verification,
-  .apkg structural validation.
-- **`ApiJudge(config)` ignores `config.api_key`.** Constructed without an
-  injected client it builds a bare `anthropic.Anthropic()`, which falls back
-  to `ANTHROPIC_API_KEY` and fails with "Could not resolve authentication
-  method" when the key lives in a file, as it does here. Production is
-  unaffected -- `build_judge` passes a client from `_api_client(cfg)` -- but
-  `tests/test_judge_live.py::test_api_judge_live` constructs it directly and
-  cannot pass. Either `ApiJudge` resolves the reference itself, or the live
-  test goes through `build_judge` like production does. The second is
-  probably right: a test that builds its subject differently from production
-  is testing something production never runs.
-- **Learner-adaptive contrast weights (HVPT loop)** — unblocked now that the
-  compiler stamps `contrast::<id>` tags on minimal-pair cards; a
-  stats script reads Anki revlog (AnkiConnect) and emits per-contrast
-  lapse-rate weights overriding data/contrasts.yaml, so coverage gaps —
-  and generation — track the learner's actual confusions, with raised
-  speaker-diversity targets on confused contrasts.
+All items below run against the redesigned pipeline (src/thai_syllabus).
+The old packages (thai_deck_eval, thai_deck_gen) are superseded; their
+removal happens once the new pipeline has produced and survived a studied
+deck.
 
-## Architecture simplification pass
+## Cutover
 
-The codebase grew by accretion: every problem this arc hit was answered by
-adding a mechanism beside the existing ones. The spec suites
-(`tests/spec/`) are implementation-independent, so they are the safety net
-for restructuring. Evidence gathered while writing them:
+- Write `<new-deck>/curated/providers.yaml` (secret references, proxy,
+  imgfetch path, judge transport) and run the real migration:
+  `thai-syllabus migrate --old-deck ~/decks/thai-ff --old-data data
+  --new-root <new-deck>`.
+- First real sourcing run (`thai-syllabus run`) against the migrated
+  state; verify RunReport numbers against expectations.
+- First `thai-syllabus compile`; delete-and-reimport in Anki; a proof
+  pass in `thai-syllabus review`.
+- First `thai-syllabus import` after a study session; verify StudyRecords
+  and flag/ReviewNote rows.
+- Retire the old packages, scripts/proof_gallery.py, and the old deck
+  work/ stores after one full loop succeeds.
 
-- **Decide the memoization question first.** Whether the five mechanisms
-  below become one is the change the spec suites most directly protect, and
-  three of this arc's bugs came from them disagreeing about what
-  invalidates them. Settle it early in the session rather than after other
-  restructuring has moved the code around it.
-- **Five memoization mechanisms, five formats, five invalidation rules.**
-  Forvo lookups (`work/forvo_lookups.jsonl`, append-only, never expires),
-  image candidates (`work/candidates/*/candidates.yaml`, invalidated by
-  corpus set), exhausted searches (`work/image_review.yaml`, invalidated by
-  queries + rubric + corpora), judge verdicts (sqlite, keyed by rules +
-  prompt + model + image sha), LLM completions (sqlite, keyed by producer +
-  prompt version + model + prompt). They answer the same question — has
-  this exact work already been done — and each learned invalidation
-  separately and late. One concept with one fingerprint rule would remove
-  three of the five bugs this arc produced.
-- **A summary line cannot distinguish success from doing almost nothing.**
-  `_fill_verified` reported `changed=4 blocked=1` and exited 0 while
-  silently processing five words of six hundred, which is indistinguishable
-  from a successful small run; three runs went by before the arithmetic
-  stopped adding up. Every run should report what it attempted against what
-  was available. `search-terms --audit-picturable` has the same shape: it
-  prints nothing until the last of ~900 requests returns.
-- **`generate` still fetches images without a judge.** The orchestrator
-  calls `fill_images` with no `judge`, so the loop takes the unverified
-  path and still depends on the previous report's flags -- the two-cycle
-  lag the standalone `images` command no longer has. Either the loop
-  verifies too, or the unverified path goes.
-- **`fill_words` and `fill_spelling` ignore the `gaps` they are handed.**
-  The loop gates on gaps (`_fillable`) but two of four producers derive
-  everything from the word list, so "gap-driven" describes the loop and not
-  the producers. Either they should consume gaps or they should not be in
-  the gap loop.
-- **`media/images.py` is 586 lines** doing search, ordering, download,
-  verification, memoization, proposals and the review queue. The largest
-  module and the one every bug landed in.
-- **Two config surfaces that reference each other.** `gen.yaml` carries a
-  `rulebook:` pointer so the generator can borrow the evaluator's judge, and
-  secrets live in both. The judge is configured in one file and consumed in
-  two.
-- **Two notions of known vocabulary**: `known_vocab` (whole deck) and
-  `vocabulary_by_position` (progressive). The first is now only used as a
-  fallback and is what made `meth/new-elements` vacuous.
-- **`ImageNeed` duplicates the note.** It carries category, gloss and
-  image_query, all of which now live on `PictureWordNote`; `pending_images`
-  needs three lookup maps passed in to rebuild what the deck already knows.
-- **Each media filler re-implements the same pattern**: per-item fault
-  tolerance, periodic checkpoint, provenance record, blocked list. Forvo,
-  TTS, images and thai1000 each have their own copy, and the checkpoint was
-  added to two of them only after a killed run lost work.
-- **Dead test seam**: `THAI_DECK_GEN_FAKE` and the fake port classes in
-  `cli.py` predate the fake-world harness in `tests/spec/world.py` and are
-  no longer exercised by anything but themselves.
-- **CLI inconsistency**: `init` and `generate` take a positional `dir`;
-  every other command takes `--deck`.
+## Content decisions (user)
 
-## Thai register questions needing expert input (not code)
+- Productive-Target selection rule: which words get production cards
+  ("what I intend to say") — frequency cutoff, category-based, or
+  hand-picked.
+- Gloss placement (F3): picture-only fronts vs gloss chip — needs the
+  gloss-off study impression; unblocks the principles lock.
+- ~26 real classifier findings from the judge triage: word-list fixes,
+  incl. the 6 time-of-day words wrongly assigned compound parts as
+  classifiers (docs/superpowers/review/2026-09-01-judge-triage.md).
+- 62 classifier placeholder Words from migration need real facts
+  (pronunciation, meaning).
 
-These were decided provisionally so generation could continue; each needs
-deeper analysis by fable, and likely research plus a local speaker.
+## Content work (machine, once cutover done)
 
-- **Politeness particle spelling.** The generator wrote คับ at the end of
-  152 sentences; those are normalized to ครับ and `lang/nonstandard-particle`
-  now enforces it. Provisional reasoning: the deck teaches reading, and TTS
-  pronounces ครับ with the natural reduction anyway. Open: whether the káp
-  reduction heard around Chiang Mai is general colloquial Thai or a Northern
-  feature, and whether a deck aimed at colloquial daily speech should ever
-  show the chat spelling. Investigate current Northern Thai pedagogy: what do
-  Chiang Mai language schools put on the page?
-- **First-person register.** ~204 sentences use ฉัน, which the word list
-  glosses "female speaker, or casual general"; production cards are being
-  regenerated with ผม and a `usage` field splits production from
-  comprehension. Open: whether ฉัน is genuinely register-neutral in casual
-  Northern speech, and what proportion of comprehension-only material a deck
-  should carry.
-- **Female particles.** 33 sentences end in ค่ะ, kept as comprehension
-  examples. Open: whether comprehension-only cards should differ in card
-  template (recognition only, never a production prompt), and whether other
-  gendered forms need the same treatment.
-- **Kam Mueang production content (parked 2026-09-02, user goal).** Speaking
-  and understanding Northern dialect matters: market/food vendors often
-  speak only Northern or warm to it; the user wants to be perceived as
-  learning *Northern* Thai, not just Thai. Parked because the cost is
-  large: the tone engine and both G2P engines are Central-only (Thai-script
-  Northern read by Central rules yields wrong tones), so native audio is
-  the only ground truth; no TTS exists; Forvo coverage thin — local
-  recording is the channel. เจ้า (jâo) particle gender-marking is
-  contradicted across sources and needs a local speaker. Open sizing
-  question: market-register phrase set (dozens of items) vs systematic
-  Kam Mueang (own contrasts and register rules). Research brief:
-  docs/superpowers/review/2026-09-02-register-research.md.
+- Grapheme data: 44 consonant name-words (recited names, e.g. กอ ไก่
+  "gɔɔ gài") + keywords; vowel/tone-mark keywords chosen (concrete,
+  picturable); first Forvo lookups answer whether letter names exist
+  there.
+- 221 migrated words with placeholder `disputed` pronunciations →
+  knowledge-adjudication judge pass (evidence hierarchy in
+  docs/superpowers/review/2026-09-01-domain-language.md).
+- Sentence corpus regeneration under F5 (picture cards introduce,
+  sentences exercise, batch set-cover generation is an open design
+  choice).
 
-- **new-element tolerance mismatch.** `check_sentence` in the generator
-  accepts one unknown non-target token; `meth/new-elements` accepts none.
-  26 of 480 sentences sit in that gap. FF's one-new-element principle says
-  the rule is right, but tightening the generator raises the block rate --
-  decide deliberately rather than leaving the two out of step.
+## Parked
 
-## Execution-time follow-ups (generator is built; these are real runs, not code)
-
-- Curate `data/pair_seeds.yaml` for `tone:high-falling`, the one contrast
-  the real lexicon can't pair on its own — hand-pick a verified minimal
-  pair (checked against real pythainlp G2P output, the way
-  tests/gen/test_e2e_integration.py's two seed pairs were).
-- Adjudicate the 97 words in `~/decks/thai-ff/work/ipa_adjudication.yaml`
-  into `data/g2p_exceptions.yaml`; never author unverified IPA.
-- Decide what to do about the 146 sentences blocked as "2 unknown
-  non-target tokens" (ถูก, สัปดาห์, ร้อน, ...) — a larger known-vocabulary
-  base, a relaxed new-elements budget, or hand-authoring. They are genuine
-  rejections, not limit halts, so re-running generate will not add them.
-- Migrate FORVO_API_KEY / GOOGLE_TTS_API_KEY / OPENAI_API_KEY out of the
-  environment into gen.yaml, alongside imgfetch and search_proxy.
-- First live Forvo batch (`thai-deck-gen audio fetch-forvo`) against the
-  real API key once word/pair/spelling content exists, to validate
-  rate-limiting, speaker-diversity behavior, and licensing metadata end to
-  end against the real service (not the fakes the e2e test uses).
-- First commission batch (`thai-deck-gen audio import-commission`) once a
-  batch of native-speaker recordings comes back, to validate the
-  recordings↔batch-manifest↔deck plumbing on real audio files.
-- First TTS run (`thai-deck-gen audio tts`) against the real Google TTS key
-  for sentence audio, to confirm cost/quota and output quality are
-  acceptable before running it at full-deck scale.
-- Judge pass (drop `--no-judge`) on the first real generated deck, once
-  word list + pairs + media are real, to see actual judge findings/cost
-  against real content rather than the `--no-judge` mechanical/linguistic/
-  method-only path the e2e test exercises.
-- Wire `duration_ok` into `fetch_forvo` before the first live Forvo run, so
-  clips outside the acceptable duration range are rejected/blocked rather
-  than silently accepted.
-- Decide whether Forvo multi-speaker variant files (`_s1`, `_s2`, ...)
-  should be schema-referenced from the note or dropped -- currently they're
-  written to media and recorded in the manifest but nothing in the note
-  model points at them.
+- **Kam Mueang production content** (user goal, 2026-09-02): Northern
+  production matters — market/food relationships, perceived effort.
+  Parked for cost: Central-only verification tooling, no TTS, thin
+  Forvo, เจ้า (jâo) particle gender-marking contradicted across sources
+  (needs a local speaker). Sizing open: market phrase set vs systematic.
+  Research: docs/superpowers/review/2026-09-02-register-research.md.
+- Commission batch (325 native recordings): deferred until deck churn
+  settles; work/commission_batch_001.yaml carries the item list.
+- Listener backend (audio verification of recordings): calibration
+  harness over corroborated words with native recordings; admit at
+  measured rank or not at all.
+- Meaning vs gloss on Word (a Word's meaning is the sense; the English
+  gloss is its L1 rendering).
+- Exercise-latency measure; scene-picture prioritization budget.
+- Rendition and grapheme-keyword sourcing levers are unwired (run()
+  tolerates them as unlevered): a rendition needs one speaker recording
+  both members — a compound ask no single backend answers; design at
+  first sourcing run.
