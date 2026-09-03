@@ -156,7 +156,8 @@ def load_targets(path: str | Path, words_by_id: Mapping[str, Word] | None = None
 
 def _grapheme_to_dict(g: Grapheme) -> dict:
     return {"symbol": g.symbol, "kind": g.kind, "sound": g.sound,
-           "consonant_class": g.consonant_class, "keyword": g.keyword}
+           "consonant_class": g.consonant_class, "keyword": g.keyword,
+           "name_word": g.name_word}
 
 
 def save_graphemes(path: str | Path, graphemes: list[Grapheme]) -> None:
@@ -180,10 +181,21 @@ def load_graphemes(path: str | Path, words_by_id: Mapping[str, Word]) -> list[Gr
             errors.append(f"graphemes[{i}] ({symbol!r}): keyword {keyword_id!r} "
                           f"does not resolve")
             continue
+        # name_word (spec 4 section 1) is optional: absent in older/partial
+        # curated data, and it carries no containment invariant to enforce
+        # (unlike keyword) -- only "if present, must resolve".
+        name_word_id = row.get("name_word")
+        name_word: Word | None = None
+        if name_word_id is not None:
+            name_word = words_by_id.get(name_word_id)
+            if name_word is None:
+                errors.append(f"graphemes[{i}] ({symbol!r}): name_word "
+                              f"{name_word_id!r} does not resolve")
+                continue
         try:
             g = Grapheme.create(symbol=symbol, kind=kind, sound=sound,
                                 consonant_class=consonant_class,
-                                keyword_word=keyword_word)
+                                keyword_word=keyword_word, name_word=name_word)
         except ValueError as e:
             errors.append(f"graphemes[{i}] ({symbol!r}): {e}")
             continue

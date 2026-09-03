@@ -12,6 +12,7 @@ gen = ["genanki", "requests[socks]", "pillow"]
 [project.scripts]
 thai-deck-eval = "thai_deck_eval.cli:main"
 thai-deck-gen = "thai_deck_gen.cli:main"
+thai-syllabus = "thai_syllabus.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-cov>=5"]

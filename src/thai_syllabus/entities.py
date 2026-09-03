@@ -157,23 +157,36 @@ class Grapheme:
 
     Identity: symbol. Invariant: keyword's thai contains symbol -- enforced
     by `create`, which needs the resolved keyword Word (not just its id).
+
+    `name_word` (spec 4, section 1) is the recited letter name as its own
+    Word -- e.g. for ก the name-word is "กอ" ("gɔɔ"), distinct from the
+    keyword "ไก่" ("gài", chicken): the grapheme/Reading card's NameThai
+    field is the two words' `thai` concatenated ("กอ ไก่"). No containment
+    invariant applies to it (unlike keyword, a name-word need not spell out
+    the symbol itself -- consonant names substitute a vowel, e.g. ก -> กอ,
+    not ก-something containing ก verbatim in every class). Defaults to
+    None: curated data may not carry it yet, and compile()'s NameThai
+    rendering degrades gracefully (falls back to symbol + keyword) when
+    absent.
     """
     symbol: str
     kind: Literal["consonant", "vowel_sign", "tone_mark"]
     sound: str
     consonant_class: Literal["mid", "high", "low"] | None
     keyword: WordId
+    name_word: WordId | None = None
 
     @classmethod
     def create(cls, *, symbol: str, kind: Literal["consonant", "vowel_sign", "tone_mark"],
                sound: str, consonant_class: Literal["mid", "high", "low"] | None,
-               keyword_word: Word) -> "Grapheme":
+               keyword_word: Word, name_word: Word | None = None) -> "Grapheme":
         if symbol not in keyword_word.thai:
             raise ValueError(
                 f"grapheme {symbol!r} is not contained in keyword word "
                 f"{keyword_word.id!r} ({keyword_word.thai!r})")
         return cls(symbol=symbol, kind=kind, sound=sound,
-                   consonant_class=consonant_class, keyword=keyword_word.id)
+                   consonant_class=consonant_class, keyword=keyword_word.id,
+                   name_word=name_word.id if name_word is not None else None)
 
 
 @dataclass(frozen=True)

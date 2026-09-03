@@ -36,9 +36,14 @@ class AssessmentReader(Protocol):
     identity (rule, note_id, artifact_sha).
     """
     def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None) -> bool | None:
+                artifact_sha: str | None = None,
+                rubric: str | None = None) -> bool | None:
         """True/False for a cached judged-rule verdict; None if the
-        (rule, note, artifact) has not been assessed yet.
+        (rule, note, artifact) has not been assessed yet. `rubric` is the
+        judged Rule's rubric text (spec 4's merged key convention --
+        store.py's module docstring: this reads the SAME
+        judge:sha(RUBRIC):IDENTITY:ROLE row shape assessor.py's
+        JudgeBackend writes, with ROLE=rule_id).
         """
         ...
 
@@ -63,7 +68,8 @@ class NullAssessmentReader:
     AssessmentReader to plug in yet.
     """
     def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None) -> bool | None:
+                artifact_sha: str | None = None,
+                rubric: str | None = None) -> bool | None:
         return None
 
     def is_waived(self, finding: "Finding") -> bool:

@@ -136,6 +136,38 @@ def test_verdict_is_exact_key_newest_row(db):
     assert db.verdict("pair/exact-confusion", "unknown") is None
 
 
+def test_verdict_distinguishes_notes_with_no_artifact_sha(db):
+    # Two different notes judged under the same rule and no artifact_sha
+    # must not collide -- the merged spec-3 key convention falls back to
+    # note_id (see store.py's module docstring), not a shared placeholder.
+    db.append_judge_verdict(rule_id="sentence/register-natural", note_id="s-1",
+                            verdict=True)
+    db.append_judge_verdict(rule_id="sentence/register-natural", note_id="s-2",
+                            verdict=False)
+    assert db.verdict("sentence/register-natural", "s-1") is True
+    assert db.verdict("sentence/register-natural", "s-2") is False
+
+
+def test_verdict_key_matches_the_spec_3_judge_backend_convention(db):
+    # Same key shape as assessor.JudgeBackend.cache_key: role=rule_id,
+    # rubric folded in -- so a judged Rule's verdict and a direct
+    # Assessor.ask("judge", ...) call under the same (rubric, role,
+    # artifact_sha-or-subject) land on the SAME cache row (one convention).
+    from thai_syllabus.assessor import AssessQuestion, JudgeBackend
+    backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
+    q = AssessQuestion(subject="mp-1", role="pair/exact-confusion",
+                       artifact_sha="aaa", rubric="is this pair exact?")
+    expected_key = backend.cache_key(q)
+    db.append_judge_verdict(rule_id="pair/exact-confusion", note_id="mp-1",
+                            artifact_sha="aaa", verdict=True,
+                            rubric="is this pair exact?")
+    row = db._con.execute(  # white-box: confirm it landed under the shared key
+        "select key from cache where port='assess' and backend='judge'").fetchone()
+    assert row[0] == expected_key
+    assert db.verdict("pair/exact-confusion", "mp-1", "aaa",
+                      rubric="is this pair exact?") is True
+
+
 def test_verdict_keys_on_artifact_sha_too(db):
     db.append_judge_verdict(rule_id="media/picture-fit", note_id="w-1",
                             artifact_sha="aaa", verdict=True)
@@ -192,6 +224,29 @@ def test_append_study_and_read_back_by_card_key(db):
     assert records[0].compile_id == "c1"
 
 
+def test_append_study_with_an_explicit_ts_stores_it_verbatim(db):
+    # anki_import.py's revlog import needs the STORED ts to be exactly the
+    # revlog row's own id (an epoch-ms review timestamp) for "idempotent
+    # by (card_key, ts)" (spec 4 section 4) to mean anything on reimport
+    # -- _next_ts's monotonic-bump-for-collision-avoidance behavior (built
+    # for the cache table's own ts source, epoch nanoseconds) must NOT
+    # silently renumber an explicitly supplied ts.
+    db.append_study(card_key="k1", compile_id="c1", grade=3, time_ms=100,
+                    ts=1_700_000_000_000)
+    records = db.records("k1")
+    assert records[0].ts == 1_700_000_000_000
+
+
+def test_append_study_with_an_explicit_ts_does_not_disturb_auto_generated_ones(db):
+    db.append_study(card_key="k1", compile_id="c1", grade=1, time_ms=100)
+    auto_ts = db.records("k1")[0].ts
+    db.append_study(card_key="k1", compile_id="c1", grade=2, time_ms=100,
+                    ts=1)  # far smaller than the nanosecond auto ts above
+    records = sorted(db.records("k1"), key=lambda r: r.ts)
+    assert records[0].ts == 1
+    assert records[1].ts == auto_ts
+
+
 def test_study_is_append_only(db):
     db.append_study(card_key="k1", compile_id="c1", grade=1, time_ms=100)
     db.append_study(card_key="k1", compile_id="c1", grade=3, time_ms=200)
@@ -235,6 +290,22 @@ def test_add_media_provenance_idempotent(db):
     assert con.execute("select count(*) from media").fetchone()[0] == 1
 
 
+def test_media_provenance_returns_none_for_an_unknown_sha(db):
+    assert db.media_provenance("nope") is None
+
+
+def test_media_provenance_returns_the_stored_row(db):
+    db.add_media(sha="deadbeef", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai",
+                speaker_kind="native")
+    prov = db.media_provenance("deadbeef")
+    assert prov["ext"] == "mp3"
+    assert prov["source"] == "forvo"
+    assert prov["speaker_id"] == "somchai"
+    assert prov["speaker_kind"] == "native"
+
+
 # --- MediaStore (CAS) -----------------------------------------------------
 
 def test_media_store_writes_content_addressed(tmp_path):
@@ -260,3 +331,21 @@ def test_media_store_has(tmp_path):
     assert not store.has("nonexistent", ext="jpg")
     sha = store.write(b"data", ext="jpg")
     assert store.has(sha, ext="jpg")
+
+
+# --- MediaStore.add_image: ingest normalization (spec 4 section 3) --------
+# Pillow is optional (guarded import); when unavailable, add_image stores
+# the bytes raw and records a warning instead of failing. This fallback
+# path doesn't need real Pillow, so it isn't gated -- it forces the
+# not-available branch directly via monkeypatch.
+
+def test_add_image_without_pillow_stores_raw_bytes_with_a_warning(tmp_path, monkeypatch):
+    from thai_syllabus import store as store_module
+    monkeypatch.setattr(store_module, "Image", None)
+    media_store = MediaStore(tmp_path)
+    result = media_store.add_image(b"not really an image", ext="jpg")
+    import hashlib
+    assert result.sha == hashlib.sha256(b"not really an image").hexdigest()
+    assert result.warning is not None
+    assert "Pillow" in result.warning
+    assert media_store.path_for(result.sha, "jpg").read_bytes() == b"not really an image"

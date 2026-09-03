@@ -65,12 +65,43 @@ class Gaps:
 
 
 @dataclass(frozen=True)
+class DroppedCard:
+    """One (subject, template) compile.py left out of the package because
+    a current-best artifact its FRONT depends on was missing -- "never an
+    empty front" (spec 4 section 3). Counted, not silently swallowed.
+    """
+    family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
+    kind: str      # the template name, e.g. "Listening", "Production"
+    subject: str   # word id / MemberKey / grapheme symbol / sentence key
+    reason: str
+
+
+@dataclass(frozen=True)
+class CompileReport:
+    """What compile() produced beyond the .apkg file itself (spec 4)."""
+    compile_id: str
+    gate: bool
+    forced: bool
+    warnings: tuple[str, ...]
+    notes_written: int
+    cards_written: int
+    dropped: tuple[DroppedCard, ...]
+    out_path: str
+
+
+@dataclass(frozen=True)
 class Compile:
-    """Spec 4's stub: compile() itself raises NotImplementedError here, but
-    the value type is named so callers can reference it.
+    """Spec 4's result value. `compile_id` = syllabus_state_id + a
+    timestamp, the value stamped into every note's CompileId field (spec 4
+    section 2); `report` is the compile-time detail spec 4 sections 1/3
+    ask compile() to produce (dropped cards, gate/force status, counts).
+    The actual translation logic lives in compile.py, spec 4's own module
+    (this stays a value type, spec 1's rules.py, per the existing split).
     """
     label: str
     syllabus_state_id: str
+    compile_id: str
+    report: CompileReport
 
 
 @dataclass(frozen=True)

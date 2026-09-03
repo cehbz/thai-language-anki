@@ -157,9 +157,8 @@ def test_rulebook_id_changes_when_the_registrys_rule_ids_change():
     assert a != b
 
 
-# --- compile(): spec 4 ---------------------------------------------------
-
-def test_compile_is_not_yet_implemented():
-    import pytest
-    with pytest.raises(NotImplementedError):
-        make_syllabus(()).compile()
+# --- compile(): spec 4 -- see tests/syllabus/test_compile.py for the real
+# implementation's coverage (models/fields/guids/tags/due/gate/dropped-
+# cards); Syllabus.compile() now delegates to compile.compile_syllabus and
+# needs a SyllabusDb/MediaStore this module's bare-bones make_syllabus()
+# fixture doesn't build.

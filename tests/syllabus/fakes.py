@@ -21,7 +21,12 @@ class FakeAssessmentReader:
         self._waived = set(waived or set())
 
     def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None) -> bool | None:
+                artifact_sha: str | None = None,
+                rubric: str | None = None) -> bool | None:
+        # `rubric` is accepted (matching the real AssessmentReader.verdict
+        # signature -- spec 4's merged key convention) but not part of this
+        # fake's lookup key: FakeAssessmentReader tests report()'s logic in
+        # isolation from store.py's actual key mechanics.
         return self._verdicts.get((rule_id, note_id, artifact_sha))
 
     def is_waived(self, finding: Finding) -> bool:

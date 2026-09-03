@@ -20,17 +20,51 @@ migration/testing surface needs but spec 1's frozen Protocols do not
 declare.
 
 Cache-row conventions used by the higher-level convenience methods (judge
-verdicts, waivers) -- these are spec 1/2's rule-level verdict/waiver
-convention, distinct from spec 3's per-backend Provider/Assessor key
-functions (provider.py/assessor.py own those; see their module
-docstrings). Kept readable per spec 3's "canonical readable strings"
-rule even though they predate it:
-  - judge verdict:  port="assess", backend="judge",
-                     key = "rule-verdict:RULE_ID:NOTE_ID:ARTIFACT_SHA"
-                     (ARTIFACT_SHA is "-" when absent),
-                     subject = note_id, question = {rule, note_id,
-                     artifact_sha}, answer = {"verdict": bool}.
-                     verdict() is an EXACT key_sha match, newest row wins.
+verdicts, waivers) -- these predate spec 3's per-backend Provider/Assessor
+key functions (provider.py/assessor.py own those; see their module
+docstrings) but, per spec 4's "key-convention debt" item, the judge-verdict
+one is no longer a separate convention:
+
+  - judge verdict (MERGED into spec 3's judge-backend key, spec 4):
+                     port="assess", backend="judge",
+                     key = "judge:sha(RUBRIC):IDENTITY:ROLE" -- exactly
+                     assessor.JudgeBackend.cache_key's shape, with ROLE =
+                     the judged Rule's id (a judged Rule has no separate
+                     Assessor "role" of its own; the rule id fills that
+                     slot) and IDENTITY = artifact_sha when the judged
+                     subject is an artifact, else note_id verbatim (per
+                     cachekeys.sha's "only sha large/binary components"
+                     rule -- note_id is already short and readable, so it
+                     is not re-hashed). Falling back to note_id rather
+                     than a bare placeholder matters here specifically:
+                     report() judges MANY distinct non-artifact subjects
+                     (e.g. one register check per sentence) under ONE
+                     shared rubric+role, so a placeholder would silently
+                     collide their verdicts (assessor.py's JudgeBackend
+                     makes the same fallback, to its own `subject`, for
+                     the identical reason -- see its module comment).
+                     subject = note_id (spec 3's AssessQuestion.subject
+                     shape), NOT the old finding-identity JSON blob --
+                     that blob remains the WAIVER convention's subject
+                     only (below), a deliberately separate, unmerged
+                     concept (learner authority over findings, not judge
+                     verdicts). question = {"role": rule_id,
+                     "artifact_sha": ..., "rubric": ...} and
+                     answer = {"value": bool, ...} -- both exactly
+                     Assessor._append_verdict's shape, so a judged Rule's
+                     verdict and a direct Assessor.ask("judge", ...) call
+                     under the same (rubric, role, identity) land on the
+                     SAME row: one convention, not two. verdict() is an
+                     EXACT key_sha match, newest row wins.
+
+                     The now-retired convention was
+                     "rule-verdict:RULE_ID:NOTE_ID:ARTIFACT_SHA" with
+                     answer={"verdict": bool} and subject = the
+                     finding-identity JSON blob; rows written under it
+                     (e.g. by an older migration run) will not be found
+                     by the merged verdict() -- acceptable per spec 2
+                     section 4 item 5's "changed questions must re-judge
+                     anyway".
   - learner waiver:  port="assess", backend="learner",
                      key = "waiver:RULE_ID:NOTE_ID:ARTIFACT_SHA"
                      (ARTIFACT_SHA is "-" when absent), subject = same
@@ -39,6 +73,14 @@ rule even though they predate it:
                      answer = {"waived": bool, "reason"}.
                      is_waived() folds newest-wins over matching rows
                      (the learner backend's standard cache policy).
+                     Explicitly OUT of the spec-4 merge (item 4 scopes it
+                     to "the judge verdict path" only): a waiver is a
+                     learner-authority fact about a Finding's identity,
+                     not a judge verdict, and spec 3's roster gives the
+                     learner backend its own separate key shape
+                     ("learner:sha(ARTIFACT):ROLE, no rubric") that this
+                     convention does not claim to match either -- left as
+                     its own, pre-existing thing.
 """
 from __future__ import annotations
 
@@ -52,10 +94,21 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .cachekeys import sha
 from .ports import Answer, StudyRecord
 
 if False:  # TYPE_CHECKING without importing at runtime
     from .rules import Finding
+
+# Pillow is optional (spec 4 section 2: "Pillow OPTIONAL -- guarded
+# import"). When present, MediaStore.add_image normalizes at ingest
+# (bounded long edge, metadata stripped, re-encoded); when absent, it
+# falls back to storing the bytes raw and recording a warning, rather than
+# failing the whole ingest over a missing dependency.
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover -- environment dependent
+    Image = None  # type: ignore[assignment]
 
 
 _SCHEMA = """
@@ -112,8 +165,14 @@ def _key_sha(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def _rule_verdict_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    return f"rule-verdict:{rule_id}:{note_id}:{artifact_sha or '-'}"
+def _judge_verdict_key(rule_id: str, note_id: str, artifact_sha: str | None,
+                       rubric: str | None) -> str:
+    """The merged spec-3 judge-backend key shape (see module docstring):
+    role = rule_id; identity = artifact_sha, falling back to note_id.
+    Exactly assessor.JudgeBackend.cache_key's formula.
+    """
+    identity = artifact_sha or note_id
+    return f"judge:{sha(rubric or '')}:{identity}:{rule_id}"
 
 
 def _finding_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
@@ -197,15 +256,16 @@ class SyllabusDb:
     # --- AssessmentReader ------------------------------------------------
 
     def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None) -> bool | None:
-        key = _rule_verdict_key(rule_id, note_id, artifact_sha)
+                artifact_sha: str | None = None,
+                rubric: str | None = None) -> bool | None:
+        key = _judge_verdict_key(rule_id, note_id, artifact_sha, rubric)
         row = self._con.execute(
             "select answer from cache where port='assess' and backend='judge' "
             "and key_sha=? order by ts desc limit 1",
             (_key_sha(key),)).fetchone()
         if row is None:
             return None
-        return bool(json.loads(row[0])["verdict"])
+        return bool(json.loads(row[0])["value"])
 
     def is_waived(self, finding: "Finding") -> bool:
         subject = _finding_subject(finding.rule, finding.note_id,
@@ -236,16 +296,19 @@ class SyllabusDb:
 
     def append_judge_verdict(self, *, rule_id: str, note_id: str,
                              verdict: bool, artifact_sha: str | None = None,
+                             rubric: str | None = None,
                              evidence: str | None = None,
                              cost: float = 0.0) -> None:
-        key = _rule_verdict_key(rule_id, note_id, artifact_sha)
-        subject = _finding_subject(rule_id, note_id, artifact_sha)
-        question = {"rule": rule_id, "note_id": note_id,
-                    "artifact_sha": artifact_sha}
-        answer: dict[str, Any] = {"verdict": verdict}
+        key = _judge_verdict_key(rule_id, note_id, artifact_sha, rubric)
+        # subject = note_id, matching spec 3's AssessQuestion.subject shape
+        # (the merged convention -- see module docstring); NOT the old
+        # finding-identity blob, which stays the waiver convention's own.
+        question = {"role": rule_id, "artifact_sha": artifact_sha,
+                    "rubric": rubric}
+        answer: dict[str, Any] = {"value": verdict}
         if evidence is not None:
             answer["evidence"] = evidence
-        self.append(port="assess", backend="judge", key=key, subject=subject,
+        self.append(port="assess", backend="judge", key=key, subject=note_id,
                     question=question, answer=answer, cost=cost)
 
     def append_waiver(self, *, rule_id: str, note_id: str,
@@ -262,8 +325,22 @@ class SyllabusDb:
     # --- study / StudyReader ----------------------------------------------
 
     def append_study(self, *, card_key: str, compile_id: str, grade: int,
-                     time_ms: int) -> None:
-        ts = self._next_ts()
+                     time_ms: int, ts: int | None = None) -> None:
+        """`ts` defaults to an auto-generated, collision-avoided value (via
+        `_next_ts`, the cache table's own convention) for callers with no
+        externally meaningful timestamp of their own. An EXPLICIT `ts` --
+        anki_import.py's revlog import passes the revlog row's own
+        (already-unique) epoch-ms review id -- is stored VERBATIM instead:
+        `_next_ts`'s monotonic bump-past-the-last-seen-value exists to
+        avoid same-instant collisions among freshly generated nanosecond
+        timestamps, and would silently renumber a real, externally unique
+        id drawn from a completely different, smaller scale (ms) -- which
+        would break "idempotent by (card_key, ts)" (spec 4 section 4) on
+        any reimport after this store has also done nanosecond-scale
+        cache writes.
+        """
+        if ts is None:
+            ts = self._next_ts()
         with self._con:
             self._con.execute(
                 "insert into study (card_key, compile_id, ts, grade, time_ms) "
@@ -340,6 +417,75 @@ class SyllabusDb:
         row = self._con.execute("select 1 from media where sha=?", (sha,)).fetchone()
         return row is not None
 
+    def media_provenance(self, sha: str) -> dict[str, Any] | None:
+        """One `media` row, decoded (spec 2 section 2) -- compile.py's
+        source for the file extension a resolved artifact sha was stored
+        under, plus source/speaker for src-provenance tags and minimal_pair
+        MemberKey's speaker component. Not part of any Protocol (spec 1's
+        MediaIndex is a narrower has/speakers-only read); this is
+        compile()'s own dependency on SyllabusDb directly, same footing as
+        the module docstring's other non-Protocol convenience methods.
+        """
+        row = self._con.execute(
+            "select sha, kind, ext, source, origin, licence, acquired, "
+            "speaker_id, speaker_kind from media where sha=?", (sha,)).fetchone()
+        if row is None:
+            return None
+        keys = ("sha", "kind", "ext", "source", "origin", "licence",
+               "acquired", "speaker_id", "speaker_kind")
+        return dict(zip(keys, row))
+
+
+IMAGE_MAX_LONG_EDGE = 800  # px (spec 4 section 3)
+
+# Pillow format name -> file extension MediaStore stores it under.
+_FORMAT_EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
+
+
+@dataclass(frozen=True)
+class ImageIngestResult:
+    """MediaStore.add_image's return value: the sha (and extension) the
+    normalized -- or, without Pillow, raw -- bytes were written under, plus
+    a warning when normalization did not happen.
+    """
+    sha: str
+    ext: str
+    warning: str | None = None
+
+
+def _normalize_image(data: bytes, ext: str) -> tuple[bytes, str]:
+    """Bounded long edge (IMAGE_MAX_LONG_EDGE, aspect preserved), metadata
+    stripped, re-encoded (spec 4 section 3). Building a brand-new Image
+    from just the pixel data (`putdata`) is what strips metadata: EXIF/ICC/
+    text chunks live on the source Image object and are never copied over,
+    rather than being enumerated and deleted one by one.
+    """
+    import io
+
+    with Image.open(io.BytesIO(data)) as src:
+        src.load()
+        fmt = src.format or ext.upper()
+        mode = src.mode
+        if mode not in ("RGB", "RGBA", "L"):
+            src = src.convert("RGBA" if "A" in mode or mode == "P" else "RGB")
+            mode = src.mode
+
+        w, h = src.size
+        long_edge = max(w, h)
+        if long_edge > IMAGE_MAX_LONG_EDGE:
+            scale = IMAGE_MAX_LONG_EDGE / long_edge
+            new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+            src = src.resize(new_size, Image.LANCZOS)
+
+        save_fmt = fmt if fmt in _FORMAT_EXT else "PNG"
+        clean_mode = "RGB" if save_fmt == "JPEG" and mode == "RGBA" else mode
+        pixels = src.convert(clean_mode) if clean_mode != mode else src
+        clean = Image.frombytes(clean_mode, pixels.size, pixels.tobytes())
+
+        out = io.BytesIO()
+        clean.save(out, format=save_fmt)
+        return out.getvalue(), _FORMAT_EXT[save_fmt]
+
 
 @dataclass
 class MediaStore:
@@ -364,6 +510,29 @@ class MediaStore:
             tmp.write_bytes(data)
             tmp.replace(path)
         return sha
+
+    def add_image(self, data: bytes, ext: str) -> ImageIngestResult:
+        """Ingest normalization (spec 4 section 3): the stored, sha'd bytes
+        are the normalized file when Pillow is available -- what a judge or
+        the card itself sees is identical. Without Pillow, stores `data`
+        raw and reports why in `.warning` rather than failing ingest.
+        """
+        if Image is None:
+            written_sha = self.write(data, ext)
+            return ImageIngestResult(
+                sha=written_sha, ext=ext,
+                warning="Pillow not available: image stored unnormalized "
+                       "(no resize, metadata strip, or re-encode)")
+        try:
+            normalized, out_ext = _normalize_image(data, ext)
+        except Exception as exc:  # undecodable bytes: store raw, say why
+            written_sha = self.write(data, ext)
+            return ImageIngestResult(
+                sha=written_sha, ext=ext,
+                warning=f"image not decodable ({exc.__class__.__name__}): "
+                       "stored unnormalized")
+        written_sha = self.write(normalized, out_ext)
+        return ImageIngestResult(sha=written_sha, ext=out_ext)
 
     def has(self, sha: str, ext: str) -> bool:
         return self._object_path(sha, ext).exists()

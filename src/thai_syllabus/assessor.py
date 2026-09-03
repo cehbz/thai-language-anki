@@ -220,6 +220,16 @@ def _batch_request_set_key(keys) -> str:
 # content hash of the artifact bytes (Picture/Recording are content-
 # addressed, spec 1 section 1) -- re-hashing it would just reproduce the
 # same value, so it goes into the key as-is rather than sha(sha(...)).
+#
+# When a question has no artifact at all (a text-only judgment -- e.g. a
+# judged Rule's per-sentence "is this natural?" verdict, spec 1 section 4 /
+# spec 4 section "key-convention debt"), the key falls back to the
+# question's `subject` instead of a bare placeholder: two different
+# subjects judged under the same rubric+role must not collide onto one
+# cache row. This is also the convention store.py's judged-rule verdict
+# path merges into (see store.py's module docstring) -- role there is the
+# judged rule's id and subject is the note_id, so the two paths share
+# exactly this key shape.
 
 def _default_judge_prompt(question: AssessQuestion) -> str:
     lines = [f"Role: {question.role}", f"Rubric: {question.rubric or ''}"]
@@ -256,7 +266,8 @@ class JudgeBackend:
     cost_per_call: float = 0.0
 
     def cache_key(self, question: AssessQuestion) -> str:
-        return f"judge:{sha(question.rubric or '')}:{question.artifact_sha or '-'}:{question.role}"
+        identity = question.artifact_sha or question.subject
+        return f"judge:{sha(question.rubric or '')}:{identity}:{question.role}"
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         if self.complete is None:

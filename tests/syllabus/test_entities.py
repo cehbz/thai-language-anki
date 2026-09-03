@@ -78,6 +78,36 @@ def test_grapheme_create_rejects_a_keyword_word_missing_the_symbol():
                         consonant_class="mid", keyword_word=keyword)
 
 
+def test_grapheme_name_word_defaults_to_none():
+    keyword = Word(id=WordId("chicken"), thai="ไก่", pron=pron(syl("k", "ai", "")),
+                    meaning="chicken", classifier=None)
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                        consonant_class="mid", keyword_word=keyword)
+    assert g.name_word is None
+
+
+def test_grapheme_create_accepts_an_explicit_name_word():
+    keyword = Word(id=WordId("chicken"), thai="ไก่", pron=pron(syl("k", "ai", "")),
+                    meaning="chicken", classifier=None)
+    # กอ "gɔɔ" -- the recited name-syllable for the letter ก, distinct from
+    # the keyword ไก่ "chicken".
+    name_word = Word(id=WordId("letter-name:ko"), thai="กอ",
+                     pron=pron(syl("k", "ɔː", "")), meaning="name of the letter ก",
+                     classifier=None)
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                        consonant_class="mid", keyword_word=keyword,
+                        name_word=name_word)
+    assert g.name_word == name_word.id
+
+
+def test_grapheme_is_still_constructible_directly_without_name_word():
+    # Plain construction (bypassing create()) is what curated-data loading
+    # does before re-validating -- name_word must default cleanly there too.
+    g = Grapheme(symbol="ก", kind="consonant", sound="k",
+                consonant_class="mid", keyword=WordId("chicken"))
+    assert g.name_word is None
+
+
 # --- Target -----------------------------------------------------------------
 
 def test_target_defaults_to_picture_card_introduction():

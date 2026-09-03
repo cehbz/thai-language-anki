@@ -10,7 +10,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from .entities import Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
 from .ids import Category, WordId
@@ -18,6 +18,9 @@ from .ports import AssessmentReader, MediaIndex, NullAssessmentReader, NullMedia
 from .profile import Profile
 from .rulebook import RULES
 from .rules import Compile, Finding, Gaps, Metric, Report, Rule
+
+if TYPE_CHECKING:
+    from .store import MediaStore, SyllabusDb
 
 TargetLike = Union[Target, str]  # str covers PairId and GraphemeId (both NewType(str))
 
@@ -147,7 +150,12 @@ class Syllabus:
     def _judged_findings(self, rule: Rule) -> list[Finding]:
         findings = []
         for note_id, artifact_sha in rule.judged_subjects(self):
-            verdict = self.assessments.verdict(rule.id, note_id, artifact_sha)
+            # rubric passed through: the merged spec-3 key convention
+            # (spec 4 "key-convention debt"; see store.py's module
+            # docstring) keys a judged rule's verdict exactly like
+            # assessor.JudgeBackend does -- role=rule.id, rubric folded in.
+            verdict = self.assessments.verdict(rule.id, note_id, artifact_sha,
+                                               rubric=rule.rubric)
             if verdict is False:
                 findings.append(Finding(rule=rule.id, note_id=note_id,
                                         artifact_sha=artifact_sha,
@@ -210,8 +218,17 @@ class Syllabus:
 
     # --- compile() ---------------------------------------------------------
 
-    def compile(self) -> Compile:
-        raise NotImplementedError("compile() is spec 4's territory")
+    def compile(self, db: "SyllabusDb", media_store: "MediaStore",
+               out_path: str, *, force: bool = False) -> Compile:
+        """Delegates to compile.compile_syllabus (spec 4) -- kept as a free
+        function there rather than inlined here because it needs a
+        CacheReader (`db`) and a MediaStore this frozen dataclass has no
+        field for; see compile.py's module docstring for the full
+        rationale. Imported lazily to avoid a module-level import cycle
+        (compile.py type-hints Syllabus under TYPE_CHECKING only).
+        """
+        from .compile import compile_syllabus
+        return compile_syllabus(self, db, media_store, out_path, force=force)
 
     # --- content-hash staleness marker ------------------------------------
 

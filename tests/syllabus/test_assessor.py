@@ -117,6 +117,17 @@ def test_judge_key_reuses_the_artifact_sha_verbatim_not_double_hashed():
     assert "deadbeef" in backend.cache_key(q)
 
 
+def test_judge_key_falls_back_to_subject_when_there_is_no_artifact():
+    # A text-only judged question (no artifact_sha, e.g. a sentence quality
+    # verdict) must still distinguish different subjects under the same
+    # rubric/role -- a bare '-' placeholder would collide them.
+    backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
+    q1 = AssessQuestion(subject="sentence-1", role="r", rubric="x")
+    q2 = AssessQuestion(subject="sentence-2", role="r", rubric="x")
+    assert backend.cache_key(q1) != backend.cache_key(q2)
+    assert "sentence-1" in backend.cache_key(q1)
+
+
 def test_judge_fetch_builds_a_prompt_and_parses_the_response():
     prompts = []
 

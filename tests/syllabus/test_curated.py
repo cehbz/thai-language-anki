@@ -67,6 +67,44 @@ def test_graphemes_round_trip_with_keyword_resolution(tmp_path):
     assert loaded == [g]
 
 
+def test_graphemes_round_trip_with_name_word_resolution(tmp_path):
+    words = {
+        "chicken": _word("chicken", "ไก่", "chicken", tone="low"),
+        "letter-name:ko": _word("letter-name:ko", "กอ", "name of the letter ก",
+                               tone="mid"),
+    }
+    path = tmp_path / "graphemes.yaml"
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                        consonant_class="mid", keyword_word=words["chicken"],
+                        name_word=words["letter-name:ko"])
+    curated.save_graphemes(path, [g])
+    loaded = curated.load_graphemes(path, words_by_id=words)
+    assert loaded == [g]
+    assert loaded[0].name_word == "letter-name:ko"
+
+
+def test_graphemes_round_trip_without_name_word_stays_none(tmp_path):
+    words = {"chicken": _word("chicken", "ไก่", "chicken", tone="low")}
+    path = tmp_path / "graphemes.yaml"
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                        consonant_class="mid", keyword_word=words["chicken"])
+    curated.save_graphemes(path, [g])
+    loaded = curated.load_graphemes(path, words_by_id=words)
+    assert loaded[0].name_word is None
+
+
+def test_graphemes_load_validation_reports_an_unresolved_name_word(tmp_path):
+    path = tmp_path / "graphemes.yaml"
+    path.write_text(yaml.safe_dump([
+        {"symbol": "ก", "kind": "consonant", "sound": "k",
+         "consonant_class": "mid", "keyword": "chicken", "name_word": "missing-name"},
+    ], allow_unicode=True))
+    words = {"chicken": _word("chicken", "ไก่", "chicken", tone="low")}
+    with pytest.raises(curated.CuratedValidationError) as exc:
+        curated.load_graphemes(path, words_by_id=words)
+    assert len(exc.value.errors) == 1
+
+
 def test_graphemes_load_validation_collects_all_errors(tmp_path):
     path = tmp_path / "graphemes.yaml"
     path.write_text(yaml.safe_dump([

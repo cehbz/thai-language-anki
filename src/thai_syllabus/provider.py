@@ -237,7 +237,8 @@ class ImgfetchBackend:
 
     def fetch(self, question: Question) -> RawAnswer:
         data, ext = self.fetcher(question.params["url"])
-        artifact_sha = self.media.write(data, ext)
+        ingest = self.media.add_image(data, ext)
+        artifact_sha = ingest.sha
         return RawAnswer(items=({"sha": artifact_sha, "ext": ext},), cost=0.0)
 
 
