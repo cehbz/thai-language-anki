@@ -213,6 +213,63 @@ def test_load_curated_bundle_from_a_directory(tmp_path):
     assert bundle.profile == profile
 
 
+# --- rulebook.yaml raw text (spec 3 section 6) -----------------------------
+
+def test_rulebook_file_text_returns_the_raw_file_contents(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    path.write_text("severities:\n  pair/exact-confusion: warn\n", encoding="utf-8")
+    assert curated.rulebook_file_text(path) == "severities:\n  pair/exact-confusion: warn\n"
+
+
+def test_rulebook_file_text_is_empty_when_the_file_is_absent(tmp_path):
+    assert curated.rulebook_file_text(tmp_path / "does-not-exist.yaml") == ""
+
+
+# --- providers.yaml (spec 3 section 5) --------------------------------------
+
+def test_providers_config_defaults_ship_the_tts_voice_pools(tmp_path):
+    from thai_syllabus.tts import FEMALE_VOICES, MALE_VOICES
+    config = curated.load_providers_config(tmp_path / "does-not-exist.yaml")
+    assert config.tts_male_voices == tuple(MALE_VOICES)
+    assert config.tts_female_voices == tuple(FEMALE_VOICES)
+    assert config.judge.transport == "cli"
+    assert config.k == 2
+    assert config.attempt_cap == 8
+
+
+def test_providers_config_round_trip(tmp_path):
+    path = tmp_path / "providers.yaml"
+    config = curated.ProvidersConfig(
+        secrets={"forvo": "op://Shared/Forvo/API Key", "google_tts": "~/.secrets/tts"},
+        search_proxy="https://proxy.example", imgfetch_path="/usr/bin/curl",
+        tts_male_voices=("v1",), tts_female_voices=("v2",),
+        judge=curated.JudgeConfig(transport="batch", model="claude-opus-5"),
+        batch={"max_requests": 1000}, quotas={"forvo": {"max_asks": 450}},
+        k=3, attempt_cap=10)
+    curated.save_providers_config(path, config)
+    loaded = curated.load_providers_config(path)
+    assert loaded == config
+
+
+def test_providers_config_secrets_resolve_via_secret_store(tmp_path):
+    key_file = tmp_path / "forvo.key"
+    key_file.write_text("s3cret\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    path = tmp_path / "providers.yaml"
+    curated.save_providers_config(path, curated.ProvidersConfig(
+        secrets={"forvo": str(key_file)}))
+    config = curated.load_providers_config(path)
+    store = config.secret_store()
+    assert store.get("forvo") == "s3cret"
+
+
+def test_providers_config_rejects_an_unknown_judge_transport(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"judge": {"transport": "carrier-pigeon"}}))
+    with pytest.raises(curated.CuratedValidationError):
+        curated.load_providers_config(path)
+
+
 def test_load_curated_bundle_collects_cross_file_errors(tmp_path):
     curated.save_words(tmp_path / "words.yaml", [_word("near", "ใกล้", "near")])
     curated.save_targets(tmp_path / "targets.yaml", [

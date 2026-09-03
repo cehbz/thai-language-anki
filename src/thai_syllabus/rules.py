@@ -39,7 +39,16 @@ class Metric:
 
 @dataclass(frozen=True)
 class Report:
+    """syllabus_state_id identifies the aggregate's CONTENT; rulebook_id
+    (spec 3 section 6) identifies what judged it -- sha of rulebook.yaml's
+    text plus the registry's rule ids. Staleness is either differing from
+    the live values (Syllabus.state_id() / Syllabus.rulebook_id()), not
+    just the first (closes the spec-1 review note: a report run under an
+    old rulebook must not silently look current just because the deck
+    content hasn't changed).
+    """
     syllabus_state_id: str
+    rulebook_id: str
     findings: tuple[Finding, ...]
     metrics: tuple[Metric, ...]
     gate: bool

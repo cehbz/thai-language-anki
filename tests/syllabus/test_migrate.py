@@ -243,6 +243,15 @@ def test_candidates_yaml_bare_list_shape_is_handled(old_deck, old_data, tmp_path
     assert report.cache["judge"] == 2  # 1 from pw-1's candidates + 1 from pw-bare
 
 
+def test_forvo_rows_use_the_spec_3_readable_key(old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)
+    db = SyllabusDb(new_root / "syllabus.db")
+    answers = [a for a in db.assessments_of("ไก่") if a.backend == "forvo"]  # chicken
+    assert len(answers) == 1
+    assert answers[0].key == "forvo:ไก่"  # chicken
+
+
 def test_missing_waivers_yaml_is_not_an_error(old_deck, old_data, tmp_path):
     (old_deck / "waivers.yaml").unlink()
     new_root = tmp_path / "new_root"

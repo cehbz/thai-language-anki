@@ -23,6 +23,8 @@ import yaml
 from .entities import Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
 from .ids import ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
+from .secrets import SecretStore
+from .tts import FEMALE_VOICES, MALE_VOICES
 
 _SEVERITIES = {"error", "warn", "info"}
 
@@ -409,6 +411,108 @@ def load_frequency_map(path: str | Path) -> TextFrequencyMap:
         rank += 1
         rank_by_word.setdefault(line, rank)
     return TextFrequencyMap(rank_by_word)
+
+
+# --- rulebook.yaml raw text (spec 3 section 6: Report.rulebook_id) --------
+#
+# load_rulebook_config above returns the PARSED RulebookConfig; rulebook_id
+# (spec 3 section 6) hashes the FILE CONTENTS + the registry's rule ids, so
+# it needs the raw text, not the parsed value -- kept as a tiny separate
+# reader rather than folded into load_rulebook_config, which has its own
+# job (validated config) and no reason to also expose raw bytes.
+
+def rulebook_file_text(path: str | Path) -> str:
+    path = Path(path)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+# --- providers.yaml (spec 3 section 5) --------------------------------------
+#
+# Per-backend settings: secret references (resolved by SecretStore, ported
+# in secrets.py), search_proxy, imgfetch path, tts voice pools (defaulting
+# to tts.py's shipped male/female lists), judge transport + model, batch
+# limits, quotas, k and attempt caps. One file; no env vars; no settings
+# in two places (judged-rule rubric TEXT stays in rulebook.yaml -- WHAT to
+# ask; this file is HOW to reach things).
+
+@dataclass(frozen=True)
+class JudgeConfig:
+    transport: str = "cli"   # "cli" | "api" | "batch"
+    model: str = ""
+
+
+@dataclass(frozen=True)
+class ProvidersConfig:
+    secrets: dict[str, str | None] = field(default_factory=dict)
+    search_proxy: str | None = None
+    imgfetch_path: str | None = None
+    tts_male_voices: tuple[str, ...] = field(default_factory=lambda: tuple(MALE_VOICES))
+    tts_female_voices: tuple[str, ...] = field(default_factory=lambda: tuple(FEMALE_VOICES))
+    judge: JudgeConfig = field(default_factory=JudgeConfig)
+    batch: dict[str, Any] = field(default_factory=dict)
+    quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    k: int = 2                 # exhausted()'s "last k provide-attempts" default
+    attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
+
+    def secret_store(self, runner=None) -> SecretStore:
+        kwargs: dict[str, Any] = {"specs": self.secrets}
+        if runner is not None:
+            kwargs["runner"] = runner
+        return SecretStore(**kwargs)
+
+
+def load_providers_config(path: str | Path) -> ProvidersConfig:
+    path = Path(path)
+    if not path.exists():
+        return ProvidersConfig()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    errors: list[str] = []
+
+    secrets_cfg = dict(data.get("secrets") or {})
+
+    tts_cfg = data.get("tts") or {}
+    male = tuple(tts_cfg["male_voices"]) if "male_voices" in tts_cfg else tuple(MALE_VOICES)
+    female = tuple(tts_cfg["female_voices"]) if "female_voices" in tts_cfg else tuple(FEMALE_VOICES)
+
+    judge_cfg = data.get("judge") or {}
+    transport = judge_cfg.get("transport", "cli")
+    if transport not in ("cli", "api", "batch"):
+        errors.append(f"providers.judge.transport: {transport!r} is not one of "
+                      "'cli', 'api', 'batch'")
+    judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""))
+
+    k = data.get("k", 2)
+    attempt_cap = data.get("attempt_cap", 8)
+    if not isinstance(k, int) or k < 1:
+        errors.append(f"providers.k: {k!r} must be a positive integer")
+    if not isinstance(attempt_cap, int) or attempt_cap < 1:
+        errors.append(f"providers.attempt_cap: {attempt_cap!r} must be a positive integer")
+
+    if errors:
+        raise CuratedValidationError(errors)
+
+    return ProvidersConfig(
+        secrets=secrets_cfg, search_proxy=data.get("search_proxy"),
+        imgfetch_path=data.get("imgfetch_path"), tts_male_voices=male,
+        tts_female_voices=female, judge=judge, batch=dict(data.get("batch") or {}),
+        quotas=dict(data.get("quotas") or {}), k=k, attempt_cap=attempt_cap)
+
+
+def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
+    _atomic_write_yaml(Path(path), {
+        "secrets": dict(config.secrets),
+        "search_proxy": config.search_proxy,
+        "imgfetch_path": config.imgfetch_path,
+        "tts": {"male_voices": list(config.tts_male_voices),
+               "female_voices": list(config.tts_female_voices)},
+        "judge": {"transport": config.judge.transport, "model": config.judge.model},
+        "batch": dict(config.batch),
+        "quotas": dict(config.quotas),
+        "k": config.k,
+        "attempt_cap": config.attempt_cap,
+    })
 
 
 def save_curated(root: str | Path, bundle: CuratedBundle) -> None:

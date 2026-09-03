@@ -49,6 +49,11 @@ class Syllabus:
     media: MediaIndex = field(default_factory=NullMediaIndex)
     assessments: AssessmentReader = field(default_factory=NullAssessmentReader)
     rules: Sequence[Rule] = field(default_factory=lambda: tuple(RULES))
+    # spec 3 section 6: rulebook_id = sha(rulebook.yaml text + registry rule
+    # ids). Raw text (curated.rulebook_file_text's output), not the parsed
+    # RulebookConfig -- a config change with no severity/threshold/rubric
+    # change still edits the file, and that edit must still show up here.
+    rulebook_text: str = ""
 
     # --- lookups -------------------------------------------------------
 
@@ -171,8 +176,8 @@ class Syllabus:
                    and not self.assessments.is_waived(f))
 
         gate = not any(blocks_gate(f) for f in findings)
-        return Report(syllabus_state_id=self.state_id(), findings=tuple(findings),
-                     metrics=tuple(metrics), gate=gate)
+        return Report(syllabus_state_id=self.state_id(), rulebook_id=self.rulebook_id(),
+                     findings=tuple(findings), metrics=tuple(metrics), gate=gate)
 
     # --- gaps() ----------------------------------------------------------
 
@@ -233,4 +238,15 @@ class Syllabus:
             "profile": canon(self.profile),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()
+
+    def rulebook_id(self) -> str:
+        """sha(rulebook.yaml text + registry rule ids) -- spec 3 section 6.
+        Differs from state_id(): a rulebook edit (severity/threshold/rubric
+        change, or the registry itself gaining/losing a rule) changes this
+        without necessarily changing the aggregate's own content.
+        """
+        payload = {"rulebook_text": self.rulebook_text,
+                  "rule_ids": sorted(r.id for r in self.rules)}
+        blob = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()

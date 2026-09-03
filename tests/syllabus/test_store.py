@@ -57,6 +57,52 @@ def test_append_is_readable_via_assessments_of(db):
     assert a.cost == 0.5
 
 
+def test_cache_row_keeps_the_readable_key_alongside_its_hash(db):
+    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+              question={"word": "ไก่"}, answer={"items": []})  # forvo:chicken
+    answer = db.assessments_of("ไก่")[0]
+    assert answer.key == "forvo:ไก่"  # chicken
+    import hashlib
+    assert answer.key_sha == hashlib.sha256("forvo:ไก่".encode()).hexdigest()
+
+
+def test_append_returns_the_ts_the_row_was_written_under(db):
+    ts = db.append(port="provide", backend="forvo", key="forvo:x", subject="x",
+                   question={}, answer={"items": []})
+    answer = db.assessments_of("x")[0]
+    assert answer.ts == ts
+
+
+# --- CacheReader.latest(): the cache-first hit lookup ------------------
+
+def test_latest_is_none_on_a_cache_miss(db):
+    assert db.latest("provide", "forvo", "forvo:missing") is None
+
+
+def test_latest_returns_the_newest_row_for_an_exact_key(db):
+    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+              question={}, answer={"items": [1]})  # chicken
+    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+              question={}, answer={"items": [2]})
+    hit = db.latest("provide", "forvo", "forvo:ไก่")
+    assert hit.answer == {"items": [2]}
+
+
+def test_latest_does_not_cross_backends_on_the_same_key_text(db):
+    # same literal key string, different backend -- must not collide.
+    db.append(port="provide", backend="forvo", key="same-key", subject="s",
+              question={}, answer={"items": ["forvo"]})
+    db.append(port="provide", backend="tts", key="same-key", subject="s",
+              question={}, answer={"items": ["tts"]})
+    assert db.latest("provide", "forvo", "same-key").answer == {"items": ["forvo"]}
+    assert db.latest("provide", "tts", "same-key").answer == {"items": ["tts"]}
+
+
+def test_satisfies_the_cache_reader_protocol(db):
+    from thai_syllabus.ports import CacheReader
+    assert isinstance(db, CacheReader)
+
+
 def test_reask_appends_a_new_row_never_updates(db):
     db.append(port="assess", backend="learner", key="k1", subject="subj-1",
               question={"q": 1}, answer={"rating": "good"})

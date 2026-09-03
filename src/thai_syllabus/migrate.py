@@ -258,7 +258,11 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                               skill="receptive", introduction="picture_card"))
 
         if row.get("image_query") and row.get("image_query_source") == "human":
-            key = f"direction:{word_id}"
+            # Not one of spec 3's roster rows (a direction carries no
+            # artifact_sha yet, so the learner Assessor's own
+            # learner:sha(ARTIFACT):ROLE template doesn't fit) -- kept
+            # readable and namespaced under the learner backend anyway.
+            key = f"learner:direction:image_query:{word_id}"
             db.append(port="assess", backend="learner", key=key, subject=word_id,
                      question={"kind": "direction", "of": "image_query"},
                      answer={"direction": row["image_query"]})
@@ -403,7 +407,9 @@ def _migrate_forvo(old_deck: Path, db: SyllabusDb, report: MigrationReport) -> N
                         "missing 'word'")
             continue
         fetched = _date_of(entry.get("fetched"), date(1970, 1, 1))
-        db.append(port="provide", backend="forvo", key=word, subject=word,
+        # spec 3 roster: forvo's key is "forvo:WORD" (never re-asked; the
+        # answer outlives the quota).
+        db.append(port="provide", backend="forvo", key=f"forvo:{word}", subject=word,
                  question={"word": word}, answer={"items": entry.get("items", [])},
                  ts=_midnight_utc_ns(fetched))
         report.bump(report.cache, "forvo")
@@ -431,7 +437,10 @@ def _migrate_proof_notes(old_deck: Path, db: SyllabusDb, report: MigrationReport
         # carrying a note but no verdict, per spec 2 section 4 item 4's
         # "kind per content: rating, direction, waiver" (this content is
         # closest to "rating": a learner reaction to a specific card).
-        db.append(port="assess", backend="learner", key=guid, subject=guid,
+        # Not spec 3's learner:sha(ARTIFACT):ROLE template (no artifact_sha
+        # in the source data) -- kept readable and namespaced instead.
+        db.append(port="assess", backend="learner", key=f"learner:rating:{guid}",
+                 subject=guid,
                  question={"note_id": entry.get("note_id"), "model": entry.get("model"),
                           "tags": entry.get("tags", [])},
                  answer={"kind": "rating", "rating": None, "note": entry.get("text", "")},

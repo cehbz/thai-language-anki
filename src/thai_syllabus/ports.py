@@ -92,10 +92,18 @@ class Answer:
     writing backend used); `ts` is nanoseconds since the epoch (store.py's
     sortable, collision-resistant substitute for the cache table's `ts`
     column -- see store.py's docstring for why).
+
+    `key` is spec 3's readable canonical cache key (e.g. "forvo:WORD",
+    "judge:sha(RUBRIC):sha(ARTIFACT):ROLE" with the real shas substituted
+    in) -- what the backend actually asked. `key_sha` is its indexed
+    digest (spec 2's `cache.key_sha` column); the two always correspond
+    (key_sha = sha256(key)), `key` is kept alongside it for readability
+    and for derivations that need to parse/prefix-match the raw key.
     """
     port: str
     backend: str
     key_sha: str
+    key: str
     subject: str
     question: Any
     answer: Any
@@ -129,15 +137,40 @@ class FrequencyMap(Protocol):
 
 @runtime_checkable
 class RecordWriter(Protocol):
-    """Append-only write side of the `cache` table (spec 2 section 2/3).
-    `key` is the backend's raw cache-key content (a string); the store
-    hashes it to the `key_sha` the table actually indexes -- the table has
-    no `key` column, only `key_sha`, so the raw key is not retained beyond
-    its hash. Every append is one transaction (the checkpoint rule); never
-    an update, never a delete.
+    """Append-only write side of the `cache` table (spec 2 section 2,
+    spec 3 section 2). `key` is the backend's own canonical, readable
+    cache-key string (spec 3's per-backend key functions, e.g.
+    "forvo:WORD"); the store keeps it verbatim in the `key` column AND
+    hashes it into `key_sha`, the column the table indexes on. Every
+    append is one transaction (the checkpoint rule); never an update,
+    never a delete. Returns the row's `ts` (nanoseconds since the epoch)
+    so callers can stamp the Answer/Verdict they hand back to their
+    caller with the same timestamp the row was actually written under.
     """
     def append(self, port: str, backend: str, key: str, subject: str,
-               question: Any, answer: Any, cost: float = 0.0) -> None: ...
+               question: Any, answer: Any, cost: float = 0.0) -> int: ...
+
+
+@runtime_checkable
+class CacheReader(Protocol):
+    """Read side of the `cache` table that spec 3's ports consume (Provider/
+    Assessor's cache-first ask(), and the derivations' folds over one
+    subject's history). Not spec 1's AssessmentReader (that one is scoped
+    to judged-rule verdicts and waivers) -- this is the general port+backend
+    cache surface spec 2 section 3 alludes to but leaves to spec 3 to name.
+    """
+    def latest(self, port: str, backend: str, key: str) -> "Answer | None":
+        """The newest row exactly matching (port, backend, key) -- the
+        cache-first hit lookup every backend's ask() consults before
+        executing. None on a cache miss (nothing asked yet).
+        """
+        ...
+
+    def assessments_of(self, subject: str) -> list["Answer"]:
+        """Every cache row (any port/backend) for one subject, oldest
+        first -- the attempt record derivations.py folds over.
+        """
+        ...
 
 
 @runtime_checkable

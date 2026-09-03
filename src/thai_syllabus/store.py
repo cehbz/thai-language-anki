@@ -20,20 +20,23 @@ migration/testing surface needs but spec 1's frozen Protocols do not
 declare.
 
 Cache-row conventions used by the higher-level convenience methods (judge
-verdicts, waivers) -- spec 3 owns the real per-backend key functions;
-spec 2 only fixes what the tables look like at rest, so these conventions
-are this implementation's stand-in, documented here rather than invented
-silently:
+verdicts, waivers) -- these are spec 1/2's rule-level verdict/waiver
+convention, distinct from spec 3's per-backend Provider/Assessor key
+functions (provider.py/assessor.py own those; see their module
+docstrings). Kept readable per spec 3's "canonical readable strings"
+rule even though they predate it:
   - judge verdict:  port="assess", backend="judge",
-                     key = json array [rule_id, note_id, artifact_sha],
+                     key = "rule-verdict:RULE_ID:NOTE_ID:ARTIFACT_SHA"
+                     (ARTIFACT_SHA is "-" when absent),
                      subject = note_id, question = {rule, note_id,
                      artifact_sha}, answer = {"verdict": bool}.
                      verdict() is an EXACT key_sha match, newest row wins.
   - learner waiver:  port="assess", backend="learner",
-                     key = json array ["waiver", rule_id, note_id,
-                     artifact_sha], subject = same finding identity,
-                     question = {"kind": "waiver", rule, note_id,
-                     artifact_sha}, answer = {"waived": bool, "reason"}.
+                     key = "waiver:RULE_ID:NOTE_ID:ARTIFACT_SHA"
+                     (ARTIFACT_SHA is "-" when absent), subject = same
+                     finding identity, question = {"kind": "waiver",
+                     rule, note_id, artifact_sha},
+                     answer = {"waived": bool, "reason"}.
                      is_waived() folds newest-wins over matching rows
                      (the learner backend's standard cache policy).
 """
@@ -81,6 +84,7 @@ create table if not exists media (
 create table if not exists cache (
     port text not null,
     backend text not null,
+    key text not null,
     key_sha text not null,
     subject text not null,
     question text not null,
@@ -91,6 +95,7 @@ create table if not exists cache (
 );
 create index if not exists cache_key_sha on cache (key_sha);
 create index if not exists cache_subject on cache (subject);
+create index if not exists cache_port_backend_key_sha on cache (port, backend, key_sha);
 
 create table if not exists study (
     card_key text not null,
@@ -107,12 +112,23 @@ def _key_sha(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _rule_verdict_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
+    return f"rule-verdict:{rule_id}:{note_id}:{artifact_sha or '-'}"
+
+
 def _finding_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    return json.dumps(["waiver", rule_id, note_id, artifact_sha], sort_keys=True)
+    return f"waiver:{rule_id}:{note_id}:{artifact_sha or '-'}"
 
 
 def _finding_subject(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
     return json.dumps([rule_id, note_id, artifact_sha], sort_keys=True)
+
+
+def _row_to_answer(row: tuple) -> Answer:
+    port, backend, key, key_sha, subject, question, answer, cost, ts = row
+    return Answer(port=port, backend=backend, key_sha=key_sha, key=key,
+                 subject=subject, question=json.loads(question),
+                 answer=json.loads(answer), cost=cost, ts=ts)
 
 
 class SyllabusDb:
@@ -155,21 +171,34 @@ class SyllabusDb:
 
     def append(self, port: str, backend: str, key: str, subject: str,
                question: Any, answer: Any, cost: float = 0.0,
-               ts: int | None = None) -> None:
+               ts: int | None = None) -> int:
         ts = self._next_ts(ts)
         with self._con:
             self._con.execute(
-                "insert into cache (port, backend, key_sha, subject, "
-                "question, answer, cost, ts) values (?, ?, ?, ?, ?, ?, ?, ?)",
-                (port, backend, _key_sha(key), subject,
+                "insert into cache (port, backend, key, key_sha, subject, "
+                "question, answer, cost, ts) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (port, backend, key, _key_sha(key), subject,
                  json.dumps(question, sort_keys=True),
                  json.dumps(answer, sort_keys=True), cost, ts))
+        return ts
+
+    # --- CacheReader (spec 3): the general cache-first read surface -------
+
+    def latest(self, port: str, backend: str, key: str) -> Answer | None:
+        row = self._con.execute(
+            "select port, backend, key, key_sha, subject, question, answer, "
+            "cost, ts from cache where port=? and backend=? and key_sha=? "
+            "order by ts desc limit 1", (port, backend, _key_sha(key))
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_answer(row)
 
     # --- AssessmentReader ------------------------------------------------
 
     def verdict(self, rule_id: str, note_id: str,
                 artifact_sha: str | None = None) -> bool | None:
-        key = json.dumps([rule_id, note_id, artifact_sha], sort_keys=True)
+        key = _rule_verdict_key(rule_id, note_id, artifact_sha)
         row = self._con.execute(
             "select answer from cache where port='assess' and backend='judge' "
             "and key_sha=? order by ts desc limit 1",
@@ -190,20 +219,26 @@ class SyllabusDb:
 
     def assessments_of(self, subject: str) -> list[Answer]:
         rows = self._con.execute(
-            "select port, backend, key_sha, subject, question, answer, "
+            "select port, backend, key, key_sha, subject, question, answer, "
             "cost, ts from cache where subject=? order by ts asc",
             (subject,)).fetchall()
-        return [Answer(port=r[0], backend=r[1], key_sha=r[2], subject=r[3],
-                       question=json.loads(r[4]), answer=json.loads(r[5]),
-                       cost=r[6], ts=r[7]) for r in rows]
+        return [_row_to_answer(r) for r in rows]
 
     # --- convenience writers for the judge/waiver conventions -------------
+    #
+    # Readable per spec 3's "canonical readable strings, sha() only on
+    # large/binary components" rule -- but NOT spec 3's own judge-backend
+    # key (judge:sha(RUBRIC):sha(ARTIFACT):ROLE, owned by assessor.py). This
+    # is spec 1/2's separate, already-shipped convention for judged-*rule*
+    # verdicts consumed by Syllabus.report() through AssessmentReader.verdict
+    # (keyed on rule_id/note_id/artifact_sha, not rubric text/role) -- see
+    # the module docstring above.
 
     def append_judge_verdict(self, *, rule_id: str, note_id: str,
                              verdict: bool, artifact_sha: str | None = None,
                              evidence: str | None = None,
                              cost: float = 0.0) -> None:
-        key = json.dumps([rule_id, note_id, artifact_sha], sort_keys=True)
+        key = _rule_verdict_key(rule_id, note_id, artifact_sha)
         subject = _finding_subject(rule_id, note_id, artifact_sha)
         question = {"rule": rule_id, "note_id": note_id,
                     "artifact_sha": artifact_sha}
