@@ -78,7 +78,7 @@ from .assessor import AssessBackend, Assessor, JudgeBackend
 from .curated import ProvidersConfig, load_curated, load_frequency_map, rulebook_file_text
 from .derivations import current_best
 from .entities import MinimalPair
-from .ids import ConfusionId, WordId
+from .ids import ConfusionId, PairId, WordId
 from .provider import (
     Backend,
     ForvoBackend,
@@ -380,6 +380,29 @@ class _DbMediaIndex:
             for member in pair.members:
                 speakers |= self._speakers_for(member)
         return frozenset(speakers)
+
+    def recording_provenance(self, word: WordId) -> Mapping[str, Any] | None:
+        best = current_best(self.db, word, "recording")
+        if best.artifact_sha is None:
+            return None
+        return self.db.media_provenance(best.artifact_sha)
+
+    def rendition_provenance(self, pair_id: PairId) -> tuple[Mapping[str, Any], ...]:
+        pair = next((p for p in self.pairs if p.id == pair_id), None)
+        if pair is None:
+            return ()
+        rows: list[Mapping[str, Any]] = []
+        for member in pair.members:
+            best = current_best(self.db, member, "recording")
+            if best.artifact_sha is None:
+                continue
+            prov = self.db.media_provenance(best.artifact_sha)
+            if prov is not None:
+                rows.append(prov)
+        return tuple(rows)
+
+    def picture_sha(self, word: WordId) -> str | None:
+        return current_best(self.db, word, "picture").artifact_sha
 
     def _speakers_for(self, word: WordId) -> frozenset[str]:
         best = current_best(self.db, word, "recording")

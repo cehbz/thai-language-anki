@@ -44,10 +44,50 @@ def _write_curated_dir(root):
 # --- compile: real end-to-end happy path ----------------------------------
 
 def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
+    # A real, non-forced compile: seed the curated deck's db with a
+    # current-best picture, a current-best recording, and a sentence that
+    # fills the target -- the spec 4 completeness rules are then all
+    # satisfied and the gate opens on its own, with no --force needed.
+    from datetime import date
+
+    from thai_syllabus.store import SyllabusDb
+
     root = _write_curated_dir(tmp_path / "deck")
+    db = SyllabusDb(root / "syllabus.db")
+
+    db.append(port="provide", backend="openverse", key="openverse:rice",
+             subject="rice", question={"provides": "picture", "params": {}},
+             answer={"items": [{"sha": "pic1"}]}, cost=0.0)
+    db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
+             subject="rice",
+             question={"role": "picture-for-word", "artifact_sha": "pic1", "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
+                origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
+
+    db.append(port="provide", backend="forvo", key="forvo:rice",
+             subject="rice", question={"provides": "recording", "params": {}},
+             answer={"items": [{"sha": "rec1"}]}, cost=0.0)
+    # derivations.current_best does not yet rank a bare mechanical pass for
+    # recordings (Task 5 adds that) -- a judge pass under role
+    # "recording-for-word" is what makes a recording candidate current-best
+    # today.
+    db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
+             subject="rice",
+             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1),
+                speaker_id="somchai", speaker_kind="native")
+
+    # The default tokenizer falls back to whitespace when pythainlp is
+    # absent (as here), so a two-token sentence puts "rice" at a boundary.
+    db.add_sentence(text_sha="s1", text="ข้าว อร่อย", voice="learner_voice",  # rice is delicious
+                    source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
+
     out = tmp_path / "deck.apkg"
     rc = cli.main(["compile", "--deck", str(root), "--out", str(out)])
-    assert rc == 0
+    assert rc == 0  # no --force: this only succeeds if the gate opened on its own
     assert out.exists()
     with zipfile.ZipFile(out) as zf:
         assert "collection.anki2" in zf.namelist()
@@ -58,10 +98,11 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
 def test_compile_prints_dropped_cards(tmp_path, capsys):
     # the word has no picture/audio media at all -- every media-gated
     # card (Listening/Production/Spelling) is dropped, only Reading (no
-    # media dependency) survives; the CompileReport must say so.
+    # media dependency) survives; the CompileReport must say so. Also
+    # forced past the closed gate, same as the summary test above.
     root = _write_curated_dir(tmp_path / "deck")
     out = tmp_path / "deck.apkg"
-    cli.main(["compile", "--deck", str(root), "--out", str(out)])
+    cli.main(["compile", "--deck", str(root), "--out", str(out), "--force"])
     text = capsys.readouterr().out
     assert "dropped" in text.lower()
 

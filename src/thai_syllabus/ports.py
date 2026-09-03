@@ -4,18 +4,23 @@ report() never calls a judge, fills() never calls a live tokenizer service.
 
 Spec 2 (durable state) section 3 adds three more interfaces -- FrequencyMap,
 RecordWriter, StudyReader -- not present when spec 1 was implemented.
-AssessmentReader/MediaIndex/Tokenizer above are spec 1's contract and are
-left untouched; store.py's SyllabusDb satisfies them exactly (isinstance
-checks against these Protocols still pass) and additionally offers
-`assessments_of` (spec 2's fuller read surface over the same cache table --
-not part of the Protocol spec 1 already shipped, so it is not declared
-here, only implemented).
+AssessmentReader/Tokenizer are spec 1's contract, unchanged since; MediaIndex
+gained recording_provenance/rendition_provenance/picture_sha here (spec 4)
+for rulebook.py's completeness, synthetic/mixed-speaker, and picture/fit
+rules. store.py's SyllabusDb satisfies AssessmentReader directly (isinstance
+checks against that Protocol pass) and additionally offers `assessments_of`
+(spec 2's fuller read surface over the same cache table -- not part of the
+Protocol spec 1 already shipped, so it is not declared here, only
+implemented); MediaIndex is satisfied by wiring.py's `_DbMediaIndex`, a
+separate adapter over SyllabusDb and the loaded pairs, not by SyllabusDb
+itself.
 """
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from .ids import ConfusionId, WordId
+    from .ids import ConfusionId, PairId, WordId
     from .rules import Finding
 
 
@@ -57,10 +62,30 @@ class MediaIndex(Protocol):
     text; added here because gap/coverage measures (media/picture-required,
     coverage/confusions) need to know what media exists, and architecture.md
     lists that as record-owned, spec-2 territory the Syllabus reads through.
+    has_picture/recording_speakers/rendition_speakers are spec 1's original
+    three; recording_provenance/rendition_provenance/picture_sha (spec 4)
+    add provenance-row and artifact-sha access for the rulebook's
+    completeness, synthetic/mixed-speaker, and picture/fit rules.
     """
     def has_picture(self, word: "WordId") -> bool: ...
     def recording_speakers(self, word: "WordId") -> frozenset[str]: ...
     def rendition_speakers(self, pair_confusion: "ConfusionId") -> frozenset[str]: ...
+
+    def recording_provenance(self, word: "WordId") -> Mapping[str, Any] | None:
+        """The current-best recording's `media` row (source, speaker_id,
+        speaker_kind), or None if there is no current-best recording.
+        """
+        ...
+
+    def rendition_provenance(self, pair_id: "PairId") -> tuple[Mapping[str, Any], ...]:
+        """One provenance row per pair member's current-best recording; a
+        member with none is skipped.
+        """
+        ...
+
+    def picture_sha(self, word: "WordId") -> str | None:
+        """The current-best picture's artifact sha, or None."""
+        ...
 
 
 class NullAssessmentReader:
@@ -86,6 +111,15 @@ class NullMediaIndex:
 
     def rendition_speakers(self, pair_confusion: "ConfusionId") -> frozenset[str]:
         return frozenset()
+
+    def recording_provenance(self, word: "WordId") -> Mapping[str, Any] | None:
+        return None
+
+    def rendition_provenance(self, pair_id: "PairId") -> tuple[Mapping[str, Any], ...]:
+        return ()
+
+    def picture_sha(self, word: "WordId") -> str | None:
+        return None
 
 
 # --- spec 2 section 3 additions -------------------------------------------

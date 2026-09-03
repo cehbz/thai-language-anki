@@ -20,6 +20,7 @@ from thai_syllabus.entities import (
 from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.media import Provenance
 from thai_syllabus.profile import Profile
+from thai_syllabus.rulebook import RULES
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -27,6 +28,21 @@ from tests.gen.helpers_apkg import read_apkg
 
 PROV = Provenance(source="test", origin="fixture", licence="cc0",
                   acquired=date(2026, 1, 1))
+
+# This module's fixtures build a Syllabus whose `media` port is the default
+# NullMediaIndex -- artifact resolution for the actual compiled cards goes
+# straight through fx.db/fx.media (Fixture.seed_picture/seed_recording), not
+# through Syllabus.media, so these five completeness ERROR rules (spec 4)
+# would always fire here regardless of what's seeded, closing the gate on
+# every fixture that has targets. This module's subject is compile.py's own
+# field/guid/due/dropped-card mechanics, not target completeness, so those
+# five are dropped from the default rules; everything else (closure,
+# exact-confusion, ...) still runs.
+_COMPLETENESS_ERROR_IDS = {
+    "target/picture-required", "target/recording-required", "target/sentence-required",
+    "pair/rendition-required", "grapheme/keyword-picture-required",
+}
+_RULES_WITHOUT_COMPLETENESS = tuple(r for r in RULES if r.id not in _COMPLETENESS_ERROR_IDS)
 
 
 def _syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
@@ -142,6 +158,7 @@ def _small_syllabus(tokenizer, extra_targets=()) -> Syllabus:
         confusions=(confusion,),
         profile=Profile(register="male_colloquial"),
         tokenizer=tokenizer,
+        rules=_RULES_WITHOUT_COMPLETENESS,
     )
 
 
@@ -378,7 +395,8 @@ def test_grapheme_name_thai_degrades_gracefully_without_a_name_word(fx):
     ]
     syllabus = Syllabus(words=(pom, gin, rice, chicken), targets=tuple(targets),
                         graphemes=(grapheme,), tokenizer=tokenizer,
-                        profile=Profile(register="male_colloquial"))
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_picture("rice", "cooked rice")
     fx.seed_recording("rice", "cooked rice")
     fx.seed_recording("pom", "I")

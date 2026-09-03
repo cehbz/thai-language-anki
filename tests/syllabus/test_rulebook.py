@@ -8,13 +8,14 @@ from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
-from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PRINCIPLES, RULES,
-                                    SENTENCE_REGISTER_NATURAL, apply_overlay,
+from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
+                                    PRINCIPLES, RUBRICS_BY_ROLE, RULES, SENTENCE_REGISTER_NATURAL,
+                                    apply_overlay, rubrics_for, sentence_note_id,
                                     traceability_metric)
 from thai_syllabus.syllabus import Syllabus
 
 from .builders import pron, sentence, syl, target, word
-from .fakes import FakeAssessmentReader, FakeTokenizer
+from .fakes import FakeAssessmentReader, FakeMediaIndex, FakeTokenizer
 
 
 def make_syllabus(**kwargs):
@@ -238,3 +239,210 @@ def test_overlay_ignores_a_rubric_override_targeting_a_non_judged_rule():
 
 def test_rule_role_defaults_to_id():
     assert SENTENCE_REGISTER_NATURAL.role == "sentence/register-natural"
+
+
+# --- completeness errors, synthetic/mixed-speaker warnings, picture fit -----
+
+def _syl(media=None, sentences=(), targets=None):
+    w = word("slow", "ช้า", "slow")
+    t = targets or (target("slow/receptive", "slow"),)
+    return Syllabus(words=(w,), targets=t, sentences=tuple(sentences),
+                    media=media or FakeMediaIndex(),
+                    tokenizer=FakeTokenizer({"ช้า มาก": ["ช้า", "มาก"]}))
+
+
+def _rules(rid):
+    return [r for r in RULES if r.id == rid]
+
+
+def test_target_without_picture_is_an_error_finding():
+    findings = _rules("target/picture-required")[0].check(_syl())
+    assert [f.note_id for f in findings] == ["slow"]
+    assert _rules("target/picture-required")[0].severity == "error"
+
+
+def test_target_with_picture_recording_and_sentence_has_no_completeness_findings():
+    # recording_speakers deliberately left empty -- target/recording-required
+    # must key off recording_provenance, not recording_speakers (see the
+    # next test): speaker_id is nullable, so a real recording can have no
+    # speakers and still be a current-best recording.
+    media = FakeMediaIndex(pictures={"slow"},
+                           recording_provenance={"slow": {"source": "forvo", "speaker_kind": "native"}})
+    s = _syl(media=media, sentences=[sentence("ช้า มาก")])
+    for rid in ("target/picture-required", "target/recording-required", "target/sentence-required"):
+        assert _rules(rid)[0].check(s) == []
+
+
+def test_target_recording_required_is_silent_for_a_recording_with_no_speaker_id():
+    # media row's speaker_id is nullable (store.py schema): a real
+    # current-best recording with none on file must not close the gate.
+    media = FakeMediaIndex(recording_speakers={"slow": frozenset()},
+                           recording_provenance={"slow": {"source": "forvo", "speaker_kind": "native"}})
+    assert _rules("target/recording-required")[0].check(_syl(media=media)) == []
+
+
+def test_target_sentence_required_is_silent_when_a_sentence_fills_the_target():
+    s = _syl(sentences=[sentence("ช้า มาก")])
+    assert _rules("target/sentence-required")[0].check(s) == []
+
+
+def test_synthetic_recording_is_a_warning():
+    media = FakeMediaIndex(recording_speakers={"slow": frozenset({"tts:v"})},
+                           recording_provenance={"slow": {"source": "tts", "speaker_kind": "synthetic"}})
+    r = _rules("recording/synthetic")[0]
+    assert r.severity == "warn"
+    assert [f.note_id for f in r.check(_syl(media=media))] == ["slow"]
+
+
+def _mid_low_pair():
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=confusion,
+                              members=(mid_word, low_word))
+    return confusion, mid_word, low_word, pair
+
+
+# --- pair/rendition-required --------------------------------------------
+
+def test_pair_rendition_required_flags_a_pair_with_no_rendition():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,))
+    findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
+    assert [f.note_id for f in findings] == [pair.id]
+
+
+def test_pair_rendition_required_flags_a_half_recorded_pair():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    media = FakeMediaIndex(rendition_provenance={
+        pair.id: ({"speaker_id": "a", "speaker_kind": "native"},)})
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
+                             media=media)
+    findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
+    assert [f.note_id for f in findings] == [pair.id]
+
+
+def test_pair_rendition_required_is_silent_when_every_member_has_a_recording():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    media = FakeMediaIndex(rendition_provenance={pair.id: (
+        {"speaker_id": "a", "speaker_kind": "native"},
+        {"speaker_id": "b", "speaker_kind": "native"})})
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
+                             media=media)
+    findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
+    assert findings == []
+
+
+# --- grapheme/keyword-picture-required --------------------------------------
+
+def test_grapheme_keyword_picture_required_flags_a_missing_picture():
+    chicken = word("chicken", "ไก่", "chicken")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken)
+    syllabus = make_syllabus(words=(chicken,), graphemes=(grapheme,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "grapheme/keyword-picture-required"]
+    assert [f.note_id for f in findings] == ["ก"]
+
+
+def test_grapheme_keyword_picture_required_is_silent_when_the_keyword_has_a_picture():
+    chicken = word("chicken", "ไก่", "chicken")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken)
+    media = FakeMediaIndex(pictures={"chicken"})
+    syllabus = make_syllabus(words=(chicken,), graphemes=(grapheme,), media=media)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "grapheme/keyword-picture-required"]
+    assert findings == []
+
+
+# --- rendition/synthetic, rendition/mixed-speakers --------------------------
+
+def test_rendition_synthetic_flags_a_tts_rendition():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    media = FakeMediaIndex(rendition_provenance={pair.id: (
+        {"speaker_id": "a", "speaker_kind": "native"},
+        {"speaker_id": "tts", "speaker_kind": "synthetic"})})
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
+                             media=media)
+    findings = [f for f in syllabus.report().findings if f.rule == "rendition/synthetic"]
+    assert [f.note_id for f in findings] == [pair.id]
+
+
+def test_rendition_mixed_speakers_flags_different_speaker_ids():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    media = FakeMediaIndex(rendition_provenance={pair.id: (
+        {"speaker_id": "a", "speaker_kind": "native"},
+        {"speaker_id": "b", "speaker_kind": "native"})})
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
+                             media=media)
+    findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
+    assert [f.note_id for f in findings] == [pair.id]
+
+
+def test_rendition_mixed_speakers_ignores_a_null_speaker_id():
+    # both rows present (so the count check passes) but one has no
+    # speaker_id on file -- must not be counted as a second, distinct
+    # speaker.
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    media = FakeMediaIndex(rendition_provenance={pair.id: (
+        {"speaker_id": "a", "speaker_kind": "native"},
+        {"speaker_id": None, "speaker_kind": "native"})})
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
+                             media=media)
+    findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
+    assert findings == []
+
+
+# --- sentence/synthetic-productive ------------------------------------------
+
+def test_sentence_synthetic_productive_flags_tts_audio_on_a_filling_productive_sentence():
+    rice = word("rice", "ข้าว")  # rice
+    t_rice = target("rice/productive", "rice", "productive")
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    media = FakeMediaIndex(recording_provenance={
+        sentence_note_id(s): {"source": "tts", "speaker_kind": "synthetic"}})
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
+                             media=media)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/synthetic-productive"]
+    assert [f.note_id for f in findings] == [sentence_note_id(s)]
+
+
+def test_sentence_synthetic_productive_is_silent_for_a_receptive_only_sentence():
+    rice = word("rice", "ข้าว")  # rice
+    t_rice = target("rice/receptive", "rice", "receptive")
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    media = FakeMediaIndex(recording_provenance={
+        sentence_note_id(s): {"source": "tts", "speaker_kind": "synthetic"}})
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
+                             media=media)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/synthetic-productive"]
+    assert findings == []
+
+
+# --- picture/fit judged_subjects --------------------------------------------
+
+def test_picture_fit_judged_subjects_includes_a_targeted_word_with_a_picture():
+    media = FakeMediaIndex(pictures={"slow"})
+    assert PICTURE_FIT.judged_subjects(_syl(media=media)) == [("slow", "sha-slow")]
+
+
+def test_picture_fit_judged_subjects_excludes_a_targeted_word_with_no_picture():
+    assert PICTURE_FIT.judged_subjects(_syl()) == []
+
+
+def test_picture_fit_rubric_is_the_old_text_verbatim():
+    from thai_deck_eval.judge.prompts import PICTURE_RULES
+    for rid in ("judge/image-off-phrase", "judge/image-irrelevant", "judge/image-embedded-text"):
+        assert PICTURE_RULES[rid] in PICTURE_FIT_RUBRIC
+
+
+def test_rubrics_for_maps_roles():
+    r = rubrics_for(RULES)
+    assert r["picture-for-word"] == PICTURE_FIT_RUBRIC
+    assert "sentence-for-target" in r and "picture-preference" in r

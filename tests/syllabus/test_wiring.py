@@ -19,6 +19,7 @@ from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import (
+    _DbMediaIndex,
     build_assessor,
     build_levers,
     build_provider,
@@ -347,6 +348,76 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
     syllabus = load_syllabus(root)
     assert syllabus.media.has_picture("rice") is True
     assert syllabus.media.has_picture("near") is False
+
+
+# --- _DbMediaIndex: picture_sha / recording_provenance / rendition_provenance
+
+def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_best(db):
+    from datetime import date
+    db.append(port="provide", backend="openverse", key="openverse:rice",
+             subject="rice", question={"provides": "picture", "params": {}},
+             answer={"items": [{"sha": "abc"}]}, cost=0.0)
+    db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
+             subject="rice",
+             question={"role": "picture-for-word", "artifact_sha": "abc", "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.append(port="provide", backend="forvo", key="forvo:rice",
+             subject="rice", question={"provides": "recording", "params": {}},
+             answer={"items": [{"sha": "rec1"}]}, cost=0.0)
+    # derivations.current_best does not yet rank a bare "mechanical" pass
+    # for recordings (Task 5 adds that) -- a judge pass under role
+    # "recording-for-word" is what makes a recording candidate current-best
+    # today.
+    db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
+             subject="rice",
+             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+
+    media = _DbMediaIndex(db=db)
+    assert media.picture_sha("rice") == "abc"
+    assert media.picture_sha("near") is None
+
+    prov = media.recording_provenance("rice")
+    assert prov["source"] == "forvo"
+    assert prov["speaker_id"] == "somchai"
+    assert prov["speaker_kind"] == "native"
+    assert media.recording_provenance("near") is None
+
+
+def test_db_media_index_rendition_provenance_reflects_current_best(db):
+    from datetime import date
+    from thai_syllabus.entities import MinimalPair, SoundConfusion
+    from thai_syllabus.ids import ConfusionId, PairId
+
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    near = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    far = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=confusion,
+                              members=(near, far))
+
+    def seed_recording(subject, sha, speaker_id):
+        db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
+                 subject=subject, question={"provides": "recording", "params": {}},
+                 answer={"items": [{"sha": sha}]}, cost=0.0)
+        db.append(port="assess", backend="judge", key=f"judge:x:{sha}:recording-for-word",
+                 subject=subject,
+                 question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None},
+                 answer={"value": True}, cost=0.0)
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                    origin="https://forvo.com/x", licence="cc-by",
+                    acquired=date(2026, 1, 1), speaker_id=speaker_id, speaker_kind="native")
+
+    seed_recording("near", "sha-near", "somchai")
+    seed_recording("far", "sha-far", "malee")
+
+    media = _DbMediaIndex(db=db, pairs=(pair,))
+    rows = media.rendition_provenance(pair.id)
+    assert {r["speaker_id"] for r in rows} == {"somchai", "malee"}
+    assert media.rendition_provenance("no-such-pair") == ()
 
 
 def test_load_syllabus_default_tokenizer_is_whitespace_when_pythainlp_absent(

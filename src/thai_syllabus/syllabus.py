@@ -153,8 +153,8 @@ class Syllabus:
             # rubric passed through: the merged spec-3 key convention
             # (spec 4 "key-convention debt"; see store.py's module
             # docstring) keys a judged rule's verdict exactly like
-            # assessor.JudgeBackend does -- role=rule.role (defaults to
-            # rule.id, but an overlay may retarget it), rubric folded in.
+            # assessor.JudgeBackend does -- report() reads verdicts under
+            # rule.role, which defaults to the rule id.
             verdict = self.assessments.verdict(rule.role, note_id, artifact_sha,
                                                rubric=rule.rubric)
             if verdict is False:
