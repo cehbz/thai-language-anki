@@ -11,7 +11,7 @@ checks against these Protocols still pass) and additionally offers
 not part of the Protocol spec 1 already shipped, so it is not declared
 here, only implemented).
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
