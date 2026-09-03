@@ -104,9 +104,18 @@ deeper analysis by fable, and likely research plus a local speaker.
   examples. Open: whether comprehension-only cards should differ in card
   template (recognition only, never a production prompt), and whether other
   gendered forms need the same treatment.
-- **Kam Mueang vs Central Thai.** The deck teaches Central Thai to a learner
-  living in a Kam Mueang-speaking region. Nothing in the pipeline knows this.
-  Worth deciding deliberately rather than by default.
+- **Kam Mueang production content (parked 2026-09-02, user goal).** Speaking
+  and understanding Northern dialect matters: market/food vendors often
+  speak only Northern or warm to it; the user wants to be perceived as
+  learning *Northern* Thai, not just Thai. Parked because the cost is
+  large: the tone engine and both G2P engines are Central-only (Thai-script
+  Northern read by Central rules yields wrong tones), so native audio is
+  the only ground truth; no TTS exists; Forvo coverage thin — local
+  recording is the channel. เจ้า (jâo) particle gender-marking is
+  contradicted across sources and needs a local speaker. Open sizing
+  question: market-register phrase set (dozens of items) vs systematic
+  Kam Mueang (own contrasts and register rules). Research brief:
+  docs/superpowers/review/2026-09-02-register-research.md.
 
 - **new-element tolerance mismatch.** `check_sentence` in the generator
   accepts one unknown non-target token; `meth/new-elements` accepts none.
