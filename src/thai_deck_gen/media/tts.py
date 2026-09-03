@@ -11,7 +11,22 @@ from thai_deck_gen.producers import ProducerResult
 
 # Google's Thai voices. A deck whose every listening card speaks in one
 # synthetic voice teaches that voice, so sentences are spread across them.
-THAI_VOICES = ["th-TH-Neural2-C", "th-TH-Standard-A"]
+# Production cards model the learner's own register (male); comprehension
+# draws from the full mixed pool. Roster from the live voices API 2026-09-02.
+_CHIRP = "th-TH-Chirp3-HD-"
+MALE_VOICES = [_CHIRP + n for n in [
+    "Achird", "Algenib", "Algieba", "Alnilam", "Charon", "Enceladus",
+    "Fenrir", "Iapetus", "Orus", "Puck", "Rasalgethi", "Sadachbia",
+    "Sadaltager", "Schedar", "Umbriel", "Zubenelgenubi"]]
+FEMALE_VOICES = [_CHIRP + n for n in [
+    "Achernar", "Aoede", "Autonoe", "Callirrhoe", "Despina", "Erinome",
+    "Kore", "Laomedeia", "Leda", "Pulcherrima", "Sulafat",
+    "Vindemiatrix", "Zephyr"]] + ["th-TH-Neural2-C", "th-TH-Standard-A"]
+THAI_VOICES = MALE_VOICES + FEMALE_VOICES
+
+
+def voices_for(usage: str) -> list[str]:
+    return MALE_VOICES if usage == "production" else THAI_VOICES
 
 
 def pick_voice(note_id: str, voices: list[str]) -> str:
@@ -57,7 +72,8 @@ def fill_tts(needs: list[AudioNeed], deck: Deck, manifest: Manifest,
 
         try:
             note = _find_note(deck, need)
-            voice = pick_voice(need.note_id, voices) if voices else tts.voice
+            pool = voices if voices else voices_for(getattr(note, "usage", "production"))
+            voice = pick_voice(need.note_id, pool)
             raw = tts.synthesize(need.text, voice)
             dst = deck.root / "media" / need.path
             dst.parent.mkdir(parents=True, exist_ok=True)

@@ -197,7 +197,8 @@ def test_tts_uses_the_configured_key_and_several_voices(deck, calls, monkeypatch
 
     cli.main(["audio", "tts", "--deck", str(deck.root)])
     assert seen["fill_tts"]["args"][3] == "TTS(S:google_tts)"
-    assert len(seen["fill_tts"]["kwargs"]["voices"]) > 1
+    # no voices override: fill_tts selects the pool per note usage
+    assert "voices" not in seen["fill_tts"]["kwargs"]
 
 
 def test_import_thai1000_forwards_the_apkg(deck, calls, monkeypatch, tmp_path):

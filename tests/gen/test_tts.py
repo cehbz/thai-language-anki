@@ -44,7 +44,8 @@ def test_fill_tts_fills_sentences_skips_pairs(tmp_path, monkeypatch):
     assert res.changed == 1
     sentence = deck.sentences[0]
     assert sentence.audio.source == "tts"
-    assert sentence.audio.speaker == "tts:th-TH-Neural2-C"
+    from thai_deck_gen.media.tts import MALE_VOICES
+    assert sentence.audio.speaker.removeprefix("tts:") in MALE_VOICES
     assert (deck.root / "media" / sentence.audio.file).exists()
     assert manifest.channel_of(f"media/{sentence.audio.file}") == "tts"
 
@@ -81,7 +82,8 @@ def test_fill_tts_per_item_error_blocks_and_continues(tmp_path, monkeypatch):
     assert "s0" in res.blocked
     assert res.changed == 1
     assert deck.sentences[0].audio.speaker == "pending"
-    assert deck.sentences[1].audio.speaker == "tts:th-TH-Neural2-C"
+    from thai_deck_gen.media.tts import MALE_VOICES
+    assert deck.sentences[1].audio.speaker.removeprefix("tts:") in MALE_VOICES
 
 def test_google_tts_parses_base64_response():
     payload = base64.b64encode(b"mp3-bytes").decode()
@@ -113,3 +115,12 @@ def test_voice_varies_across_notes_but_is_stable_per_note(tmp_path, monkeypatch)
     assert len(set(picks.values())) > 1               # not all the same
     assert all(v in voices for v in picks.values())
     assert pick_voice("sn-3", voices) == picks["sn-3"]   # stable
+
+
+def test_production_sentences_speak_in_male_voices_only():
+    """The learner self-grades production against the audio; it must model
+    his register. Comprehension draws from the full mixed pool."""
+    from thai_deck_gen.media.tts import MALE_VOICES, FEMALE_VOICES, voices_for
+    assert set(voices_for("production")) == set(MALE_VOICES)
+    assert set(voices_for("comprehension")) == set(MALE_VOICES) | set(FEMALE_VOICES)
+    assert MALE_VOICES and FEMALE_VOICES

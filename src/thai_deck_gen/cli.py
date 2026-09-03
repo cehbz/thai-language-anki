@@ -25,7 +25,7 @@ from thai_deck_gen.media.images import (audit_picturable, fill_images,
 from thai_deck_gen.media.manifest import Manifest
 from thai_deck_gen.media.scan import NATIVE_TIER_FAMILIES, pending_audio, pending_images
 from thai_deck_gen.media.thai1000 import audio_index, import_thai1000
-from thai_deck_gen.media.tts import THAI_VOICES, GoogleTts, fill_tts
+from thai_deck_gen.media.tts import GoogleTts, fill_tts
 from thai_deck_gen.orchestrator import EvalError, generate, run_eval
 from thai_deck_gen.producers.pairs import fill_pairs
 from thai_deck_gen.producers.sentences import fetch_exemplars, fill_sentences
@@ -343,8 +343,7 @@ def main(argv=None) -> int:
         deck = load_deck(args.deck)
         manifest = Manifest.load(deck.root)
         tts = GoogleTts(_require_secret(args.deck, "google_tts"))
-        res = fill_tts(pending_audio(deck), deck, manifest, tts, _today(),
-                       voices=THAI_VOICES)
+        res = fill_tts(pending_audio(deck), deck, manifest, tts, _today())
         write_deck(deck)
         manifest.save(deck.root)
         _report_result("tts", res)
