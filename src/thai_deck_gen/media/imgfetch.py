@@ -1,6 +1,6 @@
 """Image downloads go through the standalone `imgfetch` binary
-(tools/imgfetch) so the firewall can whitelist that one executable for
-arbitrary image hosts without opening the generator itself."""
+(tools/mediafetch, cmd/imgfetch) so the firewall can whitelist that one
+executable for arbitrary image hosts without opening the generator itself."""
 import subprocess
 import tempfile
 from pathlib import Path
