@@ -85,21 +85,19 @@ from .provider import (
     ForvoBackend,
     LlmBackend,
     Provider,
-    Question,
     TtsBackend,
     openverse_backend,
     pexels_backend,
     tool_fetcher,
     wikimedia_backend,
 )
-from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget, Lever
+from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport, Completion
 from .tts import pick_voice
 
-__all__ = ["build_provider", "build_assessor", "default_budgets", "build_levers",
-           "load_syllabus"]
+__all__ = ["build_provider", "build_assessor", "default_budgets", "load_syllabus"]
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -286,61 +284,6 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
         budgets[backend] = Budget(max_asks=quota.get("max_asks"),
                                   max_cost=quota.get("max_cost"))
     return budgets
-
-
-# --- levers: (subject, kind) -> Question, cheapest-first per kind ---------
-
-def build_levers(syllabus: Syllabus, provider: Provider, cfg: ProvidersConfig
-                 ) -> dict[str, list[Lever]]:
-    """Escalation order per gap kind (spec 3 section 4: "escalate backends
-    cheapest-first"), for the kinds derivations._gap_candidates actually
-    produces that this deliverable's read specs give enough to wire:
-    picture (openverse, wikimedia, pexels -- free-ish HTTP before a paid
-    key) and recording (forvo, a native lookup, before tts synthesis).
-    "sentence" is wired only when a single-question llm transport exists
-    (build_provider's own batch-transport exclusion, mirrored here).
-    "rendition" and "grapheme-keyword" are left unlevered: run() already
-    tolerates a kind with no registered levers (it just shows up in
-    RunReport.available, never attempted -- see run.py's own test
-    `test_available_counts_queued_subjects_that_were_never_attempted`),
-    and sourcing pair renditions / grapheme keyword data is its own
-    design this deliverable's two specs don't fix.
-    """
-    def picture_question(subject: str, kind: str) -> Question:
-        w = syllabus.find_word(WordId(subject))
-        query = w.meaning if w and w.meaning else subject
-        return Question(subject=subject, provides="picture", params={"query": query})
-
-    def forvo_question(subject: str, kind: str) -> Question:
-        w = syllabus.find_word(WordId(subject))
-        return Question(subject=subject, provides="recording",
-                        params={"word": w.thai if w else subject})
-
-    def tts_question(subject: str, kind: str) -> Question:
-        w = syllabus.find_word(WordId(subject))
-        return Question(subject=subject, provides="recording",
-                        params={"text": w.thai if w else subject})
-
-    def sentence_question(subject: str, kind: str) -> Question:
-        w = syllabus.find_word(WordId(subject))
-        if w is not None:
-            prompt = (f"Write one natural, colloquial Thai sentence using the word "
-                     f"{w.thai!r} ({w.meaning}). Output only the Thai sentence.")
-        else:
-            prompt = f"Write a natural Thai sentence using {subject!r}."
-        return Question(subject=subject, provides="sentence", params={"prompt": prompt})
-
-    levers: dict[str, list[Lever]] = {
-        "picture": [Lever(backend="openverse", ask=provider.ask, build_question=picture_question),
-                   Lever(backend="wikimedia", ask=provider.ask, build_question=picture_question),
-                   Lever(backend="pexels", ask=provider.ask, build_question=picture_question)],
-        "recording": [Lever(backend="forvo", ask=provider.ask, build_question=forvo_question),
-                     Lever(backend="tts", ask=provider.ask, build_question=tts_question)],
-    }
-    if cfg.judge.transport in ("cli", "api"):
-        levers["sentence"] = [Lever(backend="llm-sentence", ask=provider.ask,
-                                    build_question=sentence_question)]
-    return levers
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------

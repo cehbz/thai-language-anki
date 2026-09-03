@@ -10,8 +10,9 @@ compile and run were library-level only until their configs settled
 (compile_syllabus needed a wired Syllabus loader; run() needed
 providers.yaml-driven backend construction) -- wiring.py is that
 settling: load_syllabus() wires the Syllabus loader; build_provider/
-build_assessor/build_levers/default_budgets wire run()'s backend rosters
-and budgets from curated/providers.yaml.
+build_assessor/default_budgets wire run()'s backend rosters and budgets
+from curated/providers.yaml. _cmd_run builds the Sourcing ctx inline
+until wiring.build_sourcing lands.
 """
 from __future__ import annotations
 
@@ -20,12 +21,14 @@ import sys
 from pathlib import Path
 
 from . import anki_import, migrate as migrate_mod, reviewserver
+from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
-from .curated import load_providers_config
+from .curated import load_curated, load_providers_config
+from .rulebook import rubrics_for
 from .run import Budget
 from .run import run as run_pipeline
 from .store import MediaStore, SyllabusDb
-from .wiring import build_assessor, build_levers, build_provider, default_budgets, load_syllabus
+from .wiring import build_assessor, build_provider, default_budgets, load_syllabus
 
 
 def _providers_config_path(deck: Path) -> Path:
@@ -73,7 +76,15 @@ def _parse_backend_cap(raw: str) -> tuple[str, int]:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    """Builds a Sourcing ctx inline -- wiring.build_sourcing doesn't exist
+    yet (Task 11 lands it and replaces this construction). Every value
+    that reaches the db or a cache key (rubrics, provenance_prior,
+    image_candidates, tts_voices, judge_model) is drawn from the deck's
+    own curated/providers.yaml, never a bare Sourcing dataclass default --
+    those defaults exist for tests, not for a real run.
+    """
     syllabus = load_syllabus(args.deck)
+    bundle = load_curated(args.deck / "curated")
     db = SyllabusDb(args.deck / "syllabus.db")
     media_store = MediaStore(args.deck / "media")
     cfg = load_providers_config(_providers_config_path(args.deck))
@@ -84,11 +95,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for raw in args.backend_cap:
         name, max_asks = _parse_backend_cap(raw)
         budgets[name] = Budget(max_asks=max_asks)
-    levers = build_levers(syllabus, provider, cfg)
 
-    report = run_pipeline(syllabus, db, budgets, levers)
+    ctx = Sourcing(syllabus=syllabus, provider=provider, assessor=assessor, db=db,
+                   media_store=media_store, rubrics=rubrics_for(syllabus.rules),
+                   provenance_prior=bundle.rulebook.provenance_prior,
+                   image_candidates=cfg.image_candidates,
+                   tts_voices=tuple(cfg.tts_male_voices),
+                   judge_model=cfg.judge.model)
+
+    report = run_pipeline(ctx, budgets)
     print(f"attempted={report.attempted} improved={report.improved} "
-         f"exhausted={report.exhausted} available={report.available}")
+         f"exhausted={report.exhausted} available={report.available} "
+         f"pending={report.pending} sentences_adopted={report.sentences_adopted}")
     for name, spend in sorted(report.spend.items()):
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
     return 0

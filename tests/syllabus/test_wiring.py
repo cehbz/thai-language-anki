@@ -1,8 +1,12 @@
 """Tests for wiring.py: build_provider/build_assessor/default_budgets/
-build_levers/load_syllabus -- assembling spec 3's backend rosters from
+load_syllabus -- assembling spec 3's backend rosters from
 curated/providers.yaml and spec 1/2's Syllabus from a deck directory. No
 network, no subprocess, no pythainlp/anthropic import; secret files are
 real tmp 0600 files whose reads are tracked to prove lazy resolution.
+
+build_levers/Lever are gone (Task 10 replaced the lever-escalation shape
+with attempts.attempt() + attempts.SOURCES); Task 11 rewires this module
+around build_sourcing.
 """
 from __future__ import annotations
 
@@ -22,13 +26,12 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import (
     _DbMediaIndex,
     build_assessor,
-    build_levers,
     build_provider,
     default_budgets,
     load_syllabus,
 )
 
-from .builders import PROV, syl, pron, target, word
+from .builders import PROV, syl, pron, word
 
 
 # --- fixtures ----------------------------------------------------------
@@ -251,56 +254,6 @@ def test_default_budgets_layers_configured_quotas_over_defaults():
     assert budgets["forvo"].max_asks == 10  # overridden
     assert budgets["learner"].max_asks == 20  # default still present
     assert budgets["judge-api"].max_cost == 5.0
-
-
-# --- build_levers ----------------------------------------------------------
-
-@pytest.fixture
-def syllabus_for_levers():
-    w = word("rice", "ข้าว", "rice")
-    t = target("t-rice", "rice", skill="receptive")
-    return Syllabus(words=(w,), targets=(t,))
-
-
-def test_build_levers_covers_picture_and_recording(cfg, db, media_store, syllabus_for_levers):
-    provider = build_provider(cfg, db, media_store)
-    levers = build_levers(syllabus_for_levers, provider, cfg)
-    assert [l.backend for l in levers["picture"]] == ["openverse", "wikimedia", "pexels"]
-    assert [l.backend for l in levers["recording"]] == ["forvo", "tts"]
-
-
-def test_build_levers_sentence_lever_present_for_cli_transport(
-        cfg, db, media_store, syllabus_for_levers):
-    provider = build_provider(cfg, db, media_store)
-    levers = build_levers(syllabus_for_levers, provider, cfg)
-    assert levers["sentence"][0].backend == "llm-sentence"
-
-
-def test_build_levers_no_sentence_lever_for_batch_transport(
-        db, media_store, syllabus_for_levers, secret_paths):
-    from thai_syllabus.curated import JudgeConfig
-    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
-                          judge=JudgeConfig(transport="batch", model="m"))
-    provider = build_provider(cfg, db, media_store)
-    levers = build_levers(syllabus_for_levers, provider, cfg)
-    assert "sentence" not in levers
-
-
-def test_picture_lever_build_question_uses_the_words_meaning(
-        cfg, db, media_store, syllabus_for_levers):
-    provider = build_provider(cfg, db, media_store)
-    levers = build_levers(syllabus_for_levers, provider, cfg)
-    q = levers["picture"][0].build_question("rice", "picture")
-    assert q.params["query"] == "rice"
-
-
-def test_tts_lever_build_question_carries_the_words_thai_text(
-        cfg, db, media_store, syllabus_for_levers):
-    provider = build_provider(cfg, db, media_store)
-    levers = build_levers(syllabus_for_levers, provider, cfg)
-    tts_lever = [l for l in levers["recording"] if l.backend == "tts"][0]
-    q = tts_lever.build_question("rice", "recording")
-    assert q.params["text"] == "ข้าว"  # rice
 
 
 # --- load_syllabus: round trip over a synthetic curated dir ---------------

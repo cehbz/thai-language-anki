@@ -1,21 +1,24 @@
-"""The batch run (spec 3 section 4): Budget + run(syllabus, budgets), an
-application service -- iteration only, every policy is a derivation it
-calls (derivations.py). Kill-safe: every ask() already appends as a
-checkpoint (spec 2), so the loop itself holds no state that would be lost
-between iterations; a run stopped at any point leaves the cache exactly
-as far along as it got.
+"""The batch run (spec 3 section 4/7): a pending-aware loop over
+derivations.queue()'s entries -- one attempts.sentence_attempt() pass per
+run, then, for every other queued need, attempts.attempt() escalating
+attempts.SOURCES cheapest-first until improved, pending, or exhausted.
+Iteration only -- every policy (queue/current_best/exhausted, and what an
+attempt IS for a kind) lives in derivations.py/attempts.py; this module
+calls them and holds no state that would be lost between iterations, since
+every ask() already appended a checkpoint before this loop ever sees it
+(spec 2) -- a run stopped at any point leaves the cache exactly as far
+along as it got.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
-from .derivations import current_best, exhausted, queue
+from .attempts import Need, SOURCES, Sourcing, attempt, sentence_attempt, sources_for
+from .derivations import exhausted, queue
 from .ports import CacheReader, RecordWriter
-from .transport import TransportError
 
-__all__ = ["Budget", "Spend", "Lever", "RunReport", "run"]
+__all__ = ["Budget", "Spend", "RunReport", "run"]
 
 
 @dataclass(frozen=True)
@@ -40,8 +43,10 @@ class Spend:
     asks: int = 0
     cost: float = 0.0
 
-    def record(self, cost: float) -> None:
-        self.asks += 1
+    def add(self, asks: int, cost: float) -> None:
+        """`asks` asks (already counted by the caller -- see
+        attempts._add's cache-hit exclusion), their total cost."""
+        self.asks += asks
         self.cost += cost
 
     def exceeds(self, budget: Budget) -> bool:
@@ -52,87 +57,79 @@ class Spend:
         return False
 
 
-@dataclass(frozen=True)
-class Lever:
-    """One escalation step for a `kind`'s need: an ask against a Provider
-    or Assessor backend. `ask` is a bound `Provider.ask` / `Assessor.ask`
-    (or any callable(backend, question) -> object with a `.cost`
-    attribute); `build_question` turns (subject, kind) into that ask's
-    Question/AssessQuestion. Levers for one kind are supplied cheapest-
-    first by the caller -- run() does not re-order them (spec 3 section 4:
-    "escalate backends cheapest-first").
-    """
-    backend: str
-    ask: Callable[[str, Any], Any]
-    build_question: Callable[[str, str], Any]
-
-
 @dataclass
 class RunReport:
     """"a run that did almost nothing must look like one" (spec 3 section
     4): attempted/improved/exhausted/available are subject counts (not ask
     counts), so a run that touched nothing shows zeros everywhere except
-    `available`.
+    `available`. `pending` counts one per queued need whose source
+    escalation stopped on a pending (judge-batch-out) verdict, plus one
+    more if the per-run sentence attempt itself came back pending.
     """
     attempted: int = 0
     improved: int = 0
     exhausted: int = 0
     available: int = 0
+    pending: int = 0
+    sentences_adopted: int = 0
     spend: dict[str, Spend] = field(default_factory=dict)
 
 
-def run(syllabus, cache: CacheReader, budgets: Mapping[str, Budget],
-       levers_by_kind: Mapping[str, Sequence[Lever]], *,
-       current_rubric: str | None = None) -> RunReport:
-    """The application service (spec 3 section 4): for every subject
-    queue() orders, escalate its kind's levers cheapest-first; stop the
-    subject when current_best improves or its levers/budgets run out.
-    Iteration only -- current_best/exhausted/queue are the derivations
-    that decide everything; this function calls them and nothing else.
+def _record_spend(spend: dict[str, Spend], outcome_spend: Mapping[str, tuple[int, float]]) -> None:
+    """Merges an Outcome/SentenceOutcome's `{backend: (asks, cost)}` into
+    the run's running per-backend Spend totals."""
+    for backend, (asks, cost) in outcome_spend.items():
+        spend.setdefault(backend, Spend()).add(asks, cost)
+
+
+def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
+       sentence_targets_per_run: int = 40) -> RunReport:
+    """The application service (spec 3 section 4/7): one sentence_attempt()
+    pass first (its adoptions applied to `ctx.syllabus` before the queue is
+    computed, since sentence_attempt itself never mutates it), then for
+    every other queued need, escalate attempts.SOURCES cheapest-first,
+    stopping the need when an attempt improves, goes pending (a judge batch
+    is out -- do not escalate past it), or its sources/budgets run out.
     """
     report = RunReport()
     spend: dict[str, Spend] = {name: Spend() for name in budgets}
-    report.spend = spend
 
-    entries = queue(syllabus, cache, budgets=budgets, current_rubric=current_rubric)
+    so = sentence_attempt(ctx, max_targets=sentence_targets_per_run)
+    _record_spend(spend, so.spend)
+    report.sentences_adopted = len(so.adopted)
+    if so.pending:
+        report.pending += 1
+    ctx.syllabus = ctx.syllabus.with_sentences(so.adopted)
+
+    entries = queue(ctx.syllabus, ctx.db, budgets=budgets, current_rubric=ctx.rubrics,
+                    known_sources={k: set(v) for k, v in SOURCES.items()})
     for entry in entries:
-        before = current_best(cache, entry.subject, entry.kind,
-                              current_rubric=current_rubric)
-        rank = before.rank
-        attempted_this_subject = False
-        improved_this_subject = False
-
-        for lever in levers_by_kind.get(entry.kind, ()):
-            budget = budgets.get(lever.backend)
-            s = spend.setdefault(lever.backend, Spend())
+        if entry.kind == "sentence":
+            continue                       # handled by the per-run sentence attempt
+        need = Need(entry.subject, entry.kind)
+        attempted = improved = False
+        for source in sources_for(need.kind):
+            budget = budgets.get(source)
+            s = spend.setdefault(source, Spend())
             if budget is not None and s.exceeds(budget):
-                continue  # this backend's budget is spent -- try the next lever
-
-            question = lever.build_question(entry.subject, entry.kind)
-            try:
-                answer = lever.ask(lever.backend, question)
-            except TransportError:
-                continue  # miss NOT cached (spec 3 section 7) -- try the next lever
-
-            attempted_this_subject = True
-            s.record(getattr(answer, "cost", 0.0))
-
-            after = current_best(cache, entry.subject, entry.kind,
-                                 current_rubric=current_rubric)
-            if after.rank > rank:
-                improved_this_subject = True
-                break  # stop the subject when current_best improves
-
-        if attempted_this_subject:
-            report.attempted += 1
-        if improved_this_subject:
-            report.improved += 1
-        status = exhausted(cache, entry.subject, entry.kind, current_rubric=current_rubric)
-        if status.exhausted:
+                continue
+            out = attempt(ctx, need, source)
+            _record_spend(spend, out.spend)
+            attempted = attempted or out.attempted
+            if out.pending:
+                report.pending += 1
+                break
+            if out.improved:
+                improved = True
+                break
+        report.attempted += int(attempted)
+        report.improved += int(improved)
+        if exhausted(ctx.db, entry.subject, entry.kind, current_rubric=ctx.rubrics).exhausted:
             report.exhausted += 1
 
     report.available = len(entries) - report.attempted
-    _persist_report(cache, report)
+    report.spend = spend
+    _persist_report(ctx.db, report)
     return report
 
 
@@ -140,14 +137,13 @@ def _persist_report(cache: CacheReader, report: RunReport) -> None:
     """Appends one summary row per run() call (port="run",
     backend="runreport") so a run's own outcome has a durable source --
     RunReport itself is only ever an in-memory return value, and nothing
-    else in spec 3 writes one to the cache (reviewserver.py's /stats reads
-    cache rows only). `key` is a constant, readable label ("runreport");
-    the `cache` table's primary key is (key_sha, ts) (store.py), so every
-    call still lands its own row -- "keyed on timestamp", not deduplicated
-    by key. Silently a no-op when `cache` is read-only (doesn't also
-    satisfy RecordWriter): run() itself only ever needs cache read access,
-    so this is best-effort persistence, not a hard requirement of the
-    application service's contract.
+    else writes one to the cache. `key` is a constant, readable label
+    ("runreport"); the `cache` table's primary key is (key_sha, ts)
+    (store.py), so every call still lands its own row -- "keyed on
+    timestamp", not deduplicated by key. Silently a no-op when `cache` is
+    read-only (doesn't also satisfy RecordWriter): run() itself only ever
+    needs cache read access, so this is best-effort persistence, not a
+    hard requirement of the application service's contract.
     """
     if not isinstance(cache, RecordWriter):
         return
@@ -156,6 +152,7 @@ def _persist_report(cache: CacheReader, report: RunReport) -> None:
         question={},
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,
+                "pending": report.pending, "sentences_adopted": report.sentences_adopted,
                 "spend": {name: {"asks": s.asks, "cost": s.cost}
                          for name, s in report.spend.items()}},
         cost=sum(s.cost for s in report.spend.values()))
