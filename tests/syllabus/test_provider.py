@@ -4,12 +4,14 @@ contract. Real SyllabusDb (tmp_path sqlite) as the cache/record for the
 cache-first behavior; fake backends and fake transports everywhere else
 -- no network, no subprocess, no anthropic import.
 """
+from pathlib import Path
+
 import pytest
 
 from thai_syllabus.provider import (
+    FetchBackend,
     ForvoBackend,
     HttpImageSearchBackend,
-    ImgfetchBackend,
     LearnerAskNotSupported,
     LlmBackend,
     PairSearchBackend,
@@ -19,10 +21,10 @@ from thai_syllabus.provider import (
     RawAnswer,
     openverse_backend,
     pexels_backend,
-    subprocess_curl_fetcher,
+    tool_fetcher,
     wikimedia_backend,
 )
-from thai_syllabus.store import MediaStore, SyllabusDb
+from thai_syllabus.store import ImageIngestResult, MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 from thai_syllabus.tts import GoogleTts, pick_voice
 
@@ -174,6 +176,36 @@ def test_wikimedia_and_pexels_backends_key_by_backend_name():
     assert px.cache_key(q) == "pexels:cat"
 
 
+def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
+    seen = {}
+
+    def get(url, params, headers, timeout):
+        seen.update(params)
+        return _FakeResponse(json_data={"query": {"pages": {"1": {
+            "title": "File:A.jpg",
+            "imageinfo": [{"url": "https://u/A.jpg"}]}}}})
+
+    backend = wikimedia_backend(get=get)
+    answer = backend.fetch(Question(subject="w", provides="picture",
+                                    params={"query": "orange"}))
+    assert seen["generator"] == "search" and seen["prop"] == "imageinfo"
+    assert seen["iiprop"] == "url" and seen["gsrsearch"] == "orange"
+    assert seen["gsrnamespace"] == "6"
+    assert answer.items[0]["url"] == "https://u/A.jpg"
+    assert answer.items[0]["source"] == "wikimedia"
+    assert answer.items[0]["origin"] == "https://commons.wikimedia.org/wiki/File:A.jpg"
+
+
+def test_wikimedia_parse_skips_pages_without_a_url():
+    backend = wikimedia_backend()
+    data = {"query": {"pages": {
+        "1": {"title": "File:NoUrl.jpg", "imageinfo": [{}]},
+        "2": {"title": "File:B.jpg", "imageinfo": [{"url": "https://u/B.jpg"}]},
+    }}}
+    items = backend.parse_items(data)
+    assert [i["url"] for i in items] == ["https://u/B.jpg"]
+
+
 def test_pexels_fetch_sends_the_api_key_as_authorization_header():
     calls = []
 
@@ -189,59 +221,100 @@ def test_pexels_fetch_sends_the_api_key_as_authorization_header():
     assert answer.items[0]["url"] == "https://x/p.jpg"
 
 
-# --- imgfetch: content-addressed bytes, failure not cached -------------
+# --- FetchBackend: url -> bytes -> media store, pictures and recordings ---
 
-def test_imgfetch_key_is_the_url():
-    backend = ImgfetchBackend(media=None, fetcher=lambda url: (b"x", "jpg"))
-    key = backend.cache_key(Question(subject="s", provides="picture",
+class _Media:
+    def __init__(self):
+        self.written, self.images = [], []
+
+    def write(self, data, ext):
+        self.written.append((data, ext))
+        return "sha-" + ext
+
+    def add_image(self, data, ext):
+        self.images.append((data, ext))
+        return ImageIngestResult(sha="img-" + ext, ext=ext, warning=None)
+
+
+def test_fetch_backend_key_is_the_url():
+    backend = FetchBackend(media=None, fetcher=lambda url: (b"x", "jpg"))
+    key = backend.cache_key(Question(subject="s", provides="picture-bytes",
                                      params={"url": "https://x/y.jpg"}))
     assert key == "https://x/y.jpg"
 
 
-def test_imgfetch_writes_bytes_content_addressed(tmp_path):
-    media = MediaStore(tmp_path / "media")
-    backend = ImgfetchBackend(media=media, fetcher=lambda url: (b"hello", "jpg"))
-    answer = backend.fetch(Question(subject="s", provides="picture",
-                                    params={"url": "https://x/y.jpg"}))
-    import hashlib
-    expected_sha = hashlib.sha256(b"hello").hexdigest()
-    assert answer.items[0]["sha"] == expected_sha
-    assert media.has(expected_sha, "jpg")
+def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
+    media = _Media()
+    b = FetchBackend(media=media, fetcher=lambda url: (b"mp3bytes", "mp3"))
+    q = Question(subject="w", provides="recording-bytes",
+                 params={"url": "https://apifree.forvo.com/x.mp3", "speaker": "krisflyer",
+                        "speaker_kind": "native"})
+    assert b.cache_key(q) == "https://apifree.forvo.com/x.mp3"
+    ans = b.fetch(q)
+    assert media.written == [(b"mp3bytes", "mp3")] and media.images == []
+    item = ans.items[0]
+    assert item["sha"] == "sha-mp3" and item["speaker"] == "krisflyer"
+    assert item["speaker_kind"] == "native"
+    assert "url" not in item and ans.cost == 0.0
 
 
-def test_imgfetch_failure_raises_and_is_not_cached(tmp_path):
-    media = MediaStore(tmp_path / "media")
+def test_fetch_backend_ingests_picture_bytes_through_add_image():
+    media = _Media()
+    b = FetchBackend(media=media, fetcher=lambda url: (b"jpg", "jpg"))
+    ans = b.fetch(Question(subject="w", provides="picture-bytes",
+                           params={"url": "https://x/a.jpg"}))
+    assert media.images == [(b"jpg", "jpg")] and media.written == []
+    assert ans.items[0]["sha"] == "img-jpg"
+
+
+def test_fetch_backend_failure_raises_and_is_not_cached():
+    media = _Media()
 
     def failing_fetcher(url):
         raise TransportError("404")
 
-    backend = ImgfetchBackend(media=media, fetcher=failing_fetcher)
+    backend = FetchBackend(media=media, fetcher=failing_fetcher)
     with pytest.raises(TransportError):
-        backend.fetch(Question(subject="s", provides="picture",
+        backend.fetch(Question(subject="s", provides="picture-bytes",
                                params={"url": "https://x/y.jpg"}))
 
 
-def test_subprocess_curl_fetcher_raises_on_nonzero_exit():
+# --- tool_fetcher: the Go tools' interface (binary url out-path) --------
+
+def test_tool_fetcher_returns_bytes_and_mapped_extension_on_success():
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        Path(cmd[2]).write_bytes(b"bytes-out")
+        import subprocess as sp
+        return sp.CompletedProcess(cmd, 0, '{"format":"png","bytes":9}\n', "")
+
+    fetcher = tool_fetcher("/opt/bin/imgfetch", runner=runner)
+    data, ext = fetcher("https://x/pic.png")
+    assert data == b"bytes-out"
+    assert ext == "png"
+    assert calls[0][0] == "/opt/bin/imgfetch" and calls[0][1] == "https://x/pic.png"
+
+
+def test_tool_fetcher_raises_transport_error_on_nonzero_exit():
     import subprocess as sp
 
-    def runner(cmd, capture_output=True):
-        return sp.CompletedProcess(cmd, 22, b"", b"HTTP 404")
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(cmd, 1, "", "imgfetch: refused: not an image")
 
-    fetcher = subprocess_curl_fetcher(runner=runner)
+    fetcher = tool_fetcher("imgfetch", runner=runner)
     with pytest.raises(TransportError):
         fetcher("https://x/missing.jpg")
 
 
-def test_subprocess_curl_fetcher_returns_bytes_and_extension_on_success():
-    import subprocess as sp
+def test_tool_fetcher_raises_transport_error_when_binary_is_missing():
+    def runner(cmd, **kwargs):
+        raise OSError("no such file")
 
-    def runner(cmd, capture_output=True):
-        return sp.CompletedProcess(cmd, 0, b"bytes-out", b"")
-
-    fetcher = subprocess_curl_fetcher(runner=runner)
-    data, ext = fetcher("https://x/pic.png")
-    assert data == b"bytes-out"
-    assert ext == "png"
+    fetcher = tool_fetcher("imgfetch", runner=runner)
+    with pytest.raises(TransportError):
+        fetcher("https://x/y.jpg")
 
 
 # --- forvo: never re-asked, key = forvo:WORD ----------------------------
@@ -309,6 +382,20 @@ def test_tts_fetch_writes_synthesized_audio_content_addressed(tmp_path):
 def test_tts_is_deterministic_same_subject_same_voice():
     voices = ["v1", "v2", "v3"]
     assert pick_voice("subj-1", voices) == pick_voice("subj-1", voices)
+
+
+def test_tts_items_carry_synthetic_speaker_kind():
+    from thai_syllabus.provider import TtsBackend
+
+    class T:
+        def synthesize(self, text, voice):
+            return b"audio"
+
+    backend = TtsBackend(tts=T(), voices=["v1"], media=_Media(), pick_voice=lambda s, v: v[0])
+    ans = backend.fetch(Question(subject="w", provides="recording", params={"text": "ช้า"}))
+    assert ans.items[0]["speaker_kind"] == "synthetic"
+    assert ans.items[0]["source"] == "tts"
+    assert ans.items[0]["origin"] == "v1"
 
 
 # --- llm: key = llm:PRODUCER:MODEL:sha(PROMPT) --------------------------

@@ -16,9 +16,12 @@ anthropic at module scope -- transport.py guards that import).
 """
 from __future__ import annotations
 
+import json
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import requests
@@ -32,7 +35,7 @@ __all__ = [
     "Provider", "LearnerAskNotSupported",
     "HttpImageSearchBackend", "openverse_backend", "wikimedia_backend",
     "pexels_backend", "IMAGE_SEARCH_USER_AGENT",
-    "ImgfetchBackend", "subprocess_curl_fetcher",
+    "FetchBackend", "tool_fetcher",
     "ForvoBackend", "TtsBackend", "LlmBackend",
     "DictionaryG2P", "PairSearchBackend",
 ]
@@ -81,9 +84,11 @@ class Backend(Protocol):
 @runtime_checkable
 class MediaWriter(Protocol):
     """The slice of store.MediaStore that binary-artifact backends
-    (imgfetch, tts) need: content-addressed bytes-in, sha-out.
+    (imgfetch, audiofetch, tts) need: content-addressed bytes-in, sha-out;
+    `add_image` additionally normalizes (spec 4 section 3).
     """
     def write(self, data: bytes, ext: str) -> str: ...
+    def add_image(self, data: bytes, ext: str) -> "ImageIngestResult": ...
 
 
 class Provider:
@@ -177,15 +182,19 @@ def wikimedia_backend(get: Callable[..., Any] = requests.get,
     def build(query: str, proxy: str | None) -> tuple[str, dict, dict]:
         base = proxy or "https://commons.wikimedia.org"
         return (f"{base}/w/api.php",
-               {"action": "query", "list": "search", "srsearch": query,
-                "srnamespace": "6", "format": "json"},
+               {"action": "query", "generator": "search", "gsrsearch": query,
+                "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url",
+                "format": "json"},
                {"User-Agent": IMAGE_SEARCH_USER_AGENT})
 
     def parse(data: Any) -> list[dict]:
-        results = data.get("query", {}).get("search", [])
-        return [{"title": r.get("title"), "source": "wikimedia",
-                "origin": f"https://commons.wikimedia.org/wiki/{r.get('title', '')}"}
-               for r in results]
+        out = []
+        for page in (data.get("query", {}).get("pages", {}) or {}).values():
+            for info in page.get("imageinfo", []) or []:
+                if info.get("url"):
+                    out.append({"url": info["url"], "source": "wikimedia", "licence": None,
+                               "origin": f"https://commons.wikimedia.org/wiki/{page.get('title', '')}"})
+        return out
 
     return HttpImageSearchBackend(name="wikimedia", build_request=build,
                                   parse_items=parse, get=get, search_proxy=search_proxy)
@@ -207,28 +216,48 @@ def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
                                   parse_items=parse, get=get, search_proxy=search_proxy)
 
 
-# --- imgfetch: fetch a candidate's bytes by url -----------------------------
+# --- imgfetch/audiofetch: fetch a candidate's bytes by url ------------------
 # key = url (content-addressed); a fetch failure is NOT cached (raises).
 
-def subprocess_curl_fetcher(runner: Callable[..., Any] = subprocess.run,
-                            binary: str = "curl") -> Callable[[str], tuple[bytes, str]]:
+_FORMAT_EXT = {"jpeg": "jpg", "png": "png", "gif": "gif", "webp": "webp", "mp3": "mp3"}
+
+
+def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
+                 ) -> Callable[[str], tuple[bytes, str]]:
+    """Fetch through one of the Go tools (tools/mediafetch: imgfetch,
+    audiofetch): `<binary> <url> <out-path>`, a JSON line {format,...} on
+    stdout, non-zero exit on refusal. `runner` defaults to `subprocess.run`
+    looked up at call time (not bound eagerly) so tests can monkeypatch
+    `subprocess.run` on this module without passing `runner` explicitly.
+    """
     def fetch(url: str) -> tuple[bytes, str]:
-        tail = url.rsplit("/", 1)[-1]
-        ext = tail.rsplit(".", 1)[-1][:5] if "." in tail else "jpg"
-        try:
-            proc = runner([binary, "-fsSL", url], capture_output=True)
-        except OSError as e:
-            raise TransportError(f"cannot run `{binary}`: {e}") from e
-        if proc.returncode != 0:
-            stderr = proc.stderr
-            detail = stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
-            raise TransportError(f"fetch of {url!r} failed: {detail}")
-        return proc.stdout, ext
+        run = runner if runner is not None else subprocess.run
+        with tempfile.TemporaryDirectory(prefix="mediafetch-") as tmp:
+            out = Path(tmp) / "object"
+            try:
+                proc = run([binary, url, str(out)], capture_output=True, text=True, timeout=120)
+            except OSError as e:
+                raise TransportError(f"cannot run {binary!r}: {e}") from e
+            except subprocess.TimeoutExpired as e:
+                raise TransportError(f"{binary} timed out on {url!r}") from e
+            if proc.returncode != 0 or not out.is_file():
+                raise TransportError(f"{binary} refused {url!r}: {(proc.stderr or '').strip()}")
+            try:
+                fmt = json.loads((proc.stdout or "{}").splitlines()[-1]).get("format", "")
+            except (json.JSONDecodeError, IndexError):
+                fmt = ""
+            return out.read_bytes(), _FORMAT_EXT.get(fmt, fmt or "bin")
     return fetch
 
 
 @dataclass
-class ImgfetchBackend:
+class FetchBackend:
+    """url -> bytes -> media store -> sha, for pictures (normalized through
+    add_image) and recordings (stored raw). key = the url; a fetch failure
+    is not cached (cost 0 -- a download is not a lookup). Every question
+    param except url is echoed into the item (speaker, speaker_kind,
+    source, origin), so the attempt records provenance from the item.
+    """
     media: MediaWriter
     fetcher: Callable[[str], tuple[bytes, str]]
 
@@ -236,10 +265,17 @@ class ImgfetchBackend:
         return question.params["url"]
 
     def fetch(self, question: Question) -> RawAnswer:
-        data, ext = self.fetcher(question.params["url"])
-        ingest = self.media.add_image(data, ext)
-        artifact_sha = ingest.sha
-        return RawAnswer(items=({"sha": artifact_sha, "ext": ext},), cost=0.0)
+        url = question.params["url"]
+        data, ext = self.fetcher(url)
+        if question.provides == "picture-bytes":
+            ingest = self.media.add_image(data, ext)
+            sha_, ext = ingest.sha, ingest.ext
+        else:
+            ext = ext if ext in ("mp3", "ogg", "wav") else "mp3"
+            sha_ = self.media.write(data, ext)
+        item = {k: v for k, v in question.params.items() if k != "url"}
+        item.update({"sha": sha_, "ext": ext})
+        return RawAnswer(items=(item,), cost=0.0)
 
 
 # --- forvo: recording lookups (500/day quota; never re-asked) --------------
@@ -292,7 +328,9 @@ class TtsBackend:
         voice = self._voice(question)
         audio = self.tts.synthesize(text, voice)
         artifact_sha = self.media.write(audio, "mp3")
-        return RawAnswer(items=({"sha": artifact_sha, "ext": "mp3", "voice": voice},),
+        return RawAnswer(items=({"sha": artifact_sha, "ext": "mp3", "voice": voice,
+                                 "speaker_kind": "synthetic", "source": "tts",
+                                 "origin": voice},),
                          cost=len(text) * question.params.get("cost_per_char", 0.0))
 
 

@@ -7,6 +7,7 @@ real tmp 0600 files whose reads are tracked to prove lazy resolution.
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 import pytest
 import yaml
@@ -149,22 +150,40 @@ def test_search_proxy_reaches_openverse_and_wikimedia(cfg, db, media_store):
     assert provider._backends["wikimedia"].search_proxy == "https://proxy.example"
 
 
-def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths):
+def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths, monkeypatch):
     cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
-                          imgfetch_path="/usr/local/bin/my-curl")
+                          imgfetch_path="/opt/bin/imgfetch")
     provider = build_provider(cfg, db, media_store)
-    # the fetcher is a closure -- exercised indirectly via a runner spy
     calls = []
 
-    def runner(cmd, **kwargs):
-        calls.append(cmd)
+    def fake_run(cmd, **kwargs):
         import subprocess as sp
-        return sp.CompletedProcess(cmd, 0, b"bytes", b"")
+        Path(cmd[2]).write_bytes(b"bytes")
+        calls.append(cmd)
+        return sp.CompletedProcess(cmd, 0, '{"format":"jpeg"}\n', "")
 
-    from thai_syllabus.provider import subprocess_curl_fetcher
-    fetcher = subprocess_curl_fetcher(runner=runner, binary="/usr/local/bin/my-curl")
-    fetcher("https://x/y.jpg")
-    assert calls[0][0] == "/usr/local/bin/my-curl"
+    import thai_syllabus.provider as provider_mod
+    monkeypatch.setattr(provider_mod.subprocess, "run", fake_run)
+
+    answer = provider.ask("imgfetch", Question(subject="s", provides="picture-bytes",
+                                               params={"url": "https://x/y.jpg"}))
+    assert calls[0][0] == "/opt/bin/imgfetch"
+    assert calls[0][1] == "https://x/y.jpg"
+    assert calls[0][2] == str(Path(calls[0][2]))  # an out-path was supplied
+    assert answer.items[0]["ext"] == "jpg"
+
+
+def test_audiofetch_is_unregistered_when_audiofetch_path_is_unset(cfg, db, media_store):
+    provider = build_provider(cfg, db, media_store)
+    assert "audiofetch" not in provider._backends
+
+
+def test_audiofetch_binary_comes_from_audiofetch_path(db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          audiofetch_path="/opt/bin/audiofetch")
+    provider = build_provider(cfg, db, media_store)
+    assert "audiofetch" in provider._backends
+    assert "imgfetch" not in provider._backends
 
 
 # --- build_provider: tts voice pools -------------------------------------

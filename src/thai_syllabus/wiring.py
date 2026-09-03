@@ -81,15 +81,15 @@ from .entities import MinimalPair
 from .ids import ConfusionId, PairId, WordId
 from .provider import (
     Backend,
+    FetchBackend,
     ForvoBackend,
-    ImgfetchBackend,
     LlmBackend,
     Provider,
     Question,
     TtsBackend,
     openverse_backend,
     pexels_backend,
-    subprocess_curl_fetcher,
+    tool_fetcher,
     wikimedia_backend,
 )
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget, Lever
@@ -187,17 +187,15 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
                    *, secret_store=None) -> Provider:
     """The Provide port's backend roster (spec 3 section 2), wired from
     providers.yaml (spec 3 section 5): search_proxy for the image-search
-    backends, imgfetch_path for the curl fetcher, the tts voice pools, and
-    the shared judge/llm transport+model for llm-*.
+    backends, imgfetch_path/audiofetch_path for the mediafetch tool
+    fetchers (a missing path leaves that backend unregistered), the tts
+    voice pools, and the shared judge/llm transport+model for llm-*.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
     backends: dict[str, Backend] = {
         "openverse": openverse_backend(search_proxy=cfg.search_proxy),
         "wikimedia": wikimedia_backend(search_proxy=cfg.search_proxy),
-        "imgfetch": ImgfetchBackend(
-            media=media_store,
-            fetcher=subprocess_curl_fetcher(binary=cfg.imgfetch_path or "curl")),
         "pexels": _LazyBackend(lambda: pexels_backend(
             api_key=secrets.get("pexels") or "", search_proxy=cfg.search_proxy)),
         "forvo": _LazyBackend(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
@@ -206,6 +204,12 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
             voices=list(cfg.tts_male_voices) + list(cfg.tts_female_voices),
             media=media_store, pick_voice=pick_voice)),
     }
+    if cfg.imgfetch_path:
+        backends["imgfetch"] = FetchBackend(media=media_store,
+                                            fetcher=tool_fetcher(cfg.imgfetch_path))
+    if cfg.audiofetch_path:
+        backends["audiofetch"] = FetchBackend(media=media_store,
+                                              fetcher=tool_fetcher(cfg.audiofetch_path))
 
     llm_transport = _claude_transport(cfg, secrets)
     if llm_transport is not None:

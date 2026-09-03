@@ -86,7 +86,7 @@ from .curated import load_curated
 from .derivations import LEARNER_RANK, current_best, exhausted, queue
 from .entities import Target
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
-from .provider import ImgfetchBackend, Provider, Question, subprocess_curl_fetcher
+from .provider import FetchBackend, Provider, Question, tool_fetcher
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 
@@ -525,9 +525,9 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
 
     if source == "url":
         provider = Provider(ctx.record, ctx.cache,
-                            {"imgfetch": ImgfetchBackend(media=ctx.media_store,
-                                                         fetcher=ctx.url_fetcher)})
-        answer = provider.ask("imgfetch", Question(subject=subject, provides=kind,
+                            {"imgfetch": FetchBackend(media=ctx.media_store,
+                                                      fetcher=ctx.url_fetcher)})
+        answer = provider.ask("imgfetch", Question(subject=subject, provides=f"{kind}-bytes",
                                                     params={"url": payload["value"]}))
         if not answer.items:
             return {"ok": False, "error": "fetch produced no artifact"}
@@ -647,7 +647,7 @@ class ReviewContext:
 
     def __post_init__(self) -> None:
         if self.url_fetcher is None:
-            self.url_fetcher = subprocess_curl_fetcher()
+            self.url_fetcher = tool_fetcher("imgfetch")
 
 
 def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
