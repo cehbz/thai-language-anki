@@ -246,9 +246,12 @@ def test_rule_role_defaults_to_id():
 def _syl(media=None, sentences=(), targets=None):
     w = word("slow", "ช้า", "slow")
     t = targets or (target("slow/receptive", "slow"),)
+    # A bare single-word sentence -- FakeTokenizer's default (no mapping)
+    # treats unmapped text as one whole token, so this fills "slow" with
+    # no companion tokens to register (a strict clause-3 novelty budget
+    # would otherwise need every other token registered as its own Word).
     return Syllabus(words=(w,), targets=t, sentences=tuple(sentences),
-                    media=media or FakeMediaIndex(),
-                    tokenizer=FakeTokenizer({"ช้า มาก": ["ช้า", "มาก"]}))
+                    media=media or FakeMediaIndex(), tokenizer=FakeTokenizer())
 
 
 def _rules(rid):
@@ -268,7 +271,7 @@ def test_target_with_picture_recording_and_sentence_has_no_completeness_findings
     # speakers and still be a current-best recording.
     media = FakeMediaIndex(pictures={"slow"},
                            recording_provenance={"slow": {"source": "forvo", "speaker_kind": "native"}})
-    s = _syl(media=media, sentences=[sentence("ช้า มาก")])
+    s = _syl(media=media, sentences=[sentence("ช้า")])
     for rid in ("target/picture-required", "target/recording-required", "target/sentence-required"):
         assert _rules(rid)[0].check(s) == []
 
@@ -282,7 +285,7 @@ def test_target_recording_required_is_silent_for_a_recording_with_no_speaker_id(
 
 
 def test_target_sentence_required_is_silent_when_a_sentence_fills_the_target():
-    s = _syl(sentences=[sentence("ช้า มาก")])
+    s = _syl(sentences=[sentence("ช้า")])
     assert _rules("target/sentence-required")[0].check(s) == []
 
 

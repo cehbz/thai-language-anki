@@ -81,8 +81,10 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
                 speaker_id="somchai", speaker_kind="native")
 
     # The default tokenizer falls back to whitespace when pythainlp is
-    # absent (as here), so a two-token sentence puts "rice" at a boundary.
-    db.add_sentence(text_sha="s1", text="ข้าว อร่อย", voice="learner_voice",  # rice is delicious
+    # absent (as here); a bare single-word sentence puts "rice" at a
+    # boundary with no companion token that would need its own curated
+    # Word+Target to satisfy fills()'s strict novelty budget (spec 1 §3).
+    db.add_sentence(text_sha="s1", text="ข้าว", voice="learner_voice",  # rice
                     source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
 
     out = tmp_path / "deck.apkg"

@@ -24,6 +24,9 @@ preference included.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -33,15 +36,17 @@ from typing import Any
 from .assessor import AssessQuestion, Assessor, ROLE_FOR_KIND
 from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
+from .entities import Sentence, Target
 from .ids import WordId
+from .media import Provenance
 from .provider import Provider, ProviderAnswer, Question
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import TransportError
 from .tts import pick_voice
 
-__all__ = ["Need", "Sourcing", "Outcome", "SOURCES", "sources_for", "candidates_of",
-           "current_best_of", "attempt"]
+__all__ = ["Need", "Sourcing", "Outcome", "SentenceOutcome", "SOURCES", "sources_for",
+           "candidates_of", "current_best_of", "attempt", "sentence_attempt", "select_cover"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,14 @@ class Outcome:
     pending: bool
     improved: bool
     spend: dict[str, tuple[int, float]] = field(default_factory=dict)  # backend -> (asks, cost)
+
+
+@dataclass(frozen=True)
+class SentenceOutcome:
+    drafted: int
+    adopted: tuple[Sentence, ...]
+    pending: bool
+    spend: dict[str, tuple[int, float]] = field(default_factory=dict)
 
 
 SOURCES: dict[str, tuple[str, ...]] = {
@@ -453,3 +466,193 @@ def attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     if fn is None:
         return Outcome(attempted=False, pending=False, improved=False, spend={})
     return fn(ctx, need, source, time.time_ns())
+
+
+# --- sentence attempt (spec 3 section 5): draft over open targets, verify
+# with fills(), judge, adopt by greedy set cover -----------------------------
+
+def _text_sha(text: str) -> str:
+    """Full sha256 hex -- the artifact identity for sentence rows (not
+    cachekeys.sha's truncated form, which is a key COMPONENT, not an
+    artifact identity)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _strip_fences(text: str) -> str:
+    return re.sub(r"^```[a-z]*\n|\n```$", "", text.strip())
+
+
+def _sentence_prompt(syl: Syllabus, targets: Sequence[Target]) -> str:
+    lines = []
+    for t in targets:
+        w = syl.word(t.word)
+        met = ", ".join(x.thai for x in syl.vocabulary_met_by(t))
+        lines.append(f"- target {t.id}: word {w.thai} ({w.meaning}); may use: {met}")
+    openings = sorted({syl.tokenizer.tokens(s.text)[0] for s in syl.sentences
+                       if syl.tokenizer.tokens(s.text)})
+    return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
+           f"{syl.profile.register}.\n"
+           "Write one short sentence per target, or one sentence covering several targets when their "
+           "permitted vocabularies allow it. Use only the listed words for each target; every other "
+           "word in a sentence must appear in that target's 'may use' list.\n"
+           + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
+           + "Targets:\n" + "\n".join(lines) + "\n"
+           'Output JSON only: {"sentences": [{"text": "...", "targets": ["<target id>", ...]}]}')
+
+
+def _drafts_from(text: str) -> list[dict]:
+    try:
+        data = json.loads(_strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return []
+    out = []
+    for d in (data.get("sentences") if isinstance(data, dict) else []) or []:
+        if isinstance(d, dict) and d.get("text"):
+            out.append({"text": str(d["text"]).strip(), "targets": list(d.get("targets") or [])})
+    return out
+
+
+def _adopt(ctx: Sourcing, s: Sentence, model: str) -> None:
+    ctx.db.add_sentence(text_sha=_text_sha(s.text), text=s.text, voice=s.voice, source="llm",
+                        origin=model, licence="generated", acquired=ctx.today())
+
+
+def select_cover(passing: Sequence[tuple[Sentence, Sequence[Target]]],
+                 open_targets: set[str]) -> list[Sentence]:
+    """Greedy set cover: adopt the draft filling the most still-open
+    targets (ties: shorter text) until no draft fills an open target."""
+    uncovered = set(open_targets)
+    remaining = list(passing)
+    chosen: list[Sentence] = []
+    while remaining:
+        best = max(remaining, key=lambda sf: (len({t.id for t in sf[1]} & uncovered), -len(sf[0].text)))
+        gain = {t.id for t in best[1]} & uncovered
+        if not gain:
+            break
+        chosen.append(best[0])
+        uncovered -= gain
+        remaining.remove(best)
+    return chosen
+
+
+def _mechanical_fills(ctx: Sourcing, syl: Syllabus, targets_by_id: Mapping[str, Target],
+                      s: Sentence, ts: str, draft: Mapping[str, Any], state_id: str) -> list[Target]:
+    """fills() on every syllabus target for this draft, cached by text_sha
+    -- a text's fills result cannot change under an unchanged Syllabus
+    state, so the row is written once per (text, state_id) and every
+    later run with that same state_id reads it back instead of
+    re-verifying and re-appending a row for the identical question.
+    """
+    key = f"mech:fills:v1:{ts}"
+    cached = ctx.db.latest("assess", "mechanical", key)
+    if cached is not None and cached.question.get("params", {}).get("state_id") == state_id:
+        return [targets_by_id[i] for i in cached.question["params"].get("fills", []) if i in targets_by_id]
+    filled = [t for t in syl.targets if syl.fills(s, t)]
+    ctx.db.append(port="assess", backend="mechanical", key=key, subject=ts,
+                 question={"role": "sentence-for-target", "artifact_sha": ts, "rubric": None,
+                          "params": {"fills": [t.id for t in filled],
+                                    "claimed": [c for c in draft.get("targets", []) if c in targets_by_id],
+                                    "state_id": state_id}},
+                 answer={"value": bool(filled),
+                        "evidence": f"fills {len(filled)} target(s)" if filled else "fills no target"})
+    return filled
+
+
+def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], model: str,
+                      spend: dict[str, tuple[int, float]], start: int) -> tuple[list[Sentence], bool]:
+    """fills() on every draft (recorded as a mechanical row regardless of
+    outcome; see _mechanical_fills), then one judge question per draft
+    that fills at least one currently-open target -- a draft that only
+    fills already-covered targets is worthless to select_cover and costs
+    no judge spend -- and adopts passes by greedy set cover over the
+    currently-open targets.
+    """
+    targets_by_id = {t.id: t for t in syl.targets}
+    known = {_text_sha(s.text) for s in ctx.db.all_sentences()}
+    open_targets = set(syl.gaps().unfilled_targets)
+    state_id = syl.state_id()
+    candidates: list[tuple[Sentence, AssessQuestion]] = []
+    filled_by_candidate: list[list[Target]] = []
+    for d in drafts:
+        text = d["text"]
+        ts = _text_sha(text)
+        if ts in known:
+            continue
+        s = Sentence(text=text, voice="learner_voice",
+                    provenance=Provenance(source="llm", origin=model, licence="generated",
+                                          acquired=ctx.today()))
+        filled = _mechanical_fills(ctx, syl, targets_by_id, s, ts, d, state_id)
+        if not filled:
+            continue
+        filled_open = [t for t in filled if t.id in open_targets]
+        if not filled_open:
+            continue
+        filled_by_candidate.append(filled_open)
+        candidates.append((s, AssessQuestion(
+            subject=ts, role="sentence-for-target", artifact_sha=ts,
+            rubric=ctx.rubrics["sentence-for-target"],
+            params={"text": text, "word": syl.word(filled_open[0].word).thai})))
+    if not candidates:
+        return [], False
+    res = ctx.assessor.ask_many("judge", [q for _, q in candidates])
+    for v in res.resolved.values():
+        _add(spend, "judge", v.cost, hit=v.ts < start)
+    passing: list[tuple[Sentence, list[Target]]] = []
+    for (s, q), filled in zip(candidates, filled_by_candidate):
+        v = res.resolved.get(ctx.assessor.key_of("judge", q))
+        if v is not None and v.value is True:
+            passing.append((s, filled))
+    adopted = select_cover(passing, open_targets)
+    for s in adopted:
+        _adopt(ctx, s, model)
+    return adopted, bool(res.pending)
+
+
+def _prior_drafts(ctx: Sourcing) -> list[dict]:
+    """Every draft any earlier run's "llm-sentence" provide row produced,
+    re-parsed -- how a batch verdict that lands after drafting gets
+    adopted on a later run without re-drafting.
+    """
+    out: list[dict] = []
+    for r in ctx.db.assessments_of("run"):
+        if r.port == "provide" and r.backend == "llm-sentence":
+            for item in r.answer.get("items", []):
+                out.extend(_drafts_from(str(item)))
+    return out
+
+
+def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> SentenceOutcome:
+    """Probes the judge first (no "judge" backend registered ends the
+    attempt before any draft or Source ask, same convention as
+    _rendition_attempt's mechanical probe); adopts any already-passing
+    prior draft; then, while targets remain open, drafts new sentences,
+    verifies with fills(), judges, and adopts by greedy set cover (spec 3
+    section 5). `ctx.syllabus` itself is never mutated -- a local working
+    Syllabus tracks this run's own adoptions for gaps()/the prompt, and
+    the run applies `with_sentences(out.adopted)` to make it durable.
+    """
+    start = time.time_ns()
+    try:
+        ctx.assessor.ask_many("judge", [])
+    except KeyError:
+        return SentenceOutcome(drafted=0, adopted=(), pending=False, spend={})
+    spend: dict[str, tuple[int, float]] = {}
+    model = ctx.judge_model
+    syl = ctx.syllabus
+    adopted, pending = _verify_and_judge(ctx, syl, _prior_drafts(ctx), model, spend, start)
+    if adopted:
+        syl = syl.with_sentences(adopted)
+    open_ids = set(syl.gaps().unfilled_targets[:max_targets])
+    targets = [t for t in syl.targets if t.id in open_ids]
+    if not targets:
+        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend)
+    try:
+        ans = ctx.provider.ask("llm-sentence", Question(subject="run", provides="sentence",
+                                                        params={"prompt": _sentence_prompt(syl, targets)}))
+    except (TransportError, KeyError):
+        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend)
+    _add(spend, "llm-sentence", ans.cost, hit=ans.ts < start)
+    drafts = [d for item in ans.items for d in _drafts_from(str(item))]
+    more, pending2 = _verify_and_judge(ctx, syl, drafts, model, spend, start)
+    adopted += more
+    return SentenceOutcome(drafted=len(drafts), adopted=tuple(adopted), pending=pending or pending2, spend=spend)

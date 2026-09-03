@@ -1,14 +1,16 @@
 """attempts.py: assess-first, then one Source; every candidate judged; current-best re-derived.
 Real SyllabusDb + MediaStore; fake Provider/Assessor backends; no network."""
+import dataclasses
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend, MechanicalBackend, RawVerdict
-from thai_syllabus.attempts import (Need, Outcome, Sourcing, _phrase, attempt, candidates_of,
-                                    sources_for)
-from thai_syllabus.entities import MinimalPair, SoundConfusion
+from thai_syllabus.attempts import (Need, Outcome, SentenceOutcome, Sourcing, _phrase, attempt,
+                                    candidates_of, sentence_attempt, sources_for)
+from thai_syllabus.entities import MinimalPair, Sentence, SoundConfusion
+from thai_syllabus.media import Provenance
 from thai_syllabus.provider import FetchBackend, Provider, Question, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import RUBRICS_BY_ROLE
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -16,6 +18,7 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, TransportError
 
 from .builders import target, word
+from .fakes import FakeTokenizer
 
 
 class _Search:
@@ -440,3 +443,165 @@ def test_rendition_attempt_ends_before_any_source_when_assessor_unavailable(ctx)
     out = attempt(c, Need("pair-1", "rendition"), "forvo")
     assert forvo.calls == 0
     assert out == Outcome(False, False, False, {})
+
+
+# --- Task 9: sentence attempt -- draft over open targets, verify with fills(), judge, adopt --
+
+class _Llm:
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def cache_key(self, q):
+        return "llm:sentence-drafter:m:" + str(hash(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.prompts.append(q.params["prompt"])
+        return RawAnswer(items=(self.text,), cost=0.0)
+
+
+def _sentence_ctx(ctx, llm_text, judge_value="true"):
+    ctx.syllabus = Syllabus(
+        words=(word("orange", "ส้ม", "orange"), word("eat", "กิน", "eat")),
+        targets=(target("eat/receptive", "eat"), target("orange/receptive", "orange")),
+        frequency={"eat": 1, "orange": 2},
+        tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"], "ส้มอร่อย": ["ส้ม", "อร่อย"]}))
+    ctx.provider = Provider(record=ctx.db, cache=ctx.db, backends={"llm-sentence": _Llm(llm_text)})
+    jb = JudgeBackend(model="m", transport="api",
+                      complete=lambda p, a=(): Completion(text='{"value": %s, "evidence": "e"}' % judge_value))
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": jb})
+    return ctx
+
+
+def test_sentence_attempt_ends_before_any_draft_when_judge_unavailable(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "judge" backend at all
+    out = sentence_attempt(c)
+    assert out == SentenceOutcome(0, (), False, {})
+    assert c.provider._backends["llm-sentence"].prompts == []  # no LLM ask
+    assert [r for r in c.db.assessments_of("run") if r.port == "provide"] == []  # no provide row
+
+
+def test_sentence_attempt_adopts_a_draft_that_fills_and_passes(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
+    out = sentence_attempt(c)
+    assert out.drafted == 1 and [s.text for s in out.adopted] == ["กินส้ม"] and not out.pending
+    assert [s.text for s in c.db.all_sentences()] == ["กินส้ม"]
+    syl = c.syllabus.with_sentences(out.adopted)
+    assert syl.gaps().unfilled_targets == ()
+
+
+def test_sentence_attempt_rejects_a_draft_with_a_new_word(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "ส้มอร่อย", "targets": ["orange/receptive"]}]}')
+    out = sentence_attempt(c)
+    assert out.drafted == 1 and out.adopted == () and c.db.all_sentences() == []
+    mech = [r for r in c.db.assessments_of(__import__("hashlib").sha256("ส้มอร่อย".encode()).hexdigest())
+           if r.backend == "mechanical"]
+    assert mech and mech[0].answer["value"] is False
+
+
+def test_sentence_prompt_lists_met_vocabulary_per_target(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": []}')
+    sentence_attempt(c)
+    prompt = c.provider._backends["llm-sentence"].prompts[0]
+    assert "target orange/receptive" in prompt and "กิน" in prompt and "male_colloquial" in prompt
+
+
+def test_select_cover_adopts_the_fewest_sentences_that_cover_the_open_targets():
+    from thai_syllabus.attempts import select_cover
+    from .builders import sentence
+    ta, tb, tc = target("a/r", "a"), target("b/r", "b"), target("c/r", "c")
+    s_ab, s_a, s_c, s_b = sentence("ab"), sentence("a"), sentence("c"), sentence("b")
+    chosen = select_cover([(s_a, [ta]), (s_ab, [ta, tb]), (s_c, [tc]), (s_b, [tb])], {"a/r", "b/r", "c/r"})
+    assert [s.text for s in chosen] == ["ab", "c"]
+
+
+def test_sentence_attempt_adopts_a_cover_not_every_passing_draft(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]},'
+                        ' {"text": "กิน", "targets": ["eat/receptive"]}]}')
+    c.syllabus = dataclasses.replace(c.syllabus, tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"], "กิน": ["กิน"]}))
+    out = sentence_attempt(c)
+    assert out.drafted == 2 and [s.text for s in out.adopted] == ["กินส้ม"]
+
+
+def test_sentence_attempt_judge_fail_is_not_adopted(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}', judge_value="false")
+    assert sentence_attempt(c).adopted == ()
+
+
+def test_sentence_attempt_second_run_reuses_the_mechanical_row_and_hits_the_judge_cache(ctx):
+    """A rejected draft resurfaces from _prior_drafts on every later run
+    (still un-adopted, targets still open) -- the mechanical fills() row
+    for it must not be rewritten a second time (same text, unchanged
+    Syllabus state_id), and its judge verdict must be a cache hit, not a
+    second real ask."""
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}', judge_value="false")
+    out1 = sentence_attempt(c)
+    assert out1.adopted == ()
+    text_sha = __import__("hashlib").sha256("กินส้ม".encode()).hexdigest()
+
+    def mech_rows():
+        return [r for r in c.db.assessments_of(text_sha) if r.backend == "mechanical"]
+    assert len(mech_rows()) == 1
+    out2 = sentence_attempt(c)
+    assert out2.adopted == ()
+    assert len(mech_rows()) == 1  # not rewritten on the second run
+    assert out2.spend.get("judge", (0, 0.0))[0] == 0  # the fail verdict was a cache hit
+
+
+def test_sentence_attempt_skips_judging_a_draft_that_only_covers_already_filled_targets(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": []}')
+    covering = Sentence(text="กินส้ม", voice="learner_voice",
+                        provenance=Provenance(source="llm", origin="m", licence="generated",
+                                              acquired=date(2026, 9, 3)))
+    c.syllabus = c.syllabus.with_sentences([covering])
+    c.db.add_sentence(text_sha=__import__("hashlib").sha256("กินส้ม".encode()).hexdigest(),
+                      text="กินส้ม", voice="learner_voice", source="llm", origin="m",
+                      licence="generated", acquired=date(2026, 9, 3))
+    # a stale prior-run draft that only fills the now-already-covered "eat" target
+    c.db.append(port="provide", backend="llm-sentence", key="stale", subject="run",
+               question={"provides": "sentence", "params": {"prompt": "stale"}},
+               answer={"items": ['{"sentences": [{"text": "กิน", "targets": ["eat/receptive"]}]}']})
+    out = sentence_attempt(c)
+    assert out.adopted == ()
+    assert out.spend.get("judge", (0, 0.0))[0] == 0  # never judged -- nothing open left to fill
+    stale_sha = __import__("hashlib").sha256("กิน".encode()).hexdigest()
+    mech = [r for r in c.db.assessments_of(stale_sha) if r.backend == "mechanical"]
+    assert mech and mech[0].answer["value"] is True  # mechanically fills eat -- just not an open target
+
+
+def test_sentence_attempt_adopts_on_a_later_run_once_a_batch_verdict_lands(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
+
+    class BT:
+        def submit(self, requests):
+            return "b1"
+
+        def status(self, batch_id):
+            return "in_progress"
+    c.assessor = Assessor(record=c.db, cache=c.db,
+                          backends={"judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
+    out1 = sentence_attempt(c)
+    assert out1.pending
+    assert out1.spend.get("llm-sentence", (0, 0.0))[0] == 1  # one real draft ask
+    # the verdict arrives (simulated) and the next run adopts without re-drafting
+    text_sha = __import__("hashlib").sha256("กินส้ม".encode()).hexdigest()
+    from thai_syllabus.cachekeys import sha
+    key = f"judge:{sha(c.rubrics['sentence-for-target'])}:{text_sha}:sentence-for-target"
+    c.db.append(port="assess", backend="judge", key=key, subject=text_sha,
+               question={"role": "sentence-for-target", "artifact_sha": text_sha,
+                        "rubric": c.rubrics["sentence-for-target"]}, answer={"value": True})
+    c.assessor = Assessor(record=c.db, cache=c.db,
+                          backends={"judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
+    out2 = sentence_attempt(c)
+    assert [s.text for s in out2.adopted] == ["กินส้ม"]
+    assert len(c.provider._backends["llm-sentence"].prompts) == 1  # no re-draft
+    assert out2.spend.get("judge", (0, 0.0))[0] == 0  # the arrived verdict was a cache hit, not a real ask

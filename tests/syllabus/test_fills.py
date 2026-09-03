@@ -20,10 +20,13 @@ def base_syllabus(words, targets, tokenizer, frequency=None):
 
 def test_fills_when_the_word_is_the_whole_token():
     rice = word("rice", "ข้าว")  # rice
+    i_word = word("i", "ผม")  # I -- registered so it doesn't trip the novelty budget
+    eat = word("eat", "กิน")  # eat -- registered so it doesn't trip the novelty budget
     t = target("rice/receptive", "rice", "receptive")
     s = sentence("ผมกินข้าว", voice="learner_voice")  # I eat rice
     tok = FakeTokenizer({s.text: ["ผม", "กิน", "ข้าว"]})
-    syllabus = base_syllabus((rice,), (t,), tok)
+    syllabus = base_syllabus((rice, i_word, eat),
+                             (t, target("i/receptive", "i"), target("eat/receptive", "eat")), tok)
     assert syllabus.fills(s, t) is True
 
 
@@ -60,10 +63,15 @@ def test_fills_on_a_compound_token_that_is_two_known_words_joined():
 
 def test_other_voice_fills_a_receptive_target():
     dog = word("dog", "หมา")  # dog
+    cute = word("cute", "น่ารัก")  # registered so it doesn't trip the novelty budget
+    na = word("na", "นะ")  # particle, registered likewise
+    kha = word("kha", "คะ")  # polite female particle, registered likewise
     t = target("dog/receptive", "dog", "receptive")
     s = sentence("หมาน่ารักนะคะ", voice="other_voice")  # the dog is cute (female speaker)
     tok = FakeTokenizer({s.text: ["หมา", "น่ารัก", "นะ", "คะ"]})
-    syllabus = base_syllabus((dog,), (t,), tok)
+    syllabus = base_syllabus((dog, cute, na, kha),
+                             (t, target("cute/receptive", "cute"), target("na/receptive", "na"),
+                              target("kha/receptive", "kha")), tok)
     assert syllabus.fills(s, t) is True
 
 
@@ -78,10 +86,13 @@ def test_other_voice_does_not_fill_a_productive_target():
 
 def test_learner_voice_fills_a_productive_target():
     dog = word("dog", "หมา")  # dog
+    i_word = word("i", "ผม")  # registered so it doesn't trip the novelty budget
+    have = word("have", "มี")  # registered so it doesn't trip the novelty budget
     t = target("dog/productive", "dog", "productive")
     s = sentence("ผมมีหมา", voice="learner_voice")  # I have a dog
     tok = FakeTokenizer({s.text: ["ผม", "มี", "หมา"]})
-    syllabus = base_syllabus((dog,), (t,), tok)
+    syllabus = base_syllabus((dog, i_word, have),
+                             (t, target("i/receptive", "i"), target("have/receptive", "have")), tok)
     assert syllabus.fills(s, t) is True
 
 
@@ -116,12 +127,14 @@ def test_one_new_word_is_permitted_when_the_target_is_sentence_introduced():
     companion word may ride along without an earlier target of its own.
     """
     rice = word("rice", "ข้าว")  # rice -- being introduced by this sentence
-    companion = word("companion", "จาน")  # plate -- also new, no target
+    in_word = word("in", "อยู่ใน")  # located in -- registered, not the one new word under test
+    companion = word("companion", "จาน")  # plate -- the one new word, no target
     t_rice = target("rice/receptive", "rice", "receptive",
                     introduction="sentence")
     s = sentence("ข้าวอยู่ในจาน", voice="learner_voice")  # the rice is on the plate
     tok = FakeTokenizer({s.text: ["ข้าว", "อยู่ใน", "จาน"]})
-    syllabus = base_syllabus((rice, companion), (t_rice,), tok)
+    syllabus = base_syllabus((rice, in_word, companion),
+                             (t_rice, target("in/receptive", "in")), tok)
     assert syllabus.fills(s, t_rice) is True
 
 
@@ -137,18 +150,47 @@ def test_the_novelty_budget_does_not_cover_a_second_new_word():
     assert syllabus.fills(s, t_rice) is False
 
 
+def test_vocabulary_met_by_includes_words_targeted_at_or_before():
+    s = Syllabus(words=(word("a", "ก"), word("b", "ข"), word("c", "ค")),
+                targets=(target("a/r", "a"), target("b/r", "b"), target("c/r", "c")),
+                frequency={"a": 1, "b": 2, "c": 3})
+    met = s.vocabulary_met_by(s.targets[1])
+    assert [w.id for w in met] == ["a", "b"]
+    assert len(s.with_sentences([]).sentences) == 0
+
+
 def test_a_word_whose_target_comes_later_still_lets_the_sentence_fill():
     """The sentence enters the order after its LAST word's target; a used
     word targeted later than the exercised target is met by then. The
-    parsimony case: multi-fill texts enter late, they do not fail."""
+    parsimony case: multi-fill texts enter late, they do not fail.
+
+    "กับ" ("with") is a registered Word with its own early receptive
+    Target -- glue words get no exemption from the novelty budget, they
+    must carry a Target like any other (spec 1 §3)."""
     rice = word("rice", "ข้าว")     # rice
     spoon = word("spoon", "ช้อน")   # spoon -- targeted, but later than rice
+    with_word = word("with", "กับ")  # glue word, registered with its own Target
     t_rice = target("rice/receptive", "rice", "receptive",
                     introduction="picture_card")
     t_spoon = target("spoon/receptive", "spoon", "receptive",
                      introduction="picture_card")
+    t_with = target("with/receptive", "with", "receptive")
     s = sentence("ข้าวกับช้อน", voice="learner_voice")  # rice with a spoon
     tok = FakeTokenizer({s.text: ["ข้าว", "กับ", "ช้อน"]})
-    syllabus = base_syllabus((rice, spoon), (t_rice, t_spoon), tok,
-                             frequency={rice.id: 1, spoon.id: 99})
+    syllabus = base_syllabus((rice, spoon, with_word), (t_rice, t_spoon, t_with), tok,
+                             frequency={rice.id: 1, with_word.id: 2, spoon.id: 99})
     assert syllabus.fills(s, t_rice) is True
+
+
+def test_an_unregistered_content_token_fails_clause_3_but_a_whitespace_token_does_not():
+    """A content token matching no registered Word is a new word with no
+    Target -- no exemption list. A whitespace-only token carries no
+    vocabulary and never counts."""
+    rice = word("rice", "ข้าว")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = base_syllabus((rice,), (t,),
+                             FakeTokenizer({"ข้าวอร่อย": ["ข้าว", "อร่อย"], "ข้าว ": ["ข้าว", " "]}))
+    unknown_content = sentence("ข้าวอร่อย", voice="learner_voice")  # rice is delicious
+    assert syllabus.fills(unknown_content, t) is False  # "อร่อย" matches no registered Word
+    whitespace_only = sentence("ข้าว ", voice="learner_voice")
+    assert syllabus.fills(whitespace_only, t) is True  # a bare space is not novelty

@@ -115,6 +115,26 @@ class Syllabus:
     def _words_used(self, tokens: list[str]) -> set[WordId]:
         return {w.id for w in self.words if self._boundary_match(tokens, w.thai)}
 
+    @staticmethod
+    def _has_lexical_content(tok: str) -> bool:
+        """Whitespace-only or punctuation/digit-only tokens carry no
+        vocabulary of their own (a real tokenizer keeps whitespace
+        tokens) -- never novel, never budget-consuming."""
+        return any(ch.isalpha() for ch in tok)
+
+    def _matches_a_known_word(self, tok: str) -> bool:
+        return any(self._boundary_match([tok], w.thai) for w in self.words)
+
+    def _unknown_tokens(self, tokens: list[str]) -> list[str]:
+        """Content tokens matching no registered Word at all. Such a token
+        has no Target by construction, so it always counts against the
+        novelty budget (spec 1 §3: "every word it uses has an earlier
+        Target") -- no exemption list for function/glue words; those must
+        be registered with an early receptive Target instead.
+        """
+        return [tok for tok in tokens
+               if self._has_lexical_content(tok) and not self._matches_a_known_word(tok)]
+
     def mentions(self, sentence: Sentence, thai: str) -> bool:
         """Whether `thai` appears in `sentence.text` at a token boundary
         (rulebook helper: exposes the same boundary rule fills() uses).
@@ -135,15 +155,37 @@ class Syllabus:
 
         # clause 3: strict i+1 with a novelty budget. The sentence enters
         # the order after its LAST used word's target, so any used word
-        # with a target anywhere is met by entry; only words with no
-        # target at all are new (spec 1 §3).
+        # with a target anywhere is met by entry; a known word with no
+        # target at all, or any content token matching no registered word
+        # at all, is new (spec 1 §3; no exemption for unregistered
+        # function/glue words -- they must carry an early Target).
         if target.id not in self._target_positions:
             return False
         used_other_words = self._words_used(tokens) - {target.word}
-        new_words = [w for w in used_other_words
-                    if w not in self._word_target_positions]
+        untargeted = [w for w in used_other_words if w not in self._word_target_positions]
+        new_words = untargeted + self._unknown_tokens(tokens)
         budget = 1 if target.introduction == "sentence" else 0
         return len(new_words) <= budget
+
+    def vocabulary_met_by(self, target: Target) -> tuple[Word, ...]:
+        """Every Word with a Target at or before `target`'s order()
+        position (the target's own word included).
+        """
+        position = self._target_positions.get(target.id)
+        if position is None:
+            return ()
+        met = [t.word for t in self.order() if isinstance(t, Target)
+              and self._target_positions[t.id] <= position]
+        seen: set[WordId] = set()
+        out: list[Word] = []
+        for w in met:
+            if w not in seen:
+                seen.add(w)
+                out.append(self.word(w))
+        return tuple(out)
+
+    def with_sentences(self, new: Sequence[Sentence]) -> "Syllabus":
+        return dataclasses.replace(self, sentences=self.sentences + tuple(new))
 
     # --- report() ------------------------------------------------------
 
