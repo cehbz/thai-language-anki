@@ -30,13 +30,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from .assessor import AssessQuestion, Assessor
+from .assessor import AssessQuestion, Assessor, ROLE_FOR_KIND
+from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
 from .ids import WordId
-from .provider import Provider, Question
+from .provider import Provider, ProviderAnswer, Question
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import TransportError
+from .tts import pick_voice
 
 __all__ = ["Need", "Sourcing", "Outcome", "SOURCES", "sources_for", "candidates_of",
            "current_best_of", "attempt"]
@@ -254,7 +256,196 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outc
     return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
 
 
-_ATTEMPTS = {"picture": _picture_attempt}   # Task 8 adds recording and rendition
+def _assess_recordings(ctx: Sourcing, subject: str, shas: Sequence[str], role: str,
+                       spend: dict[str, tuple[int, float]], start: int) -> None:
+    """Mechanically assesses every sha for one subject, cache-first, via
+    ask_many -- so a missing "mechanical" backend's KeyError surfaces even
+    with zero shas (same pattern as _fit_pictures/_assess_all_candidates:
+    ask_many probes backend availability before anything else). A
+    per-question TransportError (ffprobe missing) is dropped by ask_many's
+    own inline loop, not fatal to the rest.
+    """
+    questions = [AssessQuestion(subject=subject, role=role, artifact_sha=s) for s in shas]
+    res = ctx.assessor.ask_many("mechanical", questions)
+    for v in res.resolved.values():
+        _add(spend, "mechanical", v.cost, hit=v.ts < start)
+
+
+def _assess_members(ctx: Sourcing, members: Mapping[str, str],
+                    spend: dict[str, tuple[int, float]], start: int) -> dict[str, bool]:
+    """Mechanically assesses each pair member's own recording sha under
+    the MEMBER's subject (never the pair id) -- so the member word's own
+    "recording" current_best sees the verdict too (wiring._DbMediaIndex.
+    rendition_provenance reads current_best(member, "recording")).
+    Returns member -> pass/fail; a member whose question never resolved
+    (dropped by a TransportError) counts as failing -- nothing to rank on.
+    """
+    role = ROLE_FOR_KIND["recording"]
+    questions = {m: AssessQuestion(subject=m, role=role, artifact_sha=s) for m, s in members.items()}
+    res = ctx.assessor.ask_many("mechanical", list(questions.values()))
+    for v in res.resolved.values():
+        _add(spend, "mechanical", v.cost, hit=v.ts < start)
+    return {m: bool(v.value) if (v := res.resolved.get(ctx.assessor.key_of("mechanical", q))) is not None else False
+           for m, q in questions.items()}
+
+
+def _forvo_items(ctx: Sourcing, subject: str, thai: str,
+                 spend: dict[str, tuple[int, float]], start: int) -> list[Mapping]:
+    ans = ctx.provider.ask("forvo", Question(subject=subject, provides="recording", params={"word": thai}))
+    _add(spend, "forvo", ans.cost, hit=ans.ts < start)
+    return [i for i in ans.items if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
+
+
+def _store_recording(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin: str, licence: str,
+                     speaker_id: str, speaker_kind: str) -> str | None:
+    """The shared "first item with a sha -> add_media -> return its sha"
+    loop shared by _download_forvo and _synthesize.
+    """
+    for fetched in got.items:
+        s = fetched.get("sha")
+        if s:
+            ctx.db.add_media(sha=s, kind="recording", ext=str(fetched.get("ext", "mp3")), source=source,
+                             origin=origin, licence=licence, acquired=ctx.today(),
+                             speaker_id=speaker_id, speaker_kind=speaker_kind)
+            return s
+    return None
+
+
+def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
+                    spend: dict[str, tuple[int, float]], start: int) -> str | None:
+    """A TransportError from audiofetch is a skip (this one url failed);
+    a KeyError (no "audiofetch" backend registered) propagates to the
+    caller's Source guard rather than being swallowed here.
+    """
+    url, user = item["pathmp3"], item["username"]
+    try:
+        got = ctx.provider.ask("audiofetch", Question(subject=subject, provides="recording-bytes",
+                                                      params={"url": url, "speaker": user,
+                                                              "speaker_kind": "native", "source": "forvo"}))
+    except TransportError:
+        return None
+    _add(spend, "audiofetch", got.cost, hit=got.ts < start)
+    return _store_recording(ctx, got, source="forvo", origin=url, licence="forvo",
+                            speaker_id=f"forvo:{user}", speaker_kind="native")
+
+
+def _synthesize(ctx: Sourcing, subject: str, thai: str, voice: str | None,
+                spend: dict[str, tuple[int, float]], start: int) -> str | None:
+    """A TransportError from tts is a skip; a KeyError (no "tts" backend
+    registered) propagates to the caller's Source guard.
+    """
+    params: dict[str, Any] = {"text": thai}
+    if voice:
+        params["voice"] = voice
+    try:
+        got = ctx.provider.ask("tts", Question(subject=subject, provides="recording", params=params))
+    except TransportError:
+        return None
+    _add(spend, "tts", got.cost, hit=got.ts < start)
+    used_voice = got.items[0].get("voice") if got.items else None
+    return _store_recording(ctx, got, source="tts", origin=str(used_voice or ""), licence="google-tts",
+                            speaker_id=str(used_voice or "tts"), speaker_kind="synthetic")
+
+
+def _recording_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outcome:
+    spend: dict[str, tuple[int, float]] = {}
+    role = ROLE_FOR_KIND["recording"]
+    before = current_best_of(ctx, need.subject, "recording")
+    try:
+        _assess_recordings(ctx, need.subject, candidates_of(ctx.db, need.subject, "recording"), role, spend, start)
+    except KeyError:
+        return Outcome(attempted=False, pending=False, improved=False, spend=spend)
+    if current_best_of(ctx, need.subject, "recording").rank > before.rank:
+        return Outcome(attempted=_attempted(spend), pending=False, improved=True, spend=spend)
+
+    w = _word(ctx, need.subject)
+    thai = w.thai if w else need.subject
+    new: list[str] = []
+    try:
+        if source == "forvo":
+            for item in _forvo_items(ctx, need.subject, thai, spend, start):
+                s = _download_forvo(ctx, need.subject, item, spend, start)
+                if s:
+                    new.append(s)
+        elif source == "tts":
+            s = _synthesize(ctx, need.subject, thai, None, spend, start)
+            if s:
+                new.append(s)
+    except (TransportError, KeyError):
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
+
+    try:
+        _assess_recordings(ctx, need.subject, new, role, spend, start)
+    except KeyError:
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
+    after = current_best_of(ctx, need.subject, "recording")
+    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
+
+
+def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
+                      passed: Mapping[str, bool], context: str) -> None:
+    """value is True only if every member's mechanical verdict passed;
+    otherwise False, with the failing members named in evidence.
+    """
+    joined = ",".join(members[m] for m in sorted(members))
+    ok = all(passed.values())
+    evidence = context if ok else (
+        f"{context}; failing: {', '.join(sorted(m for m, p in passed.items() if not p))}")
+    ctx.db.append(port="assess", backend="mechanical",
+                  key=f"mech:rendition:v1:{pair_id}:{_sha(joined)}", subject=pair_id,
+                  question={"role": ROLE_FOR_KIND["rendition"], "artifact_sha": _sha(joined),
+                            "rubric": None, "params": {"members": dict(members)}},
+                  answer={"value": ok, "evidence": evidence})
+
+
+def _rendition_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outcome:
+    spend: dict[str, tuple[int, float]] = {}
+    pair = next((p for p in ctx.syllabus.pairs if p.id == need.subject), None)
+    if pair is None:
+        return Outcome(attempted=False, pending=False, improved=False, spend=spend)
+    try:
+        ctx.assessor.ask_many("mechanical", [])  # probe: unavailable ends before any Source is tried
+    except KeyError:
+        return Outcome(attempted=False, pending=False, improved=False, spend=spend)
+
+    before = current_best_of(ctx, need.subject, "rendition")
+    words = {m: ctx.syllabus.word(WordId(m)) for m in pair.members}
+    members: dict[str, str] = {}
+    try:
+        if source == "forvo":
+            items = {m: _forvo_items(ctx, m, words[m].thai, spend, start) for m in pair.members}
+            common = (set.intersection(*[{i["username"] for i in its} for its in items.values()])
+                      if items else set())
+            for user in sorted(common):
+                members = {}
+                for m in pair.members:
+                    item = next(i for i in items[m] if i["username"] == user)
+                    s = _download_forvo(ctx, m, item, spend, start)
+                    if s:
+                        members[m] = s
+                if len(members) == len(pair.members):
+                    passed = _assess_members(ctx, members, spend, start)
+                    _record_rendition(ctx, need.subject, members, passed, f"speaker forvo:{user}")
+                    break
+                members = {}
+        elif source == "tts":
+            voice = pick_voice(need.subject, list(ctx.tts_voices))
+            for m in pair.members:
+                s = _synthesize(ctx, m, words[m].thai, voice, spend, start)
+                if s:
+                    members[m] = s
+            if len(members) == len(pair.members):
+                passed = _assess_members(ctx, members, spend, start)
+                _record_rendition(ctx, need.subject, members, passed, f"voice {voice}")
+    except (TransportError, KeyError):
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
+
+    after = current_best_of(ctx, need.subject, "rendition")
+    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
+
+
+_ATTEMPTS = {"picture": _picture_attempt, "recording": _recording_attempt,
+            "rendition": _rendition_attempt}
 
 
 def attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:

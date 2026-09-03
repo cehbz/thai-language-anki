@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
+from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend, MechanicalBackend, RawVerdict
 from thai_syllabus.attempts import (Need, Outcome, Sourcing, _phrase, attempt, candidates_of,
                                     sources_for)
-from thai_syllabus.provider import FetchBackend, Provider, Question, RawAnswer
+from thai_syllabus.entities import MinimalPair, SoundConfusion
+from thai_syllabus.provider import FetchBackend, Provider, Question, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import RUBRICS_BY_ROLE
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
@@ -257,3 +258,185 @@ def test_phrase_ignores_a_suggestion_older_than_the_last_provide(ctx):
     c.db.append(port="provide", backend="openverse", key="search:x", subject="orange",
                question={"provides": "picture", "params": {"query": "x"}}, answer={"items": []})
     assert _phrase(c, "orange") is None
+
+
+# --- Task 8: recording and rendition attempts; mechanical verdicts rank recordings
+
+def _mech_duration(ok=True):
+    def key_fn(q):
+        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
+
+    def evaluate(q):
+        return RawVerdict(value=ok, evidence="duration=1.0s")
+    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+def _mech_duration_failing_for(bad_subject):
+    """Fails only the member whose AssessQuestion.subject is bad_subject --
+    exercises that _assess_members asks under each member's OWN subject
+    (not the pair id), the only way a per-member fake can single one out.
+    """
+    def key_fn(q):
+        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
+
+    def evaluate(q):
+        ok = q.subject != bad_subject
+        return RawVerdict(value=ok, evidence="duration=1.0s" if ok else "too short")
+    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+class _Forvo:
+    def __init__(self, items_by_word):
+        self.items_by_word = items_by_word
+        self.calls = 0
+
+    def cache_key(self, q):
+        return f"forvo:{q.params['word']}"
+
+    def fetch(self, q):
+        self.calls += 1
+        return RawAnswer(items=tuple(self.items_by_word.get(q.params["word"], ())), cost=1.0)
+
+
+class _Tts:
+    def synthesize(self, text, voice):
+        return f"{text}-{voice}".encode()
+
+
+def _recording_backends(c, forvo_items):
+    media = c.media_store
+    forvo = _Forvo(forvo_items)
+    provider = Provider(record=c.db, cache=c.db, backends={
+        "forvo": forvo,
+        "audiofetch": FetchBackend(media=media, fetcher=lambda url: (url.encode(), "mp3")),
+        "tts": TtsBackend(tts=_Tts(), voices=["v1", "v2"], media=media, pick_voice=lambda s, v: v[0])})
+    return provider, forvo
+
+
+def _recording_ctx(c, forvo_items):
+    provider, _forvo = _recording_backends(c, forvo_items)
+    c.provider = provider
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={"mechanical": _mech_duration()})
+    return c
+
+
+def _pair_syllabus(conf):
+    return Syllabus(
+        words=(word("white", "ขาว", "white"), word("news", "ข่าว", "news")),
+        targets=(target("white/receptive", "white"), target("news/receptive", "news")),
+        confusions=(conf,),
+        pairs=(MinimalPair(id="pair-1", confusion=conf.id, members=("white", "news")),))
+
+
+def test_forvo_recording_attempt_downloads_checks_and_ranks(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
+    out = attempt(c, Need("orange", "recording"), "forvo")
+    assert out.improved and out.spend["forvo"] == (1, 1.0)
+    from thai_syllabus.attempts import current_best_of
+    best = current_best_of(c, "orange", "recording")
+    prov = c.db.media_provenance(best.artifact_sha)
+    assert best.source == "mechanical" and prov["speaker_id"] == "forvo:kris" and prov["speaker_kind"] == "native"
+
+
+def test_tts_recording_attempt_marks_synthetic_provenance(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {})
+    assert not attempt(c, Need("orange", "recording"), "forvo").improved
+    out = attempt(c, Need("orange", "recording"), "tts")
+    assert out.improved
+    from thai_syllabus.attempts import current_best_of
+    prov = c.db.media_provenance(current_best_of(c, "orange", "recording").artifact_sha)
+    assert prov["speaker_kind"] == "synthetic" and prov["source"] == "tts"
+
+
+def test_rendition_attempt_intersects_forvo_speakers(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {
+        "ขาว": [{"pathmp3": "https://f/a1.mp3", "username": "kris"}, {"pathmp3": "https://f/a2.mp3", "username": "x"}],
+        "ข่าว": [{"pathmp3": "https://f/b1.mp3", "username": "kris"}]})
+    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
+    c.syllabus = _pair_syllabus(conf)
+    out = attempt(c, Need("pair-1", "rendition"), "forvo")
+    assert out.improved
+    from thai_syllabus.attempts import current_best_of
+    best = current_best_of(c, "pair-1", "rendition")
+    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
+    members = rows[-1].question["params"]["members"]
+    assert set(members) == {"white", "news"}
+    assert {c.db.media_provenance(s)["speaker_id"] for s in members.values()} == {"forvo:kris"}
+    assert rows[-1].answer["value"] is True
+    # each member's own recording need benefits too -- mechanical verdicts
+    # are recorded under the member's own subject, not the pair id.
+    assert current_best_of(c, "white", "recording").artifact_sha is not None
+    assert current_best_of(c, "news", "recording").artifact_sha is not None
+
+
+def test_rendition_attempt_falls_to_one_tts_voice(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {"ขาว": [{"pathmp3": "https://f/a.mp3", "username": "p"}],
+                           "ข่าว": [{"pathmp3": "https://f/b.mp3", "username": "q"}]})
+    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
+    c.syllabus = _pair_syllabus(conf)
+    assert not attempt(c, Need("pair-1", "rendition"), "forvo").improved
+    out = attempt(c, Need("pair-1", "rendition"), "tts")
+    assert out.improved
+    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
+    speakers = {c.db.media_provenance(s)["speaker_id"] for s in rows[-1].question["params"]["members"].values()}
+    assert len(speakers) == 1
+    from thai_syllabus.tts import pick_voice
+    expected_voice = pick_voice("pair-1", list(c.tts_voices))
+    origins = {c.db.media_provenance(s)["origin"] for s in rows[-1].question["params"]["members"].values()}
+    assert origins == {expected_voice}
+    # symmetry with forvo: the tts branch mechanically checks each member
+    # too, under the member's own subject.
+    from thai_syllabus.attempts import current_best_of
+    assert current_best_of(c, "white", "recording").artifact_sha is not None
+    assert current_best_of(c, "news", "recording").artifact_sha is not None
+
+
+def test_rendition_attempt_records_false_when_a_member_fails_mechanically(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {"ขาว": [{"pathmp3": "https://f/a1.mp3", "username": "kris"}],
+                           "ข่าว": [{"pathmp3": "https://f/b1.mp3", "username": "kris"}]})
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={"mechanical": _mech_duration_failing_for("news")})
+    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
+    c.syllabus = _pair_syllabus(conf)
+    out = attempt(c, Need("pair-1", "rendition"), "forvo")
+    assert not out.improved
+    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
+    assert rows[-1].answer["value"] is False
+    assert "news" in rows[-1].answer["evidence"]
+
+
+def test_recording_attempt_second_run_is_fully_cached(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
+    attempt(c, Need("orange", "recording"), "forvo")
+    out2 = attempt(c, Need("orange", "recording"), "forvo")
+    assert out2.attempted is False
+    assert all(asks == 0 for asks, _cost in out2.spend.values())
+
+
+def test_recording_attempt_ends_before_any_source_when_assessor_unavailable(ctx):
+    c, _search, _judge = ctx
+    provider, forvo = _recording_backends(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
+    c.provider = provider
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "mechanical" backend at all
+    out = attempt(c, Need("orange", "recording"), "forvo")
+    assert forvo.calls == 0
+    assert out == Outcome(False, False, False, {})
+
+
+def test_rendition_attempt_ends_before_any_source_when_assessor_unavailable(ctx):
+    c, _search, _judge = ctx
+    provider, forvo = _recording_backends(c, {
+        "ขาว": [{"pathmp3": "https://f/a.mp3", "username": "kris"}],
+        "ข่าว": [{"pathmp3": "https://f/b.mp3", "username": "kris"}]})
+    c.provider = provider
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "mechanical" backend at all
+    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
+    c.syllabus = _pair_syllabus(conf)
+    out = attempt(c, Need("pair-1", "rendition"), "forvo")
+    assert forvo.calls == 0
+    assert out == Outcome(False, False, False, {})
