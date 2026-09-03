@@ -382,19 +382,11 @@ def parse_preference(text: str) -> RawVerdict:
     return RawVerdict(value=list(ranking or []), evidence=(data or {}).get("evidence"))
 
 
-def _default_judge_prompt(question: AssessQuestion) -> str:
-    lines = [f"Role: {question.role}", f"Rubric: {question.rubric or ''}"]
-    if question.artifact_sha:
-        lines.append(f"Artifact: {question.artifact_sha}")
-    if question.params:
-        lines.append(f"Params: {json.dumps(dict(question.params), sort_keys=True)}")
-    lines.append(
-        'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
-        '"suggestion": <string or null>}.')
-    return "\n".join(lines)
-
-
-def _default_parse_judge_response(text: str) -> RawVerdict:
+def _generic_value_parser(text: str) -> RawVerdict:
+    """The {"value", "evidence", "suggestion"} shape both picture_fit_prompt
+    and sentence_prompt ask for -- also the fallback for any role with no
+    entry in _DEFAULT_JUDGE_BUILDERS.
+    """
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
@@ -408,6 +400,45 @@ def _default_parse_judge_response(text: str) -> RawVerdict:
     if stripped in ("true", "false"):
         return RawVerdict(value=stripped == "true")
     return RawVerdict(value=text.strip())
+
+
+def _fallback_judge_prompt(question: AssessQuestion) -> str:
+    """Used only for a role absent from _DEFAULT_JUDGE_BUILDERS -- the
+    generic {role, rubric, artifact, params} dump, {"value", ...} shaped.
+    """
+    lines = [f"Role: {question.role}", f"Rubric: {question.rubric or ''}"]
+    if question.artifact_sha:
+        lines.append(f"Artifact: {question.artifact_sha}")
+    if question.params:
+        lines.append(f"Params: {json.dumps(dict(question.params), sort_keys=True)}")
+    lines.append(
+        'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
+        '"suggestion": <string or null>}.')
+    return "\n".join(lines)
+
+
+# Every role this module has a dedicated prompt for, and the parser that
+# matches its response shape -- one table so a JudgeBackend's default
+# prompt_builder/parse_response can never drift apart per role (an earlier
+# version dispatched the two separately and a preference completion's
+# {"ranking": [...]} silently parsed to value=None).
+_DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
+                                        Callable[[str], RawVerdict]]] = {
+    "picture-for-word": (picture_fit_prompt, _generic_value_parser),
+    "sentence-for-target": (sentence_prompt, _generic_value_parser),
+    "picture-preference": (picture_preference_prompt, parse_preference),
+}
+
+
+def _default_judge_prompt(question: AssessQuestion) -> str:
+    builder = _DEFAULT_JUDGE_BUILDERS.get(question.role)
+    return builder[0](question) if builder else _fallback_judge_prompt(question)
+
+
+def _default_parse_judge_response(text: str, question: AssessQuestion | None = None) -> RawVerdict:
+    builder = _DEFAULT_JUDGE_BUILDERS.get(question.role) if question is not None else None
+    parser = builder[1] if builder else _generic_value_parser
+    return parser(text)
 
 
 @dataclass

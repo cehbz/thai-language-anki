@@ -23,6 +23,7 @@ from thai_syllabus.assessor import (
     parse_preference,
     picture_fit_prompt,
     picture_preference_prompt,
+    sentence_prompt,
 )
 from thai_syllabus.cachekeys import sha
 from thai_syllabus.store import SyllabusDb
@@ -391,8 +392,10 @@ def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
 
     jb = JudgeBackend(model="m", transport="api", complete=complete)
     a = Assessor(record=db, cache=db, backends={"judge": jb})
+    # rubric text (not artifact_sha) is what the default picture-for-word
+    # prompt embeds verbatim -- "boom" has to land there to trip `complete`.
     qs = [AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r"),
-          AssessQuestion(subject="w", role="picture-for-word", artifact_sha="boom", rubric="r")]
+          AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s2", rubric="boom")]
     res = a.ask_many("judge", qs)
     assert isinstance(res, ManyResult)
     assert set(res.resolved) == {jb.cache_key(qs[0])} and res.pending == []
@@ -515,3 +518,52 @@ def test_preference_fetch_raises_when_one_candidate_cannot_be_resolved(tmp_path)
                        params={"candidates": ["sha-a", "sha-b"]})
     with pytest.raises(TransportError):
         jb.fetch(q)
+
+
+# --- review fix: the default prompt_builder/parse_response dispatch by role,
+# one role -> (prompt_builder, parser) table, so a preference completion's
+# {"ranking": [...]} is never silently parsed as value=None -----------------
+
+def test_default_dispatch_builds_the_picture_fit_prompt_and_parses_its_value():
+    prompts = []
+
+    def complete(prompt, attachments=()):
+        prompts.append(prompt)
+        return Completion(text='{"value": true, "evidence": "e"}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)  # no custom builder/parser
+    q = AssessQuestion(subject="w", role="picture-for-word", rubric="fit rubric",
+                       params={"word": "ก", "meaning": "m"})
+    raw = jb.fetch(q)
+    assert prompts[0] == picture_fit_prompt(q)
+    assert raw.value is True and raw.evidence == "e"
+
+
+def test_default_dispatch_builds_the_sentence_prompt_and_parses_its_value():
+    prompts = []
+
+    def complete(prompt, attachments=()):
+        prompts.append(prompt)
+        return Completion(text='{"value": false, "evidence": "not natural"}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    q = AssessQuestion(subject="w", role="sentence-for-target", rubric="sentence rubric",
+                       params={"text": "some sentence", "word": "ก"})
+    raw = jb.fetch(q)
+    assert prompts[0] == sentence_prompt(q)
+    assert raw.value is False and raw.evidence == "not natural"
+
+
+def test_default_dispatch_builds_the_preference_prompt_and_parses_the_ranking():
+    prompts = []
+
+    def complete(prompt, attachments=()):
+        prompts.append(prompt)
+        return Completion(text='{"ranking": ["a", "b"], "evidence": "e"}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    q = AssessQuestion(subject="w", role="picture-preference", rubric="pref rubric",
+                       params={"candidates": ["a", "b"], "word": "ก", "meaning": "m"})
+    raw = jb.fetch(q)
+    assert prompts[0] == picture_preference_prompt(q)
+    assert raw.value == ["a", "b"]
