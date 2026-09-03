@@ -19,7 +19,7 @@ from thai_syllabus.assessor import (
     format_mechanical_backend,
 )
 from thai_syllabus.store import SyllabusDb
-from thai_syllabus.transport import TransportError
+from thai_syllabus.transport import Completion, TransportError
 
 
 @pytest.fixture
@@ -133,7 +133,7 @@ def test_judge_fetch_builds_a_prompt_and_parses_the_response():
 
     def complete(prompt):
         prompts.append(prompt)
-        return '{"value": true, "evidence": "clear picture"}'
+        return Completion(text='{"value": true, "evidence": "clear picture"}')
 
     backend = JudgeBackend(model="m", transport="cli", complete=complete)
     q = AssessQuestion(subject="s", role="picture-for-word", artifact_sha="sha1",
@@ -205,8 +205,8 @@ def test_ask_batch_resumes_and_writes_individual_verdicts_once_ended(db):
         assessor.ask_batch("judge", [q1, q2])
 
     bt._status = "ended"
-    bt._results = {"w1": '{"value": true, "evidence": "good"}',
-                   "w2": '{"value": false, "evidence": "blurry"}'}
+    bt._results = {"w1": Completion(text='{"value": true, "evidence": "good"}'),
+                   "w2": Completion(text='{"value": false, "evidence": "blurry"}')}
     results = assessor.ask_batch("judge", [q1, q2])
     assert results["w1"].value is True
     assert results["w2"].value is False

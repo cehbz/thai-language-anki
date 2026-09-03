@@ -23,7 +23,7 @@ from thai_syllabus.provider import (
     wikimedia_backend,
 )
 from thai_syllabus.store import MediaStore, SyllabusDb
-from thai_syllabus.transport import TransportError
+from thai_syllabus.transport import Completion, TransportError
 from thai_syllabus.tts import GoogleTts, pick_voice
 
 
@@ -323,7 +323,7 @@ class _FakeTransport:
         self.prompts.append(prompt)
         if self.raises:
             raise self.raises
-        return self.text
+        return Completion(text=self.text)
 
 
 def test_llm_cache_key_is_stable_for_the_same_prompt():

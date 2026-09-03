@@ -17,7 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .cachekeys import sha
 from .ports import CacheReader, RecordWriter
-from .transport import TransportError
+from .transport import Completion, TransportError
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
@@ -175,7 +175,7 @@ class Assessor:
         if pending is not None and pending.answer.get("kind") == "batch-pending":
             batch_id = pending.answer["batch_id"]
         else:
-            requests = {q.subject: impl.prompt_builder(q) for q in misses}
+            requests = {q.subject: (impl.prompt_builder(q), ()) for q in misses}
             batch_id = impl.batch_transport.submit(requests)
             self._record.append(
                 port="assess", backend=backend, key=request_set_key,
@@ -190,11 +190,11 @@ class Assessor:
         results = impl.batch_transport.results(batch_id)
         still_pending: list[str] = []
         for q in misses:
-            text = results.get(q.subject)
-            if text is None:
+            completion = results.get(q.subject)
+            if completion is None:
                 still_pending.append(q.subject)
                 continue
-            raw = impl.parse_response(text)
+            raw = impl.parse_response(completion.text)
             raw = RawVerdict(value=raw.value, evidence=raw.evidence,
                              suggestion=raw.suggestion, cost=impl.cost_per_call)
             ts = self._append_verdict(backend, keys[q.subject], q, raw)
@@ -259,7 +259,7 @@ def _default_parse_judge_response(text: str) -> RawVerdict:
 class JudgeBackend:
     model: str
     transport: str  # "cli" | "api" | "batch" -- label, selects which of the below is used
-    complete: Callable[[str], str] | None = None  # cli/api: ClaudeCliTransport/ClaudeApiTransport.complete
+    complete: Callable[[str], Completion] | None = None  # cli/api: ClaudeCliTransport/ClaudeApiTransport.complete
     batch_transport: Any = None  # ClaudeBatchTransport, batch transport only
     prompt_builder: Callable[[AssessQuestion], str] = field(default=_default_judge_prompt)
     parse_response: Callable[[str], RawVerdict] = field(default=_default_parse_judge_response)
@@ -275,7 +275,7 @@ class JudgeBackend:
                 "this JudgeBackend has no single-question transport "
                 "(configured for batch only) -- use Assessor.ask_batch")
         prompt = self.prompt_builder(question)
-        text = self.complete(prompt)
+        text = self.complete(prompt).text
         raw = self.parse_response(text)
         return RawVerdict(value=raw.value, evidence=raw.evidence,
                           suggestion=raw.suggestion, cost=self.cost_per_call)

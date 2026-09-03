@@ -304,7 +304,7 @@ class TtsBackend:
 class LlmBackend:
     producer: str
     model: str
-    transport: Any  # .complete(prompt: str) -> str; may raise TransportError
+    transport: Any  # .complete(prompt: str) -> Completion; may raise TransportError
     cost_per_call: float = 0.0
 
     def cache_key(self, question: Question) -> str:
@@ -313,7 +313,7 @@ class LlmBackend:
 
     def fetch(self, question: Question) -> RawAnswer:
         prompt = question.params["prompt"]
-        text = self.transport.complete(prompt)
+        text = self.transport.complete(prompt).text
         items = (text,) if text else ()
         return RawAnswer(items=items, cost=self.cost_per_call)
 

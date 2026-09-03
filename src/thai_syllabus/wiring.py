@@ -69,6 +69,7 @@ violations, just latitude the terse text left to fill in:
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -94,7 +95,7 @@ from .provider import (
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget, Lever
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport
+from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport, Completion
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "default_budgets", "build_levers",
@@ -124,19 +125,20 @@ class _LazyBackend:
 
 
 class _LazyTransport:
-    """A `.complete(prompt) -> str`-shaped object that defers building the
-    real transport until first call -- used both as LlmBackend.transport
-    (an object with .complete) and, via its bound `.complete` method, as
-    JudgeBackend.complete (a bare callable) -- see _judge_transport below.
+    """A `.complete(prompt) -> Completion`-shaped object that defers
+    building the real transport until first call -- used both as
+    LlmBackend.transport (an object with .complete) and, via its bound
+    `.complete` method, as JudgeBackend.complete (a bare callable) -- see
+    _judge_transport below.
     """
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
         self._impl: Any = None
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, attachments: Sequence[Path] = ()) -> Completion:
         if self._impl is None:
             self._impl = self._factory()
-        return self._impl.complete(prompt)
+        return self._impl.complete(prompt, attachments)
 
 
 class _LazyBatchTransport:
@@ -153,13 +155,13 @@ class _LazyBatchTransport:
             self._impl = self._factory()
         return self._impl
 
-    def submit(self, requests: dict[str, str]) -> str:
+    def submit(self, requests: Mapping[str, tuple[str, Sequence[Path]]]) -> str:
         return self._resolve().submit(requests)
 
     def status(self, batch_id: str) -> str:
         return self._resolve().status(batch_id)
 
-    def results(self, batch_id: str) -> dict[str, str | None]:
+    def results(self, batch_id: str) -> dict[str, Completion | None]:
         return self._resolve().results(batch_id)
 
 
