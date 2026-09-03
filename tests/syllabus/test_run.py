@@ -195,6 +195,41 @@ def test_learner_default_session_budget_is_20_questions():
     assert LEARNER_DEFAULT_SESSION_BUDGET.max_asks == 20
 
 
+# --- RunReport persistence: /stats history needs a source ----------------
+
+def test_run_appends_a_runreport_summary_row(db):
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",)))
+    ask = _FakeAsk(db, verdict_value=True, cost=0.25)
+    levers = {"picture": [Lever(backend="openverse", ask=ask, build_question=_question)]}
+    report = run(syllabus, db, budgets={}, levers_by_kind=levers)
+
+    rows = db.assessments_of("run")
+    runreport_rows = [r for r in rows if r.port == "run" and r.backend == "runreport"]
+    assert len(runreport_rows) == 1
+    answer = runreport_rows[0].answer
+    assert answer["attempted"] == report.attempted
+    assert answer["improved"] == report.improved
+    assert answer["exhausted"] == report.exhausted
+    assert answer["available"] == report.available
+    assert answer["spend"]["openverse"]["cost"] == pytest.approx(0.25)
+
+
+def test_a_run_that_does_almost_nothing_still_appends_a_row(db):
+    syllabus = _FakeSyllabus(_FakeGaps())
+    run(syllabus, db, budgets={}, levers_by_kind={})
+    rows = [r for r in db.assessments_of("run") if r.port == "run"]
+    assert len(rows) == 1
+
+
+def test_two_runs_each_get_their_own_keyed_row(db):
+    syllabus = _FakeSyllabus(_FakeGaps())
+    run(syllabus, db, budgets={}, levers_by_kind={})
+    run(syllabus, db, budgets={}, levers_by_kind={})
+    rows = [r for r in db.assessments_of("run") if r.port == "run"]
+    assert len(rows) == 2
+    assert rows[0].ts != rows[1].ts
+
+
 # --- kill-safety: every ask() already appended a checkpoint --------------
 
 def test_a_run_interrupted_mid_subject_leaves_prior_appends_intact(db):

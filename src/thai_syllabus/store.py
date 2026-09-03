@@ -95,6 +95,8 @@ from pathlib import Path
 from typing import Any
 
 from .cachekeys import sha
+from .entities import Sentence
+from .media import Provenance
 from .ports import Answer, StudyRecord
 
 if False:  # TYPE_CHECKING without importing at runtime
@@ -412,6 +414,22 @@ class SyllabusDb:
                 (sha, kind, ext, source, origin, licence, acquired.isoformat(),
                  speaker_id, speaker_kind))
             return cur.rowcount > 0
+
+    def all_sentences(self) -> list[Sentence]:
+        """Every `sentences` row, reconstituted as entities.Sentence (spec 2
+        section 2 stores sentences; spec 1 section 1 owns the entity). Not a
+        Protocol method (ports.py names no SentenceReader) -- load_syllabus
+        (wiring.py) is this method's one caller, assembling a Syllabus from
+        db-backed state alongside the curated files.
+        """
+        rows = self._con.execute(
+            "select text, voice, source, origin, licence, acquired "
+            "from sentences").fetchall()
+        return [Sentence(text=text, voice=voice,
+                         provenance=Provenance(source=source, origin=origin,
+                                              licence=licence,
+                                              acquired=date.fromisoformat(acquired)))
+               for text, voice, source, origin, licence, acquired in rows]
 
     def has_media(self, sha: str) -> bool:
         row = self._con.execute("select 1 from media where sha=?", (sha,)).fetchone()

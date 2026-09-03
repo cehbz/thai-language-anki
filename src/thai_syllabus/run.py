@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .derivations import current_best, exhausted, queue
-from .ports import CacheReader
+from .ports import CacheReader, RecordWriter
 from .transport import TransportError
 
 __all__ = ["Budget", "Spend", "Lever", "RunReport", "run"]
@@ -132,4 +132,30 @@ def run(syllabus, cache: CacheReader, budgets: Mapping[str, Budget],
             report.exhausted += 1
 
     report.available = len(entries) - report.attempted
+    _persist_report(cache, report)
     return report
+
+
+def _persist_report(cache: CacheReader, report: RunReport) -> None:
+    """Appends one summary row per run() call (port="run",
+    backend="runreport") so a run's own outcome has a durable source --
+    RunReport itself is only ever an in-memory return value, and nothing
+    else in spec 3 writes one to the cache (reviewserver.py's /stats reads
+    cache rows only). `key` is a constant, readable label ("runreport");
+    the `cache` table's primary key is (key_sha, ts) (store.py), so every
+    call still lands its own row -- "keyed on timestamp", not deduplicated
+    by key. Silently a no-op when `cache` is read-only (doesn't also
+    satisfy RecordWriter): run() itself only ever needs cache read access,
+    so this is best-effort persistence, not a hard requirement of the
+    application service's contract.
+    """
+    if not isinstance(cache, RecordWriter):
+        return
+    cache.append(
+        port="run", backend="runreport", key="runreport", subject="run",
+        question={},
+        answer={"attempted": report.attempted, "improved": report.improved,
+                "exhausted": report.exhausted, "available": report.available,
+                "spend": {name: {"asks": s.asks, "cost": s.cost}
+                         for name, s in report.spend.items()}},
+        cost=sum(s.cost for s in report.spend.values()))

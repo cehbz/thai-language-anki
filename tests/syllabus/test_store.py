@@ -279,6 +279,30 @@ def test_add_sentence_and_read_back(db):
     assert row == ("abc123", "text", "learner_voice")
 
 
+def test_all_sentences_reads_back_as_entities(db):
+    from thai_syllabus.entities import Sentence
+    from thai_syllabus.media import Provenance
+
+    db.add_sentence(text_sha="s1", text="ผมกินข้าว", voice="learner_voice",  # I eat rice
+                    source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    db.add_sentence(text_sha="s2", text="เขากินข้าว", voice="other_voice",  # (s)he eats rice
+                    source="forvo", origin="https://forvo.com/x", licence="cc-by",
+                    acquired=date(2026, 2, 2))
+    sentences = db.all_sentences()
+    assert len(sentences) == 2
+    assert all(isinstance(s, Sentence) for s in sentences)
+    by_text = {s.text: s for s in sentences}
+    assert by_text["ผมกินข้าว"].voice == "learner_voice"  # I eat rice
+    assert by_text["ผมกินข้าว"].provenance == Provenance(
+        source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
+    assert by_text["เขากินข้าว"].provenance.origin == "https://forvo.com/x"  # (s)he eats rice
+
+
+def test_all_sentences_on_empty_store_is_empty(db):
+    assert db.all_sentences() == []
+
+
 def test_add_media_provenance_idempotent(db):
     db.add_media(sha="deadbeef", kind="picture", ext="jpg", source="openverse",
                 origin="https://example.com/x.jpg", licence="cc0",
