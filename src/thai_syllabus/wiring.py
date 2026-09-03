@@ -33,7 +33,7 @@ violations, just latitude the terse text left to fill in:
   and Provider looks a backend up by name, not by a per-call producer
   argument. A "batch" transport has no single-question `.complete()`
   (assessor.JudgeBackend.fetch's own docstring: "configured for batch
-  only -- use Assessor.ask_batch"), so the llm backend is not registered
+  only -- use Assessor.ask_many"), so the llm backend is not registered
   at all when judge.transport == "batch" (build_levers mirrors this: no
   "sentence" lever either).
 - build_assessor(cfg, db) registers only "judge" -- the one backend

@@ -8,16 +8,23 @@ import pytest
 
 from thai_syllabus.assessor import (
     AUTHORITY_ORDER,
+    ROLE_FOR_KIND,
     AssessQuestion,
     Assessor,
     BatchPending,
     JudgeBackend,
     LearnerAskNotSupported,
+    ManyResult,
+    Price,
     RawVerdict,
     Verdict,
     duration_mechanical_backend,
     format_mechanical_backend,
+    parse_preference,
+    picture_fit_prompt,
+    picture_preference_prompt,
 )
+from thai_syllabus.cachekeys import sha
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 
@@ -121,7 +128,8 @@ def test_judge_key_falls_back_to_subject_when_there_is_no_artifact():
     # A text-only judged question (no artifact_sha, e.g. a sentence quality
     # verdict) must still distinguish different subjects under the same
     # rubric/role -- a bare '-' placeholder would collide them.
-    backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
+    backend = JudgeBackend(model="m", transport="cli",
+                           complete=lambda p, a=(): Completion(text="true"))
     q1 = AssessQuestion(subject="sentence-1", role="r", rubric="x")
     q2 = AssessQuestion(subject="sentence-2", role="r", rubric="x")
     assert backend.cache_key(q1) != backend.cache_key(q2)
@@ -131,7 +139,7 @@ def test_judge_key_falls_back_to_subject_when_there_is_no_artifact():
 def test_judge_fetch_builds_a_prompt_and_parses_the_response():
     prompts = []
 
-    def complete(prompt):
+    def complete(prompt, attachments=()):
         prompts.append(prompt)
         return Completion(text='{"value": true, "evidence": "clear picture"}')
 
@@ -146,7 +154,7 @@ def test_judge_fetch_builds_a_prompt_and_parses_the_response():
 
 def test_judge_backend_without_a_transport_refuses_single_question_fetch():
     backend = JudgeBackend(model="m", transport="batch")  # no `complete`
-    with pytest.raises(RuntimeError, match="ask_batch"):
+    with pytest.raises(RuntimeError, match="ask_many"):
         backend.fetch(AssessQuestion(subject="s", role="r"))
 
 
@@ -176,18 +184,20 @@ def test_ask_batch_submits_once_and_persists_a_batch_pending_row(db):
     assessor = Assessor(record=db, cache=db, backends={"judge": backend})
     q1 = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="a1", rubric="r")
     q2 = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="a2", rubric="r")
+    k1, k2 = backend.cache_key(q1), backend.cache_key(q2)
+    cid1, cid2 = "q" + sha(k1), "q" + sha(k2)
 
     with pytest.raises(BatchPending) as exc:
         assessor.ask_batch("judge", [q1, q2])
     assert exc.value.batch_id == "batch-1"
-    assert set(exc.value.pending_subjects) == {"w1", "w2"}
-    assert set(bt.submitted) == {"w1", "w2"}
+    assert set(exc.value.pending_keys) == {k1, k2}
+    assert exc.value.resolved == {}
+    assert set(bt.submitted) == {cid1, cid2}
 
     # calling again while still in_progress does NOT resubmit
     with pytest.raises(BatchPending):
         assessor.ask_batch("judge", [q1, q2])
     assert bt.submitted is not None
-    submitted_once = bt.submitted
     bt.submitted = None
     with pytest.raises(BatchPending):
         assessor.ask_batch("judge", [q1, q2])
@@ -200,23 +210,25 @@ def test_ask_batch_resumes_and_writes_individual_verdicts_once_ended(db):
     assessor = Assessor(record=db, cache=db, backends={"judge": backend})
     q1 = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="a1", rubric="r")
     q2 = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="a2", rubric="r")
+    k1, k2 = backend.cache_key(q1), backend.cache_key(q2)
 
     with pytest.raises(BatchPending):
         assessor.ask_batch("judge", [q1, q2])
 
     bt._status = "ended"
-    bt._results = {"w1": Completion(text='{"value": true, "evidence": "good"}'),
-                   "w2": Completion(text='{"value": false, "evidence": "blurry"}')}
+    bt._results = {"q" + sha(k1): Completion(text='{"value": true, "evidence": "good"}'),
+                   "q" + sha(k2): Completion(text='{"value": false, "evidence": "blurry"}')}
     results = assessor.ask_batch("judge", [q1, q2])
-    assert results["w1"].value is True
-    assert results["w2"].value is False
-    assert len(db.assessments_of("w1")) == 1
-    assert len(db.assessments_of("w2")) == 1
+    assert results[k1].value is True
+    assert results[k2].value is False
+    # 2 rows each: the per-subject batch-pending marker plus the verdict
+    assert len(db.assessments_of("w1")) == 2
+    assert len(db.assessments_of("w2")) == 2
 
     # a further call is now a pure cache hit -- no batch transport touched
     bt.submitted = None
     results2 = assessor.ask_batch("judge", [q1, q2])
-    assert results2["w1"].value is True
+    assert results2[k1].value is True
 
 
 def test_ask_batch_returns_cached_verdicts_without_touching_the_transport(db):
@@ -229,7 +241,7 @@ def test_ask_batch_returns_cached_verdicts_without_touching_the_transport(db):
              question={}, answer={"value": True})
     q1 = AssessQuestion(subject="w1", role="r", artifact_sha="a1", rubric="x")
     results = assessor.ask_batch("judge", [q1])
-    assert results["w1"].value is True
+    assert results[key].value is True
     assert bt.submitted is None  # never touched the transport
 
 
@@ -298,3 +310,208 @@ def test_authority_order_puts_learner_ahead_of_judge_on_fit_roles():
 def test_authority_order_puts_mechanical_ahead_of_judge_on_recording_roles():
     assert AUTHORITY_ORDER["recording-for-word"][0] == "mechanical"
     assert "learner" not in AUTHORITY_ORDER["recording-for-word"]
+
+
+# --- spec 3 section 1/2: judge attaches artifacts, prices verdicts, --------
+# --- Assessor.ask_many, batch keyed by cache key ---------------------------
+
+def test_role_for_kind_and_rendition_authority():
+    assert ROLE_FOR_KIND["picture"] == "picture-for-word"
+    assert AUTHORITY_ORDER["rendition-for-pair"] == ("mechanical",)
+
+
+def test_price_costs_a_completion():
+    p = Price(input_per_mtok=2.0, output_per_mtok=10.0)
+    assert p.cost(Completion(text="", input_tokens=1_000_000, output_tokens=100_000)) == 3.0
+
+
+def test_judge_fetch_attaches_the_artifact_and_prices_the_verdict(tmp_path):
+    img = tmp_path / "abc.jpg"
+    img.write_bytes(b"x")
+    seen = {}
+
+    def complete(prompt, attachments=()):
+        seen["attachments"] = list(attachments)
+        return Completion(text='{"value": true, "evidence": "fits"}', input_tokens=500, output_tokens=50)
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete,
+                      resolve_path=lambda sha: img if sha == "abc" else None,
+                      price=Price(2.0, 10.0))
+    raw = jb.fetch(AssessQuestion(subject="w", role="picture-for-word", artifact_sha="abc", rubric="r"))
+    assert raw.value is True and seen["attachments"] == [img]
+    assert abs(raw.cost - (500 * 2.0 + 50 * 10.0) / 1_000_000) < 1e-12
+
+
+def test_judge_cli_cost_is_one_quota_call():
+    jb = JudgeBackend(model="m", transport="cli",
+                      complete=lambda p, a=(): Completion(text="true"), quota_cost_per_call=1.0)
+    assert jb.fetch(AssessQuestion(subject="w", role="picture-for-word", rubric="r")).cost == 1.0
+
+
+def test_preference_question_key_and_attachments(tmp_path):
+    a, b = tmp_path / "a.jpg", tmp_path / "b.jpg"
+    a.write_bytes(b"a"); b.write_bytes(b"b")
+    paths = {"sha-a": a, "sha-b": b}
+    seen = {}
+
+    def complete(prompt, attachments=()):
+        seen["n"] = len(list(attachments))
+        return Completion(text='{"ranking": ["sha-b", "sha-a"]}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete,
+                      resolve_path=paths.get, parse_response=parse_preference,
+                      prompt_builder=picture_preference_prompt)
+    q = AssessQuestion(subject="w", role="picture-preference", rubric="pref",
+                       params={"candidates": ["sha-b", "sha-a"], "word": "x", "meaning": "y"})
+    assert jb.cache_key(q).endswith(":picture-preference")
+    assert jb.cache_key(q) == jb.cache_key(AssessQuestion(
+        subject="w", role="picture-preference", rubric="pref",
+        params={"candidates": ["sha-a", "sha-b"]}))
+    raw = jb.fetch(q)
+    assert raw.value == ["sha-b", "sha-a"] and seen["n"] == 2
+
+
+def test_picture_fit_prompt_delimits_fields_and_names_the_rubric():
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s", rubric="RUBRIC",
+                       params={"word": "ส้ม", "meaning": "orange", "gloss_shown": "orange",
+                               "phrase": "oranges on a table"})
+    p = picture_fit_prompt(q)
+    assert "RUBRIC" in p and "<deck-field>ส้ม</deck-field>" in p and "oranges on a table" in p
+    assert '"value"' in p
+
+
+def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
+    calls = []
+
+    def complete(prompt, attachments=()):
+        calls.append(prompt)
+        if "boom" in prompt:
+            raise TransportError("boom")
+        return Completion(text="true")
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    qs = [AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r"),
+          AssessQuestion(subject="w", role="picture-for-word", artifact_sha="boom", rubric="r")]
+    res = a.ask_many("judge", qs)
+    assert isinstance(res, ManyResult)
+    assert set(res.resolved) == {jb.cache_key(qs[0])} and res.pending == []
+    assert len(calls) == 2  # both questions were attempted, not short-circuited
+
+
+def test_ask_many_batch_returns_pending_keys_and_writes_per_subject_marker(db):
+    class BT:
+        def submit(self, requests):
+            assert all(cid.startswith("q") for cid in requests)
+            return "batch_9"
+
+        def status(self, batch_id):
+            return "in_progress"
+
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=BT())
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    qs = [AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r"),
+          AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s2", rubric="r")]
+    res = a.ask_many("judge", qs)
+    assert res.resolved == {} and set(res.pending) == {jb.cache_key(q) for q in qs}
+    marker = db.latest("assess", "judge", "judge-batch-pending:w")
+    assert marker is not None and marker.answer["batch_id"] == "batch_9"
+    assert set(marker.question["keys"]) == {jb.cache_key(q) for q in qs}
+
+
+def test_ask_many_batch_writes_one_marker_row_per_subject_with_only_its_own_keys(db):
+    class BT:
+        def submit(self, requests):
+            return "batch_7"
+
+        def status(self, batch_id):
+            return "in_progress"
+
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=BT())
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q1 = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="s1", rubric="r")
+    q2 = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="s2", rubric="r")
+    a.ask_many("judge", [q1, q2])
+
+    m1 = db.latest("assess", "judge", "judge-batch-pending:w1")
+    m2 = db.latest("assess", "judge", "judge-batch-pending:w2")
+    assert m1 is not None and m1.question["keys"] == [jb.cache_key(q1)]
+    assert m2 is not None and m2.question["keys"] == [jb.cache_key(q2)]
+
+
+def test_ask_many_batch_excludes_a_question_whose_sha_cannot_be_resolved(db, tmp_path):
+    img = tmp_path / "ok.jpg"
+    img.write_bytes(b"x")
+
+    class BT:
+        def __init__(self):
+            self.submitted = None
+
+        def submit(self, requests):
+            self.submitted = dict(requests)
+            return "batch_5"
+
+        def status(self, batch_id):
+            return "in_progress"
+
+    bt = BT()
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=bt,
+                      resolve_path=lambda s: img if s == "ok" else None)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q_ok = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="ok", rubric="r")
+    q_bad = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="missing", rubric="r")
+
+    res = a.ask_many("judge", [q_ok, q_bad])
+
+    assert set(bt.submitted) == {"q" + sha(jb.cache_key(q_ok))}  # only the resolvable one submitted
+    marker = db.latest("assess", "judge", "judge-batch-pending:w1")
+    assert marker is not None and marker.question["keys"] == [jb.cache_key(q_ok)]
+    assert db.latest("assess", "judge", "judge-batch-pending:w2") is None  # excluded, no marker
+    assert res.resolved == {}
+    assert res.pending == [jb.cache_key(q_ok)]
+
+
+# --- two controller-decided additions: key_of, two-parameter parse_response
+
+def test_assessor_key_of_matches_the_backend_cache_key(db):
+    jb = JudgeBackend(model="m", transport="api", complete=lambda p, a=(): Completion(text="true"))
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    assert a.key_of("judge", q) == jb.cache_key(q)
+
+
+def test_parse_response_receives_the_question_when_it_declares_two_params():
+    def parse_two(text, question):
+        return RawVerdict(value=question.subject, evidence=text)
+
+    jb = JudgeBackend(model="m", transport="api",
+                      complete=lambda p, a=(): Completion(text="ignored"),
+                      parse_response=parse_two)
+    raw = jb.fetch(AssessQuestion(subject="w9", role="picture-for-word", rubric="r"))
+    assert raw.value == "w9" and raw.evidence == "ignored"
+
+
+# --- review fix: an unresolvable sha must raise, never be silently dropped
+
+def test_fit_fetch_raises_when_the_artifact_sha_cannot_be_resolved():
+    jb = JudgeBackend(model="m", transport="api",
+                      complete=lambda p, a=(): Completion(text="true"),
+                      resolve_path=lambda sha: None)
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="missing", rubric="r")
+    with pytest.raises(TransportError):
+        jb.fetch(q)
+
+
+def test_preference_fetch_raises_when_one_candidate_cannot_be_resolved(tmp_path):
+    img_a = tmp_path / "a.jpg"
+    img_a.write_bytes(b"a")
+    paths = {"sha-a": img_a}  # sha-b deliberately left unresolvable
+
+    jb = JudgeBackend(model="m", transport="api",
+                      complete=lambda p, attachments=(): Completion(text='{"ranking": []}'),
+                      resolve_path=paths.get, parse_response=parse_preference,
+                      prompt_builder=picture_preference_prompt)
+    q = AssessQuestion(subject="w", role="picture-preference", rubric="pref",
+                       params={"candidates": ["sha-a", "sha-b"]})
+    with pytest.raises(TransportError):
+        jb.fetch(q)
