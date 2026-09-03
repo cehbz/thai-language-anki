@@ -29,6 +29,11 @@ from .tts import FEMALE_VOICES, MALE_VOICES
 _SEVERITIES = {"error", "warn", "info"}
 
 
+def _is_number(value: Any) -> bool:
+    """int/float but not bool (bool is an int subclass in Python)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 class CuratedValidationError(ValueError):
     """Raised with every collected validation error, not just the first."""
     def __init__(self, errors: list[str]):
@@ -299,21 +304,24 @@ def load_profile(path: str | Path) -> Profile:
 @dataclass(frozen=True)
 class RulebookConfig:
     """Human-tunable overlay on the code-defined rulebook (spec 1 section
-    4's Rule objects): severities, thresholds, judged-rule rubric text.
-    Not itself the rule registry -- rulebook.py's RULES list is the code;
-    this is curated data a caller may use to override it (wiring that
-    overlay into the registry is out of this deliverable's scope).
+    4's Rule objects): severities, thresholds, judged-rule rubric text, and
+    provenance's source-preference order. Not itself the rule registry --
+    rulebook.py's RULES list is the code; this is curated data a caller
+    applies over it via rulebook.apply_overlay(RULES, config).
     """
     severities: dict[str, str] = field(default_factory=dict)
     thresholds: dict[str, float] = field(default_factory=dict)
     rubrics: dict[str, str] = field(default_factory=dict)
+    # provenance's preference order (spec 3): earlier sources win ties.
+    provenance_prior: tuple[str, ...] = ("commission", "forvo", "tts")
 
 
 def save_rulebook_config(path: str | Path, config: RulebookConfig) -> None:
     _atomic_write_yaml(Path(path), {
         "severities": dict(config.severities),
         "thresholds": dict(config.thresholds),
-        "rubrics": dict(config.rubrics)})
+        "rubrics": dict(config.rubrics),
+        "provenance_prior": list(config.provenance_prior)})
 
 
 def load_rulebook_config(path: str | Path) -> RulebookConfig:
@@ -332,9 +340,20 @@ def load_rulebook_config(path: str | Path) -> RulebookConfig:
         if not isinstance(value, (int, float)):
             errors.append(f"rulebook.thresholds[{rule_id!r}]: {value!r} is not numeric")
     rubrics = dict(data.get("rubrics") or {})
+    if "provenance_prior" in data:
+        raw_prior = data["provenance_prior"]
+        if not isinstance(raw_prior, list) or not all(isinstance(x, str) for x in raw_prior):
+            errors.append(f"rulebook.provenance_prior: {raw_prior!r} must be a "
+                          "list of strings")
+            provenance_prior = RulebookConfig().provenance_prior
+        else:
+            provenance_prior = tuple(raw_prior)
+    else:
+        provenance_prior = RulebookConfig().provenance_prior
     if errors:
         raise CuratedValidationError(errors)
-    return RulebookConfig(severities=severities, thresholds=thresholds, rubrics=rubrics)
+    return RulebookConfig(severities=severities, thresholds=thresholds, rubrics=rubrics,
+                          provenance_prior=provenance_prior)
 
 
 # --- combined bundle -----------------------------------------------------
@@ -443,16 +462,18 @@ def rulebook_file_text(path: str | Path) -> str:
 # --- providers.yaml (spec 3 section 5) --------------------------------------
 #
 # Per-backend settings: secret references (resolved by SecretStore, ported
-# in secrets.py), search_proxy, imgfetch path, tts voice pools (defaulting
-# to tts.py's shipped male/female lists), judge transport + model, batch
-# limits, quotas, k and attempt caps. One file; no env vars; no settings
-# in two places (judged-rule rubric TEXT stays in rulebook.yaml -- WHAT to
-# ask; this file is HOW to reach things).
+# in secrets.py), search_proxy, imgfetch/audiofetch paths, tts voice pools
+# (defaulting to tts.py's shipped male/female lists), judge transport +
+# model + price_per_mtok, image_candidates, batch limits, quotas, k and
+# attempt caps. One file; no env vars; no settings in two places (judged-
+# rule rubric TEXT stays in rulebook.yaml -- WHAT to ask; this file is HOW
+# to reach things).
 
 @dataclass(frozen=True)
 class JudgeConfig:
     transport: str = "cli"   # "cli" | "api" | "batch"
     model: str = ""
+    price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
 
 
 @dataclass(frozen=True)
@@ -460,9 +481,11 @@ class ProvidersConfig:
     secrets: dict[str, str | None] = field(default_factory=dict)
     search_proxy: str | None = None
     imgfetch_path: str | None = None
+    audiofetch_path: str | None = None
     tts_male_voices: tuple[str, ...] = field(default_factory=lambda: tuple(MALE_VOICES))
     tts_female_voices: tuple[str, ...] = field(default_factory=lambda: tuple(FEMALE_VOICES))
     judge: JudgeConfig = field(default_factory=JudgeConfig)
+    image_candidates: int = 5  # candidate images fetched per target word
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     k: int = 2                 # exhausted()'s "last k provide-attempts" default
@@ -493,7 +516,27 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if transport not in ("cli", "api", "batch"):
         errors.append(f"providers.judge.transport: {transport!r} is not one of "
                       "'cli', 'api', 'batch'")
-    judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""))
+    price_per_mtok = None
+    if "price_per_mtok" in judge_cfg:
+        price_cfg = judge_cfg["price_per_mtok"]
+        if not isinstance(price_cfg, Mapping):
+            errors.append(f"providers.judge.price_per_mtok: {price_cfg!r} must be "
+                          "a mapping with 'input' and 'output'")
+        else:
+            input_price = price_cfg.get("input")
+            output_price = price_cfg.get("output")
+            if not _is_number(input_price) or not _is_number(output_price):
+                errors.append(f"providers.judge.price_per_mtok: {price_cfg!r} needs "
+                              "numeric 'input' and 'output'")
+            else:
+                price_per_mtok = (float(input_price), float(output_price))
+    judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
+                        price_per_mtok=price_per_mtok)
+
+    image_candidates = data.get("image_candidates", 5)
+    if not isinstance(image_candidates, int) or image_candidates < 1:
+        errors.append(f"providers.image_candidates: {image_candidates!r} must be "
+                      "a positive integer")
 
     k = data.get("k", 2)
     attempt_cap = data.get("attempt_cap", 8)
@@ -507,19 +550,27 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
     return ProvidersConfig(
         secrets=secrets_cfg, search_proxy=data.get("search_proxy"),
-        imgfetch_path=data.get("imgfetch_path"), tts_male_voices=male,
-        tts_female_voices=female, judge=judge, batch=dict(data.get("batch") or {}),
-        quotas=dict(data.get("quotas") or {}), k=k, attempt_cap=attempt_cap)
+        imgfetch_path=data.get("imgfetch_path"),
+        audiofetch_path=data.get("audiofetch_path"), tts_male_voices=male,
+        tts_female_voices=female, judge=judge, image_candidates=image_candidates,
+        batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
+        k=k, attempt_cap=attempt_cap)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
+    judge: dict[str, Any] = {"transport": config.judge.transport, "model": config.judge.model}
+    if config.judge.price_per_mtok is not None:
+        input_price, output_price = config.judge.price_per_mtok
+        judge["price_per_mtok"] = {"input": input_price, "output": output_price}
     _atomic_write_yaml(Path(path), {
         "secrets": dict(config.secrets),
         "search_proxy": config.search_proxy,
         "imgfetch_path": config.imgfetch_path,
+        "audiofetch_path": config.audiofetch_path,
         "tts": {"male_voices": list(config.tts_male_voices),
                "female_voices": list(config.tts_female_voices)},
-        "judge": {"transport": config.judge.transport, "model": config.judge.model},
+        "judge": judge,
+        "image_candidates": config.image_candidates,
         "batch": dict(config.batch),
         "quotas": dict(config.quotas),
         "k": config.k,

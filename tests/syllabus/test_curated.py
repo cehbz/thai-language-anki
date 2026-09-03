@@ -3,6 +3,8 @@ curated/*.yaml, round-tripped through spec 1's entities. Atomic saves
 (temp+os.replace); loading collects every validation error instead of
 failing on the first one.
 """
+import textwrap
+
 import pytest
 import yaml
 
@@ -196,6 +198,42 @@ def test_rulebook_config_validation_rejects_bad_severity(tmp_path):
         curated.load_rulebook_config(path)
 
 
+def test_rulebook_config_defaults_round_trip(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    curated.save_rulebook_config(path, curated.RulebookConfig())
+    assert curated.load_rulebook_config(path) == curated.RulebookConfig()
+
+
+def test_rulebook_provenance_prior_round_trip(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    path.write_text("provenance_prior: [commission, forvo]\n", encoding="utf-8")
+    cfg = curated.load_rulebook_config(path)
+    assert cfg.provenance_prior == ("commission", "forvo")
+    curated.save_rulebook_config(path, cfg)
+    assert curated.load_rulebook_config(path).provenance_prior == ("commission", "forvo")
+    assert curated.RulebookConfig().provenance_prior == ("commission", "forvo", "tts")
+
+
+def test_rulebook_provenance_prior_explicit_empty_list_stays_empty(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    path.write_text("provenance_prior: []\n", encoding="utf-8")
+    assert curated.load_rulebook_config(path).provenance_prior == ()
+
+
+def test_rulebook_provenance_prior_rejects_a_bare_string(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    path.write_text("provenance_prior: commission\n", encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError, match="provenance_prior"):
+        curated.load_rulebook_config(path)
+
+
+def test_rulebook_provenance_prior_rejects_a_non_string_element(tmp_path):
+    path = tmp_path / "rulebook.yaml"
+    path.write_text("provenance_prior: [commission, 3]\n", encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError, match="provenance_prior"):
+        curated.load_rulebook_config(path)
+
+
 # --- frequency map -------------------------------------------------------
 
 def test_frequency_map_ranks_by_line_position(tmp_path):
@@ -280,13 +318,94 @@ def test_providers_config_round_trip(tmp_path):
     config = curated.ProvidersConfig(
         secrets={"forvo": "op://Shared/Forvo/API Key", "google_tts": "~/.secrets/tts"},
         search_proxy="https://proxy.example", imgfetch_path="/usr/bin/curl",
+        audiofetch_path="/usr/bin/wget",
         tts_male_voices=("v1",), tts_female_voices=("v2",),
-        judge=curated.JudgeConfig(transport="batch", model="claude-opus-5"),
+        judge=curated.JudgeConfig(transport="batch", model="claude-opus-5",
+                                  price_per_mtok=(2.0, 10.0)),
+        image_candidates=7,
         batch={"max_requests": 1000}, quotas={"forvo": {"max_asks": 450}},
         k=3, attempt_cap=10)
     curated.save_providers_config(path, config)
     loaded = curated.load_providers_config(path)
     assert loaded == config
+
+
+def test_providers_judge_price_and_image_candidates_round_trip(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(textwrap.dedent("""
+        judge: {transport: batch, model: claude-sonnet-5, price_per_mtok: {input: 2.0, output: 10.0}}
+        image_candidates: 3
+    """), encoding="utf-8")
+    cfg = curated.load_providers_config(path)
+    assert cfg.judge.price_per_mtok == (2.0, 10.0) and cfg.image_candidates == 3
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_defaults_when_absent():
+    cfg = curated.ProvidersConfig()
+    assert cfg.image_candidates == 5 and cfg.judge.price_per_mtok is None
+
+
+def test_providers_config_defaults_round_trip(tmp_path):
+    path = tmp_path / "providers.yaml"
+    curated.save_providers_config(path, curated.ProvidersConfig())
+    assert curated.load_providers_config(path) == curated.ProvidersConfig()
+
+
+def test_providers_judge_price_rejects_a_missing_output(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({
+        "judge": {"transport": "cli", "price_per_mtok": {"input": 2.0}}}))
+    with pytest.raises(curated.CuratedValidationError, match="price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_price_rejects_non_numeric_values(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({
+        "judge": {"transport": "cli",
+                  "price_per_mtok": {"input": "cheap", "output": 10.0}}}))
+    with pytest.raises(curated.CuratedValidationError, match="price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_price_rejects_a_scalar(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"judge": {"transport": "cli", "price_per_mtok": 2.0}}))
+    with pytest.raises(curated.CuratedValidationError, match="price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_price_rejects_a_list(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({
+        "judge": {"transport": "cli", "price_per_mtok": [2.0, 10.0]}}))
+    with pytest.raises(curated.CuratedValidationError, match="price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_price_rejects_bools(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({
+        "judge": {"transport": "cli",
+                  "price_per_mtok": {"input": True, "output": 10.0}}}))
+    with pytest.raises(curated.CuratedValidationError, match="price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_image_candidates_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"image_candidates": 0}))
+    with pytest.raises(curated.CuratedValidationError, match="image_candidates"):
+        curated.load_providers_config(path)
+
+
+def test_providers_image_candidates_rejects_a_string(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"image_candidates": "five"}))
+    with pytest.raises(curated.CuratedValidationError, match="image_candidates"):
+        curated.load_providers_config(path)
 
 
 def test_providers_config_secrets_resolve_via_secret_store(tmp_path):

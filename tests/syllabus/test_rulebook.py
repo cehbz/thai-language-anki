@@ -3,11 +3,14 @@ grapheme/keyword-contains-symbol, sentence/fills-novelty, syllabus/closure,
 media/picture-required, coverage/confusions, rulebook/traceability, and one
 judged rule (sentence/register-natural) exercising the AssessmentReader path.
 """
+from thai_syllabus.curated import RulebookConfig
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
-from thai_syllabus.rulebook import ENFORCEMENT_PRINCIPLES, PRINCIPLES, RULES, traceability_metric
+from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PRINCIPLES, RULES,
+                                    SENTENCE_REGISTER_NATURAL, apply_overlay,
+                                    traceability_metric)
 from thai_syllabus.syllabus import Syllabus
 
 from .builders import pron, sentence, syl, target, word
@@ -211,3 +214,27 @@ def test_sentence_register_rule_is_silent_with_no_cached_verdict():
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/register-natural"]
     assert findings == []
+
+
+# --- rulebook overlay (spec 3) -----------------------------------------------
+
+def test_overlay_changes_severity_and_rubric_only_where_configured():
+    cfg = RulebookConfig(severities={"sentence/register-natural": "error"},
+                         rubrics={"sentence/register-natural": "new text"})
+    out = apply_overlay(RULES, cfg)
+    by_id = {r.id: r for r in out}
+    assert by_id["sentence/register-natural"].severity == "error"
+    assert by_id["sentence/register-natural"].rubric == "new text"
+    assert by_id["syllabus/closure"].severity == "error"
+    assert SENTENCE_REGISTER_NATURAL.severity == "warn"  # registry untouched
+
+
+def test_overlay_ignores_a_rubric_override_targeting_a_non_judged_rule():
+    cfg = RulebookConfig(rubrics={"syllabus/closure": "should be ignored"})
+    out = apply_overlay(RULES, cfg)
+    by_id = {r.id: r for r in out}
+    assert by_id["syllabus/closure"].rubric is None
+
+
+def test_rule_role_defaults_to_id():
+    assert SENTENCE_REGISTER_NATURAL.role == "sentence/register-natural"

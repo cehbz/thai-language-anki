@@ -10,6 +10,7 @@ list; `test_the_shipped_rulebook_is_internally_traceable` checks that
 scoped claim, and `traceability_metric` itself is exercised independently
 against synthetic registries in tests/syllabus/test_rulebook.py.
 """
+import dataclasses
 import hashlib
 import json
 from collections.abc import Sequence
@@ -19,6 +20,7 @@ from .entities import exact_confusion_violation
 from .rules import Finding, Metric, Rule
 
 if TYPE_CHECKING:
+    from .curated import RulebookConfig
     from .entities import Sentence
     from .syllabus import Syllabus
 
@@ -243,6 +245,22 @@ def _measure_traceability(syllabus: "Syllabus") -> Metric:
 RULEBOOK_TRACEABILITY = Rule(id="rulebook/traceability", principle="META-1",
                              severity="info", shape="measure",
                              measure=_measure_traceability)
+
+
+# --- rulebook overlay (spec 3) ----------------------------------------------
+# Applies a curated RulebookConfig's severity/rubric overrides on top of the
+# code-defined registry, leaving RULES itself untouched.
+
+def apply_overlay(rules: Sequence[Rule], config: "RulebookConfig") -> tuple[Rule, ...]:
+    out = []
+    for r in rules:
+        changes: dict = {}
+        if r.id in config.severities:
+            changes["severity"] = config.severities[r.id]
+        if r.shape == "judged" and r.id in config.rubrics:
+            changes["rubric"] = config.rubrics[r.id]
+        out.append(dataclasses.replace(r, **changes) if changes else r)
+    return tuple(out)
 
 
 RULES: list[Rule] = [

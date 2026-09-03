@@ -117,6 +117,9 @@ class Rule:
     # judged only: enumerates the (note_id, artifact_sha) pairs this rule
     # asks the Assess port about.
     judged_subjects: Callable[[Any], list[tuple[str, str | None]]] | None = None
+    # judged only: the Assess role whose verdicts report() reads, defaults
+    # to `id`.
+    role: str | None = None
 
     def __post_init__(self) -> None:
         shape_field = {"check": self.check, "measure": self.measure,
@@ -126,3 +129,5 @@ class Rule:
                              f"has no matching function")
         if self.shape == "judged" and not self.rubric:
             raise ValueError(f"judged rule {self.id!r} needs rubric text")
+        if self.role is None:
+            object.__setattr__(self, "role", self.id)
