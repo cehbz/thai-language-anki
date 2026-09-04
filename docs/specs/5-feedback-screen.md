@@ -1,13 +1,16 @@
 # Spec 5: The feedback screen
 
-Revision 1, promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft. Re-checked against principles r1 and architecture r1
+Revision 2, proposed 2026-09-04 against principles r2 and architecture
+r1 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
+principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
 evidence, explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
+- r2 2026-09-04: excluded and unreachable in stats and on the subject
+  screen (spec 3 §7).
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Grows out of
@@ -68,7 +71,9 @@ server-side.
 
 Per-session: answered/queued, per-confusion drill accuracy, counts of
 exhausted subjects remaining. Per-deck: current-best coverage per need,
-learner-rated good/acceptable/unacceptable counts, RunReport history.
+learner-rated good/acceptable/unacceptable counts, RunReport history
+with every field of spec 3 §7 (excluded and unreachable included). The
+per-subject screen lists excluded candidates with the reason.
 
 ## 4. Explicitly out
 

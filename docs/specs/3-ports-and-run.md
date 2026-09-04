@@ -1,13 +1,21 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 1, promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft. Re-checked against principles r1 and architecture r1
+Revision 2, proposed 2026-09-04 against principles r2 and architecture
+r1 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
+principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
 evidence, explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
+- r2 2026-09-04: one Message Batch per run, one source per need per run
+  (§7); pending narrowed to an unresolved batch (§6); improved defined,
+  excluded and unreachable reported (§7); recording voice constraint and
+  speaker attributes, pools (E7, §5); coverage/speakers (§8); an attempt
+  appends under the need's own subject (§5); authority order as domain
+  data (§4); carry-over rewritten (§10); the 09-03 roster row for
+  audiofetch approved.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -101,7 +109,7 @@ speaker-directed search does not exist.
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording flag, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; a recording flag queues re-verification, never outranks fact |
 
-**Authority order per role** (data in assessor.py): picture-for-word:
+**Authority order per role** (domain data, spec 1 §4): picture-for-word:
 learner > judge. sentence-for-target: learner > judge. recording-for-word:
 listener (when calibrated) > mechanical; learner flags queue, never rank.
 rendition-for-pair: mechanical (one-speaker check).
@@ -111,8 +119,9 @@ e.g. commission > forvo > tts): orders eligible candidates only where no
 assessor has spoken. It never fails a candidate and any verdict outranks it.
 
 **Judge transports**: cli / api / batch, selected in providers.yaml; the
-run does not know which (section 7). Batch resume state is a cache row
-keyed on the request set. report() never calls Assess.
+run does not know which (section 7). Batch state is one marker row per
+run, keyed on the batch id, released when the batch resolves, expires,
+or fails. report() never calls Assess.
 
 ## 5. Attempts per need kind
 
@@ -124,17 +133,24 @@ openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
 
-**Recording (Word).** Source order: forvo, tts, commission. Forvo attempt:
-lookup (cached forever), download each item's mp3, mechanical
-duration/format on each; current-best by authority then provenance prior.
-TTS attempt: synthesize with a pool voice (production draws male), then
-mechanical. Warn `recording/synthetic` when current-best is TTS (the
+**Recording (Word).** Source order: forvo, tts, commission. Voice
+constraint (E2, E7): male if the word has a productive Target (the
+recording plays on the productive back), any sex otherwise; within the
+constraint the pick spreads over the pool. Forvo attempt: lookup (cached
+forever), download each item's mp3, mechanical duration/format on each;
+the item's sex and country are recorded on the speaker (spec 2);
+current-best by authority then provenance prior. TTS attempt: synthesize
+with a pool voice (pools per sex in providers.yaml; the roster's sex is
+recorded on the speaker), then mechanical. TTS supplies sex and timbre
+only; Forvo and commissions supply age and accent. Warn `recording/synthetic` when current-best is TTS (the
 native-audio principle is kept as the target; commission is tracked in
 TODO).
 
 **Rendition (MinimalPair).** Source order: forvo (intersection of members'
 lookups by username; one lookup per member, shared with the recording
-need), tts (one voice), commission. Mechanical checks one speaker across
+need), tts (one voice), commission. The attempt appends its ask under
+the pair, the need's own subject, even though the lookups are cached per
+member: exhausted() counts attempts per need. Mechanical checks one speaker across
 members and duration. Findings: none for native one-speaker;
 `rendition/synthetic` (warn) for TTS; `rendition/mixed-speakers` (warn)
 when the members' current-best recordings differ in speaker and no
@@ -168,9 +184,11 @@ Implemented after cutover.
   rank); among equals, the provenance prior; never below an artifact the
   learner rated acceptable. A passing mechanical verdict ranks a recording;
   a passing judge fit ranks a picture; preference orders passing pictures.
-- **pending(subject, kind)**: some candidate lacks a verdict from the
-  deciding authority, or its questions sit in a submitted batch. A pending
-  need gets no new attempt and no escalation.
+- **pending(subject, kind)**: a question about one of its candidates
+  sits in a submitted, unresolved batch. Nothing else is pending: with an
+  inline transport a verdict arrives inside the attempt, an unpreparable
+  question is excluded, and a judge that cannot be reached stops the
+  run. A pending need gets no new attempt.
 - **exhausted(subject, kind)**: unchanged: the last k attempts produced no
   candidate out-ranking current-best and the attempt cap is reached;
   reopened by learner input, a rubric change, or a new source.
@@ -186,23 +204,39 @@ Implemented after cutover.
 Budget per source in its currency: {max_asks?, max_cost?}; forvo 450/day,
 learner 20/session. Spend is summed from the record for per-day budgets.
 
+One source per need per run; one judge batch per run. Escalation to the
+next source happens on the next run, for every transport alike, so the
+loop has one shape and a run is cheap and repeatable (F10).
+
 ```
 run(syllabus, budgets):
+  resolve the previous run's batch, if any: append its verdicts, release
+      its marker (an expired or failed batch releases too; its questions
+      re-ask). Pending clears here.
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
+  questions = []
   for need in queue(syllabus, budgets):        # pending excluded
-      for source in sources_for(need.kind):     # cheapest first
-          if budget spent: continue
-          attempt(need, source)                 # provide + assess all
-          if pending(need): break               # verdicts outstanding
-          if current_best(need) improved: break
-  RunReport {attempted, improved, exhausted, pending, available,
-             spend per source}
+      source = next_source(need)               # cheapest source not yet
+                                               # tried since current-best
+                                               # last changed; none ->
+                                               # exhausted, skip
+      if budget spent: continue
+      questions += attempt(need, source)       # provide; assess inline
+                                               # where the transport is
+                                               # inline, else collect
+  submit(questions) as one batch; append its marker  # no-op if empty
+  RunReport {attempted, improved, exhausted, pending, excluded,
+             unreachable, available, spend per source}
 ```
 
-Every ask appends; kill-safe anywhere. With an inline transport a pending
-need resolves inside the same attempt; with the batch transport it resolves
-in a later run. The run is transport-agnostic.
+improved = the need's current-best artifact sha differs after the
+attempt; a re-ranking among unchanged artifacts is not improvement.
+excluded = questions that could not be prepared (missing or unreadable
+artifact), reported per need and skipped. unreachable = the judge could
+not be reached; the run stops at the first such attempt and exits
+non-zero (fail fast; nothing after it is attempted). Every ask appends;
+kill-safe anywhere. The run is transport-agnostic.
 
 ## 8. Rules added
 
@@ -212,7 +246,10 @@ sentence fills it), `pair/rendition-required`,
 `grapheme/keyword-picture-required`. Warn: `recording/synthetic`,
 `rendition/synthetic`, `rendition/mixed-speakers`,
 `sentence/synthetic-productive`. Judged: `picture/fit` (old texts),
-`picture/preference`, `sentence/register-natural`. Per-deck severity
+`picture/preference`, `sentence/register-natural`. Measure:
+`coverage/speakers` (E7): per audio corpus (word recordings, renditions,
+sentence recordings), distinct speakers per sex, age band, and region
+against rulebook targets; unknown attributes never count. Per-deck severity
 overrides live in rulebook.yaml severities; that is the only relaxation
 path besides compile --force.
 
@@ -223,17 +260,15 @@ providers.yaml adds `judge.price_per_mtok: {input, output}` and
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,
 picture/preference, and sentence texts verbatim.
 
-## 10. Carry-over (amends spec 2 section 4)
+## 10. Carry-over
 
-- Item 2: current-deck images as before, AND candidates.yaml's recorded
-  pass/fail per candidate becomes the judge fit verdict under the picture-fit
-  rubric, so studied pictures rank on day one. The old judge_cache.sqlite is
-  NOT migrated: its key hashes the full prompt text, which is unrecoverable.
-  Item 5 is withdrawn.
-- Item 4: learner rows (flags, gallery notes, waivers) are keyed by word id
-  via the guid map, never by guid.
-- The machine-chosen marker is consumed by the feedback screen only.
-- Audio and sentences still regenerate.
+Spec 2 §4 as revised (r2) is the contract: old candidate verdicts carry
+under a legacy rubric id and never rank; every current picture is judged
+under the current rubric by the first run's assess-first step; the old
+judge_cache.sqlite is retired (its keys are opaque hashes of prompts,
+recoverable only by replaying the old package); learner rows are keyed
+by word id; no marker of the old deck's choice exists. Audio and
+sentences regenerate.
 
 ## 11. Report identity
 

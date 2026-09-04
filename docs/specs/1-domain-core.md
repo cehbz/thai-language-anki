@@ -1,13 +1,18 @@
 # Spec 1: Domain core
 
-Revision 1, promoted 2026-09-04 as written on 2026-09-02 against the
-principles draft. Re-checked against principles r1 and architecture r1
+Revision 2, proposed 2026-09-04 against principles r2 and architecture
+r1 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
+principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
 evidence, explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
+- r2 2026-09-04: Category as a curated collection (F2); Speaker
+  attributes (E7); Grapheme.name_word (spec 4); grapheme containment
+  re-checked by rule; authority order and role map as domain values;
+  initial rulebook enumerated against the locked principles.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -45,13 +50,29 @@ Grapheme                            # language model
   kind: Literal[consonant, vowel_sign, tone_mark]
   sound: str
   consonant_class: Literal[mid, high, low] | None
-  keyword: WordId                   # invariant: keyword's thai contains symbol
+  keyword: WordId                   # required (F6: the card shows it);
+                                    # invariant: keyword's thai contains
+                                    # symbol, checked at construction and
+                                    # re-checked on loaded data by rule
+  name_word: WordId | None          # the recited letter name as a Word
+                                    # ("gɔɔ gài" for ก); consonants today
 
 Target                              # curated learning list; the unit of
   id: TargetId                      # ordering and coverage. identity
   word: WordId
   skill: Literal[receptive, productive]
   introduction: Literal[picture_card, sentence]   # default picture_card
+
+Category                            # curated learning list: a theme of
+  name: str                         # the FF 625 list. identity
+  members: frozenset[WordId]        # invariant: a word is in at most one
+                                    # category (rule category/single-
+                                    # membership); closure words (pair
+                                    # members, keywords) are in none.
+                                    # Consumers: coverage/categories (F2),
+                                    # emphasis (Profile), the picture query
+                                    # qualifier (derived reverse lookup;
+                                    # absent for closure words)
 
 MinimalPair
   id: PairId                        # identity
@@ -72,7 +93,11 @@ Media artifacts (Picture, Recording) are content-addressed values:
 ```
 Picture   { sha: str, provenance: Provenance }
 Recording { sha: str, provenance: Provenance, speaker: Speaker }
-Speaker   { id: str, kind: Literal[native, synthetic] }
+Speaker   { id: str, kind: Literal[native, synthetic],
+            sex: Literal[male, female, unknown],
+            age_band: Literal[child, adult, older, unknown],
+            region: str | unknown }          # E7; unknown never counts
+                                             # as coverage
 Provenance{ source: str, origin: str, licence: str, acquired: date }
 ```
 
@@ -88,7 +113,7 @@ speaker across members), sentence→recording.
 Profile
   register: Literal[male_colloquial]      # shapes generation prompts,
                                           # voice constraints
-  emphasis: dict[Category, float]         # order tie-breaking, drafting
+  emphasis: dict[CategoryName, float]     # order tie-breaking, drafting
 ```
 
 Confusion training weights are NOT stored here: derived as
@@ -97,8 +122,9 @@ inputs. (Kam Mueang production parked; when unparked it enters here.)
 
 ## 3. The Syllabus aggregate
 
-Owns: all Words, Targets, Graphemes, MinimalPairs, Sentences, the
-Profile, and read access to the record/caches (spec 2 interfaces). All
+Owns: all Words, Targets, Categories, Graphemes, MinimalPairs,
+Sentences, the Profile, and read access to the record/caches (spec 2
+interfaces). All
 cross-entity behavior:
 
 **order() -> list[TargetLike]** — TargetLike = Target | PairId |
@@ -151,15 +177,43 @@ Rule
   (spec 3); their findings derive from cached assessments, so report()
   never blocks on the judge.
 
+Authority order per role (ordered backends, most authoritative first)
+and the need-kind -> role map are domain values defined beside Rule, in
+one module; assessment and the derivations (spec 3) consume them, never
+define them.
+
 Registry is explicit (a module-level list, no import side effects).
 Traceability is itself a measure: every rule names a live principle,
 every principle with enforcement intent names ≥1 rule; violations are
 info findings on the rulebook.
 
-Initial rulebook: the principles draft's lens rules (A2-A8, F1, F5, F6,
-F7, F11, E1, E4, E5 as checks/measures; F3 gloss policy parked-variant).
-Exact list enumerated at implementation-plan time against the locked
-principles.
+Initial rulebook, against principles r2. "compile" = enforced by
+Syllabus.compile() (spec 4), not a rule; "structural" = cannot be
+violated by construction.
+
+| principle | rules |
+|---|---|
+| A2, A5, A6, A7, A8 | compile |
+| A3 | card/unique-front (check, error) |
+| A4 | compile (a missing artifact drops the card, counted) |
+| F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, rendition/mixed-speakers, coverage/confusions |
+| F2 | syllabus/closure, coverage/categories (measure), category/single-membership |
+| F3 | picture/fit (judged), target/picture-required; front-gloss policy provisional |
+| F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
+| F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
+| F7, E2 | target/recording-required, recording/synthetic, sentence/synthetic-productive |
+| F8 | order/sounds-first, order/sentence-after-words, order/receptive-before-productive (checks over order()) |
+| F11 | structural: current-best ranks judged candidates only |
+| E1 | order/reading-after-graphemes (check over order()) |
+| E3 | sentence/register-natural (judged) |
+| E4 | word/pronunciation-corroborated (check, error; blocks card emission) |
+| E5 | word/classifier-known (check, warn, nouns) |
+| E7 | coverage/speakers (measure) |
+| F4, F9, F10, F12, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection decision |
+| META-1 | rulebook/traceability |
+
+The set of principles with enforcement intent is every row above with a
+rule; the traceability measure reads this table.
 
 ## 5. Explicitly out
 

@@ -1,13 +1,19 @@
 # Spec 2: Durable state
 
-Revision 1, promoted 2026-09-04 as written on 2026-09-02 against the
-principles draft. Re-checked against principles r1 and architecture r1
+Revision 2, proposed 2026-09-04 against principles r2 and architecture
+r1 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
+principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
 evidence, explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
+- r2 2026-09-04: category on words.yaml rows; speakers table (E7);
+  migration joins pictures by (thai, category), carries old verdicts
+  under a legacy rubric id that never ranks, normalizes images at
+  ingest, and drops the machine-chosen marker; the 09-03 amendment
+  folded in.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -24,7 +30,10 @@ hand-editable, machine state is not hand-edited.
 <deck>/                        # the Syllabus's home directory
   curated/                     # store 1 — human-owned YAML
     words.yaml                 # Word facts: id, thai, pron (authored IPA),
-                               # meaning, classifier
+                               # meaning, classifier; category (the row
+                               # is where a human edits it; the loader
+                               # builds the Category collections, so
+                               # single membership holds by construction)
     targets.yaml               # id, word, skill, introduction
     graphemes.yaml             # symbol, kind, sound, class, keyword
     confusions.yaml            # id, dimension, sounds + profile seed weight
@@ -47,9 +56,13 @@ write is one transaction (the append-is-checkpoint rule).
 ```
 sentences(text_sha PK, text, voice, source, origin, licence, acquired)
   -- Sentence artifacts; identity = text_sha; fills derived, never here.
-media(sha PK, kind, ext, source, origin, licence, acquired, speaker_id,
-      speaker_kind)
-  -- provenance for media/objects/*; speaker_* null for pictures.
+media(sha PK, kind, ext, source, origin, licence, acquired, speaker_id)
+  -- provenance for media/objects/*; speaker_id null for pictures.
+speakers(id PK, kind, sex, age_band, region)
+  -- E7. Written at recording ingest from what the source exposes (Forvo
+  -- per-item sex and country; the TTS roster's sex; the commission
+  -- brief); attributes unknown otherwise. Never hand-edited; a learner
+  -- correction is a learner row in cache.
 cache(port, backend, key_sha, subject, question, answer, cost, ts)
       -- PK (key_sha, ts); key_sha indexed. 
   -- store 3. port ∈ provide|assess; backend names the concrete one
@@ -96,16 +109,23 @@ Carry-over per the handoff's table; everything else regenerates.
    part_of_speech): image_query with source=human migrates as a learner
    direction row in cache; the rest are dropped.
 2. **Judged images** (~650 in the deck + work/candidates/*/candidates.yaml
-   verdicts) → bytes into media/objects/ by sha (files already
-   sha-identifiable via manifest+disk), provenance from
-   media_manifest.yaml; each candidates.yaml verdict → a judge-backend
-   cache row keyed under the OLD rubric id recorded as-is. Current deck
-   images additionally get a provisional "machine-chosen" marker (an
-   answer row), never a learner rating.
+   verdicts) → normalized at ingest like any picture (spec 4 §3) into
+   media/objects/ by sha of the normalized bytes, provenance from
+   media_manifest.yaml. Old picture notes join words by (thai, category)
+   (measured 2026-09-04: unambiguous for 38 of 39 homograph forms); an
+   ambiguous form is reported, never guessed. Each candidates.yaml
+   verdict → a judge-backend cache row under a legacy rubric id
+   ("legacy-picture-rules"), the verdict and failed rule ids as-is: the
+   old record does not say which rubric version judged, so under F9 the
+   row is evidence of what was seen and rejected, and it never ranks
+   (spec 3 §6). Every current picture is judged under the current rubric
+   by the first run's assess-first step (one batch, ~654 questions). No
+   marker of the old deck's choice is written.
 3. **Forvo answers** (work/forvo_lookups.jsonl) → provide/forvo cache
    rows, hit and miss alike.
 4. **Proof-gallery notes + ReviewNote harvests + waivers.yaml** → learner
-   assessment rows (kind per content: rating, direction, waiver).
+   assessment rows (kind per content: rating, direction, waiver), keyed
+   by word id via the guid map, never by Anki guid.
 5. **The old judge_cache.sqlite is retired**, not migrated: its keys are
    opaque hashes of rubric texts the redesign replaces; identical
    questions will re-hit via candidates.yaml-derived rows, changed
@@ -125,17 +145,3 @@ reasons, zero silent drops (the SourcingLog lesson).
 - No .last-report.json: reports are derived and identified by state hash.
 - No media_manifest.yaml: provenance is the media table.
 - No per-filler checkpoint code: sqlite transactions are the checkpoint.
-
-## Amendment 2026-09-03 (carry-over, from spec 3 section 10)
-
-- Section 4 item 2: candidates.yaml's recorded pass/fail per candidate
-  becomes the judge fit verdict under the picture-fit rubric, so the studied
-  deck's pictures rank as current-best on day one. The old
-  `work/judge_cache.sqlite` is NOT migrated: its keys are opaque hashes of
-  the full prompt text, unrecoverable.
-- Section 4 item 4: learner rows (Anki flags, proof-gallery notes, waivers)
-  are keyed by word id via the guid map, never by Anki guid.
-- Section 4 item 5 stands as written (the old judge_cache.sqlite is retired,
-  not migrated).
-- The machine-chosen marker has one consumer: the feedback screen.
-- Audio and sentences still regenerate.

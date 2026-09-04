@@ -1,13 +1,16 @@
 # Spec 4: The Anki boundary
 
-Revision 1, promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft. Re-checked against principles r1 and architecture r1
+Revision 2, proposed 2026-09-04 against principles r2 and architecture
+r1 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
+principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
 evidence, explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
+- r2 2026-09-04: the two mechanisms principles r2 moved out of A2 and A3
+  (fields append; first field is the note identity).
 
 Scope: Syllabus.compile() — the translation of Syllabus state into Anki's
 domain — and the return path: revlog, flags, and ReviewNote harvests.
@@ -16,7 +19,9 @@ re-litigates it.
 
 ## 1. Models and cards (the card taxonomy, principles draft)
 
-Model ids: sha-derived from model name, stable. Every model carries the
+Model ids: sha-derived from model name, stable; fields only ever
+append, so an existing collection updates in place (A2). A note's first
+field is its identity, unique within its model (A3). Every model carries the
 card CSS (legible Thai, bounded images, answer distinct, night mode — as
 shipped in the current compiler) and two service fields rendered by no
 template: ReviewNote (the mid-review comment channel) and CompileId.
