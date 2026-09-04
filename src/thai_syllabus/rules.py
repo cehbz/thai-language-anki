@@ -14,6 +14,17 @@ from typing import Any, Literal
 
 Severity = Literal["error", "warn", "info"]
 RuleShape = Literal["check", "measure", "judged", "compile"]
+OrderKind = Literal["word_target", "pair", "grapheme", "sentence"]
+
+
+@dataclass(frozen=True)
+class OrderEntry:
+    """One entry in Syllabus.order(): id is a TargetId for word_target, a
+    PairId for pair, a grapheme symbol for grapheme, a text_sha for
+    sentence.
+    """
+    kind: OrderKind
+    id: str
 
 
 @dataclass(frozen=True)

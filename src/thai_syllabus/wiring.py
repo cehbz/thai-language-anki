@@ -62,11 +62,11 @@ violations, just latitude the terse text left to fill in:
   empty map, which Syllabus.order() already degrades gracefully to its
   documented float('inf') fallback), with an optional `frequency_path`
   override for a caller keeping the shared corpus elsewhere.
-- Tokenizer: pythainlp is imported lazily, and only used when actually
-  importable (a plain `try/except ImportError` at call time, guarding
-  the only pythainlp import in this module); otherwise load_syllabus
-  passes no `tokenizer=` at all, so Syllabus's own private
-  whitespace-tokenizer default applies unmodified.
+- Tokenizer: pythainlp is imported lazily (a plain `try/except ImportError`
+  at call time, guarding the only pythainlp import in this module).
+  Syllabus.tokenizer has no default, so load_syllabus refuses with a
+  RuntimeError naming pythainlp when it is not installed, rather than
+  silently falling back to a tokenizer that mis-splits Thai.
 """
 from __future__ import annotations
 
@@ -396,8 +396,10 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
 def _pythainlp_tokenizer():
     try:
         from pythainlp.tokenize import word_tokenize
-    except ImportError:
-        return None
+    except ImportError as exc:
+        raise RuntimeError(
+            "pythainlp is required to tokenize Thai text for load_syllabus; "
+            "install it before loading a Syllabus") from exc
 
     @dataclass
     class _PythainlpTokenizer:
@@ -585,10 +587,7 @@ def load_syllabus(deck_root: str | Path, *,
         words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
-        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)
-
-    tokenizer = _pythainlp_tokenizer()
-    if tokenizer is not None:
-        kwargs["tokenizer"] = tokenizer
+        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules,
+        tokenizer=_pythainlp_tokenizer())
 
     return Syllabus(**kwargs)

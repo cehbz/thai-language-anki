@@ -138,27 +138,29 @@ def test_report_carries_the_live_rulebook_id():
 
 
 def test_rulebook_id_is_stable_for_identical_rulebook_text_and_rules():
-    a = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}").rulebook_id()
-    b = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}").rulebook_id()
+    a = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}",
+                tokenizer=FakeTokenizer()).rulebook_id()
+    b = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}",
+                tokenizer=FakeTokenizer()).rulebook_id()
     assert a == b
 
 
 def test_rulebook_id_changes_when_the_rulebook_text_changes_but_content_does_not():
     rice = word("rice", "ข้าว")  # rice
-    a = Syllabus(words=(rice,), rulebook_text="severities: {}")
-    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/exact-confusion: warn}")
+    a = Syllabus(words=(rice,), rulebook_text="severities: {}", tokenizer=FakeTokenizer())
+    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/exact-confusion: warn}",
+                tokenizer=FakeTokenizer())
     assert a.state_id() == b.state_id()          # same content
     assert a.rulebook_id() != b.rulebook_id()     # different rulebook
 
 
 def test_rulebook_id_changes_when_the_registrys_rule_ids_change():
-    a = Syllabus(rules=(ERROR_CHECK,)).rulebook_id()
-    b = Syllabus(rules=(ERROR_CHECK, WORD_COUNT)).rulebook_id()
+    a = Syllabus(rules=(ERROR_CHECK,), tokenizer=FakeTokenizer()).rulebook_id()
+    b = Syllabus(rules=(ERROR_CHECK, WORD_COUNT), tokenizer=FakeTokenizer()).rulebook_id()
     assert a != b
 
 
-# --- compile(): spec 4 -- see tests/syllabus/test_compile.py for the real
+# --- compile: spec 4 -- see tests/syllabus/test_compile.py for the real
 # implementation's coverage (models/fields/guids/tags/due/gate/dropped-
-# cards); Syllabus.compile() now delegates to compile.compile_syllabus and
-# needs a SyllabusDb/MediaStore this module's bare-bones make_syllabus()
-# fixture doesn't build.
+# cards); compile_syllabus needs a SyllabusDb/MediaStore this module's
+# bare-bones make_syllabus() fixture doesn't build.

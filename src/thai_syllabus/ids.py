@@ -13,7 +13,7 @@ TargetId = NewType("TargetId", str)
 
 # Grapheme has no separate id field (spec: "symbol: str  # identity"); this
 # alias names the identity space a Grapheme's `symbol` lives in, for use in
-# TargetLike and Finding.note_id contexts.
+# OrderEntry and Finding.note_id contexts.
 GraphemeId = NewType("GraphemeId", str)
 
 CategoryName = NewType("CategoryName", str)

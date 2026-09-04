@@ -68,7 +68,8 @@ def ctx(tmp_path):
     media = MediaStore(tmp_path / "media")
     judge = _Judge()
     syl = Syllabus(words=(word("orange", "ส้ม", "orange"),),
-                   targets=(target("orange/receptive", "orange"),))
+                   targets=(target("orange/receptive", "orange"),),
+                   tokenizer=FakeTokenizer())
 
     def resolve(sha):
         prov = db.media_provenance(sha)
@@ -337,7 +338,8 @@ def _pair_syllabus(conf):
         words=(word("white", "ขาว", "white"), word("news", "ข่าว", "news")),
         targets=(target("white/receptive", "white"), target("news/receptive", "news")),
         confusions=(conf,),
-        pairs=(MinimalPair(id="pair-1", confusion=conf.id, members=("white", "news")),))
+        pairs=(MinimalPair(id="pair-1", confusion=conf.id, members=("white", "news")),),
+        tokenizer=FakeTokenizer())
 
 
 def test_forvo_recording_attempt_downloads_checks_and_ranks(ctx):

@@ -153,7 +153,7 @@ def test_the_novelty_budget_does_not_cover_a_second_new_word():
 def test_vocabulary_met_by_includes_words_targeted_at_or_before():
     s = Syllabus(words=(word("a", "ก"), word("b", "ข"), word("c", "ค")),
                 targets=(target("a/r", "a"), target("b/r", "b"), target("c/r", "c")),
-                frequency={"a": 1, "b": 2, "c": 3})
+                frequency={"a": 1, "b": 2, "c": 3}, tokenizer=FakeTokenizer())
     met = s.vocabulary_met_by(s.targets[1])
     assert [w.id for w in met] == ["a", "b"]
     assert len(s.with_sentences([]).sentences) == 0

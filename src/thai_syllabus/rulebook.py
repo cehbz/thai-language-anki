@@ -507,13 +507,13 @@ SENTENCE_RECORDING_REQUIRED = Rule(id="sentence/recording-required", principle="
 
 
 # --- order constraint checks (F8, E1) ----------------------------------------
-# Checks over order()'s own shape: str entries are pair ids or grapheme
-# symbols, Target entries are word targets.
+# Checks over order()'s own shape: OrderEntry.kind names pair, grapheme,
+# word_target and sentence entries.
 
 def _check_order_sounds_first(syllabus: "Syllabus") -> list[Finding]:
-    positions = list(syllabus.order())
-    sound_idxs = [i for i, e in enumerate(positions) if isinstance(e, str)]
-    target_idxs = [i for i, e in enumerate(positions) if isinstance(e, Target)]
+    entries = list(syllabus.order())
+    sound_idxs = [i for i, e in enumerate(entries) if e.kind in ("pair", "grapheme")]
+    target_idxs = [i for i, e in enumerate(entries) if e.kind == "word_target"]
     if sound_idxs and target_idxs and max(sound_idxs) > min(target_idxs):
         return [Finding(rule="order/sounds-first", note_id="order",
                         evidence="a pair or grapheme entry follows a word target")]
@@ -525,11 +525,9 @@ ORDER_SOUNDS_FIRST = Rule(id="order/sounds-first", principle="F8", severity="err
 
 
 def _check_order_reading_after_graphemes(syllabus: "Syllabus") -> list[Finding]:
-    grapheme_symbols = {g.symbol for g in syllabus.graphemes}
-    positions = list(syllabus.order())
-    grapheme_idxs = [i for i, e in enumerate(positions)
-                     if isinstance(e, str) and e in grapheme_symbols]
-    target_idxs = [i for i, e in enumerate(positions) if isinstance(e, Target)]
+    entries = list(syllabus.order())
+    grapheme_idxs = [i for i, e in enumerate(entries) if e.kind == "grapheme"]
+    target_idxs = [i for i, e in enumerate(entries) if e.kind == "word_target"]
     if grapheme_idxs and target_idxs and max(grapheme_idxs) > min(target_idxs):
         return [Finding(rule="order/reading-after-graphemes", note_id="order",
                         evidence="a grapheme entry follows a word target")]
@@ -542,7 +540,7 @@ ORDER_READING_AFTER_GRAPHEMES = Rule(id="order/reading-after-graphemes", princip
 
 
 def _check_order_receptive_first(syllabus: "Syllabus") -> list[Finding]:
-    positions = {t.id: i for i, t in enumerate(syllabus.order()) if isinstance(t, Target)}
+    positions = {e.id: i for i, e in enumerate(syllabus.order()) if e.kind == "word_target"}
     by_skill: dict["WordId", dict[str, Target]] = {}
     for t in syllabus.targets:
         by_skill.setdefault(t.word, {})[t.skill] = t
@@ -562,13 +560,32 @@ ORDER_RECEPTIVE_FIRST = Rule(id="order/receptive-before-productive", principle="
 
 
 def _check_order_sentence_after_words(syllabus: "Syllabus") -> list[Finding]:
-    targeted_words = {t.word for t in syllabus.targets}
+    """Every sentence entry must sit after every word_target entry of a
+    word it uses: a used word with no Target at all is flagged directly;
+    a used word's Target that is not before the sentence's own position
+    is flagged too (should not arise from order()'s own construction).
+    """
+    positions = {(e.kind, e.id): i for i, e in enumerate(syllabus.order())}
     findings = []
     for s in syllabus.sentences:
+        note_id = sentence_note_id(s)
+        sentence_pos = positions.get(("sentence", note_id))
+        if sentence_pos is None:
+            continue
         for w in syllabus.words:
-            if w.id not in targeted_words and syllabus.mentions(s, w.thai):
-                findings.append(Finding(rule="order/sentence-after-words", note_id=sentence_note_id(s),
+            if not syllabus.mentions(s, w.thai):
+                continue
+            word_targets = [t for t in syllabus.targets if t.word == w.id]
+            if not word_targets:
+                findings.append(Finding(rule="order/sentence-after-words", note_id=note_id,
                                         evidence=f"uses word {w.id!r} with no Target"))
+                continue
+            for t in word_targets:
+                target_pos = positions.get(("word_target", t.id))
+                if target_pos is not None and target_pos >= sentence_pos:
+                    findings.append(Finding(
+                        rule="order/sentence-after-words", note_id=note_id,
+                        evidence=f"target {t.id!r} for word {w.id!r} is not before the sentence"))
     return findings
 
 
@@ -660,6 +677,6 @@ RULES: list[Rule] = [
 
 # Every principle actually cited by a registered rule -- "the set of
 # principles with enforcement intent" (spec 1 section 4): a principle
-# enforced only by Syllabus.compile() mechanics (the table's "compile"
+# enforced only by compile_syllabus() mechanics (the table's "compile"
 # rows) carries no rule and is not counted here.
 ENFORCEMENT_PRINCIPLES: frozenset[str] = frozenset(r.principle for r in RULES)

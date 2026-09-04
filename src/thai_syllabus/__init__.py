@@ -15,8 +15,8 @@ from .entities import (
 )
 from .media import Picture, Provenance, Recording, Speaker
 from .profile import Profile
-from .rules import Compile, Finding, Gaps, Metric, Report, Rule
-from .syllabus import Syllabus, TargetLike
+from .rules import Compile, Finding, Gaps, Metric, OrderEntry, Report, Rule
+from .syllabus import Syllabus
 
 __all__ = [
     "Grapheme",
@@ -36,8 +36,8 @@ __all__ = [
     "Finding",
     "Gaps",
     "Metric",
+    "OrderEntry",
     "Report",
     "Rule",
     "Syllabus",
-    "TargetLike",
 ]

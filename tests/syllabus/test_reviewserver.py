@@ -23,6 +23,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
 from .builders import PROV, syl, pron, target, word
+from .fakes import FakeTokenizer
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -75,7 +76,8 @@ def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
     targets = (target("t-rice", w1.id), target("t-near", w2.id))
     db.set_pair_confusions({pair.id: confusion.id})
     return Syllabus(words=(w1, w2, keyword_word), targets=targets, pairs=(pair,),
-                    graphemes=(grapheme,), confusions=(confusion,), assessments=db)
+                    graphemes=(grapheme,), confusions=(confusion,), assessments=db,
+                    tokenizer=FakeTokenizer())
 
 
 # --- cache-row helpers (mirrors test_derivations.py's) ----------------------

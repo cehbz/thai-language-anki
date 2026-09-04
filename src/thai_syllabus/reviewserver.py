@@ -42,15 +42,16 @@ list):
     the only enumeration of "subjects the Syllabus cares about" available
     without a full unindexed cache table scan.
   - Kind 4 (re-ask with evidence / StudyRecord contradiction). Card-level
-    StudyReader lookups need a card_key convention that compile() (spec 4,
-    not implemented yet -- Syllabus.compile() raises NotImplementedError)
-    has not fixed. The one StudyReader lookup already well-defined without
-    compile() is confusion-level (store.py's pair_confusions aggregation),
-    so this module implements kind 4 over confusions only: a confusion
-    with StudyRecord lapses (grade <= 1) AND an existing learner rating on
-    its rendition is a contradiction worth re-asking. Per the task brief,
-    "missing derivation inputs mean that kind simply yields no questions"
-    -- word/sentence-level re-asks yield none until compile() lands.
+    StudyReader lookups need a card_key convention that compile (spec 4;
+    `compile_syllabus`, an application service, not a Syllabus method) has
+    not fixed for word/sentence cards. The one StudyReader lookup already
+    well-defined is confusion-level (store.py's pair_confusions
+    aggregation), so this module implements kind 4 over confusions only: a
+    confusion with StudyRecord lapses (grade <= 1) AND an existing learner
+    rating on its rendition is a contradiction worth re-asking. Per the
+    task brief, "missing derivation inputs mean that kind simply yields no
+    questions" -- word/sentence-level re-asks yield none until that
+    card_key convention is fixed.
   - Gallery gloss-overlay/position persistence (spec 5 section 1 "gloss
     overlay default-on persisted" vs section 2 "localStorage for position
     only -- all state of record is server-side"). Read as: the record of
@@ -84,7 +85,6 @@ from .authority import role_for
 from .curated import load_curated
 from .derivations import LEARNER_RANK, current_best, exhausted, queue
 from .derivations import stale as _stale
-from .entities import Target
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
 from .store import MediaStore, SyllabusDb
@@ -379,25 +379,29 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
 def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
                      current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     words_by_id = {w.id: w for w in syllabus.words}
+    targets_by_id = {t.id: t for t in syllabus.targets}
     pairs_by_id = {p.id: p for p in syllabus.pairs}
     graphemes_by_symbol = {g.symbol: g for g in syllabus.graphemes}
     confusions_by_id = {c.id: c for c in syllabus.confusions}
 
     cards: list[dict[str, Any]] = []
-    for index, item in enumerate(syllabus.order()):
-        if isinstance(item, Target):
-            word = words_by_id.get(item.word)
-            if word is None:
+    for index, entry in enumerate(syllabus.order()):
+        if entry.kind == "word_target":
+            target = targets_by_id.get(entry.id)
+            word = words_by_id.get(target.word) if target else None
+            if target is None or word is None:
                 continue
-            best = current_best(cache, item.word, "picture", current_rubric=current_rubric)
+            best = current_best(cache, target.word, "picture", current_rubric=current_rubric)
             cards.append({
-                "index": index, "id": item.id, "kind": "target",
+                "index": index, "id": target.id, "kind": "target",
                 "front": {"thai": word.thai, "picture": (_artifact(best.artifact_sha) or {}).get("url")},
                 "back": {"meaning": word.meaning},
                 "gloss": word.meaning, "voice": None, "drill": None,
             })
-        elif item in pairs_by_id:
-            pair = pairs_by_id[item]
+        elif entry.kind == "pair":
+            pair = pairs_by_id.get(entry.id)
+            if pair is None:
+                continue
             members = [words_by_id.get(m) for m in pair.members]
             if any(m is None for m in members):
                 continue
@@ -414,19 +418,19 @@ def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
                          "thai": members[0].thai, "other_thai": other,
                          "contrast": confusion.id if confusion else pair.confusion},
             })
-        elif item in graphemes_by_symbol:
-            grapheme = graphemes_by_symbol[item]
+        elif entry.kind == "grapheme":
+            grapheme = graphemes_by_symbol.get(entry.id)
+            if grapheme is None:
+                continue
             keyword = words_by_id.get(grapheme.keyword)
             cards.append({
-                "index": index, "id": item, "kind": "grapheme",
+                "index": index, "id": entry.id, "kind": "grapheme",
                 "front": {"symbol": grapheme.symbol},
                 "back": {"sound": grapheme.sound, "keyword": keyword.thai if keyword else None},
                 "gloss": keyword.meaning if keyword else None, "voice": None, "drill": None,
             })
-        # else: an order() entry this provider doesn't know how to render
-        # yet (should not happen -- TargetLike is exactly these three
-        # shapes) -- skipped rather than raising, so one bad entry doesn't
-        # blank the whole gallery.
+        # else: entry.kind == "sentence" -- this provider renders no
+        # sentence card yet, skipped rather than raising.
     return cards
 
 

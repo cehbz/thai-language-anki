@@ -1,4 +1,4 @@
-"""Syllabus.compile() / compile.compile_syllabus (spec 4): models, fields,
+"""compile.compile_syllabus (spec 4): models, fields,
 guids, tags, due, gate refusal, and dropped-card counting, against a small
 synthetic Syllabus compiled through a real SyllabusDb + MediaStore (in a
 tmp_path) end to end -- reading the produced .apkg back with the same
@@ -13,7 +13,7 @@ from datetime import date
 import pytest
 
 from thai_syllabus.authority import ROLE_FOR_KIND
-from thai_syllabus.compile import GateRefusal, compile_syllabus, thai_cloze
+from thai_syllabus.compile import GateRefusal, STRIDE, compile_syllabus, thai_cloze
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
     Target, Word,
@@ -21,7 +21,7 @@ from thai_syllabus.entities import (
 from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.profile import Profile
-from thai_syllabus.rulebook import RULES
+from thai_syllabus.rulebook import RULES, sentence_note_id
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -580,6 +580,89 @@ def test_graphemes_are_due_before_any_word(fx):
     assert all(g_due < d for d in word_dues)
 
 
+def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
+    # Mirrors test_graphemes_are_due_before_any_word: the fixture sentence
+    # "ผมกินข้าว" (I eat rice) uses pom, gin and rice, each of which has a
+    # Target -- a sentence note's due comes straight from its order()
+    # entry's position (compile._positions no longer derives it), which
+    # sits after every word_target entry, including theirs.
+    syllabus = _fully_seeded(fx)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    pkg = read_apkg(fx.out_path)
+    models = pkg["models"]
+    s_model = next(m for m in models.values() if m["name"] == "sentence")
+    word_model = next(m for m in models.values() if m["name"] == "word")
+    word_field_names = [f["name"] for f in word_model["flds"]]
+
+    def word_due(thai: str) -> int:
+        note = next(n for n in pkg["notes"] if str(n["mid"]) == word_model["id"]
+                   and dict(zip(word_field_names, n["flds"]))["Thai"] == thai)
+        return min(c["due"] for c in pkg["cards"] if c["nid"] == note["id"])
+
+    used_dues = [word_due(thai) for thai in ("ผม", "กิน", "ข้าว")]  # pom, gin, rice
+
+    s_notes = [n for n in pkg["notes"] if str(n["mid"]) == s_model["id"]]
+    sentence_dues = [c["due"] for n in s_notes for c in pkg["cards"] if c["nid"] == n["id"]]
+    assert sentence_dues
+    assert all(used < s for used in used_dues for s in sentence_dues)
+
+
+def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
+    # eat's target is the earliest, dog/run's targets sit strictly between
+    # eat's and rice's -- "กินข้าว" (eat rice) fills BOTH eat/receptive and
+    # rice/receptive; "หมาวิ่ง" (dog runs) fills both dog/receptive and
+    # run/receptive. compile._positions now sources each fill's due
+    # position from its SENTENCE's own order() entry (the position after
+    # the last word it uses), not from the individual filled target's own
+    # position -- so "กินข้าว"'s two notes land adjacent to each other,
+    # both after "หมาวิ่ง"'s two notes, even though eat/receptive's own
+    # target position is the earliest of the four.
+    tokenizer = _SplitTokenizer({
+        "กินข้าว": ["กิน", "ข้าว"],  # eat rice
+        "หมาวิ่ง": ["หมา", "วิ่ง"],  # dog runs
+    })
+    eat = _word("eat", "กิน", "to eat")
+    dog = _word("dog", "หมา", "dog")
+    run = _word("run", "วิ่ง", "to run")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    targets = (
+        Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive"),
+        Target(id=TargetId("dog/receptive"), word=dog.id, skill="receptive"),
+        Target(id=TargetId("run/receptive"), word=run.id, skill="receptive"),
+        Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
+    )
+    eat_rice = Sentence(text="กินข้าว", gloss="eat rice", voice="learner_voice", provenance=PROV)
+    dog_runs = Sentence(text="หมาวิ่ง", gloss="dog runs", voice="learner_voice", provenance=PROV)
+    syllabus = Syllabus(words=(eat, dog, run, rice), targets=targets,
+                        sentences=(eat_rice, dog_runs), tokenizer=tokenizer,
+                        frequency={eat.id: 1, dog.id: 2, run.id: 3, rice.id: 4},
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    for w in ("eat", "dog", "run", "rice"):
+        fx.seed_recording(w, w)
+    fx.seed_recording(sentence_note_id(eat_rice), "กินข้าว")
+    fx.seed_recording(sentence_note_id(dog_runs), "หมาวิ่ง")
+
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    pkg = read_apkg(fx.out_path)
+    models = pkg["models"]
+    s_model = next(m for m in models.values() if m["name"] == "sentence")
+    s_notes = [n for n in pkg["notes"] if str(n["mid"]) == s_model["id"]]
+
+    def due_for(target_id: str) -> int:
+        note = next(n for n in s_notes if f"target::{target_id}" in n["tags"].split(" "))
+        return min(c["due"] for c in pkg["cards"] if c["nid"] == note["id"])
+
+    eat_due = due_for("eat/receptive")
+    rice_due = due_for("rice/receptive")
+    dog_due = due_for("dog/receptive")
+    run_due = due_for("run/receptive")
+
+    assert dog_due < eat_due and run_due < eat_due
+    assert dog_due < rice_due and run_due < rice_due
+    assert abs(eat_due - rice_due) == STRIDE
+
+
 def test_shipped_deck_options_group_already_buries_siblings(fx):
     # Not this module's own logic -- genanki's default dconf ships
     # new.bury=true / rev.bury=true already (spec 4 section 2's "both",
@@ -609,10 +692,3 @@ def test_compile_leaves_no_leftover_tmp_file(fx):
     syllabus = _fully_seeded(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
     assert list(fx.out_path.parent.glob("*.tmp")) == []
-
-
-def test_syllabus_compile_method_delegates(fx):
-    syllabus = _fully_seeded(fx)
-    compiled = syllabus.compile(fx.db, fx.media, fx.out_path)
-    assert fx.out_path.exists()
-    assert compiled.syllabus_state_id == syllabus.state_id()

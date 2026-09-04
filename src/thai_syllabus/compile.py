@@ -1,17 +1,17 @@
-"""Syllabus.compile() (spec 4): translate a Syllabus into an Anki .apkg.
+"""compile_syllabus (spec 4): translate a Syllabus into an Anki .apkg.
 
 `compile_syllabus(syllabus, db, media_store, out_path, *, force=False)` is
-the free function `Syllabus.compile()` (syllabus.py) delegates to -- kept
-as a free function rather than inlined into the Syllabus dataclass because
-it needs two dependencies (a CacheReader for `derivations.current_best`,
-and a MediaStore to stage bytes into the package) that spec 1's frozen
-Syllabus dataclass has no field for, and because "the translation of
-Syllabus state into Anki's domain" (spec 4's own framing) is a distinct
-concern from the aggregate's pure, storage-agnostic domain logic in
-syllabus.py. `db` is typed concretely as store.SyllabusDb (not just the
-narrower CacheReader Protocol) because compile also needs its
-non-Protocol `media_provenance` (extension/source/speaker lookups) --
-consistent with how migrate.py already depends on SyllabusDb directly.
+an application service, a free function rather than a Syllabus method,
+because it needs two dependencies (a CacheReader for
+`derivations.current_best`, and a MediaStore to stage bytes into the
+package) that spec 1's frozen Syllabus dataclass has no field for, and
+because "the translation of Syllabus state into Anki's domain" (spec 4's
+own framing) is a distinct concern from the aggregate's pure,
+storage-agnostic domain logic in syllabus.py. `db` is typed concretely as
+store.SyllabusDb (not just the narrower CacheReader Protocol) because
+compile also needs its non-Protocol `media_provenance` (extension/source/
+speaker lookups) -- consistent with how migrate.py already depends on
+SyllabusDb directly.
 
 Ambiguities the terse spec text left implicit, resolved here (not
 redesigns -- nothing here contradicts spec 4, it fills gaps the prose
@@ -52,7 +52,7 @@ didn't spell out):
   a specific Target id -- a word note aggregates every Target the word
   has into one note (guid = word id too, spec 4 section 2), so no single
   Target id anchors it uniquely; ports.py's phrasing is read as shorthand
-  for "the TargetLike identity", which bottoms out at the word for word
+  for "the order()-entry identity", which bottoms out at the word for word
   cards. For pairs it IS the pair id (not MemberKey) -- store.py's
   existing, untouched `_card_keys_by_pair_confusion` already parses
   card_key as "<pair_id>::<kind>" for confusion-level StudyReader
@@ -336,9 +336,9 @@ class _Resolver:
 
 @dataclass
 class _Positions:
-    """Where each order()-entry sits, plus sentence placement (spec 4
-    section 2: due from Syllabus.order(); a sentence enters after every
-    word it uses, per Syllabus.fills's own doc comment).
+    """Where each order()-entry sits, plus one due block per (sentence,
+    target) fill (spec 4 section 2): a sentence's own position comes
+    straight from its order() entry -- never recomputed here.
     """
     entry_index: dict[str, int]           # grapheme symbol / pair id -> position
     target_index: dict[str, int]          # target id -> position
@@ -352,18 +352,24 @@ def _positions(syllabus: "Syllabus") -> _Positions:
     entry_index: dict[str, int] = {}
     target_index: dict[str, int] = {}
     word_index: dict[str, int] = {}
+    sentence_position: dict[str, int] = {}
+    target_word = {t.id: t.word for t in syllabus.targets}
     for i, entry in enumerate(order_list):
-        if isinstance(entry, Target):
+        if entry.kind == "word_target":
             target_index[entry.id] = i
-            word_index[entry.word] = min(word_index.get(entry.word, i), i)
+            word = target_word[entry.id]
+            word_index[word] = min(word_index.get(word, i), i)
+        elif entry.kind == "sentence":
+            sentence_position[entry.id] = i
         else:
-            entry_index[entry] = i
+            entry_index[entry.id] = i
 
     fills_entries: list[tuple[Sentence, Target, int]] = []
     for s in syllabus.sentences:
         for t in syllabus.targets:
             if syllabus.fills(s, t):
-                fills_entries.append((s, t, target_index.get(t.id, len(order_list))))
+                position = sentence_position.get(sentence_note_id(s), len(order_list))
+                fills_entries.append((s, t, position))
     fills_entries.sort(key=lambda e: (e[2], sentence_note_id(e[0]), e[1].id))
     sentence_entries = [(s, t, len(order_list) + i)
                         for i, (s, t, _) in enumerate(fills_entries)]

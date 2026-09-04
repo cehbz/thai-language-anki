@@ -10,28 +10,14 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any
 
 from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
 from .ids import CategoryName, WordId
 from .ports import AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, Tokenizer
 from .profile import Profile
 from .rulebook import RULES
-from .rules import Compile, Finding, Gaps, Metric, Report, Rule
-
-if TYPE_CHECKING:
-    from .store import MediaStore, SyllabusDb
-
-TargetLike = Union[Target, str]  # str covers PairId and GraphemeId (both NewType(str))
-
-
-class _WhitespaceTokenizer:
-    """A tokenizer of last resort: real Thai has no spaces, so this only
-    exists so Syllabus() is constructible without a tokenizer for tests
-    that never call fills(). Real callers pass a real port.
-    """
-    def tokens(self, text: str) -> list[str]:
-        return text.split()
+from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 
 
 @dataclass(frozen=True)
@@ -43,7 +29,7 @@ class Syllabus:
     sentences: tuple[Sentence, ...] = ()
     confusions: tuple[SoundConfusion, ...] = ()
     profile: Profile = field(default_factory=lambda: Profile(register="male_colloquial"))
-    tokenizer: Tokenizer = field(default_factory=_WhitespaceTokenizer)
+    tokenizer: Tokenizer = field(kw_only=True)
     # Storage-owned by spec 2; taken as constructor input for now (spec 1
     # note): rank per word (lower = more frequent).
     frequency: Mapping[WordId, int] = field(default_factory=dict)
@@ -86,11 +72,10 @@ class Syllabus:
 
     # --- order() ---------------------------------------------------------
 
-    def order(self) -> list[TargetLike]:
-        sounds: list[TargetLike] = (
-            [p.id for p in sorted(self.pairs, key=lambda p: p.id)]
-            + [g.symbol for g in sorted(self.graphemes, key=lambda g: g.symbol)]
-        )
+    def order(self) -> list[OrderEntry]:
+        sounds = ([OrderEntry("pair", p.id) for p in sorted(self.pairs, key=lambda p: p.id)]
+                 + [OrderEntry("grapheme", g.symbol)
+                   for g in sorted(self.graphemes, key=lambda g: g.symbol)])
 
         def key(t: Target) -> tuple[float, str, int]:
             freq = self.frequency.get(t.word, float("inf"))
@@ -98,19 +83,36 @@ class Syllabus:
             skill_rank = 0 if t.skill == "receptive" else 1
             return (freq / weight if weight else float("inf"), str(t.word), skill_rank)
 
-        words: list[TargetLike] = sorted(self.targets, key=key)
-        return [*sounds, *words]
+        ordered_targets = sorted(self.targets, key=key)
+        target_entries = [OrderEntry("word_target", t.id) for t in ordered_targets]
+
+        # A word's position for sentence placement: the LAST of its own
+        # targets' positions (receptive and productive both included), so a
+        # sentence using that word is placed after every target it has.
+        word_last_position: dict[WordId, int] = {}
+        for i, t in enumerate(ordered_targets):
+            position = len(sounds) + i
+            word_last_position[t.word] = max(word_last_position.get(t.word, position), position)
+
+        def sentence_after(sentence: Sentence) -> int:
+            used = self._words_used(self.tokenizer.tokens(sentence.text))
+            return max((word_last_position[w] for w in used if w in word_last_position),
+                      default=-1)
+
+        ordered_sentences = sorted(self.sentences, key=lambda s: (sentence_after(s), s.text_sha))
+        sentence_entries = [OrderEntry("sentence", s.text_sha) for s in ordered_sentences]
+
+        return [*sounds, *target_entries, *sentence_entries]
 
     @cached_property
     def _target_positions(self) -> dict[str, int]:
-        return {t.id: i for i, t in enumerate(self.order()) if isinstance(t, Target)}
+        return {e.id: i for i, e in enumerate(self.order()) if e.kind == "word_target"}
 
     @cached_property
     def _word_target_positions(self) -> dict[WordId, list[int]]:
         positions: dict[WordId, list[int]] = {}
-        for t in self.order():
-            if isinstance(t, Target):
-                positions.setdefault(t.word, []).append(self._target_positions[t.id])
+        for t in self.targets:
+            positions.setdefault(t.word, []).append(self._target_positions[t.id])
         return positions
 
     # --- fills() -----------------------------------------------------------
@@ -182,8 +184,7 @@ class Syllabus:
         position = self._target_positions.get(target.id)
         if position is None:
             return ()
-        met = [t.word for t in self.order() if isinstance(t, Target)
-              and self._target_positions[t.id] <= position]
+        met = [t.word for t in self.targets if self._target_positions[t.id] <= position]
         seen: set[WordId] = set()
         out: list[Word] = []
         for w in met:
@@ -266,20 +267,6 @@ class Syllabus:
                     words_missing_pictures=words_missing_pictures,
                     words_missing_recordings=words_missing_recordings,
                     graphemes_missing_keyword_data=graphemes_missing_keyword_data)
-
-    # --- compile() ---------------------------------------------------------
-
-    def compile(self, db: "SyllabusDb", media_store: "MediaStore",
-               out_path: str, *, force: bool = False) -> Compile:
-        """Delegates to compile.compile_syllabus (spec 4) -- kept as a free
-        function there rather than inlined here because it needs a
-        CacheReader (`db`) and a MediaStore this frozen dataclass has no
-        field for; see compile.py's module docstring for the full
-        rationale. Imported lazily to avoid a module-level import cycle
-        (compile.py type-hints Syllabus under TYPE_CHECKING only).
-        """
-        from .compile import compile_syllabus
-        return compile_syllabus(self, db, media_store, out_path, force=force)
 
     # --- content-hash staleness marker ------------------------------------
 

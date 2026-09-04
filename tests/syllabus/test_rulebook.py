@@ -10,7 +10,7 @@ from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusi
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
-from thai_syllabus.rules import Rule
+from thai_syllabus.rules import OrderEntry, Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
                                     PICTURE_PREFERENCE, PRINCIPLES, RULES, SENTENCE_REGISTER_NATURAL,
                                     apply_overlay, rubrics_for, sentence_note_id,
@@ -646,13 +646,20 @@ class _FixedOrderSyllabus:
     productive at equal frequency) can't be forced into a violating shape
     without it.
     """
-    def __init__(self, targets=(), order_list=(), graphemes=()):
+    def __init__(self, targets=(), order_list=(), graphemes=(), sentences=(), words=(),
+                mentions=None):
         self.targets = targets
         self.graphemes = graphemes
+        self.sentences = sentences
+        self.words = words
         self._order_list = order_list
+        self._mentions = mentions or (lambda sentence, thai: False)
 
     def order(self):
         return self._order_list
+
+    def mentions(self, sentence, thai):
+        return self._mentions(sentence, thai)
 
 
 def test_order_receptive_before_productive_flags_a_reversed_pair():
@@ -660,8 +667,10 @@ def test_order_receptive_before_productive_flags_a_reversed_pair():
     rice = word("rice", "ข้าว")  # rice
     t_productive = target("rice/productive", "rice", "productive")
     t_receptive = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(targets=(t_productive, t_receptive),
-                                order_list=[t_productive, t_receptive])
+    fixed = _FixedOrderSyllabus(
+        targets=(t_productive, t_receptive),
+        order_list=[OrderEntry("word_target", t_productive.id),
+                   OrderEntry("word_target", t_receptive.id)])
     findings = _check_order_receptive_first(fixed)
     assert [f.note_id for f in findings] == ["rice"]
 
@@ -669,7 +678,8 @@ def test_order_receptive_before_productive_flags_a_reversed_pair():
 def test_order_sounds_first_flags_a_target_before_a_pair_or_grapheme_entry():
     from thai_syllabus.rulebook import _check_order_sounds_first
     t = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(order_list=[t, "tone:mid-low/klai"])
+    fixed = _FixedOrderSyllabus(order_list=[OrderEntry("word_target", t.id),
+                                            OrderEntry("pair", "tone:mid-low/klai")])
     findings = _check_order_sounds_first(fixed)
     assert [f.rule for f in findings] == ["order/sounds-first"]
 
@@ -680,7 +690,9 @@ def test_order_reading_after_graphemes_flags_a_target_before_a_grapheme():
     grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
                                consonant_class="mid", keyword_word=chicken)
     t = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(order_list=[t, "ก"], graphemes=(grapheme,))
+    fixed = _FixedOrderSyllabus(order_list=[OrderEntry("word_target", t.id),
+                                            OrderEntry("grapheme", "ก")],
+                                graphemes=(grapheme,))
     findings = _check_order_reading_after_graphemes(fixed)
     assert [f.rule for f in findings] == ["order/reading-after-graphemes"]
 
@@ -706,3 +718,23 @@ def test_order_sentence_after_words_is_silent_when_every_used_word_has_a_target(
     findings = [f for f in syllabus.report().findings
                if f.rule == "order/sentence-after-words"]
     assert findings == []
+
+
+def test_order_sentence_after_words_flags_a_target_not_before_the_sentence():
+    from thai_syllabus.rulebook import _check_order_sentence_after_words
+    rice = word("rice", "ข้าว")  # rice
+    t_rice = target("rice/receptive", "rice", "receptive")
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    # A fabricated order() placing the sentence entry BEFORE its own
+    # word's target entry -- real Syllabus.order() never builds this
+    # shape (the sentence block always trails every word_target entry),
+    # but the check reads positions, not the aggregate's own invariants,
+    # so it must catch a violation if one were ever produced.
+    fixed = _FixedOrderSyllabus(
+        targets=(t_rice,), words=(rice,), sentences=(s,),
+        order_list=[OrderEntry("sentence", sentence_note_id(s)),
+                   OrderEntry("word_target", t_rice.id)],
+        mentions=lambda sentence, thai: thai == rice.thai)
+    findings = _check_order_sentence_after_words(fixed)
+    assert [f.rule for f in findings] == ["order/sentence-after-words"]
+    assert findings[0].note_id == sentence_note_id(s)

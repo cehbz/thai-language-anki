@@ -27,7 +27,7 @@ from thai_syllabus.curated import (
     load_providers_config,
     save_curated,
 )
-from thai_syllabus.entities import Category, Target
+from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import Provider, Question
@@ -45,6 +45,7 @@ from thai_syllabus.wiring import (
 )
 
 from .builders import PROV, sentence, syl, pron, target, word
+from .fakes import FakeTokenizer
 
 
 # --- fixtures ----------------------------------------------------------
@@ -388,7 +389,7 @@ def test_emphasis_from_profile_moves_a_word_earlier_through_load_syllabus(tmp_pa
     (root / "data" / "frequency_th.txt").write_text("แดง\nข้าว\n", encoding="utf-8")
 
     syllabus = load_syllabus(root)
-    ids = [t.id for t in syllabus.order() if isinstance(t, Target)]
+    ids = [e.id for e in syllabus.order() if e.kind == "word_target"]
     assert ids.index("rice/receptive") < ids.index("red/receptive")
 
 
@@ -633,14 +634,14 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     _seed_member_recording(db, "long", "sha-long", "malee")
 
     media = _DbMediaIndex(db=db, pairs=(real_pair, fallback_pair))
-    syllabus = Syllabus(confusions=(real_confusion, fallback_confusion), media=media)
+    syllabus = Syllabus(confusions=(real_confusion, fallback_confusion), media=media,
+                        tokenizer=FakeTokenizer())
     gaps = syllabus.gaps()
     assert real_confusion.id not in gaps.missing_renditions
     assert fallback_confusion.id in gaps.missing_renditions
 
 
-def test_load_syllabus_default_tokenizer_is_whitespace_when_pythainlp_absent(
-        tmp_path, monkeypatch):
+def test_load_syllabus_refuses_when_pythainlp_is_absent(tmp_path, monkeypatch):
     import builtins
     real_import = builtins.__import__
 
@@ -651,8 +652,8 @@ def test_load_syllabus_default_tokenizer_is_whitespace_when_pythainlp_absent(
 
     monkeypatch.setattr(builtins, "__import__", blocking_import)
     root = _write_curated_dir(tmp_path / "deck")
-    syllabus = load_syllabus(root)
-    assert syllabus.tokenizer.tokens("a b c") == ["a", "b", "c"]
+    with pytest.raises(RuntimeError, match="pythainlp"):
+        load_syllabus(root)
 
 
 def test_load_syllabus_no_frequency_file_leaves_empty_frequency_map(tmp_path):
