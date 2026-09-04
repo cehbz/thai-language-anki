@@ -3,8 +3,10 @@ that target" (spec 1, section 3): word at a token boundary, voice satisfies
 skill, strict i+1 with a novelty budget of 1 for a sentence-introducing
 target, 0 otherwise.
 """
+import pytest
+
 from thai_syllabus.profile import Profile
-from thai_syllabus.syllabus import Syllabus
+from thai_syllabus.syllabus import Syllabus, token_is_known
 
 from .builders import sentence, target, word
 from .fakes import FakeTokenizer
@@ -57,6 +59,26 @@ def test_fills_on_a_compound_token_that_is_two_known_words_joined():
     syllabus = base_syllabus((body, kind), (t_body, t_kind), tok,
                              frequency={body.id: 1, kind.id: 2})
     assert syllabus.fills(s, t_kind) is True
+
+
+def test_compound_with_unregistered_remainder_is_new():
+    # token "กินข้าว" (eat-rice) with "กิน" (eat) registered and "ข้าว" (rice) not
+    eat = word("eat", "กิน")  # eat
+    t = target("eat/receptive", "eat", "receptive")
+    s = sentence("กินข้าว", voice="learner_voice", gloss="eat rice")  # eat rice
+    tok = FakeTokenizer({s.text: ["กินข้าว"]})
+    syllabus = base_syllabus((eat,), (t,), tok)
+    assert syllabus.fills(s, t) is False  # "rice" is unknown and has no Target
+
+
+@pytest.mark.parametrize("token,known,expected", [
+    ("กินข้าว", {"กิน", "ข้าว"}, True),        # eat-rice: both halves known
+    ("กินข้าว", {"กิน"}, False),               # eat-rice: the "rice" remainder is unknown
+    ("โรงพยาบาล", {"ยา"}, False),              # hospital contains medicine mid-token; not a boundary match
+    ("ตัวอย่าง", {"ตัวอย่าง"}, True),           # example: the compound itself is a registered Word
+])
+def test_token_known_table(token, known, expected):
+    assert token_is_known(token, known) is expected
 
 
 # --- clause 2: voice satisfies skill -----------------------------------------

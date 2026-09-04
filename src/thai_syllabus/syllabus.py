@@ -7,7 +7,7 @@ report() identifies the state it judged so a stale report steers nothing.
 import dataclasses
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
@@ -18,6 +18,23 @@ from .ports import AssessmentReader, MediaIndex, NullAssessmentReader, NullMedia
 from .profile import Profile
 from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
+
+
+def token_is_known(token: str, known: Collection[str]) -> bool:
+    """Whether `token` is a known word, or a known word is its prefix or
+    suffix with a remainder that is itself known, recursively. A known
+    word occurring mid-token, matching neither end, is not a boundary.
+    """
+    if token in known:
+        return True
+    for candidate in known:
+        if not candidate or candidate == token:
+            continue
+        if token.startswith(candidate) and token_is_known(token[len(candidate):], known):
+            return True
+        if token.endswith(candidate) and token_is_known(token[:len(token) - len(candidate)], known):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -132,18 +149,18 @@ class Syllabus:
         tokens) -- never novel, never budget-consuming."""
         return any(ch.isalpha() for ch in tok)
 
-    def _matches_a_known_word(self, tok: str) -> bool:
-        return any(self._boundary_match([tok], w.thai) for w in self.words)
-
     def _unknown_tokens(self, tokens: list[str]) -> list[str]:
-        """Content tokens matching no registered Word at all. Such a token
-        has no Target by construction, so it always counts against the
-        novelty budget (spec 1 §3: "every word it uses has an earlier
-        Target") -- no exemption list for function/glue words; those must
-        be registered with an early receptive Target instead.
+        """Content tokens that do not decompose into registered Words at
+        a boundary (token_is_known). Such a token has no Target by
+        construction, so it always counts against the novelty budget
+        (spec 1 §3: "every word it uses has an earlier Target") -- no
+        exemption list for function/glue words; those must be registered
+        with an early receptive Target instead. A known prefix does not
+        excuse an unregistered remainder.
         """
+        known = {w.thai for w in self.words}
         return [tok for tok in tokens
-               if self._has_lexical_content(tok) and not self._matches_a_known_word(tok)]
+               if self._has_lexical_content(tok) and not token_is_known(tok, known)]
 
     def mentions(self, sentence: Sentence, thai: str) -> bool:
         """Whether `thai` appears in `sentence.text` at a token boundary
