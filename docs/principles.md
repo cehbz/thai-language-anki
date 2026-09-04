@@ -1,6 +1,6 @@
 # Principles
 
-Revision 1, approved 2026-09-04. Drafted 2026-09-01, rewritten 2026-09-02
+Revision 2, proposed 2026-09-04 (r1 approved 2026-09-04). Drafted 2026-09-01, rewritten 2026-09-02
 in the domain language of the entity pass. The architecture
 (docs/architecture.md) is the companion.
 
@@ -8,6 +8,10 @@ Three meta-rules from the charter; every principle traces to one; every
 rule operationalizes a principle, and the traceability check runs both
 directions (a rule without a principle is cruft; a principle without a
 rule is unimplemented doctrine).
+
+A principle states what must hold and why, in terms that survive a
+reimplementation. Mechanisms (data shapes, keys, screens, functions)
+live in docs/architecture.md and docs/specs/, which cite the principle.
 
 Status marks. A principle without a mark is locked. **[provisional:
 <evidence>]** names the evidence that settles it; the principle binds the
@@ -32,25 +36,31 @@ the principle.
 Revision log:
 - r1 2026-09-04: draft of 09-02 locked; open items marked provisional;
   E7 added from the 09-02 study readout on voices.
+- r2 2026-09-04: mechanism sentences moved to the architecture and specs
+  (A2, A3, A5, A6, F1, F4, F5, F6a, F8, F9, F10, F11, E6, E7); the
+  decisions-on-record section retired (architecture §2-§6 carry them);
+  F2 gains the no-study-grouping sentence with its evidence. No other
+  principle's meaning changed.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
 - **A1.** Anki's domain is adopted at the boundary, unmodified: note, card,
   template, guid, due, tags, scheduling. A Compile is a pure translation
   of Syllabus state into it; nothing on our side re-invents scheduling.
-- **A2.** Identity is stable across Compiles: a Word target's note identity
-  derives from the Word; a sentence card's from (Target, Sentence), so a
-  replaced sentence resets its scheduling (texts are not fungible) while
-  everything else updates in place. Model ids are stable; fields append.
-- **A3.** No two cards of a note share a front; a note's first field is its
-  identity, unique within its model.
+- **A2.** Card identity is stable across Compiles, so scheduling survives
+  regeneration. Identity derives from what the card teaches: a word card
+  from its Word, a sentence card from the Target and the text, so a
+  replaced sentence is a new card (texts are not fungible) while
+  everything else updates in place.
+- **A3.** No two cards share a front: a front the learner cannot tell
+  apart cannot be graded.
 - **A4.** Every media reference resolves; filenames are sync-safe.
-- **A5.** New-card order is the Compile's decision (due, from Syllabus.order());
-  review scheduling is Anki's. The two cards of one MinimalPair rendition
-  are separated (offset due, bury-siblings shipped in the options group);
-  different pairs of a confusion may interleave. [evidence: study 09-02]
-- **A6.** The Compile carries the tags StudyRecords need to map every review
-  back to its Target, SoundConfusion, card kind, and compile id.
+- **A5.** Introduction order is ours; review scheduling is Anki's. The
+  cards of one rendition are never studied back to back (the second would
+  give the first away); different pairs of a confusion may interleave.
+  [evidence: study 09-02]
+- **A6.** Every review maps back to what it taught (Target,
+  SoundConfusion, card kind) and to the Compile that produced the card.
 - **A7.** Compiles are frequent and cheap; import never duplicates or silently
   drops; the compile refuses on gate failure or ships declared warnings.
 - **A8.** The deck styles its own cards: legible Thai, the answer visually
@@ -59,28 +69,29 @@ Revision log:
 
 ## Lens 2 — "Does it implement Fluent Forever (as re-derived)?"
 
-- **F1.** **Sound system first.** [provisional: study, pair difficulty] SoundConfusions are trained by MinimalPairs
-  with native renditions (one speaker per rendition across members —
-  never let the voice carry the answer). Coverage per trained confusion =
-  pairs × distinct speakers; targets ≥ N pairs × ≥ M speakers (N, M in
-  the rulebook); the trained set and weights come from the learner
-  profile seed, re-derived from StudyRecords when they exist. *Current
-  deck: one pair per confusion, mostly one speaker — a demonstration.*
+- **F1.** **Sound system first.** [provisional: study, pair difficulty]
+  SoundConfusions are trained by MinimalPairs with native renditions, one
+  speaker across the members of a rendition so the voice never carries
+  the answer. Coverage of a confusion is its pairs and its distinct
+  speakers, each against a target. Which confusions are trained, and how
+  heavily, comes from the learner profile and, once it exists, the
+  learner's study evidence.
 - **F2.** **Concrete vocabulary before grammar.** Word targets ordered by
   colloquial usefulness (frequency blend × emphasis) inside semantic
-  spread (category coverage as a measure).
+  spread (category coverage as a measure). A category measures spread
+  and weights emphasis; it never groups study, since same-category
+  batches impair retention (Tinkham 1993, 1997; Waring 1997; Erten &
+  Tekin 2008; Wyner's own guidance; research log 2026-09-04).
 - **F3.** **A picture carries meaning; a gloss fixes it.** The picture is the
   prompt on production; a short L1 gloss may appear on any back, and on
   a front only where no picture can fix the sense. Which words carry
   front glosses is recorded, not ad hoc. **[provisional: gloss-off study pass or Anki study]**
-- **F4.** **Finding media is the machine's job; the learner rates, guides, and
-  curates last.** Feedback screen per subject: gloss, current artifact
-  with the judge's verdict, rejected candidates at judgeable size
-  (presentation at card size — the presentation is part of the
-  question), the query read-only. Ratings: unacceptable-none /
-  unacceptable-use-this / acceptable / good, optional note. First mode
-  is a proof gallery: every card front/back in introduction order,
-  sequential, no scheduling. Anki flags feed the same record.
+- **F4.** **Finding media is the machine's job; the learner rates, guides,
+  and curates last.** The learner is the most expensive source and judge,
+  asked only after the machine has tried: to rate, to direct, to supply,
+  never to search. The learner judges an artifact as the card will show
+  it; the presentation is part of the question. Every channel of learner
+  feedback lands in one record.
 - **F5.** **Picture cards introduce; sentences exercise** (locked 09-02).
   Orthodox FF for the base stage, applied to the whole colloquial core;
   sentence-led introduction (Wyner-style) remains available as a Target
@@ -88,14 +99,14 @@ Revision log:
   introducing target, else 0 — every other word has an earlier Target,
   uniformly, no exemption list; glue words get early receptive Targets.
   word_form targets carry their novelty in the construction, words all
-  known. One shared definition Syllabus.fills(sentence, target) (word at
-  token boundary, voice constraint, met-at-entry) serves generation and
-  report alike. Exercise latency per target is a measure (parsimonious
-  multi-fill texts must not drift a word's exercise months late).
+  known. Generation and measurement share one definition of "this
+  sentence serves that target". Exercise latency per target is measured:
+  a text that serves several targets must not drift a word's exercise
+  months late.
 - **F6.** **Graphemes teach reading, not writing.** One card per grapheme:
   symbol → sound + keyword, showing the keyword Word's own picture
-  (F6a: one picture per word, everywhere — structural, since only Word
-  has a picture relation). Writing is incidental, never a family.
+  (F6a: one picture per word, everywhere). Writing is incidental, never
+  a family.
   Consonant keywords are the acrophonic words; vowels and marks take
   concrete picturable keywords. Tone-rule material is card-back
   reference, never tested; a word's tone is memorized with the word.
@@ -106,31 +117,29 @@ Revision log:
   any productive Target carries male native audio (self-grading
   register); receptive-only Sentences may be TTS. [decided 09-02]
 - **F8.** **Order = usefulness in daily speech; then SRS.**
-  [provisional: study, intro order feel] Syllabus.order() is
-  the one implementation; constraints (sounds early, sentence after its
-  words, receptive before productive per word) are rules; frequency ×
-  emphasis breaks ties. Derived, never stored; the studied past is fixed
-  by StudyRecords, the unstudied future reorders freely and rules catch
-  what a reorder invalidates.
-- **F9.** **Authority and memory are cache policy.** The learner is the most
-  expensive backend of both ports: answers keyed on (artifact, role) —
-  no rubric in the key, so rubric changes cannot touch them; never
-  evicted; authoritative on conflict. Re-asked only by role change
-  (mechanical miss), StudyRecord contradiction (evidence shown, may
-  reopen "good"), or the learner re-rating (newest wins). Machine
-  verdicts are memoization keyed on all inputs including rubric; a
-  changed rubric is a new question. Nothing overrides a learner answer;
-  things queue questions.
-- **F10.** **Sourcing is periodic batch over the whole Syllabus**, ordered by
-  expected gain per unit of Budget (per-backend caps), escalating
-  backends in cost order, the learner last. Exhausted-for-now = only
-  the learner remains; any learner input reopens. The queue is derived
-  each run; every run reports attempted / improved / exhausted against
-  available.
-- **F11.** **No unjudged artifact on a card; no query that cannot describe its
-  object.** A missing picture is a gap; a wrong one is a lie memorized.
-  Provider caches are never evicted and double as the attempt record
-  (the question asked is always on the record).
+  [provisional: study, intro order feel] Constraints first: sounds early,
+  a sentence after its words, receptive before productive per word;
+  usefulness (F2) orders within them. Order is derived, never stored: the
+  studied past is fixed by the evidence, the unstudied future reorders
+  freely, and what a reorder invalidates is caught, not hidden.
+- **F9.** **A learner's answer is permanent and final; a machine's answers
+  exactly the question asked.** A learner's answer is about an artifact
+  in a role and outlives every rubric; it is never discarded and wins on
+  conflict. The learner is re-asked only when the question changed (a
+  new role), the evidence contradicts (shown), or the learner re-rates
+  (newest wins). A machine verdict answers one question, rubric
+  included; a changed rubric is a new question. Nothing overrides a
+  learner answer; the system queues a question instead.
+- **F10.** **Sourcing is periodic batch over the whole Syllabus**, spending
+  where the expected gain per unit of budget is highest, cheapest sources
+  first, the learner last. A subject is exhausted for now when only the
+  learner remains; any learner input reopens it. Every run reports what
+  it attempted, improved, and exhausted against what was available: a
+  run that did almost nothing must be distinguishable from success.
+- **F11.** **No unjudged artifact on a card; no query that cannot describe
+  its object.** A missing picture is a gap; a wrong one is a lie
+  memorized. Every question asked of a source is on the record, the ones
+  that returned nothing included.
 - **F12.** **Productive practice for what the learner intends to say.**
   [provisional: user decision on the productive-Target selection rule] Every
   Sentence yields receptive cards; productive Targets exist for
@@ -155,10 +164,9 @@ Revision log:
   Word attribute, taught through counting sentences (word_form cloze),
   displayed as reference on backs. Measure words and register variants
   are constructions and register, not noun attributes.
-- **E6.** Evidence closes the loop: StudyRecords (kept across regenerations,
-  keyed by card content identity + compile id) feed confusion
-  reweighting and learner-cache re-asks; until they exist, the proxies
-  are the report's measures and the learner's study notes.
+- **E6.** Evidence closes the loop: study records survive regeneration and
+  feed confusion reweighting and learner re-asks; until they exist, the
+  proxies are the report's measures and the learner's study notes.
 - **E7.** **Comprehension needs many voices.** Everything the learner hears is
   reception, productive backs included. Speaker diversity is a coverage
   measure over each audio corpus: sex, age band, and regional accent,
@@ -169,9 +177,7 @@ Revision log:
   attributes when known and "unknown" otherwise; unknown never counts
   as coverage. F1's speakers-per-confusion is this measure applied to
   renditions. Diversity never overrides native-audio requirements (F7)
-  or one speaker per rendition (F1). Pools are providers config; TTS
-  supplies sex and timbre only, Forvo and commissions supply age and
-  accent.
+  or one speaker per rendition (F1).
 
 ## Card taxonomy (as the principles imply)
 
@@ -184,15 +190,6 @@ Revision log:
 | symbol → sound | grapheme | sound, keyword + its picture, audio | Grapheme |
 | produce in context | cloze sentence (+scene picture) | target word, native audio | productive Target × Sentence |
 | understand in context | sentence audio | text, target, gloss | receptive Target × Sentence |
-
-## Decisions on record
-
-Study run of 09-01 disposable (scheduling only; StudyRecords kept).
-Sentence = artifact; Target = (word, skill); texts fill multiple targets;
-(target, text) identity. Grapheme reading-only. Strict i+1. Productive
-sentences native male audio. Scene pictures optional per Sentence,
-budget-prioritized. Syllabus aggregate root; Compile value; Anki domain
-adopted. Learner profile = register + emphasis.
 
 ## Provisional, by evidence awaited
 
