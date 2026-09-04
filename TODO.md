@@ -115,6 +115,15 @@ the new deck root is ~/decks/thai-ff.
   the 39 homographs (45 word rows lose their picture, named in the report);
   a (thai, gloss) key or a curated map would remove the shortcut.
 
+## Nice to have
+
+- Category framework: the FF 27 categories are English-centric; one
+  restructuring seen in the community regroups vocabulary into cognitive
+  domains (perception, emotion, cognition, social relationships,
+  culture) to avoid imposing one language's logic on another. Categories
+  are a coverage measure, so a second grouping would be a second measure
+  (research log 2026-09-04).
+
 ## Parked
 
 - **Kam Mueang production content** (user goal, 2026-09-02): Northern
