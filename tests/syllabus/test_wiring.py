@@ -407,8 +407,8 @@ def test_load_syllabus_sentences_come_from_the_db(tmp_path):
     from datetime import date
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
-    db.add_sentence(text_sha="s1", text="ผมกินข้าว", voice="learner_voice",  # I eat rice
-                    source="llm", origin="draft", licence="n/a",
+    db.add_sentence(text_sha="s1", text="ผมกินข้าว", gloss="I eat rice",  # I eat rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
                     acquired=date(2026, 1, 1))
     syllabus = load_syllabus(root)
     assert any(s.text == "ผมกินข้าว" for s in syllabus.sentences)  # I eat rice

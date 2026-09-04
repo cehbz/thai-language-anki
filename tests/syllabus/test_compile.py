@@ -149,7 +149,8 @@ def _small_syllabus(tokenizer, extra_targets=()) -> Syllabus:
         *extra_targets,
     ]
 
-    sentence = Sentence(text="ผมกินข้าว", voice="learner_voice", provenance=PROV)
+    sentence = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
+                        provenance=PROV)  # I eat rice
 
     return Syllabus(
         words=(pom, gin, rice, chicken, ko_name, near, far),
@@ -472,6 +473,7 @@ def test_sentence_note_cloze_and_listening(fx):
     assert fields["Thai"] == "ผมกินข้าว"
     assert fields["TargetWord"] == "ข้าว"
     assert fields["Audio"].startswith("[sound:")
+    assert fields["Gloss"] == "I eat rice"
 
     tmpl_names = [t["name"] for t in s_model["tmpls"]]
     cards = [c for c in pkg["cards"] if c["nid"] == rice_note["id"]]

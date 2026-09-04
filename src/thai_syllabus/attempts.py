@@ -43,7 +43,6 @@ preference included.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -55,7 +54,7 @@ from typing import Any
 from .assessor import AssessQuestion, Assessor, ROLE_FOR_KIND
 from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
-from .entities import Sentence, Target
+from .entities import Sentence, Target, text_sha
 from .ids import WordId
 from .media import Provenance, Speaker
 from .provider import Provider, ProviderAnswer, Question
@@ -576,13 +575,6 @@ def attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
 # --- sentence attempt (spec 3 section 5): draft over open targets, verify
 # with fills(), judge, adopt by greedy set cover -----------------------------
 
-def _text_sha(text: str) -> str:
-    """Full sha256 hex -- the artifact identity for sentence rows (not
-    cachekeys.sha's truncated form, which is a key COMPONENT, not an
-    artifact identity)."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _strip_fences(text: str) -> str:
     return re.sub(r"^```[a-z]*\n|\n```$", "", text.strip())
 
@@ -613,13 +605,14 @@ def _drafts_from(text: str) -> list[dict]:
     out = []
     for d in (data.get("sentences") if isinstance(data, dict) else []) or []:
         if isinstance(d, dict) and d.get("text"):
-            out.append({"text": str(d["text"]).strip(), "targets": list(d.get("targets") or [])})
+            out.append({"text": str(d["text"]).strip(), "targets": list(d.get("targets") or []),
+                       "gloss": str(d.get("gloss") or "")})
     return out
 
 
 def _adopt(ctx: Sourcing, s: Sentence, model: str) -> None:
-    ctx.db.add_sentence(text_sha=_text_sha(s.text), text=s.text, voice=s.voice, source="llm",
-                        origin=model, licence="generated", acquired=ctx.today())
+    ctx.db.add_sentence(text_sha=s.text_sha, text=s.text, gloss=s.gloss, voice=s.voice,
+                        source="llm", origin=model, licence="generated", acquired=ctx.today())
 
 
 def select_cover(passing: Sequence[tuple[Sentence, Sequence[Target]]],
@@ -676,17 +669,17 @@ def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], mode
     attempts do (module docstring).
     """
     targets_by_id = {t.id: t for t in syl.targets}
-    known = {_text_sha(s.text) for s in ctx.db.all_sentences()}
+    known = {s.text_sha for s in ctx.db.all_sentences()}
     open_targets = set(syl.gaps().unfilled_targets)
     state_id = syl.state_id()
     candidates: list[tuple[Sentence, AssessQuestion]] = []
     filled_by_candidate: list[list[Target]] = []
     for d in drafts:
         text = d["text"]
-        ts = _text_sha(text)
+        ts = text_sha(text)
         if ts in known:
             continue
-        s = Sentence(text=text, voice="learner_voice",
+        s = Sentence(text=text, gloss=d.get("gloss", ""), voice="learner_voice",
                     provenance=Provenance(source="llm", origin=model, licence="generated",
                                           acquired=ctx.today()))
         filled = _mechanical_fills(ctx, syl, targets_by_id, s, ts, d, state_id)

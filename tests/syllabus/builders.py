@@ -34,5 +34,5 @@ def target(id: str, word_id: str, skill: str = "receptive",
                  introduction=introduction)
 
 
-def sentence(text: str, voice: str = "learner_voice") -> Sentence:
-    return Sentence(text=text, voice=voice, provenance=PROV)
+def sentence(text: str, voice: str = "learner_voice", gloss: str = "") -> Sentence:
+    return Sentence(text=text, gloss=gloss, voice=voice, provenance=PROV)

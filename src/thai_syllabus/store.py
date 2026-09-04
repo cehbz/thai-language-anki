@@ -117,6 +117,7 @@ _SCHEMA = """
 create table if not exists sentences (
     text_sha text primary key,
     text text not null,
+    gloss text not null,
     voice text not null,
     source text not null,
     origin text not null,
@@ -393,15 +394,19 @@ class SyllabusDb:
 
     # --- sentences ----------------------------------------------------
 
-    def add_sentence(self, *, text_sha: str, text: str, voice: str,
+    def add_sentence(self, *, text_sha: str, text: str, gloss: str, voice: str,
                      source: str, origin: str, licence: str,
-                     acquired: date) -> None:
+                     acquired: date) -> bool:
+        """Insert-or-ignore on text_sha. Returns True if a new row was
+        inserted, False if text_sha already had one.
+        """
         with self._con:
-            self._con.execute(
-                "insert or ignore into sentences (text_sha, text, voice, "
-                "source, origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?)",
-                (text_sha, text, voice, source, origin, licence,
+            cur = self._con.execute(
+                "insert or ignore into sentences (text_sha, text, gloss, voice, "
+                "source, origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                (text_sha, text, gloss, voice, source, origin, licence,
                  acquired.isoformat()))
+            return cur.rowcount > 0
 
     # --- speakers -------------------------------------------------------
 
@@ -455,13 +460,13 @@ class SyllabusDb:
         db-backed state alongside the curated files.
         """
         rows = self._con.execute(
-            "select text, voice, source, origin, licence, acquired "
+            "select text, gloss, voice, source, origin, licence, acquired "
             "from sentences").fetchall()
-        return [Sentence(text=text, voice=voice,
+        return [Sentence(text=text, gloss=gloss, voice=voice,
                          provenance=Provenance(source=source, origin=origin,
                                               licence=licence,
                                               acquired=date.fromisoformat(acquired)))
-               for text, voice, source, origin, licence, acquired in rows]
+               for text, gloss, voice, source, origin, licence, acquired in rows]
 
     def has_media(self, sha: str) -> bool:
         row = self._con.execute("select 1 from media where sha=?", (sha,)).fetchone()

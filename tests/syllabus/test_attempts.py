@@ -593,13 +593,13 @@ def test_sentence_attempt_second_run_reuses_the_mechanical_row_and_hits_the_judg
 def test_sentence_attempt_skips_judging_a_draft_that_only_covers_already_filled_targets(ctx):
     c, _search, _judge = ctx
     c = _sentence_ctx(c, '{"sentences": []}')
-    covering = Sentence(text="กินส้ม", voice="learner_voice",
+    covering = Sentence(text="กินส้ม", gloss="eat orange", voice="learner_voice",  # eat orange
                         provenance=Provenance(source="llm", origin="m", licence="generated",
                                               acquired=date(2026, 9, 3)))
     c.syllabus = c.syllabus.with_sentences([covering])
     c.db.add_sentence(text_sha=__import__("hashlib").sha256("กินส้ม".encode()).hexdigest(),
-                      text="กินส้ม", voice="learner_voice", source="llm", origin="m",
-                      licence="generated", acquired=date(2026, 9, 3))
+                      text="กินส้ม", gloss="eat orange", voice="learner_voice", source="llm",
+                      origin="m", licence="generated", acquired=date(2026, 9, 3))
     # a stale prior-run draft that only fills the now-already-covered "eat" target
     c.db.append(port="provide", backend="llm-sentence", key="stale", subject="run",
                question={"provides": "sentence", "params": {"prompt": "stale"}},

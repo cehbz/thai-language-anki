@@ -11,8 +11,6 @@ scoped claim, and `traceability_metric` itself is exercised independently
 against synthetic registries in tests/syllabus/test_rulebook.py.
 """
 import dataclasses
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
@@ -46,16 +44,8 @@ ENFORCEMENT_PRINCIPLES: frozenset[str] = frozenset({
 
 
 def sentence_note_id(sentence: "Sentence") -> str:
-    """Sentence has no id field (identity = text + provenance); this is a
-    stable, content-derived note_id for Findings and judged subjects.
-    """
-    basis = json.dumps({
-        "text": sentence.text,
-        "source": sentence.provenance.source,
-        "origin": sentence.provenance.origin,
-        "acquired": str(sentence.provenance.acquired),
-    }, sort_keys=True)
-    return "sentence:" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+    """The note_id for Findings and judged subjects on a sentence."""
+    return sentence.text_sha
 
 
 # --- pair/exact-confusion ---------------------------------------------------

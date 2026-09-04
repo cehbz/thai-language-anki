@@ -3,6 +3,7 @@
 Thai strings always carry an English gloss alongside them (project rule).
 """
 import dataclasses
+import hashlib
 from datetime import date
 
 import pytest
@@ -20,6 +21,7 @@ from thai_syllabus.entities import (
 )
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
+from thai_syllabus.rulebook import sentence_note_id
 
 
 def syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
@@ -173,7 +175,10 @@ def test_category_is_frozen():
 
 # --- Sentence -----------------------------------------------------------------
 
-def test_sentence_identity_is_text_together_with_provenance():
-    a = Sentence(text="ผมกินข้าว", voice="learner_voice", provenance=PROV)
-    b = Sentence(text="ผมกินข้าว", voice="learner_voice", provenance=PROV)
-    assert a == b  # "I eat rice" (learner voice), same provenance
+def test_sentence_identity_is_the_text_sha_regardless_of_provenance():
+    a = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
+                provenance=PROV)  # "I eat rice"
+    b = dataclasses.replace(a, provenance=Provenance(
+        source="llm", origin="other-run", licence="cc", acquired=date(2026, 9, 5)))
+    assert a.text_sha == b.text_sha == hashlib.sha256(a.text.encode()).hexdigest()
+    assert sentence_note_id(a) == a.text_sha

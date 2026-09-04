@@ -527,7 +527,7 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
         target_word.thai,
         resolver.sound(text_sha, "recording"),
         resolver.img(text_sha, "picture"),
-        target_word.meaning,
+        sentence.gloss,
         "",  # GrammarNote: no curated source yet
         "",
         compile_id,

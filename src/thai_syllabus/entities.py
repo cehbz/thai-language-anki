@@ -11,6 +11,7 @@ Loaded data is re-checked the same way by the `grapheme/keyword-contains-
 symbol` and `pair/exact-confusion` rules (see rulebook.py), which reuse the
 same pure diff functions.
 """
+import hashlib
 from dataclasses import dataclass
 from typing import Literal
 
@@ -229,12 +230,23 @@ class MinimalPair:
                    members=tuple(m.id for m in members))
 
 
+def text_sha(text: str) -> str:
+    """sha256 hex digest of text, the one sentence id."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class Sentence:
-    """An artifact, not a fact of the language. Identity: (text, provenance).
+    """An artifact, not a fact of the language. Identity: text_sha, the sha256
+    of text; provenance is a fact of the row, not identity.
 
     Which Targets it fills is derived (Syllabus.fills), never stored.
     """
     text: str
+    gloss: str
     voice: Voice
     provenance: Provenance
+
+    @property
+    def text_sha(self) -> str:
+        return text_sha(self.text)
