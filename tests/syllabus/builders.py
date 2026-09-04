@@ -22,8 +22,9 @@ def pron(*syllables: Syllable, corroboration="engines_agree") -> Pronunciation:
 
 
 def word(id: str, thai: str, meaning: str = "", classifier: str | None = None,
-         syllables: tuple[Syllable, ...] | None = None) -> Word:
-    p = pron(*syllables) if syllables else pron()
+         syllables: tuple[Syllable, ...] | None = None,
+         corroboration: str = "engines_agree") -> Word:
+    p = pron(*syllables, corroboration=corroboration) if syllables else pron(corroboration=corroboration)
     return Word(id=WordId(id), thai=thai, pron=p, meaning=meaning or id,
                classifier=WordId(classifier) if classifier else None)
 

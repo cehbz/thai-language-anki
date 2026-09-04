@@ -2,12 +2,14 @@
 mechanical backends; picture, recording and sentence needs close; the gate opens."""
 import dataclasses
 import json
+from datetime import date
 from pathlib import Path
 
 from thai_syllabus.assessor import RawVerdict
 from thai_syllabus.attempts import current_best_of
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
-from thai_syllabus.entities import Category
+from thai_syllabus.entities import Category, text_sha
+from thai_syllabus.media import Speaker
 from thai_syllabus.provider import FetchBackend, RawAnswer
 from thai_syllabus.profile import Profile
 from thai_syllabus.run import run
@@ -100,6 +102,23 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
 
     report = run(ctx, {})
     assert report.improved >= 4 and report.pending == 0 and report.sentences_adopted == 1
+
+    # sentence/recording-required (F7): Syllabus.gaps() does not enumerate
+    # an adopted sentence's own audio need, so this run's queue never
+    # attempts it -- seed it directly, the same way its word recordings
+    # are seeded (build_sourcing shares ctx.db with load_syllabus's db).
+    sentence_sha = text_sha("กินส้ม")  # eat orange
+    ctx.db.add_speaker(Speaker(id="somchai", kind="native"))
+    ctx.db.add_media(sha="sentence-rec", kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id="somchai")
+    ctx.db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
+                 subject=sentence_sha, question={"provides": "recording"},
+                 answer={"items": [{"sha": "sentence-rec"}]})
+    ctx.db.append(port="assess", backend="judge", key=f"judge:x:sentence-rec:recording-for-word",
+                 subject=sentence_sha,
+                 question={"role": "recording-for-word", "artifact_sha": "sentence-rec", "rubric": None},
+                 answer={"value": True})
 
     after = dataclasses.replace(load_syllabus(root), tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"]}))
     g = after.gaps()

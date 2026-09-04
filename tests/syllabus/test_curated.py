@@ -234,7 +234,7 @@ def test_rulebook_config_round_trip(tmp_path):
     path = tmp_path / "rulebook.yaml"
     cfg = curated.RulebookConfig(
         severities={"pair/exact-confusion": "error"},
-        thresholds={"media/picture-required": 0.1},
+        thresholds={"coverage/categories": 0.1},
         rubrics={"sentence/register-natural": "Is this natural?"})
     curated.save_rulebook_config(path, cfg)
     assert curated.load_rulebook_config(path) == cfg

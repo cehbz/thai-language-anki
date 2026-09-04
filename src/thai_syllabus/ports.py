@@ -61,7 +61,7 @@ class AssessmentReader(Protocol):
 @runtime_checkable
 class MediaIndex(Protocol):
     """Read access to spec 2's media relationships. Not named by spec 1's
-    text; added here because gap/coverage measures (media/picture-required,
+    text; added here because gap/coverage measures (coverage/speakers,
     coverage/confusions) need to know what media exists, and architecture.md
     lists that as record-owned, spec-2 territory the Syllabus reads through.
     has_picture/recording_speakers/rendition_speakers are spec 1's original

@@ -1,8 +1,10 @@
-"""The seeded rulebook (spec 1, section 4): pair/exact-confusion,
-grapheme/keyword-contains-symbol, sentence/fills-novelty, syllabus/closure,
-media/picture-required, coverage/confusions, rulebook/traceability, and one
-judged rule (sentence/register-natural) exercising the AssessmentReader path.
+"""The rulebook (spec 1, section 4), enumerated against the spec table:
+every registered rule, the locked principles, and the traceability measure
+derived from both.
 """
+import re
+from pathlib import Path
+
 from thai_syllabus.curated import RulebookConfig
 from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
@@ -10,7 +12,7 @@ from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
-                                    PRINCIPLES, RUBRICS_BY_ROLE, RULES, SENTENCE_REGISTER_NATURAL,
+                                    PICTURE_PREFERENCE, PRINCIPLES, RULES, SENTENCE_REGISTER_NATURAL,
                                     apply_overlay, rubrics_for, sentence_note_id,
                                     traceability_metric)
 from thai_syllabus.syllabus import Syllabus
@@ -65,8 +67,43 @@ def test_the_shipped_rulebook_is_internally_traceable():
     assert metric.detail == {"orphan_rules": [], "unenforced_principles": []}
 
 
+def test_traceability_reports_every_principle_without_a_rule():
+    metric = traceability_metric([r for r in RULES if r.principle != "E7"], PRINCIPLES,
+                                 ENFORCEMENT_PRINCIPLES)
+    assert metric.value == 0.0
+    assert metric.detail["unenforced_principles"] == ["E7"]
+
+
 def test_rulebook_traceability_rule_is_itself_in_the_registry():
     assert any(r.id == "rulebook/traceability" for r in RULES)
+
+
+# --- rule enumeration against the spec table --------------------------------
+
+def test_registered_rules_match_the_spec_table():
+    expected = {
+        "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
+        "rendition/mixed-speakers", "coverage/confusions", "syllabus/closure",
+        "coverage/categories", "category/single-membership", "picture/fit",
+        "picture/preference", "target/picture-required", "sentence/fills-novelty",
+        "target/sentence-required", "grapheme/keyword-picture-required",
+        "grapheme/keyword-contains-symbol", "target/recording-required",
+        "sentence/recording-required", "recording/synthetic",
+        "sentence/synthetic-productive", "order/sounds-first",
+        "order/sentence-after-words", "order/receptive-before-productive",
+        "order/reading-after-graphemes", "sentence/register-natural",
+        "word/pronunciation-corroborated", "word/classifier-known",
+        "coverage/speakers", "card/unique-front", "rulebook/traceability",
+    }
+    assert {r.id for r in RULES} == expected
+
+
+def test_principles_matches_the_locked_principles_doc():
+    text = Path("docs/principles.md").read_text(encoding="utf-8")
+    ids = set(re.findall(r"\*\*([AFE]\d+[ab]?)\.\*\*", text))
+    ids.add("F6a")    # named only in prose ("(F6a: ...)"), never its own heading
+    ids.add("META-1")  # the charter's traceability meta-rule; not numbered in the doc
+    assert ids == PRINCIPLES
 
 
 # --- pair/exact-confusion ----------------------------------------------------
@@ -197,20 +234,6 @@ def test_coverage_categories_is_full_with_no_categories_at_all():
     syllabus = make_syllabus()
     metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/categories")
     assert metric.value == 1.0
-
-
-# --- media/picture-required (gap-metric) -------------------------------------
-
-def test_media_picture_required_counts_targeted_words_without_a_picture():
-    from .fakes import FakeMediaIndex
-    rice = word("rice", "ข้าว")  # rice
-    dog = word("dog", "หมา")  # dog
-    t1 = target("rice/receptive", "rice", "receptive")
-    t2 = target("dog/receptive", "dog", "receptive")
-    media = FakeMediaIndex(pictures={rice.id})
-    syllabus = make_syllabus(words=(rice, dog), targets=(t1, t2), media=media)
-    metrics = {m.rule: m for m in syllabus.report().metrics}
-    assert metrics["media/picture-required"].detail["missing"] == [dog.id]
 
 
 # --- coverage/confusions ------------------------------------------------
@@ -504,7 +527,182 @@ def test_picture_fit_rubric_is_the_old_text_verbatim():
         assert PICTURE_RULES[rid] in PICTURE_FIT_RUBRIC
 
 
-def test_rubrics_for_maps_roles():
+def test_every_rubric_comes_from_a_judged_rule():
+    assert set(rubrics_for(RULES)) == {r.role for r in RULES if r.shape == "judged"}
+
+
+def test_rubrics_for_maps_a_judged_rules_own_rubric():
     r = rubrics_for(RULES)
     assert r["picture-for-word"] == PICTURE_FIT_RUBRIC
-    assert "sentence-for-target" in r and "picture-preference" in r
+    assert r["picture-preference"] == PICTURE_PREFERENCE.rubric
+
+
+# --- picture/preference (judged) --------------------------------------------
+
+def test_picture_preference_role_and_shape():
+    assert PICTURE_PREFERENCE.shape == "judged"
+    assert PICTURE_PREFERENCE.role == "picture-preference"
+    assert PICTURE_PREFERENCE.judged_subjects(_syl()) == []
+
+
+# --- word/pronunciation-corroborated (E4) -----------------------------------
+
+def test_disputed_pronunciation_is_an_error_on_the_word():
+    rice = word("rice", "ข้าว", corroboration="disputed")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = make_syllabus(words=(rice,), targets=(t,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "word/pronunciation-corroborated"]
+    assert [f.note_id for f in findings] == ["rice"]
+
+
+def test_corroborated_pronunciation_is_silent():
+    rice = word("rice", "ข้าว", corroboration="engines_agree")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = make_syllabus(words=(rice,), targets=(t,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "word/pronunciation-corroborated"]
+    assert findings == []
+
+
+# --- word/classifier-known (E5) ---------------------------------------------
+
+def test_classifier_known_flags_an_unresolvable_classifier():
+    dog = word("dog", "หมา", classifier="ghost-classifier")  # dog
+    syllabus = make_syllabus(words=(dog,))
+    findings = [f for f in syllabus.report().findings if f.rule == "word/classifier-known"]
+    assert [f.note_id for f in findings] == ["dog"]
+    assert _rules("word/classifier-known")[0].severity == "warn"
+
+
+def test_classifier_known_is_silent_when_the_classifier_resolves():
+    unit = word("unit", "ตัว")  # classifier word
+    dog = word("dog", "หมา", classifier="unit")  # dog
+    syllabus = make_syllabus(words=(dog, unit))
+    findings = [f for f in syllabus.report().findings if f.rule == "word/classifier-known"]
+    assert findings == []
+
+
+# --- sentence/recording-required (F7) ---------------------------------------
+
+def test_sentence_recording_required_flags_a_sentence_with_no_recording():
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    syllabus = make_syllabus(sentences=(s,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/recording-required"]
+    assert [f.note_id for f in findings] == [sentence_note_id(s)]
+
+
+def test_sentence_recording_required_is_silent_with_a_current_best_recording():
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    media = FakeMediaIndex(recording_provenance={
+        sentence_note_id(s): {"source": "forvo", "speaker": Speaker("s", "native")}})
+    syllabus = make_syllabus(sentences=(s,), media=media)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/recording-required"]
+    assert findings == []
+
+
+# --- order constraint checks (F8, E1) ---------------------------------------
+
+def test_order_sounds_first_is_silent_over_orders_own_shape():
+    confusion, mid_word, low_word, pair = _mid_low_pair()
+    chicken = word("chicken", "ไก่", "chicken")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken)
+    rice = word("rice", "ข้าว")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = make_syllabus(words=(mid_word, low_word, chicken, rice), pairs=(pair,),
+                             graphemes=(grapheme,), confusions=(confusion,), targets=(t,))
+    findings = [f for f in syllabus.report().findings if f.rule == "order/sounds-first"]
+    assert findings == []
+
+
+def test_order_reading_after_graphemes_is_silent_over_orders_own_shape():
+    chicken = word("chicken", "ไก่", "chicken")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken)
+    rice = word("rice", "ข้าว")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = make_syllabus(words=(chicken, rice), graphemes=(grapheme,), targets=(t,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "order/reading-after-graphemes"]
+    assert findings == []
+
+
+def test_order_receptive_before_productive_is_silent_when_ordered_correctly():
+    rice = word("rice", "ข้าว")  # rice
+    t_receptive = target("rice/receptive", "rice", "receptive")
+    t_productive = target("rice/productive", "rice", "productive")
+    syllabus = make_syllabus(words=(rice,), targets=(t_receptive, t_productive))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "order/receptive-before-productive"]
+    assert findings == []
+
+
+class _FixedOrderSyllabus:
+    """A minimal stand-in exposing only what an order() check reads --
+    order()'s own ranking (sounds before words; receptive before
+    productive at equal frequency) can't be forced into a violating shape
+    without it.
+    """
+    def __init__(self, targets=(), order_list=(), graphemes=()):
+        self.targets = targets
+        self.graphemes = graphemes
+        self._order_list = order_list
+
+    def order(self):
+        return self._order_list
+
+
+def test_order_receptive_before_productive_flags_a_reversed_pair():
+    from thai_syllabus.rulebook import _check_order_receptive_first
+    rice = word("rice", "ข้าว")  # rice
+    t_productive = target("rice/productive", "rice", "productive")
+    t_receptive = target("rice/receptive", "rice", "receptive")
+    fixed = _FixedOrderSyllabus(targets=(t_productive, t_receptive),
+                                order_list=[t_productive, t_receptive])
+    findings = _check_order_receptive_first(fixed)
+    assert [f.note_id for f in findings] == ["rice"]
+
+
+def test_order_sounds_first_flags_a_target_before_a_pair_or_grapheme_entry():
+    from thai_syllabus.rulebook import _check_order_sounds_first
+    t = target("rice/receptive", "rice", "receptive")
+    fixed = _FixedOrderSyllabus(order_list=[t, "tone:mid-low/klai"])
+    findings = _check_order_sounds_first(fixed)
+    assert [f.rule for f in findings] == ["order/sounds-first"]
+
+
+def test_order_reading_after_graphemes_flags_a_target_before_a_grapheme():
+    from thai_syllabus.rulebook import _check_order_reading_after_graphemes
+    chicken = word("chicken", "ไก่", "chicken")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken)
+    t = target("rice/receptive", "rice", "receptive")
+    fixed = _FixedOrderSyllabus(order_list=[t, "ก"], graphemes=(grapheme,))
+    findings = _check_order_reading_after_graphemes(fixed)
+    assert [f.rule for f in findings] == ["order/reading-after-graphemes"]
+
+
+def test_order_sentence_after_words_flags_a_word_the_sentence_uses_with_no_target():
+    rice = word("rice", "ข้าว")  # rice
+    plate = word("plate", "จาน")  # plate, no Target
+    t_rice = target("rice/receptive", "rice", "receptive")
+    s = sentence("ข้าวอยู่บนจาน", voice="learner_voice")  # the rice is on the plate
+    tok = FakeTokenizer({s.text: ["ข้าว", "อยู่บน", "จาน"]})
+    syllabus = make_syllabus(words=(rice, plate), targets=(t_rice,), sentences=(s,), tokenizer=tok)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "order/sentence-after-words"]
+    assert [f.note_id for f in findings] == [sentence_note_id(s)]
+
+
+def test_order_sentence_after_words_is_silent_when_every_used_word_has_a_target():
+    rice = word("rice", "ข้าว")  # rice
+    t_rice = target("rice/receptive", "rice", "receptive")
+    s = sentence("ข้าว", voice="learner_voice")  # rice
+    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "order/sentence-after-words"]
+    assert findings == []

@@ -33,15 +33,23 @@ PROV = Provenance(source="test", origin="fixture", licence="cc0",
 # This module's fixtures build a Syllabus whose `media` port is the default
 # NullMediaIndex -- artifact resolution for the actual compiled cards goes
 # straight through fx.db/fx.media (Fixture.seed_picture/seed_recording), not
-# through Syllabus.media, so these five completeness ERROR rules (spec 4)
-# would always fire here regardless of what's seeded, closing the gate on
-# every fixture that has targets. This module's subject is compile.py's own
-# field/guid/due/dropped-card mechanics, not target completeness, so those
-# five are dropped from the default rules; everything else (closure,
-# exact-confusion, ...) still runs.
+# through Syllabus.media, so these completeness ERROR rules (spec 4) would
+# always fire here regardless of what's seeded, closing the gate on every
+# fixture that has targets or sentences. This module's subject is
+# compile.py's own field/guid/due/dropped-card mechanics, not target
+# completeness, so these are dropped from the default rules; everything
+# else (closure, exact-confusion, ...) still runs.
+#
+# card/unique-front is dropped too: `_small_syllabus`'s one sentence fills
+# three targets, so its "Listening" cards ({{Audio}} alone as the front)
+# legitimately share one front across those targets -- a real content
+# question this module's mechanics-only fixtures aren't meant to raise;
+# the dedicated card/unique-front tests build their own syllabus with it
+# enabled.
 _COMPLETENESS_ERROR_IDS = {
     "target/picture-required", "target/recording-required", "target/sentence-required",
     "pair/rendition-required", "grapheme/keyword-picture-required",
+    "sentence/recording-required", "card/unique-front",
 }
 _RULES_WITHOUT_COMPLETENESS = tuple(r for r in RULES if r.id not in _COMPLETENESS_ERROR_IDS)
 
@@ -219,6 +227,62 @@ def test_compile_refuses_when_the_gate_is_closed(fx):
     with pytest.raises(GateRefusal):
         compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
     assert not fx.out_path.exists()
+
+
+# _RULES_WITHOUT_COMPLETENESS plus card/unique-front (dropped from it
+# above) -- every other completeness check still excluded, so a fixture
+# with no picture, no recording index, and no sentence stays gate-clean
+# apart from the duplicate front itself.
+_RULES_FOR_UNIQUE_FRONT = _RULES_WITHOUT_COMPLETENESS + (
+    next(r for r in RULES if r.id == "card/unique-front"),)
+
+
+def _duplicate_front_syllabus(tokenizer) -> Syllabus:
+    # Two distinct words sharing one Thai spelling -- their Reading
+    # template fronts ("{{Thai}}" alone) render identically.
+    rice_a = _word("rice-a", "ข้าว", "cooked rice (a)")
+    rice_b = _word("rice-b", "ข้าว", "cooked rice (b)")
+    targets = (Target(id=TargetId("rice-a/receptive"), word=rice_a.id, skill="receptive"),
+              Target(id=TargetId("rice-b/receptive"), word=rice_b.id, skill="receptive"))
+    return Syllabus(words=(rice_a, rice_b), targets=targets, tokenizer=tokenizer,
+                    rules=_RULES_FOR_UNIQUE_FRONT)
+
+
+def test_compile_refuses_on_duplicate_card_fronts(fx):
+    syllabus = _duplicate_front_syllabus(_SplitTokenizer({}))
+    fx.seed_recording("rice-a", "recording a")
+    fx.seed_recording("rice-b", "recording b")
+    with pytest.raises(GateRefusal) as excinfo:
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    assert not fx.out_path.exists()
+    assert any(f.rule == "card/unique-front" for f in excinfo.value.report.findings)
+
+
+def test_compile_forced_past_duplicate_fronts_reports_the_finding_and_writes(fx):
+    syllabus = _duplicate_front_syllabus(_SplitTokenizer({}))
+    fx.seed_recording("rice-a", "recording a")
+    fx.seed_recording("rice-b", "recording b")
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True)
+    assert fx.out_path.exists()
+    assert compiled.report.gate is False
+    assert any(f.rule == "card/unique-front" for f in compiled.report.findings)
+    assert any("card/unique-front" in w for w in compiled.report.warnings)
+
+
+def test_compile_with_distinct_fronts_reports_no_unique_front_finding(fx):
+    # Same setup as _duplicate_front_syllabus but with distinct Thai
+    # spellings -- no two Reading fronts collide.
+    rice = _word("rice", "ข้าว", "cooked rice")
+    dog = _word("dog", "หมา", "dog")
+    targets = (Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
+              Target(id=TargetId("dog/receptive"), word=dog.id, skill="receptive"))
+    syllabus = Syllabus(words=(rice, dog), targets=targets, tokenizer=_SplitTokenizer({}),
+                        rules=_RULES_FOR_UNIQUE_FRONT)
+    fx.seed_recording("rice", "recording rice")
+    fx.seed_recording("dog", "recording dog")
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    assert compiled.report.gate is True
+    assert compiled.report.findings == ()
 
 
 def test_compile_forced_past_a_closed_gate_records_declared_warnings(fx):

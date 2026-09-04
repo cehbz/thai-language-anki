@@ -91,11 +91,13 @@ distinct, stride-separated due values instead of collapsing onto one.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import tempfile
 import time
 import zipfile
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -104,7 +106,7 @@ import genanki
 from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
 from .rulebook import sentence_note_id
-from .rules import Compile, CompileReport, DroppedCard, Report
+from .rules import Compile, CompileReport, DroppedCard, Finding, Report
 
 if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
@@ -538,6 +540,54 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
     return note, due
 
 
+# --- card/unique-front (A3) -------------------------------------------------
+# A minimal mustache-section renderer, just enough to compare rendered card
+# fronts -- not a full Anki template engine.
+
+_HASH_SECTION_RE = re.compile(r"{{#([A-Za-z0-9_]+)}}(.*?){{/\1}}", re.DOTALL)
+_CARET_SECTION_RE = re.compile(r"{{\^([A-Za-z0-9_]+)}}(.*?){{/\1}}", re.DOTALL)
+_FIELD_RE = re.compile(r"{{([A-Za-z0-9_]+)}}")
+
+
+def _render_qfmt(qfmt: str, values: Mapping[str, str]) -> str:
+    def hashed(m: re.Match) -> str:
+        return _render_qfmt(m.group(2), values) if values.get(m.group(1)) else ""
+
+    def caret(m: re.Match) -> str:
+        return _render_qfmt(m.group(2), values) if not values.get(m.group(1)) else ""
+
+    text = _HASH_SECTION_RE.sub(hashed, qfmt)
+    text = _CARET_SECTION_RE.sub(caret, text)
+    return _FIELD_RE.sub(lambda m: values.get(m.group(1), ""), text)
+
+
+def _record_fronts(entries: list[tuple[str, str, str]], model: genanki.Model,
+                   subject: str, note: genanki.Note) -> None:
+    """Appends (model:ord, subject, rendered front) for every card the note
+    actually generated -- card/unique-front compares these within a
+    (model, ord) group.
+    """
+    values = dict(zip((f["name"] for f in model.fields), note.fields))
+    for card in note.cards:
+        front = _render_qfmt(model.templates[card.ord]["qfmt"], values)
+        entries.append((f"{model.name}:{card.ord}", subject, front))
+
+
+def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Finding]:
+    by_front: dict[tuple[str, str], list[str]] = {}
+    for group, subject, front in entries:
+        by_front.setdefault((group, front), []).append(subject)
+    findings = []
+    for (group, _front), subjects in by_front.items():
+        if len(subjects) < 2:
+            continue
+        for subject in subjects:
+            others = sorted(s for s in subjects if s != subject)
+            findings.append(Finding(rule="card/unique-front", note_id=subject,
+                                    evidence=f"front matches {others} ({group})"))
+    return findings
+
+
 # --- assembly ------------------------------------------------------------
 
 def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
@@ -611,6 +661,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     notes_written = 0
     cards_written = 0
     due_by_guid_ord: dict[tuple[str, int], int] = {}
+    front_entries: list[tuple[str, str, str]] = []
 
     targeted_word_ids = {t.word for t in syllabus.targets}
     for word in syllabus.words:
@@ -627,6 +678,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
         dropped.extend(_dropped_for(note, WORD_MODEL, "word", word.id,
                                     "no current-best artifact resolves"))
         deck.add_note(note)
+        _record_fronts(front_entries, WORD_MODEL, word.id, note)
         for c in note.cards:
             due_by_guid_ord[(note.guid, c.ord)] = base_due + c.ord
         notes_written += 1
@@ -640,6 +692,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
                                            reason="no current-best recording resolves"))
                 continue
             deck.add_note(note)
+            _record_fronts(front_entries, MINIMAL_PAIR_MODEL, note.fields[0], note)
             due_by_guid_ord[(note.guid, 0)] = base_due
             notes_written += 1
             cards_written += len(note.cards)
@@ -655,6 +708,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
                                        reason="Symbol field unexpectedly empty"))
             continue
         deck.add_note(note)
+        _record_fronts(front_entries, GRAPHEME_MODEL, grapheme.symbol, note)
         due_by_guid_ord[(note.guid, 0)] = base_due
         notes_written += 1
         cards_written += len(note.cards)
@@ -673,10 +727,24 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
                                     f"{target.id}:{sentence_note_id(sentence)}",
                                     "no current-best artifact resolves"))
         deck.add_note(note)
+        _record_fronts(front_entries, SENTENCE_MODEL,
+                       f"{target.id}:{sentence_note_id(sentence)}", note)
         for c in note.cards:
             due_by_guid_ord[(note.guid, c.ord)] = base_due + c.ord
         notes_written += 1
         cards_written += len(note.cards)
+
+    unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)
+    front_findings = _duplicate_front_findings(front_entries) if unique_front_rule else []
+    blocking_front_findings = [f for f in front_findings
+                               if unique_front_rule.severity == "error"
+                               and not syllabus.assessments.is_waived(f)]
+    if blocking_front_findings and not force:
+        raise GateRefusal(replace(report, gate=False,
+                                  findings=report.findings + tuple(front_findings)))
+    for f in blocking_front_findings:
+        warnings.append(f"{f.rule}: {f.evidence} (note {f.note_id})")
+    gate = report.gate and not blocking_front_findings
 
     warnings.extend(resolver.warnings)
 
@@ -690,9 +758,9 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     os.replace(tmp_out, out_path)  # atomic (thai_deck_gen/compiler/build.py's pattern)
 
     compile_report = CompileReport(
-        compile_id=compile_id, gate=report.gate, forced=force,
+        compile_id=compile_id, gate=gate, forced=force,
         warnings=tuple(warnings), notes_written=notes_written,
         cards_written=cards_written, dropped=tuple(dropped),
-        out_path=str(out_path))
+        out_path=str(out_path), findings=tuple(front_findings))
     return Compile(label=deck_name, syllabus_state_id=state_id,
                    compile_id=compile_id, report=compile_report)

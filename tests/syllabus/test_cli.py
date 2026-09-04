@@ -54,6 +54,7 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # satisfied and the gate opens on its own, with no --force needed.
     from datetime import date
 
+    from thai_syllabus.entities import text_sha
     from thai_syllabus.media import Speaker
     from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
     from thai_syllabus.store import SyllabusDb
@@ -97,6 +98,21 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # Word+Target to satisfy fills()'s strict novelty budget (spec 1 §3).
     db.add_sentence(text_sha="s1", text="ข้าว", gloss="rice", voice="learner_voice",  # rice
                     source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
+
+    # sentence/recording-required (F7): a current-best recording under the
+    # sentence's OWN text_sha (Sentence.text_sha derives from the text, not
+    # the sentences-table row's stored key above).
+    sentence_sha = text_sha("ข้าว")
+    db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
+             subject=sentence_sha, question={"provides": "recording", "params": {}},
+             answer={"items": [{"sha": "rec-sentence"}]}, cost=0.0)
+    db.append(port="assess", backend="judge", key=f"judge:x:rec-sentence:recording-for-word",
+             subject=sentence_sha,
+             question={"role": "recording-for-word", "artifact_sha": "rec-sentence", "rubric": None},
+             answer={"value": True}, cost=0.0)
+    db.add_media(sha="rec-sentence", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1),
+                speaker_id="somchai")
 
     out = tmp_path / "deck.apkg"
     rc = cli.main(["compile", "--deck", str(root), "--out", str(out)])

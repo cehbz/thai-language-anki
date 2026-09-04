@@ -13,7 +13,15 @@ from thai_syllabus.attempts import (Need, Outcome, SentenceOutcome, Sourcing, _p
 from thai_syllabus.entities import MinimalPair, Sentence, SoundConfusion
 from thai_syllabus.media import Provenance
 from thai_syllabus.provider import FetchBackend, Provider, Question, RawAnswer, TtsBackend
-from thai_syllabus.rulebook import RUBRICS_BY_ROLE
+from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
+                                    SENTENCE_FOR_TARGET_RUBRIC)
+
+# This fixture's own role -> rubric map (rulebook.rubrics_for only covers
+# roles a judged Rule registers; "sentence-for-target" is a sourcing-time
+# judge role with no report()-time Rule).
+_RUBRICS = {"picture-for-word": PICTURE_FIT_RUBRIC,
+           "picture-preference": PICTURE_PREFERENCE_RUBRIC,
+           "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, TransportError
@@ -73,7 +81,7 @@ def ctx(tmp_path):
     jb = JudgeBackend(model="m", transport="api", complete=judge, resolve_path=resolve)
     assessor = Assessor(record=db, cache=db, backends={"judge": jb})
     sourcing = Sourcing(syllabus=syl, provider=provider, assessor=assessor, db=db, media_store=media,
-                        rubrics=dict(RUBRICS_BY_ROLE), provenance_prior=("commission", "forvo", "tts"),
+                        rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts"),
                         image_candidates=3, today=lambda: date(2026, 9, 3))
     return sourcing, search, judge
 

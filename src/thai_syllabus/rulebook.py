@@ -1,14 +1,6 @@
 """The rule registry (spec 1, section 4): an explicit module-level list, no
-import side effects.
-
-Seeded with 8 rules against the principles draft (2026-09-01-principles-
-draft.md): a representative slice, not the full doctrine -- spec section 4
-says the exact list is "enumerated at implementation-plan time against the
-locked principles." `ENFORCEMENT_PRINCIPLES` here is therefore scoped to
-just the principles this seed actually covers, not the whole draft's A/F/E
-list; `test_the_shipped_rulebook_is_internally_traceable` checks that
-scoped claim, and `traceability_metric` itself is exercised independently
-against synthetic registries in tests/syllabus/test_rulebook.py.
+import side effects. Every rule spec 1 r2 section 4's table names against
+docs/principles.md r2 is registered here; `RULES` is the enumeration.
 """
 import dataclasses
 from collections.abc import Mapping, Sequence
@@ -16,7 +8,7 @@ from typing import Any, TYPE_CHECKING
 
 from thai_deck_eval.judge.prompts import PICTURE_RULES as _OLD_PICTURE_RULES  # texts kept verbatim
 
-from .entities import exact_confusion_violation
+from .entities import Target, exact_confusion_violation, is_corroborated
 from .rules import Finding, Metric, Rule
 
 if TYPE_CHECKING:
@@ -25,21 +17,15 @@ if TYPE_CHECKING:
     from .ids import WordId
     from .syllabus import Syllabus
 
-# Every principle id from the principles draft with enforcement intent
-# (i.e. not a pure [study]/[ask] research item). "META-1" is this
-# implementation's own id for the charter's traceability meta-rule, which
-# the draft states in prose (section on Rule) but does not number.
+# Every principle id docs/principles.md r2 numbers, plus "META-1", this
+# implementation's own id for the charter's traceability meta-rule (stated
+# in prose, never numbered by the doc).
 PRINCIPLES: frozenset[str] = frozenset({
     "META-1",
     "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8",
     "F1", "F2", "F3", "F4", "F5", "F6", "F6a", "F6b", "F7", "F8", "F9",
     "F10", "F11", "F12",
     "E1", "E2", "E3", "E4", "E5", "E6", "E7",
-})
-
-# The subset of PRINCIPLES this seed actually implements a rule for.
-ENFORCEMENT_PRINCIPLES: frozenset[str] = frozenset({
-    "META-1", "F1", "F2", "F3", "F5", "F6", "F7", "E3", "E7",
 })
 
 
@@ -194,23 +180,6 @@ COVERAGE_CATEGORIES = Rule(id="coverage/categories", principle="F2",
                            measure=_measure_coverage_categories)
 
 
-# --- media/picture-required (gap-metric) -------------------------------------
-# F3: a picture carries meaning. Measures how many targeted words still
-# lack one; gaps() reads the same underlying facts.
-
-def _measure_picture_required(syllabus: "Syllabus") -> Metric:
-    targeted = {t.word for t in syllabus.targets}
-    missing = sorted(w for w in targeted if not syllabus.media.has_picture(w))
-    total = len(targeted) or 1
-    return Metric(rule="media/picture-required", value=len(missing) / total,
-                 detail={"missing": missing})
-
-
-MEDIA_PICTURE_REQUIRED = Rule(id="media/picture-required", principle="F3",
-                              severity="info", shape="measure",
-                              measure=_measure_picture_required)
-
-
 # --- coverage/confusions --------------------------------------------------
 # F1: sound system first. Coverage per trained confusion = pairs x distinct
 # speakers.
@@ -264,28 +233,15 @@ PICTURE_PREFERENCE_RUBRIC = ("Rank the attached candidates by how well each, as 
                              "unambiguous, no answer-revealing text.")
 SENTENCE_FOR_TARGET_RUBRIC = (SENTENCE_REGISTER_RUBRIC
                               + " Is it natural, grammatical, something a native speaker would say?")
-RUBRICS_BY_ROLE = {"picture-for-word": PICTURE_FIT_RUBRIC,
-                   "picture-preference": PICTURE_PREFERENCE_RUBRIC,
-                   "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
 
 
 def rubrics_for(rules: Sequence[Rule]) -> dict[str, str]:
-    """role -> rubric for every judged rule, overlay-aware (a rule's own
-    `rubric` wins over RUBRICS_BY_ROLE's default for that role), merged
-    over RUBRICS_BY_ROLE so every known role has an entry even if `rules`
-    doesn't carry a judged rule for it.
-    """
-    out = dict(RUBRICS_BY_ROLE)
-    for r in rules:
-        if r.shape == "judged" and r.rubric:
-            out[r.role] = r.rubric
-    return out
+    """role -> rubric text, for every judged rule in `rules`."""
+    return {r.role: r.rubric for r in rules if r.shape == "judged" and r.rubric}
 
 
 # --- completeness errors (F3/F5/F6/F7/F1): a targeted word or pair with no
-# current-best artifact at all is an error, not a gap metric -- these close
-# report().gate the way media/picture-required (an info-severity measure)
-# never did.
+# current-best artifact at all is an error, not a gap metric.
 
 def _targeted_words(syllabus: "Syllabus") -> list["WordId"]:
     seen, out = set(), []
@@ -443,6 +399,20 @@ PICTURE_FIT = Rule(id="picture/fit", principle="F3", severity="warn", shape="jud
                    judged_subjects=_picture_fit_subjects)
 
 
+# --- picture/preference (judged, F3) -----------------------------------------
+# Ranks candidate pictures against each other (derivations._apply_preference
+# reads the cached ranking directly); report() asks no subject about it.
+
+def _no_judged_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
+    del syllabus
+    return []
+
+
+PICTURE_PREFERENCE = Rule(id="picture/preference", principle="F3", severity="info",
+                          shape="judged", rubric=PICTURE_PREFERENCE_RUBRIC,
+                          role="picture-preference", judged_subjects=_no_judged_subjects)
+
+
 # --- coverage/speakers (E7) --------------------------------------------------
 # Speaker diversity per audio corpus: distinct speakers, and how many of them
 # carry each known sex/age_band/region -- unknown attributes never count.
@@ -471,6 +441,131 @@ def _measure_coverage_speakers(syllabus: "Syllabus") -> Metric:
 
 COVERAGE_SPEAKERS = Rule(id="coverage/speakers", principle="E7", severity="info",
                          shape="measure", measure=_measure_coverage_speakers)
+
+
+# --- word/pronunciation-corroborated (E4) ------------------------------------
+# A disputed pronunciation blocks the word's card.
+
+def _check_word_pronunciation_corroborated(syllabus: "Syllabus") -> list[Finding]:
+    findings = []
+    for word_id in _targeted_words(syllabus):
+        target_word = syllabus.find_word(word_id)
+        if target_word is not None and not is_corroborated(target_word.pron.corroboration):
+            findings.append(Finding(rule="word/pronunciation-corroborated", note_id=target_word.id,
+                                    evidence=f"pronunciation is {target_word.pron.corroboration!r}"))
+    return findings
+
+
+WORD_PRONUNCIATION_CORROBORATED = Rule(id="word/pronunciation-corroborated", principle="E4",
+                                       severity="error", shape="check",
+                                       check=_check_word_pronunciation_corroborated)
+
+
+# --- word/classifier-known (E5) ----------------------------------------------
+
+def _check_word_classifier_known(syllabus: "Syllabus") -> list[Finding]:
+    known = {w.id for w in syllabus.words}
+    return [Finding(rule="word/classifier-known", note_id=w.id,
+                    evidence=f"classifier references unknown word {w.classifier!r}")
+           for w in syllabus.words if w.classifier is not None and w.classifier not in known]
+
+
+WORD_CLASSIFIER_KNOWN = Rule(id="word/classifier-known", principle="E5", severity="warn",
+                             shape="check", check=_check_word_classifier_known)
+
+
+# --- sentence/recording-required (F7) ----------------------------------------
+# Mirrors target/recording-required's completeness shape, subject = text_sha.
+
+def _check_sentence_recording(syllabus: "Syllabus") -> list[Finding]:
+    return [Finding(rule="sentence/recording-required", note_id=sentence_note_id(s),
+                    evidence="no current-best recording")
+           for s in syllabus.sentences
+           if syllabus.media.recording_provenance(sentence_note_id(s)) is None]
+
+
+SENTENCE_RECORDING_REQUIRED = Rule(id="sentence/recording-required", principle="F7",
+                                   severity="error", shape="check",
+                                   check=_check_sentence_recording)
+
+
+# --- order constraint checks (F8, E1) ----------------------------------------
+# Checks over order()'s own shape: str entries are pair ids or grapheme
+# symbols, Target entries are word targets.
+
+def _check_order_sounds_first(syllabus: "Syllabus") -> list[Finding]:
+    positions = list(syllabus.order())
+    sound_idxs = [i for i, e in enumerate(positions) if isinstance(e, str)]
+    target_idxs = [i for i, e in enumerate(positions) if isinstance(e, Target)]
+    if sound_idxs and target_idxs and max(sound_idxs) > min(target_idxs):
+        return [Finding(rule="order/sounds-first", note_id="order",
+                        evidence="a pair or grapheme entry follows a word target")]
+    return []
+
+
+ORDER_SOUNDS_FIRST = Rule(id="order/sounds-first", principle="F8", severity="error",
+                          shape="check", check=_check_order_sounds_first)
+
+
+def _check_order_reading_after_graphemes(syllabus: "Syllabus") -> list[Finding]:
+    grapheme_symbols = {g.symbol for g in syllabus.graphemes}
+    positions = list(syllabus.order())
+    grapheme_idxs = [i for i, e in enumerate(positions)
+                     if isinstance(e, str) and e in grapheme_symbols]
+    target_idxs = [i for i, e in enumerate(positions) if isinstance(e, Target)]
+    if grapheme_idxs and target_idxs and max(grapheme_idxs) > min(target_idxs):
+        return [Finding(rule="order/reading-after-graphemes", note_id="order",
+                        evidence="a grapheme entry follows a word target")]
+    return []
+
+
+ORDER_READING_AFTER_GRAPHEMES = Rule(id="order/reading-after-graphemes", principle="E1",
+                                     severity="error", shape="check",
+                                     check=_check_order_reading_after_graphemes)
+
+
+def _check_order_receptive_first(syllabus: "Syllabus") -> list[Finding]:
+    positions = {t.id: i for i, t in enumerate(syllabus.order()) if isinstance(t, Target)}
+    by_skill: dict["WordId", dict[str, Target]] = {}
+    for t in syllabus.targets:
+        by_skill.setdefault(t.word, {})[t.skill] = t
+    findings = []
+    for word_id, skills in by_skill.items():
+        receptive, productive = skills.get("receptive"), skills.get("productive")
+        if receptive is not None and productive is not None \
+              and positions[receptive.id] > positions[productive.id]:
+            findings.append(Finding(rule="order/receptive-before-productive", note_id=word_id,
+                                    evidence="productive Target precedes its receptive Target"))
+    return findings
+
+
+ORDER_RECEPTIVE_FIRST = Rule(id="order/receptive-before-productive", principle="F8",
+                             severity="error", shape="check",
+                             check=_check_order_receptive_first)
+
+
+def _check_order_sentence_after_words(syllabus: "Syllabus") -> list[Finding]:
+    targeted_words = {t.word for t in syllabus.targets}
+    findings = []
+    for s in syllabus.sentences:
+        for w in syllabus.words:
+            if w.id not in targeted_words and syllabus.mentions(s, w.thai):
+                findings.append(Finding(rule="order/sentence-after-words", note_id=sentence_note_id(s),
+                                        evidence=f"uses word {w.id!r} with no Target"))
+    return findings
+
+
+ORDER_SENTENCE_AFTER_WORDS = Rule(id="order/sentence-after-words", principle="F8",
+                                  severity="error", shape="check",
+                                  check=_check_order_sentence_after_words)
+
+
+# --- card/unique-front (A3) --------------------------------------------------
+# shape="compile": evaluated by compile.py against compiled notes, not by
+# report(); carries no check/measure/judged_subjects function.
+
+CARD_UNIQUE_FRONT = Rule(id="card/unique-front", principle="A3", severity="error",
+                         shape="compile")
 
 
 # --- rulebook/traceability -------------------------------------------------
@@ -521,7 +616,6 @@ RULES: list[Rule] = [
     SYLLABUS_CLOSURE,
     CATEGORY_SINGLE_MEMBERSHIP,
     COVERAGE_CATEGORIES,
-    MEDIA_PICTURE_REQUIRED,
     COVERAGE_CONFUSIONS,
     SENTENCE_REGISTER_NATURAL,
     RULEBOOK_TRACEABILITY,
@@ -535,5 +629,20 @@ RULES: list[Rule] = [
     RENDITION_MIXED_SPEAKERS,
     SENTENCE_SYNTHETIC_PRODUCTIVE,
     PICTURE_FIT,
+    PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
+    WORD_PRONUNCIATION_CORROBORATED,
+    WORD_CLASSIFIER_KNOWN,
+    SENTENCE_RECORDING_REQUIRED,
+    ORDER_SOUNDS_FIRST,
+    ORDER_READING_AFTER_GRAPHEMES,
+    ORDER_RECEPTIVE_FIRST,
+    ORDER_SENTENCE_AFTER_WORDS,
+    CARD_UNIQUE_FRONT,
 ]
+
+# Every principle actually cited by a registered rule -- "the set of
+# principles with enforcement intent" (spec 1 section 4): a principle
+# enforced only by Syllabus.compile() mechanics (the table's "compile"
+# rows) carries no rule and is not counted here.
+ENFORCEMENT_PRINCIPLES: frozenset[str] = frozenset(r.principle for r in RULES)

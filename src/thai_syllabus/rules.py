@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 Severity = Literal["error", "warn", "info"]
-RuleShape = Literal["check", "measure", "judged"]
+RuleShape = Literal["check", "measure", "judged", "compile"]
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,11 @@ class DroppedCard:
 
 @dataclass(frozen=True)
 class CompileReport:
-    """What compile() produced beyond the .apkg file itself (spec 4)."""
+    """What compile() produced beyond the .apkg file itself (spec 4).
+    `findings` carries card/unique-front Findings, computed over the
+    compiled notes themselves (report() cannot see them -- they don't
+    exist until compile builds the notes).
+    """
     compile_id: str
     gate: bool
     forced: bool
@@ -87,6 +91,7 @@ class CompileReport:
     cards_written: int
     dropped: tuple[DroppedCard, ...]
     out_path: str
+    findings: tuple[Finding, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,12 +127,16 @@ class Rule:
     role: str | None = None
 
     def __post_init__(self) -> None:
-        shape_field = {"check": self.check, "measure": self.measure,
-                       "judged": self.judged_subjects}[self.shape]
-        if shape_field is None:
-            raise ValueError(f"rule {self.id!r} is shape={self.shape!r} but "
-                             f"has no matching function")
-        if self.shape == "judged" and not self.rubric:
-            raise ValueError(f"judged rule {self.id!r} needs rubric text")
+        # shape="compile" is evaluated by compile.py directly against
+        # compiled notes -- it carries no check/measure/judged_subjects
+        # function and report() never dispatches it.
+        if self.shape != "compile":
+            shape_field = {"check": self.check, "measure": self.measure,
+                           "judged": self.judged_subjects}[self.shape]
+            if shape_field is None:
+                raise ValueError(f"rule {self.id!r} is shape={self.shape!r} but "
+                                 f"has no matching function")
+            if self.shape == "judged" and not self.rubric:
+                raise ValueError(f"judged rule {self.id!r} needs rubric text")
         if self.role is None:
             object.__setattr__(self, "role", self.id)

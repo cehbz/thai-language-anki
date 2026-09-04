@@ -27,9 +27,8 @@ VowelLength = Literal["short", "long"]
 
 # A word's pronunciation is a lexical fact, adjudicated by knowledge (engines
 # as cheap oracles, an LLM as a better-read oracle on disagreement). Only
-# "disputed" blocks card emission (rule R-PRON); the other two values both
-# count as corroborated. Not specified further by the spec -- see the
-# domain-language doc's "Smell 3 resolved" note.
+# "disputed" blocks card emission (rule word/pronunciation-corroborated);
+# the other two values both count as corroborated.
 Corroboration = Literal["engines_agree", "curated_exception", "disputed"]
 
 

@@ -101,7 +101,7 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import RULES, apply_overlay, rubrics_for, sentence_note_id
+from .rulebook import RULES, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay, rubrics_for, sentence_note_id
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
@@ -380,9 +380,12 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     media_store = MediaStore(root / "media")
     bundle = load_curated(root / "curated")
     syllabus = load_syllabus(root, db=db, bundle=bundle)
+    # rubrics_for covers registered judged Rules only; "sentence-for-target"
+    # (attempts.py) is a judge role with no Rule, added here directly.
+    rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
     return Sourcing(syllabus=syllabus, provider=build_provider(cfg, db, media_store),
                     assessor=build_assessor(cfg, db, media_store), db=db, media_store=media_store,
-                    rubrics=rubrics_for(syllabus.rules),
+                    rubrics=rubrics,
                     provenance_prior=bundle.rulebook.provenance_prior,
                     image_candidates=cfg.image_candidates, tts_voices=tuple(cfg.tts_male_voices),
                     judge_model=cfg.judge.model)
