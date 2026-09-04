@@ -28,8 +28,10 @@ from thai_syllabus.curated import (
     save_curated,
 )
 from thai_syllabus.entities import Category, Target
+from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import Provider, Question
+from thai_syllabus.rulebook import sentence_note_id
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
@@ -42,7 +44,7 @@ from thai_syllabus.wiring import (
     load_syllabus,
 )
 
-from .builders import PROV, syl, pron, target, word
+from .builders import PROV, sentence, syl, pron, target, word
 
 
 # --- fixtures ----------------------------------------------------------
@@ -456,9 +458,10 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
              subject="rice",
              question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
              answer={"value": True}, cost=0.0)
+    db.add_speaker(Speaker(id="somchai", kind="native"))
     db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
-                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+                acquired=date(2026, 1, 1), speaker_id="somchai")
 
     media = _DbMediaIndex(db=db)
     assert media.picture_sha("rice") == "abc"
@@ -467,7 +470,7 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
     prov = media.recording_provenance("rice")
     assert prov["source"] == "forvo"
     assert prov["speaker_id"] == "somchai"
-    assert prov["speaker_kind"] == "native"
+    assert prov["speaker"] == Speaker(id="somchai", kind="native")
     assert media.recording_provenance("near") is None
 
 
@@ -495,7 +498,10 @@ def _tone_pair(db=None):
     return confusion, pair
 
 
-def _seed_member_recording(db, subject, sha, speaker_id):
+def _seed_member_recording(db, subject, sha, speaker_id, sex="unknown",
+                           age_band="unknown", region="unknown"):
+    db.add_speaker(Speaker(id=speaker_id, kind="native", sex=sex,
+                           age_band=age_band, region=region))
     db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
              subject=subject, question={"provides": "recording", "params": {}},
              answer={"items": [{"sha": sha}]}, cost=0.0)
@@ -505,7 +511,7 @@ def _seed_member_recording(db, subject, sha, speaker_id):
              answer={"value": True}, cost=0.0)
     db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
-                acquired=date(2026, 1, 1), speaker_id=speaker_id, speaker_kind="native")
+                acquired=date(2026, 1, 1), speaker_id=speaker_id)
 
 
 def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_row(db):
@@ -517,10 +523,10 @@ def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_ro
     _seed_member_recording(db, "far", "sha-far-own", "somchai")
     db.add_media(sha="sha-near-rendition", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
-                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+                acquired=date(2026, 1, 1), speaker_id="somchai")
     db.add_media(sha="sha-far-rendition", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
-                acquired=date(2026, 1, 1), speaker_id="somchai", speaker_kind="native")
+                acquired=date(2026, 1, 1), speaker_id="somchai")
 
     # attempts._record_rendition's own row shape.
     db.append(port="assess", backend="mechanical",
@@ -549,6 +555,59 @@ def test_db_media_index_rendition_provenance_falls_back_to_member_recordings_wit
     # rendition_speakers skips the fallback -- a partial/mixed-speaker pair
     # with no pair-level rendition row must not read as "covered".
     assert media.rendition_speakers(confusion.id) == frozenset()
+
+
+# --- _DbMediaIndex.speakers_of -------------------------------------------
+
+def test_speakers_of_recording_returns_the_shared_speaker_with_its_attributes(db):
+    orange = word("orange", "ส้ม")  # orange
+    rice = word("rice", "ข้าว")  # rice
+    _seed_member_recording(db, "orange", "sha-orange", "somchai", sex="male", region="TH")
+    _seed_member_recording(db, "rice", "sha-rice", "somchai", sex="male", region="TH")
+
+    media = _DbMediaIndex(db=db, words=(orange, rice))
+    assert media.speakers_of("recording") == (
+        Speaker(id="somchai", kind="native", sex="male", region="TH"),)
+
+
+def test_speakers_of_sentence_returns_the_sentence_recordings_speaker(db):
+    s = sentence("ข้าว")  # rice
+    note_id = sentence_note_id(s)
+    _seed_member_recording(db, note_id, "sha-sentence", "malee", sex="female")
+
+    media = _DbMediaIndex(db=db, sentences=(s,))
+    assert media.speakers_of("sentence") == (Speaker(id="malee", kind="native", sex="female"),)
+
+
+def test_speakers_of_rendition_returns_the_pairs_rendition_speaker_once(db):
+    _, pair = _tone_pair(db)
+    _seed_member_recording(db, "near", "sha-near-own", "malee")
+    _seed_member_recording(db, "far", "sha-far-own", "somchai")
+    db.add_media(sha="sha-near-rendition", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai")
+    db.add_media(sha="sha-far-rendition", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id="somchai")
+    # attempts._record_rendition's own row shape -- both members' current-
+    # best rendition rows resolve to the SAME speaker, so speakers_of must
+    # report it once, not twice.
+    db.append(port="assess", backend="mechanical",
+             key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
+                      "rubric": None,
+                      "params": {"members": {"near": "sha-near-rendition",
+                                             "far": "sha-far-rendition"}}},
+             answer={"value": True}, cost=0.0)
+
+    media = _DbMediaIndex(db=db, pairs=(pair,))
+    assert media.speakers_of("rendition") == (Speaker(id="somchai", kind="native"),)
+
+
+def test_speakers_of_an_unknown_corpus_raises_value_error_naming_it(db):
+    media = _DbMediaIndex(db=db)
+    with pytest.raises(ValueError, match="bogus"):
+        media.speakers_of("bogus")
 
 
 def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_the_fallback(db):

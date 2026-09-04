@@ -6,6 +6,7 @@ judged rule (sentence/register-natural) exercising the AssessmentReader path.
 from thai_syllabus.curated import RulebookConfig
 from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
@@ -309,7 +310,7 @@ def test_target_with_picture_recording_and_sentence_has_no_completeness_findings
     # next test): speaker_id is nullable, so a real recording can have no
     # speakers and still be a current-best recording.
     media = FakeMediaIndex(pictures={"slow"},
-                           recording_provenance={"slow": {"source": "forvo", "speaker_kind": "native"}})
+                           recording_provenance={"slow": {"source": "forvo", "speaker": Speaker("s", "native")}})
     s = _syl(media=media, sentences=[sentence("ช้า")])
     for rid in ("target/picture-required", "target/recording-required", "target/sentence-required"):
         assert _rules(rid)[0].check(s) == []
@@ -319,7 +320,7 @@ def test_target_recording_required_is_silent_for_a_recording_with_no_speaker_id(
     # media row's speaker_id is nullable (store.py schema): a real
     # current-best recording with none on file must not close the gate.
     media = FakeMediaIndex(recording_speakers={"slow": frozenset()},
-                           recording_provenance={"slow": {"source": "forvo", "speaker_kind": "native"}})
+                           recording_provenance={"slow": {"source": "forvo", "speaker": Speaker("s", "native")}})
     assert _rules("target/recording-required")[0].check(_syl(media=media)) == []
 
 
@@ -330,7 +331,7 @@ def test_target_sentence_required_is_silent_when_a_sentence_fills_the_target():
 
 def test_synthetic_recording_is_a_warning():
     media = FakeMediaIndex(recording_speakers={"slow": frozenset({"tts:v"})},
-                           recording_provenance={"slow": {"source": "tts", "speaker_kind": "synthetic"}})
+                           recording_provenance={"slow": {"source": "tts", "speaker": Speaker("tts:v", "synthetic")}})
     r = _rules("recording/synthetic")[0]
     assert r.severity == "warn"
     assert [f.note_id for f in r.check(_syl(media=media))] == ["slow"]
@@ -358,7 +359,7 @@ def test_pair_rendition_required_flags_a_pair_with_no_rendition():
 def test_pair_rendition_required_flags_a_half_recorded_pair():
     confusion, mid_word, low_word, pair = _mid_low_pair()
     media = FakeMediaIndex(rendition_provenance={
-        pair.id: ({"speaker_id": "a", "speaker_kind": "native"},)})
+        pair.id: ({"speaker_id": "a", "speaker": Speaker("a", "native")},)})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
@@ -368,8 +369,8 @@ def test_pair_rendition_required_flags_a_half_recorded_pair():
 def test_pair_rendition_required_is_silent_when_every_member_has_a_recording():
     confusion, mid_word, low_word, pair = _mid_low_pair()
     media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker_kind": "native"},
-        {"speaker_id": "b", "speaker_kind": "native"})})
+        {"speaker_id": "a", "speaker": Speaker("a", "native")},
+        {"speaker_id": "b", "speaker": Speaker("b", "native")})})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
@@ -404,8 +405,8 @@ def test_grapheme_keyword_picture_required_is_silent_when_the_keyword_has_a_pict
 def test_rendition_synthetic_flags_a_tts_rendition():
     confusion, mid_word, low_word, pair = _mid_low_pair()
     media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker_kind": "native"},
-        {"speaker_id": "tts", "speaker_kind": "synthetic"})})
+        {"speaker_id": "a", "speaker": Speaker("a", "native")},
+        {"speaker_id": "tts", "speaker": Speaker("tts", "synthetic")})})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "rendition/synthetic"]
@@ -415,8 +416,8 @@ def test_rendition_synthetic_flags_a_tts_rendition():
 def test_rendition_mixed_speakers_flags_different_speaker_ids():
     confusion, mid_word, low_word, pair = _mid_low_pair()
     media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker_kind": "native"},
-        {"speaker_id": "b", "speaker_kind": "native"})})
+        {"speaker_id": "a", "speaker": Speaker("a", "native")},
+        {"speaker_id": "b", "speaker": Speaker("b", "native")})})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
@@ -429,8 +430,8 @@ def test_rendition_mixed_speakers_ignores_a_null_speaker_id():
     # speaker.
     confusion, mid_word, low_word, pair = _mid_low_pair()
     media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker_kind": "native"},
-        {"speaker_id": None, "speaker_kind": "native"})})
+        {"speaker_id": "a", "speaker": Speaker("a", "native")},
+        {"speaker_id": None, "speaker": Speaker("a2", "native")})})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
@@ -445,7 +446,7 @@ def test_sentence_synthetic_productive_flags_tts_audio_on_a_filling_productive_s
     s = sentence("ข้าว", voice="learner_voice")  # rice
     tok = FakeTokenizer({s.text: ["ข้าว"]})
     media = FakeMediaIndex(recording_provenance={
-        sentence_note_id(s): {"source": "tts", "speaker_kind": "synthetic"}})
+        sentence_note_id(s): {"source": "tts", "speaker": Speaker("tts:v", "synthetic")}})
     syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
                              media=media)
     findings = [f for f in syllabus.report().findings
@@ -459,12 +460,31 @@ def test_sentence_synthetic_productive_is_silent_for_a_receptive_only_sentence()
     s = sentence("ข้าว", voice="learner_voice")  # rice
     tok = FakeTokenizer({s.text: ["ข้าว"]})
     media = FakeMediaIndex(recording_provenance={
-        sentence_note_id(s): {"source": "tts", "speaker_kind": "synthetic"}})
+        sentence_note_id(s): {"source": "tts", "speaker": Speaker("tts:v", "synthetic")}})
     syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
                              media=media)
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/synthetic-productive"]
     assert findings == []
+
+
+# --- coverage/speakers (E7) --------------------------------------------
+
+def test_coverage_speakers_ignores_unknown_attributes():
+    index = FakeMediaIndex(speakers={
+        "recording": (Speaker("a", "native", sex="male"), Speaker("b", "native"))})
+    syllabus = make_syllabus(media=index)
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/speakers")
+    assert metric.detail["recording"]["speakers"] == 2
+    assert metric.detail["recording"]["sex"] == {"male": 1}
+    assert metric.detail["recording"]["age_band"] == {}
+    assert metric.detail["recording"]["region"] == {}
+
+
+def test_coverage_speakers_is_empty_for_a_corpus_with_no_current_best_speakers():
+    syllabus = make_syllabus(media=FakeMediaIndex())
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/speakers")
+    assert metric.detail["rendition"] == {"speakers": 0, "sex": {}, "age_band": {}, "region": {}}
 
 
 # --- picture/fit judged_subjects --------------------------------------------

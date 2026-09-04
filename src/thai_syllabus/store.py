@@ -2,7 +2,7 @@
 MediaStore, the content-addressed writer for media/objects/ (spec 2
 section 1).
 
-Ground rules from the spec: four tables and nothing else; WAL mode; one
+Ground rules from the spec: five tables and nothing else; WAL mode; one
 transaction per append; caches are never evicted -- a re-ask appends, it
 never updates or deletes. `ts` is stored as an integer count of
 nanoseconds since the epoch (not the ISO string spec 2's prose examples
@@ -96,7 +96,7 @@ from typing import Any
 
 from .cachekeys import sha
 from .entities import Sentence
-from .media import Provenance
+from .media import Provenance, Speaker
 from .ports import Answer, StudyRecord
 
 if False:  # TYPE_CHECKING without importing at runtime
@@ -132,8 +132,15 @@ create table if not exists media (
     origin text not null,
     licence text not null,
     acquired text not null,
-    speaker_id text,
-    speaker_kind text
+    speaker_id text
+);
+
+create table if not exists speakers (
+    id text primary key,
+    kind text not null,
+    sex text not null default 'unknown',
+    age_band text not null default 'unknown',
+    region text not null default 'unknown'
 );
 
 create table if not exists cache (
@@ -396,23 +403,48 @@ class SyllabusDb:
                 (text_sha, text, voice, source, origin, licence,
                  acquired.isoformat()))
 
+    # --- speakers -------------------------------------------------------
+
+    def add_speaker(self, speaker: Speaker) -> None:
+        """Insert-or-ignore on id (spec 2 section 2): a speaker's
+        attributes are never overwritten once recorded.
+        """
+        with self._con:
+            self._con.execute(
+                "insert or ignore into speakers (id, kind, sex, age_band, region) "
+                "values (?, ?, ?, ?, ?)",
+                (speaker.id, speaker.kind, speaker.sex, speaker.age_band, speaker.region))
+
+    def speaker(self, speaker_id: str) -> Speaker | None:
+        row = self._con.execute(
+            "select id, kind, sex, age_band, region from speakers where id=?",
+            (speaker_id,)).fetchone()
+        if row is None:
+            return None
+        id_, kind, sex, age_band, region = row
+        return Speaker(id=id_, kind=kind, sex=sex, age_band=age_band, region=region)
+
     # --- media provenance ----------------------------------------------
 
     def add_media(self, *, sha: str, kind: str, ext: str, source: str,
                  origin: str, licence: str, acquired: date,
-                 speaker_id: str | None = None,
-                 speaker_kind: str | None = None) -> bool:
+                 speaker_id: str | None = None) -> bool:
         """Idempotent: returns True if a new provenance row was inserted,
         False if `sha` already had one (so callers can count actual rows,
-        not attempted writes).
+        not attempted writes). `speaker_id`, when given, must already name
+        a row in `speakers` (add_speaker first) -- fails fast otherwise.
         """
+        if speaker_id is not None and self.speaker(speaker_id) is None:
+            raise ValueError(
+                f"add_media: speaker_id {speaker_id!r} names no speaker "
+                "(call add_speaker first)")
         with self._con:
             cur = self._con.execute(
                 "insert or ignore into media (sha, kind, ext, source, origin, "
-                "licence, acquired, speaker_id, speaker_kind) "
-                "values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "licence, acquired, speaker_id) "
+                "values (?, ?, ?, ?, ?, ?, ?, ?)",
                 (sha, kind, ext, source, origin, licence, acquired.isoformat(),
-                 speaker_id, speaker_kind))
+                 speaker_id))
             return cur.rowcount > 0
 
     def all_sentences(self) -> list[Sentence]:
@@ -439,19 +471,23 @@ class SyllabusDb:
         """One `media` row, decoded (spec 2 section 2) -- compile.py's
         source for the file extension a resolved artifact sha was stored
         under, plus source/speaker for src-provenance tags and minimal_pair
-        MemberKey's speaker component. Not part of any Protocol (spec 1's
-        MediaIndex is a narrower has/speakers-only read); this is
-        compile()'s own dependency on SyllabusDb directly, same footing as
-        the module docstring's other non-Protocol convenience methods.
+        MemberKey's speaker component. `speaker` is the resolved Speaker
+        for `speaker_id`, or None when `speaker_id` is absent. Not part of
+        any Protocol (spec 1's MediaIndex is a narrower has/speakers-only
+        read); this is compile()'s own dependency on SyllabusDb directly,
+        same footing as the module docstring's other non-Protocol
+        convenience methods.
         """
         row = self._con.execute(
             "select sha, kind, ext, source, origin, licence, acquired, "
-            "speaker_id, speaker_kind from media where sha=?", (sha,)).fetchone()
+            "speaker_id from media where sha=?", (sha,)).fetchone()
         if row is None:
             return None
         keys = ("sha", "kind", "ext", "source", "origin", "licence",
-               "acquired", "speaker_id", "speaker_kind")
-        return dict(zip(keys, row))
+               "acquired", "speaker_id")
+        result = dict(zip(keys, row))
+        result["speaker"] = self.speaker(result["speaker_id"]) if result["speaker_id"] else None
+        return result
 
 
 IMAGE_MAX_LONG_EDGE = 800  # px (spec 4 section 3)

@@ -1,5 +1,5 @@
 """Tests for store.py (spec 2 section 2/3): SyllabusDb over sqlite (WAL,
-one transaction per append), the four tables, the RecordWriter/
+one transaction per append), the five tables, the RecordWriter/
 AssessmentReader/StudyReader read/write surface, and MediaStore's
 content-addressed writes.
 """
@@ -8,6 +8,7 @@ from datetime import date
 
 import pytest
 
+from thai_syllabus.media import Speaker
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.rules import Finding
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -20,11 +21,11 @@ def db(tmp_path):
 
 # --- schema / WAL -----------------------------------------------------
 
-def test_creates_the_four_tables(db):
+def test_creates_the_five_tables(db):
     con = sqlite3.connect(db.path)
     names = {row[0] for row in
              con.execute("select name from sqlite_master where type='table'")}
-    assert {"sentences", "media", "cache", "study"} <= names
+    assert {"sentences", "media", "speakers", "cache", "study"} <= names
 
 
 def test_journal_mode_is_wal(db):
@@ -303,6 +304,30 @@ def test_all_sentences_on_empty_store_is_empty(db):
     assert db.all_sentences() == []
 
 
+# --- speakers -----------------------------------------------------------
+
+def test_add_media_requires_a_known_speaker(db):
+    with pytest.raises(ValueError, match="speaker"):
+        db.add_media(sha="a" * 64, kind="recording", ext="mp3", source="forvo",
+                    origin="u", licence="cc", acquired=date(2026, 9, 4),
+                    speaker_id="forvo:somchai")
+    db.add_speaker(Speaker(id="forvo:somchai", kind="native", sex="male", region="TH"))
+    assert db.add_media(sha="a" * 64, kind="recording", ext="mp3", source="forvo",
+                        origin="u", licence="cc", acquired=date(2026, 9, 4),
+                        speaker_id="forvo:somchai")
+    assert db.speaker("forvo:somchai").sex == "male"
+
+
+def test_add_speaker_is_insert_or_ignore(db):
+    db.add_speaker(Speaker(id="forvo:somchai", kind="native", sex="male"))
+    db.add_speaker(Speaker(id="forvo:somchai", kind="native", sex="female"))
+    assert db.speaker("forvo:somchai").sex == "male"
+
+
+def test_speaker_returns_none_for_an_unknown_id(db):
+    assert db.speaker("nope") is None
+
+
 def test_add_media_provenance_idempotent(db):
     db.add_media(sha="deadbeef", kind="picture", ext="jpg", source="openverse",
                 origin="https://example.com/x.jpg", licence="cc0",
@@ -319,15 +344,22 @@ def test_media_provenance_returns_none_for_an_unknown_sha(db):
 
 
 def test_media_provenance_returns_the_stored_row(db):
+    db.add_speaker(Speaker(id="somchai", kind="native"))
     db.add_media(sha="deadbeef", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
-                acquired=date(2026, 1, 1), speaker_id="somchai",
-                speaker_kind="native")
+                acquired=date(2026, 1, 1), speaker_id="somchai")
     prov = db.media_provenance("deadbeef")
     assert prov["ext"] == "mp3"
     assert prov["source"] == "forvo"
     assert prov["speaker_id"] == "somchai"
-    assert prov["speaker_kind"] == "native"
+    assert prov["speaker"] == Speaker(id="somchai", kind="native")
+
+
+def test_media_provenance_speaker_is_none_when_no_speaker_id_is_on_file(db):
+    db.add_media(sha="deadbeef", kind="picture", ext="jpg", source="openverse",
+                origin="https://example.com/x.jpg", licence="cc0",
+                acquired=date(2026, 1, 1))
+    assert db.media_provenance("deadbeef")["speaker"] is None
 
 
 # --- MediaStore (CAS) -----------------------------------------------------

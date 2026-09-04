@@ -22,6 +22,9 @@ class Provenance:
 class Speaker:
     id: str
     kind: Literal["native", "synthetic"]
+    sex: Literal["male", "female", "unknown"] = "unknown"
+    age_band: Literal["child", "adult", "older", "unknown"] = "unknown"
+    region: str = "unknown"
 
 
 @dataclass(frozen=True)

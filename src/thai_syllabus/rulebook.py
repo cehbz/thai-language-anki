@@ -13,8 +13,8 @@ against synthetic registries in tests/syllabus/test_rulebook.py.
 import dataclasses
 import hashlib
 import json
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import Any, TYPE_CHECKING
 
 from thai_deck_eval.judge.prompts import PICTURE_RULES as _OLD_PICTURE_RULES  # texts kept verbatim
 
@@ -36,12 +36,12 @@ PRINCIPLES: frozenset[str] = frozenset({
     "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8",
     "F1", "F2", "F3", "F4", "F5", "F6", "F6a", "F6b", "F7", "F8", "F9",
     "F10", "F11", "F12",
-    "E1", "E2", "E3", "E4", "E5", "E6",
+    "E1", "E2", "E3", "E4", "E5", "E6", "E7",
 })
 
 # The subset of PRINCIPLES this seed actually implements a rule for.
 ENFORCEMENT_PRINCIPLES: frozenset[str] = frozenset({
-    "META-1", "F1", "F2", "F3", "F5", "F6", "F7", "E3",
+    "META-1", "F1", "F2", "F3", "F5", "F6", "F7", "E3", "E7",
 })
 
 
@@ -370,11 +370,16 @@ GRAPHEME_KEYWORD_PICTURE_REQUIRED = Rule(id="grapheme/keyword-picture-required",
 # for a human voice, or a minimal pair's two members voiced by different
 # speakers (a third confound on top of the sound contrast itself).
 
+def _speaker_kind(prov: Mapping[str, Any] | None) -> str | None:
+    speaker = prov.get("speaker") if prov else None
+    return speaker.kind if speaker is not None else None
+
+
 def _check_recording_synthetic(syllabus: "Syllabus") -> list[Finding]:
     out = []
     for w in _targeted_words(syllabus):
         prov = syllabus.media.recording_provenance(w)
-        if prov and prov.get("speaker_kind") == "synthetic":
+        if _speaker_kind(prov) == "synthetic":
             out.append(Finding(rule="recording/synthetic", note_id=w,
                                evidence=f"current-best recording is {prov.get('source')}"))
     return out
@@ -389,7 +394,7 @@ def _check_rendition_synthetic(syllabus: "Syllabus") -> list[Finding]:
     out = []
     for p in syllabus.pairs:
         rows = syllabus.media.rendition_provenance(p.id)
-        if rows and any(r.get("speaker_kind") == "synthetic" for r in rows):
+        if rows and any(_speaker_kind(r) == "synthetic" for r in rows):
             out.append(Finding(rule="rendition/synthetic", note_id=p.id, evidence="TTS rendition"))
     return out
 
@@ -422,7 +427,7 @@ def _check_sentence_synthetic_productive(syllabus: "Syllabus") -> list[Finding]:
         if not productive:
             continue
         prov = syllabus.media.recording_provenance(sentence_note_id(s))
-        if prov and prov.get("speaker_kind") == "synthetic":
+        if _speaker_kind(prov) == "synthetic":
             out.append(Finding(rule="sentence/synthetic-productive", note_id=sentence_note_id(s),
                                evidence="productive sentence carries TTS audio"))
     return out
@@ -446,6 +451,36 @@ def _picture_fit_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
 PICTURE_FIT = Rule(id="picture/fit", principle="F3", severity="warn", shape="judged",
                    rubric=PICTURE_FIT_RUBRIC, role="picture-for-word",
                    judged_subjects=_picture_fit_subjects)
+
+
+# --- coverage/speakers (E7) --------------------------------------------------
+# Speaker diversity per audio corpus: distinct speakers, and how many of them
+# carry each known sex/age_band/region -- unknown attributes never count.
+
+_SPEAKER_CORPORA: tuple[str, ...] = ("recording", "rendition", "sentence")
+_SPEAKER_ATTRIBUTES: tuple[str, ...] = ("sex", "age_band", "region")
+
+
+def _measure_coverage_speakers(syllabus: "Syllabus") -> Metric:
+    detail: dict[str, dict[str, Any]] = {}
+    covered = 0
+    for corpus in _SPEAKER_CORPORA:
+        speakers = syllabus.media.speakers_of(corpus)
+        counts: dict[str, dict[str, int]] = {attr: {} for attr in _SPEAKER_ATTRIBUTES}
+        for speaker in speakers:
+            for attr in _SPEAKER_ATTRIBUTES:
+                value = getattr(speaker, attr)
+                if value != "unknown":
+                    counts[attr][value] = counts[attr].get(value, 0) + 1
+        detail[corpus] = {"speakers": len(speakers), **counts}
+        if speakers:
+            covered += 1
+    value = covered / len(_SPEAKER_CORPORA)
+    return Metric(rule="coverage/speakers", value=value, detail=detail)
+
+
+COVERAGE_SPEAKERS = Rule(id="coverage/speakers", principle="E7", severity="info",
+                         shape="measure", measure=_measure_coverage_speakers)
 
 
 # --- rulebook/traceability -------------------------------------------------
@@ -510,4 +545,5 @@ RULES: list[Rule] = [
     RENDITION_MIXED_SPEAKERS,
     SENTENCE_SYNTHETIC_PRODUCTIVE,
     PICTURE_FIT,
+    COVERAGE_SPEAKERS,
 ]

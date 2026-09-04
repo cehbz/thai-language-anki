@@ -465,7 +465,7 @@ def load_curated(root: str | Path) -> CuratedBundle:
 #
 # Not one of curated/*.yaml (spec 2 section 1 doesn't list a frequency
 # file) and not a syllabus.db table either (spec 2 section 2 lists exactly
-# four tables). It is project input data that predates and outlives this
+# five tables). It is project input data that predates and outlives this
 # migration -- data/frequency_th.txt, one Thai word per line in rank order,
 # a `#`-prefixed header comment block up top. Read-only; nothing ever
 # writes it.

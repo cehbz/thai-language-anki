@@ -19,7 +19,7 @@ from thai_syllabus.entities import (
     Target, Word,
 )
 from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
-from thai_syllabus.media import Provenance
+from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import RULES
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -96,10 +96,10 @@ class Fixture:
 
     def seed_recording(self, subject: str, text: str, speaker="somchai") -> str:
         sha = self.media.write(f"audio:{subject}:{text}".encode(), ext="mp3")
+        self.db.add_speaker(Speaker(id=speaker, kind="native"))
         self.db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
                           origin="https://forvo.com/x", licence="cc-by",
-                          acquired=date(2026, 1, 1), speaker_id=speaker,
-                          speaker_kind="native")
+                          acquired=date(2026, 1, 1), speaker_id=speaker)
         self.db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
                        subject=subject, question={"provides": "recording"},
                        answer={"items": [{"sha": sha}]})

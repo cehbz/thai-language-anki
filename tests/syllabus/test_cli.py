@@ -54,6 +54,7 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # satisfied and the gate opens on its own, with no --force needed.
     from datetime import date
 
+    from thai_syllabus.media import Speaker
     from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
     from thai_syllabus.store import SyllabusDb
 
@@ -85,9 +86,10 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
              subject="rice",
              question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
              answer={"value": True}, cost=0.0)
+    db.add_speaker(Speaker(id="somchai", kind="native"))
     db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1),
-                speaker_id="somchai", speaker_kind="native")
+                speaker_id="somchai")
 
     # The default tokenizer falls back to whitespace when pythainlp is
     # absent (as here); a bare single-word sentence puts "rice" at a

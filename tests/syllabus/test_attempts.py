@@ -340,7 +340,8 @@ def test_forvo_recording_attempt_downloads_checks_and_ranks(ctx):
     from thai_syllabus.attempts import current_best_of
     best = current_best_of(c, "orange", "recording")
     prov = c.db.media_provenance(best.artifact_sha)
-    assert best.source == "mechanical" and prov["speaker_id"] == "forvo:kris" and prov["speaker_kind"] == "native"
+    assert best.source == "mechanical" and prov["speaker_id"] == "forvo:kris"
+    assert prov["speaker"].kind == "native"
 
 
 def test_tts_recording_attempt_marks_synthetic_provenance(ctx):
@@ -351,7 +352,7 @@ def test_tts_recording_attempt_marks_synthetic_provenance(ctx):
     assert out.improved
     from thai_syllabus.attempts import current_best_of
     prov = c.db.media_provenance(current_best_of(c, "orange", "recording").artifact_sha)
-    assert prov["speaker_kind"] == "synthetic" and prov["source"] == "tts"
+    assert prov["speaker"].kind == "synthetic" and prov["source"] == "tts"
 
 
 def test_rendition_attempt_intersects_forvo_speakers(ctx):

@@ -7,7 +7,8 @@ RecordWriter, StudyReader -- not present when spec 1 was implemented.
 AssessmentReader/Tokenizer are spec 1's contract, unchanged since; MediaIndex
 gained recording_provenance/rendition_provenance/picture_sha here (spec 4)
 for rulebook.py's completeness, synthetic/mixed-speaker, and picture/fit
-rules. store.py's SyllabusDb satisfies AssessmentReader directly (isinstance
+rules, and speakers_of (spec 1 section 1, E7) for coverage/speakers.
+store.py's SyllabusDb satisfies AssessmentReader directly (isinstance
 checks against that Protocol pass) and additionally offers `assessments_of`
 (spec 2's fuller read surface over the same cache table -- not part of the
 Protocol spec 1 already shipped, so it is not declared here, only
@@ -17,10 +18,11 @@ itself.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Any, Literal, TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .ids import ConfusionId, PairId, WordId
+    from .media import Speaker
     from .rules import Finding
 
 
@@ -65,15 +67,17 @@ class MediaIndex(Protocol):
     has_picture/recording_speakers/rendition_speakers are spec 1's original
     three; recording_provenance/rendition_provenance/picture_sha (spec 4)
     add provenance-row and artifact-sha access for the rulebook's
-    completeness, synthetic/mixed-speaker, and picture/fit rules.
+    completeness, synthetic/mixed-speaker, and picture/fit rules;
+    speakers_of (E7) backs coverage/speakers.
     """
     def has_picture(self, word: "WordId") -> bool: ...
     def recording_speakers(self, word: "WordId") -> frozenset[str]: ...
     def rendition_speakers(self, pair_confusion: "ConfusionId") -> frozenset[str]: ...
 
     def recording_provenance(self, word: "WordId") -> Mapping[str, Any] | None:
-        """The current-best recording's `media` row (source, speaker_id,
-        speaker_kind), or None if there is no current-best recording.
+        """The current-best recording's `media` row: source, speaker_id,
+        and `speaker` (the resolved Speaker, or None when speaker_id is
+        absent); None if there is no current-best recording.
         """
         ...
 
@@ -85,6 +89,13 @@ class MediaIndex(Protocol):
 
     def picture_sha(self, word: "WordId") -> str | None:
         """The current-best picture's artifact sha, or None."""
+        ...
+
+    def speakers_of(self, corpus: Literal["recording", "rendition", "sentence"]) -> tuple["Speaker", ...]:
+        """Distinct speakers behind that audio corpus's current-best
+        artifacts. corpus is "recording" (word recordings), "rendition"
+        (pair renditions), or "sentence" (sentence recordings).
+        """
         ...
 
 
@@ -120,6 +131,9 @@ class NullMediaIndex:
 
     def picture_sha(self, word: "WordId") -> str | None:
         return None
+
+    def speakers_of(self, corpus: Literal["recording", "rendition", "sentence"]) -> tuple["Speaker", ...]:
+        return ()
 
 
 # --- spec 2 section 3 additions -------------------------------------------
@@ -167,8 +181,8 @@ class StudyRecord:
 
 @runtime_checkable
 class FrequencyMap(Protocol):
-    """Word-frequency corpus lookup (spec 2 section 3). Not one of the four
-    durable stores (spec 2 section 2 lists exactly four sqlite tables and no
+    """Word-frequency corpus lookup (spec 2 section 3). Not one of the five
+    durable stores (spec 2 section 2 lists exactly five sqlite tables and no
     frequency table) -- this reads a static, unchanging project resource
     (data/frequency_th.txt), not deck state the Syllabus writes.
     """

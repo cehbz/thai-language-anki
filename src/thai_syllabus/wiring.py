@@ -73,7 +73,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .assessor import AssessBackend, Assessor, JudgeBackend, Price, duration_mechanical_backend
 from .attempts import Sourcing
@@ -86,8 +86,9 @@ from .curated import (
     rulebook_file_text,
 )
 from .derivations import current_best
-from .entities import MinimalPair
+from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
+from .media import Speaker
 from .provider import (
     Backend,
     FetchBackend,
@@ -100,7 +101,7 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import RULES, apply_overlay, rubrics_for
+from .rulebook import RULES, apply_overlay, rubrics_for, sentence_note_id
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
@@ -427,6 +428,8 @@ class _DbMediaIndex:
     """
     db: SyllabusDb
     pairs: tuple[MinimalPair, ...] = ()
+    words: tuple[Word, ...] = ()
+    sentences: tuple[Sentence, ...] = ()
     rubrics: Mapping[str, str] = field(default_factory=dict)
     provenance_prior: Sequence[str] = ()
 
@@ -514,6 +517,28 @@ class _DbMediaIndex:
         speaker = prov.get("speaker_id") if prov else None
         return frozenset({speaker}) if speaker else frozenset()
 
+    def speakers_of(self, corpus: Literal["recording", "rendition", "sentence"]) -> tuple[Speaker, ...]:
+        """Distinct speakers behind that corpus's current-best artifacts
+        (ports.py's MediaIndex.speakers_of): every word's current-best
+        recording for "recording", every pair's current-best rendition
+        rows for "rendition", every sentence's current-best recording for
+        "sentence".
+        """
+        if corpus == "recording":
+            provenances = (self.recording_provenance(w.id) for w in self.words)
+        elif corpus == "sentence":
+            provenances = (self.recording_provenance(sentence_note_id(s)) for s in self.sentences)
+        elif corpus == "rendition":
+            provenances = (prov for pair in self.pairs for prov in self.rendition_provenance(pair.id))
+        else:
+            raise ValueError(f"speakers_of: unknown corpus {corpus!r}")
+        seen: dict[str, Speaker] = {}
+        for prov in provenances:
+            speaker = prov.get("speaker") if prov else None
+            if speaker is not None:
+                seen[speaker.id] = speaker
+        return tuple(seen.values())
+
 
 def load_syllabus(deck_root: str | Path, *,
                   frequency_path: str | Path | None = None,
@@ -540,7 +565,9 @@ def load_syllabus(deck_root: str | Path, *,
         db = SyllabusDb(root / "syllabus.db")
     db.set_pair_confusions({p.id: p.confusion for p in bundle.pairs})
     rules = apply_overlay(RULES, bundle.rulebook)
-    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, rubrics=rubrics_for(rules),
+    sentences = tuple(db.all_sentences())
+    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=bundle.words, sentences=sentences,
+                                rubrics=rubrics_for(rules),
                                 provenance_prior=bundle.rulebook.provenance_prior)
 
     freq_file = (Path(frequency_path) if frequency_path is not None
@@ -550,7 +577,6 @@ def load_syllabus(deck_root: str | Path, *,
                 if (rank := freq_map.rank(w.thai)) is not None}
 
     rulebook_text = rulebook_file_text(root / "curated" / "rulebook.yaml")
-    sentences = tuple(db.all_sentences())
 
     kwargs: dict[str, Any] = dict(
         words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,

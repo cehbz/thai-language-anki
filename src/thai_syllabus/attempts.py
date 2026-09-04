@@ -57,7 +57,7 @@ from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
 from .entities import Sentence, Target
 from .ids import WordId
-from .media import Provenance
+from .media import Provenance, Speaker
 from .provider import Provider, ProviderAnswer, Question
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
@@ -405,14 +405,18 @@ def _forvo_items(ctx: Sourcing, subject: str, thai: str,
 def _store_recording(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin: str, licence: str,
                      speaker_id: str, speaker_kind: str) -> str | None:
     """The shared "first item with a sha -> add_media -> return its sha"
-    loop shared by _download_forvo and _synthesize.
+    loop shared by _download_forvo and _synthesize. Records the speaker
+    with what this attempt knows (kind only -- sex/age_band/region are
+    unknown here) only on the path that also writes the media row
+    referencing it -- no speaker row without a referencing media row.
     """
     for fetched in got.items:
         s = fetched.get("sha")
         if s:
+            ctx.db.add_speaker(Speaker(id=speaker_id, kind=speaker_kind))
             ctx.db.add_media(sha=s, kind="recording", ext=str(fetched.get("ext", "mp3")), source=source,
                              origin=origin, licence=licence, acquired=ctx.today(),
-                             speaker_id=speaker_id, speaker_kind=speaker_kind)
+                             speaker_id=speaker_id)
             return s
     return None
 
