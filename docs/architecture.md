@@ -1,6 +1,6 @@
 # Architecture
 
-Revision 1, approved 2026-09-04. Written 2026-09-02 from the entity pass
+Revision 2, proposed 2026-09-04 (r1 approved 2026-09-04). Written 2026-09-02 from the entity pass
 and behavior walk of 2026-09-01/02. The principles (docs/principles.md)
 are the companion: every rule traces to a principle, every principle to
 one of the three charter meta-rules: is it a well-formed Anki deck / does
@@ -21,6 +21,9 @@ learner.
 
 Revision log:
 - r1 2026-09-04: draft of 09-02 approved unchanged.
+- r2 2026-09-04: compile moved from the aggregate's operations (§3) to
+  the application services (§7); the aggregate keeps no storage
+  dependency. Evidence: implementation review 2026-09-04.
 
 ## 1. Shape of the system
 
@@ -96,7 +99,9 @@ cross-entity behavior lives here:
   the state they judged; a stale report steers nothing.
 - `gaps()` — what sourcing should produce next, derived from report
   measures and target needs.
-- `compile() → Compile` — pure translation into Anki's domain (below).
+- Compile is not an aggregate operation: the application service (§7)
+  reads `report()`, `order()` and the current-best artifacts and
+  translates them into Anki's domain (§6).
 
 ## 4. Ports and backends
 
@@ -187,7 +192,8 @@ question.
   is misplaced domain logic.
 - **Feedback session**: serve the screen, append learner answers.
 - **Import**: revlog and flags.
-- **Compile**: gate, translate, label.
+- **Compile**: gate on report(), translate order() and the current-best
+  artifacts into Anki's domain, label.
 
 ## 8. What this architecture deletes from the current code
 
