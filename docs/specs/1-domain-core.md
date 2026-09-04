@@ -1,7 +1,7 @@
 # Spec 1: Domain core
 
-Revision 2, proposed 2026-09-04 against principles r2 and architecture
-r1 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
+Revision 3, proposed 2026-09-04 against principles r2 and architecture
+r2 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
 principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
@@ -13,6 +13,12 @@ Revision log:
   attributes (E7); Grapheme.name_word (spec 4); grapheme containment
   re-checked by rule; authority order and role map as domain values;
   initial rulebook enumerated against the locked principles.
+- r3 2026-09-04: sentence identity is the text sha; Sentence.gloss;
+  order() returns typed entries including sentences; gaps() derives from
+  the report and covers sentence recordings and scene pictures; compile
+  off the aggregate; frequency resolved by the loader. The r2 log
+  overstated grapheme containment: the rule was already registered.
+  Evidence: implementation review 2026-09-04.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -82,7 +88,10 @@ MinimalPair
   # the confusion's dimension and values; loaded data re-checked by rule
 
 Sentence                            # artifact
-  text: str                         # identity together with provenance
+  text: str                         # identity: sha of the text; provenance
+                                    # is a fact of the row, not identity
+  gloss: str                        # L1 gloss, drafted and judged with
+                                    # the text (F3: a gloss on any back)
   voice: Literal[learner_voice, other_voice]
   provenance: Provenance
   # which Targets it fills is DERIVED (Syllabus.fills), never stored
@@ -127,13 +136,16 @@ Sentences, the Profile, and read access to the record/caches (spec 2
 interfaces). All
 cross-entity behavior:
 
-**order() -> list[TargetLike]** — TargetLike = Target | PairId |
-GraphemeId (the umbrella filed in review; a uniform ordering unit).
-Constraints, each also stated as a rule: sounds stage (pairs, graphemes)
-before words; a sentence's cards after every word it uses; receptive
-target before productive target per word. Ties: frequency rank ÷ emphasis
-weight. Pure; recomputed each call; the studied past is not consulted
-(StudyRecords fix history, rules catch invalidated sentences).
+**order() -> list[OrderEntry]** — OrderEntry { kind: word_target | pair
+| grapheme | sentence, id }: the one introduction order of everything the
+learner meets. Constraints, each also stated as a rule: sounds stage
+(pairs, graphemes) before words; a sentence after every word it uses;
+receptive target before productive target per word. Ties: frequency rank
+÷ emphasis weight; the loader resolves ranks through the FrequencyMap
+port and the aggregate holds the mapping. Pure; recomputed each call;
+the studied past is not consulted (StudyRecords fix history, rules catch
+invalidated sentences). Consumers (compile, the screen) read positions;
+none re-derives placement.
 
 **fills(sentence, target) -> bool** — the single definition:
 1. target.word appears in sentence.text at a token boundary
@@ -152,13 +164,16 @@ gate }. syllabus_state_id = hash of the aggregate's content; a report
 whose state id differs from the live aggregate steers nothing (staleness
 is structural, not advisory). gate = no unwaived error findings.
 
-**gaps() -> Gaps** — derived from report metrics + target needs: missing
-renditions per confusion (count × distinct speakers vs targets), unfilled
-targets, words lacking pictures/recordings, graphemes lacking keyword
-data. Input to the batch run (spec 3).
+**gaps() -> Gaps** — derived from the report's completeness findings
+and measures, never recomputed beside them: missing renditions per
+confusion (count × distinct speakers vs targets), unfilled targets, words
+lacking pictures/recordings, sentences lacking recordings, sentences
+lacking an (optional, budget-prioritized) scene picture, graphemes
+lacking keyword data. Input to the batch run (spec 3).
 
-**compile() -> Compile** — spec 4; refuses when gate fails unless
-explicitly overridden with declared warnings.
+Compile is an application service (spec 4; architecture §7) over
+report(), order() and the current-best artifacts; the aggregate has no
+storage dependency.
 
 ## 4. Rules
 
@@ -198,10 +213,10 @@ violated by construction.
 | A4 | compile (a missing artifact drops the card, counted) |
 | F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, rendition/mixed-speakers, coverage/confusions |
 | F2 | syllabus/closure, coverage/categories (measure), category/single-membership |
-| F3 | picture/fit (judged), target/picture-required; front-gloss policy provisional |
+| F3 | picture/fit (judged), picture/preference (judged), target/picture-required; front-gloss policy provisional |
 | F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
 | F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
-| F7, E2 | target/recording-required, recording/synthetic, sentence/synthetic-productive |
+| F7, E2 | target/recording-required, sentence/recording-required, recording/synthetic, sentence/synthetic-productive |
 | F8 | order/sounds-first, order/sentence-after-words, order/receptive-before-productive (checks over order()) |
 | F11 | structural: current-best ranks judged candidates only |
 | E1 | order/reading-after-graphemes (check over order()) |

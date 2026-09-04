@@ -1,7 +1,7 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 2, proposed 2026-09-04 against principles r2 and architecture
-r1 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
+Revision 3, proposed 2026-09-04 against principles r2 and architecture
+r2 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
 principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
@@ -16,6 +16,10 @@ Revision log:
   appends under the need's own subject (§5); authority order as domain
   data (§4); carry-over rewritten (§10); the 09-03 roster row for
   audiofetch approved.
+- r3 2026-09-04: one key function per backend; the rendition answer is
+  the artifact set compile resolves; sentence drafts carry a judged
+  gloss; flags and re-verification requests make a subject directed.
+  Evidence: implementation review 2026-09-04.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -42,6 +46,9 @@ whose picture attempts stopped at search.
   verdicts and no adoption. Adoption is derived (current-best), never stored.
 - **Verdict**: an Assess answer on (artifact, role) under a rubric; carries
   its cost.
+- **Key**: every backend has one key function, defined in this spec's
+  module and used by every writer and reader; no other module builds a
+  key.
 - **Current-best / pending / exhausted**: folds over the record (section 6).
 
 ## 2. Port contracts
@@ -150,7 +157,10 @@ TODO).
 lookups by username; one lookup per member, shared with the recording
 need), tts (one voice), commission. The attempt appends its ask under
 the pair, the need's own subject, even though the lookups are cached per
-member: exhausted() counts attempts per need. Mechanical checks one speaker across
+member: exhausted() counts attempts per need. The answer row carries the
+per-member shas and the speaker; a rendition is that artifact set, and
+compile resolves the pair's current-best rendition from it (a pair with
+none does not compile). Mechanical checks one speaker across
 members and duration. Findings: none for native one-speaker;
 `rendition/synthetic` (warn) for TTS; `rendition/mixed-speakers` (warn)
 when the members' current-best recordings differ in speaker and no
@@ -162,9 +172,11 @@ met at its entry position (Syllabus.order), the profile register, and the
 existing sentence openings to avoid. Each drafted text is a candidate:
 mechanical `fills()` against the targets it claims, judge
 sentence-for-target (naturalness; register), then adopt:
-`Syllabus.add_sentence` with provenance. Adoption creates needs: the
-sentence's recording (tts allowed for receptive-only; a productive fill
-wants native, warn otherwise) and an optional scene picture. A candidate
+`Syllabus.add_sentence` with provenance. Each draft carries its L1
+gloss, judged with the text (a gloss that misstates the sentence fails
+the candidate). Adoption creates needs: the sentence's recording (tts
+allowed for receptive-only; a productive fill wants native, warn
+otherwise) and an optional scene picture. A candidate
 that fills nothing is a rejected draft in the record.
 
 **Grapheme keyword (Grapheme).** Source: llm proposal (concrete, picturable,
@@ -193,7 +205,9 @@ Implemented after cutover.
   candidate out-ranking current-best and the attempt cap is reached;
   reopened by learner input, a rubric change, or a new source.
 - **queue(syllabus, budgets)**: order per the periodic-batch principle:
-  (1) no artifact or learner-unacceptable, directed first; (2) an untried
+  (1) no artifact or learner-unacceptable, directed first (a learner
+  direction, an unconsumed re-verification request from a flag on a tone
+  role, or a card-level flag all make a subject directed); (2) an untried
   option remains (unasked suggestion, rubric changed, unsearched source);
   (3) acceptable/unrated by rank then attempts; excluded: good, exhausted,
   pending (pending is reported, not queued).

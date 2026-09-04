@@ -1,7 +1,7 @@
 # Spec 2: Durable state
 
-Revision 2, proposed 2026-09-04 against principles r2 and architecture
-r1 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
+Revision 3, proposed 2026-09-04 against principles r2 and architecture
+r2 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
 principles draft). Re-checked against principles r1 and architecture r1
 on 2026-09-04; the revisions that re-check proposed enter as r2 on
 approval. Revision process as in docs/architecture.md: proposals on
@@ -14,6 +14,10 @@ Revision log:
   under a legacy rubric id that never ranks, normalizes images at
   ingest, and drops the machine-chosen marker; the 09-03 amendment
   folded in.
+- r3 2026-09-04: sentences carry gloss; study keyed (card_key, ts) with
+  the anchor::kind convention; keys built by spec 3's functions; ranks
+  resolved by the loader; no layout version. Evidence: implementation
+  review 2026-09-04.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -54,8 +58,10 @@ write is one transaction (the append-is-checkpoint rule).
 ## 2. syllabus.db tables
 
 ```
-sentences(text_sha PK, text, voice, source, origin, licence, acquired)
-  -- Sentence artifacts; identity = text_sha; fills derived, never here.
+sentences(text_sha PK, text, gloss, voice, source, origin, licence,
+          acquired)
+  -- Sentence artifacts; identity = text_sha, the one sentence id
+  -- everywhere (rules, compile, learner rows); fills derived, never here.
 media(sha PK, kind, ext, source, origin, licence, acquired, speaker_id)
   -- provenance for media/objects/*; speaker_id null for pictures.
 speakers(id PK, kind, sex, age_band, region)
@@ -72,11 +78,12 @@ cache(port, backend, key_sha, subject, question, answer, cost, ts)
   -- a re-ask appends a new row (newest-wins on read for the learner
   -- backend; exact-key hit for memoized backends). subject indexes the
   -- attempt record ("what was tried for X"), including empty answers.
-study(card_key, compile_id, ts, grade, time_ms)
-  -- store 4. card_key = the compiled card's content identity (from its
-  -- tags: target/pair/grapheme id + card kind). Imported from revlog;
-  -- append-only. Anki flags do NOT land here: a flag imports as a
-  -- learner assessment row in cache.
+study(card_key, compile_id, ts, grade, time_ms)  -- PK (card_key, ts)
+  -- store 4. card_key = "<anchor>::<card kind>", anchor = the note's
+  -- guid source (word id, pair MemberKey, grapheme symbol, target id +
+  -- text_sha); the Target of a word card is derived from the kind.
+  -- Imported from revlog; append-only, insert-or-ignore. Anki flags do
+  -- NOT land here: a flag imports as a learner assessment row in cache.
 ```
 
 Learner authority, regression rules, exhausted, current-best, the queue:
@@ -88,7 +95,11 @@ them. Confusion weights = confusions.yaml seed × study rows; derived.
 ```
 AssessmentReader   .verdict(backend, key) -> Answer | None
                    .assessments_of(subject) -> list[Answer]   # newest last
+                   # keys are built by spec 3's one key function per
+                   # backend; the store appends and reads what it is handed
 FrequencyMap       .rank(word_thai) -> int | None
+                   # consumed by the loader, which hands the aggregate a
+                   # word -> rank mapping
 RecordWriter       .append(port, backend, key, subject, question, answer,
                            cost)
 StudyReader        .records(card_key | confusion) -> list[StudyRecord]
@@ -135,7 +146,11 @@ Carry-over per the handoff's table; everything else regenerates.
    migrate as study-adjacent learner evidence rows in cache).
 
 Migration report: counts per store, unmigratable rows listed with
-reasons, zero silent drops (the SourcingLog lesson).
+reasons, rows passed over counted (audio, duplicates on re-run), zero
+silent drops (the SourcingLog lesson).
+
+No layout version is recorded: the loader validates the shape it expects
+and refuses anything else, naming the file and field.
 
 ## 5. Explicitly out
 
