@@ -13,20 +13,16 @@ at search, recordings never ranked, sentences were never produced, the
 gate passed an empty syllabus. The old deck is at ~/decks/thai-ff.20260903;
 the new deck root is ~/decks/thai-ff.
 
-- Implement the spec 3 revision: attempts per need kind (picture,
-  recording, rendition, sentence), pending as a derivation, authority-
-  driven current-best with the provenance prior, cost on every answer
-  (api transport must return usage), artifact paths to the judge with
-  per-transport encoding, the fit/preference picture rubrics (old texts
-  verbatim), completeness rules at error, the warn rules for synthetic
-  and mixed-speaker audio, the spec 2 carry-over amendment (old judge
-  cache migrates; learner rows keyed by word id).
 - Write `~/decks/thai-ff/curated/providers.yaml` (secret references,
   proxy, imgfetch path, judge transport batch + model + price,
   image_candidates) and run the real migration:
   `thai-syllabus migrate --old-deck ~/decks/thai-ff.20260903 --old-data
-  data --new-root ~/decks/thai-ff`. Expect the 718 studied pictures to
-  rank on day one.
+  data --new-root ~/decks/thai-ff`. Migration carries candidates.yaml's
+  recorded pass/fail per candidate over as the judge fit verdict (the old
+  judge_cache.sqlite does not migrate): expect 410 of 654 chosen pictures
+  to rank on day one (measured 2026-09-03 on ~/decks/thai-ff.20260903;
+  scratch migration probe: 356 of 766 words still missing a picture); the
+  rest are judged by the first run's assess-first step.
 - First sourcing run against the migrated state, smoke-capped per source;
   verify RunReport (attempted / improved / exhausted / pending / spend)
   against expectations; then the whole-syllabus batch passes.

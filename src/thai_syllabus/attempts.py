@@ -593,8 +593,15 @@ def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], mode
         if not filled_open:
             continue
         filled_by_candidate.append(filled_open)
+        # artifact_sha=None: a sentence judgment is text-only (the text
+        # rides in params, read by sentence_prompt) -- not an artifact
+        # attachment. JudgeBackend.cache_key/attachments both fall back to
+        # `subject` (=ts) when artifact_sha is None, so the cache key is
+        # unchanged; setting artifact_sha=ts here instead made attachments()
+        # try to resolve ts as a media sha and raise TransportError, silently
+        # dropping every sentence-for-target question from ask_many's result.
         candidates.append((s, AssessQuestion(
-            subject=ts, role="sentence-for-target", artifact_sha=ts,
+            subject=ts, role="sentence-for-target", artifact_sha=None,
             rubric=ctx.rubrics["sentence-for-target"],
             params={"text": text, "word": syl.word(filled_open[0].word).thai})))
     if not candidates:

@@ -466,7 +466,17 @@ def _sentence_ctx(ctx, llm_text, judge_value="true"):
         frequency={"eat": 1, "orange": 2},
         tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"], "ส้มอร่อย": ["ส้ม", "อร่อย"]}))
     ctx.provider = Provider(record=ctx.db, cache=ctx.db, backends={"llm-sentence": _Llm(llm_text)})
-    jb = JudgeBackend(model="m", transport="api",
+
+    def resolve(sha):
+        # Same resolver the `ctx` fixture wires for the picture path (returns
+        # None for a sha with no media row) -- wired here too so a sentence
+        # question's artifact_sha, if ever wrongly set to a non-artifact
+        # sha, actually exercises JudgeBackend.attachments()'s resolve
+        # instead of short-circuiting on resolve_path=None.
+        prov = ctx.db.media_provenance(sha)
+        return ctx.media_store.path_for(sha, prov["ext"]) if prov else None
+
+    jb = JudgeBackend(model="m", transport="api", resolve_path=resolve,
                       complete=lambda p, a=(): Completion(text='{"value": %s, "evidence": "e"}' % judge_value))
     ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": jb})
     return ctx
@@ -490,6 +500,29 @@ def test_sentence_attempt_adopts_a_draft_that_fills_and_passes(ctx):
     assert [s.text for s in c.db.all_sentences()] == ["กินส้ม"]
     syl = c.syllabus.with_sentences(out.adopted)
     assert syl.gaps().unfilled_targets == ()
+
+
+def test_sentence_attempt_judges_with_no_attachments(ctx):
+    """A sentence-for-target judgment is text-only (the text rides in
+    params, read by sentence_prompt) -- its AssessQuestion.artifact_sha
+    must be None, not the text's own sha, or JudgeBackend.attachments()
+    tries to resolve that sha as a media artifact, finds no `media` row
+    (resolve_path -> None), and raises TransportError -- silently dropping
+    the question from ask_many's result before `complete` is ever called
+    (regression: this used to pass with 0 adopted instead of 1)."""
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
+    calls: list[list[str]] = []
+
+    def judge_complete(p, a=()):
+        calls.append(list(a))
+        return Completion(text='{"value": true, "evidence": "e"}')
+    c.assessor._backends["judge"].complete = judge_complete
+
+    out = sentence_attempt(c)
+
+    assert calls and calls[0] == []  # no attachments for a text-only sentence judgment
+    assert [s.text for s in out.adopted] == ["กินส้ม"]
 
 
 def test_sentence_attempt_rejects_a_draft_with_a_new_word(ctx):
@@ -597,7 +630,7 @@ def test_sentence_attempt_adopts_on_a_later_run_once_a_batch_verdict_lands(ctx):
     from thai_syllabus.cachekeys import sha
     key = f"judge:{sha(c.rubrics['sentence-for-target'])}:{text_sha}:sentence-for-target"
     c.db.append(port="assess", backend="judge", key=key, subject=text_sha,
-               question={"role": "sentence-for-target", "artifact_sha": text_sha,
+               question={"role": "sentence-for-target", "artifact_sha": None,
                         "rubric": c.rubrics["sentence-for-target"]}, answer={"value": True})
     c.assessor = Assessor(record=c.db, cache=c.db,
                           backends={"judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
