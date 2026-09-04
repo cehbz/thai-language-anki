@@ -251,7 +251,7 @@ def test_coverage_confusions_measures_pairs_and_speakers_per_confusion():
                              confusions=(confusion,), media=media)
     metrics = {m.rule: m for m in syllabus.report().metrics}
     detail = metrics["coverage/confusions"].detail[confusion.id]
-    assert detail == {"pairs": 1, "speakers": 1}
+    assert detail == {"pairs": 1, "speakers": 1, "covered": True}
 
 
 # --- sentence/register-natural (judged) --------------------------------------

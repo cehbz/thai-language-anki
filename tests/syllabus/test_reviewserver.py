@@ -9,6 +9,7 @@ handler functions directly.
 """
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import threading
@@ -431,7 +432,11 @@ def live_server(syllabus, tmp_path, media_store, pair, confusion):
     def run() -> None:
         db_local = SyllabusDb(db_path)
         db_local.set_pair_confusions({pair.id: confusion.id})
-        ctx = rs.ReviewContext(syllabus=syllabus, cache=db_local, record=db_local,
+        # syllabus.assessments must be db_local too: Syllabus.gaps() reads
+        # waivers/verdicts through it, and that query must run on this
+        # server thread, not the fixture thread that built `syllabus`.
+        server_syllabus = dataclasses.replace(syllabus, assessments=db_local)
+        ctx = rs.ReviewContext(syllabus=server_syllabus, cache=db_local, record=db_local,
                                media_store=media_store, study=db_local)
         httpd = HTTPServer(("127.0.0.1", 0), rs.build_app(ctx))
         state["port"] = httpd.server_address[1]

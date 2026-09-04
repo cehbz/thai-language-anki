@@ -634,7 +634,8 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     _seed_member_recording(db, "long", "sha-long", "malee")
 
     media = _DbMediaIndex(db=db, pairs=(real_pair, fallback_pair))
-    syllabus = Syllabus(confusions=(real_confusion, fallback_confusion), media=media,
+    syllabus = Syllabus(confusions=(real_confusion, fallback_confusion),
+                        pairs=(real_pair, fallback_pair), media=media,
                         tokenizer=FakeTokenizer())
     gaps = syllabus.gaps()
     assert real_confusion.id not in gaps.missing_renditions

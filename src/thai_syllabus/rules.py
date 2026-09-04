@@ -73,6 +73,8 @@ class Gaps:
     words_missing_pictures: tuple[str, ...]     # WordId
     words_missing_recordings: tuple[str, ...]   # WordId
     graphemes_missing_keyword_data: tuple[str, ...]  # symbol
+    sentence_recordings: tuple[str, ...] = ()   # text_sha, no recording
+    scene_pictures: tuple[str, ...] = ()        # text_sha, no scene picture
 
 
 @dataclass(frozen=True)

@@ -3,12 +3,16 @@ judged-rule verdicts and waivers from the AssessmentReader (never calls a
 judge), gates on unwaived error findings, and stamps a content hash that
 goes stale the moment the aggregate's content changes (spec 1, section 3).
 """
+import pytest
+
 from thai_syllabus.profile import Profile
+from thai_syllabus.rulebook import (COVERAGE_CONFUSIONS, SENTENCE_RECORDING_REQUIRED,
+                                    TARGET_PICTURE_REQUIRED)
 from thai_syllabus.rules import Finding, Metric, Rule
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import target, word
-from .fakes import FakeAssessmentReader, FakeTokenizer
+from .builders import sentence, target, word
+from .fakes import FakeAssessmentReader, FakeMediaIndex, FakeTokenizer
 
 
 def always_fails(syllabus) -> list[Finding]:
@@ -158,6 +162,65 @@ def test_rulebook_id_changes_when_the_registrys_rule_ids_change():
     a = Syllabus(rules=(ERROR_CHECK,), tokenizer=FakeTokenizer()).rulebook_id()
     b = Syllabus(rules=(ERROR_CHECK, WORD_COUNT), tokenizer=FakeTokenizer()).rulebook_id()
     assert a != b
+
+
+# --- gaps(): derived from report()'s findings, never recomputed beside them
+# (spec 1, section 3) -------------------------------------------------------
+
+def make_gaps_syllabus(targets=(), sentences=(), confusions=(), rules=(), media=None):
+    # coverage/confusions always runs: gaps() reads missing_renditions from
+    # its measure and refuses when that rule is absent.
+    return Syllabus(targets=targets, sentences=sentences, confusions=confusions,
+                    profile=Profile(register="male_colloquial"),
+                    tokenizer=FakeTokenizer(), rules=(COVERAGE_CONFUSIONS, *rules),
+                    media=media or FakeMediaIndex(),
+                    assessments=FakeAssessmentReader())
+
+
+def test_gaps_lists_the_sentence_without_a_recording():
+    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
+    syl = make_gaps_syllabus(sentences=(eat_rice,), rules=(SENTENCE_RECORDING_REQUIRED,))
+    assert syl.gaps().sentence_recordings == (eat_rice.text_sha,)
+
+
+def test_gaps_agree_with_the_completeness_findings():
+    rice = target("t1", "rice")
+    syl = make_gaps_syllabus(targets=(rice,), rules=(TARGET_PICTURE_REQUIRED,))
+    report = syl.report()
+    missing = {f.note_id for f in report.findings if f.rule == "target/picture-required"}
+    assert set(syl.gaps().words_missing_pictures) == missing
+
+
+def test_gaps_lists_the_sentence_without_a_scene_picture():
+    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
+    syl = make_gaps_syllabus(sentences=(eat_rice,), media=FakeMediaIndex())
+    assert syl.gaps().scene_pictures == (eat_rice.text_sha,)
+
+
+def test_gaps_omits_a_sentence_that_already_has_a_scene_picture():
+    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
+    media = FakeMediaIndex(pictures={eat_rice.text_sha})
+    syl = make_gaps_syllabus(sentences=(eat_rice,), media=media)
+    assert syl.gaps().scene_pictures == ()
+
+
+def test_gaps_lists_a_confusion_with_no_registered_pairs():
+    from thai_syllabus.entities import SoundConfusion
+    from thai_syllabus.ids import ConfusionId
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    # A speaker is on file for the confusion, but no pair names it -- the
+    # zero-pairs branch alone must still mark it a gap.
+    media = FakeMediaIndex(rendition_speakers={confusion.id: frozenset({"speaker-a"})})
+    syl = make_gaps_syllabus(confusions=(confusion,), media=media)
+    assert confusion.id in syl.gaps().missing_renditions
+
+
+def test_gaps_raises_when_coverage_confusions_is_not_registered():
+    syl = Syllabus(profile=Profile(register="male_colloquial"), tokenizer=FakeTokenizer(),
+                  rules=(), media=FakeMediaIndex(), assessments=FakeAssessmentReader())
+    with pytest.raises(RuntimeError, match="coverage/confusions"):
+        syl.gaps()
 
 
 # --- compile: spec 4 -- see tests/syllabus/test_compile.py for the real

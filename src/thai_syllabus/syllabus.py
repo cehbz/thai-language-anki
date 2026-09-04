@@ -242,31 +242,32 @@ class Syllabus:
     # --- gaps() ----------------------------------------------------------
 
     def gaps(self) -> Gaps:
-        unfilled_targets = tuple(
-            t.id for t in self.targets
-            if not any(self.fills(s, t) for s in self.sentences)
-        )
-        words_with_targets = {t.word for t in self.targets}
-        words_missing_pictures = tuple(
-            w.id for w in self.words
-            if w.id in words_with_targets and not self.media.has_picture(w.id)
-        )
-        words_missing_recordings = tuple(
-            w.id for w in self.words
-            if w.id in words_with_targets and not self.media.recording_speakers(w.id)
-        )
-        graphemes_missing_keyword_data = tuple(
-            g.symbol for g in self.graphemes if g.keyword not in self._word_index
-        )
+        """Folds report()'s completeness findings and measures (spec 1,
+        section 3) by rule id. Scene pictures are optional and carry no
+        rule finding; that one field reads the media index directly.
+        """
+        report = self.report()
+
+        def note_ids(rule_id: str) -> tuple[str, ...]:
+            return tuple(f.note_id for f in report.findings if f.rule == rule_id)
+
+        coverage = next((m for m in report.metrics if m.rule == "coverage/confusions"), None)
+        if coverage is None:
+            raise RuntimeError("gaps() needs the coverage/confusions rule registered")
         missing_renditions = tuple(
-            c.id for c in self.confusions
-            if not self.media.rendition_speakers(c.id)
+            confusion_id for confusion_id, detail in coverage.detail.items()
+            if not detail["covered"]
+        )
+        scene_pictures = tuple(
+            s.text_sha for s in self.sentences if self.media.picture_sha(s.text_sha) is None
         )
         return Gaps(missing_renditions=missing_renditions,
-                    unfilled_targets=unfilled_targets,
-                    words_missing_pictures=words_missing_pictures,
-                    words_missing_recordings=words_missing_recordings,
-                    graphemes_missing_keyword_data=graphemes_missing_keyword_data)
+                    unfilled_targets=note_ids("target/sentence-required"),
+                    words_missing_pictures=note_ids("target/picture-required"),
+                    words_missing_recordings=note_ids("target/recording-required"),
+                    graphemes_missing_keyword_data=note_ids("grapheme/keyword-picture-required"),
+                    sentence_recordings=note_ids("sentence/recording-required"),
+                    scene_pictures=scene_pictures)
 
     # --- content-hash staleness marker ------------------------------------
 

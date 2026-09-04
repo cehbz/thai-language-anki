@@ -183,13 +183,14 @@ COVERAGE_CATEGORIES = Rule(id="coverage/categories", principle="F2",
 # speakers.
 
 def _measure_coverage_confusions(syllabus: "Syllabus") -> Metric:
-    detail: dict[str, dict[str, int]] = {}
+    detail: dict[str, dict[str, int | bool]] = {}
     for c in syllabus.confusions:
         pair_count = sum(1 for p in syllabus.pairs if p.confusion == c.id)
         speakers = syllabus.media.rendition_speakers(c.id)
-        detail[c.id] = {"pairs": pair_count, "speakers": len(speakers)}
-    covered = sum(1 for d in detail.values() if d["pairs"] >= 1 and d["speakers"] >= 1)
-    value = covered / len(detail) if detail else 1.0
+        covered = pair_count >= 1 and len(speakers) >= 1
+        detail[c.id] = {"pairs": pair_count, "speakers": len(speakers), "covered": covered}
+    covered_count = sum(1 for d in detail.values() if d["covered"])
+    value = covered_count / len(detail) if detail else 1.0
     return Metric(rule="coverage/confusions", value=value, detail=detail)
 
 
