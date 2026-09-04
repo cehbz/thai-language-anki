@@ -15,6 +15,9 @@ build_sourcing/default_budgets/run_pipeline together into a Sourcing ctx
 """
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 import zipfile
 
 import pytest
@@ -172,7 +175,9 @@ def deck(tmp_path):
     # non-default values, so the cli-run test can prove Sourcing.image_candidates/
     # judge_model come from the deck's own providers.yaml, not a bare default.
     (root / "curated" / "providers.yaml").write_text(yaml.safe_dump(
-        {"image_candidates": 9, "judge": {"transport": "cli", "model": "claude-run-test"}}))
+        {"image_candidates": 9, "imgfetch_path": "/opt/bin/imgfetch",
+         "audiofetch_path": "/opt/bin/audiofetch",
+         "judge": {"transport": "cli", "model": "claude-run-test"}}))
     return root
 
 
@@ -203,6 +208,59 @@ def test_run_wires_a_sourcing_ctx_and_budgets_into_run_pipeline(deck, monkeypatc
     assert "improved=1" in text
     assert "pending=1" in text
     assert "sentences_adopted=3" in text
+
+
+def test_run_prints_excluded_and_unreachable(deck, monkeypatch, capsys):
+    """The two "what went wrong" fields have to reach the operator's
+    terminal, not just the persisted row."""
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(attempted=1, excluded=2))
+    rc = cli.main(["run", "--deck", str(deck)])
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "excluded=2" in text
+    assert "unreachable=False" in text
+
+
+def test_run_exits_1_when_the_judge_was_unreachable(deck, monkeypatch, capsys):
+    """A run that could not reach the judge did not do its job: exit
+    non-zero so a script or a cron job notices."""
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(attempted=0, unreachable=True))
+    rc = cli.main(["run", "--deck", str(deck)])
+    assert rc == 1
+    assert "unreachable=True" in capsys.readouterr().out
+
+
+# --- logging: warnings must reach the terminal (item 3) --------------------
+
+def test_main_configures_logging_so_module_warnings_reach_stderr(deck):
+    """attempts.py logs "judge unreachable" at WARNING; without a logging
+    configuration at the entry point those warnings never reach a terminal.
+
+    Run in a real subprocess, not in-process: pytest installs its own root
+    handler, which makes logging.basicConfig a silent no-op and would let
+    this pass whether or not cli.main configures anything. A fresh
+    interpreter is the only honest witness. run_pipeline is replaced there
+    so the subprocess makes no network/subprocess call of its own.
+    """
+    program = textwrap.dedent("""
+        import logging, sys
+        from thai_syllabus import cli
+        from thai_syllabus.run import RunReport
+
+        def fake_run(ctx, budgets, **kw):
+            logging.getLogger("thai_syllabus.attempts").warning("judge unreachable (401)")
+            return RunReport()
+
+        cli.run_pipeline = fake_run
+        sys.exit(cli.main(["run", "--deck", sys.argv[1]]))
+    """)
+    proc = subprocess.run([sys.executable, "-c", program, str(deck)],
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "judge unreachable (401)" in proc.stderr
+    assert "WARNING" in proc.stderr and "thai_syllabus.attempts" in proc.stderr
 
 
 # --- existing subcommands keep working -------------------------------------

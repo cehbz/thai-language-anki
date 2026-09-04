@@ -7,6 +7,9 @@ fixed here -- see the implementation report's ambiguity notes):
     (provider.py); its `answer["items"]` is a list, each item optionally
     carrying "sha" once the artifact is content-addressed (imgfetch/tts
     write one, a bare image-search result before imgfetch does not).
+    The bytes-fetching backends write `"{kind}-bytes"` ("picture-bytes",
+    "recording-bytes"), and they are the only writers of a sha, so `kind`
+    matches both that and the bare kind (_matches_kind).
   - An `assess` row's `question` carries {"role": role, "artifact_sha":
     sha_or_null, "rubric": rubric_or_null} (assessor.py); its
     `answer["value"]` is the judge's/learner's verdict -- bool or score
@@ -43,6 +46,7 @@ __all__ = [
     "pending",
     "confusion_weights",
     "LEARNER_RANK",
+    "stale",
 ]
 
 # A rubric filter: None matches every rubric; a str applies to every role
@@ -71,7 +75,12 @@ _GOOD_RANK = LEARNER_RANK["good"]
 def _matches_kind(question: Mapping, kind: str) -> bool:
     provides = question.get("provides")
     if provides is not None:
-        return provides == kind
+        # "picture" is the search hits; "picture-bytes" is the fetched
+        # artifact -- and imgfetch/audiofetch's -bytes row is the ONLY row
+        # that ever carries a sha (provider.FetchBackend), so a fold that
+        # matched the bare kind alone never saw a single candidate.
+        # attempts.candidates_of has always matched both.
+        return provides in (kind, f"{kind}-bytes")
     role = question.get("role")
     if role is not None:
         return role == kind or role.startswith(kind + "-")
@@ -94,13 +103,49 @@ def _rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
     return [r for r in cache.assessments_of(subject) if _matches_kind(r.question, kind)]
 
 
+def _source_asks(rows: Sequence[Answer], kind: str) -> list[Answer]:
+    """The provide rows that ARE attempts, oldest first: a Source ask (an
+    image search, a Forvo lookup, a tts synthesis) writes the bare kind.
+    The bytes fetches an ask leads to write `"{kind}-bytes"` and belong to
+    that same attempt -- counting them too burned the attempt cap several
+    times faster than a run actually attempts anything.
+    """
+    return sorted((r for r in rows if r.port == "provide"
+                  and r.question.get("provides") == kind), key=lambda r: r.ts)
+
+
+def _shas_since(rows: Sequence[Answer], since_ts: int) -> set[str]:
+    """Every artifact sha any provide row at or after `since_ts` carries --
+    the candidates the attempts in that window actually produced. Almost
+    always the imgfetch/audiofetch `-bytes` rows, but tts writes its sha on
+    its own bare-kind row, so this reads both rather than the -bytes shape
+    alone.
+    """
+    shas: set[str] = set()
+    for r in rows:
+        if r.port != "provide" or r.ts < since_ts:
+            continue
+        for item in r.answer.get("items", []):
+            if isinstance(item, Mapping) and item.get("sha"):
+                shas.add(item["sha"])
+    return shas
+
+
 def _stale(row: Answer, current_rubric: Rubric) -> bool:
     """True when a verdict row's rubric no longer matches -- a str rubric
     applies to every role (old behavior); a role -> rubric mapping only
     stales the roles it names (a role absent from the mapping is never
     stale on that account).
+
+    Mechanical rows carry no rubric at all (`rubric: None` -- they check
+    ground truth, e.g. recording duration/format, not a judge prompt) --
+    a rubric change can never make one stale, so a mechanical row with no
+    rubric is exempted before either comparison runs (it would otherwise
+    read as "rubric changed from None" under any current_rubric).
     """
     if current_rubric is None:
+        return False
+    if row.question.get("rubric") is None and row.backend == "mechanical":
         return False
     role = row.question.get("role")
     if isinstance(current_rubric, str):
@@ -108,6 +153,14 @@ def _stale(row: Answer, current_rubric: Rubric) -> bool:
     if role in current_rubric:
         return row.question.get("rubric") != current_rubric[role]
     return False
+
+
+# Public export: reviewserver._judge_verdict_line's rubric filter has to
+# apply the same str-or-mapping semantics (and the same mechanical-row
+# exemption) this module's own folds use -- re-deriving it there let a
+# mapping silently miscompare (== against a dict). `stale` is the public
+# name for the same function `_stale` is used under internally.
+stale = _stale
 
 
 def _machine_ranks(rows: Sequence[Answer], kind: str,
@@ -295,7 +348,7 @@ class ExhaustedStatus:
 def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
              attempt_cap: int = 8, current_rubric: Rubric = None) -> ExhaustedStatus:
     rows = _rows_for(cache, subject, kind)
-    provide_rows = sorted((r for r in rows if r.port == "provide"), key=lambda r: r.ts)
+    provide_rows = _source_asks(rows, kind)
     attempts = len(provide_rows)
     if attempts < attempt_cap:
         return ExhaustedStatus(exhausted=False, attempts=attempts, reason="attempt cap not reached")
@@ -304,11 +357,10 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
     if best.artifact_sha is None:
         return ExhaustedStatus(exhausted=False, attempts=attempts, reason="no current_best yet")
 
-    last_k_shas: set[str] = set()
-    for r in provide_rows[-k:]:
-        for item in r.answer.get("items", []):
-            if isinstance(item, Mapping) and item.get("sha"):
-                last_k_shas.add(item["sha"])
+    # "the last k attempts' candidates" = every sha fetched at or after the
+    # k-th-last Source ask, since the fetches an ask causes are written
+    # after it and are what that attempt actually produced.
+    last_k_shas = _shas_since(rows, provide_rows[-k:][0].ts if provide_rows else 0)
 
     # Compare the last k attempts' candidates against the best that stood
     # BEFORE them, not against current_best (which already folds them in
@@ -411,7 +463,7 @@ def queue(syllabus, cache: CacheReader, *, budgets: Mapping[str, object] | None 
         if best.rank >= _GOOD_RANK or status.exhausted:
             continue  # never: good/exhausted -- exhausted surfaces on the feedback screen
         directed = any(_is_direction(r) for r in rows)
-        attempts = len([r for r in rows if r.port == "provide"])
+        attempts = len(_source_asks(rows, kind))   # Source asks, not the fetches they caused
         if best.artifact_sha is None or best.source != "learner" or best.rank < _ACCEPTABLE_FLOOR:
             bucket = 1
         elif _has_untried_option(rows, current_rubric,

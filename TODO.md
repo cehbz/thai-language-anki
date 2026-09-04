@@ -13,9 +13,10 @@ at search, recordings never ranked, sentences were never produced, the
 gate passed an empty syllabus. The old deck is at ~/decks/thai-ff.20260903;
 the new deck root is ~/decks/thai-ff.
 
-- Write `~/decks/thai-ff/curated/providers.yaml` (secret references,
-  proxy, imgfetch path, judge transport batch + model + price,
-  image_candidates) and run the real migration:
+- Write `~/decks/thai-ff/curated/providers.yaml` (secret references
+  including `anthropic`, proxy, imgfetch_path AND audiofetch_path, judge
+  transport batch + model + price, image_candidates -- the loader now
+  refuses a file missing any of those) and run the real migration:
   `thai-syllabus migrate --old-deck ~/decks/thai-ff.20260903 --old-data
   data --new-root ~/decks/thai-ff`. Migration carries candidates.yaml's
   recorded pass/fail per candidate over as the judge fit verdict (the old
@@ -24,8 +25,9 @@ the new deck root is ~/decks/thai-ff.
   scratch migration probe: 356 of 766 words still missing a picture); the
   rest are judged by the first run's assess-first step.
 - First sourcing run against the migrated state, smoke-capped per source;
-  verify RunReport (attempted / improved / exhausted / pending / spend)
-  against expectations; then the whole-syllabus batch passes.
+  verify RunReport (attempted / improved / exhausted / pending / excluded
+  / unreachable / spend) against expectations; then the whole-syllabus
+  batch passes.
 - First `thai-syllabus compile`; delete-and-reimport in Anki; a proof
   pass in `thai-syllabus review`. Testing-deck relaxations are severity
   overrides in the deck's rulebook.yaml, recorded there.
@@ -63,6 +65,55 @@ the new deck root is ~/decks/thai-ff.
 - Pair search and grapheme-keyword attempts (spec 3 section 5): shapes
   defined, implemented after the cutover; the old deck's 22 pairs did not
   migrate, so renditions are moot until pairs exist.
+- Batch judge granularity: the run submits one Message Batch per need;
+  before the whole-syllabus batch pass, gather every judge question of a
+  run into one batch and resolve on the next run (the pending derivation
+  already supports this).
+
+## Follow-ups from the whole-arc review (2026-09-04)
+
+- reviewserver `_tried_summary` lists imgfetch/audiofetch rows and fetched
+  urls as "sources/phrases tried" in the direction prompt; filter to the
+  Source-ask rows (`provides == kind`) as `_latest_query` does.
+- `_picture_attempt`'s pre-search guard returns `attempted=False` even when
+  the fit questions were really asked before the judge failed; return
+  `_attempted(spend)`.
+- A dead judge ends each attempt, not the run: `run()` still escalates every
+  source for every need and re-asks the wire each time. Abort the run after
+  the first unreachable-judge attempt.
+- `load_providers_config` accepts an empty `tts.male_voices`; `pick_voice`
+  then divides by zero. Validate non-empty pools.
+- `exhausted(pair, "rendition")` is always 0 attempts: rendition asks are
+  recorded under the member subjects, never the pair.
+
+## Design follow-ups (round review, 2026-09-04)
+
+- Row conventions are parsed in three places (`derivations._matches_kind`
+  and `_machine_ranks`, plus reviewserver's private duplicates of
+  `_matches_kind`/`_rows_for`/`_gap_candidates`/`_candidate_shas`). One
+  row-reading module both import, and an explicit `kind` on every provide
+  row instead of inferring it from `provides`.
+- `derivations` imports `AUTHORITY_ORDER`/`ROLE_FOR_KIND` from `assessor`;
+  authority and the kind→role map are domain data for a small shared module.
+- `Assessor._preparation_failure` re-runs prompt/attachment preparation on
+  every inline miss to classify exclusions; replace with a distinct
+  `PreparationError` raised by the backend that `ask_many` maps to
+  `excluded`.
+- Batch resume state is a growing marker convention (`judge-batch-pending`
+  rows superseded by abandoned markers); revisit when batch granularity
+  moves to one batch per run.
+- `rulebook.py` imports rubric texts from `thai_deck_eval.judge.prompts`;
+  copy them into the rulebook before retiring the old packages.
+- Spec 3 §5 picture query: "gloss head term + category qualifier" is not
+  implementable (Word has no category); the query is the whole meaning.
+  Amend the spec or add the field.
+- Spec 3 §6: `pending` is implemented as "batch marker with an unresolved
+  key" (narrower than the spec's wording); a judge-passed, learner-unrated
+  picture queues in bucket 1 rather than 3; `RunReport.improved` counts a
+  preference bonus as improvement without an artifact change.
+- Migration joins picture notes to words by Thai form, first row wins for
+  the 39 homographs (45 word rows lose their picture, named in the report);
+  a (thai, gloss) key or a curated map would remove the shortcut.
 
 ## Parked
 

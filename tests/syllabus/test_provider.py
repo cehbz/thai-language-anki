@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from thai_syllabus.assessor import Price
 from thai_syllabus.provider import (
     FetchBackend,
     ForvoBackend,
@@ -401,16 +402,19 @@ def test_tts_items_carry_synthetic_speaker_kind():
 # --- llm: key = llm:PRODUCER:MODEL:sha(PROMPT) --------------------------
 
 class _FakeTransport:
-    def __init__(self, text="drafted sentence", raises=None):
+    def __init__(self, text="drafted sentence", raises=None, input_tokens=0, output_tokens=0):
         self.text = text
         self.raises = raises
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
         self.prompts = []
 
     def complete(self, prompt):
         self.prompts.append(prompt)
         if self.raises:
             raise self.raises
-        return Completion(text=self.text)
+        return Completion(text=self.text, input_tokens=self.input_tokens,
+                          output_tokens=self.output_tokens)
 
 
 def test_llm_cache_key_is_stable_for_the_same_prompt():
@@ -432,12 +436,26 @@ def test_llm_cache_key_changes_when_the_prompt_text_changes():
 
 def test_llm_fetch_delegates_to_the_transport_and_wraps_the_completion():
     transport = _FakeTransport(text="ผมกินข้าว")  # I eat rice
-    backend = LlmBackend(producer="p", model="m", transport=transport, cost_per_call=0.002)
+    backend = LlmBackend(producer="p", model="m", transport=transport, quota_cost_per_call=0.002)
     answer = backend.fetch(Question(subject="s", provides="sentence",
                                     params={"prompt": "write a sentence about rice"}))
     assert answer.items == ("ผมกินข้าว",)  # I eat rice
     assert answer.cost == 0.002
     assert transport.prompts == ["write a sentence about rice"]
+
+
+def test_llm_fetch_prices_the_completions_tokens_when_a_price_is_configured():
+    """Spec 3 section 2's cost contract: every Answer carries the cost the
+    backend incurred, measured by the backend -- api/batch llm drafting is
+    tokens times the providers.yaml price, exactly as JudgeBackend prices a
+    verdict. A flat per-call quota cost applies only where no price does
+    (the cli transport, which reports no usage)."""
+    transport = _FakeTransport(text="drafted", input_tokens=1_000_000, output_tokens=500_000)
+    backend = LlmBackend(producer="p", model="m", transport=transport,
+                         price=Price(2.0, 10.0), quota_cost_per_call=1.0)
+    answer = backend.fetch(Question(subject="s", provides="sentence",
+                                    params={"prompt": "draft"}))
+    assert answer.cost == pytest.approx(2.0 + 5.0)
 
 
 def test_llm_transport_error_propagates_uncached(db):
@@ -488,3 +506,11 @@ def test_pair_search_fetch_returns_the_dictionarys_candidates():
                                     params={"confusion_id": "tone:mid-low"}))
     assert answer.items[0]["members"] == ["ใกล้", "ไกล"]  # near, far
     assert g2p.searched == ["tone:mid-low"]
+
+
+def test_a_provider_miss_is_not_a_hit_and_the_re_read_is(db):
+    backend = _FakeBackend(items=({"url": "u"},))
+    provider = Provider(record=db, cache=db, backends={"openverse": backend})
+    q = Question(subject="s", provides="picture", params={"query": "orange"})
+    assert provider.ask("openverse", q).hit is False
+    assert provider.ask("openverse", q).hit is True

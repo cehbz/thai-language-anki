@@ -25,7 +25,16 @@ def _deck(tmp_path):
         targets=(target("eat/receptive", "eat"), target("orange/receptive", "orange")),
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig()))
-    (root / "curated" / "providers.yaml").write_text("judge: {transport: api, model: m}\n", encoding="utf-8")
+    # imgfetch/audiofetch paths and the anthropic secret reference are what
+    # load_providers_config now requires of any real providers.yaml; the
+    # test replaces both fetch backends (and the judge's transport) with
+    # fakes below, so neither binary nor secret is ever touched.
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n"
+        "secrets: {anthropic: op://Shared/Anthropic/API Key}\n"
+        "judge: {transport: api, model: m, price_per_mtok: {input: 2.0, output: 10.0}}\n",
+        encoding="utf-8")
     SyllabusDb(root / "syllabus.db").close()
     MediaStore(root / "media")
     return root

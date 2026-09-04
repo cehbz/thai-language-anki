@@ -347,3 +347,21 @@ def test_homograph_word_list_rows_are_counted(old_deck, old_data, tmp_path):
                          encoding="utf-8")
     report = migrate(old_deck, old_data, tmp_path / "new")
     assert report.curated["homograph_rows"] == 1
+
+
+def test_homograph_word_list_rows_are_reported_as_unmigratable(old_deck, old_data, tmp_path):
+    """A homograph row still becomes its own Word, but it can never be the
+    join target for the note-keyed rows sharing its Thai form -- those go
+    to the first row. A counter alone left that silent: the report has to
+    name the row and the word its picture note joined to instead.
+    """
+    word_list = old_data / "word_list_th.yaml"
+    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
+    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)"})
+    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+                         encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    dropped = [u for u in report.unmigratable
+              if u.source == "data/word_list_th.yaml" and u.identity == "chicken-2"]
+    assert len(dropped) == 1
+    assert dropped[0].reason == "homograph of chicken: the picture note joins to that word"

@@ -348,6 +348,19 @@ def test_mechanical_pass_ranks_a_recording(db):
     assert best.artifact_sha == "s1" and best.rank == 50.0 and best.source == "mechanical"
 
 
+def test_mechanical_pass_ranks_a_recording_under_a_rubric_mapping_for_its_own_role(db):
+    # Mechanical rows are written with rubric=None (attempts.py's
+    # convention -- they check ground truth, not a judge prompt). A
+    # current_rubric mapping that names recording-for-word (e.g. because
+    # the judge rubric changed) must not stale a mechanical verdict on
+    # that account.
+    _provide(db, "w", "recording", "forvo", ["s1"])
+    _verdict(db, "w", "mechanical", "recording-for-word", "s1", True, rubric=None)
+    best = current_best(db, "w", "recording",
+                        current_rubric={"recording-for-word": "some judge rubric"})
+    assert best.artifact_sha == "s1" and best.rank == 50.0 and best.source == "mechanical"
+
+
 def test_mechanical_never_ranks_a_picture(db):
     _provide(db, "w", "picture", "openverse", ["s1"])
     _verdict(db, "w", "mechanical", "picture-for-word", "s1", True, rubric=None)
@@ -417,3 +430,58 @@ def test_queue_excludes_pending_needs(db):
               question={"keys": ["judge:r:a:picture-for-word"]},
               answer={"kind": "batch-pending", "batch_id": "b1"})
     assert [e.subject for e in queue(syl, db)] == ["v"]
+
+
+def test_exhausted_counts_fetched_picture_bytes_shas_in_the_last_k_attempts():
+    """A picture sha only ever appears on an imgfetch row, whose `provides`
+    is "picture-bytes" -- not the bare kind. A fold that matched only
+    "picture" saw neither the row nor its sha, so the last-k candidate set
+    was always empty and a freshly fetched, freshly judged winner could
+    never reopen an exhausted need. (The bytes row is a candidate of the
+    Source ask before it, not an attempt of its own -- hence 7, not 8.)
+    """
+    rows = [judge_row("rice", "picture", "sha-a", False, ts=0)]
+    rows += [provide_row("rice", "picture") for _ in range(7)]
+    last = provide_row("rice", "picture-bytes", backend="imgfetch",
+                       items=[{"sha": "sha-great"}])
+    rows.append(last)
+    rows.append(judge_row("rice", "picture", "sha-great", 99.0, ts=last.ts + 1))
+    status = exhausted(FakeCache(rows), "rice", "picture", k=1, attempt_cap=7)
+    assert status.attempts == 7
+    assert status.exhausted is False and "out-rank" in status.reason
+
+
+def _searches_with_fetches(n):
+    """n whole picture attempts: each a Source ask (`provides: picture`)
+    followed by the imgfetch row (`provides: picture-bytes`) carrying the
+    one candidate it produced."""
+    rows = []
+    for i in range(n):
+        rows.append(provide_row("rice", "picture"))
+        rows.append(provide_row("rice", "picture-bytes", backend="imgfetch",
+                                items=[{"sha": f"sha-{i}"}]))
+    return rows
+
+
+def test_exhausted_counts_source_asks_not_the_bytes_fetches_they_caused():
+    """An attempt is one Source ask. The imgfetch rows that follow it are
+    part of that same attempt, so counting every provide row burned the
+    attempt cap several times faster than a run actually attempts."""
+    status = exhausted(FakeCache(_searches_with_fetches(7)), "rice", "picture",
+                       k=2, attempt_cap=7)
+    assert status.attempts == 7          # seven searches, not fourteen rows
+
+
+def test_exhausted_last_k_covers_the_fetches_after_the_kth_last_source_ask():
+    def deck(great_index):
+        rows = _searches_with_fetches(7)
+        rows.append(judge_row("rice", "picture", f"sha-{great_index}", 99.0))
+        rows.append(judge_row("rice", "picture", "sha-other", False))
+        return FakeCache(rows)
+
+    # k=2: the window opens at the second-to-last Source ask, so both the
+    # sixth and the seventh attempt's fetches are inside it.
+    assert exhausted(deck(5), "rice", "picture", k=2, attempt_cap=7).exhausted is False
+    # sha-0 was fetched seven attempts ago -- outside the window, so nothing
+    # recent out-ranks the best that already stood.
+    assert exhausted(deck(0), "rice", "picture", k=2, attempt_cap=7).exhausted is True

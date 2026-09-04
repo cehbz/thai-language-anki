@@ -463,11 +463,18 @@ def rulebook_file_text(path: str | Path) -> str:
 #
 # Per-backend settings: secret references (resolved by SecretStore, ported
 # in secrets.py), search_proxy, imgfetch/audiofetch paths, tts voice pools
-# (defaulting to tts.py's shipped male/female lists), judge transport +
-# model + price_per_mtok, image_candidates, batch limits, quotas, k and
+# (defaulting to tts.py's shipped male/female lists) + cost_per_char, judge
+# transport + model + price_per_mtok, image_candidates, batch limits, quotas, k and
 # attempt caps. One file; no env vars; no settings in two places (judged-
 # rule rubric TEXT stays in rulebook.yaml -- WHAT to ask; this file is HOW
 # to reach things).
+#
+# load_providers_config refuses a file that describes a run the code cannot
+# perform: no imgfetch_path/audiofetch_path (pictures and recordings are
+# always in scope), an api/batch judge with no price_per_mtok (its spend
+# would be silently costed at zero), and an api/batch judge with no
+# anthropic secret (nothing left to draft sentences through). The dataclass
+# defaults stay permissive -- they are what an ABSENT file yields.
 
 @dataclass(frozen=True)
 class JudgeConfig:
@@ -484,6 +491,7 @@ class ProvidersConfig:
     audiofetch_path: str | None = None
     tts_male_voices: tuple[str, ...] = field(default_factory=lambda: tuple(MALE_VOICES))
     tts_female_voices: tuple[str, ...] = field(default_factory=lambda: tuple(FEMALE_VOICES))
+    tts_cost_per_char: float = 0.0   # $ per synthesized character (spec 3's cost contract)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     image_candidates: int = 5  # candidate images fetched per target word
     batch: dict[str, Any] = field(default_factory=dict)
@@ -510,6 +518,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     tts_cfg = data.get("tts") or {}
     male = tuple(tts_cfg["male_voices"]) if "male_voices" in tts_cfg else tuple(MALE_VOICES)
     female = tuple(tts_cfg["female_voices"]) if "female_voices" in tts_cfg else tuple(FEMALE_VOICES)
+    tts_cost_per_char = tts_cfg.get("cost_per_char", 0.0)
+    if not _is_number(tts_cost_per_char) or float(tts_cost_per_char) < 0:
+        errors.append(f"providers.tts.cost_per_char: {tts_cost_per_char!r} must be "
+                      "a non-negative number")
+        tts_cost_per_char = 0.0
 
     judge_cfg = data.get("judge") or {}
     transport = judge_cfg.get("transport", "cli")
@@ -530,8 +543,39 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                               "numeric 'input' and 'output'")
             else:
                 price_per_mtok = (float(input_price), float(output_price))
+    if transport in ("api", "batch") and price_per_mtok is None:
+        # Spec 3 section 2's cost contract: the api and batch judges spend
+        # cash, measured as tokens times this price. Without it every
+        # verdict is silently costed at zero and no budget can bind.
+        errors.append("providers.judge.price_per_mtok: required for the "
+                      f"{transport!r} transport, which spends cash per token")
     judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
                         price_per_mtok=price_per_mtok)
+
+    # A loaded config must describe a run that can actually happen (fail
+    # fast and noisy): both mediafetch paths are required -- pictures and
+    # recordings are always in scope, so a run without imgfetch could never
+    # fetch a found image and one without audiofetch could never download a
+    # Forvo recording; each would look like a run that simply "found
+    # nothing". The ProvidersConfig DATACLASS stays permissive (its
+    # defaults are what an ABSENT file yields); only this loader refuses.
+    imgfetch_path = data.get("imgfetch_path")
+    audiofetch_path = data.get("audiofetch_path")
+    if not imgfetch_path:
+        errors.append("providers.imgfetch_path: required -- pictures are always in "
+                      "scope and nothing else can fetch a found image")
+    if not audiofetch_path:
+        errors.append("providers.audiofetch_path: required -- recordings are always "
+                      "in scope and nothing else can download one")
+
+    # Sentence drafting is a single-question ask (wiring._llm_transport):
+    # the cli transport IS one; api/batch need the anthropic secret to
+    # build one. With neither, wiring registers no llm-* backend at all and
+    # every unfilled target stays silently unfilled.
+    if transport in ("api", "batch") and "anthropic" not in secrets_cfg:
+        errors.append(f"providers.secrets.anthropic: required for the {transport!r} "
+                      "judge transport -- sentence drafting needs a single-question "
+                      "transport on that account")
 
     image_candidates = data.get("image_candidates", 5)
     if not isinstance(image_candidates, int) or image_candidates < 1:
@@ -550,9 +594,10 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
     return ProvidersConfig(
         secrets=secrets_cfg, search_proxy=data.get("search_proxy"),
-        imgfetch_path=data.get("imgfetch_path"),
-        audiofetch_path=data.get("audiofetch_path"), tts_male_voices=male,
-        tts_female_voices=female, judge=judge, image_candidates=image_candidates,
+        imgfetch_path=imgfetch_path,
+        audiofetch_path=audiofetch_path, tts_male_voices=male,
+        tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
+        judge=judge, image_candidates=image_candidates,
         batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
         k=k, attempt_cap=attempt_cap)
 
@@ -568,7 +613,8 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "imgfetch_path": config.imgfetch_path,
         "audiofetch_path": config.audiofetch_path,
         "tts": {"male_voices": list(config.tts_male_voices),
-               "female_voices": list(config.tts_female_voices)},
+               "female_voices": list(config.tts_female_voices),
+               "cost_per_char": config.tts_cost_per_char},
         "judge": judge,
         "image_candidates": config.image_candidates,
         "batch": dict(config.batch),

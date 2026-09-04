@@ -26,16 +26,17 @@ violations, just latitude the terse text left to fill in:
 - The llm Provider backend (sentence/phrase/entry drafting) has no
   section of its own in providers.yaml -- section 5 lists only "judge
   transport + model" as this project's one configured way to reach an
-  LLM. Read as: the llm backend reuses that SAME transport+model (one
-  Claude account, one configured transport), registered under three
-  backend names (llm-sentence/llm-phrase/llm-entry) rather than one
-  "llm" name -- LlmBackend.producer is fixed per instance (provider.py)
-  and Provider looks a backend up by name, not by a per-call producer
-  argument. A "batch" transport has no single-question `.complete()`
-  (assessor.JudgeBackend.fetch's own docstring: "configured for batch
-  only -- use Assessor.ask_many"), so the llm backend is not registered
-  at all when judge.transport == "batch" (build_levers mirrors this: no
-  "sentence" lever either).
+  LLM. Read as: the llm backend reuses that SAME account, model and
+  price, registered under three backend names (llm-sentence/llm-phrase/
+  llm-entry) rather than one "llm" name -- LlmBackend.producer is fixed
+  per instance (provider.py) and Provider looks a backend up by name,
+  not by a per-call producer argument. A "batch" transport has no
+  single-question `.complete()` (assessor.JudgeBackend.fetch's own
+  docstring: "configured for batch only -- use Assessor.ask_many"), and
+  drafting is inherently single-question, so under a batch judge the llm
+  backends ride a lazy api transport on the same anthropic secret
+  (_llm_transport); they are omitted only when no anthropic secret is
+  configured to reach at all.
 - build_assessor(cfg, db, media_store) registers "judge" (transport +
   model, resolve_path/price/quota_cost_per_call wired from cfg and the
   db+media_store's _resolver) and "mechanical" (duration check, same
@@ -189,6 +190,34 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
     return None
 
 
+def _llm_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
+    """The single-question transport llm-sentence/phrase/entry draft on.
+    The judge's own cli/api transport where one exists; under a BATCH
+    judge -- which has no single-question transport at all -- a lazy api
+    transport on the same anthropic secret, so a deck whose verdicts ride
+    batches can still draft sentences (an omitted llm backend silently
+    left every target unfilled). None only when there is no transport to
+    reach at all: a batch judge with no anthropic secret configured.
+    """
+    transport = _claude_transport(cfg, secrets)
+    if transport is not None:
+        return transport
+    if "anthropic" not in cfg.secrets:
+        return None
+    return _LazyTransport(lambda: ClaudeApiTransport(
+        api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
+
+
+def _judge_price(cfg: ProvidersConfig) -> Price | None:
+    return Price(*cfg.judge.price_per_mtok) if cfg.judge.price_per_mtok else None
+
+
+def _judge_quota_cost(cfg: ProvidersConfig) -> float:
+    """The cli transport spends a flat unit of subscription quota per call
+    and reports no token usage; api/batch report usage and are priced."""
+    return 1.0 if cfg.judge.transport == "cli" else 0.0
+
+
 # --- build_provider ----------------------------------------------------
 
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
@@ -196,8 +225,9 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     """The Provide port's backend roster (spec 3 section 2), wired from
     providers.yaml (spec 3 section 5): search_proxy for the image-search
     backends, imgfetch_path/audiofetch_path for the mediafetch tool
-    fetchers (a missing path leaves that backend unregistered), the tts
-    voice pools, and the shared judge/llm transport+model for llm-*.
+    fetchers (both always registered -- load_providers_config refuses a
+    config missing either path), the tts voice pools, and the shared
+    judge/llm transport+model for llm-*.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
@@ -210,22 +240,27 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "tts": _LazyBackend(lambda: TtsBackend(
             tts=_lazy_google_tts(secrets),
             voices=list(cfg.tts_male_voices) + list(cfg.tts_female_voices),
-            media=media_store, pick_voice=pick_voice)),
+            media=media_store, pick_voice=pick_voice,
+            cost_per_char=cfg.tts_cost_per_char)),
     }
-    if cfg.imgfetch_path:
-        backends["imgfetch"] = FetchBackend(media=media_store,
-                                            fetcher=tool_fetcher(cfg.imgfetch_path))
-    if cfg.audiofetch_path:
-        backends["audiofetch"] = FetchBackend(media=media_store,
-                                              fetcher=tool_fetcher(cfg.audiofetch_path))
+    # Unconditional: load_providers_config refuses a providers.yaml without
+    # both paths (pictures and recordings are always in scope), so there is
+    # no "this deck has no imgfetch" case left to skip -- a run that could
+    # not fetch what it found must fail at load, not silently source nothing.
+    backends["imgfetch"] = FetchBackend(media=media_store,
+                                        fetcher=tool_fetcher(cfg.imgfetch_path))
+    backends["audiofetch"] = FetchBackend(media=media_store,
+                                          fetcher=tool_fetcher(cfg.audiofetch_path))
 
-    llm_transport = _claude_transport(cfg, secrets)
+    llm_transport = _llm_transport(cfg, secrets)
     if llm_transport is not None:
         for producer, name in (("sentence-drafter", "llm-sentence"),
                                ("phrase-drafter", "llm-phrase"),
                                ("entry-drafter", "llm-entry")):
             backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
-                                        transport=llm_transport)
+                                        transport=llm_transport,
+                                        price=_judge_price(cfg),
+                                        quota_cost_per_call=_judge_quota_cost(cfg))
 
     return Provider(record=db, cache=db, backends=backends)
 
@@ -278,8 +313,8 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     resolve = _resolver(db, media_store)
     judge = _build_judge_backend(cfg, secrets)
     judge.resolve_path = resolve
-    judge.price = Price(*cfg.judge.price_per_mtok) if cfg.judge.price_per_mtok else None
-    judge.quota_cost_per_call = 1.0 if cfg.judge.transport == "cli" else 0.0
+    judge.price = _judge_price(cfg)
+    judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
         "mechanical": duration_mechanical_backend(
@@ -293,7 +328,8 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
     complete = None
     batch_transport = None
     if kind == "batch":
-        batch_transport = _LazyBatchTransport(lambda: ClaudeBatchTransport(model=cfg.judge.model))
+        batch_transport = _LazyBatchTransport(lambda: ClaudeBatchTransport(
+            api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
     else:
         transport = _claude_transport(cfg, secrets)
         complete = transport.complete if transport is not None else None

@@ -62,9 +62,17 @@ class RunReport:
     """"a run that did almost nothing must look like one" (spec 3 section
     4): attempted/improved/exhausted/available are subject counts (not ask
     counts), so a run that touched nothing shows zeros everywhere except
-    `available`. `pending` counts one per queued need whose source
+    `available`, which counts the queued needs this run did NOT attempt --
+    sentence needs excluded, since the per-run sentence attempt covers
+    those and they are never work left over. `pending` counts one per queued need whose source
     escalation stopped on a pending (judge-batch-out) verdict, plus one
     more if the per-run sentence attempt itself came back pending.
+
+    `excluded` and `unreachable` are the run's "what went wrong" fields
+    (failing undetectably is a bug): `excluded` sums the questions the
+    judge could not prepare across every attempt -- candidates dropped, not
+    candidates rejected -- and `unreachable` says a judge TransportError
+    (or an answer-nothing result) ended an attempt, which stops the run.
     """
     attempted: int = 0
     improved: int = 0
@@ -72,6 +80,8 @@ class RunReport:
     available: int = 0
     pending: int = 0
     sentences_adopted: int = 0
+    excluded: int = 0
+    unreachable: bool = False
     spend: dict[str, Spend] = field(default_factory=dict)
 
 
@@ -90,6 +100,11 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     every other queued need, escalate attempts.SOURCES cheapest-first,
     stopping the need when an attempt improves, goes pending (a judge batch
     is out -- do not escalate past it), or its sources/budgets run out.
+
+    The whole RUN stops at the first unreachable attempt (a judge that
+    cannot be reached at all): no further need is attempted, the still-open
+    needs stay counted in `available`, and the persisted report carries
+    unreachable=True so the failure is visible afterwards, not silent.
     """
     report = RunReport()
     spend: dict[str, Spend] = {name: Spend() for name in budgets}
@@ -97,17 +112,28 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     so = sentence_attempt(ctx, max_targets=sentence_targets_per_run)
     _record_spend(spend, so.spend)
     report.sentences_adopted = len(so.adopted)
+    report.excluded += so.excluded
+    report.unreachable = report.unreachable or so.unreachable
     if so.pending:
         report.pending += 1
     ctx.syllabus = ctx.syllabus.with_sentences(so.adopted)
 
     entries = queue(ctx.syllabus, ctx.db, budgets=budgets, current_rubric=ctx.rubrics,
                     known_sources={k: set(v) for k, v in SOURCES.items()})
+    # Sentence needs are covered once per run by sentence_attempt above, so
+    # this loop never sees them and they are not work left over: counting
+    # them in `available` reported as still-to-do exactly what the run had
+    # just done.
+    entries = [e for e in entries if e.kind != "sentence"]
     for entry in entries:
-        if entry.kind == "sentence":
-            continue                       # handled by the per-run sentence attempt
+        # An unreachable judge (here or in the sentence attempt above) is a
+        # dead wire, not a per-need failure: every remaining need would fail
+        # the same way, so the run stops and the report says so rather than
+        # grinding the whole queue against it.
+        if report.unreachable:
+            break
         need = Need(entry.subject, entry.kind)
-        attempted = improved = False
+        attempted = improved = unreachable = False
         for source in sources_for(need.kind):
             budget = budgets.get(source)
             s = spend.setdefault(source, Spend())
@@ -115,7 +141,11 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
                 continue
             out = attempt(ctx, need, source)
             _record_spend(spend, out.spend)
+            report.excluded += out.excluded
             attempted = attempted or out.attempted
+            if out.unreachable:
+                unreachable = True
+                break
             if out.pending:
                 report.pending += 1
                 break
@@ -124,6 +154,9 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
                 break
         report.attempted += int(attempted)
         report.improved += int(improved)
+        if unreachable:
+            report.unreachable = True
+            break
         if exhausted(ctx.db, entry.subject, entry.kind, current_rubric=ctx.rubrics).exhausted:
             report.exhausted += 1
 
@@ -153,6 +186,7 @@ def _persist_report(cache: CacheReader, report: RunReport) -> None:
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
+                "excluded": report.excluded, "unreachable": report.unreachable,
                 "spend": {name: {"asks": s.asks, "cost": s.cost}
                          for name, s in report.spend.items()}},
         cost=sum(s.cost for s in report.spend.values()))

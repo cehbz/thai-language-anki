@@ -18,7 +18,7 @@ import pytest
 
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion
-from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -81,10 +81,25 @@ def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
 # --- cache-row helpers (mirrors test_derivations.py's) ----------------------
 
 def _provide(db, subject, kind, backend="openverse", items=(), query=None):
+    """One whole attempt, in the two row shapes a real one writes: the
+    Source ask (`provides: picture`, carrying the query and the search
+    hits) and then one bytes row per fetched candidate (`provides:
+    picture-bytes`, backend imgfetch, one sha each) -- the only row shape
+    that ever carries a sha. The Source ask is the attempt; the bytes rows
+    are the candidates it produced.
+    """
     params = {"query": query} if query else {}
-    return db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{query}",
-                     subject=subject, question={"provides": kind, "params": params},
-                     answer={"items": list(items)})
+    ts = db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{query}",
+                   subject=subject, question={"provides": kind, "params": params},
+                   answer={"items": [i for i in items if not i.get("sha")]})
+    for item in items:
+        if not item.get("sha"):
+            continue
+        url = f"https://x/{item['sha']}.jpg"
+        ts = db.append(port="provide", backend="imgfetch", key=url, subject=subject,
+                       question={"provides": f"{kind}-bytes", "params": {"url": url}},
+                       answer={"items": [dict(item)]})
+    return ts
 
 
 def _judge(db, subject, kind, artifact_sha, value, rubric="rubric-v1", evidence=None):
@@ -155,6 +170,22 @@ def test_build_queue_challenger_kind_when_rubric_change_outranks_learner_pick(sy
     assert len(challengers) == 1
     assert challengers[0]["current"]["sha"] == "s-old"
     assert challengers[0]["challenger"]["sha"] == "s-new"
+
+
+# --- _judge_verdict_line: a role -> rubric mapping current_rubric ----------
+
+def test_judge_verdict_line_honors_a_role_scoped_rubric_mapping(db, w1):
+    _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
+    _judge(db, w1.id, "picture", "sA", True, rubric="rubric-v2", evidence="clear")
+    rows = rs._rows_for(db, w1.id, "picture")
+
+    # a mapping naming this row's role (picture-for-word) under the same
+    # rubric text -- the verdict line is shown.
+    assert rs._judge_verdict_line(rows, "sA", {"picture-for-word": "rubric-v2"}) is not None
+
+    # a mapping naming the SAME role under different rubric text -- the
+    # row is stale under that role, so no verdict line.
+    assert rs._judge_verdict_line(rows, "sA", {"picture-for-word": "some other text"}) is None
 
 
 def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(syllabus, db, pair, confusion):
@@ -489,3 +520,47 @@ def test_http_stats_endpoint(live_server):
     assert status == 200
     stats = json.loads(body)
     assert "session" in stats and "coverage" in stats
+
+
+# --- load_context: one assembly path with the run and the compiler ---------
+
+def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
+    """load_context used to construct a bare Syllabus inline -- no media
+    index, no sentences, no frequency map, no rulebook overlay -- so the
+    review screen reported gaps the run had already closed. It must build
+    the same Syllabus wiring.load_syllabus builds for the run and the
+    compiler.
+    """
+    from datetime import date
+
+    from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+    from thai_syllabus.profile import Profile
+    from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
+
+    root = tmp_path / "deck"
+    save_curated(root / "curated", CuratedBundle(
+        words=(word("orange", "ส้ม", "orange"),),
+        targets=(target("orange/receptive", "orange"),),
+        graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
+        rulebook=RulebookConfig()))
+    deck_db = SyllabusDb(root / "syllabus.db")
+    deck_db.append(port="provide", backend="openverse", key="openverse:orange",
+                   subject="orange", question={"provides": "picture", "params": {}},
+                   answer={"items": [{"sha": "pic1"}]})
+    deck_db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
+                   subject="orange",
+                   question={"role": "picture-for-word", "artifact_sha": "pic1",
+                             "rubric": PICTURE_FIT_RUBRIC},
+                   answer={"value": True})
+    deck_db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
+                      origin="https://example.com/x.jpg", licence="cc0",
+                      acquired=date(2026, 1, 1))
+    deck_db.close()
+
+    ctx = rs.load_context(root)
+
+    assert "orange" not in ctx.syllabus.gaps().words_missing_pictures
+    assert ctx.syllabus.media.picture_sha(WordId("orange")) == "pic1"
+    # the rest of ReviewContext is unchanged
+    assert ctx.cache is ctx.record
+    assert ctx.syllabus.assessments is ctx.cache

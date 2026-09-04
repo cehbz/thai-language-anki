@@ -12,10 +12,14 @@ providers.yaml-driven backend construction) -- wiring.py is that
 settling: load_syllabus() wires the Syllabus loader; build_sourcing()
 wires run()'s Sourcing ctx (provider/assessor rosters, rubrics,
 provenance_prior) from curated/providers.yaml + rulebook.yaml.
+
+Exit codes: 0 done, 1 refused/incomplete (`compile` hit a closed gate;
+`run` could not reach the judge), 2 no subcommand matched.
 """
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -89,13 +93,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
     report = run_pipeline(ctx, budgets)
     print(f"attempted={report.attempted} improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
-         f"pending={report.pending} sentences_adopted={report.sentences_adopted}")
+         f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
+         f"excluded={report.excluded} unreachable={report.unreachable}")
     for name, spend in sorted(report.spend.items()):
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
-    return 0
+    # A run that could not reach the judge did not do its job: exit
+    # non-zero so a script or a cron job notices instead of reading a
+    # zero-attempt run as "nothing left to do".
+    return 1 if report.unreachable else 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    # One logging configuration, at the process entry point: attempts.py
+    # and assessor.py report a dead judge, an unusable candidate and a
+    # dropped question at WARNING, and with nothing configured those go
+    # nowhere. Failing undetectably is a bug.
+    logging.basicConfig(level=logging.WARNING,
+                        format="%(levelname)s %(name)s: %(message)s",
+                        stream=sys.stderr)
+
     parser = argparse.ArgumentParser(prog="thai-syllabus")
     sub = parser.add_subparsers(dest="command", required=True)
 

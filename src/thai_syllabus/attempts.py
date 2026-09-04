@@ -9,16 +9,35 @@ knows what an attempt IS for each need kind.
 An unavailable Source (Provider.ask raising KeyError -- no backend
 configured for it -- or TransportError) is skipped: that source is
 unusable this run, nothing is cached, the attempt may still succeed on
-what's already on record. An unavailable Assessor (Assessor.ask_many
-raising KeyError -- no "judge" backend registered) is different: nothing
-can be judged at all, so it ends the whole attempt before any Source is
-tried, rather than spending on a search whose results could never be
-assessed.
+what's already on record. An unavailable OR unreachable Assessor is
+different: nothing can be judged at all, so it ends the whole attempt
+before any Source is tried, rather than spending on a search whose
+results could never be assessed. Three shapes mean that, all handled the
+same way (see `_judge_many`): Assessor.ask_many raising KeyError (no
+"judge" backend registered), raising TransportError (the batch branch's
+submit failed), or coming back with nothing resolved, nothing pending
+AND nothing excluded for a non-empty question list (the inline branch
+swallowed a per-question TransportError on every question). Each is
+logged at WARNING -- a run that judged nothing must say so, not look
+like a run that found nothing.
+
+A question the judge EXCLUDED (ManyResult.excluded: it could not be
+prepared -- an artifact sha resolving to no file) is not that. The judge
+is reachable and answered what it could; that one candidate is unusable.
+It is named at WARNING and skipped, and the attempt continues to the
+Source.
+
+Both shapes are also COUNTED, not just logged: Outcome/SentenceOutcome
+carry `excluded` (how many questions the judge could not prepare, deduped
+per attempt) and `unreachable` (the judge ended this attempt), so the run
+report can say what went wrong instead of looking like a quiet run that
+found nothing.
 
 Outcome.spend counts one ask per backend unless the answer was served
-from the cache: `attempt` captures a start timestamp before doing
-anything, and an answer whose `ts` predates that start was already on
-record (a hit, free); everything newer was actually asked this attempt.
+from the cache, and the PORT says which: every ProviderAnswer/Verdict
+carries its own `hit`. (Comparing an answer's `ts` against a start
+timestamp cannot: a verdict this same attempt wrote a moment ago is
+newer than the start, so every re-read of it counted as another ask.)
 Outcome.attempted is true whenever spend records any real ask, fit or
 preference included.
 """
@@ -26,8 +45,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -47,6 +66,8 @@ from .tts import pick_voice
 
 __all__ = ["Need", "Sourcing", "Outcome", "SentenceOutcome", "SOURCES", "sources_for",
            "candidates_of", "current_best_of", "attempt", "sentence_attempt", "select_cover"]
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -73,10 +94,19 @@ class Sourcing:
 
 @dataclass(frozen=True)
 class Outcome:
+    """`excluded` counts the questions the judge could not PREPARE during
+    this attempt (deduped by cache key: one unusable candidate is one
+    exclusion even though an attempt judges its candidate set twice, before
+    and after the Source). `unreachable` says the judge could not be
+    reached at all and ended the attempt -- the run stops on it rather than
+    grinding through every remaining need against a dead wire.
+    """
     attempted: bool                    # any real (non-cached) ask ran, provide or assess
     pending: bool
     improved: bool
     spend: dict[str, tuple[int, float]] = field(default_factory=dict)  # backend -> (asks, cost)
+    excluded: int = 0
+    unreachable: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +115,22 @@ class SentenceOutcome:
     adopted: tuple[Sentence, ...]
     pending: bool
     spend: dict[str, tuple[int, float]] = field(default_factory=dict)
+    excluded: int = 0
+    unreachable: bool = False
+
+
+@dataclass
+class _Tally:
+    """One attempt's judge bookkeeping: the cache keys the judge could not
+    prepare, as a SET -- an attempt asks the same fit question twice (once
+    before the Source, once after), and one unusable candidate is one
+    exclusion, not two.
+    """
+    excluded_keys: set[str] = field(default_factory=set)
+
+    @property
+    def excluded(self) -> int:
+        return len(self.excluded_keys)
 
 
 SOURCES: dict[str, tuple[str, ...]] = {
@@ -159,25 +205,59 @@ def _picture_params(ctx: Sourcing, subject: str) -> dict[str, Any]:
             "gloss_shown": w.meaning if w else "", "phrase": _phrase(ctx, subject)}
 
 
+def _judge_many(ctx: Sourcing, questions: Sequence[AssessQuestion], tally: _Tally):
+    """Assessor.ask_many("judge", ...) under the unreachable-judge
+    contract (module docstring). The judge is UNREACHABLE when ask_many
+    raises TransportError, or when resolved, pending AND excluded are all
+    empty for a non-empty question list -- nothing came back and nothing
+    was even attempted, so no verdict can be had; logged at WARNING and
+    raised as TransportError for the caller to end the attempt on.
+
+    An EXCLUDED question is the opposite case: the judge is reachable and
+    answered what it could, but that question could not be prepared (an
+    artifact sha resolving to no file). Those candidates are unusable, not
+    evidence of a dead wire -- named at WARNING and skipped, and the
+    attempt carries on to the Source. Ending it instead would wedge the
+    subject: the stale row that names the missing artifact is still on
+    record on every later run.
+
+    An empty question list is the availability probe and answers nothing
+    -- never unreachable.
+    """
+    try:
+        res = ctx.assessor.ask_many("judge", questions)
+    except TransportError as e:
+        _log.warning("judge unreachable (%s); ending the attempt before any source spend", e)
+        raise
+    if res.excluded:
+        tally.excluded_keys.update(res.excluded)
+        _log.warning("the judge could not prepare %d of %d question(s) (%s); "
+                     "those candidates are unusable -- continuing the attempt",
+                     len(res.excluded), len(questions), ", ".join(res.excluded))
+    if questions and not res.resolved and not res.pending and not res.excluded:
+        _log.warning("judge answered none of %d question(s), reported none pending and "
+                     "excluded none; ending the attempt before any source spend",
+                     len(questions))
+        raise TransportError("the judge resolved no questions and reported none pending")
+    return res
+
+
 def _fit_pictures(ctx: Sourcing, subject: str, shas: Sequence[str],
-                  spend: dict[str, tuple[int, float]], start: int) -> tuple[list[str], bool]:
+                  spend: dict[str, tuple[int, float]], tally: _Tally) -> tuple[list[str], bool]:
     """Fits every sha (cache-first; may be empty -- ask_many still probes
     backend availability, so an unregistered judge backend's KeyError
     surfaces even with zero candidates). Returns (passing shas, pending).
-    A TransportError is treated as a transient miss (nothing judged, not
-    pending); a KeyError (no "judge" backend at all) propagates -- the
-    caller ends the whole attempt over it, see attempt()'s module doc.
+    A KeyError (no "judge" backend at all) or a TransportError (the judge
+    is unreachable, see _judge_many) propagates -- the caller ends the
+    whole attempt over either, see attempt()'s module doc.
     """
     rubric = ctx.rubrics["picture-for-word"]
     params = _picture_params(ctx, subject)
     questions = [AssessQuestion(subject=subject, role="picture-for-word", artifact_sha=s,
                                 rubric=rubric, params=params) for s in shas]
-    try:
-        res = ctx.assessor.ask_many("judge", questions)
-    except TransportError:
-        return [], False
+    res = _judge_many(ctx, questions, tally)
     for v in res.resolved.values():
-        _add(spend, "judge", v.cost, hit=v.ts < start)
+        _add(spend, "judge", v.cost, hit=v.hit)
     if res.pending:
         return [], True
     passing = sorted(s for s, q in zip(shas, questions)
@@ -187,7 +267,7 @@ def _fit_pictures(ctx: Sourcing, subject: str, shas: Sequence[str],
 
 
 def _prefer_pictures(ctx: Sourcing, subject: str, passing: Sequence[str],
-                     spend: dict[str, tuple[int, float]], start: int) -> bool:
+                     spend: dict[str, tuple[int, float]], tally: _Tally) -> bool:
     """One preference question over every currently-passing candidate --
     cache-first, so an unchanged passing set (same shas, same rubric)
     costs nothing. Returns True when pending in a batch.
@@ -196,44 +276,50 @@ def _prefer_pictures(ctx: Sourcing, subject: str, passing: Sequence[str],
     pref = AssessQuestion(subject=subject, role="picture-preference", rubric=ctx.rubrics["picture-preference"],
                           params={"candidates": sorted(passing), "word": params["word"],
                                   "meaning": params["meaning"]})
-    try:
-        res = ctx.assessor.ask_many("judge", [pref])
-    except TransportError:
-        return False
+    res = _judge_many(ctx, [pref], tally)
     for v in res.resolved.values():
-        _add(spend, "judge", v.cost, hit=v.ts < start)
+        _add(spend, "judge", v.cost, hit=v.hit)
     return bool(res.pending)
 
 
-def _assess_all_candidates(ctx: Sourcing, subject: str, spend: dict[str, tuple[int, float]],
-                           start: int) -> bool:
+def _assess_all_candidates(ctx: Sourcing, subject: str,
+                           spend: dict[str, tuple[int, float]], tally: _Tally) -> bool:
     """Fits every candidate_of() on record, then -- if two or more pass --
     asks one preference question over the WHOLE passing set, not just
     whatever was newly fit (both cache-first, so an attempt that changed
     nothing costs nothing). Returns True when a verdict is pending in a
     batch. Raises KeyError when the judge backend is not registered at
-    all (an unavailable Assessor, distinct from an unavailable Source --
-    see the module docstring); the caller ends the attempt over it.
+    all, or TransportError when it is registered but unreachable (an
+    unavailable/unreachable Assessor, distinct from an unavailable
+    Source -- see the module docstring); the caller ends the attempt over
+    either.
     """
     shas = candidates_of(ctx.db, subject, "picture")
-    passing, is_pending = _fit_pictures(ctx, subject, shas, spend, start)
+    passing, is_pending = _fit_pictures(ctx, subject, shas, spend, tally)
     if is_pending:
         return True
     if len(passing) < 2:
         return False
-    return _prefer_pictures(ctx, subject, passing, spend, start)
+    return _prefer_pictures(ctx, subject, passing, spend, tally)
 
 
-def _picture_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outcome:
+def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     spend: dict[str, tuple[int, float]] = {}
+    tally = _Tally()
     before = current_best_of(ctx, need.subject, need.kind)
     try:
-        if _assess_all_candidates(ctx, need.subject, spend, start):
-            return Outcome(attempted=_attempted(spend), pending=True, improved=False, spend=spend)
-    except KeyError:
-        return Outcome(attempted=False, pending=False, improved=False, spend=spend)
+        if _assess_all_candidates(ctx, need.subject, spend, tally):
+            return Outcome(attempted=_attempted(spend), pending=True, improved=False, spend=spend,
+                           excluded=tally.excluded)
+    except KeyError:   # no "judge" backend registered at all
+        return Outcome(attempted=False, pending=False, improved=False, spend=spend,
+                       excluded=tally.excluded)
+    except TransportError:   # registered but unreachable -- the run stops on this
+        return Outcome(attempted=False, pending=False, improved=False, spend=spend,
+                       excluded=tally.excluded, unreachable=True)
     if current_best_of(ctx, need.subject, need.kind).rank > before.rank:
-        return Outcome(attempted=_attempted(spend), pending=False, improved=True, spend=spend)
+        return Outcome(attempted=_attempted(spend), pending=False, improved=True, spend=spend,
+                       excluded=tally.excluded)
 
     w = _word(ctx, need.subject)
     query = _phrase(ctx, need.subject) or (w.meaning if w and w.meaning else need.subject)
@@ -241,8 +327,9 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outc
         hits = ctx.provider.ask(source, Question(subject=need.subject, provides="picture",
                                                  params={"query": query}))
     except (TransportError, KeyError):
-        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
-    _add(spend, source, hits.cost, hit=hits.ts < start)
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend,
+                       excluded=tally.excluded)
+    _add(spend, source, hits.cost, hit=hits.hit)
 
     for item in [i for i in hits.items if isinstance(i, Mapping) and i.get("url")][:ctx.image_candidates]:
         url = item["url"]
@@ -251,7 +338,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outc
                                                         params={"url": url}))
         except (TransportError, KeyError):
             continue
-        _add(spend, "imgfetch", got.cost, hit=got.ts < start)
+        _add(spend, "imgfetch", got.cost, hit=got.hit)
         for fetched in got.items:
             sha, ext = fetched.get("sha"), fetched.get("ext", "jpg")
             if not sha:
@@ -261,16 +348,22 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outc
                              acquired=ctx.today())
 
     try:
-        if _assess_all_candidates(ctx, need.subject, spend, start):
-            return Outcome(attempted=_attempted(spend), pending=True, improved=False, spend=spend)
+        if _assess_all_candidates(ctx, need.subject, spend, tally):
+            return Outcome(attempted=_attempted(spend), pending=True, improved=False, spend=spend,
+                           excluded=tally.excluded)
     except KeyError:
-        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend,
+                       excluded=tally.excluded)
+    except TransportError:
+        return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend,
+                       excluded=tally.excluded, unreachable=True)
     after = current_best_of(ctx, need.subject, need.kind)
-    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
+    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank,
+                   spend=spend, excluded=tally.excluded)
 
 
 def _assess_recordings(ctx: Sourcing, subject: str, shas: Sequence[str], role: str,
-                       spend: dict[str, tuple[int, float]], start: int) -> None:
+                       spend: dict[str, tuple[int, float]]) -> None:
     """Mechanically assesses every sha for one subject, cache-first, via
     ask_many -- so a missing "mechanical" backend's KeyError surfaces even
     with zero shas (same pattern as _fit_pictures/_assess_all_candidates:
@@ -281,11 +374,11 @@ def _assess_recordings(ctx: Sourcing, subject: str, shas: Sequence[str], role: s
     questions = [AssessQuestion(subject=subject, role=role, artifact_sha=s) for s in shas]
     res = ctx.assessor.ask_many("mechanical", questions)
     for v in res.resolved.values():
-        _add(spend, "mechanical", v.cost, hit=v.ts < start)
+        _add(spend, "mechanical", v.cost, hit=v.hit)
 
 
 def _assess_members(ctx: Sourcing, members: Mapping[str, str],
-                    spend: dict[str, tuple[int, float]], start: int) -> dict[str, bool]:
+                    spend: dict[str, tuple[int, float]]) -> dict[str, bool]:
     """Mechanically assesses each pair member's own recording sha under
     the MEMBER's subject (never the pair id) -- so the member word's own
     "recording" current_best sees the verdict too (wiring._DbMediaIndex.
@@ -297,15 +390,15 @@ def _assess_members(ctx: Sourcing, members: Mapping[str, str],
     questions = {m: AssessQuestion(subject=m, role=role, artifact_sha=s) for m, s in members.items()}
     res = ctx.assessor.ask_many("mechanical", list(questions.values()))
     for v in res.resolved.values():
-        _add(spend, "mechanical", v.cost, hit=v.ts < start)
+        _add(spend, "mechanical", v.cost, hit=v.hit)
     return {m: bool(v.value) if (v := res.resolved.get(ctx.assessor.key_of("mechanical", q))) is not None else False
            for m, q in questions.items()}
 
 
 def _forvo_items(ctx: Sourcing, subject: str, thai: str,
-                 spend: dict[str, tuple[int, float]], start: int) -> list[Mapping]:
+                 spend: dict[str, tuple[int, float]]) -> list[Mapping]:
     ans = ctx.provider.ask("forvo", Question(subject=subject, provides="recording", params={"word": thai}))
-    _add(spend, "forvo", ans.cost, hit=ans.ts < start)
+    _add(spend, "forvo", ans.cost, hit=ans.hit)
     return [i for i in ans.items if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
 
 
@@ -325,7 +418,7 @@ def _store_recording(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin:
 
 
 def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
-                    spend: dict[str, tuple[int, float]], start: int) -> str | None:
+                    spend: dict[str, tuple[int, float]]) -> str | None:
     """A TransportError from audiofetch is a skip (this one url failed);
     a KeyError (no "audiofetch" backend registered) propagates to the
     caller's Source guard rather than being swallowed here.
@@ -337,13 +430,13 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
                                                               "speaker_kind": "native", "source": "forvo"}))
     except TransportError:
         return None
-    _add(spend, "audiofetch", got.cost, hit=got.ts < start)
+    _add(spend, "audiofetch", got.cost, hit=got.hit)
     return _store_recording(ctx, got, source="forvo", origin=url, licence="forvo",
                             speaker_id=f"forvo:{user}", speaker_kind="native")
 
 
 def _synthesize(ctx: Sourcing, subject: str, thai: str, voice: str | None,
-                spend: dict[str, tuple[int, float]], start: int) -> str | None:
+                spend: dict[str, tuple[int, float]]) -> str | None:
     """A TransportError from tts is a skip; a KeyError (no "tts" backend
     registered) propagates to the caller's Source guard.
     """
@@ -354,18 +447,18 @@ def _synthesize(ctx: Sourcing, subject: str, thai: str, voice: str | None,
         got = ctx.provider.ask("tts", Question(subject=subject, provides="recording", params=params))
     except TransportError:
         return None
-    _add(spend, "tts", got.cost, hit=got.ts < start)
+    _add(spend, "tts", got.cost, hit=got.hit)
     used_voice = got.items[0].get("voice") if got.items else None
     return _store_recording(ctx, got, source="tts", origin=str(used_voice or ""), licence="google-tts",
                             speaker_id=str(used_voice or "tts"), speaker_kind="synthetic")
 
 
-def _recording_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outcome:
+def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     spend: dict[str, tuple[int, float]] = {}
     role = ROLE_FOR_KIND["recording"]
     before = current_best_of(ctx, need.subject, "recording")
     try:
-        _assess_recordings(ctx, need.subject, candidates_of(ctx.db, need.subject, "recording"), role, spend, start)
+        _assess_recordings(ctx, need.subject, candidates_of(ctx.db, need.subject, "recording"), role, spend)
     except KeyError:
         return Outcome(attempted=False, pending=False, improved=False, spend=spend)
     if current_best_of(ctx, need.subject, "recording").rank > before.rank:
@@ -376,19 +469,22 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Ou
     new: list[str] = []
     try:
         if source == "forvo":
-            for item in _forvo_items(ctx, need.subject, thai, spend, start):
-                s = _download_forvo(ctx, need.subject, item, spend, start)
+            for item in _forvo_items(ctx, need.subject, thai, spend):
+                s = _download_forvo(ctx, need.subject, item, spend)
                 if s:
                     new.append(s)
         elif source == "tts":
-            s = _synthesize(ctx, need.subject, thai, None, spend, start)
+            # production draws from the configured (male) pool, spec 3
+            # section 5 -- never the backend's own unqualified default.
+            s = _synthesize(ctx, need.subject, thai,
+                            pick_voice(need.subject, list(ctx.tts_voices)), spend)
             if s:
                 new.append(s)
     except (TransportError, KeyError):
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
 
     try:
-        _assess_recordings(ctx, need.subject, new, role, spend, start)
+        _assess_recordings(ctx, need.subject, new, role, spend)
     except KeyError:
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
     after = current_best_of(ctx, need.subject, "recording")
@@ -416,7 +512,7 @@ def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
                   answer={"value": ok, "evidence": evidence})
 
 
-def _rendition_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Outcome:
+def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     spend: dict[str, tuple[int, float]] = {}
     pair = next((p for p in ctx.syllabus.pairs if p.id == need.subject), None)
     if pair is None:
@@ -431,29 +527,29 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str, start: int) -> Ou
     members: dict[str, str] = {}
     try:
         if source == "forvo":
-            items = {m: _forvo_items(ctx, m, words[m].thai, spend, start) for m in pair.members}
+            items = {m: _forvo_items(ctx, m, words[m].thai, spend) for m in pair.members}
             common = (set.intersection(*[{i["username"] for i in its} for its in items.values()])
                       if items else set())
             for user in sorted(common):
                 members = {}
                 for m in pair.members:
                     item = next(i for i in items[m] if i["username"] == user)
-                    s = _download_forvo(ctx, m, item, spend, start)
+                    s = _download_forvo(ctx, m, item, spend)
                     if s:
                         members[m] = s
                 if len(members) == len(pair.members):
-                    passed = _assess_members(ctx, members, spend, start)
+                    passed = _assess_members(ctx, members, spend)
                     _record_rendition(ctx, need.subject, members, passed, f"speaker forvo:{user}")
                     break
                 members = {}
         elif source == "tts":
             voice = pick_voice(need.subject, list(ctx.tts_voices))
             for m in pair.members:
-                s = _synthesize(ctx, m, words[m].thai, voice, spend, start)
+                s = _synthesize(ctx, m, words[m].thai, voice, spend)
                 if s:
                     members[m] = s
             if len(members) == len(pair.members):
-                passed = _assess_members(ctx, members, spend, start)
+                passed = _assess_members(ctx, members, spend)
                 _record_rendition(ctx, need.subject, members, passed, f"voice {voice}")
     except (TransportError, KeyError):
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
@@ -470,7 +566,7 @@ def attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     fn = _ATTEMPTS.get(need.kind)
     if fn is None:
         return Outcome(attempted=False, pending=False, improved=False, spend={})
-    return fn(ctx, need, source, time.time_ns())
+    return fn(ctx, need, source)
 
 
 # --- sentence attempt (spec 3 section 5): draft over open targets, verify
@@ -564,13 +660,16 @@ def _mechanical_fills(ctx: Sourcing, syl: Syllabus, targets_by_id: Mapping[str, 
 
 
 def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], model: str,
-                      spend: dict[str, tuple[int, float]], start: int) -> tuple[list[Sentence], bool]:
+                      spend: dict[str, tuple[int, float]], tally: _Tally
+                      ) -> tuple[list[Sentence], bool]:
     """fills() on every draft (recorded as a mechanical row regardless of
     outcome; see _mechanical_fills), then one judge question per draft
     that fills at least one currently-open target -- a draft that only
     fills already-covered targets is worthless to select_cover and costs
     no judge spend -- and adopts passes by greedy set cover over the
-    currently-open targets.
+    currently-open targets. An unreachable judge raises TransportError out
+    of _judge_many -- sentence_attempt ends over it, exactly as the other
+    attempts do (module docstring).
     """
     targets_by_id = {t.id: t for t in syl.targets}
     known = {_text_sha(s.text) for s in ctx.db.all_sentences()}
@@ -606,9 +705,9 @@ def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], mode
             params={"text": text, "word": syl.word(filled_open[0].word).thai})))
     if not candidates:
         return [], False
-    res = ctx.assessor.ask_many("judge", [q for _, q in candidates])
+    res = _judge_many(ctx, [q for _, q in candidates], tally)
     for v in res.resolved.values():
-        _add(spend, "judge", v.cost, hit=v.ts < start)
+        _add(spend, "judge", v.cost, hit=v.hit)
     passing: list[tuple[Sentence, list[Target]]] = []
     for (s, q), filled in zip(candidates, filled_by_candidate):
         v = res.resolved.get(ctx.assessor.key_of("judge", q))
@@ -642,29 +741,45 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> SentenceOutcome
     section 5). `ctx.syllabus` itself is never mutated -- a local working
     Syllabus tracks this run's own adoptions for gaps()/the prompt, and
     the run applies `with_sentences(out.adopted)` to make it durable.
+
+    A judge that is registered but unreachable ends the attempt the same
+    way the unregistered one does -- before the drafting ask when the
+    prior-draft pass discovers it, and adopting nothing (keeping whatever
+    the drafting ask already spent) when the post-drafting pass does.
     """
-    start = time.time_ns()
+    spend: dict[str, tuple[int, float]] = {}
+    tally = _Tally()
     try:
         ctx.assessor.ask_many("judge", [])
     except KeyError:
         return SentenceOutcome(drafted=0, adopted=(), pending=False, spend={})
-    spend: dict[str, tuple[int, float]] = {}
     model = ctx.judge_model
     syl = ctx.syllabus
-    adopted, pending = _verify_and_judge(ctx, syl, _prior_drafts(ctx), model, spend, start)
+    try:
+        adopted, pending = _verify_and_judge(ctx, syl, _prior_drafts(ctx), model, spend, tally)
+    except TransportError:
+        return SentenceOutcome(drafted=0, adopted=(), pending=False, spend=spend,
+                               excluded=tally.excluded, unreachable=True)
     if adopted:
         syl = syl.with_sentences(adopted)
     open_ids = set(syl.gaps().unfilled_targets[:max_targets])
     targets = [t for t in syl.targets if t.id in open_ids]
     if not targets:
-        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend)
+        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend,
+                               excluded=tally.excluded)
     try:
         ans = ctx.provider.ask("llm-sentence", Question(subject="run", provides="sentence",
                                                         params={"prompt": _sentence_prompt(syl, targets)}))
     except (TransportError, KeyError):
-        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend)
-    _add(spend, "llm-sentence", ans.cost, hit=ans.ts < start)
+        return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend,
+                               excluded=tally.excluded)
+    _add(spend, "llm-sentence", ans.cost, hit=ans.hit)
     drafts = [d for item in ans.items for d in _drafts_from(str(item))]
-    more, pending2 = _verify_and_judge(ctx, syl, drafts, model, spend, start)
+    try:
+        more, pending2 = _verify_and_judge(ctx, syl, drafts, model, spend, tally)
+    except TransportError:
+        return SentenceOutcome(drafted=len(drafts), adopted=tuple(adopted), pending=pending,
+                               spend=spend, excluded=tally.excluded, unreachable=True)
     adopted += more
-    return SentenceOutcome(drafted=len(drafts), adopted=tuple(adopted), pending=pending or pending2, spend=spend)
+    return SentenceOutcome(drafted=len(drafts), adopted=tuple(adopted), pending=pending or pending2,
+                           spend=spend, excluded=tally.excluded)

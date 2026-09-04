@@ -75,10 +75,13 @@ def secret_paths(tmp_path):
 
 @pytest.fixture
 def cfg(secret_paths):
+    # Both fetch paths set: load_providers_config refuses a file without
+    # them, so every config build_provider can actually be handed has both.
     return ProvidersConfig(
         secrets={name: str(path) for name, path in secret_paths.items()},
         search_proxy="https://proxy.example",
         imgfetch_path="curl",
+        audiofetch_path="curl",
     )
 
 
@@ -165,7 +168,8 @@ def test_search_proxy_reaches_openverse_and_wikimedia(cfg, db, media_store):
 
 def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths, monkeypatch):
     cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
-                          imgfetch_path="/opt/bin/imgfetch")
+                          imgfetch_path="/opt/bin/imgfetch",
+                          audiofetch_path="/opt/bin/audiofetch")
     provider = build_provider(cfg, db, media_store)
     calls = []
 
@@ -186,17 +190,12 @@ def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths,
     assert answer.items[0]["ext"] == "jpg"
 
 
-def test_audiofetch_is_unregistered_when_audiofetch_path_is_unset(cfg, db, media_store):
-    provider = build_provider(cfg, db, media_store)
-    assert "audiofetch" not in provider._backends
-
-
 def test_audiofetch_binary_comes_from_audiofetch_path(db, media_store, secret_paths):
     cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          imgfetch_path="/opt/bin/imgfetch",
                           audiofetch_path="/opt/bin/audiofetch")
     provider = build_provider(cfg, db, media_store)
     assert "audiofetch" in provider._backends
-    assert "imgfetch" not in provider._backends
 
 
 # --- build_provider: tts voice pools -------------------------------------
@@ -218,11 +217,45 @@ def test_llm_backends_registered_for_cli_transport(cfg, db, media_store):
     assert "llm-sentence" in provider._backends
 
 
-def test_no_llm_backends_registered_for_batch_transport(cfg, db, media_store):
-    from thai_syllabus.curated import JudgeConfig
-    cfg = ProvidersConfig(secrets=cfg.secrets, judge=JudgeConfig(transport="batch", model="m"))
-    provider = build_provider(cfg, db, media_store)
-    assert "llm-sentence" not in provider._backends
+def test_llm_backends_registered_for_a_batch_judge_with_an_anthropic_secret(
+        cfg, db, media_store, monkeypatch):
+    """A batch judge has no single-question transport, but sentence/phrase/
+    entry drafting still needs one -- it rides a lazy api transport on the
+    same anthropic secret, so a deck whose verdicts go through batches can
+    still draft sentences."""
+    cfg2 = ProvidersConfig(secrets=cfg.secrets,
+                           judge=JudgeConfig(transport="batch", model="m",
+                                             price_per_mtok=(2.0, 10.0)))
+    calls = _track_reads(monkeypatch)
+    backends = build_provider(cfg2, db, media_store)._backends
+    assert {"llm-sentence", "llm-phrase", "llm-entry"} <= set(backends)
+    assert calls == []                       # still lazy: no secret read to build the roster
+    transport = backends["llm-sentence"].transport
+    transport.complete  # a .complete-shaped lazy transport, not a batch one
+    assert not hasattr(transport, "submit")
+
+
+def test_no_llm_backends_registered_for_a_batch_judge_without_an_anthropic_secret(db, media_store):
+    cfg = ProvidersConfig(secrets={}, judge=JudgeConfig(transport="batch", model="m"))
+    assert "llm-sentence" not in build_provider(cfg, db, media_store)._backends
+
+
+def test_llm_backends_carry_the_judge_price_and_quota_cost(cfg, db, media_store):
+    """Spec 3 section 2's cost contract: llm drafting spends on the same
+    account and the same currency the judge does, so it is priced from the
+    same providers.yaml judge section."""
+    api = build_provider(ProvidersConfig(
+        secrets=cfg.secrets,
+        judge=JudgeConfig(transport="api", model="m", price_per_mtok=(2.0, 10.0))),
+        db, media_store)._backends
+    cli = build_provider(ProvidersConfig(
+        secrets=cfg.secrets, judge=JudgeConfig(transport="cli", model="m")),
+        db, media_store)._backends
+    for name in ("llm-sentence", "llm-phrase", "llm-entry"):
+        assert api[name].price == Price(2.0, 10.0)
+        assert api[name].quota_cost_per_call == 0.0
+        assert cli[name].price is None
+        assert cli[name].quota_cost_per_call == 1.0
 
 
 # --- build_assessor -------------------------------------------------------
@@ -266,11 +299,15 @@ def test_judge_backend_quota_cost_is_flat_for_cli_zero_otherwise(db, media_store
     cli_assessor = build_assessor(ProvidersConfig(secrets=secrets,
                                                   judge=JudgeConfig(transport="cli", model="m")),
                                   db, media_store)
-    api_assessor = build_assessor(ProvidersConfig(secrets=secrets,
-                                                  judge=JudgeConfig(transport="api", model="m")),
-                                  db, media_store)
+    # an api judge is never priceless -- load_providers_config refuses one
+    # without a price_per_mtok (spec 3 section 2's cost contract).
+    api_assessor = build_assessor(ProvidersConfig(
+        secrets=secrets,
+        judge=JudgeConfig(transport="api", model="m", price_per_mtok=(2.0, 10.0))),
+        db, media_store)
     assert cli_assessor._backends["judge"].quota_cost_per_call == 1.0
     assert api_assessor._backends["judge"].quota_cost_per_call == 0.0
+    assert api_assessor._backends["judge"].price == Price(2.0, 10.0)
 
 
 # --- build_provider: imgfetch/audiofetch as peer fetch backends -----------
@@ -280,14 +317,6 @@ def test_build_provider_registers_imgfetch_and_audiofetch_as_peers(db, media_sto
                           imgfetch_path="/opt/bin/imgfetch", audiofetch_path="/opt/bin/audiofetch")
     backends = build_provider(cfg, db, media_store)._backends
     assert type(backends["imgfetch"]) is type(backends["audiofetch"])
-
-
-def test_build_provider_omits_a_fetch_backend_without_a_path(cfg, db, media_store):
-    # `cfg` sets imgfetch_path but not audiofetch_path -- the omission is
-    # per-backend, not "no fetch backend was configured at all".
-    backends = build_provider(cfg, db, media_store)._backends
-    assert "imgfetch" in backends
-    assert "audiofetch" not in backends
 
 
 # --- default_budgets -----------------------------------------------------
@@ -578,7 +607,9 @@ def test_load_syllabus_applies_severity_overlay(tmp_path):
 
 def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
     root = _minimal_deck(tmp_path)
-    (root / "curated" / "providers.yaml").write_text("image_candidates: 2\n", encoding="utf-8")
+    (root / "curated" / "providers.yaml").write_text(
+        "image_candidates: 2\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
     ctx = build_sourcing(root)
     assert ctx.image_candidates == 2 and "picture-for-word" in ctx.rubrics
     assert ctx.provenance_prior == ("commission", "forvo", "tts")
@@ -592,3 +623,18 @@ def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
     root = _minimal_deck(tmp_path)
     ctx = build_sourcing(root)
     assert ctx.db is ctx.syllabus.assessments
+
+
+# --- the batch judge authenticates like the api one (C1) -------------------
+
+def test_batch_judge_transport_carries_the_anthropic_secret(cfg, db, media_store, monkeypatch):
+    cfg2 = ProvidersConfig(secrets=cfg.secrets,
+                           judge=JudgeConfig(transport="batch", model="m",
+                                             price_per_mtok=(2.0, 10.0)))
+    calls = _track_reads(monkeypatch)
+    judge = build_assessor(cfg2, db, media_store)._backends["judge"]
+    assert calls == []                      # still lazy: no secret read to build the roster
+    transport = judge.batch_transport._resolve()
+    assert transport.api_key == "anthropic-key"
+    assert transport.model == "m"
+    assert calls == ["anthropic"]

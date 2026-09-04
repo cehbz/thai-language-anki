@@ -248,8 +248,14 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
             # First row with this Thai form wins the join key; later rows
             # sharing it (homographs in the old data) still become their
             # own Word/Target below, they just can't be the join target
-            # for note-keyed rows sharing that Thai form.
+            # for note-keyed rows sharing that Thai form. Reported item by
+            # item as well as counted -- "no silent drops" means naming the
+            # row and the word its picture note went to instead, not just
+            # how many such rows there were.
             report.bump(report.curated, "homograph_rows")
+            report.drop("data/word_list_th.yaml", row["id"],
+                        f"homograph of {thai_to_word_id[row['thai']]}: "
+                        "the picture note joins to that word")
         else:
             thai_to_word_id[row["thai"]] = row["id"]
         good_rows.append(row)

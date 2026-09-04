@@ -246,6 +246,82 @@ def test_ask_batch_returns_cached_verdicts_without_touching_the_transport(db):
     assert bt.submitted is None  # never touched the transport
 
 
+# --- batch starvation: an ended/terminal batch must not wedge its subjects
+# forever -- a key with no successful result must drop out of the per-
+# subject `judge-batch-pending:{subject}` marker so derivations.pending()
+# stops reporting it forever-pending (it was never cached, so a later run
+# asks it again as a fresh question).
+
+def test_ask_batch_drops_an_errored_key_from_the_pending_marker_once_ended(db):
+    bt = _FakeBatchTransport()
+    backend = JudgeBackend(model="m", transport="batch", batch_transport=bt)
+    assessor = Assessor(record=db, cache=db, backends={"judge": backend})
+    q_ok = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="a1", rubric="r")
+    q_bad = AssessQuestion(subject="w", role="picture-preference", artifact_sha="a2", rubric="r")
+    k_ok, k_bad = backend.cache_key(q_ok), backend.cache_key(q_bad)
+
+    with pytest.raises(BatchPending):
+        assessor.ask_batch("judge", [q_ok, q_bad])
+
+    bt._status = "ended"
+    # q_bad's result errored/canceled/expired -- results() omits it, exactly
+    # as ClaudeBatchTransport.results does for a non-succeeded result.
+    bt._results = {"q" + sha(k_ok): Completion(text='{"value": true, "evidence": "good"}')}
+
+    with pytest.raises(BatchPending) as exc:
+        assessor.ask_batch("judge", [q_ok, q_bad])
+    assert exc.value.resolved[k_ok].value is True
+    assert exc.value.pending_keys == [k_bad]
+
+    marker = db.latest("assess", "judge", "judge-batch-pending:w")
+    assert marker is not None
+    assert marker.question["keys"] == [k_ok]  # the errored key is absent
+    assert marker.answer["abandoned"] == [k_bad]
+
+    from thai_syllabus.derivations import pending as derive_pending
+    assert derive_pending(db, "w", "picture") is False
+
+
+def test_ask_batch_treats_a_non_ended_terminal_status_as_all_abandoned_and_logs(db, caplog):
+    class BT:
+        def __init__(self):
+            self.batch_id = "batch-expired"
+            self.status_calls = 0
+
+        def submit(self, requests):
+            return self.batch_id
+
+        def status(self, batch_id):
+            self.status_calls += 1
+            return "expired"
+
+        def results(self, batch_id):
+            raise AssertionError("results() must not be called for a non-ended status")
+
+    bt = BT()
+    backend = JudgeBackend(model="m", transport="batch", batch_transport=bt)
+    assessor = Assessor(record=db, cache=db, backends={"judge": backend})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="a1", rubric="r")
+    k = backend.cache_key(q)
+
+    with pytest.raises(BatchPending):
+        assessor.ask_batch("judge", [q])  # submits, does not check status yet
+
+    with caplog.at_level("WARNING", logger="thai_syllabus.assessor"):
+        with pytest.raises(BatchPending) as exc:
+            assessor.ask_batch("judge", [q])
+    assert exc.value.pending_keys == [k]
+    assert bt.status_calls == 1
+    assert "expired" in caplog.text.lower()
+
+    marker = db.latest("assess", "judge", "judge-batch-pending:w")
+    assert marker.question["keys"] == []
+    assert marker.answer["abandoned"] == [k]
+
+    from thai_syllabus.derivations import pending as derive_pending
+    assert derive_pending(db, "w", "picture") is False
+
+
 # --- mechanical: duration/format checks ---------------------------------
 
 def test_duration_mechanical_key_is_parameter_explicit():
@@ -472,6 +548,7 @@ def test_ask_many_batch_excludes_a_question_whose_sha_cannot_be_resolved(db, tmp
     assert db.latest("assess", "judge", "judge-batch-pending:w2") is None  # excluded, no marker
     assert res.resolved == {}
     assert res.pending == [jb.cache_key(q_ok)]
+    assert res.excluded == [jb.cache_key(q_bad)]  # reported, not silently absent
 
 
 # --- two controller-decided additions: key_of, two-parameter parse_response
@@ -567,3 +644,110 @@ def test_default_dispatch_builds_the_preference_prompt_and_parses_the_ranking():
     raw = jb.fetch(q)
     assert prompts[0] == picture_preference_prompt(q)
     assert raw.value == ["a", "b"]
+
+
+# --- hit/miss is the port's answer, not the caller's timestamp guess ------
+
+def test_a_miss_is_not_a_hit_and_the_re_read_is(db):
+    backend = _FakeBackend(value=True, cost=0.002)
+    assessor = Assessor(record=db, cache=db, backends={"judge": backend})
+    q = AssessQuestion(subject="s1", role="picture-for-word")
+    assert assessor.ask("judge", q).hit is False
+    assert assessor.ask("judge", q).hit is True
+
+
+def test_ask_many_marks_cached_verdicts_as_hits(db):
+    backend = _FakeBackend(value=True)
+    assessor = Assessor(record=db, cache=db, backends={"judge": backend})
+    q = AssessQuestion(subject="s1", role="picture-for-word")
+    first = assessor.ask_many("judge", [q])
+    second = assessor.ask_many("judge", [q])
+    assert [v.hit for v in first.resolved.values()] == [False]
+    assert [v.hit for v in second.resolved.values()] == [True]
+
+
+def test_ask_batch_marks_cached_verdicts_as_hits(db):
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=object())
+    assessor = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="s1", role="picture-for-word", artifact_sha="a", rubric="r")
+    db.append(port="assess", backend="judge", key=jb.cache_key(q), subject="s1",
+              question={"role": q.role, "artifact_sha": "a", "rubric": "r"},
+              answer={"value": True})
+    resolved = assessor.ask_batch("judge", [q])
+    assert [v.hit for v in resolved.values()] == [True]
+
+
+# --- a swallowed per-question transport error is logged, with its key ------
+
+def test_ask_many_logs_a_warning_naming_the_dropped_question_key(db, caplog):
+    import logging
+
+    def complete(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.assessor"):
+        res = a.ask_many("judge", [q])
+    assert res.resolved == {} and res.pending == []
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings and jb.cache_key(q) in warnings[0].getMessage()
+
+
+# --- excluded: a question the backend cannot PREPARE is not a dead wire ----
+
+def test_ask_many_inline_excludes_a_question_whose_sha_cannot_be_resolved(db, tmp_path):
+    """An artifact sha that resolves to no file is a question the judge
+    cannot prepare -- reported in `excluded`, distinct from a wire that
+    will not answer, so a caller can tell "this candidate is unusable"
+    from "the judge is unreachable"."""
+    img = tmp_path / "ok.jpg"
+    img.write_bytes(b"x")
+    calls = []
+
+    def complete(prompt, attachments=()):
+        calls.append(prompt)
+        return Completion(text='{"value": true}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete,
+                      resolve_path=lambda s: img if s == "ok" else None)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q_ok = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="ok", rubric="r")
+    q_bad = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="gone", rubric="r")
+
+    res = a.ask_many("judge", [q_ok, q_bad])
+
+    assert set(res.resolved) == {jb.cache_key(q_ok)}
+    assert res.excluded == [jb.cache_key(q_bad)]
+    assert len(calls) == 1        # the unpreparable question never reached the wire
+
+
+def test_ask_many_inline_does_not_call_a_wire_failure_an_exclusion(db):
+    """A transport that will not answer is not an unpreparable question:
+    `excluded` stays empty, which is how a caller recognises a dead wire."""
+    def complete(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    res = a.ask_many("judge", [q])
+    assert res.resolved == {} and res.pending == [] and res.excluded == []
+
+
+def test_ask_many_never_re_prepares_a_cached_verdict(db):
+    """A cached verdict needs no preparation -- a candidate whose file has
+    since vanished must still read its verdict back, not be excluded."""
+    def resolve(sha):
+        raise AssertionError("preparation must not run for a cache hit")
+
+    jb = JudgeBackend(model="m", transport="api", resolve_path=resolve,
+                      complete=lambda p, a=(): Completion(text="true"))
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    db.append(port="assess", backend="judge", key=jb.cache_key(q), subject="w",
+              question={"role": q.role, "artifact_sha": "s1", "rubric": "r"},
+              answer={"value": True})
+    res = a.ask_many("judge", [q])
+    assert [v.value for v in res.resolved.values()] == [True] and res.excluded == []

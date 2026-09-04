@@ -197,3 +197,53 @@ def test_spend_exceeds_checks_asks_and_cost():
     assert not Spend(asks=4).exceeds(Budget(max_asks=5))
     assert Spend(cost=1.0).exceeds(Budget(max_cost=1.0))
     assert not Spend(cost=0.5).exceeds(Budget(max_cost=1.0))
+
+
+# --- the report counts what went wrong ------------------------------------
+
+def test_run_stops_at_the_first_unreachable_attempt(db, monkeypatch):
+    """An unreachable judge is a dead wire, not a per-need failure: every
+    remaining need would fail the same way. The run stops and says so
+    instead of grinding through the whole queue in silence."""
+    calls = _patch(monkeypatch, {
+        ("a", "openverse"): Outcome(False, False, False, {}, unreachable=True)})
+    r = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert [n.subject for n, _ in calls] == ["a"]   # no escalation, no second need
+    assert r.unreachable is True
+    assert r.available == 2                          # both needs still to do
+    row = db.latest("run", "runreport", "runreport")
+    assert row.answer["unreachable"] is True
+
+
+def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
+    _patch(monkeypatch, {
+        ("a", "openverse"): Outcome(True, False, True, {}, excluded=1),
+        ("b", "openverse"): Outcome(True, False, True, {}, excluded=2)},
+        sentence=SentenceOutcome(0, (), False, {}, excluded=3))
+    r = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert r.excluded == 6
+    assert db.latest("run", "runreport", "runreport").answer["excluded"] == 6
+
+
+def test_a_run_with_nothing_wrong_reports_zero_excluded_and_reachable(db, monkeypatch):
+    _patch(monkeypatch, {})
+    r = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert r.excluded == 0 and r.unreachable is False
+
+
+def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
+    calls = _patch(monkeypatch, {},
+                   sentence=SentenceOutcome(0, (), False, {}, unreachable=True))
+    r = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert calls == []                               # no need attempted at all
+    assert r.unreachable is True
+
+
+def test_available_excludes_the_sentence_entries_the_loop_skips(db, monkeypatch):
+    """Sentence needs are handled once per run by sentence_attempt, so the
+    per-need loop skips them -- counting them as "available" reported work
+    still to do that this run had already done."""
+    calls = _patch(monkeypatch, {}, sentence=SentenceOutcome(0, (), False, {}))
+    r = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2"), graphemes=("g1",)))), {})
+    assert calls == []                      # no per-subject attempt for either kind
+    assert r.available == 1                 # the grapheme need only

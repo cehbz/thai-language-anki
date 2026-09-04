@@ -147,8 +147,8 @@ class ClaudeApiTransport:
         return anthropic.Anthropic(api_key=self.api_key)
 
     def complete(self, prompt: str, attachments: Sequence[Path] = ()) -> Completion:
-        client = self._client()
         try:
+            client = self._client()
             response = client.messages.create(
                 model=self.model, max_tokens=self.max_tokens,
                 messages=[{"role": "user", "content": _content(prompt, attachments)}])
@@ -166,8 +166,14 @@ class ClaudeBatchTransport:
     -- create/retrieve/results). Submission and polling are separate calls
     so callers can persist the batch id between them (spec 3: "Batch
     resume state is a cache row ... not a sidecar file").
+
+    `api_key` authenticates the same way ClaudeApiTransport's does: set, it
+    is passed to the SDK client; empty, the SDK falls back to its own
+    default resolution. Without it a wired batch judge reached the SDK
+    unauthenticated and every submission failed.
     """
     model: str
+    api_key: str = ""
     max_tokens: int = 4096
     client_factory: Callable[[], Any] | None = None
 
@@ -175,12 +181,14 @@ class ClaudeBatchTransport:
         if self.client_factory is not None:
             return self.client_factory()
         anthropic = _import_anthropic()
+        if self.api_key:
+            return anthropic.Anthropic(api_key=self.api_key)
         return anthropic.Anthropic()
 
     def submit(self, requests: Mapping[str, tuple[str, Sequence[Path]]]) -> str:
         """requests: custom_id -> (prompt, attachments). Returns the batch id."""
-        client = self._client()
         try:
+            client = self._client()
             batch = client.messages.batches.create(requests=[
                 {"custom_id": custom_id,
                  "params": {"model": self.model, "max_tokens": self.max_tokens,
@@ -193,8 +201,8 @@ class ClaudeBatchTransport:
 
     def status(self, batch_id: str) -> str:
         """"in_progress" | "ended" (anthropic's processing_status values)."""
-        client = self._client()
         try:
+            client = self._client()
             batch = client.messages.batches.retrieve(batch_id)
         except Exception as e:  # noqa: BLE001
             raise TransportError(f"batch status check failed: {e}") from e
@@ -205,8 +213,8 @@ class ClaudeBatchTransport:
         (errored/canceled/expired) -- callers decide how to treat those
         (typically: leave the subject queued, do not cache a miss).
         """
-        client = self._client()
         try:
+            client = self._client()
             out: dict[str, Completion | None] = {}
             for result in client.messages.batches.results(batch_id):
                 completion = None

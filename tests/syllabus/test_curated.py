@@ -302,6 +302,23 @@ def test_rulebook_file_text_is_empty_when_the_file_is_absent(tmp_path):
 
 
 # --- providers.yaml (spec 3 section 5) --------------------------------------
+#
+# A LOADED providers.yaml must describe a run that can actually happen
+# (fail fast and noisy): both mediafetch paths are required -- pictures and
+# recordings are always in scope -- and there must be some single-question
+# transport for sentence drafting. The ProvidersConfig dataclass itself
+# stays permissive (a bare ProvidersConfig() is still constructible, and
+# an ABSENT file still yields those defaults); only the loader refuses.
+
+def _providers(**overrides) -> dict:
+    """The minimum providers.yaml the loader accepts, plus overrides --
+    so a test about one field doesn't trip over the others."""
+    base = {"imgfetch_path": "/opt/bin/imgfetch",
+            "audiofetch_path": "/opt/bin/audiofetch",
+            "judge": {"transport": "cli", "model": "m"}}
+    base.update(overrides)
+    return base
+
 
 def test_providers_config_defaults_ship_the_tts_voice_pools(tmp_path):
     from thai_syllabus.tts import FEMALE_VOICES, MALE_VOICES
@@ -316,7 +333,8 @@ def test_providers_config_defaults_ship_the_tts_voice_pools(tmp_path):
 def test_providers_config_round_trip(tmp_path):
     path = tmp_path / "providers.yaml"
     config = curated.ProvidersConfig(
-        secrets={"forvo": "op://Shared/Forvo/API Key", "google_tts": "~/.secrets/tts"},
+        secrets={"forvo": "op://Shared/Forvo/API Key", "google_tts": "~/.secrets/tts",
+                 "anthropic": "op://Shared/Anthropic/API Key"},
         search_proxy="https://proxy.example", imgfetch_path="/usr/bin/curl",
         audiofetch_path="/usr/bin/wget",
         tts_male_voices=("v1",), tts_female_voices=("v2",),
@@ -333,6 +351,9 @@ def test_providers_config_round_trip(tmp_path):
 def test_providers_judge_price_and_image_candidates_round_trip(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(textwrap.dedent("""
+        imgfetch_path: /opt/bin/imgfetch
+        audiofetch_path: /opt/bin/audiofetch
+        secrets: {anthropic: op://Shared/Anthropic/API Key}
         judge: {transport: batch, model: claude-sonnet-5, price_per_mtok: {input: 2.0, output: 10.0}}
         image_candidates: 3
     """), encoding="utf-8")
@@ -348,9 +369,14 @@ def test_providers_defaults_when_absent():
 
 
 def test_providers_config_defaults_round_trip(tmp_path):
+    """Everything except the two required paths left at its default still
+    round-trips exactly (the loader refuses a file with no fetch paths, so
+    the minimum acceptable config is the default plus those)."""
     path = tmp_path / "providers.yaml"
-    curated.save_providers_config(path, curated.ProvidersConfig())
-    assert curated.load_providers_config(path) == curated.ProvidersConfig()
+    minimal = curated.ProvidersConfig(imgfetch_path="/opt/bin/imgfetch",
+                                      audiofetch_path="/opt/bin/audiofetch")
+    curated.save_providers_config(path, minimal)
+    assert curated.load_providers_config(path) == minimal
 
 
 def test_providers_judge_price_rejects_a_missing_output(tmp_path):
@@ -414,7 +440,8 @@ def test_providers_config_secrets_resolve_via_secret_store(tmp_path):
     key_file.chmod(0o600)
     path = tmp_path / "providers.yaml"
     curated.save_providers_config(path, curated.ProvidersConfig(
-        secrets={"forvo": str(key_file)}))
+        secrets={"forvo": str(key_file)}, imgfetch_path="/opt/bin/imgfetch",
+        audiofetch_path="/opt/bin/audiofetch"))
     config = curated.load_providers_config(path)
     store = config.secret_store()
     assert store.get("forvo") == "s3cret"
@@ -441,3 +468,104 @@ def test_load_curated_bundle_collects_cross_file_errors(tmp_path):
     with pytest.raises(curated.CuratedValidationError) as exc:
         curated.load_curated(tmp_path)
     assert any("does-not-exist" in e for e in exc.value.errors)
+
+
+def test_providers_judge_api_transport_requires_a_price(tmp_path):
+    """Spec 3 section 2's cost contract: an api/batch judge spends cash, so
+    it cannot be configured without the price that measures it -- a missing
+    price silently costed every verdict at zero."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"judge": {"transport": "api", "model": "m"}}))
+    with pytest.raises(curated.CuratedValidationError, match="judge.price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_batch_transport_requires_a_price(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"judge": {"transport": "batch", "model": "m"}}))
+    with pytest.raises(curated.CuratedValidationError, match="judge.price_per_mtok"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_cli_transport_needs_no_price(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "model": "m"})))
+    assert curated.load_providers_config(path).judge.price_per_mtok is None
+
+
+def test_providers_tts_cost_per_char_round_trips(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(textwrap.dedent("""
+        imgfetch_path: /opt/bin/imgfetch
+        audiofetch_path: /opt/bin/audiofetch
+        tts: {male_voices: [m1], female_voices: [f1], cost_per_char: 1.6e-05}
+    """), encoding="utf-8")
+    cfg = curated.load_providers_config(path)
+    assert cfg.tts_cost_per_char == pytest.approx(1.6e-05)
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_tts_cost_per_char_defaults_to_zero(tmp_path):
+    assert curated.load_providers_config(tmp_path / "nope.yaml").tts_cost_per_char == 0.0
+
+
+def test_providers_tts_cost_per_char_rejects_a_non_number(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(tts={"cost_per_char": "cheap"})))
+    with pytest.raises(curated.CuratedValidationError, match="cost_per_char"):
+        curated.load_providers_config(path)
+
+
+# --- the loader refuses what the run cannot do -----------------------------
+
+def test_providers_requires_an_imgfetch_path(tmp_path):
+    """Pictures are always in scope: without imgfetch_path every image the
+    search backends find is unfetchable, and the run would quietly source
+    no pictures at all."""
+    path = tmp_path / "providers.yaml"
+    cfg = _providers()
+    del cfg["imgfetch_path"]
+    path.write_text(yaml.safe_dump(cfg))
+    with pytest.raises(curated.CuratedValidationError, match="imgfetch_path"):
+        curated.load_providers_config(path)
+
+
+def test_providers_requires_an_audiofetch_path(tmp_path):
+    """Recordings are always in scope: without audiofetch_path no Forvo
+    recording can ever be downloaded."""
+    path = tmp_path / "providers.yaml"
+    cfg = _providers()
+    del cfg["audiofetch_path"]
+    path.write_text(yaml.safe_dump(cfg))
+    with pytest.raises(curated.CuratedValidationError, match="audiofetch_path"):
+        curated.load_providers_config(path)
+
+
+def test_providers_requires_a_single_question_transport_for_drafting(tmp_path):
+    """Sentence drafting is a single-question ask. Under an api/batch judge
+    that means the anthropic secret -- without it wiring registers no llm-*
+    backend and every target stays silently unfilled."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        judge={"transport": "batch", "model": "m",
+               "price_per_mtok": {"input": 2.0, "output": 10.0}})))
+    with pytest.raises(curated.CuratedValidationError, match="secrets.anthropic"):
+        curated.load_providers_config(path)
+
+
+def test_providers_api_judge_with_an_anthropic_secret_is_accepted(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        secrets={"anthropic": "op://Shared/Anthropic/key"},
+        judge={"transport": "api", "model": "m",
+               "price_per_mtok": {"input": 2.0, "output": 10.0}})))
+    assert curated.load_providers_config(path).judge.transport == "api"
+
+
+def test_providers_cli_judge_needs_no_anthropic_secret(tmp_path):
+    """The cli transport IS the single-question transport -- it shells out
+    to the Claude CLI's own session, no api key involved."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers()))
+    assert curated.load_providers_config(path).judge.transport == "cli"

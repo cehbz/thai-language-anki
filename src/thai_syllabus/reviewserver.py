@@ -84,6 +84,7 @@ from typing import Any
 
 from .curated import load_curated
 from .derivations import LEARNER_RANK, current_best, exhausted, queue
+from .derivations import stale as _stale
 from .entities import Target
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
@@ -130,7 +131,11 @@ def _role(kind: str) -> str:
 def _matches_kind(question: Mapping, kind: str) -> bool:
     provides = question.get("provides")
     if provides is not None:
-        return provides == kind
+        # Both shapes, exactly as derivations._matches_kind: "picture" is
+        # the search hits, "picture-bytes" the fetched artifact -- and the
+        # -bytes row is the only one carrying a sha, so matching the bare
+        # kind alone left every candidate list and thumbnail strip empty.
+        return provides in (kind, f"{kind}-bytes")
     role = question.get("role")
     if role is not None:
         return role == kind or role.startswith(kind + "-")
@@ -207,11 +212,17 @@ def _candidate_shas(rows: Sequence[Answer], *, exclude: str | None = None) -> li
     return shas
 
 
-def _latest_query(rows: Sequence[Answer]) -> str | None:
-    provide_rows = [r for r in rows if r.port == "provide"]
-    if not provide_rows:
+def _latest_query(rows: Sequence[Answer], kind: str) -> str | None:
+    """The phrase the newest SOURCE ask searched for -- the bare-kind row.
+    The `-bytes` fetch rows an ask causes are written after it and carry
+    only the url they fetched, so reading the newest provide row of any
+    shape showed the learner a candidate's url instead of the query.
+    """
+    asks = [r for r in rows if r.port == "provide"
+           and r.question.get("provides") == kind]
+    if not asks:
         return None
-    latest = max(provide_rows, key=lambda r: r.ts)
+    latest = max(asks, key=lambda r: r.ts)
     params = latest.question.get("params", {}) or {}
     return params.get("query") or params.get("url") or params.get("text")
 
@@ -220,9 +231,14 @@ def _judge_verdict_line(rows: Sequence[Answer], artifact_sha: str | None,
                         current_rubric: str | Mapping[str, str] | None) -> str | None:
     if not artifact_sha:
         return None
+    # derivations.stale (not a plain `== current_rubric`) so a role ->
+    # rubric mapping is honored the same way current_best/exhausted honor
+    # it -- comparing a str-or-Mapping directly against `rubric` always
+    # returns True/"not equal" for a mapping, which hid every verdict
+    # line whenever a caller passed the mapping form.
     matches = [r for r in rows if r.port == "assess" and r.backend == "judge"
               and r.question.get("artifact_sha") == artifact_sha
-              and (current_rubric is None or r.question.get("rubric") == current_rubric)]
+              and not _stale(r, current_rubric)]
     if not matches:
         return None
     latest = max(matches, key=lambda r: r.ts)
@@ -251,7 +267,7 @@ def _rate_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: s
     rejected = [_artifact(s) for s in _candidate_shas(rows, exclude=best.artifact_sha)]
     return {
         "type": "rate", "subject": subject, "kind": kind, "role": _role(kind),
-        "gloss": _gloss_for(syllabus, subject, kind), "query": _latest_query(rows),
+        "gloss": _gloss_for(syllabus, subject, kind), "query": _latest_query(rows, kind),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
     }
@@ -766,15 +782,28 @@ def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_
                  ) -> ReviewContext:
     """Wire a ReviewContext from a real deck directory (spec 2 section 1
     layout): curated/*.yaml + syllabus.db + media/.
+
+    The Syllabus comes from wiring.load_syllabus -- the SAME assembly the
+    run and the compiler use -- not a bare inline Syllabus. An inline one
+    had no media index, no sentences, no frequency map and no rulebook
+    overlay, so the review screen showed gaps the run had already closed
+    (every word "missing a picture", however many pictures were on record)
+    and scored against unoverlaid rules. `db`/`bundle` are opened here and
+    injected so ReviewContext.cache/record and the Syllabus's own
+    AssessmentReader/MediaIndex are one connection.
+
+    wiring is imported lazily, inside the function: reviewserver is on the
+    import path of cli.py and wiring is a heavier module that (unlike this
+    one) reaches for provider/assessor/transport -- a module-level import
+    would be a cycle the day wiring wants anything from here.
     """
+    from .wiring import load_syllabus
+
     deck_dir = Path(deck_dir)
     bundle = load_curated(deck_dir / "curated")
     db = SyllabusDb(deck_dir / "syllabus.db")
-    db.set_pair_confusions({p.id: p.confusion for p in bundle.pairs})
     media_store = MediaStore(deck_dir / "media")
-    syllabus = Syllabus(words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
-                        graphemes=bundle.graphemes, confusions=bundle.confusions,
-                        profile=bundle.profile, assessments=db)
+    syllabus = load_syllabus(deck_dir, db=db, bundle=bundle)
     return ReviewContext(syllabus=syllabus, cache=db, record=db, media_store=media_store,
                          study=db, learner_budget=learner_budget)
 

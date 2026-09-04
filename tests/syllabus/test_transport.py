@@ -326,3 +326,36 @@ def test_batch_transport_submits_attachments_and_returns_completions(tmp_path):
     assert req_a["params"]["messages"][0]["content"][0]["type"] == "image"
     out = t.results(bid)
     assert out["a"] == Completion(text="A", input_tokens=7, output_tokens=2)
+
+
+# --- a client that cannot be constructed is a TransportError, not a crash ---
+# (`client = self._client()` sits INSIDE each method's try, so an SDK
+# construction failure -- a bad key, a missing package -- reaches the caller
+# as a TransportError and is never cached.)
+
+def _boom():
+    raise RuntimeError("no credentials")
+
+
+def test_api_transport_client_construction_failure_is_a_transport_error():
+    t = ClaudeApiTransport(api_key="k", model="m", client_factory=_boom)
+    with pytest.raises(TransportError, match="no credentials"):
+        t.complete("prompt")
+
+
+@pytest.mark.parametrize("call", [
+    lambda t: t.submit({"c1": ("p", ())}),
+    lambda t: t.status("batch_123"),
+    lambda t: t.results("batch_123"),
+])
+def test_batch_transport_client_construction_failure_is_a_transport_error(call):
+    t = ClaudeBatchTransport(model="m", client_factory=_boom)
+    with pytest.raises(TransportError, match="no credentials"):
+        call(t)
+
+
+# --- the batch transport authenticates like the api one --------------------
+
+def test_batch_transport_carries_an_api_key():
+    assert ClaudeBatchTransport(model="m", api_key="sk-test").api_key == "sk-test"
+    assert ClaudeBatchTransport(model="m").api_key == ""

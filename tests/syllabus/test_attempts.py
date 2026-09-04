@@ -1,6 +1,7 @@
 """attempts.py: assess-first, then one Source; every candidate judged; current-best re-derived.
 Real SyllabusDb + MediaStore; fake Provider/Assessor backends; no network."""
 import dataclasses
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -638,3 +639,162 @@ def test_sentence_attempt_adopts_on_a_later_run_once_a_batch_verdict_lands(ctx):
     assert [s.text for s in out2.adopted] == ["กินส้ม"]
     assert len(c.provider._backends["llm-sentence"].prompts) == 1  # no re-draft
     assert out2.spend.get("judge", (0, 0.0))[0] == 0  # the arrived verdict was a cache hit, not a real ask
+
+
+# --- C1: an UNREACHABLE judge ends the attempt, like an unavailable one ----
+#
+# Distinct from "no judge backend registered" (KeyError, above): the backend
+# IS registered, but its transport cannot answer. Either shape -- ask_many
+# raising TransportError (the batch branch's submit), or ask_many swallowing
+# a per-question TransportError and returning nothing resolved and nothing
+# pending (the inline branch) -- means nothing can be judged, so the attempt
+# must end before any Source spend rather than searching for candidates no
+# one can assess.
+
+def _seed_unjudged_candidate(c, payload=b"good-old"):
+    """One candidate on record and unjudged, so the pre-search assess step
+    has a real question to ask (with no candidates at all the judge is
+    never contacted before the search)."""
+    sha = c.media_store.write(payload, "jpg")
+    c.db.add_media(sha=sha, kind="picture", ext="jpg", source="legacy", origin="", licence="?",
+                   acquired=date(2026, 1, 1))
+    c.db.append(port="assess", backend="machine-chosen", key=f"machine-chosen:orange:{sha}",
+                subject="orange", question={"note_id": "pw-1", "word": "ส้ม"},
+                answer={"marker": "machine-chosen", "sha": sha})
+    return sha
+
+
+def test_unreachable_inline_judge_ends_the_picture_attempt_before_any_search(ctx, caplog):
+    c, search, _judge = ctx
+    _seed_unjudged_candidate(c)
+
+    def boom(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+    c.assessor._backends["judge"].complete = boom
+
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        out = attempt(c, Need("orange", "picture"), "openverse")
+    assert search.calls == 0
+    assert out == Outcome(False, False, False, {}, excluded=0, unreachable=True)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_unreachable_batch_judge_ends_the_picture_attempt_before_any_search(ctx, caplog):
+    c, search, _judge = ctx
+    _seed_unjudged_candidate(c)
+
+    class BT:
+        def submit(self, requests):
+            raise TransportError("batch submit failed: 401")
+    c.assessor = Assessor(record=c.db, cache=c.db, backends={
+        "judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
+
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        out = attempt(c, Need("orange", "picture"), "openverse")
+    assert search.calls == 0
+    assert out == Outcome(False, False, False, {}, excluded=0, unreachable=True)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_unreachable_judge_ends_the_sentence_attempt_before_any_draft(ctx, caplog):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
+    # a prior-run draft, so the pre-draft judge step has a real question
+    c.db.append(port="provide", backend="llm-sentence", key="prior", subject="run",
+                question={"provides": "sentence", "params": {"prompt": "prior"}},
+                answer={"items": ['{"sentences": [{"text": "กินส้ม", '
+                                  '"targets": ["orange/receptive"]}]}']})
+
+    def boom(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+    c.assessor._backends["judge"].complete = boom
+
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        out = sentence_attempt(c)
+    assert out == SentenceOutcome(0, (), False, {}, excluded=0, unreachable=True)
+    assert c.provider._backends["llm-sentence"].prompts == []   # no LLM ask
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_unreachable_judge_after_drafting_adopts_nothing(ctx):
+    c, _search, _judge = ctx
+    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
+
+    def boom(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+    c.assessor._backends["judge"].complete = boom
+
+    out = sentence_attempt(c)
+    assert out.adopted == () and c.db.all_sentences() == []
+    assert out.unreachable is True
+
+
+# --- I3: hit/miss comes from the port, not a timestamp comparison ----------
+
+def test_a_verdict_re_read_after_the_search_counts_as_one_ask(ctx):
+    """The pre-search assess step asks a real fit verdict; the post-search
+    step re-reads the same verdict from the cache. Spend must count it
+    once -- a timestamp comparison against the attempt's start counted
+    every verdict this attempt itself wrote as a fresh ask each time it
+    was read back."""
+    c, search, judge = ctx
+    _seed_unjudged_candidate(c, b"bad-old")   # fails fit, so the attempt goes on to search
+    out = attempt(c, Need("orange", "picture"), "openverse")
+    assert search.calls == 1
+    # 1 pre-search fit (the seeded candidate) + 3 post-search fits + 1
+    # preference over the two passers = 5 real asks, and the judge fake
+    # counted exactly that many `complete` calls.
+    assert out.spend["judge"][0] == len(judge.calls) == 5
+
+
+# --- I5: the tts recording attempt draws from the configured voice pool ----
+
+def test_tts_recording_attempt_draws_a_pooled_voice(ctx):
+    c, _search, _judge = ctx
+    c = _recording_ctx(c, {})
+    c.tts_voices = ("th-M-a", "th-M-b")
+    attempt(c, Need("orange", "recording"), "tts")
+    from thai_syllabus.attempts import current_best_of
+    from thai_syllabus.tts import pick_voice
+    prov = c.db.media_provenance(current_best_of(c, "orange", "recording").artifact_sha)
+    assert prov["speaker_id"] == pick_voice("orange", list(c.tts_voices))
+    assert prov["speaker_id"] in c.tts_voices
+
+
+def test_a_candidate_the_judge_cannot_prepare_is_skipped_and_the_attempt_continues(ctx, caplog):
+    """A candidate with a media row but no file on disk is a question the
+    judge cannot PREPARE -- not an unreachable judge. The candidate is
+    unusable, so it is named at WARNING and skipped, and the attempt goes
+    on to search rather than ending before any Source ask (which would
+    wedge the subject: the stale row is still there on every later run).
+    """
+    c, search, _judge = ctx
+    c.db.add_media(sha="ghost", kind="picture", ext="jpg", source="legacy", origin="",
+                   licence="?", acquired=date(2026, 1, 1))
+    c.db.append(port="assess", backend="machine-chosen", key="machine-chosen:orange:ghost",
+                subject="orange", question={"note_id": "pw-1", "word": "ส้ม"},
+                answer={"marker": "machine-chosen", "sha": "ghost"})
+
+    resolve_row = c.assessor._backends["judge"].resolve_path
+
+    def resolve_existing(sha):
+        """The production resolver (wiring._resolver): a media row alone is
+        not enough, the object has to be on disk."""
+        path = resolve_row(sha)
+        return path if path is not None and path.exists() else None
+    c.assessor._backends["judge"].resolve_path = resolve_existing
+
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        out = attempt(c, Need("orange", "picture"), "openverse")
+
+    assert search.calls == 1                      # the attempt was NOT ended
+    assert out.improved and out.attempted
+    # ...and the run report must be able to SAY a candidate was dropped:
+    # one unusable candidate, counted once, even though the attempt judges
+    # the candidate set twice (before and after the Source).
+    assert out.excluded == 1
+    assert out.unreachable is False
+    from thai_syllabus.attempts import current_best_of
+    assert current_best_of(c, "orange", "picture").artifact_sha != "ghost"
+    assert any("ghost" in r.getMessage() or "unusable" in r.getMessage()
+               for r in caplog.records if r.levelname == "WARNING")

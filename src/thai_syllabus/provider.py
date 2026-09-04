@@ -26,9 +26,10 @@ from typing import Any, Protocol, runtime_checkable
 
 import requests
 
+from .assessor import Price
 from .cachekeys import sha
 from .ports import CacheReader, RecordWriter
-from .transport import TransportError
+from .transport import Completion, TransportError
 
 __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
@@ -53,10 +54,17 @@ class Question:
 
 @dataclass(frozen=True)
 class ProviderAnswer:
-    """items may be empty -- a miss is an answer and is cached."""
+    """items may be empty -- a miss is an answer and is cached. `hit` is
+    the port's own answer to "was this served from the cache?" -- the only
+    authority on it, since only ask() knows which branch it took (a
+    caller comparing `ts` against its own start time counts a row this
+    same caller wrote a moment ago as a fresh ask every time it re-reads
+    it).
+    """
     items: tuple[Any, ...]
     cost: float
     ts: int
+    hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,7 +118,7 @@ class Provider:
         cached = self._cache.latest("provide", backend, key)
         if cached is not None:
             return ProviderAnswer(items=tuple(cached.answer.get("items", [])),
-                                  cost=0.0, ts=cached.ts)
+                                  cost=0.0, ts=cached.ts, hit=True)
         raw = impl.fetch(question)  # transport errors propagate uncached
         ts = self._record.append(
             port="provide", backend=backend, key=key, subject=question.subject,
@@ -311,10 +319,16 @@ class ForvoBackend:
 
 @dataclass
 class TtsBackend:
+    """`cost_per_char` is the configured rate (providers.yaml `tts`), not a
+    per-question parameter: the rate belongs to the backend that incurs it
+    (spec 3 section 2's "measured by the backend"), and reading it off the
+    question let any caller that forgot to pass it record a free synthesis.
+    """
     tts: Any  # thai_syllabus.tts.Tts -- synthesize(text, voice) -> bytes
     voices: Sequence[str]
     media: MediaWriter
     pick_voice: Callable[[str, Sequence[str]], str]
+    cost_per_char: float = 0.0
 
     def _voice(self, question: Question) -> str:
         return question.params.get("voice") or self.pick_voice(question.subject, self.voices)
@@ -331,7 +345,7 @@ class TtsBackend:
         return RawAnswer(items=({"sha": artifact_sha, "ext": "mp3", "voice": voice,
                                  "speaker_kind": "synthetic", "source": "tts",
                                  "origin": voice},),
-                         cost=len(text) * question.params.get("cost_per_char", 0.0))
+                         cost=len(text) * self.cost_per_char)
 
 
 # --- llm: sentence/phrase/entry drafting -------------------------------------
@@ -340,20 +354,33 @@ class TtsBackend:
 
 @dataclass
 class LlmBackend:
+    """Costed exactly like assessor.JudgeBackend, on the same currencies
+    (spec 3 section 2's cost contract): a `price` prices the completion's
+    actual token usage (api/batch, cash), and `quota_cost_per_call` is the
+    flat subscription-quota cost of the cli transport, which reports no
+    usage on the wire. A transport that receives usage and drops it
+    violates the contract, so `fetch` keeps the whole Completion.
+    """
     producer: str
     model: str
     transport: Any  # .complete(prompt: str) -> Completion; may raise TransportError
-    cost_per_call: float = 0.0
+    price: Price | None = None
+    quota_cost_per_call: float = 0.0
 
     def cache_key(self, question: Question) -> str:
         prompt = question.params["prompt"]
         return f"llm:{self.producer}:{self.model}:{sha(prompt)}"
 
+    def _cost(self, completion: Completion) -> float:
+        if self.price is not None:
+            return self.price.cost(completion)
+        return self.quota_cost_per_call
+
     def fetch(self, question: Question) -> RawAnswer:
         prompt = question.params["prompt"]
-        text = self.transport.complete(prompt).text
-        items = (text,) if text else ()
-        return RawAnswer(items=items, cost=self.cost_per_call)
+        completion = self.transport.complete(prompt)
+        items = (completion.text,) if completion.text else ()
+        return RawAnswer(items=items, cost=self._cost(completion))
 
 
 # --- pair-search: minimal pairs over a dictionary + G2P ---------------------
