@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Union
 
-from .entities import Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
-from .ids import Category, WordId
+from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
+from .ids import CategoryName, WordId
 from .ports import AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, Tokenizer
 from .profile import Profile
 from .rulebook import RULES
@@ -45,10 +45,11 @@ class Syllabus:
     profile: Profile = field(default_factory=lambda: Profile(register="male_colloquial"))
     tokenizer: Tokenizer = field(default_factory=_WhitespaceTokenizer)
     # Storage-owned by spec 2; taken as constructor input for now (spec 1
-    # note): rank per word (lower = more frequent) and each word's emphasis
-    # category.
+    # note): rank per word (lower = more frequent).
     frequency: Mapping[WordId, int] = field(default_factory=dict)
-    categories: Mapping[WordId, Category] = field(default_factory=dict)
+    # The Syllabus's curated Category collections; category_of derives the
+    # reverse lookup from word id to category name.
+    categories: tuple[Category, ...] = ()
     media: MediaIndex = field(default_factory=NullMediaIndex)
     assessments: AssessmentReader = field(default_factory=NullAssessmentReader)
     rules: Sequence[Rule] = field(default_factory=lambda: tuple(RULES))
@@ -70,8 +71,15 @@ class Syllabus:
     def find_word(self, word_id: WordId) -> Word | None:
         return self._word_index.get(word_id)
 
+    @cached_property
+    def _category_by_word(self) -> dict[WordId, CategoryName]:
+        return {word_id: cat.name for cat in self.categories for word_id in cat.members}
+
+    def category_of(self, word_id: WordId) -> CategoryName | None:
+        return self._category_by_word.get(word_id)
+
     def _emphasis_weight(self, word_id: WordId) -> float:
-        category = self.categories.get(word_id)
+        category = self.category_of(word_id)
         if category is None:
             return 1.0
         return self.profile.emphasis.get(category, 1.0)
@@ -283,6 +291,8 @@ class Syllabus:
             if isinstance(obj, Mapping):
                 return {str(k): canon(v) for k, v in sorted(obj.items(),
                                                              key=lambda kv: str(kv[0]))}
+            if isinstance(obj, frozenset):
+                return sorted(str(v) for v in obj)
             if isinstance(obj, (list, tuple)):
                 return [canon(v) for v in obj]
             return obj
@@ -295,6 +305,7 @@ class Syllabus:
             "sentences": sorted((canon(s) for s in self.sentences),
                                 key=lambda d: json.dumps(d, sort_keys=True, default=str)),
             "confusions": sorted((canon(c) for c in self.confusions), key=lambda d: d["id"]),
+            "categories": sorted((canon(c) for c in self.categories), key=lambda d: d["name"]),
             "profile": canon(self.profile),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")

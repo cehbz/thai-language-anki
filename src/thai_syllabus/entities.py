@@ -14,7 +14,7 @@ same pure diff functions.
 from dataclasses import dataclass
 from typing import Literal
 
-from .ids import ConfusionId, PairId, TargetId, WordId
+from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .media import Provenance
 
 Dimension = Literal["tone", "length", "aspiration", "vowel_quality", "consonant"]
@@ -196,6 +196,17 @@ class Target:
     word: WordId
     skill: Skill
     introduction: Introduction = "picture_card"
+
+
+@dataclass(frozen=True)
+class Category:
+    """A curated theme grouping Words (the FF 625 list). Identity: name.
+
+    A word belongs to at most one Category (rule category/single-
+    membership); closure words (pair members, keywords) belong to none.
+    """
+    name: CategoryName
+    members: frozenset[WordId]
 
 
 @dataclass(frozen=True)

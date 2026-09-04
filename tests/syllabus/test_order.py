@@ -1,8 +1,8 @@
 """Syllabus.order(): sounds before words; receptive before productive per
 word; ties by frequency rank / emphasis weight (spec 1, section 3).
 """
-from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, Target
-from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Target
+from thai_syllabus.ids import CategoryName, ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.syllabus import Syllabus
 
@@ -78,7 +78,25 @@ def test_emphasis_weight_can_move_a_lower_frequency_word_earlier():
                         emphasis={"food": 100.0}),
         tokenizer=FakeTokenizer(),
         frequency={common.id: 10, rare.id: 100},
-        categories={rare.id: "food"},
+        categories=(Category(name=CategoryName("food"), members=frozenset({rare.id})),),
     )
     ordering = [t.id for t in syllabus.order() if isinstance(t, Target)]
     assert ordering.index(t_rare.id) < ordering.index(t_common.id)
+
+
+# --- Syllabus.category_of ------------------------------------------------
+
+def test_category_of_returns_the_owning_categorys_name():
+    rice = word("rice", "ข้าว")  # rice
+    syllabus = Syllabus(words=(rice,),
+                        categories=(Category(name=CategoryName("Food"),
+                                            members=frozenset({rice.id})),))
+    assert syllabus.category_of(rice.id) == "Food"
+
+
+def test_category_of_is_none_for_a_word_in_no_category():
+    # a closure word (spec 1: pair members and grapheme keywords are in no
+    # category)
+    keyword = word("chicken", "ไก่")  # chicken
+    syllabus = Syllabus(words=(keyword,), categories=())
+    assert syllabus.category_of(keyword.id) is None

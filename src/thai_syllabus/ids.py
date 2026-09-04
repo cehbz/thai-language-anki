@@ -16,4 +16,4 @@ TargetId = NewType("TargetId", str)
 # TargetLike and Finding.note_id contexts.
 GraphemeId = NewType("GraphemeId", str)
 
-Category = NewType("Category", str)
+CategoryName = NewType("CategoryName", str)

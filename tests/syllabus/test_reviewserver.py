@@ -534,6 +534,7 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
     from datetime import date
 
     from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+    from thai_syllabus.entities import Category
     from thai_syllabus.profile import Profile
     from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
 
@@ -542,7 +543,8 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
         words=(word("orange", "ส้ม", "orange"),),
         targets=(target("orange/receptive", "orange"),),
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
-        rulebook=RulebookConfig()))
+        rulebook=RulebookConfig(),
+        categories=(Category(name="Food", members=frozenset({"orange"})),)))
     deck_db = SyllabusDb(root / "syllabus.db")
     deck_db.append(port="provide", backend="openverse", key="openverse:orange",
                    subject="orange", question={"provides": "picture", "params": {}},

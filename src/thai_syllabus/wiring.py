@@ -555,8 +555,8 @@ def load_syllabus(deck_root: str | Path, *,
     kwargs: dict[str, Any] = dict(
         words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=sentences, confusions=bundle.confusions,
-        profile=bundle.profile, frequency=frequency, media=media_index,
-        assessments=db, rulebook_text=rulebook_text, rules=rules)
+        profile=bundle.profile, frequency=frequency, categories=bundle.categories,
+        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)
 
     tokenizer = _pythainlp_tokenizer()
     if tokenizer is not None:

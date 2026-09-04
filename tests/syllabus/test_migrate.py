@@ -124,9 +124,9 @@ def old_data(tmp_path):
          "classifier": "ตัว", "picturable": True, "part_of_speech": "noun"},
         {"id": "dog", "thai": "หมา", "gloss": "dog", "category": "Animals",
          "picturable": True},
-        {"id": "human-directed", "thai": "ผู้ชาย", "gloss": "man",
+        {"id": "human-directed", "thai": "ผู้ชาย", "gloss": "man", "category": "People",
          "image_query": "a man standing", "image_query_source": "human"},
-        {"id": "slow", "thai": "ช้า", "gloss": "slow"},
+        {"id": "slow", "thai": "ช้า", "gloss": "slow", "category": "Adjectives"},
         # deliberately malformed: missing 'thai'
         {"id": "broken-row", "gloss": "nothing here"},
     ])
@@ -342,7 +342,7 @@ def test_guid_matching_no_picture_word_note_is_reported(old_deck, old_data, tmp_
 def test_homograph_word_list_rows_are_counted(old_deck, old_data, tmp_path):
     word_list = old_data / "word_list_th.yaml"
     rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
-    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)"})
+    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)", "category": "Animals"})
     word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
                          encoding="utf-8")
     report = migrate(old_deck, old_data, tmp_path / "new")
@@ -357,7 +357,7 @@ def test_homograph_word_list_rows_are_reported_as_unmigratable(old_deck, old_dat
     """
     word_list = old_data / "word_list_th.yaml"
     rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
-    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)"})
+    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)", "category": "Animals"})
     word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
                          encoding="utf-8")
     report = migrate(old_deck, old_data, tmp_path / "new")
@@ -365,3 +365,20 @@ def test_homograph_word_list_rows_are_reported_as_unmigratable(old_deck, old_dat
               if u.source == "data/word_list_th.yaml" and u.identity == "chicken-2"]
     assert len(dropped) == 1
     assert dropped[0].reason == "homograph of chicken: the picture note joins to that word"
+
+
+def test_word_list_row_without_a_category_is_reported_and_refused(old_deck, old_data, tmp_path):
+    word_list = old_data / "word_list_th.yaml"
+    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
+    rows.append({"id": "cat-less", "thai": "แมว", "gloss": "cat"})  # แมว = cat
+    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+                         encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+
+    dropped = [u for u in report.unmigratable
+              if u.source == "data/word_list_th.yaml" and u.identity == "cat-less"]
+    assert len(dropped) == 1
+    assert "category" in dropped[0].reason
+
+    bundle = curated.load_curated(tmp_path / "new" / "curated")
+    assert "cat-less" not in {w.id for w in bundle.words}

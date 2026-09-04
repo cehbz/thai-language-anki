@@ -33,7 +33,7 @@ from thai_syllabus.run import RunReport, Spend
 def _write_curated_dir(root):
     curated = root / "curated"
     curated.mkdir(parents=True)
-    words = [{"id": "rice", "thai": "ข้าว", "meaning": "rice",  # rice
+    words = [{"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",  # rice
              "pron": {"syllables": [{"segments": ["kh", "aa", ""],
                                      "vowel_length": "long", "tone": "low"}],
                       "corroboration": "engines_agree"}}]

@@ -46,7 +46,7 @@ from typing import Any
 import genanki
 import yaml
 
-from .curated import save_curated, CuratedBundle, RulebookConfig
+from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
 from .ids import TargetId, WordId
 from .profile import Profile
@@ -202,7 +202,7 @@ def _write_media(media_store: MediaStore, data: bytes, ext: str) -> tuple[str, b
 
 def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                        report: MigrationReport
-                       ) -> tuple[list[Word], list[Target], dict[str, str]]:
+                       ) -> tuple[list[tuple[Word, str | None]], list[Target], dict[str, str]]:
     rows = _load_yaml(old_data / "word_list_th.yaml") or []
     picture_words = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     ipa_by_thai: dict[str, str] = {}
@@ -211,7 +211,7 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
         if thai and ipa and thai not in ipa_by_thai:
             ipa_by_thai[thai] = ipa
 
-    words: list[Word] = []
+    word_rows: list[tuple[Word, str | None]] = []
     targets: list[Target] = []
     seen_ids: set[str] = set()
     thai_to_word_id: dict[str, str] = {}
@@ -262,6 +262,10 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
 
     for row in good_rows:
         word_id = row["id"]
+        category = row.get("category")
+        if not category:
+            report.drop("data/word_list_th.yaml", word_id, "missing category")
+            continue
         classifier_id: str | None = None
         classifier_thai = row.get("classifier")
         if classifier_thai:
@@ -276,10 +280,11 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                                      f"classifier {classifier_thai}"),
                         meaning="(classifier -- no gloss migrated)", classifier=None)
 
-        words.append(Word(id=WordId(word_id), thai=row["thai"],
-                          pron=pron_for(row["thai"], "data/word_list_th.yaml", word_id),
-                          meaning=row["gloss"],
-                          classifier=WordId(classifier_id) if classifier_id else None))
+        word_rows.append((Word(id=WordId(word_id), thai=row["thai"],
+                              pron=pron_for(row["thai"], "data/word_list_th.yaml", word_id),
+                              meaning=row["gloss"],
+                              classifier=WordId(classifier_id) if classifier_id else None),
+                         category))
         targets.append(Target(id=TargetId(f"{word_id}/receptive"), word=WordId(word_id),
                               skill="receptive", introduction="picture_card"))
 
@@ -296,12 +301,14 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
         # Dropped, per spec 2 section 4 item 1: picturable, emphasis,
         # image_query (non-human source), split_of, part_of_speech.
 
-    words.extend(classifier_words_by_thai.values())
+    # Classifier words are synthesized, untargeted closure words (spec 1:
+    # closure words are in no category).
+    word_rows.extend((w, None) for w in classifier_words_by_thai.values())
     report.bump(report.curated, "classifier_words_synthesized",
                len(classifier_words_by_thai))
-    report.bump(report.curated, "words", len(words))
+    report.bump(report.curated, "words", len(word_rows))
     report.bump(report.curated, "targets", len(targets))
-    return words, targets, thai_to_word_id
+    return word_rows, targets, thai_to_word_id
 
 
 # --- note subjects: old note id -> word id, via the Thai-form join ---------
@@ -568,11 +575,11 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     db = SyllabusDb(new_root / "syllabus.db")
     report = MigrationReport()
 
-    words, targets, thai_to_word_id = _migrate_word_list(old_data, old_deck, db, report)
+    word_rows, targets, thai_to_word_id = _migrate_word_list(old_data, old_deck, db, report)
     save_curated(curated_dir, CuratedBundle(
-        words=tuple(words), targets=tuple(targets), graphemes=(), confusions=(),
-        pairs=(), profile=Profile(register="male_colloquial"),
-        rulebook=RulebookConfig()))
+        words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
+        confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
+        rulebook=RulebookConfig(), categories=build_categories(word_rows)))
 
     note_subjects = _note_subjects(old_deck, thai_to_word_id, report)
 

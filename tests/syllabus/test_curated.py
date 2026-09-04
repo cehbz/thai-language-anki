@@ -9,9 +9,18 @@ import pytest
 import yaml
 
 from thai_syllabus import curated
-from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, Target, Word
-from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
+from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Target, Word
+from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.profile import Profile
+
+from .builders import word
+
+
+def write_words_yaml(path, rows: list[dict]) -> None:
+    """Writes raw word rows (dicts), bypassing save_words -- for tests
+    that need to control exactly which keys a row carries.
+    """
+    path.write_text(yaml.safe_dump(rows, allow_unicode=True), encoding="utf-8")
 
 
 # --- words -------------------------------------------------------------
@@ -19,15 +28,16 @@ from thai_syllabus.profile import Profile
 def test_words_round_trip(tmp_path):
     path = tmp_path / "words.yaml"
     curated.save_words(path, [
-        _word("rice", "ข้าว", "cooked rice", classifier=None),
-        _word("plate", "จาน", "plate", classifier=None),
+        (_word("rice", "ข้าว", "cooked rice", classifier=None), "Food"),
+        (_word("plate", "จาน", "plate", classifier=None), "Home"),
     ])
     loaded = curated.load_words(path)
-    assert {w.id for w in loaded} == {"rice", "plate"}
-    rice = next(w for w in loaded if w.id == "rice")
+    assert {w.id for w, _ in loaded} == {"rice", "plate"}
+    rice, rice_category = next((w, c) for w, c in loaded if w.id == "rice")
     assert rice.thai == "ข้าว"  # rice
     assert rice.meaning == "cooked rice"
     assert rice.pron.syllables[0].tone in ("mid", "low", "falling", "high", "rising")
+    assert rice_category == "Food"
 
 
 def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="engines_agree"):
@@ -40,10 +50,52 @@ def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="en
 
 def test_words_save_is_atomic_temp_then_replace(tmp_path, monkeypatch):
     path = tmp_path / "words.yaml"
-    curated.save_words(path, [_word("rice", "ข้าว", "cooked rice")])
+    curated.save_words(path, [(_word("rice", "ข้าว", "cooked rice"), "Food")])
     # no leftover temp files
     assert list(tmp_path.glob("*.tmp*")) == []
     assert path.exists()
+
+
+def test_load_words_a_row_without_category_loads_with_none(tmp_path):
+    """A word need not name a category (spec 1: closure words are in
+    none) -- load_words only rejects an unknown name, never an absent one.
+    """
+    rows = [{"id": "rice", "thai": "ข้าว", "pron": _pron_dict(), "meaning": "rice",
+            "category": "Food"},                                       # ข้าว = rice
+           {"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red"}]  # แดง = red
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    loaded = curated.load_words(tmp_path / "words.yaml")
+    by_id = {w.id: c for w, c in loaded}
+    assert by_id["rice"] == "Food"
+    assert by_id["red"] is None
+
+
+def test_load_words_refuses_an_unknown_category_name(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+            "category": "Kitchen"}]  # แดง = red; "Kitchen" is not one of the 27 FF categories
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    with pytest.raises(curated.CuratedValidationError, match="red"):
+        curated.load_words(tmp_path / "words.yaml")
+    with pytest.raises(curated.CuratedValidationError, match="Kitchen"):
+        curated.load_words(tmp_path / "words.yaml")
+
+
+def _pron_dict():
+    return {"syllables": [{"segments": ["k", "a", "w"], "vowel_length": "long",
+                          "tone": "falling"}], "corroboration": "engines_agree"}
+
+
+def test_build_categories_groups_members_by_name():
+    cats = curated.build_categories([
+        (word("rice", "ข้าว"), "Food"), (word("fish", "ปลา"), "Food"),
+        (word("red", "แดง"), "Colors")])  # rice, fish, red
+    by_name = {c.name: c.members for c in cats}
+    assert by_name == {"Food": frozenset({"rice", "fish"}), "Colors": frozenset({"red"})}
+
+
+def test_category_names_are_loaded_from_the_repo_data_file():
+    assert len(curated.CATEGORY_NAMES) == 27
+    assert "Food" in curated.CATEGORY_NAMES
 
 
 # --- targets -----------------------------------------------------------
@@ -272,7 +324,7 @@ def test_load_curated_bundle_from_a_directory(tmp_path):
                                consonant_class="mid", keyword_word=low_word)
     profile = Profile(register="male_colloquial")
 
-    curated.save_words(tmp_path / "words.yaml", [mid_word, low_word])
+    curated.save_words(tmp_path / "words.yaml", [(mid_word, "Adjectives"), (low_word, "Adjectives")])
     curated.save_targets(tmp_path / "targets.yaml", [target])
     curated.save_graphemes(tmp_path / "graphemes.yaml", [grapheme])
     curated.save_confusions(tmp_path / "confusions.yaml", [confusion])
@@ -287,6 +339,7 @@ def test_load_curated_bundle_from_a_directory(tmp_path):
     assert bundle.graphemes == (grapheme,)
     assert bundle.confusions == (confusion,)
     assert bundle.profile == profile
+    assert {c.name for c in bundle.categories} == {"Adjectives"}
 
 
 # --- rulebook.yaml raw text (spec 3 section 6) -----------------------------
@@ -455,7 +508,7 @@ def test_providers_config_rejects_an_unknown_judge_transport(tmp_path):
 
 
 def test_load_curated_bundle_collects_cross_file_errors(tmp_path):
-    curated.save_words(tmp_path / "words.yaml", [_word("near", "ใกล้", "near")])
+    curated.save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), "Adjectives")])
     curated.save_targets(tmp_path / "targets.yaml", [
         Target(id=TargetId("bad/receptive"), word=WordId("does-not-exist"),
               skill="receptive")])
@@ -468,6 +521,56 @@ def test_load_curated_bundle_collects_cross_file_errors(tmp_path):
     with pytest.raises(curated.CuratedValidationError) as exc:
         curated.load_curated(tmp_path)
     assert any("does-not-exist" in e for e in exc.value.errors)
+
+
+def test_load_curated_refuses_a_targeted_word_without_a_category(tmp_path):
+    curated.save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), None)])
+    curated.save_targets(tmp_path / "targets.yaml", [
+        Target(id=TargetId("near/receptive"), word=WordId("near"), skill="receptive")])
+    curated.save_graphemes(tmp_path / "graphemes.yaml", [])
+    curated.save_confusions(tmp_path / "confusions.yaml", [])
+    curated.save_pairs(tmp_path / "pairs.yaml", [])
+    curated.save_profile(tmp_path / "profile.yaml", Profile(register="male_colloquial"))
+    curated.save_rulebook_config(tmp_path / "rulebook.yaml", curated.RulebookConfig())
+
+    with pytest.raises(curated.CuratedValidationError, match="near"):
+        curated.load_curated(tmp_path)
+
+
+def test_load_curated_allows_an_untargeted_word_with_no_category(tmp_path):
+    """A closure word (no Target) needs no category (spec 1)."""
+    curated.save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), None)])
+    curated.save_targets(tmp_path / "targets.yaml", [])
+    curated.save_graphemes(tmp_path / "graphemes.yaml", [])
+    curated.save_confusions(tmp_path / "confusions.yaml", [])
+    curated.save_pairs(tmp_path / "pairs.yaml", [])
+    curated.save_profile(tmp_path / "profile.yaml", Profile(register="male_colloquial"))
+    curated.save_rulebook_config(tmp_path / "rulebook.yaml", curated.RulebookConfig())
+
+    bundle = curated.load_curated(tmp_path)
+    assert bundle.categories == ()
+
+
+def test_save_curated_refuses_a_targeted_word_without_a_category(tmp_path):
+    """Same condition load_curated enforces on read, checked on write too:
+    a bundle that would fail to load must not be written."""
+    bundle = curated.CuratedBundle(
+        words=(_word("near", "ใกล้", "near"),),
+        targets=(Target(id=TargetId("near/receptive"), word=WordId("near"),
+                        skill="receptive"),),
+        graphemes=(), confusions=(), pairs=(),
+        profile=Profile(register="male_colloquial"), rulebook=curated.RulebookConfig())
+    with pytest.raises(curated.CuratedValidationError, match="near"):
+        curated.save_curated(tmp_path, bundle)
+
+
+def test_save_curated_allows_an_untargeted_word_with_no_category(tmp_path):
+    bundle = curated.CuratedBundle(
+        words=(_word("near", "ใกล้", "near"),), targets=(),
+        graphemes=(), confusions=(), pairs=(),
+        profile=Profile(register="male_colloquial"), rulebook=curated.RulebookConfig())
+    curated.save_curated(tmp_path, bundle)
+    assert curated.load_curated(tmp_path).categories == ()
 
 
 def test_providers_judge_api_transport_requires_a_price(tmp_path):

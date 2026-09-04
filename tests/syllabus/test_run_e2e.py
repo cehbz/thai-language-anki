@@ -7,6 +7,7 @@ from pathlib import Path
 from thai_syllabus.assessor import RawVerdict
 from thai_syllabus.attempts import current_best_of
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+from thai_syllabus.entities import Category
 from thai_syllabus.provider import FetchBackend, RawAnswer
 from thai_syllabus.profile import Profile
 from thai_syllabus.run import run
@@ -24,7 +25,9 @@ def _deck(tmp_path):
         words=(word("orange", "ส้ม", "orange"), word("eat", "กิน", "eat")),
         targets=(target("eat/receptive", "eat"), target("orange/receptive", "orange")),
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
-        rulebook=RulebookConfig()))
+        rulebook=RulebookConfig(),
+        categories=(Category(name="Food", members=frozenset({"orange"})),
+                   Category(name="Verbs", members=frozenset({"eat"})))))
     # imgfetch/audiofetch paths and the anthropic secret reference are what
     # load_providers_config now requires of any real providers.yaml; the
     # test replaces both fetch backends (and the judge's transport) with

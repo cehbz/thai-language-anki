@@ -27,6 +27,7 @@ from thai_syllabus.curated import (
     load_providers_config,
     save_curated,
 )
+from thai_syllabus.entities import Category, Target
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import Provider, Question
 from thai_syllabus.run import Budget
@@ -342,10 +343,10 @@ def _write_curated_dir(root):
     curated = root / "curated"
     curated.mkdir(parents=True)
     words = [
-        {"id": "rice", "thai": "ข้าว", "meaning": "rice",
+        {"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",
          "pron": {"syllables": [{"segments": ["kh", "aa", ""], "vowel_length": "long",
                                  "tone": "low"}], "corroboration": "engines_agree"}},
-        {"id": "near", "thai": "ใกล้", "meaning": "near",
+        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives",
          "pron": {"syllables": [{"segments": ["kl", "ai", ""], "vowel_length": "long",
                                  "tone": "falling"}], "corroboration": "engines_agree"}},
     ]
@@ -363,6 +364,30 @@ def test_load_syllabus_round_trips_words_and_targets(tmp_path):
     assert isinstance(syllabus, Syllabus)
     assert {w.id for w in syllabus.words} == {"rice", "near"}
     assert {t.id for t in syllabus.targets} == {"t-rice"}
+
+
+def test_emphasis_from_profile_moves_a_word_earlier_through_load_syllabus(tmp_path):
+    """Profile.emphasis reaches Syllabus.order() through load_syllabus's
+    categories wiring: a lower-frequency word in an emphasized category
+    outranks a higher-frequency word outside it.
+    """
+    root = tmp_path / "deck"
+    save_curated(root / "curated", CuratedBundle(
+        words=(word("rice", "ข้าว", "rice"), word("red", "แดง", "red")),  # rice, red
+        targets=(target("rice/receptive", "rice"), target("red/receptive", "red")),
+        graphemes=(), confusions=(), pairs=(),
+        profile=Profile(register="male_colloquial", emphasis={"Food": 3.0}),
+        rulebook=RulebookConfig(),
+        categories=(Category(name="Food", members=frozenset({"rice"})),
+                   Category(name="Colors", members=frozenset({"red"})))))
+    (root / "data").mkdir()
+    # red ranks more frequent (1) than rice (2); Food's 3x emphasis must
+    # still bring rice's target ahead of red's.
+    (root / "data" / "frequency_th.txt").write_text("แดง\nข้าว\n", encoding="utf-8")
+
+    syllabus = load_syllabus(root)
+    ids = [t.id for t in syllabus.order() if isinstance(t, Target)]
+    assert ids.index("rice/receptive") < ids.index("red/receptive")
 
 
 def test_load_syllabus_wires_a_real_assessment_reader(tmp_path):
@@ -593,7 +618,8 @@ def _minimal_deck(tmp_path):
     save_curated(root / "curated", CuratedBundle(
         words=(word("slow", "ช้า", "slow"),), targets=(target("slow/receptive", "slow"),),
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
-        rulebook=RulebookConfig()))
+        rulebook=RulebookConfig(),
+        categories=(Category(name="Adjectives", members=frozenset({"slow"})),)))
     return root
 
 

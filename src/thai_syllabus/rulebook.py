@@ -167,6 +167,43 @@ SYLLABUS_CLOSURE = Rule(id="syllabus/closure", principle="F2", severity="error",
                         shape="check", check=_check_closure)
 
 
+# --- category/single-membership ---------------------------------------------
+# F2: a word belongs to at most one Category.
+
+def _check_category_single_membership(syllabus: "Syllabus") -> list[Finding]:
+    seen: set["WordId"] = set()
+    duplicates: list["WordId"] = []
+    for cat in syllabus.categories:
+        for word_id in cat.members:
+            if word_id in seen and word_id not in duplicates:
+                duplicates.append(word_id)
+            seen.add(word_id)
+    return [Finding(rule="category/single-membership", note_id=word_id,
+                    evidence="word is a member of more than one category")
+           for word_id in duplicates]
+
+
+CATEGORY_SINGLE_MEMBERSHIP = Rule(id="category/single-membership", principle="F2",
+                                  severity="error", shape="check",
+                                  check=_check_category_single_membership)
+
+
+# --- coverage/categories ----------------------------------------------------
+# F2: fraction of categories with at least one targeted word.
+
+def _measure_coverage_categories(syllabus: "Syllabus") -> Metric:
+    targeted = {t.word for t in syllabus.targets}
+    covered = sorted(cat.name for cat in syllabus.categories
+                     if cat.members & targeted)
+    value = len(covered) / len(syllabus.categories) if syllabus.categories else 1.0
+    return Metric(rule="coverage/categories", value=value, detail={"covered": covered})
+
+
+COVERAGE_CATEGORIES = Rule(id="coverage/categories", principle="F2",
+                           severity="info", shape="measure",
+                           measure=_measure_coverage_categories)
+
+
 # --- media/picture-required (gap-metric) -------------------------------------
 # F3: a picture carries meaning. Measures how many targeted words still
 # lack one; gaps() reads the same underlying facts.
@@ -457,6 +494,8 @@ RULES: list[Rule] = [
     GRAPHEME_KEYWORD_CONTAINS_SYMBOL,
     SENTENCE_FILLS_NOVELTY,
     SYLLABUS_CLOSURE,
+    CATEGORY_SINGLE_MEMBERSHIP,
+    COVERAGE_CATEGORIES,
     MEDIA_PICTURE_REQUIRED,
     COVERAGE_CONFUSIONS,
     SENTENCE_REGISTER_NATURAL,

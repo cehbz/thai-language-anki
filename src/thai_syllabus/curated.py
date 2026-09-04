@@ -13,20 +13,38 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .entities import Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
-from .ids import ConfusionId, PairId, TargetId, WordId
+from .entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
+from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
 from .secrets import SecretStore
 from .tts import FEMALE_VOICES, MALE_VOICES
 
 _SEVERITIES = {"error", "warn", "info"}
+
+# Repo data/ directory: project input data outside curated/*.yaml (the
+# same directory frequency_th.txt and word_list_th.yaml live in). Resolved
+# relative to this file, as the repo's other packages resolve it.
+_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+
+
+def load_category_names(path: str | Path) -> frozenset[str]:
+    """The Fluent Forever 625-word list's 27 thematic category names."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"category names file not found: {path}")
+    return frozenset(yaml.safe_load(path.read_text(encoding="utf-8")) or [])
+
+
+# Loaded once at import: the fixed set of valid words.yaml `category`
+# values (data/categories.yaml is the repo's source of these 27 names).
+CATEGORY_NAMES: frozenset[str] = load_category_names(_DATA_DIR / "categories.yaml")
 
 
 def _is_number(value: Any) -> bool:
@@ -85,9 +103,9 @@ def _pron_from_dict(d: dict) -> Pronunciation:
                          corroboration=d["corroboration"])
 
 
-def _word_to_dict(w: Word) -> dict:
+def _word_to_dict(w: Word, category: CategoryName | None) -> dict:
     return {"id": w.id, "thai": w.thai, "pron": _pron_to_dict(w.pron),
-           "meaning": w.meaning, "classifier": w.classifier}
+           "meaning": w.meaning, "classifier": w.classifier, "category": category}
 
 
 def _word_from_dict(d: dict) -> Word:
@@ -96,14 +114,18 @@ def _word_from_dict(d: dict) -> Word:
                classifier=WordId(d["classifier"]) if d.get("classifier") else None)
 
 
-def save_words(path: str | Path, words: list[Word]) -> None:
-    _atomic_write_yaml(Path(path), [_word_to_dict(w) for w in words])
+def save_words(path: str | Path, rows: list[tuple[Word, CategoryName | None]]) -> None:
+    _atomic_write_yaml(Path(path), [_word_to_dict(w, c) for w, c in rows])
 
 
-def load_words(path: str | Path) -> list[Word]:
+def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
+    """Row order kept. `category` is optional (spec 1: closure words are in
+    no category); a row that names one must use one of CATEGORY_NAMES, or
+    the row is refused naming the row's id and the name.
+    """
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
-    words: list[Word] = []
+    words: list[tuple[Word, CategoryName | None]] = []
     seen: set[str] = set()
     for i, row in enumerate(rows):
         try:
@@ -114,11 +136,29 @@ def load_words(path: str | Path) -> list[Word]:
         if w.id in seen:
             errors.append(f"words[{i}]: duplicate id {w.id!r}")
             continue
+        category = row.get("category") or None
+        if category is not None and category not in CATEGORY_NAMES:
+            errors.append(f"words[{i}] ({w.id!r}): unknown category {category!r}")
+            continue
         seen.add(w.id)
-        words.append(w)
+        words.append((w, CategoryName(category) if category is not None else None))
     if errors:
         raise CuratedValidationError(errors)
     return words
+
+
+def build_categories(rows: Sequence[tuple[Word, CategoryName | None]]) -> tuple[Category, ...]:
+    """Groups word ids by category name, preserving first-seen name order.
+    A row with no category contributes no membership (spec 1: closure
+    words are in no category).
+    """
+    members_by_name: dict[CategoryName, set[WordId]] = {}
+    for w, category in rows:
+        if category is None:
+            continue
+        members_by_name.setdefault(category, set()).add(w.id)
+    return tuple(Category(name=name, members=frozenset(ids))
+                for name, ids in members_by_name.items())
 
 
 # --- targets -----------------------------------------------------------
@@ -367,6 +407,7 @@ class CuratedBundle:
     pairs: tuple[MinimalPair, ...]
     profile: Profile
     rulebook: RulebookConfig
+    categories: tuple[Category, ...] = ()
 
 
 def load_curated(root: str | Path) -> CuratedBundle:
@@ -384,8 +425,11 @@ def load_curated(root: str | Path) -> CuratedBundle:
             errors.extend(e.errors)
             return None
 
-    words = _collect(load_words, root / "words.yaml") or []
+    word_rows = _collect(load_words, root / "words.yaml") or []
+    words = [w for w, _ in word_rows]
     words_by_id = {w.id: w for w in words}
+    category_by_word_id = {w.id: c for w, c in word_rows}
+    categories = build_categories(word_rows)
     confusions = _collect(load_confusions, root / "confusions.yaml") or []
     confusions_by_id = {c.id: c for c in confusions}
     targets = _collect(load_targets, root / "targets.yaml", words_by_id) or []
@@ -401,12 +445,20 @@ def load_curated(root: str | Path) -> CuratedBundle:
             errors.append(f"words[{w.id!r}]: classifier {w.classifier!r} "
                           f"does not resolve")
 
+    # cross-file: a targeted word needs a category (only an untargeted,
+    # closure word may have none).
+    targeted_word_ids = {t.word for t in targets}
+    for word_id in sorted(wid for wid in targeted_word_ids if wid in words_by_id):
+        if category_by_word_id.get(word_id) is None:
+            errors.append(f"words[{word_id!r}]: targeted but has no category")
+
     if errors:
         raise CuratedValidationError(errors)
 
     return CuratedBundle(words=tuple(words), targets=tuple(targets),
                          graphemes=tuple(graphemes), confusions=tuple(confusions),
-                         pairs=tuple(pairs), profile=profile, rulebook=rulebook)
+                         pairs=tuple(pairs), profile=profile, rulebook=rulebook,
+                         categories=categories)
 
 
 # --- frequency corpus (spec 2 section 3's FrequencyMap) --------------------
@@ -626,7 +678,20 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
 
 def save_curated(root: str | Path, bundle: CuratedBundle) -> None:
     root = Path(root)
-    save_words(root / "words.yaml", list(bundle.words))
+    category_by_word: dict[WordId, CategoryName] = {
+        word_id: cat.name for cat in bundle.categories for word_id in cat.members}
+    # Same condition load_curated enforces on read: a targeted word needs
+    # a category. Checked here too so a bundle that would fail to load is
+    # never written in the first place.
+    word_ids = {w.id for w in bundle.words}
+    targeted_word_ids = {t.word for t in bundle.targets}
+    missing = sorted(wid for wid in targeted_word_ids
+                     if wid in word_ids and category_by_word.get(wid) is None)
+    if missing:
+        raise CuratedValidationError(
+            [f"words.yaml: word {wid!r} is targeted but has no category" for wid in missing])
+    save_words(root / "words.yaml",
+              [(w, category_by_word.get(w.id)) for w in bundle.words])
     save_targets(root / "targets.yaml", list(bundle.targets))
     save_graphemes(root / "graphemes.yaml", list(bundle.graphemes))
     save_confusions(root / "confusions.yaml", list(bundle.confusions))

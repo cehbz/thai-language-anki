@@ -4,7 +4,7 @@ media/picture-required, coverage/confusions, rulebook/traceability, and one
 judged rule (sentence/register-natural) exercising the AssessmentReader path.
 """
 from thai_syllabus.curated import RulebookConfig
-from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, Word
+from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
@@ -157,6 +157,45 @@ def test_closure_is_silent_when_every_reference_resolves():
     syllabus = make_syllabus(words=(rice,), targets=(t,))
     findings = [f for f in syllabus.report().findings if f.rule == "syllabus/closure"]
     assert findings == []
+
+
+# --- category/single-membership -----------------------------------------
+
+def test_single_membership_flags_a_word_in_two_categories():
+    syllabus = make_syllabus(categories=(
+        Category(name="Food", members=frozenset({"rice"})),
+        Category(name="Verbs", members=frozenset({"rice"}))))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "category/single-membership"]
+    assert [f.note_id for f in findings] == ["rice"]
+
+
+def test_single_membership_is_silent_when_every_word_is_in_at_most_one_category():
+    syllabus = make_syllabus(categories=(
+        Category(name="Food", members=frozenset({"rice"})),
+        Category(name="Colors", members=frozenset({"red"}))))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "category/single-membership"]
+    assert findings == []
+
+
+# --- coverage/categories ---------------------------------------------------
+
+def test_coverage_categories_counts_categories_with_a_target():
+    rice = word("rice", "ข้าว")  # rice
+    t = target("rice/receptive", "rice", "receptive")
+    syllabus = make_syllabus(words=(rice,), targets=(t,), categories=(
+        Category(name="Food", members=frozenset({"rice"})),
+        Category(name="Colors", members=frozenset({"red"}))))
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/categories")
+    assert metric.value == 0.5
+    assert metric.detail["covered"] == ["Food"]
+
+
+def test_coverage_categories_is_full_with_no_categories_at_all():
+    syllabus = make_syllabus()
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/categories")
+    assert metric.value == 1.0
 
 
 # --- media/picture-required (gap-metric) -------------------------------------

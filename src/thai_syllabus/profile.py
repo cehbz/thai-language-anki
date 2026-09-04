@@ -7,10 +7,10 @@ in curated inputs.
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .ids import Category
+from .ids import CategoryName
 
 
 @dataclass(frozen=True)
 class Profile:
     register: Literal["male_colloquial"]
-    emphasis: dict[Category, float] = field(default_factory=dict)
+    emphasis: dict[CategoryName, float] = field(default_factory=dict)

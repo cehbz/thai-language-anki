@@ -8,6 +8,7 @@ from datetime import date
 import pytest
 
 from thai_syllabus.entities import (
+    Category,
     Grapheme,
     MinimalPair,
     Pronunciation,
@@ -18,7 +19,7 @@ from thai_syllabus.entities import (
     Word,
 )
 from thai_syllabus.media import Provenance
-from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
+from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 
 
 def syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
@@ -154,6 +155,20 @@ def test_minimal_pair_create_rejects_members_using_sounds_outside_the_confusion(
     with pytest.raises(ValueError):
         MinimalPair.create(id=PairId("bad"), confusion=confusion,
                            members=(mid_word, rising_word))
+
+
+# --- Category -------------------------------------------------------------
+
+def test_category_holds_a_name_and_its_member_word_ids():
+    cat = Category(name=CategoryName("Food"), members=frozenset({WordId("rice"), WordId("fish")}))
+    assert cat.name == "Food"
+    assert cat.members == {"rice", "fish"}
+
+
+def test_category_is_frozen():
+    cat = Category(name=CategoryName("Food"), members=frozenset({WordId("rice")}))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cat.name = CategoryName("Colors")
 
 
 # --- Sentence -----------------------------------------------------------------
