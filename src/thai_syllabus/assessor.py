@@ -25,7 +25,7 @@ from .transport import Completion, TransportError
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
     "Assessor", "ManyResult", "LearnerAskNotSupported", "BatchPending",
-    "Price", "JudgeBackend", "AUTHORITY_ORDER", "ROLE_FOR_KIND",
+    "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "parse_preference",
     "MechanicalBackend", "duration_mechanical_backend",
@@ -73,8 +73,8 @@ class RawVerdict:
 class LearnerAskNotSupported(RuntimeError):
     """Assessor.ask("learner", ...) always raises this: the learner
     backend is read-side only (newest-wins, authority per (backend, role)
-    -- see AUTHORITY_ORDER); rows arrive via RecordWriter from the
-    feedback surfaces, never through ask().
+    -- see authority.AUTHORITY_ORDER); rows arrive via RecordWriter from
+    the feedback surfaces, never through ask().
     """
 
 
@@ -97,37 +97,6 @@ class BatchPending(RuntimeError):
 class AssessBackend(Protocol):
     def cache_key(self, question: AssessQuestion) -> str: ...
     def fetch(self, question: AssessQuestion) -> RawVerdict: ...  # may raise -- not cached
-
-
-# --- authority (spec 3 section 2's "authority" column, as data) ------------
-#
-# Per role, backends ordered most- to least-authoritative. Not a single
-# global ranking -- authority is per (backend, role) (domain-language doc,
-# "Recording QA placement" amendment): the learner is final on fit/quality/
-# waivers but unqualified on tone correctness, where mechanical is ground
-# truth and listener ranks only once calibrated (spec section 7 -- absent
-# from this table until a deployment's providers.yaml supplies a measured
-# rank, which is why "listener" does not appear in the recording-for-word
-# row below: an uncalibrated listener contributes nothing to current_best).
-
-AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
-    "picture-for-word": ("learner", "judge"),
-    "scene-for-sentence": ("learner", "judge"),
-    "sentence-for-target": ("learner", "judge"),
-    "finding-waiver": ("learner",),
-    "card-flag": ("learner",),
-    "recording-for-word": ("mechanical", "judge"),  # learner may flag, never outrank
-    "rendition-for-pair": ("mechanical",),
-}
-
-
-# Media-kind -> the judged Assess role that kind's fit verdict is asked under.
-ROLE_FOR_KIND: dict[str, str] = {
-    "picture": "picture-for-word",
-    "recording": "recording-for-word",
-    "rendition": "rendition-for-pair",
-    "sentence": "sentence-for-target",
-}
 
 
 @dataclass(frozen=True)
@@ -649,7 +618,7 @@ class MechanicalBackend:
 
 
 def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.run) -> float:
-    """Ported from thai_deck_gen/media/ffmpeg.py's duration_ok, split into
+    """Ported out of thai_deck_gen's media/ffmpeg.py duration_ok, split into
     a pure duration lookup so the mechanical backend owns the pass/fail
     range check (injectable `runner`, no thai_deck_gen import).
     """

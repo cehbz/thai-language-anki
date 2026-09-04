@@ -4,11 +4,14 @@ persistence/resume), the mechanical backend, and the learner/listener
 non-implementations. Real SyllabusDb for cache-first behavior; fakes for
 transports -- no network, no subprocess, no anthropic import.
 """
+import importlib
+import pkgutil
+from pathlib import Path
+
 import pytest
 
+import thai_syllabus
 from thai_syllabus.assessor import (
-    AUTHORITY_ORDER,
-    ROLE_FOR_KIND,
     AssessQuestion,
     Assessor,
     BatchPending,
@@ -25,9 +28,22 @@ from thai_syllabus.assessor import (
     picture_preference_prompt,
     sentence_prompt,
 )
+from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
 from thai_syllabus.cachekeys import sha
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
+
+
+def test_no_module_imports_the_old_packages():
+    for m in pkgutil.iter_modules(thai_syllabus.__path__):
+        src = Path(importlib.import_module(f"thai_syllabus.{m.name}").__file__).read_text()
+        assert "from thai_deck_eval" not in src and "import thai_deck_eval" not in src, m.name
+        assert "from thai_deck_gen" not in src and "import thai_deck_gen" not in src, m.name
+
+
+def test_assessor_has_no_authority_data():
+    import thai_syllabus.assessor as a
+    assert not hasattr(a, "AUTHORITY_ORDER") and not hasattr(a, "ROLE_FOR_KIND")
 
 
 @pytest.fixture
@@ -387,6 +403,16 @@ def test_authority_order_puts_learner_ahead_of_judge_on_fit_roles():
 def test_authority_order_puts_mechanical_ahead_of_judge_on_recording_roles():
     assert AUTHORITY_ORDER["recording-for-word"][0] == "mechanical"
     assert "learner" not in AUTHORITY_ORDER["recording-for-word"]
+
+
+def test_role_for_returns_the_mapped_role():
+    assert role_for("picture") == "picture-for-word"
+    assert role_for("grapheme-keyword") == "grapheme-keyword-for-grapheme"
+
+
+def test_role_for_raises_keyerror_naming_the_kind():
+    with pytest.raises(KeyError, match="unknown-kind"):
+        role_for("unknown-kind")
 
 
 # --- spec 3 section 1/2: judge attaches artifacts, prices verdicts, --------

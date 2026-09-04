@@ -12,7 +12,7 @@ from datetime import date
 
 import pytest
 
-from thai_syllabus.assessor import ROLE_FOR_KIND
+from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.compile import GateRefusal, compile_syllabus, thai_cloze
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,

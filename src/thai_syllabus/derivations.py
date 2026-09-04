@@ -36,7 +36,7 @@ from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Union
 
-from .assessor import AUTHORITY_ORDER, ROLE_FOR_KIND
+from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND
 from .ports import Answer, CacheReader, StudyReader
 
 __all__ = [

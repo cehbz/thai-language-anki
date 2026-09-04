@@ -34,7 +34,7 @@ schema constraint spec 2 doesn't otherwise call for.
 
 Flag import (spec 4 section 4, "role from the card kind"): the card-kind
 -> Assessor role mapping is this module's own resolution -- spec 3's
-AUTHORITY_ORDER (assessor.py) names roles by WHAT is being judged
+AUTHORITY_ORDER (authority.py) names roles by WHAT is being judged
 (picture-for-word, recording-for-word, ...), not by card-template name,
 and nothing in specs 1-4 gives an exhaustive table from one to the other.
 Only the two word templates whose FRONT is unambiguously one specific

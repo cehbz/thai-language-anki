@@ -25,12 +25,10 @@ data-driven from derivations" and spec 3's key-shape prose leave to the
 implementation -- see the top-level implementation report for the full
 list):
 
-  - Role strings. Spec 3's AUTHORITY_ORDER table names roles per kind
-    ("picture-for-word", "sentence-for-target", "recording-for-word");
+  - Role strings. authority.ROLE_FOR_KIND names the role per kind
+    ("picture-for-word", "sentence-for-target", "recording-for-word",
+    "rendition-for-pair", "grapheme-keyword-for-grapheme");
     derivations._matches_kind only requires role.startswith(kind + "-").
-    _ROLE_SUFFIX below extends that table to the two kinds AUTHORITY_ORDER
-    doesn't name (rendition, grapheme-keyword), picking a same-shaped
-    "KIND-for-WHAT" role for each.
   - Kind 3 (challenger) and kind 2 (direction)'s subject universe.
     derivations.queue() deliberately excludes exhausted and already-good
     subjects ("never: good/exhausted -- exhausted surfaces on the feedback
@@ -82,6 +80,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .authority import role_for
 from .curated import load_curated
 from .derivations import LEARNER_RANK, current_best, exhausted, queue
 from .derivations import stale as _stale
@@ -112,17 +111,7 @@ ACTION_RATINGS: dict[int, str] = {
     4: "good",
 }
 
-_ROLE_SUFFIX: dict[str, str] = {
-    "picture": "for-word",
-    "recording": "for-word",
-    "sentence": "for-target",
-    "rendition": "for-pair",
-    "grapheme-keyword": "for-grapheme",
-}
-
-
-def _role(kind: str) -> str:
-    return f"{kind}-{_ROLE_SUFFIX.get(kind, 'for-word')}"
+_role = role_for
 
 
 # --- cache-row conventions (mirrors derivations.py's, duplicated here since

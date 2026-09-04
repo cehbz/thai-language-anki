@@ -1,7 +1,7 @@
-"""Voice pools and Google TTS synthesis, ported from
+"""Voice pools and Google TTS synthesis, ported out of
 thai_deck_gen/media/tts.py (spec 3 deliverable 2) -- decoupled from that
 module's Deck/Manifest/ProducerResult machinery, since this package
-imports nothing from thai_deck_gen or thai_deck_eval by design (see
+imports nothing out of thai_deck_gen or thai_deck_eval by design (see
 __init__.py). Consumed by provider.py's TtsBackend.
 
 The male/production rule ("a text filling any productive slot gets native

@@ -56,8 +56,8 @@ from .store import MediaStore, SyllabusDb
 # --- IPA -> Pronunciation ----------------------------------------------
 #
 # Ported (not imported -- src/thai_syllabus stays stdlib+PyYAML only, and
-# this package imports nothing from thai_deck_eval/thai_deck_gen by
-# design, see __init__.py) from thai_deck_eval/lang/ipa.py's parse_ipa,
+# this package imports nothing out of thai_deck_eval/thai_deck_gen by
+# design, see __init__.py) out of thai_deck_eval/lang/ipa.py's parse_ipa,
 # whose onset/vowel/coda token lists and 5-Chao-tone-letter table were
 # independently confirmed against this deck's actual note data (see the
 # implementation report: exactly {˧, ˨˩, ˥˩, ˦˥, ˨˩˦} appear, matching

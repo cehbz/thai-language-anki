@@ -51,7 +51,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from .assessor import AssessQuestion, Assessor, ROLE_FOR_KIND
+from .assessor import AssessQuestion, Assessor
+from .authority import ROLE_FOR_KIND
 from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
 from .entities import Sentence, Target, text_sha

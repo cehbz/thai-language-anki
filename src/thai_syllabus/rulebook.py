@@ -6,8 +6,6 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
-from thai_deck_eval.judge.prompts import PICTURE_RULES as _OLD_PICTURE_RULES  # texts kept verbatim
-
 from .entities import Target, exact_confusion_violation, is_corroborated
 from .rules import Finding, Metric, Rule
 
@@ -222,12 +220,31 @@ SENTENCE_REGISTER_NATURAL = Rule(id="sentence/register-natural", principle="E3",
 
 
 # --- rubric constants (judged rules) ----------------------------------------
-# PICTURE_FIT_RUBRIC is the three old thai_deck_eval judge rubric texts,
+# PICTURE_FIT_RUBRIC is the three old picture/fit judge rubric texts,
 # concatenated verbatim (not paraphrased) so a migrated verdict, cached under
 # the old text's hash, still hits the cache under this rule.
 
-PICTURE_FIT_RUBRIC = "\n\n".join(_OLD_PICTURE_RULES[k] for k in (
-    "judge/image-off-phrase", "judge/image-irrelevant", "judge/image-embedded-text"))
+PICTURE_FIT_RUBRIC = (
+    "Does the image show what the intended phrase describes? This asks "
+    "only whether the search found what it was looking for. Pass if no "
+    "phrase is given.\n\n"
+    "Would this image, as a picture on a flashcard, evoke the word for a "
+    "learner? An abstract word is served by a scene that cues it, not by "
+    "a literal depiction -- a person pointing at their own chest evokes "
+    "\"I\", two apples evoke \"two\". Scale the bar to the card: when a "
+    "gloss is shown the image only has to support it, so an image that "
+    "fits the glossed sense passes even if it would not have evoked the "
+    "word unaided; when no gloss is shown the image carries the meaning "
+    "alone and must evoke the word by itself. If it fails, give a "
+    "`suggestion`: the search phrase that would have found a better "
+    "picture.\n\n"
+    "Fail only if text in the image reveals the answer: the Thai word "
+    "itself, its English translation, or a romanized spelling of it. "
+    "Incidental text passes -- watermarks, photographer credits, shop "
+    "signage, product packaging, text in unrelated languages. The rule "
+    "exists so the picture cannot give away the word, not to require a "
+    "text-free photograph."
+)
 PICTURE_PREFERENCE_RUBRIC = ("Rank the attached candidates by how well each, as the only picture "
                              "on a flashcard, evokes the word for a learner: concrete, "
                              "unambiguous, no answer-revealing text.")

@@ -1,7 +1,7 @@
 """API-key resolution for curated/providers.yaml's secret references
-(spec 3 section 5), ported from thai_deck_eval/secrets.py -- the one
+(spec 3 section 5), ported out of thai_deck_eval/secrets.py -- the one
 carry-over module the spec names explicitly. No cross-package import
-(this package imports nothing from thai_deck_eval/thai_deck_gen by
+(this package imports nothing out of thai_deck_eval/thai_deck_gen by
 design, see __init__.py); this is a straight copy, kept in its own
 module here rather than shared, so thai_syllabus stays self-contained.
 

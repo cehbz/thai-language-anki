@@ -127,7 +127,7 @@ class GateRefusal(Exception):
         self.report = report
 
 
-# --- CSS (ported from thai_deck_gen/compiler/build.py's CARD_CSS; spec 4
+# --- CSS (ported out of thai_deck_gen's compiler/build.py CARD_CSS; spec 4
 # section 3: "CSS retains only final fit-to-viewport" for images) --------
 
 CARD_CSS = """
@@ -606,7 +606,7 @@ def _stage_media(used: dict[str, Path], tmp_dir: Path) -> list[Path]:
 
 
 def _stamp_due(apkg_path: Path, due_by_guid_ord: dict[tuple[str, int], int]) -> None:
-    """Post-process pass (ported from thai_deck_gen/compiler/build.py's
+    """Post-process pass (ported out of thai_deck_gen's compiler/build.py
     stamp_due): genanki writes one `due` per NOTE onto every sibling card
     (verified against genanki.Note.write_to_db), so per-template stride
     separation needs this direct sqlite rewrite, keyed by (guid, ord)
