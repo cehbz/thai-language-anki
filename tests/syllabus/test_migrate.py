@@ -4,12 +4,17 @@ touches ~/decks or the real data/ directory.
 """
 import json
 
+import genanki
 import pytest
 import yaml
 
 from thai_syllabus import curated
+from thai_syllabus.derivations import current_best
 from thai_syllabus.migrate import MigrationReport, migrate
+from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
 from thai_syllabus.store import SyllabusDb
+
+PW1_GUID = genanki.guid_for("picture_word", "pw-1")
 
 
 def _write_yaml(path, obj):
@@ -31,10 +36,12 @@ def old_deck(tmp_path):
     d = tmp_path / "old_deck"
     (d / "media" / "images").mkdir(parents=True)
     (d / "media" / "images" / "pw-1.jpg").write_bytes(b"picture-bytes-1")
+    (d / "media" / "images" / "pw-2.jpg").write_bytes(b"slow-picture-bytes")
     (d / "media" / "images" / "sp-k.jpg").write_bytes(b"picture-bytes-sp-k")
 
     _write_yaml(d / "notes" / "picture_words.yaml", [
         {"id": "pw-1", "thai": "ไก่", "ipa": "kaj˨˩", "image": "images/pw-1.jpg"},
+        {"id": "pw-2", "thai": "ช้า", "image": "images/pw-2.jpg"},
     ])
     _write_yaml(d / "notes" / "spelling_sound.yaml", [
         {"id": "sp-1", "pattern": "ก", "image": "images/sp-k.jpg"},
@@ -68,6 +75,24 @@ def old_deck(tmp_path):
              "failed_rules": ["judge/image-irrelevant"], "accepted": False},
         ]})
 
+    # pw-2's own chosen image (images/pw-2.jpg) shares bytes with candidate
+    # 0.jpg, which is recorded as a full pass -- this is the scenario where
+    # a judge PASS on the SAME sha the deck already picked must outrank the
+    # bare machine-chosen marker in current_best (source == "judge").
+    cand_dir2 = d / "work" / "candidates" / "pw-2"
+    cand_dir2.mkdir(parents=True)
+    (cand_dir2 / "0.jpg").write_bytes(b"slow-picture-bytes")
+    (cand_dir2 / "1.jpg").write_bytes(b"other-candidate-slow")
+    _write_yaml(cand_dir2 / "candidates.yaml", {
+        "corpora": ["openverse"],
+        "candidates": [
+            {"file": "0.jpg", "url": "https://example.com/slow-0.jpg", "source": "openverse",
+             "license": "cc0", "passed": True, "failed_rules": [], "accepted": True},
+            {"file": "1.jpg", "url": "https://example.com/slow-1.jpg", "source": "openverse",
+             "license": "cc0", "passed": False,
+             "failed_rules": ["judge/image-irrelevant"], "accepted": False},
+        ]})
+
     _write_jsonl(d / "work" / "forvo_lookups.jsonl", [
         {"word": "ไก่", "items": [{"id": 1}], "fetched": "2026-08-29"},
         {"word": "หมา", "items": [], "fetched": "2026-08-30"},
@@ -75,10 +100,10 @@ def old_deck(tmp_path):
     ])
 
     _write_jsonl(d / "work" / "proof_notes.jsonl", [
-        {"index": 1, "note_id": 111, "guid": "abc123", "model": "picture_word",
+        {"index": 1, "note_id": 111, "guid": PW1_GUID, "model": "picture_word",
          "tags": ["stage::words"], "kind": "note", "text": "looks good",
          "ts": "2026-09-02T15:58:34.647168+00:00"},
-        {"note_id": 111, "guid": "abc123", "model": "picture_word", "tags": [],
+        {"note_id": 111, "guid": PW1_GUID, "model": "picture_word", "tags": [],
          "kind": "note", "text": "actually reconsider",
          "ts": "2026-09-02T15:59:00.000000+00:00"},
     ])
@@ -101,6 +126,7 @@ def old_data(tmp_path):
          "picturable": True},
         {"id": "human-directed", "thai": "ผู้ชาย", "gloss": "man",
          "image_query": "a man standing", "image_query_source": "human"},
+        {"id": "slow", "thai": "ช้า", "gloss": "slow"},
         # deliberately malformed: missing 'thai'
         {"id": "broken-row", "gloss": "nothing here"},
     ])
@@ -112,9 +138,9 @@ def test_migration_report_counts_and_no_silent_drops(old_deck, old_data, tmp_pat
     report = migrate(old_deck, old_data, new_root)
 
     assert isinstance(report, MigrationReport)
-    # word list: 4 rows in, 1 malformed -> 3 words + 1 synthesized classifier
-    assert report.curated["words"] == 4  # chicken, dog, human-directed, classifier:ตัว
-    assert report.curated["targets"] == 3
+    # word list: 5 rows in, 1 malformed -> 4 words + 1 synthesized classifier
+    assert report.curated["words"] == 5  # chicken, dog, human-directed, slow, classifier:ตัว
+    assert report.curated["targets"] == 4
     assert report.curated["classifier_words_synthesized"] == 1
 
     # every dropped item has a reason, and the malformed row was NOT silently skipped
@@ -123,15 +149,19 @@ def test_migration_report_counts_and_no_silent_drops(old_deck, old_data, tmp_pat
     assert ("data/word_list_th.yaml", "broken-row") in reasons_by_source
     assert "missing" in reasons_by_source[("data/word_list_th.yaml", "broken-row")]
 
+    # spelling-sound notes never migrate
+    assert ("notes/spelling_sound.yaml", "sp-1") in reasons_by_source
+    assert "graphemes" in reasons_by_source[("notes/spelling_sound.yaml", "sp-1")]
+
     # media: pw-1.jpg + sp-k.jpg from manifest, missing.jpg dropped w/ reason
     assert report.media["objects_written"] >= 2
     assert any(u.source == "media_manifest.yaml" and "missing.jpg" in u.identity
               for u in report.unmigratable)
 
-    # candidates: one failed (judge row), one passed (no rubric to key under),
-    # one missing on disk (dropped)
-    assert report.cache["judge"] == 1
-    assert report.media.get("candidates_passed_no_recorded_rubric") == 1
+    # candidates: pw-1 (1 fail, 1 pass) + pw-2 (1 pass, 1 fail); pw-1's
+    # missing.jpg is dropped (candidate image missing on disk)
+    assert report.cache["judge_pass"] == 2
+    assert report.cache["judge_fail"] == 2
     assert any(u.source == "work/candidates" and "missing.jpg" in u.identity
               for u in report.unmigratable)
 
@@ -175,9 +205,10 @@ def test_machine_chosen_marker_on_current_deck_images(old_deck, old_data, tmp_pa
     new_root = tmp_path / "new_root"
     migrate(old_deck, old_data, new_root)
     db = SyllabusDb(new_root / "syllabus.db")
-    answers = db.assessments_of("pw-1")
+    answers = db.assessments_of("chicken")
     kinds = [a.answer.get("marker") for a in answers if a.backend == "machine-chosen"]
     assert "machine-chosen" in kinds
+    assert db.assessments_of("pw-1") == []  # old note id is never a subject
 
 
 def test_direction_row_migrated_only_for_human_source(old_deck, old_data, tmp_path):
@@ -203,7 +234,8 @@ def test_proof_notes_newest_wins_via_verdict_history(old_deck, old_data, tmp_pat
     new_root = tmp_path / "new_root"
     migrate(old_deck, old_data, new_root)
     db = SyllabusDb(new_root / "syllabus.db")
-    answers = db.assessments_of("abc123")
+    answers = [a for a in db.assessments_of("chicken")
+              if a.backend == "learner" and a.question.get("kind") == "note"]
     assert len(answers) == 2
     assert answers[-1].answer["note"] == "actually reconsider"
 
@@ -229,7 +261,9 @@ def test_does_not_touch_judge_cache_sqlite(old_deck, old_data, tmp_path):
 
 def test_candidates_yaml_bare_list_shape_is_handled(old_deck, old_data, tmp_path):
     # An older on-disk layout: candidates.yaml is a bare top-level list,
-    # not {"corpora": [...], "candidates": [...]}.
+    # not {"corpora": [...], "candidates": [...]}. "pw-bare" has no
+    # corresponding note at all, so its candidate contributes media only
+    # (no word id to rank a verdict under) and is itself reported.
     cand_dir = old_deck / "work" / "candidates" / "pw-bare"
     cand_dir.mkdir(parents=True)
     (cand_dir / "0.jpg").write_bytes(b"bare-candidate-0")
@@ -240,7 +274,11 @@ def test_candidates_yaml_bare_list_shape_is_handled(old_deck, old_data, tmp_path
     ])
     new_root = tmp_path / "new_root"
     report = migrate(old_deck, old_data, new_root)
-    assert report.cache["judge"] == 2  # 1 from pw-1's candidates + 1 from pw-bare
+    # pw-1's failed candidate + pw-2's failed candidate = 2; pw-bare's
+    # candidate has no word mapping and contributes no verdict.
+    assert report.cache["judge_fail"] == 2
+    assert any(u.source == "work/candidates" and u.identity == "pw-bare"
+              for u in report.unmigratable)
 
 
 def test_forvo_rows_use_the_spec_3_readable_key(old_deck, old_data, tmp_path):
@@ -257,3 +295,55 @@ def test_missing_waivers_yaml_is_not_an_error(old_deck, old_data, tmp_path):
     new_root = tmp_path / "new_root"
     report = migrate(old_deck, old_data, new_root)
     assert report.cache.get("waiver", 0) == 0
+
+
+# --- new for this task: subjects are word ids, candidates.yaml verdicts
+# rank, learner rows by word ---------------------------------------------
+
+def test_chosen_picture_with_a_recorded_pass_ranks_as_current_best(old_deck, old_data, tmp_path):
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    best = current_best(db, "slow", "picture", current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC})
+    assert best.artifact_sha is not None and best.source == "judge"
+    assert report.cache["judge_pass"] == 2 and report.cache["judge_fail"] == 2
+    assert any(r.backend == "machine-chosen" for r in db.assessments_of("slow"))
+    assert db.assessments_of("pw-2") == []
+
+
+def test_unmapped_note_thai_is_reported(old_deck, old_data, tmp_path):
+    notes = old_deck / "notes" / "picture_words.yaml"
+    notes.write_text(notes.read_text(encoding="utf-8")
+                     + "- id: pw-9\n  thai: ไม่มี\n  image: images/pw-1.jpg\n", encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    assert any(u.identity == "pw-9" and "no word" in u.reason for u in report.unmigratable)
+
+
+def test_proof_note_lands_under_the_word_id(old_deck, old_data, tmp_path):
+    guid = genanki.guid_for("picture_word", "pw-2")
+    (old_deck / "work" / "proof_notes.jsonl").write_text(
+        '{"guid": "%s", "model": "picture_word", "note_id": 1, "tags": [], "text": "looks fine", '
+        '"ts": "2026-09-02T15:58:34+00:00"}\n' % guid, encoding="utf-8")
+    migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    rows = [r for r in db.assessments_of("slow") if r.backend == "learner" and r.question.get("kind") == "note"]
+    assert rows and rows[0].answer["note"] == "looks fine"
+
+
+def test_guid_matching_no_picture_word_note_is_reported(old_deck, old_data, tmp_path):
+    (old_deck / "work" / "proof_notes.jsonl").write_text(
+        '{"guid": "not-a-real-guid", "model": "picture_word", "note_id": 1, "tags": [], '
+        '"text": "orphan", "ts": "2026-09-02T15:58:34+00:00"}\n', encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    assert any(u.source == "work/proof_notes.jsonl" and u.identity == "not-a-real-guid"
+              and "guid matches no picture-word note" in u.reason
+              for u in report.unmigratable)
+
+
+def test_homograph_word_list_rows_are_counted(old_deck, old_data, tmp_path):
+    word_list = old_data / "word_list_th.yaml"
+    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
+    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)"})
+    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
+                         encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    assert report.curated["homograph_rows"] == 1
