@@ -102,15 +102,10 @@ from .ports import Answer, StudyRecord
 if False:  # TYPE_CHECKING without importing at runtime
     from .rules import Finding
 
-# Pillow is optional (spec 4 section 2: "Pillow OPTIONAL -- guarded
-# import"). When present, MediaStore.add_image normalizes at ingest
-# (bounded long edge, metadata stripped, re-encoded); when absent, it
-# falls back to storing the bytes raw and recording a warning, rather than
-# failing the whole ingest over a missing dependency.
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover -- environment dependent
-    Image = None  # type: ignore[assignment]
+# Pillow is a hard dependency of picture ingest (spec 4 section 3):
+# MediaStore.add_image normalizes at ingest (bounded long edge, metadata
+# stripped, re-encoded); the stored, sha'd bytes are the normalized file.
+from PIL import Image
 
 
 _SCHEMA = """
@@ -504,12 +499,10 @@ _FORMAT_EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 @dataclass(frozen=True)
 class ImageIngestResult:
     """MediaStore.add_image's return value: the sha (and extension) the
-    normalized -- or, without Pillow, raw -- bytes were written under, plus
-    a warning when normalization did not happen.
+    normalized bytes were written under.
     """
     sha: str
     ext: str
-    warning: str | None = None
 
 
 def _normalize_image(data: bytes, ext: str) -> tuple[bytes, str]:
@@ -572,24 +565,13 @@ class MediaStore:
 
     def add_image(self, data: bytes, ext: str) -> ImageIngestResult:
         """Ingest normalization (spec 4 section 3): the stored, sha'd bytes
-        are the normalized file when Pillow is available -- what a judge or
-        the card itself sees is identical. Without Pillow, stores `data`
-        raw and reports why in `.warning` rather than failing ingest.
+        are the normalized file -- what a judge or the card itself sees is
+        identical.
         """
-        if Image is None:
-            written_sha = self.write(data, ext)
-            return ImageIngestResult(
-                sha=written_sha, ext=ext,
-                warning="Pillow not available: image stored unnormalized "
-                       "(no resize, metadata strip, or re-encode)")
         try:
             normalized, out_ext = _normalize_image(data, ext)
-        except Exception as exc:  # undecodable bytes: store raw, say why
-            written_sha = self.write(data, ext)
-            return ImageIngestResult(
-                sha=written_sha, ext=ext,
-                warning=f"image not decodable ({exc.__class__.__name__}): "
-                       "stored unnormalized")
+        except Exception as exc:
+            raise ValueError(f"cannot decode image: {exc}") from exc
         written_sha = self.write(normalized, out_ext)
         return ImageIngestResult(sha=written_sha, ext=out_ext)
 

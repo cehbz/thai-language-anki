@@ -1,9 +1,13 @@
 """End to end over a fixture deck: build_sourcing + run with fake search, Forvo, LLM, judge and
 mechanical backends; picture, recording and sentence needs close; the gate opens."""
 import dataclasses
+import hashlib
+import io
 import json
 from datetime import date
 from pathlib import Path
+
+from PIL import Image as PILImage
 
 from thai_syllabus.assessor import RawVerdict
 from thai_syllabus.attempts import current_best_of
@@ -74,6 +78,16 @@ class _Llm:
         return RawAnswer(items=('{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}',))
 
 
+def _jpeg_bytes(seed: str) -> bytes:
+    """A valid, decodable JPEG whose color derives from `seed` -- distinct
+    urls decode to distinct images, unlike a bare url-as-bytes stand-in.
+    """
+    digest = hashlib.sha256(seed.encode()).digest()
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), tuple(digest[:3])).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
 def _judge_complete(prompt, attachments=()):
     """The judge's default prompt builders dispatch per role -- fit
     questions attach at most one artifact, a picture-preference question
@@ -91,7 +105,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     ctx = build_sourcing(root)
     ctx.provider._backends.update({
         "openverse": _Search(), "forvo": _Forvo(), "llm-sentence": _Llm(),
-        "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "jpg")),
+        "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
         "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
     ctx.assessor._backends["judge"].complete = _judge_complete
     ctx.assessor._backends["mechanical"].evaluate = lambda q: RawVerdict(value=True, evidence="1.0s")

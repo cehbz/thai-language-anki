@@ -1647,6 +1647,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -1654,7 +1655,6 @@ dependencies = [
 [package.optional-dependencies]
 gen = [
     { name = "genanki" },
-    { name = "pillow" },
     { name = "requests", extra = ["socks"] },
 ]
 llm = [
@@ -1679,7 +1679,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "genanki", marker = "extra == 'gen'" },
     { name = "pandas", marker = "extra == 'nlp'", specifier = ">=2" },
-    { name = "pillow", marker = "extra == 'gen'" },
+    { name = "pillow" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pythainlp", marker = "extra == 'nlp'", specifier = ">=5" },
     { name = "pyyaml", specifier = ">=6" },

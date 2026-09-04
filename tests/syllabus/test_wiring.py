@@ -178,8 +178,13 @@ def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths,
     calls = []
 
     def fake_run(cmd, **kwargs):
+        import io
         import subprocess as sp
-        Path(cmd[2]).write_bytes(b"bytes")
+
+        from PIL import Image as PILImage
+        buf = io.BytesIO()
+        PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
+        Path(cmd[2]).write_bytes(buf.getvalue())
         calls.append(cmd)
         return sp.CompletedProcess(cmd, 0, '{"format":"jpeg"}\n', "")
 
@@ -358,6 +363,7 @@ def _write_curated_dir(root):
     (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
     (curated / "profile.yaml").write_text(yaml.safe_dump(
         {"register": "male_colloquial", "emphasis": {}}))
+    (curated / "rulebook.yaml").write_text("{}\n", encoding="utf-8")
     return root
 
 
@@ -708,6 +714,9 @@ def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
     # connections -- e.g. set_pair_confusions would land on only one.
     # build_sourcing must open db/bundle once and inject them.
     root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
     ctx = build_sourcing(root)
     assert ctx.db is ctx.syllabus.assessments
 

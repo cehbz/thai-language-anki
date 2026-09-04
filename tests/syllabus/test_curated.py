@@ -222,12 +222,6 @@ def test_profile_round_trip(tmp_path):
     assert curated.load_profile(path) == profile
 
 
-def test_profile_defaults_when_absent(tmp_path):
-    path = tmp_path / "profile.yaml"
-    profile = curated.load_profile(path)
-    assert profile.register == "male_colloquial"
-
-
 # --- rulebook config -----------------------------------------------------
 
 def test_rulebook_config_round_trip(tmp_path):
@@ -359,9 +353,10 @@ def test_rulebook_file_text_is_empty_when_the_file_is_absent(tmp_path):
 # A LOADED providers.yaml must describe a run that can actually happen
 # (fail fast and noisy): both mediafetch paths are required -- pictures and
 # recordings are always in scope -- and there must be some single-question
-# transport for sentence drafting. The ProvidersConfig dataclass itself
-# stays permissive (a bare ProvidersConfig() is still constructible, and
-# an ABSENT file still yields those defaults); only the loader refuses.
+# transport for sentence drafting. An ABSENT providers.yaml refuses, naming
+# the path (it is a store, spec 2 section 1). The ProvidersConfig dataclass
+# itself stays permissive -- a bare ProvidersConfig() is still
+# constructible; only the loader refuses.
 
 def _providers(**overrides) -> dict:
     """The minimum providers.yaml the loader accepts, plus overrides --
@@ -373,14 +368,37 @@ def _providers(**overrides) -> dict:
     return base
 
 
-def test_providers_config_defaults_ship_the_tts_voice_pools(tmp_path):
-    from thai_syllabus.tts import FEMALE_VOICES, MALE_VOICES
-    config = curated.load_providers_config(tmp_path / "does-not-exist.yaml")
-    assert config.tts_male_voices == tuple(MALE_VOICES)
-    assert config.tts_female_voices == tuple(FEMALE_VOICES)
-    assert config.judge.transport == "cli"
-    assert config.k == 2
-    assert config.attempt_cap == 8
+def write_providers(tmp_path, **overrides) -> None:
+    """Writes the minimum acceptable providers.yaml, plus overrides, to
+    tmp_path / "providers.yaml"."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(**overrides)), encoding="utf-8")
+
+
+# --- missing curated files refuse, naming the path -------------------------
+
+@pytest.mark.parametrize("loader,name", [
+    (curated.load_providers_config, "providers.yaml"),
+    (curated.load_profile, "profile.yaml"),
+    (curated.load_rulebook_config, "rulebook.yaml"),
+])
+def test_missing_curated_file_refuses(tmp_path, loader, name):
+    with pytest.raises(curated.CuratedValidationError, match=name):
+        loader(tmp_path / name)
+
+
+def test_empty_voice_pool_refuses(tmp_path):
+    write_providers(tmp_path, tts={"male_voices": [],
+                                   "female_voices": ["th-TH-Chirp3-HD-Aoede"]})
+    with pytest.raises(curated.CuratedValidationError, match="male_voices"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_empty_female_voice_pool_refuses(tmp_path):
+    write_providers(tmp_path, tts={"male_voices": ["th-TH-Chirp3-HD-Puck"],
+                                   "female_voices": []})
+    with pytest.raises(curated.CuratedValidationError, match="female_voices"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
 
 
 def test_providers_config_round_trip(tmp_path):
@@ -607,10 +625,6 @@ def test_providers_tts_cost_per_char_round_trips(tmp_path):
     assert cfg.tts_cost_per_char == pytest.approx(1.6e-05)
     curated.save_providers_config(path, cfg)
     assert curated.load_providers_config(path) == cfg
-
-
-def test_providers_tts_cost_per_char_defaults_to_zero(tmp_path):
-    assert curated.load_providers_config(tmp_path / "nope.yaml").tts_cost_per_char == 0.0
 
 
 def test_providers_tts_cost_per_char_rejects_a_non_number(tmp_path):

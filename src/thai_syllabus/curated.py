@@ -59,6 +59,13 @@ class CuratedValidationError(ValueError):
         super().__init__("; ".join(errors))
 
 
+def _require_exists(path: Path) -> None:
+    """A store file (providers.yaml, profile.yaml, rulebook.yaml) refuses
+    when absent, naming the path."""
+    if not path.exists():
+        raise CuratedValidationError([f"{path}: not found"])
+
+
 def _atomic_write_yaml(path: Path, data: Any) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,8 +339,7 @@ def save_profile(path: str | Path, profile: Profile) -> None:
 
 def load_profile(path: str | Path) -> Profile:
     path = Path(path)
-    if not path.exists():
-        return Profile(register="male_colloquial")
+    _require_exists(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return Profile(register=data.get("register", "male_colloquial"),
                    emphasis=dict(data.get("emphasis") or {}))
@@ -366,8 +372,7 @@ def save_rulebook_config(path: str | Path, config: RulebookConfig) -> None:
 
 def load_rulebook_config(path: str | Path) -> RulebookConfig:
     path = Path(path)
-    if not path.exists():
-        return RulebookConfig()
+    _require_exists(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     errors: list[str] = []
     severities = dict(data.get("severities") or {})
@@ -524,9 +529,11 @@ def rulebook_file_text(path: str | Path) -> str:
 # load_providers_config refuses a file that describes a run the code cannot
 # perform: no imgfetch_path/audiofetch_path (pictures and recordings are
 # always in scope), an api/batch judge with no price_per_mtok (its spend
-# would be silently costed at zero), and an api/batch judge with no
-# anthropic secret (nothing left to draft sentences through). The dataclass
-# defaults stay permissive -- they are what an ABSENT file yields.
+# would be silently costed at zero), an api/batch judge with no anthropic
+# secret (nothing left to draft sentences through), and an empty
+# male_voices or female_voices pool (pick_voice divides by its length).
+# providers.yaml is a store (spec 2 section 1): an absent file refuses,
+# naming the path -- it never yields the dataclass's permissive defaults.
 
 @dataclass(frozen=True)
 class JudgeConfig:
@@ -560,8 +567,7 @@ class ProvidersConfig:
 
 def load_providers_config(path: str | Path) -> ProvidersConfig:
     path = Path(path)
-    if not path.exists():
-        return ProvidersConfig()
+    _require_exists(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     errors: list[str] = []
 
@@ -569,7 +575,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
     tts_cfg = data.get("tts") or {}
     male = tuple(tts_cfg["male_voices"]) if "male_voices" in tts_cfg else tuple(MALE_VOICES)
+    if not male:
+        errors.append("providers.tts.male_voices: must not be empty")
     female = tuple(tts_cfg["female_voices"]) if "female_voices" in tts_cfg else tuple(FEMALE_VOICES)
+    if not female:
+        errors.append("providers.tts.female_voices: must not be empty")
     tts_cost_per_char = tts_cfg.get("cost_per_char", 0.0)
     if not _is_number(tts_cost_per_char) or float(tts_cost_per_char) < 0:
         errors.append(f"providers.tts.cost_per_char: {tts_cost_per_char!r} must be "
@@ -609,8 +619,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     # recordings are always in scope, so a run without imgfetch could never
     # fetch a found image and one without audiofetch could never download a
     # Forvo recording; each would look like a run that simply "found
-    # nothing". The ProvidersConfig DATACLASS stays permissive (its
-    # defaults are what an ABSENT file yields); only this loader refuses.
+    # nothing". The ProvidersConfig DATACLASS stays permissive (a bare
+    # ProvidersConfig() is still constructible); only this loader refuses.
     imgfetch_path = data.get("imgfetch_path")
     audiofetch_path = data.get("audiofetch_path")
     if not imgfetch_path:

@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import dataclasses
 import http.client
+import io
 import json
 import threading
 from http.server import HTTPServer
 
 import pytest
+
+from PIL import Image as PILImage
 
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion
@@ -282,6 +285,14 @@ def test_append_answer_same_answer_twice_is_idempotent_in_derived_state(db, w1):
     assert len(db.assessments_of(w1.id)) == 2
 
 
+def _png_bytes() -> bytes:
+    """A valid, decodable PNG -- add_image now requires one, unlike an
+    arbitrary bytes stand-in."""
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # --- append_supply: path and url flows --------------------------------------
 
 def test_append_supply_from_local_path(tmp_path, db, media_store, syllabus, w1):
@@ -303,7 +314,7 @@ def test_append_supply_from_local_path(tmp_path, db, media_store, syllabus, w1):
 def test_append_supply_from_url_goes_through_imgfetch_provider(db, media_store, syllabus, w1):
     def fake_fetcher(url):
         assert url == "https://example.test/pic.png"
-        return b"fetched-bytes", "png"
+        return _png_bytes(), "png"
 
     ctx = rs.ReviewContext(syllabus=syllabus, cache=db, record=db, media_store=media_store,
                            url_fetcher=fake_fetcher)
@@ -322,7 +333,7 @@ def test_append_supply_url_fetch_is_cache_first(db, media_store, syllabus, w1):
 
     def counting_fetcher(url):
         calls.append(url)
-        return b"bytes", "png"
+        return _png_bytes(), "png"
 
     ctx = rs.ReviewContext(syllabus=syllabus, cache=db, record=db, media_store=media_store,
                            url_fetcher=counting_fetcher)

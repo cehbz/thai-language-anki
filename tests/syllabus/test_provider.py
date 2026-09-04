@@ -234,7 +234,7 @@ class _Media:
 
     def add_image(self, data, ext):
         self.images.append((data, ext))
-        return ImageIngestResult(sha="img-" + ext, ext=ext, warning=None)
+        return ImageIngestResult(sha="img-" + ext, ext=ext)
 
 
 def test_fetch_backend_key_is_the_url():

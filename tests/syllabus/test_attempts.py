@@ -1,11 +1,14 @@
 """attempts.py: assess-first, then one Source; every candidate judged; current-best re-derived.
 Real SyllabusDb + MediaStore; fake Provider/Assessor backends; no network."""
 import dataclasses
+import hashlib
+import io
 import logging
 from datetime import date
 from pathlib import Path
 
 import pytest
+from PIL import Image as PILImage
 
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend, MechanicalBackend, RawVerdict
 from thai_syllabus.attempts import (Need, Outcome, SentenceOutcome, Sourcing, _phrase, attempt,
@@ -42,14 +45,42 @@ class _Search:
         return RawAnswer(items=tuple({"url": u, "source": "openverse", "licence": "by"} for u in self.urls))
 
 
+def _jpeg_bytes(url: str) -> bytes:
+    """A valid, decodable JPEG unique to `url` (distinct urls must still
+    content-address to distinct shas) whose dominant color -- green for a
+    "good" url, red otherwise -- encodes the fit signal _is_good_image
+    reads back; add_image requires real image bytes, so the fetcher can no
+    longer smuggle the url text itself into the stored file.
+    """
+    digest = hashlib.sha256(url.encode()).digest()
+    if "good" in url:
+        color = (digest[0] % 50, 200 + digest[1] % 56, digest[2] % 50)
+    else:
+        color = (200 + digest[0] % 56, digest[1] % 50, digest[2] % 50)
+    buf = io.BytesIO()
+    PILImage.new("RGB", (4, 4), color).save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 def _fetcher(url):
-    return url.encode(), "jpg"
+    return _jpeg_bytes(url), "jpg"
+
+
+def _is_good_image(path) -> bool:
+    """True for a fresh fetch (_jpeg_bytes: green means good) and for a
+    pre-existing legacy media row written raw, pre-dating add_image's
+    normalization requirement (the literal text "good" in its bytes)."""
+    try:
+        r, g, b = PILImage.open(path).convert("RGB").getpixel((0, 0))
+        return g > r
+    except Exception:
+        return b"good" in Path(path).read_bytes()
 
 
 class _Judge:
     """Verdict by attachment count: more than one attachment means a
     preference (ranking) question; one attachment is a fit question,
-    decided by its file's bytes containing 'good'."""
+    decided by its file's pixel color (see _jpeg_bytes/_is_good_image)."""
     def __init__(self):
         self.calls = []
 
@@ -58,7 +89,7 @@ class _Judge:
         if len(attachments) > 1:
             names = [Path(a).stem for a in attachments]
             return Completion(text='{"ranking": ' + str(names).replace("'", '"') + '}')
-        ok = any(b"good" in Path(a).read_bytes() for a in attachments)
+        ok = any(_is_good_image(a) for a in attachments)
         return Completion(text='{"value": %s, "evidence": "e"}' % ("true" if ok else "false"))
 
 
@@ -216,7 +247,7 @@ def test_per_url_fetch_transport_error_is_skipped(ctx):
     def flaky_fetcher(url):
         if "boom" in url:
             raise TransportError("refused")
-        return url.encode(), "jpg"
+        return _jpeg_bytes(url), "jpg"
 
     c.provider = Provider(record=c.db, cache=c.db, backends={
         "openverse": search, "imgfetch": FetchBackend(media=c.media_store, fetcher=flaky_fetcher)})

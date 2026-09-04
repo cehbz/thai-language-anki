@@ -3,12 +3,9 @@ long edge (800px, aspect preserved), metadata stripped, re-encoded -- the
 stored, sha'd bytes are the normalized file, so a judge/learner always
 sees the pixels the card shows.
 
-Pillow is an optional dependency (guarded import in store.py); this whole
-module needs a real Pillow to build fixture images, so it skips cleanly
-when Pillow isn't installed, per the task's "no Pillow requirement for the
-default suite" instruction. The no-Pillow *fallback* behavior itself
-(store.py falls back to raw bytes + a warning) is tested without this
-guard, in test_store.py, via monkeypatch.
+Pillow is a hard dependency of add_image; this module needs a real Pillow
+to build fixture images, so it skips cleanly when Pillow isn't installed,
+per the task's "no Pillow requirement for the default suite" instruction.
 """
 import io
 
@@ -76,7 +73,11 @@ def test_add_image_is_content_addressed_on_the_normalized_bytes(tmp_path):
     assert r1.sha == hashlib.sha256(stored_bytes).hexdigest()
 
 
-def test_add_image_carries_no_warning_when_pillow_is_available(tmp_path):
-    store = MediaStore(tmp_path)
-    result = store.add_image(_png_bytes((300, 200)), ext="png")
-    assert result.warning is None
+@pytest.fixture
+def media_store(tmp_path):
+    return MediaStore(tmp_path)
+
+
+def test_undecodable_image_refuses(media_store):
+    with pytest.raises(ValueError, match="decode"):
+        media_store.add_image(b"not an image", "jpg")

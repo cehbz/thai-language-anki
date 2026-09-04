@@ -409,18 +409,11 @@ def test_media_store_has(tmp_path):
 
 
 # --- MediaStore.add_image: ingest normalization (spec 4 section 3) --------
-# Pillow is optional (guarded import); when unavailable, add_image stores
-# the bytes raw and records a warning instead of failing. This fallback
-# path doesn't need real Pillow, so it isn't gated -- it forces the
-# not-available branch directly via monkeypatch.
+# Pillow is a hard dependency; undecodable bytes refuse rather than being
+# stored raw. The real-Pillow normalization behavior is covered, gated on
+# Pillow being installed, in test_media_normalization.py.
 
-def test_add_image_without_pillow_stores_raw_bytes_with_a_warning(tmp_path, monkeypatch):
-    from thai_syllabus import store as store_module
-    monkeypatch.setattr(store_module, "Image", None)
+def test_add_image_refuses_undecodable_bytes(tmp_path):
     media_store = MediaStore(tmp_path)
-    result = media_store.add_image(b"not really an image", ext="jpg")
-    import hashlib
-    assert result.sha == hashlib.sha256(b"not really an image").hexdigest()
-    assert result.warning is not None
-    assert "Pillow" in result.warning
-    assert media_store.path_for(result.sha, "jpg").read_bytes() == b"not really an image"
+    with pytest.raises(ValueError, match="decode"):
+        media_store.add_image(b"not really an image", ext="jpg")

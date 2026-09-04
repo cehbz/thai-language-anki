@@ -42,6 +42,7 @@ def _write_curated_dir(root):
     (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
     (curated / "profile.yaml").write_text(yaml.safe_dump(
         {"register": "male_colloquial", "emphasis": {}}))
+    (curated / "rulebook.yaml").write_text("{}\n", encoding="utf-8")
     return root
 
 
