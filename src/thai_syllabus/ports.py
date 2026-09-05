@@ -172,15 +172,21 @@ class Answer:
 @dataclass(frozen=True)
 class StudyRecord:
     """One `study` table row (spec 2 section 2): an imported Anki review.
-    card_key = the compiled card's content identity (target/pair/grapheme
-    id + card kind, spec 2's own words); compile_id identifies which
-    Compile produced that card.
+    family is word|minimal_pair|grapheme|sentence; anchor is the entity id
+    for the family (word id, grapheme symbol, sentence text_sha), or a
+    pair id for family "minimal_pair" (member_index/speaker_id then name
+    the reviewed member); card_kind is the card's template name, lowered;
+    compile_id identifies which Compile produced that card.
     """
-    card_key: str
+    family: str
+    anchor: str
+    card_kind: str
     compile_id: str
     ts: int
     grade: int
     time_ms: int
+    member_index: str | None = None
+    speaker_id: str | None = None
 
 
 @runtime_checkable
@@ -241,10 +247,10 @@ class CacheReader(Protocol):
 @runtime_checkable
 class StudyReader(Protocol):
     """Read side of the `study` table (spec 2 section 3). `records` is an
-    exact match on one card_key; `study_rows` returns every row, ordered
-    by ts, so a caller (the Syllabus aggregate's study_by_confusion) can
-    group study history over its own pairs without querying one card_key
-    at a time.
+    exact match on one (family, anchor, card_kind); `study_rows` returns
+    every row, ordered by ts, so a caller (the Syllabus aggregate's
+    study_by_confusion) can group study history over its own pairs
+    without querying one (family, anchor, card_kind) at a time.
     """
-    def records(self, card_key: str) -> list["StudyRecord"]: ...
+    def records(self, family: str, anchor: str, card_kind: str) -> list["StudyRecord"]: ...
     def study_rows(self) -> list["StudyRecord"]: ...

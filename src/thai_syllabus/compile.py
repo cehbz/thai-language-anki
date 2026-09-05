@@ -52,12 +52,12 @@ didn't spell out):
   `syllabus.media.rendition(pair.id)`, never a member's own current-best
   word recording. A pair with no current-best rendition compiles no notes
   for either member (DroppedCard reason "no rendition").
-- **card_key's word/pair anchor**: a word note's anchor is the word id
+- **a card's word/pair anchor**: a word note's anchor is the word id
   (a word note aggregates every Target the word has into one note, guid
   = word id too, spec 4 section 2). A pair member note's anchor is its
-  MemberKey, "<pair_id>:<speaker>:<i>" -- Syllabus.study_by_confusion
-  resolves this back to a confusion by matching the longest known pair
-  id the anchor starts with, since a pair id may itself contain ":".
+  MemberKey, "<pair_id>:<speaker>:<i>" -- anki_import.py's revlog import
+  writes the pair id alone as the study row's anchor, with the member's
+  speaker/index carried in separate columns (spec 2 section 2).
 - **Bury-siblings options group** (spec 4 section 2's "the shipped deck
   options group sets bury-siblings"): genanki's own default dconf (the
   "Default" preset every genanki.Deck uses) already ships

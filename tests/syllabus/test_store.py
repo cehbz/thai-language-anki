@@ -267,68 +267,66 @@ def test_satisfies_study_reader_protocol(db):
 
 # --- study ---------------------------------------------------------------
 
-def test_append_study_and_read_back_by_card_key(db):
-    db.append_study(card_key="target:cheap:picture_card", compile_id="c1",
-                    grade=3, time_ms=1200)
-    records = db.records("target:cheap:picture_card")
+def _study(*, family="word", anchor="rice", card_kind="listening", compile_id="c1",
+          ts, grade, time_ms, member_index=None, speaker_id=None) -> StudyRecord:
+    return StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                       compile_id=compile_id, ts=ts, grade=grade, time_ms=time_ms,
+                       member_index=member_index, speaker_id=speaker_id)
+
+
+def test_append_study_and_read_back_by_family_anchor_card_kind(db):
+    db.append_study(_study(family="target", anchor="cheap", card_kind="picture_card",
+                           ts=1, grade=3, time_ms=1200))
+    records = db.records("target", "cheap", "picture_card")
     assert len(records) == 1
     assert isinstance(records[0], StudyRecord)
     assert records[0].grade == 3
     assert records[0].compile_id == "c1"
 
 
-def test_append_study_with_an_explicit_ts_stores_it_verbatim(db):
+def test_append_study_stores_its_ts_verbatim(db):
     # anki_import.py's revlog import needs the STORED ts to be exactly the
     # revlog row's own id (an epoch-ms review timestamp) for "idempotent
-    # by (card_key, ts)" (spec 4 section 4) to mean anything on reimport
-    # -- _next_ts's monotonic-bump-for-collision-avoidance behavior (built
-    # for the cache table's own ts source, epoch nanoseconds) must NOT
-    # silently renumber an explicitly supplied ts.
-    db.append_study(card_key="k1", compile_id="c1", grade=3, time_ms=100,
-                    ts=1_700_000_000_000)
-    records = db.records("k1")
+    # by (family, anchor, card_kind, ts)" (spec 4 section 4) to mean
+    # anything on reimport.
+    db.append_study(_study(anchor="k1", grade=3, time_ms=100, ts=1_700_000_000_000))
+    records = db.records("word", "k1", "listening")
     assert records[0].ts == 1_700_000_000_000
 
 
-def test_append_study_with_an_explicit_ts_does_not_disturb_auto_generated_ones(db):
-    db.append_study(card_key="k1", compile_id="c1", grade=1, time_ms=100)
-    auto_ts = db.records("k1")[0].ts
-    db.append_study(card_key="k1", compile_id="c1", grade=2, time_ms=100,
-                    ts=1)  # far smaller than the nanosecond auto ts above
-    records = sorted(db.records("k1"), key=lambda r: r.ts)
-    assert records[0].ts == 1
-    assert records[1].ts == auto_ts
-
-
 def test_study_is_append_only(db):
-    db.append_study(card_key="k1", compile_id="c1", grade=1, time_ms=100)
-    db.append_study(card_key="k1", compile_id="c1", grade=3, time_ms=200)
-    assert len(db.records("k1")) == 2
+    db.append_study(_study(anchor="k1", grade=1, time_ms=100, ts=1))
+    db.append_study(_study(anchor="k1", grade=3, time_ms=200, ts=2))
+    assert len(db.records("word", "k1", "listening")) == 2
     con = sqlite3.connect(db.path)
     assert con.execute("select count(*) from study").fetchone()[0] == 2
 
 
 def test_append_study_ignores_a_duplicate(db):
-    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
-                           grade=3, time_ms=900)
-    assert not db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
-                               grade=3, time_ms=900)
-    assert len(db.records("rice::listening")) == 1
+    assert db.append_study(_study(anchor="rice", ts=5, grade=3, time_ms=900))
+    assert not db.append_study(_study(anchor="rice", ts=5, grade=3, time_ms=900))
+    assert len(db.records("word", "rice", "listening")) == 1
 
 
-def test_append_study_with_a_new_ts_for_a_known_card_key_is_not_a_duplicate(db):
-    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
-                           grade=3, time_ms=900)
-    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=6,
-                           grade=4, time_ms=800)
-    assert len(db.records("rice::listening")) == 2
+def test_append_study_with_a_new_ts_for_a_known_card_is_not_a_duplicate(db):
+    assert db.append_study(_study(anchor="rice", ts=5, grade=3, time_ms=900))
+    assert db.append_study(_study(anchor="rice", ts=6, grade=4, time_ms=800))
+    assert len(db.records("word", "rice", "listening")) == 2
+
+
+def test_append_study_keeps_member_index_and_speaker_id_for_a_pair_row(db):
+    db.append_study(_study(family="minimal_pair", anchor="p1", card_kind="recognition",
+                           ts=1, grade=2, time_ms=100, member_index="0", speaker_id="s1"))
+    records = db.records("minimal_pair", "p1", "recognition")
+    assert records[0].member_index == "0"
+    assert records[0].speaker_id == "s1"
 
 
 def test_study_rows_returns_every_row_ordered_by_ts(db):
-    db.append_study(card_key="k2", compile_id="c1", ts=2, grade=1, time_ms=100)
-    db.append_study(card_key="k1", compile_id="c1", ts=1, grade=2, time_ms=100)
+    db.append_study(_study(anchor="k2", ts=2, grade=1, time_ms=100))
+    db.append_study(_study(anchor="k1", ts=1, grade=2, time_ms=100))
     rows = db.study_rows()
-    assert [r.card_key for r in rows] == ["k1", "k2"]
+    assert [r.anchor for r in rows] == ["k1", "k2"]
     assert [r.ts for r in rows] == [1, 2]
 
 

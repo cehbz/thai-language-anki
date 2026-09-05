@@ -106,7 +106,7 @@ def test_revlog_import_appends_a_study_row_with_the_revlogs_own_ts(compiled):
     report = import_collection(collection_path, fx.db)
     assert report.revlog_imported == 1
 
-    records = fx.db.records("rice::listening")
+    records = fx.db.records("word", "rice", "listening")
     assert len(records) == 1
     assert records[0].ts == 1_700_000_000_000
     assert records[0].grade == 3
@@ -114,7 +114,7 @@ def test_revlog_import_appends_a_study_row_with_the_revlogs_own_ts(compiled):
     assert records[0].compile_id == compile_result.compile_id
 
 
-def test_revlog_import_is_idempotent_by_card_key_and_ts(compiled):
+def test_revlog_import_is_idempotent_by_family_anchor_kind_and_ts(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     card_id, note_id = _find_word_card(conn, "ข้าว", "Listening")
@@ -128,7 +128,7 @@ def test_revlog_import_is_idempotent_by_card_key_and_ts(compiled):
     assert r1.revlog_imported == 1
     assert r2.revlog_imported == 0
     assert r2.revlog_skipped >= 1
-    assert len(fx.db.records("rice::listening")) == 1
+    assert len(fx.db.records("word", "rice", "listening")) == 1
 
 
 def test_revlog_import_reports_a_duplicate_as_skipped_already_present(compiled):
@@ -162,7 +162,10 @@ def test_revlog_import_skips_an_unrecognized_card_with_a_reason(compiled):
 
 # --- flag import ---------------------------------------------------------
 
-def test_flag_import_writes_a_learner_assessment_row(compiled):
+def test_flag_on_a_production_card_with_a_current_picture_is_a_rating(compiled):
+    # Production's front IS the word's picture (like Listening's front is
+    # its recording): a flag there rates that specific picture, it is not
+    # a card-level flag.
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     card_id, note_id = _find_word_card(conn, "ข้าว", "Production")
@@ -170,14 +173,101 @@ def test_flag_import_writes_a_learner_assessment_row(compiled):
     conn.commit()
     conn.close()
 
+    from thai_syllabus.derivations import current_best
+    picture = current_best(fx.db, "rice", "picture", current_rubric={}, prior=(),
+                           provenance_source=lambda s: None)
+    assert picture.artifact_sha is not None
+
     report = import_collection(collection_path, fx.db)
     assert report.flags_imported == 1
 
     rows = fx.db.assessments_of("rice")
-    flag_rows = [r for r in rows if r.backend == "learner" and r.question.get("role") == "picture-for-word"]
+    rating_rows = [r for r in rows if r.backend == "learner" and r.question.get("kind") == "rating"
+                  and r.question.get("role") == "picture-for-word"]
+    assert len(rating_rows) == 1
+    assert rating_rows[0].question["artifact_sha"] == picture.artifact_sha
+    assert rating_rows[0].answer["value"] == "unacceptable-none"
+
+
+def test_flag_on_a_production_card_with_no_current_picture_is_a_card_flag(compiled):
+    # No artifact to rate: the flag falls back to a card-level flag
+    # (spec 4 section 4).
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    card_id, note_id = _find_word_card(conn, "ข้าว", "Production")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    from thai_syllabus.cachekeys import LearnerKey
+    from thai_syllabus.derivations import current_best
+    picture = current_best(fx.db, "rice", "picture", current_rubric={}, prior=(),
+                           provenance_source=lambda s: None)
+    fx.db.append(port="assess", backend="learner",
+                key=LearnerKey(artifact_sha=picture.artifact_sha, role="picture-for-word"),
+                subject="rice", question={"role": "picture-for-word",
+                                          "artifact_sha": picture.artifact_sha, "kind": "rating"},
+                answer={"value": "unacceptable-none"})
+    assert current_best(fx.db, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=lambda s: None).artifact_sha is None
+
+    report = import_collection(collection_path, fx.db)
+    assert report.flags_imported == 1
+
+    rows = fx.db.assessments_of("rice")
+    flag_rows = [r for r in rows if r.backend == "learner" and r.question.get("kind") == "card-flag"
+                and r.question.get("card_kind") == "production"]
     assert len(flag_rows) == 1
-    assert flag_rows[0].answer["value"] == "unacceptable-none"
-    assert flag_rows[0].question["kind"] == "rating"  # record.learner_ratings reads this back
+
+
+def test_card_flag_on_a_reading_card_is_a_card_flag_row(compiled):
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    card_id, note_id = _find_word_card(conn, "ข้าว", "Reading")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db)
+
+    rows = fx.db.assessments_of("rice")
+    assert any(a.question.get("kind") == "card-flag" and a.question["family"] == "word"
+              and a.question["card_kind"] == "reading" for a in rows)
+    assert not any(a.question.get("kind") == "flag-import-marker" for a in rows)
+
+
+def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_role_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db)
+
+    rows = [a for a in fx.db.assessments_of(text_sha) if a.backend == "learner"]
+    assert rows and rows[-1].question["role"] == "recording-for-sentence"
+
+
+def test_flag_import_is_idempotent(compiled):
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    card_id, note_id = _find_word_card(conn, "ข้าว", "Reading")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db)
+    n = len(fx.db.assessments_of("rice"))
+    import_collection(collection_path, fx.db)
+    assert len(fx.db.assessments_of("rice")) == n
 
 
 def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(compiled):
@@ -286,7 +376,7 @@ def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
 
     rows = fx.db.assessments_of("p1")
     flag_rows = [r for r in rows if r.backend == "learner"
-                and r.question.get("kind") == "rating"]
+                and r.question.get("kind") == "card-flag"]
     assert len(flag_rows) == 1
 
 
@@ -317,28 +407,44 @@ def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
 
 # --- ReviewNote harvest ----------------------------------------------------
 
-def test_review_note_harvest_appends_a_learner_row_keyed_by_note_and_text_sha(compiled):
+def _set_review_note(conn, note_id: int, idx: int, text: str) -> None:
+    (flds,) = conn.execute("select flds from notes where id=?", (note_id,)).fetchone()
+    fields = flds.split("\x1f")
+    fields[idx] = text
+    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields), note_id))
+
+
+def test_review_note_row_is_keyed_by_anchor(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     idx = _review_note_field_index(conn)
-    (note_id, flds) = conn.execute(
-        "select id, flds from notes limit 1").fetchone()
-    fields = flds.split("\x1f")
-    fields[idx] = "the picture looks off"
-    conn.execute("update notes set flds=? where id=?",
-                ("\x1f".join(fields), note_id))
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "the picture looks off")
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db)
+    assert report.notes_harvested == 1
+    assert any(a.key.startswith("learner-note:rice:") for a in fx.db.assessments_of("rice"))
+
+
+def test_review_note_harvest_appends_a_learner_row_keyed_by_anchor_and_text_sha(compiled):
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    idx = _review_note_field_index(conn)
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "the picture looks off")
     conn.commit()
     conn.close()
 
     report = import_collection(collection_path, fx.db)
     assert report.notes_harvested == 1
 
-    subject = str(note_id)
-    rows = fx.db.assessments_of(subject)
+    rows = fx.db.assessments_of("rice")
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
     assert len(harvest_rows) == 1
     assert harvest_rows[0].answer["text"] == "the picture looks off"
-    expected_key = f"learner-note:{note_id}:{sha('the picture looks off')}"
+    expected_key = f"learner-note:rice:{sha('the picture looks off')}"
     assert harvest_rows[0].key == expected_key
 
 
@@ -346,10 +452,8 @@ def test_review_note_reharvest_of_the_same_text_is_a_no_op(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     idx = _review_note_field_index(conn)
-    (note_id, flds) = conn.execute("select id, flds from notes limit 1").fetchone()
-    fields = flds.split("\x1f")
-    fields[idx] = "same text"
-    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields), note_id))
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "same text")
     conn.commit()
     conn.close()
 
@@ -358,33 +462,27 @@ def test_review_note_reharvest_of_the_same_text_is_a_no_op(compiled):
     assert r1.notes_harvested == 1
     assert r2.notes_harvested == 0
     assert r2.notes_skipped >= 1
-    assert len(fx.db.assessments_of(str(note_id))) == 1
+    assert len([r for r in fx.db.assessments_of("rice") if r.backend == "learner-note"]) == 1
 
 
 def test_review_note_edited_text_is_a_new_row(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     idx = _review_note_field_index(conn)
-    (note_id, flds) = conn.execute("select id, flds from notes limit 1").fetchone()
-    fields = flds.split("\x1f")
-    fields[idx] = "first version"
-    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields), note_id))
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "first version")
     conn.commit()
     conn.close()
     import_collection(collection_path, fx.db)
 
     conn = _open_rw(collection_path)
-    (note_id2, flds2) = conn.execute(
-        "select id, flds from notes where id=?", (note_id,)).fetchone()
-    fields2 = flds2.split("\x1f")
-    fields2[idx] = "edited version"
-    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields2), note_id))
+    _set_review_note(conn, note_id, idx, "edited version")
     conn.commit()
     conn.close()
 
     report2 = import_collection(collection_path, fx.db)
     assert report2.notes_harvested == 1
-    rows = fx.db.assessments_of(str(note_id))
+    rows = fx.db.assessments_of("rice")
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
     assert len(harvest_rows) == 2
     assert {r.answer["text"] for r in harvest_rows} == {"first version", "edited version"}
@@ -394,26 +492,20 @@ def test_review_note_cleared_field_appends_nothing_and_retracts_nothing(compiled
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
     idx = _review_note_field_index(conn)
-    (note_id, flds) = conn.execute("select id, flds from notes limit 1").fetchone()
-    fields = flds.split("\x1f")
-    fields[idx] = "a note"
-    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields), note_id))
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "a note")
     conn.commit()
     conn.close()
     import_collection(collection_path, fx.db)
 
     conn = _open_rw(collection_path)
-    (note_id2, flds2) = conn.execute(
-        "select id, flds from notes where id=?", (note_id,)).fetchone()
-    fields2 = flds2.split("\x1f")
-    fields2[idx] = ""
-    conn.execute("update notes set flds=? where id=?", ("\x1f".join(fields2), note_id))
+    _set_review_note(conn, note_id, idx, "")
     conn.commit()
     conn.close()
 
     report2 = import_collection(collection_path, fx.db)
     assert report2.notes_harvested == 0
-    rows = fx.db.assessments_of(str(note_id))
+    rows = fx.db.assessments_of("rice")
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
     assert len(harvest_rows) == 1  # the earlier row is untouched, still there
     assert harvest_rows[0].answer["text"] == "a note"
@@ -421,10 +513,10 @@ def test_review_note_cleared_field_appends_nothing_and_retracts_nothing(compiled
 
 # --- card identity ---------------------------------------------------------
 
-def test_pair_member_cards_have_distinct_card_keys(fx):
+def test_pair_member_cards_have_distinct_anchors(fx):
     # Both member notes of one pair used to anchor on the pair id alone,
-    # so their Recognition cards collapsed onto one card_key -- the
-    # anchor is now each member's own MemberKey (pair id, speaker, index).
+    # so their Recognition cards collapsed onto one anchor -- the anchor
+    # is now each member's own MemberKey (pair id, speaker, index).
     syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
@@ -432,8 +524,8 @@ def test_pair_member_cards_have_distinct_card_keys(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pair_extracted")
 
     identities = card_identities(collection_path)
-    keys = {i.card_key for i in identities if i.family == "minimal_pair"}
-    assert keys == {"p1:s1:0::recognition", "p1:s1:1::recognition"}
+    anchors = {i.anchor for i in identities if i.family == "minimal_pair"}
+    assert anchors == {"p1:s1:0", "p1:s1:1"}
 
 
 # --- read-only ---------------------------------------------------------

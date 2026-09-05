@@ -101,12 +101,16 @@ create index if not exists cache_subject on cache (subject);
 create index if not exists cache_port_backend_key_sha on cache (port, backend, key_sha);
 
 create table if not exists study (
-    card_key text not null,
+    family text not null,
+    anchor text not null,
+    card_kind text not null,
     compile_id text not null,
     ts integer not null,
     grade integer not null,
     time_ms integer not null,
-    primary key (card_key, ts)
+    member_index text,
+    speaker_id text,
+    primary key (family, anchor, card_kind, ts)
 );
 """
 
@@ -127,9 +131,10 @@ def _row_to_answer(row: tuple) -> Answer:
 
 
 def _row_to_study_record(row: tuple) -> StudyRecord:
-    card_key, compile_id, ts, grade, time_ms = row
-    return StudyRecord(card_key=card_key, compile_id=compile_id, ts=ts,
-                       grade=grade, time_ms=time_ms)
+    family, anchor, card_kind, compile_id, ts, grade, time_ms, member_index, speaker_id = row
+    return StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                       compile_id=compile_id, ts=ts, grade=grade, time_ms=time_ms,
+                       member_index=member_index, speaker_id=speaker_id)
 
 
 class SyllabusDb:
@@ -238,48 +243,38 @@ class SyllabusDb:
 
     # --- study / StudyReader ----------------------------------------------
 
-    def append_study(self, *, card_key: str, compile_id: str, grade: int,
-                     time_ms: int, ts: int | None = None) -> bool:
-        """Insert-or-ignore on the table's primary key (card_key, ts).
-        Returns True if a new row was inserted, False if that exact
-        (card_key, ts) pair already had one.
-
-        `ts` defaults to an auto-generated, collision-avoided value (via
-        `_next_ts`, the cache table's own convention) for callers with no
-        externally meaningful timestamp of their own. An EXPLICIT `ts` --
-        anki_import.py's revlog import passes the revlog row's own
-        (already-unique) epoch-ms review id -- is stored VERBATIM instead:
-        `_next_ts`'s monotonic bump-past-the-last-seen-value exists to
-        avoid same-instant collisions among freshly generated nanosecond
-        timestamps, and would silently renumber a real, externally unique
-        id drawn from a completely different, smaller scale (ms) -- which
-        would break "idempotent by (card_key, ts)" (spec 4 section 4) on
-        any reimport after this store has also done nanosecond-scale
-        cache writes.
+    def append_study(self, record: StudyRecord) -> bool:
+        """Insert-or-ignore on the table's primary key (family, anchor,
+        card_kind, ts). Returns True if a new row was inserted, False if
+        that exact key already had one. `record.ts` is stored verbatim
+        (anki_import.py's revlog import passes the revlog row's own
+        epoch-ms review id).
         """
-        if ts is None:
-            ts = self._next_ts()
         with self._con:
             cur = self._con.execute(
-                "insert or ignore into study (card_key, compile_id, ts, grade, "
-                "time_ms) values (?, ?, ?, ?, ?)",
-                (card_key, compile_id, ts, grade, time_ms))
+                "insert or ignore into study (family, anchor, card_kind, "
+                "compile_id, ts, grade, time_ms, member_index, speaker_id) "
+                "values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.family, record.anchor, record.card_kind, record.compile_id,
+                 record.ts, record.grade, record.time_ms, record.member_index,
+                 record.speaker_id))
             return cur.rowcount > 0
 
-    def records(self, card_key: str) -> list[StudyRecord]:
+    def records(self, family: str, anchor: str, card_kind: str) -> list[StudyRecord]:
         rows = self._con.execute(
-            "select card_key, compile_id, ts, grade, time_ms from study "
-            "where card_key=? order by ts asc", (card_key,)).fetchall()
+            "select family, anchor, card_kind, compile_id, ts, grade, time_ms, "
+            "member_index, speaker_id from study where family=? and anchor=? "
+            "and card_kind=? order by ts asc", (family, anchor, card_kind)).fetchall()
         return [_row_to_study_record(r) for r in rows]
 
     def study_rows(self) -> list[StudyRecord]:
         """Every `study` row, ordered by ts, for callers (the Syllabus
         aggregate) that group study history themselves rather than
-        querying one card_key at a time.
+        querying one (family, anchor, card_kind) at a time.
         """
         rows = self._con.execute(
-            "select card_key, compile_id, ts, grade, time_ms from study "
-            "order by ts asc").fetchall()
+            "select family, anchor, card_kind, compile_id, ts, grade, time_ms, "
+            "member_index, speaker_id from study order by ts asc").fetchall()
         return [_row_to_study_record(r) for r in rows]
 
     # --- sentences ----------------------------------------------------

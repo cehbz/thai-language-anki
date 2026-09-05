@@ -659,12 +659,11 @@ def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, st
 # --- reasks ----------------------------------------------------------------
 
 def reasks(cache: CacheReader, study: StudyReader, syllabus, *, lapse_threshold: int,
-          card_keys_for: Callable[[str], Sequence[str]]) -> list[tuple[str, str]]:
-    """(subject, card_key) for every word/pair whose learner-rated "good"
+          cards_for: Callable[[str], Sequence[tuple[str, str, str]]]) -> list[tuple[str, str]]:
+    """(subject, anchor) for every word/pair whose learner-rated "good"
     artifact's card has accumulated at least `lapse_threshold` lapses
-    (StudyRecord grade <= 1). `card_keys_for` names the card keys a
-    subject's compiled cards use -- a later task carries the card key's
-    own parts as columns; for now the caller composes them.
+    (StudyRecord grade <= 1). `cards_for` names the (family, anchor,
+    card_kind) triples a subject's compiled cards use.
     """
     out: list[tuple[str, str]] = []
     subjects = ([(w.id, "picture") for w in syllabus.words]
@@ -678,10 +677,10 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *, lapse_threshold:
         latest = max(ratings, key=lambda r: r.ts)
         if latest.answer.get("value") != "good":
             continue
-        for card_key in card_keys_for(subject):
-            lapses = sum(1 for r in study.records(card_key) if r.grade <= 1)
+        for family, anchor, card_kind in cards_for(subject):
+            lapses = sum(1 for r in study.records(family, anchor, card_kind) if r.grade <= 1)
             if lapses >= lapse_threshold:
-                out.append((subject, card_key))
+                out.append((subject, anchor))
     return out
 
 

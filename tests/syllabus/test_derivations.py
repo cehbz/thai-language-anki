@@ -630,13 +630,16 @@ def test_reasks_flags_a_good_rated_card_with_enough_lapses(cache):
     seed_rating(cache, "rice", "a" * 64, "good")
 
     class _Study:
-        def records(self, card_key):
-            return [StudyRecord(card_key=card_key, compile_id="c1", ts=i, grade=1, time_ms=100)
-                   for i in range(3)] if card_key == "rice::picture" else []
+        def records(self, family, anchor, card_kind):
+            if (family, anchor, card_kind) == ("word", "rice", "picture"):
+                return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                    compile_id="c1", ts=i, grade=1, time_ms=100)
+                       for i in range(3)]
+            return []
 
     found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
-                   card_keys_for=lambda s: [f"{s}::picture"])
-    assert found == [("rice", "rice::picture")]
+                   cards_for=lambda s: [("word", s, "picture")])
+    assert found == [("rice", "rice")]
 
 
 def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
@@ -644,11 +647,12 @@ def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
     seed_rating(cache, "rice", "a" * 64, "good")
 
     class _Study:
-        def records(self, card_key):
-            return [StudyRecord(card_key=card_key, compile_id="c1", ts=1, grade=4, time_ms=100)]
+        def records(self, family, anchor, card_kind):
+            return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                compile_id="c1", ts=1, grade=4, time_ms=100)]
 
     found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
-                   card_keys_for=lambda s: [f"{s}::picture"])
+                   cards_for=lambda s: [("word", s, "picture")])
     assert found == []
 
 
@@ -661,8 +665,9 @@ class _FakeStudyReader:
     def __init__(self, rows):
         self._rows = list(rows)
 
-    def records(self, card_key):
-        return [r for r in self._rows if r.card_key == card_key]
+    def records(self, family, anchor, card_kind):
+        return [r for r in self._rows
+               if (r.family, r.anchor, r.card_kind) == (family, anchor, card_kind)]
 
     def study_rows(self):
         return list(self._rows)
@@ -670,11 +675,15 @@ class _FakeStudyReader:
 
 @dataclass
 class _Rec:
-    card_key: str = "k"
+    family: str = "minimal_pair"
+    anchor: str = "k"
+    card_kind: str = "recognition"
     compile_id: str = "c"
     ts: int = 0
     grade: int = 3
     time_ms: int = 100
+    member_index: str | None = None
+    speaker_id: str | None = None
 
 
 def _confusion_syllabus(confusion_id: str, pair_id: str) -> Syllabus:
@@ -694,9 +703,9 @@ def test_confusion_weights_keeps_the_seed_with_no_study_history():
 
 def test_confusion_weights_increases_with_lapse_rate():
     syllabus = _confusion_syllabus("tone:mid-low", "p1")
-    records = [_Rec(card_key="p1::recognition", grade=1),
-              _Rec(card_key="p1::recognition", grade=1),
-              _Rec(card_key="p1::recognition", grade=4)]  # 2/3 lapses
+    records = [_Rec(anchor="p1", grade=1),
+              _Rec(anchor="p1", grade=1),
+              _Rec(anchor="p1", grade=4)]  # 2/3 lapses
     reader = _FakeStudyReader(records)
     weights = confusion_weights({"tone:mid-low": 1.0}, syllabus, reader)
     assert weights["tone:mid-low"] == pytest.approx(1.0 * (1 + 2 / 3))

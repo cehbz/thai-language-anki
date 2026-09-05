@@ -8,6 +8,7 @@ import pytest
 
 from thai_syllabus.entities import MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -27,97 +28,71 @@ def _pair(pair_id: str, confusion: SoundConfusion) -> MinimalPair:
                               members=(mid_w, low_w))
 
 
+def _study(**overrides) -> StudyRecord:
+    fields = {"family": "minimal_pair", "anchor": "p1", "card_kind": "recognition",
+             "compile_id": "c", "ts": 1, "grade": 1, "time_ms": 1}
+    fields.update(overrides)
+    return StudyRecord(**fields)
+
+
 def test_study_groups_study_records_by_confusion(db):
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     pair = _pair("p1", confusion)
     syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
 
-    db.append_study(card_key="p1:s1:0::recognition", compile_id="c", ts=1,
-                    grade=1, time_ms=1)
+    db.append_study(_study(member_index="0", speaker_id="s1"))
 
     assert list(syllabus.study_by_confusion(db)) == ["tone:mid-low"]
 
 
-def test_study_by_confusion_accepts_both_pair_card_key_shapes(db):
+def test_study_by_confusion_groups_every_member_row_under_the_pair_id(db):
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     pair = _pair("p1", confusion)
     syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
 
-    db.append_study(card_key="p1::recognition", compile_id="c", ts=1, grade=2,
-                    time_ms=10)
-    db.append_study(card_key="p1:speaker-a:0::recognition", compile_id="c", ts=2,
-                    grade=3, time_ms=20)
+    db.append_study(_study(ts=1, grade=2, time_ms=10, member_index="0", speaker_id="speaker-a"))
+    db.append_study(_study(ts=2, grade=3, time_ms=20, member_index="1", speaker_id="speaker-b"))
 
     grouped = syllabus.study_by_confusion(db)
-    assert {r.card_key for r in grouped["tone:mid-low"]} == {
-        "p1::recognition", "p1:speaker-a:0::recognition",
-    }
+    assert len(grouped["tone:mid-low"]) == 2
 
 
-def test_study_by_confusion_resolves_a_colon_bearing_pair_id_exact_shape(db):
+def test_study_by_confusion_resolves_a_colon_bearing_pair_id(db):
     # Real pair ids embed the confusion id, which itself contains ":"
-    # ("tone:mid-low/klai") -- the anchor parse must not cut on the first
-    # ":" it sees.
+    # ("tone:mid-low/klai") -- an exact anchor match must not mistreat it.
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     pair = _pair("tone:mid-low/klai", confusion)
     syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
 
-    db.append_study(card_key="tone:mid-low/klai::recognition", compile_id="c",
-                    ts=1, grade=1, time_ms=1)
+    db.append_study(_study(anchor="tone:mid-low/klai"))
 
     grouped = syllabus.study_by_confusion(db)
-    assert {r.card_key for r in grouped["tone:mid-low"]} == {"tone:mid-low/klai::recognition"}
+    assert len(grouped["tone:mid-low"]) == 1
 
 
-def test_study_by_confusion_resolves_a_colon_bearing_pair_id_memberkey_shape(db):
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    pair = _pair("tone:mid-low/klai", confusion)
-    syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
-
-    db.append_study(card_key="tone:mid-low/klai:s1:0::recognition", compile_id="c",
-                    ts=1, grade=1, time_ms=1)
-
-    grouped = syllabus.study_by_confusion(db)
-    assert {r.card_key for r in grouped["tone:mid-low"]} == {
-        "tone:mid-low/klai:s1:0::recognition",
-    }
-
-
-def test_study_by_confusion_prefers_the_longest_matching_pair_id(db):
-    # A decoy pair id that is a proper prefix of another's, sharing the
-    # ":" component the confusion id already contributes -- the anchor
-    # must resolve to the pair it actually names, not the shorter decoy.
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    decoy_confusion = SoundConfusion(id=ConfusionId("tone:mid-low-decoy"), dimension="tone",
-                                     sounds=("mid", "low"))
-    pair = _pair("tone:mid-low/klai", confusion)
-    decoy_pair = _pair("tone:mid-low/klai-long", decoy_confusion)
-    syllabus = Syllabus(pairs=(pair, decoy_pair), confusions=(confusion, decoy_confusion),
-                        tokenizer=FakeTokenizer())
-
-    db.append_study(card_key="tone:mid-low/klai-long:s1:0::recognition", compile_id="c",
-                    ts=1, grade=1, time_ms=1)
-
-    grouped = syllabus.study_by_confusion(db)
-    assert "tone:mid-low" not in grouped
-    assert {r.card_key for r in grouped["tone:mid-low-decoy"]} == {
-        "tone:mid-low/klai-long:s1:0::recognition",
-    }
-
-
-def test_study_by_confusion_skips_a_card_key_naming_no_known_pair(db):
+def test_study_by_confusion_skips_an_anchor_naming_no_known_pair(db):
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     pair = _pair("p1", confusion)
     syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
 
-    db.append_study(card_key="unrelated-word::listening", compile_id="c", ts=1,
-                    grade=1, time_ms=1)
+    db.append_study(_study(anchor="unrelated-pair"))
+
+    assert syllabus.study_by_confusion(db) == {}
+
+
+def test_study_by_confusion_ignores_a_non_pair_family_row(db):
+    # A word row whose anchor happens to equal a pair id must not be
+    # folded into that pair's confusion.
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    pair = _pair("p1", confusion)
+    syllabus = Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
+
+    db.append_study(_study(family="word", anchor="p1", card_kind="listening"))
 
     assert syllabus.study_by_confusion(db) == {}
 

@@ -42,18 +42,14 @@ list):
     universe and will not be re-scanned for challengers here -- gaps() is
     the only enumeration of "subjects the Syllabus cares about" available
     without a full unindexed cache table scan.
-  - Kind 4 (re-ask with evidence / StudyRecord contradiction). Card-level
-    StudyReader lookups need a card_key convention that compile (spec 4;
-    `compile_syllabus`, an application service, not a Syllabus method) has
-    not fixed for word/sentence cards. The one StudyReader lookup already
-    well-defined is confusion-level (Syllabus.study_by_confusion, grouped
-    over the aggregate's own pairs), so this module implements kind 4 over
-    confusions only: a confusion with StudyRecord lapses (grade <= 1) AND
-    an existing learner rating on its rendition is a contradiction worth
-    re-asking. Per the
-    task brief, "missing derivation inputs mean that kind simply yields no
-    questions" -- word/sentence-level re-asks yield none until that
-    card_key convention is fixed.
+  - Kind 4 (re-ask with evidence / StudyRecord contradiction). This module
+    implements kind 4 over confusions only, the one StudyReader lookup
+    already well-defined (Syllabus.study_by_confusion, grouped over the
+    aggregate's own pairs): a confusion with StudyRecord lapses (grade <=
+    1) AND an existing learner rating on its rendition is a contradiction
+    worth re-asking. Per the task brief, "missing derivation inputs mean
+    that kind simply yields no questions" -- word/sentence-level re-asks
+    yield none.
   - Gallery gloss-overlay/position persistence (spec 5 section 1 "gloss
     overlay default-on persisted" vs section 2 "localStorage for position
     only -- all state of record is server-side"). Read as: the record of
@@ -278,8 +274,8 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
             "type": "reask", "subject": subject, "kind": kind, "role": _role(kind),
             "gloss": None, "original_answer": latest.answer.get("value"),
             "current": _artifact(best.artifact_sha),
-            "evidence": [{"card_key": r.card_key, "grade": r.grade, "ts": r.ts}
-                        for r in lapses[-5:]],
+            "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
+                         "ts": r.ts} for r in lapses[-5:]],
         })
     return out
 
@@ -1102,7 +1098,7 @@ INDEX_HTML = """<!doctype html>
     var ev = el("div", { "class": "tried" });
     ev.appendChild(el("h4", {}, "lapse evidence"));
     (q.evidence || []).forEach(function (e) {
-      ev.appendChild(el("div", {}, e.card_key + ": grade " + e.grade));
+      ev.appendChild(el("div", {}, e.anchor + " (" + e.card_kind + "): grade " + e.grade));
     });
     box.appendChild(ev);
     var actions = el("div", { "class": "actions" });

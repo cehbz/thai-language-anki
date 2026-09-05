@@ -89,6 +89,20 @@ class LearnerKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class FlagKey(CacheKey):
+    """flag:FAMILY:ANCHOR:CARD_KIND:FLAGS -- one Anki flag import fact,
+    the (card, flags) idempotence key spec 4 section 4 defines.
+    """
+    family: str
+    anchor: str
+    card_kind: str
+    flags: int
+
+    def encode(self) -> str:
+        return f"flag:{self.family}:{self.anchor}:{self.card_kind}:{self.flags}"
+
+
+@dataclass(frozen=True)
 class LearnerNoteKey(CacheKey):
     """learner-note:ANCHOR:TEXT_SHA -- one ReviewNote harvest row."""
     anchor: str

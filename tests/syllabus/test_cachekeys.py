@@ -6,6 +6,7 @@ from thai_syllabus.cachekeys import (
     BatchMarkerKey,
     CacheKey,
     DrillKey,
+    FlagKey,
     JudgeKey,
     LearnerKey,
     LearnerNoteKey,
@@ -61,6 +62,13 @@ def test_reverify_key_falls_back_to_anchor_with_no_artifact():
     assert key.encode() == "learner:reverify:w1:recording-for-word"
     key_with_sha = ReverifyKey(artifact_sha="s1", anchor="w1", role="recording-for-word")
     assert key_with_sha.encode() == "learner:reverify:s1:recording-for-word"
+
+
+def test_flag_key_encodes_family_anchor_card_kind_and_flags():
+    key = FlagKey(family="word", anchor="rice", card_kind="reading", flags=1)
+    assert key.encode() == "flag:word:rice:reading:1"
+    assert key.kind == "FlagKey"
+    assert isinstance(key, CacheKey)
 
 
 def test_waiver_key_falls_back_to_dash_with_no_artifact():

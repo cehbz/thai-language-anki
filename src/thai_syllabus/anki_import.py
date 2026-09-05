@@ -1,72 +1,46 @@
 """The return path (spec 4 section 4): revlog import, flag import, and
 ReviewNote harvest -- one command, one report, all reading a real
-collection.anki2 directly and read-only (the proven pattern:
-scripts/proof_gallery.py's sqlite reads, generalized here to the
-notes/cards/revlog shape). `import_collection`'s `collection_path`
-parameter is always the caller's to supply -- never hardcoded to
-~/Library/.../collection.anki2 (the actual location on a real machine),
-so tests and any future caller point it at whatever collection they mean.
+collection.anki2 directly and read-only. `import_collection`'s
+`collection_path` parameter is the caller's to supply -- never hardcoded.
 
-Card identity -> (family, anchor, card_key, compile_id) is read from
-compile.py's own tags/CompileId convention (see compile.py's module
-docstring for the tag shapes this depends on: family::, word::/pair::/
-grapheme::/target::/sentence::/member::/speaker::, CompileId as a note
-field). Every tag is atomic (one part per tag); an anchor spanning
-several tags (a pair member's MemberKey, a sentence's target+sha) is
-built by composing those tags' values, never by parsing one tag's value
-into parts, and never by reading MemberKey or any other note field back.
-`card_key`'s KIND component (Listening/Production/.../Cloze) is read
-from the card's own template name via the collection's `col.models`
-JSON and the card's `ord` -- NOT parsed out of a tag -- because Anki
-tags are a NOTE-level property shared by every sibling card, so a
-single `kind::` tag cannot disambiguate which of several sibling cards
-a given review or flag belongs to; the template name is unambiguous and
-already present in the collection compile.py wrote. (The `kind::` tags
-compile.py DOES emit are for the Anki browser's own tag-based search/
-filtering, not for this module's identity reconstruction.)
+Card identity -> (family, anchor, card kind, compile_id) is read from
+compile.py's own tags/CompileId convention: family::, word::/pair::/
+grapheme::/target::/sentence::/member::/speaker:: tags, CompileId as a
+note field. Every tag is atomic; an anchor spanning several tags (a pair
+member's MemberKey, a sentence's target+sha) is built by composing those
+tags' values, never by parsing one tag's value into parts, and never by
+reading a note field back. The card kind (Listening/Production/.../
+Cloze, lowered) is read from the card's own template name via
+`col.models` and the card's `ord` -- a `kind::` tag is a note-level
+property shared by every sibling card, so it cannot disambiguate which
+sibling a given review or flag belongs to; the template name can.
 
-Revlog idempotence (spec 4 section 4, "idempotent by (card_key, ts)"):
-`ts` is the revlog row's OWN id (Anki's epoch-ms review timestamp,
-already unique per review) -- store.py's `append_study(ts=...)` stores it
-verbatim rather than through the cache table's collision-avoiding
-`_next_ts` bump (see its docstring). The `study` table's primary key is
-(card_key, ts); `append_study` is insert-or-ignore against that key and
-reports whether it inserted, so a reimport's duplicate rows are detected
-by the store, not by a read-then-write check here.
+Revlog import appends a `study` row per revlog entry, keyed (spec 2
+section 2) by (family, anchor, card_kind, ts); `anchor` is the family's
+entity id (word id, grapheme symbol, sentence text_sha), or a pair id for
+family "minimal_pair" (the reviewed member's speaker/index go in the
+row's own columns). `ts` is the revlog row's own id, stored verbatim;
+`append_study` is insert-or-ignore on that primary key.
 
-Flag import (spec 4 section 4, "role from the card kind"): the card-kind
--> Assessor role mapping is this module's own resolution -- spec 3's
-AUTHORITY_ORDER (authority.py) names roles by WHAT is being judged
-(picture-for-word, recording-for-word, ...), not by card-template name,
-and nothing in specs 1-4 gives an exhaustive table from one to the other.
-Only the two word templates whose FRONT is unambiguously one specific
-artifact map to that artifact's role (Listening's front is the
-recording -> "recording-for-word"; Production's front is the picture ->
-"picture-for-word"); every other flagged card kind (Reading, Spelling,
-Recognition, Cloze, sentence Listening) maps to the generic "card-flag"
-role, which AUTHORITY_ORDER already lists as learner-authoritative. A
-flag's COLOR carries no defined meaning anywhere in specs 1-4 (Anki
-flags are just seven colors with project-specific meaning, undefined
-here), so any non-zero flag is read as one undifferentiated "the learner
-marked this" signal.
-"recording-for-word" is spec 3's tone-correctness-adjacent role (its
-AUTHORITY_ORDER row: `("mechanical", "judge")`, with the module comment
-"the learner ... unqualified on tone correctness" -- exactly spec 4
-section 4's "a flag on a tone-correctness role"): a flag there is
-therefore NOT written as a normal learner rating (which
-derivations.current_best always treats as authoritative outright,
-regardless of AUTHORITY_ORDER -- writing one would let an unqualified
-flag silently override a mechanically-verified recording). Instead it
-lands as a `{"kind": "reverify", ...}` row: no `"value"` key
-recognized by `derivations.LEARNER_RANK`, so it is invisible to
-current_best's fold and exists purely as a signal a future
-judge/mechanical run can query for and act on -- "queues machine
-re-verification instead of overriding" (spec 4 section 4), verbatim.
-Every other role writes a normal learner rating,
-`{"value": "unacceptable-none"}` (spec 3's
-current_best/LEARNER_RANK vocabulary) -- the conservative "something's
-wrong, no known-good replacement yet" reading of an undifferentiated
-flag, on the role/subject the learner IS authoritative for.
+Flag import: (family, card kind) resolves to a role. `_TONE_ROLE` names
+the (family, kind) combinations whose front is a tone-correctness
+artifact (word/sentence Listening, both recording roles): these write a
+`{"kind": "reverify", ...}` row under a ReverifyKey, queuing machine
+re-verification instead of overriding current_best. `_RATED_ROLE` names
+combinations whose front is a rateable artifact when the word/sentence
+currently has one (word Production, the picture role): with a current
+artifact, the flag is a learner rating on it, `{"value":
+"unacceptable-none"}`; with none, there is nothing to rate and the flag
+falls back to a card-level flag. Every other combination is a card-level
+flag outright. A rating or card-flag row's idempotence key is a FlagKey
+over (family, anchor, card_kind, flags) -- the card-and-flags fact
+itself, so no marker row is written.
+
+ReviewNote harvest: each non-empty ReviewNote field appends a
+learner-note row on the note's own entity subject (from its family/
+anchor tags), keyed by LearnerNoteKey(anchor, sha(text)) -- re-harvesting
+unchanged text is an exact-key hit, edited text is a new key, a cleared
+field appends nothing.
 """
 from __future__ import annotations
 
@@ -76,20 +50,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .cachekeys import LearnerKey, LearnerNoteKey, ReverifyKey, sha
+from .authority import role_for
+from .cachekeys import FlagKey, LearnerNoteKey, ReverifyKey, sha
+from .ports import StudyRecord
 from .store import SyllabusDb
 
 __all__ = ["ImportReport", "card_identities", "import_collection"]
 
-# card kind (template name, lowercased) -> Assessor role, for the two
-# templates whose front is unambiguously one specific artifact; every
-# other kind falls back to the generic "card-flag" role.
-_ARTIFACT_ROLE_BY_KIND: dict[str, tuple[str, str]] = {
-    # kind_slug -> (role, provider `kind` for current_best lookup)
-    "listening": ("recording-for-word", "recording"),
-    "production": ("picture-for-word", "picture"),
+# (family, card kind slug) -> the tone-correctness role its flag queues
+# re-verification for (spec 4 section 4: "a flag on a tone-correctness
+# role"). Absent from AUTHORITY_ORDER's learner-first roles.
+_TONE_ROLE: dict[tuple[str, str], str] = {
+    ("word", "listening"): role_for("recording", "word"),
+    ("sentence", "listening"): role_for("recording", "sentence"),
 }
-TONE_CORRECTNESS_ROLES = frozenset({"recording-for-word"})
+
+# (family, card kind slug) -> (role, provide kind) for a card whose front
+# is a specific artifact the learner IS authoritative over: with a
+# current-best artifact of that kind, the flag rates it under `role`;
+# with none, there is no artifact to rate and the flag is a card-flag.
+_RATED_ROLE: dict[tuple[str, str], tuple[str, str]] = {
+    ("word", "production"): (role_for("picture", "word"), "picture"),
+}
 
 
 @dataclass(frozen=True)
@@ -160,6 +142,43 @@ _ANCHOR_BUILDERS: dict[str, Any] = {
     "sentence": _sentence_anchor,
 }
 
+# family -> the _CardIdentity field naming that family's own ENTITY
+# subject: a word's id, a pair's id, a grapheme's symbol, a sentence's
+# text_sha. This is what rendition rows, current_best, compile's own
+# audio/picture resolution, and study rows are all keyed on -- never a
+# per-card anchor (a pair member's MemberKey names one card, not the pair
+# a learner's flag or a study row's confusion grouping is about).
+_ENTITY_SUBJECT_FIELD: dict[str, str] = {
+    "word": "word_id",
+    "minimal_pair": "pair_id",
+    "grapheme": "grapheme_symbol",
+    "sentence": "sentence_sha",
+}
+
+
+def _family_anchor_parts(tags: list[str]) -> tuple[str, str, dict[str, str]] | None:
+    family = _tag_value(tags, "family")
+    if family is None:
+        return None
+    builder = _ANCHOR_BUILDERS.get(family)
+    built = builder(tags) if builder is not None else None
+    if built is None:
+        return None
+    anchor, parts = built
+    return family, anchor, parts
+
+
+def _note_subject(tags: list[str]) -> str | None:
+    """The entity subject a note's own family/anchor tags name -- no
+    card-level (template/ord) information needed.
+    """
+    resolved = _family_anchor_parts(tags)
+    if resolved is None:
+        return None
+    family, _anchor, parts = resolved
+    field_name = _ENTITY_SUBJECT_FIELD.get(family)
+    return parts.get(field_name) if field_name is not None else None
+
 
 @dataclass(frozen=True)
 class _Collection:
@@ -193,12 +212,10 @@ class _CardIdentity:
     family: str
     anchor: str
     kind_slug: str
-    card_key: str
     compile_id: str
     note_id: int
-    # Anchor parts, kept alongside the composed `anchor` string so a
-    # future column-writing importer never re-parses it; populated per
-    # family (see _word_anchor/_pair_anchor/_grapheme_anchor/
+    # Anchor parts, kept alongside the composed `anchor` string so nothing
+    # ever re-parses it (see _word_anchor/_pair_anchor/_grapheme_anchor/
     # _sentence_anchor).
     word_id: str | None = None
     pair_id: str | None = None
@@ -219,26 +236,19 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     model = col.models.get(str(note["mid"]))
     if model is None:
         return None
-    tags = note["tags"]
-    family = _tag_value(tags, "family")
-    if family is None:
+    resolved = _family_anchor_parts(note["tags"])
+    if resolved is None:
         return None
-    builder = _ANCHOR_BUILDERS.get(family)
-    built = builder(tags) if builder is not None else None
-    if built is None:
-        return None
-    anchor, parts = built
+    family, anchor, parts = resolved
     tmpls = model["tmpls"]
     ord_ = card["ord"]
     if not (0 <= ord_ < len(tmpls)):
         return None
     kind_slug = tmpls[ord_]["name"].lower()
-    card_key = f"{anchor}::{kind_slug}"
     compile_idx = _field_index(model, "CompileId")
     compile_id = note["flds"][compile_idx] if compile_idx is not None else ""
     return _CardIdentity(family=family, anchor=anchor, kind_slug=kind_slug,
-                         card_key=card_key, compile_id=compile_id,
-                         note_id=card["nid"], **parts)
+                         compile_id=compile_id, note_id=card["nid"], **parts)
 
 
 def card_identities(collection_path: str | Path) -> list[_CardIdentity]:
@@ -251,6 +261,11 @@ def card_identities(collection_path: str | Path) -> list[_CardIdentity]:
     return [identity for identity in
            (_identify_card(col, card_id) for card_id in col.cards)
            if identity is not None]
+
+
+def _entity_subject(identity: _CardIdentity) -> str | None:
+    field_name = _ENTITY_SUBJECT_FIELD.get(identity.family)
+    return getattr(identity, field_name) if field_name is not None else None
 
 
 # --- revlog import -------------------------------------------------------
@@ -267,11 +282,15 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
             skips.append(("revlog", str(card_id),
                           "card not recognized (no family:: tag, or model/template unknown)"))
             continue
-        inserted = db.append_study(card_key=identity.card_key, compile_id=identity.compile_id,
-                                   grade=int(ease), time_ms=int(time_ms), ts=int(rev_id))
-        if not inserted:
+        anchor = _entity_subject(identity)
+        record = StudyRecord(family=identity.family, anchor=anchor,
+                             card_kind=identity.kind_slug, compile_id=identity.compile_id,
+                             ts=int(rev_id), grade=int(ease), time_ms=int(time_ms),
+                             member_index=identity.member_index, speaker_id=identity.speaker_id)
+        if not db.append_study(record):
             skipped += 1
-            skips.append(("revlog", f"{identity.card_key}@{rev_id}", "skipped: already present"))
+            skips.append(("revlog", f"{identity.family}:{anchor}:{identity.kind_slug}@{rev_id}",
+                          "skipped: already present"))
             continue
         imported += 1
     return imported, skipped
@@ -279,28 +298,10 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
 
 # --- flag import -----------------------------------------------------------
 
-def _flag_role(kind_slug: str) -> tuple[str, str | None]:
-    """-> (role, provider-kind-for-current_best-lookup-or-None)."""
-    return _ARTIFACT_ROLE_BY_KIND.get(kind_slug, ("card-flag", None))
-
-
-# family -> the _CardIdentity field naming that family's own ENTITY
-# subject: a word's id, a pair's id, a grapheme's symbol, a sentence's
-# text_sha. This is what rendition rows, current_best, and compile's own
-# audio/picture resolution are all keyed on -- never a per-card anchor
-# (a pair member's MemberKey names one card, not the pair the learner's
-# flag is about).
-_ENTITY_SUBJECT_FIELD: dict[str, str] = {
-    "word": "word_id",
-    "minimal_pair": "pair_id",
-    "grapheme": "grapheme_symbol",
-    "sentence": "sentence_sha",
-}
-
-
-def _entity_subject(identity: _CardIdentity) -> str | None:
-    field_name = _ENTITY_SUBJECT_FIELD.get(identity.family)
-    return getattr(identity, field_name) if field_name is not None else None
+def _current_best_sha(db: SyllabusDb, subject: str, provide_kind: str) -> str | None:
+    from .derivations import current_best
+    return current_best(db, subject, provide_kind, current_rubric={}, prior=(),
+                        provenance_source=lambda s: None).artifact_sha
 
 
 def _import_flags(col: _Collection, db: SyllabusDb,
@@ -316,44 +317,44 @@ def _import_flags(col: _Collection, db: SyllabusDb,
             skipped += 1
             skips.append(("flag", str(card_id), "card not recognized"))
             continue
-        role, provide_kind = _flag_role(identity.kind_slug)
+
+        flags = card["flags"]
+        combo = (identity.family, identity.kind_slug)
+        tone_role = _TONE_ROLE.get(combo)
+        rated = _RATED_ROLE.get(combo)
         artifact_sha = None
-        if provide_kind is not None:
-            from .derivations import current_best
-            artifact_sha = current_best(db, subject, provide_kind,
-                                        current_rubric={}, prior=(),
-                                        provenance_source=lambda s: None).artifact_sha
 
-        existing_key = f"flag-import:{card_id}:{card['flags']}"
-        if role in TONE_CORRECTNESS_ROLES:
-            key = ReverifyKey(artifact_sha=artifact_sha, anchor=subject, role=role)
+        if tone_role is not None:
+            artifact_sha = _current_best_sha(db, subject, "recording")
+            key = ReverifyKey(artifact_sha=artifact_sha, anchor=subject, role=tone_role)
+            role, row_kind = tone_role, "reverify"
+            answer = {"flagged": True, "flag": flags}
         else:
-            key = LearnerKey(artifact_sha=artifact_sha, role=role)
+            role = "card-flag"
+            if rated is not None:
+                rated_role, provide_kind = rated
+                artifact_sha = _current_best_sha(db, subject, provide_kind)
+                if artifact_sha is not None:
+                    role = rated_role
+            key = FlagKey(family=identity.family, anchor=identity.anchor,
+                          card_kind=identity.kind_slug, flags=flags)
+            row_kind = "card-flag" if role == "card-flag" else "rating"
+            answer = ({"flagged": True, "flag": flags} if row_kind == "card-flag"
+                     else {"value": "unacceptable-none", "flag": flags})
 
-        already = db.latest("assess", "learner", existing_key)
+        already = db.latest("assess", "learner", key)
         if already is not None:
             skipped += 1
             skips.append(("flag", f"card {card_id}", "already imported (same flags value)"))
             continue
 
-        if role in TONE_CORRECTNESS_ROLES:
-            question = {"role": role, "artifact_sha": artifact_sha,
-                       "kind": "reverify", "flag_import_key": existing_key}
-            answer = {"flagged": True, "flag": card["flags"]}
-        else:
-            question = {"role": role, "artifact_sha": artifact_sha,
-                       "kind": "rating", "flag_import_key": existing_key}
-            answer = {"value": "unacceptable-none", "flag": card["flags"]}
+        question = {"kind": row_kind, "role": role, "family": identity.family,
+                   "anchor": identity.anchor, "card_kind": identity.kind_slug,
+                   "flags": flags}
+        if row_kind == "rating":
+            question["artifact_sha"] = artifact_sha
         db.append(port="assess", backend="learner", key=key, subject=subject,
                  question=question, answer=answer)
-        # A second row under `existing_key` records "this exact flags
-        # value on this card has been imported", the idempotence marker
-        # `_import_flags` checks above -- kept distinct from the rating/
-        # reverify row itself (whose key must stay the readable
-        # learner:ARTIFACT:ROLE shape derivations.py folds over).
-        db.append(port="assess", backend="learner", key=existing_key, subject=subject,
-                 question={"kind": "flag-import-marker", "card_id": card_id},
-                 answer={"flags": card["flags"]})
         imported += 1
     return imported, skipped
 
@@ -374,14 +375,19 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
         text = note["flds"][idx].strip()
         if not text:
             continue  # cleared/empty: appends nothing, retracts nothing
+        subject = _note_subject(note["tags"])
+        if subject is None:
+            skipped += 1
+            skips.append(("review_note", str(note_id), "note not recognized"))
+            continue
         text_sha = sha(text)
-        key = LearnerNoteKey(anchor=str(note_id), text_sha=text_sha)
+        key = LearnerNoteKey(anchor=subject, text_sha=text_sha)
         already = db.latest("assess", "learner-note", key)
         if already is not None:
             skipped += 1
             skips.append(("review_note", f"note {note_id}", "already harvested (unchanged text)"))
             continue
-        db.append(port="assess", backend="learner-note", key=key, subject=str(note_id),
+        db.append(port="assess", backend="learner-note", key=key, subject=subject,
                  question={"note_id": note_id, "text_sha": text_sha},
                  answer={"text": text})
         imported += 1

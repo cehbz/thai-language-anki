@@ -23,6 +23,7 @@ from PIL import Image as PILImage
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId, WordId
+from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -202,18 +203,26 @@ def test_judge_verdict_line_honors_a_role_scoped_rubric_mapping(db, w1):
     assert rs._judge_verdict_line(rows, "sA", {"picture-for-word": "some other text"}) is None
 
 
+def _pair_study_row(pair, **overrides) -> StudyRecord:
+    fields = {"family": "minimal_pair", "anchor": pair.id, "card_kind": "recognition",
+             "compile_id": "c1", "ts": 1, "grade": 1, "time_ms": 900}
+    fields.update(overrides)
+    return StudyRecord(**fields)
+
+
 def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(syllabus, db, pair, confusion):
-    db.append_study(card_key=f"{pair.id}::recognition", compile_id="c1", grade=1, time_ms=900)
+    db.append_study(_pair_study_row(pair))
     _learner(db, confusion.id, "rendition", "rend-sha", "acceptable")
     items = rs.build_queue(syllabus, db, study=db, budget=50, current_rubric={})
     reasks = [i for i in items if i["type"] == "reask" and i["subject"] == confusion.id]
     assert len(reasks) == 1
     assert reasks[0]["original_answer"] == "acceptable"
-    assert reasks[0]["evidence"][0]["card_key"] == f"{pair.id}::recognition"
+    assert reasks[0]["evidence"][0]["anchor"] == pair.id
+    assert reasks[0]["evidence"][0]["card_kind"] == "recognition"
 
 
 def test_build_queue_yields_no_reask_without_studyreader(syllabus, db, pair, confusion):
-    db.append_study(card_key=f"{pair.id}::recognition", compile_id="c1", grade=1, time_ms=900)
+    db.append_study(_pair_study_row(pair))
     _learner(db, confusion.id, "rendition", "rend-sha", "acceptable")
     items = rs.build_queue(syllabus, db, study=None, budget=50, current_rubric={})
     assert not [i for i in items if i["type"] == "reask"]
