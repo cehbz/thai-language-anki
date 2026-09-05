@@ -79,7 +79,7 @@ from typing import Any, Callable, Literal
 from .assessor import (AssessBackend, Assessor, JudgeBackend, Price,
                        duration_mechanical_backend, fills_mechanical_backend,
                        rendition_mechanical_backend)
-from .attempts import Sourcing, provenance_source_for
+from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
     ProvidersConfig,
@@ -113,7 +113,7 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "load_syllabus"]
+          "Derivations", "load_derivations", "load_syllabus"]
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -333,25 +333,32 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
     return budgets
 
 
-# --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------
+# --- load_derivations: the parameters every fold over the record takes ----
 
-def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Sourcing:
-    """Assembles a Sourcing ctx (attempts.py) for one deck: load_syllabus
-    (overlay-applied rules), the db-backed provider/assessor rosters, and
-    every value that reaches a cache key -- rubrics, provenance_prior,
-    image_candidates, voices, query_hints, judge_model -- drawn from the
-    deck's own curated/providers.yaml + rulebook.yaml, never a bare
-    Sourcing dataclass default.
+@dataclass(frozen=True)
+class Derivations:
+    """One deck's record and every parameter derivations.py asks for: the
+    Syllabus (media index included), the db the record lives in, the media
+    store its artifacts resolve to, and the current_rubric / prior /
+    provenance_source / sources_for / attempt_cap a fold is measured
+    under. build_sourcing wires the run's Sourcing from this same bundle,
+    so a surface holding one derives exactly what the run derives.
+    """
+    syllabus: Syllabus
+    db: SyllabusDb                     # CacheReader + RecordWriter
+    media_store: MediaStore
+    current_rubric: Mapping[str, str]  # role -> rubric text
+    prior: Sequence[str]               # provenance kinds, most preferred first
+    provenance_source: Callable[[str], str | None]
+    sources_for: Callable[[str], Sequence[str]]
+    attempt_cap: int
 
-    Opens `db`/`bundle` exactly once and hands them to load_syllabus,
-    rather than letting load_syllabus open its own second SyllabusDb/
-    CuratedBundle -- so `Sourcing.db` and `syllabus.assessments`/
-    `syllabus.media.db` are the SAME connection, one place a run's writes
-    and the Syllabus's reads meet.
 
-    The "fills" Assess backend reads `ctx.syllabus` through a closure over
-    the ctx this function is about to return, since a run adopts sentences
-    into it between attempts.
+def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
+    """One deck's Derivations from its own curated/*.yaml + syllabus.db +
+    media/ (spec 2 section 1 layout). Opens `db`/`bundle` once and hands
+    them to load_syllabus, so the Syllabus's AssessmentReader/MediaIndex
+    and `db` are the same connection.
     """
     root = Path(deck_root)
     if cfg is None:
@@ -363,15 +370,42 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     # rubrics_for covers registered judged Rules only; "sentence-for-target"
     # (attempts.py) is a judge role with no Rule, added here directly.
     rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
+    return Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                       current_rubric=rubrics,
+                       prior=bundle.rulebook.provenance_prior,
+                       provenance_source=provenance_source_for(db),
+                       sources_for=sources_for, attempt_cap=cfg.attempt_cap)
+
+
+# --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------
+
+def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Sourcing:
+    """Assembles a Sourcing ctx (attempts.py) for one deck: the deck's
+    Derivations (load_derivations -- the Syllabus, the record, and every
+    parameter a fold takes) plus the db-backed provider/assessor rosters
+    and the remaining values that reach a cache key -- image_candidates,
+    voices, query_hints, judge_model -- drawn from the deck's own
+    curated/providers.yaml + rulebook.yaml, never a bare Sourcing
+    dataclass default.
+
+    The "fills" Assess backend reads `ctx.syllabus` through a closure over
+    the ctx this function is about to return, since a run adopts sentences
+    into it between attempts.
+    """
+    root = Path(deck_root)
+    if cfg is None:
+        cfg = load_providers_config(root / "curated" / "providers.yaml")
+    derivations = load_derivations(root, cfg)
+    db, media_store = derivations.db, derivations.media_store
     ctx = Sourcing(
-        syllabus=syllabus, provider=build_provider(cfg, db, media_store),
+        syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
         assessor=build_assessor(cfg, db, media_store, syllabus_of=lambda: ctx.syllabus),
-        db=db, media_store=media_store, rubrics=rubrics,
-        provenance_prior=bundle.rulebook.provenance_prior,
+        db=db, media_store=media_store, rubrics=derivations.current_rubric,
+        provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
         query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
-        attempt_cap=cfg.attempt_cap)
+        sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap)
     return ctx
 
 

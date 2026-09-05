@@ -12,14 +12,18 @@ from types import SimpleNamespace
 import pytest
 
 from thai_syllabus.derivations import (
+    Challenger,
     CurrentBest,
+    JudgeVerdict,
     adoptable_drafts,
+    available_needs,
     challengers,
     confusion_weights,
     current_best,
     directed,
     exhausted,
     improved,
+    judge_verdict,
     next_source,
     pending,
     passing_pictures,
@@ -91,11 +95,13 @@ def provide_row(subject, kind, backend="openverse", items=(), ts=None):
 
 
 def judge_row(subject, kind, artifact_sha, value, rubric="rubric-v1", ts=None,
-             suggestion=None):
+             suggestion=None, evidence=None):
     ts = ts if ts is not None else _next_ts()
     answer = {"value": value}
     if suggestion:
         answer["suggestion"] = suggestion
+    if evidence:
+        answer["evidence"] = evidence
     return Answer(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}:{ts}",
                  key_sha="x", subject=subject,
                  question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
@@ -597,6 +603,45 @@ def test_card_flag_directs_the_subject(cache):
     assert entry.directed is True
 
 
+# --- available_needs ---------------------------------------------------
+
+def test_available_needs_names_each_gap_with_its_subject_kind():
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",),
+                                       words_missing_recordings=("rice",),
+                                       missing_renditions=("tone:mid-low",),
+                                       graphemes_missing_keyword_data=("k",)))
+    assert available_needs(syllabus) == [
+        ("rice", "picture", "word"),
+        ("rice", "recording", "word"),
+        ("tone:mid-low", "rendition", "pair"),
+        ("k", "grapheme-keyword", "grapheme"),
+    ]
+
+
+# --- judge_verdict -----------------------------------------------------
+
+def test_judge_verdict_is_the_newest_fresh_verdict_on_the_artifact(cache):
+    cache.rows.append(judge_row("rice", "picture", "sha-a", False, rubric=R, ts=1))
+    cache.rows.append(judge_row("rice", "picture", "sha-a", True, rubric=R, ts=2,
+                                evidence="a bowl of steamed rice"))
+    assert judge_verdict(cache, "rice", "picture", "sha-a",
+                         current_rubric={"picture-for-word": R}) == JudgeVerdict(
+        artifact_sha="sha-a", passed=True, evidence="a bowl of steamed rice")
+
+
+def test_judge_verdict_is_none_once_the_rubric_moved_on(cache):
+    cache.rows.append(judge_row("rice", "picture", "sha-a", True, rubric="an older rubric",
+                                ts=1))
+    assert judge_verdict(cache, "rice", "picture", "sha-a",
+                         current_rubric={"picture-for-word": R}) is None
+
+
+def test_judge_verdict_is_none_for_an_artifact_the_judge_never_saw(cache):
+    cache.rows.append(judge_row("rice", "picture", "sha-a", True, rubric=R, ts=1))
+    assert judge_verdict(cache, "rice", "picture", "sha-b",
+                         current_rubric={"picture-for-word": R}) is None
+
+
 # --- challengers -------------------------------------------------------
 
 def test_challenger_found_for_a_learner_accepted_picture(cache):
@@ -607,7 +652,8 @@ def test_challenger_found_for_a_learner_accepted_picture(cache):
     cache.rows.append(judge_row("rice", "picture", "b" * 64, True, rubric=R, ts=_next_ts()))
     found = challengers(cache, syllabus, current_rubric={"picture-for-word": R}, prior=(),
                         provenance_source=_no_provenance)
-    assert found == [("rice", "a" * 64, "b" * 64)]
+    assert found == [Challenger(subject="rice", kind="picture", subject_kind="word",
+                                current_sha="a" * 64, challenger_sha="b" * 64)]
 
 
 def test_no_challenger_when_no_machine_candidate_outranks_the_accepted_pick(cache):

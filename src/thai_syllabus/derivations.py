@@ -37,14 +37,16 @@ from .syllabus import Syllabus
 __all__ = [
     "CurrentBest", "current_best",
     "role_of", "adoptable_drafts",
+    "JudgeVerdict", "judge_verdict",
     "pending",
     "attempts_since_change", "next_source",
     "ExhaustedStatus", "exhausted",
     "improved",
     "directed",
-    "QueueEntry", "queue", "QueuedNeeds", "queued", "available_subjects",
+    "QueueEntry", "queue", "QueuedNeeds", "queued",
+    "available_needs", "available_subjects",
     "passing_pictures", "pictures_awaiting_preference",
-    "challengers",
+    "Challenger", "challengers",
     "reasks",
     "confusion_weights",
     "LEARNER_RANK",
@@ -113,9 +115,9 @@ def _stale(row: Answer, current_rubric: Mapping[str, str]) -> bool:
     return False
 
 
-# Public export: reviewserver._judge_verdict_line's rubric filter has to
-# apply the same role-scoped semantics (and the same mechanical-row
-# exemption) this module's own folds use.
+# Public export: a caller reading verdict rows outside this module applies
+# the same role-scoped staleness (and the same mechanical-row exemption)
+# this module's own folds use.
 stale = _stale
 
 
@@ -291,6 +293,35 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
     return CurrentBest(artifact_sha=None, source=None, rank=-1.0)
 
 
+# --- the verdict a surface shows next to an artifact ---------------------
+
+@dataclass(frozen=True)
+class JudgeVerdict:
+    artifact_sha: str
+    passed: bool
+    evidence: str | None = None
+
+
+def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str, *,
+                  current_rubric: Mapping[str, str]) -> JudgeVerdict | None:
+    """The newest judge verdict on `artifact_sha` under (subject, kind)'s
+    own role that is not stale under `current_rubric`. None when the judge
+    has not spoken on that artifact, or every verdict it gave was asked
+    under a superseded rubric -- the same freshness current_best ranks by,
+    so a surface never shows a verdict current_best refuses to count.
+    """
+    rows = record.rows_for(cache, subject, kind)
+    role = role_of(cache, subject, kind, rows)
+    fresh = [r for r in record.judge_verdicts(rows, role)
+            if r.question.get("artifact_sha") == artifact_sha and not _stale(r, current_rubric)]
+    if not fresh:
+        return None
+    latest = max(fresh, key=lambda r: r.ts)
+    return JudgeVerdict(artifact_sha=artifact_sha,
+                        passed=_judge_rank(latest.answer.get("value")) > _JUDGE_FAIL_RANK,
+                        evidence=latest.answer.get("evidence"))
+
+
 # --- pending -----------------------------------------------------------
 
 def pending(cache: CacheReader, subject: str, kind: str) -> bool:
@@ -459,7 +490,7 @@ class QueueEntry:
     attempts: int = 0
 
 
-def _gap_candidates(syllabus) -> list[tuple[str, str, str]]:
+def available_needs(syllabus) -> list[tuple[str, str, str]]:
     """(subject, artifact kind, subject kind) per gap. A sentence's own
     recording and scene picture carry the same artifact kinds a word's do
     -- "recording", "picture" -- and are told apart by their subject kind.
@@ -505,13 +536,13 @@ class QueuedNeeds:
 
 
 def available_subjects(syllabus) -> frozenset[str]:
-    """Every subject `_gap_candidates` names -- the need list `available`
+    """Every subject `available_needs` names -- the need list `available`
     counts (run.RunReport). A subject a batch question names but that has
     left this set (its need already satisfied, e.g. a picture whose fit
     passed) is not pending on run.py's own account: only its former need
     made it one, and that need is gone.
     """
-    return frozenset(subject for subject, _kind, _subject_kind in _gap_candidates(syllabus))
+    return frozenset(subject for subject, _kind, _subject_kind in available_needs(syllabus))
 
 
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
@@ -540,7 +571,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     question this run.
     """
     entries: list[QueueEntry] = []
-    candidates = _gap_candidates(syllabus)
+    candidates = available_needs(syllabus)
     out_of_options = 0
     unserved = 0
     for subject, kind, subject_kind in candidates:
@@ -623,16 +654,28 @@ def pictures_awaiting_preference(cache: CacheReader, subject: str, *,
 
 # --- challengers -----------------------------------------------------------
 
+@dataclass(frozen=True)
+class Challenger:
+    """The need the challenge is about (a word's picture and its recording
+    are two separate challenges), the artifact the learner accepted, and
+    the candidate now out-ranking it.
+    """
+    subject: str
+    kind: str
+    subject_kind: str
+    current_sha: str
+    challenger_sha: str
+
+
 def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                 prior: Sequence[str],
-                provenance_source: Callable[[str], str | None]) -> list[tuple[str, str, str]]:
-    """(subject, learner-accepted sha, challenger sha) for every subject in
-    syllabus.gaps()'s universe where a machine-ranked candidate under
-    `current_rubric` outranks a learner-accepted artifact -- never auto-
-    switched, only ever presented.
+                provenance_source: Callable[[str], str | None]) -> list[Challenger]:
+    """Every need in syllabus.gaps()'s universe where a machine-ranked
+    candidate under `current_rubric` outranks a learner-accepted artifact
+    -- never auto-switched, only ever presented.
     """
-    out: list[tuple[str, str, str]] = []
-    for subject, kind, _subject_kind in _gap_candidates(syllabus):
+    out: list[Challenger] = []
+    for subject, kind, subject_kind in available_needs(syllabus):
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
                             provenance_source=provenance_source)
         if best.source != "learner" or best.artifact_sha is None:
@@ -652,7 +695,8 @@ def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, st
         if not candidates:
             continue
         challenger_sha = max(candidates, key=lambda t: t[1])[0]
-        out.append((subject, best.artifact_sha, challenger_sha))
+        out.append(Challenger(subject=subject, kind=kind, subject_kind=subject_kind,
+                              current_sha=best.artifact_sha, challenger_sha=challenger_sha))
     return out
 
 

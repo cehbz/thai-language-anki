@@ -1,71 +1,20 @@
-"""Spec 5: the feedback screen -- the learner-backend transport where the
-learner answers the system's questions and reviews the deck.
+"""Spec 5: the feedback screen -- the local surface where the learner
+answers the system's questions and reviews the deck.
 
-Grows out of scripts/proof_gallery.py (kept patterns: local http.server,
-single connection per process, keyboard-first, inline single-page HTML/CSS/
-JS, no external resources, localStorage for position). Policy (current_best,
-exhausted, queue -- derivations.py) lives in spec 3; this module only
-presents that policy's output and records the learner's acts. It never
-computes policy itself and never calls a judge or provider backend except
-the one explicitly named by spec 5 section 1 kind 2 ("supply an artifact ...
-URL fetched through imgfetch").
+Presents the run's own derivations and records the learner's acts. The
+parameters every fold is measured under -- the wired Syllabus and its
+media index, the deck's rubric, provenance prior, Source roster and
+attempt cap -- arrive as one wiring.Derivations bundle, the same one
+wiring.build_sourcing hands the run, so current-best, exhausted, the
+queue and coverage read here exactly as they read there; this module
+computes none of them itself.
 
-One process: `python -m thai_syllabus.reviewserver --deck DIR [--port 8877]`
-(spec 5 section 2's `syllabus review` CLI wires a nicer entrypoint on top of
-this module's main()/build_app() -- out of this deliverable's scope, per
-the task brief: "so a CLI can wire it later"). Reads Syllabus state (the
-curated loaders), the cache (SyllabusDb as CacheReader/AssessmentReader/
-StudyReader), and media/objects; writes ONLY RecordWriter appends -- no
-curated YAML is ever written from here (spec 5 section 4: "No editing of
-curated data").
+Writes are RecordWriter appends only: no curated data is edited (spec 5
+section 4) and no judge or provider backend is called except the media
+ingest a supplied URL goes through (spec 5 section 1 kind 2).
 
-Design decisions this module had to make that the specs left open (not
-conflicts worth a STOP, just latitude spec 5 section 1's "kinds are
-data-driven from derivations" and spec 3's key-shape prose leave to the
-implementation -- see the top-level implementation report for the full
-list):
-
-  - Role strings. authority.ROLE_FOR_KIND names the role per kind
-    ("picture-for-word", "sentence-for-target", "recording-for-word",
-    "rendition-for-pair", "grapheme-keyword-for-grapheme"); every row
-    also names its need kind explicitly in question["kind"]
-    (record.rows_for reads that field, not the role string).
-  - Kind 3 (challenger) and kind 2 (direction)'s subject universe.
-    derivations.queue() deliberately excludes exhausted and already-good
-    subjects ("never: good/exhausted -- exhausted surfaces on the feedback
-    screen instead"); this module re-scans the SAME (subject, kind)
-    candidate set queue() draws from (Syllabus.gaps(), mirrored here as
-    _gap_candidates) without that filter, so exhausted subjects surface as
-    kind-2 questions and good-with-challenger subjects surface as kind-3
-    questions. A subject that has fully graduated out of gaps() (e.g. a
-    word whose MediaIndex already reports a picture) is outside this
-    universe and will not be re-scanned for challengers here -- gaps() is
-    the only enumeration of "subjects the Syllabus cares about" available
-    without a full unindexed cache table scan.
-  - Kind 4 (re-ask with evidence / StudyRecord contradiction). This module
-    implements kind 4 over confusions only, the one StudyReader lookup
-    already well-defined (Syllabus.study_by_confusion, grouped over the
-    aggregate's own pairs): a confusion with StudyRecord lapses (grade <=
-    1) AND an existing learner rating on its rendition is a contradiction
-    worth re-asking. Per the task brief, "missing derivation inputs mean
-    that kind simply yields no questions" -- word/sentence-level re-asks
-    yield none.
-  - Gallery gloss-overlay/position persistence (spec 5 section 1 "gloss
-    overlay default-on persisted" vs section 2 "localStorage for position
-    only -- all state of record is server-side"). Read as: the record of
-    truth (every rating, note, drill result) is 100% server-side via
-    RecordWriter appends; localStorage may still hold non-authoritative UI
-    conveniences (which card you were on, whether the gloss chip is
-    showing) exactly as scripts/proof_gallery.py already did -- losing
-    that convenience never loses learner data, so it doesn't violate "all
-    state of record is server-side".
-  - Presentation sizing ("F9 role key includes it", spec 5 section 1). The
-    lens-rules principle F9 referenced there is not among the specs this
-    deliverable was told to read; the actionable requirement -- "current
-    artifact presented at card size, rejected candidates at judgeable
-    thumbnail size" -- is implemented as a CSS-only distinction (INDEX_HTML
-    below); no role-string encoding of presentation size was added since
-    nothing downstream (derivations.py) branches on it.
+One process: `python -m thai_syllabus.reviewserver --deck DIR
+[--port 8877]`, which `thai-syllabus review` wires.
 """
 from __future__ import annotations
 
@@ -77,21 +26,39 @@ import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, WaiverKey
-from .curated import load_curated
-from .derivations import DEFAULT_ATTEMPT_CAP, LEARNER_RANK, challengers, current_best, exhausted, queue
-from .derivations import stale as _stale
+from .derivations import (
+    LEARNER_RANK,
+    Challenger,
+    CurrentBest,
+    ExhaustedStatus,
+    JudgeVerdict,
+    QueueEntry,
+    available_needs,
+    challengers,
+    current_best,
+    exhausted,
+    judge_verdict,
+    queue,
+)
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
-from .record import candidate_shas as _candidate_shas
-from .record import latest_query as _latest_query
-from .record import ratings_for_role as _ratings_for_role
-from .record import rows_for as _rows_for
-from .store import MediaStore, SyllabusDb
+from .record import (
+    candidate_shas,
+    judge_verdicts,
+    latest_query,
+    ratings_for_role,
+    rows_for,
+    source_asks,
+)
+from .store import MediaStore
 from .syllabus import Syllabus
+
+if TYPE_CHECKING:                       # wiring reaches for provider/assessor; the
+    from .wiring import Derivations     # screen needs only the bundle's values.
 
 __all__ = [
     "ReviewContext", "SessionStats", "build_app", "serve", "load_context", "main",
@@ -102,8 +69,9 @@ __all__ = [
 DEFAULT_PORT = 8877          # 8765 is reserved for AnkiConnect / proof_gallery.py
 DEFAULT_LEARNER_BUDGET = 20  # spec 3 section 4: session default, ~25 min
 
+# The rank an artifact must reach to count as covered (spec 5 section 3's
+# current-best coverage per need).
 _ACCEPTABLE_FLOOR = LEARNER_RANK["acceptable"]
-_GOOD_RANK = LEARNER_RANK["good"]
 
 # action 1-4 (spec 5 section 1 kind 1) -> the learner rating vocabulary
 # derivations.py's current_best/exhausted already fold over (LEARNER_RANK).
@@ -114,69 +82,30 @@ ACTION_RATINGS: dict[int, str] = {
     4: "good",
 }
 
-_role = role_for
+
+def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
+    return current_best(d.db, subject, kind, current_rubric=d.current_rubric, prior=d.prior,
+                        provenance_source=d.provenance_source)
 
 
-def _no_provenance(artifact_sha: str) -> str | None:
-    """The default provenance_source for every function below: no prior
-    tie-break bonus for any candidate. load_context wires the real one
-    (attempts.provenance_source_for(db)) onto ReviewContext.
-    """
-    return None
+def _exhausted(d: "Derivations", subject: str, kind: str) -> ExhaustedStatus:
+    return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
+                     attempt_cap=d.attempt_cap)
 
 
-# --- cache-row conventions: rows_for/candidate_shas/latest_query are
-# record.py's (imported above); this module keeps only what record.py
-# does not cover ------------------------------------------------------
-
-def _gap_candidates(syllabus: Syllabus) -> list[tuple[str, str]]:
-    """The (subject, kind) universe Syllabus.gaps() names -- mirrors
-    derivations._gap_candidates exactly (that one is private; this module's
-    direction/challenger/stats scans need the SAME universe without
-    queue()'s good/exhausted filter, see module docstring).
-    """
-    gaps = syllabus.gaps()
-    target_word = {t.id: t.word for t in syllabus.targets}
-    candidates: list[tuple[str, str]] = []
-    candidates += [(w, "picture") for w in gaps.words_missing_pictures]
-    candidates += [(w, "recording") for w in gaps.words_missing_recordings]
-    candidates += [(target_word.get(t, t), "sentence") for t in gaps.unfilled_targets]
-    candidates += [(c, "rendition") for c in gaps.missing_renditions]
-    candidates += [(g, "grapheme-keyword") for g in gaps.graphemes_missing_keyword_data]
-    seen: set[tuple[str, str]] = set()
-    out: list[tuple[str, str]] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            out.append(c)
-    return out
-
-
-def _gloss_for(syllabus: Syllabus, subject: str, kind: str) -> str | None:
+def _gloss_for(syllabus: Syllabus, subject: str) -> str | None:
     word = syllabus.find_word(subject)
     return word.meaning if word is not None else None
 
 
-def _judge_verdict_line(rows: Sequence[Answer], artifact_sha: str | None,
-                        current_rubric: Mapping[str, str]) -> str | None:
-    if not artifact_sha:
+def _verdict_line(verdict: JudgeVerdict | None) -> str | None:
+    """The one line spec 5 section 1 kind 1 shows beside the current
+    artifact, or None when derivations.judge_verdict has nothing fresh.
+    """
+    if verdict is None:
         return None
-    # derivations.stale (not a plain `== current_rubric`) so a role ->
-    # rubric mapping is honored the same way current_best/exhausted honor
-    # it -- comparing a str-or-Mapping directly against `rubric` always
-    # returns True/"not equal" for a mapping, which hid every verdict
-    # line whenever a caller passed the mapping form.
-    matches = [r for r in rows if r.port == "assess" and r.backend == "judge"
-              and r.question.get("artifact_sha") == artifact_sha
-              and not _stale(r, current_rubric)]
-    if not matches:
-        return None
-    latest = max(matches, key=lambda r: r.ts)
-    value = latest.answer.get("value")
-    passed = value is True or (isinstance(value, (int, float)) and value > 0)
-    evidence = latest.answer.get("evidence")
-    line = f"judge: {'pass' if passed else 'fail'}"
-    return f"{line} — {evidence}" if evidence else line
+    line = f"judge: {'pass' if verdict.passed else 'fail'}"
+    return f"{line} — {verdict.evidence}" if verdict.evidence else line
 
 
 def _artifact(sha: str | None) -> dict[str, str] | None:
@@ -185,94 +114,89 @@ def _artifact(sha: str | None) -> dict[str, str] | None:
 
 # --- question session (spec 5 section 1) -----------------------------------
 
-def _rate_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: str,
-                   *, directed: bool = False, rank: float = 0.0, attempts: int = 0,
-                   current_rubric: Mapping[str, str], prior: Sequence[str] = (),
-                   provenance_source: Callable[[str], str | None] = _no_provenance) -> dict[str, Any]:
-    rows = _rows_for(cache, subject, kind)
-    best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
-                        provenance_source=provenance_source)
+def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
+                   *, directed: bool = False, rank: float = 0.0,
+                   attempts: int = 0) -> dict[str, Any]:
+    rows = rows_for(d.db, subject, kind)
+    best = _best(d, subject, kind)
     current = _artifact(best.artifact_sha)
     if current is not None:
-        current["verdict"] = _judge_verdict_line(rows, best.artifact_sha, current_rubric)
+        current["verdict"] = _verdict_line(
+            judge_verdict(d.db, subject, kind, best.artifact_sha,
+                          current_rubric=d.current_rubric))
         current["source"] = best.source
-    rejected = [_artifact(s) for s in _candidate_shas(rows) if s != best.artifact_sha]
+    rejected = [_artifact(s) for s in candidate_shas(rows) if s != best.artifact_sha]
     return {
-        "type": "rate", "subject": subject, "kind": kind, "role": _role(kind),
-        "gloss": _gloss_for(syllabus, subject, kind), "query": _latest_query(rows),
+        "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
+        "role": role_for(kind, subject_kind),
+        "gloss": _gloss_for(d.syllabus, subject), "query": latest_query(rows),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
     }
 
 
-def _tried_summary(rows: Sequence[Answer]) -> dict[str, Any]:
-    phrases: list[str] = []
-    sources: list[str] = []
-    for r in rows:
-        if r.port != "provide":
-            continue
-        sources.append(r.backend)
-        params = r.question.get("params", {}) or {}
-        q = params.get("query") or params.get("url") or params.get("text")
-        if q:
-            phrases.append(q)
-    judge_reasons = [r.answer.get("evidence") for r in rows
-                     if r.port == "assess" and r.backend == "judge" and r.answer.get("evidence")]
-    return {"phrases": phrases, "sources": sorted(set(sources)),
-           "judge_reasons": judge_reasons, "best_candidates": _candidate_shas(rows)[:5]}
-
-
-def _direction_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: str,
-                        attempts: int) -> dict[str, Any]:
-    rows = _rows_for(cache, subject, kind)
-    return {
-        "type": "direction", "subject": subject, "kind": kind, "role": _role(kind),
-        "gloss": _gloss_for(syllabus, subject, kind), "tried": _tried_summary(rows),
-        "attempts": attempts,
-    }
-
-
-def _kind_for_subject(syllabus: Syllabus, subject: str) -> str | None:
-    """The kind _gap_candidates first pairs `subject` with -- challengers()
-    names only (subject, current sha, challenger sha); the question shape
-    (role, gloss) still needs a kind.
+def _tried_summary(rows: Sequence[Answer], role: str) -> dict[str, Any]:
+    """What spec 5 section 1 kind 2 shows an exhausted subject: the phrases
+    its Source asks carried, the Sources asked, the judge's reasons, and the
+    candidates those asks produced.
     """
-    for s, kind in _gap_candidates(syllabus):
-        if s == subject:
-            return kind
-    return None
+    asks = source_asks(rows)
+    phrases: list[str] = []
+    for ask in asks:
+        params = ask.question.get("params", {}) or {}
+        phrase = params.get("query") or params.get("text")
+        if phrase:
+            phrases.append(phrase)
+    judge_reasons = [evidence for r in judge_verdicts(rows, role)
+                    if (evidence := r.answer.get("evidence"))]
+    return {"phrases": phrases, "sources": sorted({r.backend for r in asks}),
+           "judge_reasons": judge_reasons, "best_candidates": candidate_shas(rows)[:5]}
 
 
-def _challenger_question(syllabus: Syllabus, subject: str, kind: str,
-                         current_sha: str, challenger_sha: str) -> dict[str, Any]:
+def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
+                        attempts: int) -> dict[str, Any]:
+    role = role_for(kind, subject_kind)
+    rows = rows_for(d.db, subject, kind)
     return {
-        "type": "challenger", "subject": subject, "kind": kind, "role": _role(kind),
-        "gloss": _gloss_for(syllabus, subject, kind),
-        "current": _artifact(current_sha), "challenger": _artifact(challenger_sha),
+        "type": "direction", "subject": subject, "kind": kind, "subject_kind": subject_kind,
+        "role": role, "gloss": _gloss_for(d.syllabus, subject),
+        "tried": _tried_summary(rows, role), "attempts": attempts,
     }
 
 
-def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
-                     *, current_rubric: Mapping[str, str], prior: Sequence[str] = (),
-                     provenance_source: Callable[[str], str | None] = _no_provenance
-                     ) -> list[dict[str, Any]]:
+def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, Any]:
+    return {
+        "type": "challenger", "subject": challenger.subject, "kind": challenger.kind,
+        "subject_kind": challenger.subject_kind,
+        "role": role_for(challenger.kind, challenger.subject_kind),
+        "gloss": _gloss_for(d.syllabus, challenger.subject),
+        "current": _artifact(challenger.current_sha),
+        "challenger": _artifact(challenger.challenger_sha),
+    }
+
+
+def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any]]:
+    """Spec 5 section 1 kind 4 over confusions: a confusion whose
+    StudyRecords hold lapses (grade <= 1) and whose rendition the learner
+    has already rated is a contradiction worth re-asking. A kind with no
+    matching derivation input yields no questions.
+    """
     out: list[dict[str, Any]] = []
-    grouped = syllabus.study_by_confusion(study)
-    for confusion in syllabus.confusions:
-        records = grouped.get(confusion.id, [])
-        lapses = [r for r in records if r.grade <= 1]
+    grouped = d.syllabus.study_by_confusion(study)
+    for confusion in d.syllabus.confusions:
+        lapses = [r for r in grouped.get(confusion.id, []) if r.grade <= 1]
         if not lapses:
             continue
-        subject, kind = confusion.id, "rendition"
-        learner_rows = _ratings_for_role(cache.assessments_of(subject), _role(kind))
-        if not learner_rows:
+        subject, kind, subject_kind = confusion.id, "rendition", "pair"
+        role = role_for(kind, subject_kind)
+        rated = ratings_for_role(d.db.assessments_of(subject), role)
+        if not rated:
             continue  # no prior answer to contradict -- nothing to re-ask
-        latest = max(learner_rows, key=lambda r: r.ts)
-        best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
-                            provenance_source=provenance_source)
+        latest = max(rated, key=lambda r: r.ts)
+        best = _best(d, subject, kind)
         out.append({
-            "type": "reask", "subject": subject, "kind": kind, "role": _role(kind),
-            "gloss": None, "original_answer": latest.answer.get("value"),
+            "type": "reask", "subject": subject, "kind": kind, "subject_kind": subject_kind,
+            "role": role, "gloss": None, "original_answer": latest.answer.get("value"),
             "current": _artifact(best.artifact_sha),
             "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
                          "ts": r.ts} for r in lapses[-5:]],
@@ -280,60 +204,43 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
     return out
 
 
-def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
-                budget: int = DEFAULT_LEARNER_BUDGET,
-                current_rubric: Mapping[str, str], prior: Sequence[str] = (),
-                provenance_source: Callable[[str], str | None] = _no_provenance,
-                sources_for: Callable[[str], Sequence[str]] | None = None,
-                attempt_cap: int = DEFAULT_ATTEMPT_CAP) -> list[dict[str, Any]]:
+def build_queue(d: "Derivations", study: StudyReader | None = None, *,
+                budget: int = DEFAULT_LEARNER_BUDGET) -> list[dict[str, Any]]:
     """The question session (spec 5 section 1): four kinds, data-driven
-    from derivations.py, capped by the session-wide learner-attention
-    budget. Highest expected gain first: F10-ordered rate questions
-    (derivations.queue's own order) fill the budget first; direction
-    requests, challenger comparisons, and re-asks are lower-urgency
-    "something changed, come look" prompts that only appear in whatever
-    budget the ordinary queue didn't use. A kind with no matching
-    derivation input yields no questions (e.g. no StudyRecords -> kind 4
-    is empty) rather than erroring. `sources_for` defaults to attempts.py's
-    own picture/recording/rendition roster (spec 3's Source order).
+    from derivations.py under `d`'s parameters, capped by the session-wide
+    learner-attention budget. Highest expected gain first: the F10-ordered
+    rate questions (derivations.queue's own order) fill the budget first;
+    direction requests, challenger comparisons and re-asks fill whatever
+    the queue left. A kind with no matching derivation input yields no
+    questions (no StudyRecords -> kind 4 is empty) rather than erroring.
     """
-    if sources_for is None:
-        from .attempts import sources_for as sources_for  # noqa: PLW0127 (default roster)
-
-    entries = queue(syllabus, cache, current_rubric=current_rubric, prior=prior,
-                    sources_for=sources_for, attempt_cap=attempt_cap,
-                    provenance_source=provenance_source)
+    entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
+                    sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                    provenance_source=d.provenance_source)
     items = [
-        _rate_question(syllabus, cache, e.subject, e.kind, directed=e.directed,
-                       rank=e.rank, attempts=e.attempts, current_rubric=current_rubric,
-                       prior=prior, provenance_source=provenance_source)
+        _rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
+                       rank=e.rank, attempts=e.attempts)
         for e in entries
     ][:budget]
 
     if len(items) < budget:
-        for subject, kind in _gap_candidates(syllabus):
-            status = exhausted(cache, subject, kind, sources=sources_for(kind),
-                               attempt_cap=attempt_cap)
+        for subject, kind, subject_kind in available_needs(d.syllabus):
+            status = _exhausted(d, subject, kind)
             if status.exhausted:
-                items.append(_direction_question(syllabus, cache, subject, kind,
-                                                  status.attempts))
+                items.append(_direction_question(d, subject, kind, subject_kind,
+                                                 status.attempts))
                 if len(items) >= budget:
                     break
 
     if len(items) < budget:
-        for subject, current_sha, challenger_sha in challengers(
-                cache, syllabus, current_rubric=current_rubric, prior=prior,
-                provenance_source=provenance_source):
-            kind = _kind_for_subject(syllabus, subject)
-            if kind is None:
-                continue
-            items.append(_challenger_question(syllabus, subject, kind, current_sha, challenger_sha))
+        for challenger in challengers(d.db, d.syllabus, current_rubric=d.current_rubric,
+                                      prior=d.prior, provenance_source=d.provenance_source):
+            items.append(_challenger_question(d, challenger))
             if len(items) >= budget:
                 break
 
     if len(items) < budget and study is not None:
-        items.extend(_reask_questions(syllabus, cache, study, current_rubric=current_rubric,
-                                      prior=prior, provenance_source=provenance_source))
+        items.extend(_reask_questions(d, study))
 
     return items[:budget]
 
@@ -346,10 +253,8 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
 # apkg-faithful renderer once compile() lands, without touching anything
 # else here.
 
-def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
-                     current_rubric: Mapping[str, str], prior: Sequence[str] = (),
-                     provenance_source: Callable[[str], str | None] = _no_provenance
-                     ) -> list[dict[str, Any]]:
+def simplified_cards(d: "Derivations") -> list[dict[str, Any]]:
+    syllabus = d.syllabus
     words_by_id = {w.id: w for w in syllabus.words}
     targets_by_id = {t.id: t for t in syllabus.targets}
     pairs_by_id = {p.id: p for p in syllabus.pairs}
@@ -363,8 +268,7 @@ def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
             word = words_by_id.get(target.word) if target else None
             if target is None or word is None:
                 continue
-            best = current_best(cache, target.word, "picture", current_rubric=current_rubric, prior=prior,
-                                provenance_source=provenance_source)
+            best = _best(d, target.word, "picture")
             cards.append({
                 "index": index, "id": target.id, "kind": "target",
                 "front": {"thai": word.thai, "picture": (_artifact(best.artifact_sha) or {}).get("url")},
@@ -379,8 +283,7 @@ def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
             if any(m is None for m in members):
                 continue
             confusion = confusions_by_id.get(pair.confusion)
-            best = current_best(cache, members[0].id, "recording", current_rubric=current_rubric, prior=prior,
-                                provenance_source=provenance_source)
+            best = _best(d, members[0].id, "recording")
             other = members[1].thai if len(members) > 1 else None
             cards.append({
                 "index": index, "id": pair.id, "kind": "pair",
@@ -445,6 +348,9 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
       rate/reask:  {subject, kind, action: 1-4, artifact_sha?, note?}
       challenger:  {subject, kind, action: "keep"|"switch", artifact_sha?}
       waiver:      {finding: {rule, note_id, artifact_sha?}, waived?, reason?}
+    The role a rating is filed under comes back from the question that
+    asked it (`role`), or from the need's own kinds (`kind` plus
+    `subject_kind`, which is "word" for a payload naming neither).
     Never mutates or deletes a row (append-only, spec 2): calling this
     twice with an identical payload appends two rows, but every derivation
     over the cache folds newest-wins, so the DERIVED state (current_best,
@@ -465,7 +371,7 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
 
     subject = payload["subject"]
     kind = payload["kind"]
-    role = payload.get("role") or _role(kind)
+    role = payload.get("role") or role_for(kind, payload.get("subject_kind", "word"))
     action = payload.get("action")
 
     if action in ("keep", "switch"):
@@ -520,7 +426,7 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
     else:
         raise ValueError(f"unknown supply source {source!r}")
 
-    role = _role(kind)
+    role = payload.get("role") or role_for(kind, payload.get("subject_kind", "word"))
     key = LearnerKey(artifact_sha=artifact_sha, role=role)
     answer_row: dict[str, Any] = {
         "value": "unacceptable-use-this",
@@ -549,10 +455,14 @@ class SessionStats:
     queued: int = 0
 
 
-def _drill_stats(cache: CacheReader, syllabus: Syllabus) -> dict[str, dict[str, int]]:
+def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
+    """Per-confusion correct/total over the gallery drill rows this module
+    itself appends (append_drill_result) -- live drill evidence, not a
+    policy derivation.
+    """
     drills: dict[str, dict[str, int]] = {}
-    for confusion in syllabus.confusions:
-        for r in cache.assessments_of(confusion.id):
+    for confusion in d.syllabus.confusions:
+        for r in d.db.assessments_of(confusion.id):
             if r.port == "assess" and r.backend == "learner" and r.question.get("kind") == "drill":
                 bucket = drills.setdefault(confusion.id, {"correct": 0, "total": 0})
                 bucket["total"] += 1
@@ -561,44 +471,35 @@ def _drill_stats(cache: CacheReader, syllabus: Syllabus) -> dict[str, dict[str, 
     return drills
 
 
-def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
-                  session: SessionStats | None = None,
-                  current_rubric: Mapping[str, str], prior: Sequence[str] = (),
-                  provenance_source: Callable[[str], str | None] = _no_provenance,
-                  sources_for: Callable[[str], Sequence[str]] | None = None,
-                  attempt_cap: int = DEFAULT_ATTEMPT_CAP) -> dict[str, Any]:
+def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
+                  session: SessionStats | None = None) -> dict[str, Any]:
     """Spec 5 section 3: per-session (answered/queued, per-confusion drill
     accuracy, exhausted-remaining count) and per-deck (current-best
-    coverage per need, learner good/acceptable/unacceptable counts).
+    coverage per need, learner good/acceptable/unacceptable counts) --
+    every count derived under `d`'s parameters, the run's own.
     `pending`/`sentences_adopted` come from the newest run.py
     (port="run", backend="runreport") row when one exists, else 0 -- the
     same row run._persist_report appends after every run() call.
-    `run_report_history` stays empty: run._persist_report DOES append one
-    row per run() call (a real per-run history sits in the cache table),
-    but this module's read side only reads the newest one back -- no
-    aggregation over the full history is implemented here yet.
+    `run_report_history` stays empty: run._persist_report appends one row
+    per run() call, but this module's read side only reads the newest one
+    back -- no aggregation over the full history is implemented here yet.
     """
-    if sources_for is None:
-        from .attempts import sources_for as sources_for  # noqa: PLW0127 (default roster)
-
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
     exhausted_count = 0
 
-    for subject, kind in _gap_candidates(syllabus):
-        best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
-                           provenance_source=provenance_source)
+    for subject, kind, subject_kind in available_needs(d.syllabus):
+        best = _best(d, subject, kind)
         bucket = coverage.setdefault(kind, {"covered": 0, "total": 0})
         bucket["total"] += 1
         if best.rank >= _ACCEPTABLE_FLOOR:
             bucket["covered"] += 1
-        if exhausted(cache, subject, kind, sources=sources_for(kind),
-                    attempt_cap=attempt_cap).exhausted:
+        if _exhausted(d, subject, kind).exhausted:
             exhausted_count += 1
 
-        learner_rows = _ratings_for_role(cache.assessments_of(subject), _role(kind))
-        if learner_rows:
-            value = max(learner_rows, key=lambda r: r.ts).answer["value"]
+        rated = ratings_for_role(d.db.assessments_of(subject), role_for(kind, subject_kind))
+        if rated:
+            value = max(rated, key=lambda r: r.ts).answer["value"]
             if value == "good":
                 ratings["good"] += 1
             elif value == "acceptable":
@@ -606,7 +507,7 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
             else:
                 ratings["unacceptable"] += 1
 
-    runreport = cache.latest("run", "runreport", "runreport")
+    runreport = d.db.latest("run", "runreport", "runreport")
     runreport_answer = runreport.answer if runreport else {}
 
     return {
@@ -615,7 +516,7 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
         "exhausted_remaining": exhausted_count,
         "coverage": coverage,
         "ratings": ratings,
-        "drills": _drill_stats(cache, syllabus),
+        "drills": _drill_stats(d),
         "pending": runreport_answer.get("pending", 0),
         "sentences_adopted": runreport_answer.get("sentences_adopted", 0),
         "run_report_history": [],
@@ -631,22 +532,62 @@ def _find_media_file(media_store: MediaStore, sha: str) -> Path | None:
 
 @dataclass
 class ReviewContext:
-    syllabus: Syllabus
-    cache: CacheReader
-    record: RecordWriter
-    media_store: MediaStore
+    """One review session over one deck: the deck's Derivations (the run's
+    own parameters), the StudyReader the re-ask questions read, the
+    learner-attention budget one session serves, and the counters that
+    session keeps. Every derivation the surface shows goes through the
+    methods below, so no endpoint can measure a fold under anything but
+    `derivations`.
+    """
+    derivations: "Derivations"
     study: StudyReader | None = None
     learner_budget: int = DEFAULT_LEARNER_BUDGET
-    current_rubric: Mapping[str, str] = field(default_factory=dict)
-    prior: Sequence[str] = ()
-    provenance_source: Callable[[str], str | None] = _no_provenance
     url_fetcher: Callable[[str], tuple[bytes, str]] | None = None
-    cards_provider: Callable[..., list[dict[str, Any]]] = field(default=simplified_cards)
+    cards_provider: Callable[["Derivations"], list[dict[str, Any]]] = field(
+        default=simplified_cards)
     session: SessionStats = field(default_factory=SessionStats)
 
     def __post_init__(self) -> None:
         if self.url_fetcher is None:
             self.url_fetcher = tool_fetcher("imgfetch")
+
+    @property
+    def syllabus(self) -> Syllabus:
+        return self.derivations.syllabus
+
+    @property
+    def cache(self) -> CacheReader:
+        return self.derivations.db
+
+    @property
+    def record(self) -> RecordWriter:
+        return self.derivations.db
+
+    @property
+    def media_store(self) -> MediaStore:
+        return self.derivations.media_store
+
+    def current_best(self, subject: str, kind: str) -> CurrentBest:
+        return _best(self.derivations, subject, kind)
+
+    def exhausted(self, subject: str, kind: str) -> ExhaustedStatus:
+        return _exhausted(self.derivations, subject, kind)
+
+    def queue(self) -> list[QueueEntry]:
+        d = self.derivations
+        return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
+                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                     provenance_source=d.provenance_source)
+
+    def questions(self, budget: int | None = None) -> list[dict[str, Any]]:
+        return build_queue(self.derivations, self.study,
+                           budget=self.learner_budget if budget is None else budget)
+
+    def cards(self) -> list[dict[str, Any]]:
+        return self.cards_provider(self.derivations)
+
+    def stats(self) -> dict[str, Any]:
+        return compute_stats(self.derivations, self.study, session=self.session)
 
 
 def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
@@ -678,23 +619,13 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             if parsed.path == "/":
                 self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/api/queue":
-                budget = int((qs.get("budget") or [ctx.learner_budget])[0])
-                items = build_queue(ctx.syllabus, ctx.cache, ctx.study, budget=budget,
-                                    current_rubric=ctx.current_rubric, prior=ctx.prior,
-                                    provenance_source=ctx.provenance_source)
+                items = ctx.questions(int((qs.get("budget") or [ctx.learner_budget])[0]))
                 ctx.session.queued = len(items)
                 self._send_json(items)
             elif parsed.path == "/api/cards":
-                self._send_json(ctx.cards_provider(ctx.syllabus, ctx.cache,
-                                                    current_rubric=ctx.current_rubric,
-                                                    prior=ctx.prior,
-                                                    provenance_source=ctx.provenance_source))
+                self._send_json(ctx.cards())
             elif parsed.path == "/stats":
-                self._send_json(compute_stats(ctx.syllabus, ctx.cache, ctx.study,
-                                              session=ctx.session,
-                                              current_rubric=ctx.current_rubric,
-                                              prior=ctx.prior,
-                                              provenance_source=ctx.provenance_source))
+                self._send_json(ctx.stats())
             elif parsed.path.startswith("/media/"):
                 self._serve_media(urllib.parse.unquote(parsed.path[len("/media/"):]))
             else:
@@ -761,33 +692,24 @@ def serve(ctx: ReviewContext, port: int) -> None:
 def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_BUDGET
                  ) -> ReviewContext:
     """Wire a ReviewContext from a real deck directory (spec 2 section 1
-    layout): curated/*.yaml + syllabus.db + media/.
+    layout: curated/*.yaml + syllabus.db + media/).
 
-    The Syllabus comes from wiring.load_syllabus -- the SAME assembly the
-    run and the compiler use -- not a bare inline Syllabus. An inline one
-    had no media index, no sentences, no frequency map and no rulebook
-    overlay, so the review screen showed gaps the run had already closed
-    (every word "missing a picture", however many pictures were on record)
-    and scored against unoverlaid rules. `db`/`bundle` are opened here and
-    injected so ReviewContext.cache/record and the Syllabus's own
-    AssessmentReader/MediaIndex are one connection.
+    wiring.load_derivations is the assembly build_sourcing hands the run:
+    the Syllabus with its media index, one db connection serving as
+    CacheReader, RecordWriter and StudyReader, and the deck's own rubric,
+    provenance prior, Source roster and attempt cap. The screen adds no
+    parameter of its own, so what it shows and what the run derives cannot
+    drift apart.
 
-    wiring is imported lazily, inside the function: reviewserver is on the
-    import path of cli.py and wiring is a heavier module that (unlike this
-    one) reaches for provider/assessor/transport -- a module-level import
-    would be a cycle the day wiring wants anything from here.
+    wiring is imported inside the function: reviewserver is on cli.py's
+    import path and wiring reaches for provider/assessor/transport, which
+    a module-level import would pull in to serve a page.
     """
-    from .attempts import provenance_source_for
-    from .wiring import load_syllabus
+    from .wiring import load_derivations
 
-    deck_dir = Path(deck_dir)
-    bundle = load_curated(deck_dir / "curated")
-    db = SyllabusDb(deck_dir / "syllabus.db")
-    media_store = MediaStore(deck_dir / "media")
-    syllabus = load_syllabus(deck_dir, db=db, bundle=bundle)
-    return ReviewContext(syllabus=syllabus, cache=db, record=db, media_store=media_store,
-                         study=db, learner_budget=learner_budget,
-                         provenance_source=provenance_source_for(db))
+    derivations = load_derivations(deck_dir)
+    return ReviewContext(derivations=derivations, study=derivations.db,
+                         learner_budget=learner_budget)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1022,7 +944,8 @@ INDEX_HTML = """<!doctype html>
   }
 
   function answerRate(q, action, noteText) {
-    var payload = { subject: q.subject, kind: q.kind, action: action, note: noteText || "" };
+    var payload = { subject: q.subject, kind: q.kind, subject_kind: q.subject_kind,
+                    role: q.role, action: action, note: noteText || "" };
     if (action === 2) {
       pickCandidateForAction2(q, function (sha) {
         payload.artifact_sha = sha;
@@ -1073,13 +996,16 @@ INDEX_HTML = """<!doctype html>
     var actions = el("div", { "class": "actions" });
     var keepBtn = el("button", { "class": "good" }, "keep");
     keepBtn.addEventListener("click", function () {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind, action: "keep" })
+      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+                                subject_kind: q.subject_kind, role: q.role,
+                                action: "keep" })
         .then(function () { advanceQueue(); });
     });
     var switchBtn = el("button", { "class": "bad" }, "switch");
     switchBtn.addEventListener("click", function () {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind, action: "switch",
-                                artifact_sha: q.challenger.sha })
+      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+                                subject_kind: q.subject_kind, role: q.role,
+                                action: "switch", artifact_sha: q.challenger.sha })
         .then(function () { advanceQueue(); });
     });
     actions.appendChild(keepBtn);
@@ -1226,7 +1152,8 @@ INDEX_HTML = """<!doctype html>
 
   function openDirectionBox(q) {
     openBox("directionInput", "directionText", function (text) {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind, action: 3,
+      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+                                subject_kind: q.subject_kind, role: q.role, action: 3,
                                 rating: "unacceptable-use-this", note: text })
         .then(function () { advanceQueue(); });
     });
@@ -1235,7 +1162,9 @@ INDEX_HTML = """<!doctype html>
   function openSupplyBox(q) {
     openBox("supplyInput", "supplyValue", function (val) {
       var source = /^https?:\\/\\//.test(val) ? "url" : "path";
-      postJson("/api/supply", { subject: q.subject, kind: q.kind, source: source, value: val })
+      postJson("/api/supply", { subject: q.subject, kind: q.kind,
+                                subject_kind: q.subject_kind, role: q.role,
+                                source: source, value: val })
         .then(function () { advanceQueue(); });
     });
   }
