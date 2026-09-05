@@ -1,11 +1,8 @@
 # Spec 2: Durable state
 
-Revision 3, proposed 2026-09-04 against principles r2 and architecture
-r2 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
-principles draft). Re-checked against principles r1 and architecture r1
-on 2026-09-04; the revisions that re-check proposed enter as r2 on
-approval. Revision process as in docs/architecture.md: proposals on
-evidence, explicit approval per revision, numbered log.
+Revision 4, proposed 2026-09-05 against principles r2 and architecture
+r2. Revision process as in docs/architecture.md: proposals on evidence,
+explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -18,6 +15,10 @@ Revision log:
   the anchor::kind convention; keys built by spec 3's functions; ranks
   resolved by the loader; no layout version. Evidence: implementation
   review 2026-09-04.
+- r4 2026-09-05: study rows carry family, anchor and card_kind as
+  columns written once at import; keys are typed values whose encoding
+  is a storage identity, never parsed. Evidence: Task A10 review (a
+  colon-bearing pair id broke a string parse); user ruling 2026-09-05.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -78,12 +79,16 @@ cache(port, backend, key_sha, subject, question, answer, cost, ts)
   -- a re-ask appends a new row (newest-wins on read for the learner
   -- backend; exact-key hit for memoized backends). subject indexes the
   -- attempt record ("what was tried for X"), including empty answers.
-study(card_key, compile_id, ts, grade, time_ms)  -- PK (card_key, ts)
-  -- store 4. card_key = "<anchor>::<card kind>", anchor = the note's
-  -- guid source (word id, pair MemberKey, grapheme symbol, target id +
-  -- text_sha); the Target of a word card is derived from the kind.
-  -- Imported from revlog; append-only, insert-or-ignore. Anki flags do
-  -- NOT land here: a flag imports as a learner assessment row in cache.
+study(family, anchor, card_kind, compile_id, ts, grade, time_ms)
+      -- PK (family, anchor, card_kind, ts)
+  -- store 4. The import reads a card's tags once and writes their parts
+  -- as columns: family (word|minimal_pair|grapheme|sentence), anchor (the
+  -- note's guid source: word id, pair MemberKey, grapheme symbol, target
+  -- id + text_sha), card_kind. Nothing re-parses an anchor: a pair row's
+  -- pair id is matched exactly against the aggregate's pairs, and the
+  -- Target of a word card is derived from card_kind. Imported from
+  -- revlog; append-only, insert-or-ignore. Anki flags do NOT land here:
+  -- a flag imports as a learner assessment row in cache.
 ```
 
 Learner authority, regression rules, exhausted, current-best, the queue:
@@ -95,8 +100,8 @@ them. Confusion weights = confusions.yaml seed × study rows; derived.
 ```
 AssessmentReader   .verdict(backend, key) -> Answer | None
                    .assessments_of(subject) -> list[Answer]   # newest last
-                   # keys are built by spec 3's one key function per
-                   # backend; the store appends and reads what it is handed
+                   # keys are spec 3's typed key values; the store hashes
+                   # key.encode() into key_sha and never reads a key back
 FrequencyMap       .rank(word_thai) -> int | None
                    # consumed by the loader, which hands the aggregate a
                    # word -> rank mapping

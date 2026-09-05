@@ -1,11 +1,8 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 3, proposed 2026-09-04 against principles r2 and architecture
-r2 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft). Re-checked against principles r1 and architecture r1
-on 2026-09-04; the revisions that re-check proposed enter as r2 on
-approval. Revision process as in docs/architecture.md: proposals on
-evidence, explicit approval per revision, numbered log.
+Revision 4, proposed 2026-09-05 against principles r2 and architecture
+r2. Revision process as in docs/architecture.md: proposals on evidence,
+explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -20,6 +17,8 @@ Revision log:
   the artifact set compile resolves; sentence drafts carry a judged
   gloss; flags and re-verification requests make a subject directed.
   Evidence: implementation review 2026-09-04.
+- r4 2026-09-05: keys are typed values; the encoding is a storage
+  identity, never parsed. User ruling 2026-09-05.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -46,9 +45,11 @@ whose picture attempts stopped at search.
   verdicts and no adoption. Adoption is derived (current-best), never stored.
 - **Verdict**: an Assess answer on (artifact, role) under a rubric; carries
   its cost.
-- **Key**: every backend has one key function, defined in this spec's
-  module and used by every writer and reader; no other module builds a
-  key.
+- **Key**: a typed value per backend (a frozen dataclass of its parts),
+  defined in this spec's key module and used by every writer and reader.
+  Its canonical encoding exists only as the store's identity (key_sha);
+  no module parses, splits or prefix-matches an encoded key. A consumer
+  that needs a key's parts reads the row's question and subject.
 - **Current-best / pending / exhausted**: folds over the record (section 6).
 
 ## 2. Port contracts
