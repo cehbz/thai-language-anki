@@ -260,10 +260,10 @@ def test_per_url_fetch_transport_error_is_skipped(ctx):
 def test_candidates_of_dedups_shas_and_ignores_batch_pending_markers(ctx):
     c, search, judge = ctx
     c.db.append(port="provide", backend="imgfetch", key="url1", subject="orange",
-               question={"provides": "picture-bytes", "params": {"url": "url1"}},
+               question={"kind": "picture", "params": {"url": "url1"}},
                answer={"items": [{"sha": "sha1", "ext": "jpg"}]})
     c.db.append(port="provide", backend="imgfetch", key="url2", subject="orange",
-               question={"provides": "picture-bytes", "params": {"url": "url2"}},
+               question={"kind": "picture", "params": {"url": "url2"}},
                answer={"items": [{"sha": "sha1", "ext": "jpg"}]})  # same sha, different url -- not a dup
     c.db.append(port="assess", backend="judge", key="judge-batch-pending:orange", subject="orange",
                question={"keys": ["k1"]}, answer={"kind": "batch-pending", "batch_id": "b1"})
@@ -412,6 +412,7 @@ def test_rendition_attempt_intersects_forvo_speakers(ctx):
     assert set(members) == {"white", "news"}
     assert {c.db.media_provenance(s)["speaker_id"] for s in members.values()} == {"forvo:kris"}
     assert rows[-1].answer["value"] is True
+    assert rows[-1].question["kind"] == "rendition"  # record.rows_for reads this back
     # each member's own recording need benefits too -- mechanical verdicts
     # are recorded under the member's own subject, not the pair id.
     assert current_best_of(c, "white", "recording").artifact_sha is not None
@@ -543,6 +544,9 @@ def test_sentence_attempt_adopts_a_draft_that_fills_and_passes(ctx):
     assert [s.text for s in c.db.all_sentences()] == ["กินส้ม"]
     syl = c.syllabus.with_sentences(out.adopted)
     assert syl.gaps().unfilled_targets == ()
+    from thai_syllabus.entities import text_sha
+    mechanical_rows = [r for r in c.db.assessments_of(text_sha("กินส้ม")) if r.backend == "mechanical"]
+    assert mechanical_rows and mechanical_rows[0].question["kind"] == "sentence"
 
 
 def test_sentence_attempt_judges_with_no_attachments(ctx):

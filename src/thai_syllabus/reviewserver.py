@@ -27,8 +27,9 @@ list):
 
   - Role strings. authority.ROLE_FOR_KIND names the role per kind
     ("picture-for-word", "sentence-for-target", "recording-for-word",
-    "rendition-for-pair", "grapheme-keyword-for-grapheme");
-    derivations._matches_kind only requires role.startswith(kind + "-").
+    "rendition-for-pair", "grapheme-keyword-for-grapheme"); every row
+    also names its need kind explicitly in question["kind"]
+    (record.rows_for reads that field, not the role string).
   - Kind 3 (challenger) and kind 2 (direction)'s subject universe.
     derivations.queue() deliberately excludes exhausted and already-good
     subjects ("never: good/exhausted -- exhausted surfaces on the feedback
@@ -89,6 +90,10 @@ from .derivations import LEARNER_RANK, current_best, exhausted, queue
 from .derivations import stale as _stale
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
+from .record import candidate_shas as _candidate_shas
+from .record import latest_query as _latest_query
+from .record import ratings_for_role as _ratings_for_role
+from .record import rows_for as _rows_for
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 
@@ -116,26 +121,9 @@ ACTION_RATINGS: dict[int, str] = {
 _role = role_for
 
 
-# --- cache-row conventions (mirrors derivations.py's, duplicated here since
-# that module's are private helpers -- see this module's docstring) --------
-
-def _matches_kind(question: Mapping, kind: str) -> bool:
-    provides = question.get("provides")
-    if provides is not None:
-        # Both shapes, exactly as derivations._matches_kind: "picture" is
-        # the search hits, "picture-bytes" the fetched artifact -- and the
-        # -bytes row is the only one carrying a sha, so matching the bare
-        # kind alone left every candidate list and thumbnail strip empty.
-        return provides in (kind, f"{kind}-bytes")
-    role = question.get("role")
-    if role is not None:
-        return role == kind or role.startswith(kind + "-")
-    return False
-
-
-def _rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
-    return [r for r in cache.assessments_of(subject) if _matches_kind(r.question, kind)]
-
+# --- cache-row conventions: rows_for/candidate_shas/latest_query are
+# record.py's (imported above); this module keeps only what record.py
+# does not cover ------------------------------------------------------
 
 def _gap_candidates(syllabus: Syllabus) -> list[tuple[str, str]]:
     """The (subject, kind) universe Syllabus.gaps() names -- mirrors
@@ -163,37 +151,6 @@ def _gap_candidates(syllabus: Syllabus) -> list[tuple[str, str]]:
 def _gloss_for(syllabus: Syllabus, subject: str, kind: str) -> str | None:
     word = syllabus.find_word(subject)
     return word.meaning if word is not None else None
-
-
-def _candidate_shas(rows: Sequence[Answer], *, exclude: str | None = None) -> list[str]:
-    shas: list[str] = []
-    seen: set[str] = set()
-    for r in rows:
-        if r.port != "provide":
-            continue
-        for item in r.answer.get("items", []):
-            if not isinstance(item, Mapping):
-                continue
-            sha = item.get("sha")
-            if sha and sha != exclude and sha not in seen:
-                seen.add(sha)
-                shas.append(sha)
-    return shas
-
-
-def _latest_query(rows: Sequence[Answer], kind: str) -> str | None:
-    """The phrase the newest SOURCE ask searched for -- the bare-kind row.
-    The `-bytes` fetch rows an ask causes are written after it and carry
-    only the url they fetched, so reading the newest provide row of any
-    shape showed the learner a candidate's url instead of the query.
-    """
-    asks = [r for r in rows if r.port == "provide"
-           and r.question.get("provides") == kind]
-    if not asks:
-        return None
-    latest = max(asks, key=lambda r: r.ts)
-    params = latest.question.get("params", {}) or {}
-    return params.get("query") or params.get("url") or params.get("text")
 
 
 def _judge_verdict_line(rows: Sequence[Answer], artifact_sha: str | None,
@@ -233,10 +190,10 @@ def _rate_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: s
     if current is not None:
         current["verdict"] = _judge_verdict_line(rows, best.artifact_sha, current_rubric)
         current["source"] = best.source
-    rejected = [_artifact(s) for s in _candidate_shas(rows, exclude=best.artifact_sha)]
+    rejected = [_artifact(s) for s in _candidate_shas(rows) if s != best.artifact_sha]
     return {
         "type": "rate", "subject": subject, "kind": kind, "role": _role(kind),
-        "gloss": _gloss_for(syllabus, subject, kind), "query": _latest_query(rows, kind),
+        "gloss": _gloss_for(syllabus, subject, kind), "query": _latest_query(rows),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
     }
@@ -287,9 +244,7 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
         if not lapses:
             continue
         subject, kind = confusion.id, "rendition"
-        rows = _rows_for(cache, subject, kind)
-        learner_rows = [r for r in rows if r.port == "assess" and r.backend == "learner"
-                        and r.answer.get("value") in LEARNER_RANK]
+        learner_rows = _ratings_for_role(cache.assessments_of(subject), _role(kind))
         if not learner_rows:
             continue  # no prior answer to contradict -- nothing to re-ask
         latest = max(learner_rows, key=lambda r: r.ts)
@@ -492,7 +447,8 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
         answer["note"] = payload["note"]
     key = LearnerKey(artifact_sha=artifact_sha, role=role)
     ts = record.append(port="assess", backend="learner", key=key, subject=subject,
-                       question={"role": role, "artifact_sha": artifact_sha, "rubric": None},
+                       question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
+                                "kind": "rating"},
                        answer=answer)
     return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": artifact_sha}
 
@@ -516,7 +472,7 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
                             {"imgfetch": FetchBackend(media=ctx.media_store,
                                                       fetcher=ctx.url_fetcher)})
         answer = provider.ask("imgfetch", Question(subject=subject, provides=f"{kind}-bytes",
-                                                    params={"url": payload["value"]}))
+                                                    params={"url": payload["value"]}, kind=kind))
         if not answer.items:
             return {"ok": False, "error": "fetch produced no artifact"}
         artifact_sha = answer.items[0]["sha"]
@@ -535,7 +491,8 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
     if payload.get("note"):
         answer_row["note"] = payload["note"]
     ts = ctx.record.append(port="assess", backend="learner", key=key, subject=subject,
-                           question={"role": role, "artifact_sha": artifact_sha, "rubric": None},
+                           question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
+                                    "kind": "rating"},
                            answer=answer_row)
     return {"ok": True, "ts": ts, "artifact_sha": artifact_sha}
 
@@ -593,9 +550,7 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
         if exhausted(cache, subject, kind, current_rubric=current_rubric).exhausted:
             exhausted_count += 1
 
-        rows = _rows_for(cache, subject, kind)
-        learner_rows = [r for r in rows if r.port == "assess" and r.backend == "learner"
-                        and r.answer.get("value") in LEARNER_RANK]
+        learner_rows = _ratings_for_role(cache.assessments_of(subject), _role(kind))
         if learner_rows:
             value = max(learner_rows, key=lambda r: r.ts).answer["value"]
             if value == "good":

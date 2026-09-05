@@ -64,7 +64,7 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     db = SyllabusDb(root / "syllabus.db")
 
     db.append(port="provide", backend="openverse", key="openverse:rice",
-             subject="rice", question={"provides": "picture", "params": {}},
+             subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "pic1"}]}, cost=0.0)
     # rubric must match load_syllabus's own rubrics_for(rules) (the default
     # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
@@ -72,13 +72,13 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
              subject="rice",
              question={"role": "picture-for-word", "artifact_sha": "pic1",
-                      "rubric": PICTURE_FIT_RUBRIC},
+                      "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
              answer={"value": True}, cost=0.0)
     db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
                 origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
 
     db.append(port="provide", backend="forvo", key="forvo:rice",
-             subject="rice", question={"provides": "recording", "params": {}},
+             subject="rice", question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec1"}]}, cost=0.0)
     # derivations.current_best does not yet rank a bare mechanical pass for
     # recordings (Task 5 adds that) -- a judge pass under role
@@ -86,7 +86,8 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # today.
     db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
              subject="rice",
-             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
+             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None,
+                      "kind": "recording"},
              answer={"value": True}, cost=0.0)
     db.add_speaker(Speaker(id="somchai", kind="native"))
     db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
@@ -105,11 +106,12 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # the sentences-table row's stored key above).
     sentence_sha = text_sha("ข้าว")
     db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
-             subject=sentence_sha, question={"provides": "recording", "params": {}},
+             subject=sentence_sha, question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec-sentence"}]}, cost=0.0)
     db.append(port="assess", backend="judge", key=f"judge:x:rec-sentence:recording-for-word",
              subject=sentence_sha,
-             question={"role": "recording-for-word", "artifact_sha": "rec-sentence", "rubric": None},
+             question={"role": "recording-for-word", "artifact_sha": "rec-sentence", "rubric": None,
+                      "kind": "recording"},
              answer={"value": True}, cost=0.0)
     db.add_media(sha="rec-sentence", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1),

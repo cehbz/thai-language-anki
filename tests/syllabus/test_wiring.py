@@ -432,7 +432,7 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
     db.append(port="provide", backend="openverse", key="openverse:rice",
-             subject="rice", question={"provides": "picture", "params": {}},
+             subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "abc"}]}, cost=0.0)
     # rubric must match load_syllabus's own rubrics_for(rules) (the default
     # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
@@ -441,7 +441,7 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
     db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
              subject="rice",
              question={"role": "picture-for-word", "artifact_sha": "abc",
-                      "rubric": PICTURE_FIT_RUBRIC},
+                      "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
              answer={"value": True}, cost=0.0)
     syllabus = load_syllabus(root)
     assert syllabus.media.has_picture("rice") is True
@@ -453,14 +453,15 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
 def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_best(db):
     from datetime import date
     db.append(port="provide", backend="openverse", key="openverse:rice",
-             subject="rice", question={"provides": "picture", "params": {}},
+             subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "abc"}]}, cost=0.0)
     db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
              subject="rice",
-             question={"role": "picture-for-word", "artifact_sha": "abc", "rubric": None},
+             question={"role": "picture-for-word", "artifact_sha": "abc", "rubric": None,
+                      "kind": "picture"},
              answer={"value": True}, cost=0.0)
     db.append(port="provide", backend="forvo", key="forvo:rice",
-             subject="rice", question={"provides": "recording", "params": {}},
+             subject="rice", question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec1"}]}, cost=0.0)
     # derivations.current_best does not yet rank a bare "mechanical" pass
     # for recordings (Task 5 adds that) -- a judge pass under role
@@ -468,7 +469,8 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
     # today.
     db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
              subject="rice",
-             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None},
+             question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None,
+                      "kind": "recording"},
              answer={"value": True}, cost=0.0)
     db.add_speaker(Speaker(id="somchai", kind="native"))
     db.add_media(sha="rec1", kind="recording", ext="mp3", source="forvo",
@@ -515,11 +517,12 @@ def _seed_member_recording(db, subject, sha, speaker_id, sex="unknown",
     db.add_speaker(Speaker(id=speaker_id, kind="native", sex=sex,
                            age_band=age_band, region=region))
     db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
-             subject=subject, question={"provides": "recording", "params": {}},
+             subject=subject, question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": sha}]}, cost=0.0)
     db.append(port="assess", backend="judge", key=f"judge:x:{sha}:recording-for-word",
              subject=subject,
-             question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None},
+             question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None,
+                      "kind": "recording"},
              answer={"value": True}, cost=0.0)
     db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
@@ -544,7 +547,7 @@ def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_ro
     db.append(port="assess", backend="mechanical",
              key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
-                      "rubric": None,
+                      "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
                                              "far": "sha-far-rendition"}}},
              answer={"value": True}, cost=0.0)
@@ -607,7 +610,7 @@ def test_speakers_of_rendition_returns_the_pairs_rendition_speaker_once(db):
     db.append(port="assess", backend="mechanical",
              key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
-                      "rubric": None,
+                      "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
                                              "far": "sha-far-rendition"}}},
              answer={"value": True}, cost=0.0)
@@ -629,7 +632,7 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     db.append(port="assess", backend="mechanical",
              key=f"mech:rendition:v1:{real_pair.id}:joined", subject=real_pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
-                      "rubric": None,
+                      "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-own", "far": "sha-far-own"}}},
              answer={"value": True}, cost=0.0)
 

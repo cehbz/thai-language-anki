@@ -53,9 +53,13 @@ def _next_ts() -> int:
 
 
 def provide_row(subject, kind, backend="openverse", items=(), ts=None):
+    """`kind` is the need kind (e.g. "picture"), never "picture-bytes" --
+    a bytes-fetch row is distinguished by `backend` (imgfetch/audiofetch),
+    not by a suffixed kind.
+    """
     ts = ts if ts is not None else _next_ts()
     return Answer(port="provide", backend=backend, key=f"{backend}:{subject}",
-                 key_sha="x", subject=subject, question={"provides": kind, "params": {}},
+                 key_sha="x", subject=subject, question={"kind": kind, "params": {}},
                  answer={"items": list(items)}, cost=0.0, ts=ts)
 
 
@@ -68,7 +72,7 @@ def judge_row(subject, kind, artifact_sha, value, rubric="rubric-v1", ts=None,
     return Answer(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}",
                  key_sha="x", subject=subject,
                  question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
-                          "rubric": rubric},
+                          "rubric": rubric, "kind": kind},
                  answer=answer, cost=0.001, ts=ts)
 
 
@@ -77,7 +81,7 @@ def learner_row(subject, kind, artifact_sha, rating, ts=None):
     return Answer(port="assess", backend="learner", key=f"learner:{subject}:{artifact_sha}",
                  key_sha="x", subject=subject,
                  question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
-                          "rubric": None},
+                          "rubric": None, "kind": "rating"},
                  answer={"value": rating}, cost=0.0, ts=ts)
 
 
@@ -356,13 +360,18 @@ def test_confusion_weights_increases_with_lapse_rate():
 
 def _provide(db, subject, kind, backend, shas, ts=None):
     db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{len(shas)}",
-              subject=subject, question={"provides": kind, "params": {}},
+              subject=subject, question={"kind": kind, "params": {}},
               answer={"items": [{"sha": s} for s in shas]}, ts=ts)
+
+
+# role -> need kind, for the two roles this section's fixtures verdict under.
+_KIND_BY_ROLE = {"picture-for-word": "picture", "recording-for-word": "recording"}
 
 
 def _verdict(db, subject, backend, role, sha, value, rubric="r"):
     db.append(port="assess", backend=backend, key=f"{backend}:{rubric}:{sha}:{role}",
-              subject=subject, question={"role": role, "artifact_sha": sha, "rubric": rubric},
+              subject=subject, question={"role": role, "artifact_sha": sha, "rubric": rubric,
+                                        "kind": _KIND_BY_ROLE[role]},
               answer={"value": value})
 
 
@@ -398,7 +407,7 @@ def test_preference_orders_passing_pictures(db):
         _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
     db.append(port="assess", backend="judge", key="judge:x:abc:picture-preference", subject="w",
               question={"role": "picture-preference", "artifact_sha": None, "rubric": "pref",
-                        "params": {"candidates": ["a", "b", "c"]}},
+                        "kind": "picture", "params": {"candidates": ["a", "b", "c"]}},
               answer={"value": ["b", "c", "a"]})
     best = current_best(db, "w", "picture",
                         current_rubric={"picture-for-word": "fit", "picture-preference": "pref"})
@@ -458,16 +467,17 @@ def test_queue_excludes_pending_needs(db):
 
 
 def test_exhausted_counts_fetched_picture_bytes_shas_in_the_last_k_attempts():
-    """A picture sha only ever appears on an imgfetch row, whose `provides`
-    is "picture-bytes" -- not the bare kind. A fold that matched only
-    "picture" saw neither the row nor its sha, so the last-k candidate set
-    was always empty and a freshly fetched, freshly judged winner could
-    never reopen an exhausted need. (The bytes row is a candidate of the
-    Source ask before it, not an attempt of its own -- hence 7, not 8.)
+    """A picture sha only ever appears on an imgfetch row -- one whose own
+    `backend` (not kind) marks it as a bytes fetch, not a Source ask of
+    its own. A fold that ignored it saw neither the row nor its sha, so
+    the last-k candidate set was always empty and a freshly fetched,
+    freshly judged winner could never reopen an exhausted need. (The
+    bytes row is a candidate of the Source ask before it, not an attempt
+    of its own -- hence 7, not 8.)
     """
     rows = [judge_row("rice", "picture", "sha-a", False, ts=0)]
     rows += [provide_row("rice", "picture") for _ in range(7)]
-    last = provide_row("rice", "picture-bytes", backend="imgfetch",
+    last = provide_row("rice", "picture", backend="imgfetch",
                        items=[{"sha": "sha-great"}])
     rows.append(last)
     rows.append(judge_row("rice", "picture", "sha-great", 99.0, ts=last.ts + 1))
@@ -477,13 +487,13 @@ def test_exhausted_counts_fetched_picture_bytes_shas_in_the_last_k_attempts():
 
 
 def _searches_with_fetches(n):
-    """n whole picture attempts: each a Source ask (`provides: picture`)
-    followed by the imgfetch row (`provides: picture-bytes`) carrying the
-    one candidate it produced."""
+    """n whole picture attempts: each a Source ask (backend="openverse")
+    followed by the imgfetch row carrying the one candidate it produced
+    (same kind, distinguished from the ask by backend, not kind)."""
     rows = []
     for i in range(n):
         rows.append(provide_row("rice", "picture"))
-        rows.append(provide_row("rice", "picture-bytes", backend="imgfetch",
+        rows.append(provide_row("rice", "picture", backend="imgfetch",
                                 items=[{"sha": f"sha-{i}"}]))
     return rows
 

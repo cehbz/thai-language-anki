@@ -99,7 +99,7 @@ class Fixture:
         self.db.append(port="assess", backend="judge",
                        key=f"judge:seed:{sha}:{kind}", subject=subject,
                        question={"role": ROLE_FOR_KIND.get(kind, kind), "artifact_sha": sha,
-                                "rubric": "seed"},
+                                "rubric": "seed", "kind": kind},
                        answer={"value": True})
 
     def seed_recording(self, subject: str, text: str, speaker="somchai") -> str:
@@ -109,7 +109,7 @@ class Fixture:
                           origin="https://forvo.com/x", licence="cc-by",
                           acquired=date(2026, 1, 1), speaker_id=speaker)
         self.db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
-                       subject=subject, question={"provides": "recording"},
+                       subject=subject, question={"provides": "recording", "kind": "recording"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "recording", sha)
         return sha
@@ -120,7 +120,7 @@ class Fixture:
                           origin="https://example.com/x.jpg", licence="cc0",
                           acquired=date(2026, 1, 1))
         self.db.append(port="provide", backend="openverse", key=f"openverse:{subject}",
-                       subject=subject, question={"provides": "picture"},
+                       subject=subject, question={"provides": "picture", "kind": "picture"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "picture", sha)
         return sha

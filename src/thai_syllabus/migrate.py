@@ -483,7 +483,7 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
             judge_key = JudgeKey.for_rule(LEGACY_PICTURE_RUBRIC, sha, word_id,
                                           "picture-for-word")
             question = {"role": "picture-for-word", "artifact_sha": sha,
-                       "rubric": LEGACY_PICTURE_RUBRIC}
+                       "rubric": LEGACY_PICTURE_RUBRIC, "kind": "picture"}
             if cand.get("passed"):
                 _record_once(
                     db, report, "judge_pass", port="assess", backend="judge", key=judge_key,
@@ -525,7 +525,7 @@ def _migrate_forvo(old_deck: Path, db: SyllabusDb, report: MigrationReport) -> N
         _record_once(db, report, "forvo", port="provide", backend="forvo", key=key,
                     write=lambda k=key, w=word, it=items: db.append(
                         port="provide", backend="forvo", key=k, subject=w,
-                        question={"word": w}, answer={"items": it}))
+                        question={"word": w, "kind": "recording"}, answer={"items": it}))
 
 
 # --- item 4: proof-gallery notes + waivers ---------------------------------

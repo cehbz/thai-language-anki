@@ -78,11 +78,13 @@ class _FakeBackend:
 def test_a_miss_executes_and_appends_one_row(db):
     backend = _FakeBackend(value=True, evidence="looks right", cost=0.002)
     assessor = Assessor(record=db, cache=db, backends={"judge": backend})
-    v = assessor.ask("judge", AssessQuestion(subject="s1", role="picture-for-word"))
+    v = assessor.ask("judge", AssessQuestion(subject="s1", role="picture-for-word", kind="picture"))
     assert isinstance(v, Verdict)
     assert v.value is True and v.evidence == "looks right" and v.cost == 0.002
     assert backend.fetch_calls == 1
-    assert len(db.assessments_of("s1")) == 1
+    rows = db.assessments_of("s1")
+    assert len(rows) == 1
+    assert rows[0].question["kind"] == "picture"  # record.rows_for reads this back
 
 
 def test_a_hit_does_not_execute_and_appends_nothing(db):
@@ -241,6 +243,8 @@ def test_ask_batch_resumes_and_writes_individual_verdicts_once_ended(db):
     # 2 rows each: the per-subject batch-pending marker plus the verdict
     assert len(db.assessments_of("w1")) == 2
     assert len(db.assessments_of("w2")) == 2
+    marker = db.latest("assess", "judge", "judge-batch-pending:w1")
+    assert marker.question["kind"] == "batch"  # record.rows_for never returns this for a need kind
 
     # a further call is now a pure cache hit -- no batch transport touched
     bt.submitted = None

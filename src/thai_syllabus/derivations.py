@@ -1,29 +1,19 @@
 """Derivations (spec 3 section 3): pure folds over the cache, never
 stored. current_best, exhausted, queue, confusion_weights.
 
-Row conventions these folds rely on (not fixed elsewhere in the spec, so
-fixed here -- see the implementation report's ambiguity notes):
-  - A `provide` row's `question` carries {"provides": kind, "params": {...}}
-    (provider.py); its `answer["items"]` is a list, each item optionally
-    carrying "sha" once the artifact is content-addressed (imgfetch/tts
-    write one, a bare image-search result before imgfetch does not).
-    The bytes-fetching backends write `"{kind}-bytes"` ("picture-bytes",
-    "recording-bytes"), and they are the only writers of a sha, so `kind`
-    matches both that and the bare kind (_matches_kind).
-  - An `assess` row's `question` carries {"role": role, "artifact_sha":
-    sha_or_null, "rubric": rubric_or_null} (assessor.py); its
-    `answer["value"]` is the judge's/learner's verdict -- bool or score
-    for judge, a rating string for the learner backend
-    ("good"/"acceptable"/"unacceptable-use-this"/"unacceptable-none").
-  - `kind` (this module's parameter, matching the spec's terse
-    `current_best(subject, kind)`) matches a `provide` row via
-    question["provides"] == kind, and an `assess` row via
-    question["role"] == kind or question["role"].startswith(kind + "-")
-    (bridging the two ports' vocabularies -- "picture" matches the judge
-    role "picture-for-word").
-  - A learner "direction" fact (steering, no artifact yet) is any row
-    whose answer carries a non-null "direction" key, or whose question
-    carries {"kind": "direction"} (migrate.py's convention).
+record.py holds the row-selecting folds (rows_for, source_asks,
+candidate_shas, learner_ratings, directions, judge_verdicts,
+latest_query); every row a provide/assess writer appends names its need
+kind, or a learner row's own row kind, in question["kind"] (record.py's
+docstring). This module reads through record.py only -- no `provide`
+row's `provides` string or `assess` row's `role` string is matched by
+membership or prefix here.
+
+A rating row's own question["kind"] is "rating", never a need kind, so
+it is not among rows_for(subject, kind)'s result; current_best/exhausted
+instead scope record.ratings_for_role(cache.assessments_of(subject),
+ROLE_FOR_KIND[kind]) to one need by its question["role"] -- an explicit
+equality read of typed data, not an inference.
 
 `cache`/`syllabus` are always the first parameters (the spec's prose
 `current_best(subject, kind)` elides the obvious reader dependency; this
@@ -36,8 +26,10 @@ from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Union
 
+from . import record
 from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND
 from .ports import Answer, CacheReader, StudyReader
+from .record import LEARNER_RANK
 from .syllabus import Syllabus
 
 __all__ = [
@@ -56,40 +48,15 @@ __all__ = [
 # stale on that account).
 Rubric = Union[str, Mapping[str, str], None]
 
-# Learner rating -> a numeric rank on the same scale judge verdicts use,
-# so current_best's regression guard ("never below an artifact the
-# learner rated acceptable") is a plain numeric comparison. Judge pass
-# (True/1.0) ranks below learner "acceptable" so a judge run alone can
-# never outrank a learner's endorsement (spec 3 section 3).
-LEARNER_RANK: dict[str, float] = {
-    "good": 100.0,
-    "acceptable": 80.0,
-    "unacceptable-use-this": 40.0,
-    "unacceptable-none": -1.0,
-}
+# LEARNER_RANK (record.py): a numeric rank on the same scale judge
+# verdicts use, so current_best's regression guard ("never below an
+# artifact the learner rated acceptable") is a plain numeric comparison.
+# Judge pass (True/1.0) ranks below learner "acceptable" so a judge run
+# alone can never outrank a learner's endorsement (spec 3 section 3).
 _JUDGE_PASS_RANK = 50.0
 _JUDGE_FAIL_RANK = 0.0
 _ACCEPTABLE_FLOOR = LEARNER_RANK["acceptable"]
 _GOOD_RANK = LEARNER_RANK["good"]
-
-
-def _matches_kind(question: Mapping, kind: str) -> bool:
-    provides = question.get("provides")
-    if provides is not None:
-        # "picture" is the search hits; "picture-bytes" is the fetched
-        # artifact -- and imgfetch/audiofetch's -bytes row is the ONLY row
-        # that ever carries a sha (provider.FetchBackend), so a fold that
-        # matched the bare kind alone never saw a single candidate.
-        # attempts.candidates_of has always matched both.
-        return provides in (kind, f"{kind}-bytes")
-    role = question.get("role")
-    if role is not None:
-        return role == kind or role.startswith(kind + "-")
-    return False
-
-
-def _is_direction(row: Answer) -> bool:
-    return bool(row.answer.get("direction")) or row.question.get("kind") == "direction"
 
 
 def _judge_rank(value) -> float:
@@ -100,27 +67,10 @@ def _judge_rank(value) -> float:
     return _JUDGE_FAIL_RANK
 
 
-def _rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
-    return [r for r in cache.assessments_of(subject) if _matches_kind(r.question, kind)]
-
-
-def _source_asks(rows: Sequence[Answer], kind: str) -> list[Answer]:
-    """The provide rows that ARE attempts, oldest first: a Source ask (an
-    image search, a Forvo lookup, a tts synthesis) writes the bare kind.
-    The bytes fetches an ask leads to write `"{kind}-bytes"` and belong to
-    that same attempt -- counting them too burned the attempt cap several
-    times faster than a run actually attempts anything.
-    """
-    return sorted((r for r in rows if r.port == "provide"
-                  and r.question.get("provides") == kind), key=lambda r: r.ts)
-
-
 def _shas_since(rows: Sequence[Answer], since_ts: int) -> set[str]:
-    """Every artifact sha any provide row at or after `since_ts` carries --
-    the candidates the attempts in that window actually produced. Almost
-    always the imgfetch/audiofetch `-bytes` rows, but tts writes its sha on
-    its own bare-kind row, so this reads both rather than the -bytes shape
-    alone.
+    """Every artifact sha any provide row in `rows` at or after `since_ts`
+    carries -- the candidates the attempts in that window actually
+    produced.
     """
     shas: set[str] = set()
     for r in rows:
@@ -130,6 +80,21 @@ def _shas_since(rows: Sequence[Answer], since_ts: int) -> set[str]:
             if isinstance(item, Mapping) and item.get("sha"):
                 shas.add(item["sha"])
     return shas
+
+
+def _ratings_by_artifact(rating_rows: Sequence[Answer]) -> dict[str, tuple[int, str]]:
+    """artifact_sha -> (latest ts, rating), newest wins per artifact, over
+    an already role-scoped list of rating rows (record.ratings_for_role).
+    """
+    out: dict[str, tuple[int, str]] = {}
+    for r in rating_rows:
+        artifact_sha = r.question.get("artifact_sha") or r.answer.get("artifact_sha")
+        if not artifact_sha:
+            continue
+        prev = out.get(artifact_sha)
+        if prev is None or r.ts > prev[0]:
+            out[artifact_sha] = (r.ts, r.answer.get("value"))
+    return out
 
 
 def _stale(row: Answer, current_rubric: Rubric) -> bool:
@@ -210,8 +175,8 @@ def _apply_preference(rows: Sequence[Answer], ranks: dict[str, float],
     amendment), 20.0 * (n - 1 - i) / max(n - 1, 1) at rank position i.
     """
     passing = {s for s, r in ranks.items() if r > _JUDGE_FAIL_RANK}
-    prefs = [r for r in rows if r.port == "assess" and r.backend == "judge"
-            and r.question.get("role") == "picture-preference" and not _stale(r, current_rubric)
+    prefs = [r for r in record.judge_verdicts(rows, "picture-preference")
+            if not _stale(r, current_rubric)
             and set(r.question.get("params", {}).get("candidates", [])) <= passing]
     if not prefs:
         return
@@ -244,24 +209,6 @@ def _apply_prior(ranks: dict[str, float], provenance_prior: Sequence[str],
         ranks[s] = r + (len(provenance_prior) - idx) / (len(provenance_prior) + 1)
 
 
-def _learner_ratings(rows: Sequence[Answer]) -> dict[str, tuple[int, str]]:
-    """artifact_sha -> (latest ts, rating), newest wins per artifact."""
-    out: dict[str, tuple[int, str]] = {}
-    for r in rows:
-        if r.port != "assess" or r.backend != "learner":
-            continue
-        rating = r.answer.get("value")
-        if rating not in LEARNER_RANK:
-            continue
-        artifact_sha = r.question.get("artifact_sha") or r.answer.get("artifact_sha")
-        if not artifact_sha:
-            continue
-        prev = out.get(artifact_sha)
-        if prev is None or r.ts > prev[0]:
-            out[artifact_sha] = (r.ts, rating)
-    return out
-
-
 # --- current_best -----------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -277,15 +224,14 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
                  current_rubric: Rubric = None,
                  provenance_prior: Sequence[str] = (),
                  provenance: Callable[[str], Mapping | None] | None = None) -> CurrentBest:
-    rows = _rows_for(cache, subject, kind)
-    learner_ratings = _learner_ratings(rows)
+    rows = record.rows_for(cache, subject, kind)
+    role = ROLE_FOR_KIND.get(kind, kind)
+    rating_rows = record.ratings_for_role(cache.assessments_of(subject), role)
+    learner_ratings = _ratings_by_artifact(rating_rows)
     machine_ranks, machine_sources = _machine_ranks(rows, kind, current_rubric)
     _apply_prior(machine_ranks, provenance_prior, provenance)
 
-    latest_learner_row = max(
-        (r for r in rows if r.port == "assess" and r.backend == "learner"
-         and r.answer.get("value") in LEARNER_RANK),
-        key=lambda r: r.ts, default=None)
+    latest_learner_row = max(rating_rows, key=lambda r: r.ts, default=None)
 
     # regression floor: the best rating the learner has EVER given any
     # artifact for this (subject, kind), acceptable-or-better only.
@@ -348,8 +294,8 @@ class ExhaustedStatus:
 
 def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
              attempt_cap: int = 8, current_rubric: Rubric = None) -> ExhaustedStatus:
-    rows = _rows_for(cache, subject, kind)
-    provide_rows = _source_asks(rows, kind)
+    rows = record.rows_for(cache, subject, kind)
+    provide_rows = record.source_asks(rows)
     attempts = len(provide_rows)
     if attempts < attempt_cap:
         return ExhaustedStatus(exhausted=False, attempts=attempts, reason="attempt cap not reached")
@@ -368,7 +314,8 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *, k: int = 2,
     # -- comparing against itself would make "the last attempt IS the
     # best" look like it never out-ranked anything).
     machine_ranks, _sources = _machine_ranks(rows, kind, current_rubric)
-    learner_ratings = _learner_ratings(rows)
+    role = ROLE_FOR_KIND.get(kind, kind)
+    learner_ratings = _ratings_by_artifact(record.ratings_for_role(cache.assessments_of(subject), role))
     prior_machine_best = max((r for s, r in machine_ranks.items() if s not in last_k_shas),
                              default=-1.0)
     prior_learner_best = max((LEARNER_RANK[rating] for s, (_, rating) in learner_ratings.items()
@@ -415,12 +362,10 @@ def _gap_candidates(syllabus) -> list[tuple[str, str]]:
 def pending(cache: CacheReader, subject: str, kind: str) -> bool:
     """True while a judge batch is out and hasn't resolved every key this
     kind's role cares about (spec 3 section 3 amendment): the newest
-    `judge-batch-pending:{subject}` marker row (Task 8's convention --
-    written by the batch path, matches neither "provides" nor "role" so
-    _matches_kind already excludes it from _rows_for/current_best/
-    exhausted) names the keys a batch submitted; any of those keys, whose
-    role matches this kind, still lacking a verdict row means the batch
-    hasn't come back yet.
+    `judge-batch-pending:{subject}` marker row (its own kind is "batch",
+    so record.rows_for never returns it for a need kind) names the keys a
+    batch submitted; any of those keys, whose role matches this kind,
+    still lacking a verdict row means the batch hasn't come back yet.
     """
     marker = cache.latest("assess", "judge", f"judge-batch-pending:{subject}")
     if marker is None:
@@ -458,13 +403,13 @@ def queue(syllabus, cache: CacheReader, *, budgets: Mapping[str, object] | None 
     for subject, kind in _gap_candidates(syllabus):
         if pending(cache, subject, kind):
             continue  # a batch is still out -- don't re-queue while awaiting it
-        rows = _rows_for(cache, subject, kind)
+        rows = record.rows_for(cache, subject, kind)
         best = current_best(cache, subject, kind, current_rubric=current_rubric)
         status = exhausted(cache, subject, kind, current_rubric=current_rubric)
         if best.rank >= _GOOD_RANK or status.exhausted:
             continue  # never: good/exhausted -- exhausted surfaces on the feedback screen
-        directed = any(_is_direction(r) for r in rows)
-        attempts = len(_source_asks(rows, kind))   # Source asks, not the fetches they caused
+        directed = bool(record.directions(cache.assessments_of(subject)))
+        attempts = len(record.source_asks(rows))   # Source asks, not the fetches they caused
         if best.artifact_sha is None or best.source != "learner" or best.rank < _ACCEPTABLE_FLOOR:
             bucket = 1
         elif _has_untried_option(rows, current_rubric,

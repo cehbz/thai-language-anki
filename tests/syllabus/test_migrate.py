@@ -195,6 +195,10 @@ def test_migration_report_counts_and_no_silent_drops(old_deck, old_data, tmp_pat
     assert any(u.source == "work/candidates" and "missing.jpg" in u.identity
               for u in report.unmigratable)
 
+    db = SyllabusDb(new_root / "syllabus.db")
+    chicken_verdicts = [a for a in db.assessments_of("chicken") if a.backend == "judge"]
+    assert chicken_verdicts and all(a.question["kind"] == "picture" for a in chicken_verdicts)
+
     # forvo: 2 good lines, 1 malformed json dropped
     assert report.cache["forvo"] == 2
     assert any(u.source == "work/forvo_lookups.jsonl" for u in report.unmigratable)
@@ -348,6 +352,7 @@ def test_forvo_rows_use_the_spec_3_readable_key(old_deck, old_data, tmp_path):
     answers = [a for a in db.assessments_of("ไก่") if a.backend == "forvo"]  # chicken
     assert len(answers) == 1
     assert answers[0].key == "forvo:ไก่"  # chicken
+    assert answers[0].question["kind"] == "recording"  # record.rows_for reads this back
 
 
 def test_missing_waivers_yaml_is_not_an_error(old_deck, old_data, tmp_path):

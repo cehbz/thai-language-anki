@@ -58,12 +58,14 @@ class _FakeBackend:
 def test_a_miss_executes_and_appends_one_row(db):
     backend = _FakeBackend(items=("pic-1",), cost=0.5)
     provider = Provider(record=db, cache=db, backends={"x": backend})
-    answer = provider.ask("x", Question(subject="s1", provides="picture"))
+    answer = provider.ask("x", Question(subject="s1", provides="picture", kind="picture"))
     assert isinstance(answer, ProviderAnswer)
     assert answer.items == ("pic-1",)
     assert answer.cost == 0.5
     assert backend.fetch_calls == 1
-    assert len(db.assessments_of("s1")) == 1
+    rows = db.assessments_of("s1")
+    assert len(rows) == 1
+    assert rows[0].question["kind"] == "picture"  # record.rows_for reads this back
 
 
 def test_a_hit_does_not_execute_and_appends_nothing(db):

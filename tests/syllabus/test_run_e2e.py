@@ -127,11 +127,12 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id="somchai")
     ctx.db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
-                 subject=sentence_sha, question={"provides": "recording"},
+                 subject=sentence_sha, question={"kind": "recording"},
                  answer={"items": [{"sha": "sentence-rec"}]})
     ctx.db.append(port="assess", backend="judge", key=f"judge:x:sentence-rec:recording-for-word",
                  subject=sentence_sha,
-                 question={"role": "recording-for-word", "artifact_sha": "sentence-rec", "rubric": None},
+                 question={"role": "recording-for-word", "artifact_sha": "sentence-rec", "rubric": None,
+                          "kind": "recording"},
                  answer={"value": True})
 
     after = dataclasses.replace(load_syllabus(root), tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"]}))

@@ -44,6 +44,10 @@ class AssessQuestion:
     artifact_sha: str | None = None
     rubric: str | None = None  # machine backends only
     params: Mapping[str, Any] = field(default_factory=dict)
+    # The need kind (picture | recording | rendition | sentence |
+    # grapheme-keyword) this verdict ranks toward -- record.py's folds
+    # read this back verbatim; Assessor never derives it from `role`.
+    kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -224,7 +228,8 @@ class Assessor:
         return self._record.append(
             port="assess", backend=backend, key=key, subject=question.subject,
             question={"role": question.role, "artifact_sha": question.artifact_sha,
-                     "rubric": question.rubric}, answer=answer, cost=raw.cost)
+                     "rubric": question.rubric, "kind": question.kind},
+            answer=answer, cost=raw.cost)
 
     # --- judge's batch transport: many questions, one submission ---------
 
@@ -290,7 +295,7 @@ class Assessor:
             self._record.append(
                 port="assess", backend=backend, key=request_set_key,
                 subject=request_set_key,
-                question={"keys": sorted(k.encode() for k in miss_keys)},
+                question={"kind": "batch", "keys": sorted(k.encode() for k in miss_keys)},
                 answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
             by_subject: dict[str, list[CacheKey]] = {}
             for key, q in submittable:
@@ -298,7 +303,7 @@ class Assessor:
             for subject, keys in by_subject.items():
                 self._record.append(
                     port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                    subject=subject, question={"keys": [k.encode() for k in keys]},
+                    subject=subject, question={"kind": "batch", "keys": [k.encode() for k in keys]},
                     answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
             raise BatchPending(batch_id, miss_keys, resolved, excluded)
 
@@ -365,7 +370,8 @@ class Assessor:
             remaining = [k for k in keys if k not in abandoned_set]
             self._record.append(
                 port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                subject=subject, question={"keys": [k.encode() for k in remaining]},
+                subject=subject,
+                question={"kind": "batch", "keys": [k.encode() for k in remaining]},
                 answer={"kind": "batch-pending", "batch_id": batch_id,
                        "abandoned": [k.encode() for k in subject_abandoned]}, cost=0.0)
 

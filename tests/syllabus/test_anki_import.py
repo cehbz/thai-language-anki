@@ -175,6 +175,7 @@ def test_flag_import_writes_a_learner_assessment_row(compiled):
     flag_rows = [r for r in rows if r.backend == "learner" and r.question.get("role") == "picture-for-word"]
     assert len(flag_rows) == 1
     assert flag_rows[0].answer["value"] == "unacceptable-none"
+    assert flag_rows[0].question["kind"] == "rating"  # record.learner_ratings reads this back
 
 
 def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(compiled):
@@ -198,7 +199,7 @@ def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(comp
     assert after.artifact_sha == before.artifact_sha
     rows = fx.db.assessments_of("rice")
     reverify_rows = [r for r in rows if r.backend == "learner"
-                     and r.question.get("kind") == "reverify-request"]
+                     and r.question.get("kind") == "reverify"]
     assert len(reverify_rows) == 1
     assert reverify_rows[0].question["role"] == "recording-for-word"
 

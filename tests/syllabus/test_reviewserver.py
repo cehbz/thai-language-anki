@@ -87,22 +87,22 @@ def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
 
 def _provide(db, subject, kind, backend="openverse", items=(), query=None):
     """One whole attempt, in the two row shapes a real one writes: the
-    Source ask (`provides: picture`, carrying the query and the search
-    hits) and then one bytes row per fetched candidate (`provides:
-    picture-bytes`, backend imgfetch, one sha each) -- the only row shape
-    that ever carries a sha. The Source ask is the attempt; the bytes rows
-    are the candidates it produced.
+    Source ask (carrying the query and the search hits) and then one
+    bytes row per fetched candidate (backend imgfetch, one sha each --
+    the only row shape that ever carries a sha; same `kind` as the ask,
+    distinguished from it by backend, not by a suffixed kind). The Source
+    ask is the attempt; the bytes rows are the candidates it produced.
     """
     params = {"query": query} if query else {}
     ts = db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{query}",
-                   subject=subject, question={"provides": kind, "params": params},
+                   subject=subject, question={"kind": kind, "params": params},
                    answer={"items": [i for i in items if not i.get("sha")]})
     for item in items:
         if not item.get("sha"):
             continue
         url = f"https://x/{item['sha']}.jpg"
         ts = db.append(port="provide", backend="imgfetch", key=url, subject=subject,
-                       question={"provides": f"{kind}-bytes", "params": {"url": url}},
+                       question={"kind": kind, "params": {"url": url}},
                        answer={"items": [dict(item)]})
     return ts
 
@@ -114,7 +114,8 @@ def _judge(db, subject, kind, artifact_sha, value, rubric="rubric-v1", evidence=
         answer["evidence"] = evidence
     return db.append(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}",
                      subject=subject,
-                     question={"role": role, "artifact_sha": artifact_sha, "rubric": rubric},
+                     question={"role": role, "artifact_sha": artifact_sha, "rubric": rubric,
+                              "kind": kind},
                      answer=answer)
 
 
@@ -122,7 +123,8 @@ def _learner(db, subject, kind, artifact_sha, rating):
     role = rs._role(kind)
     return db.append(port="assess", backend="learner",
                      key=f"learner:{artifact_sha}:{role}", subject=subject,
-                     question={"role": role, "artifact_sha": artifact_sha, "rubric": None},
+                     question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
+                              "kind": "rating"},
                      answer={"value": rating})
 
 
@@ -223,6 +225,7 @@ def test_append_answer_action_maps_to_rating_and_learner_key(db, w1):
     assert row.port == "assess" and row.backend == "learner"
     assert row.key == "learner:sA:picture-for-word"
     assert row.answer["value"] == "good"
+    assert row.question["kind"] == "rating"  # record.learner_ratings reads this back
 
 
 def test_append_answer_action_1_has_no_artifact_sha(db, w1):
@@ -321,6 +324,7 @@ def test_append_supply_from_local_path(tmp_path, db, media_store, syllabus, w1):
     row = db.assessments_of(w1.id)[0]
     assert row.answer["value"] == "unacceptable-use-this"
     assert row.answer["provenance"]["source"] == "learner"
+    assert row.question["kind"] == "rating"  # record.learner_ratings reads this back
     # no provide row for a local path -- nothing to cache-key against.
     assert not [r for r in db.assessments_of(w1.id) if r.port == "provide"]
 
@@ -578,12 +582,12 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
         categories=(Category(name="Food", members=frozenset({"orange"})),)))
     deck_db = SyllabusDb(root / "syllabus.db")
     deck_db.append(port="provide", backend="openverse", key="openverse:orange",
-                   subject="orange", question={"provides": "picture", "params": {}},
+                   subject="orange", question={"kind": "picture", "params": {}},
                    answer={"items": [{"sha": "pic1"}]})
     deck_db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
                    subject="orange",
                    question={"role": "picture-for-word", "artifact_sha": "pic1",
-                             "rubric": PICTURE_FIT_RUBRIC},
+                             "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
                    answer={"value": True})
     deck_db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
                       origin="https://example.com/x.jpg", licence="cc0",

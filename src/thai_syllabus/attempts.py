@@ -60,6 +60,7 @@ from .entities import Sentence, Target, text_sha
 from .ids import WordId
 from .media import Provenance, Speaker
 from .provider import Provider, ProviderAnswer, Question
+from . import record
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import TransportError
@@ -152,22 +153,18 @@ def current_best_of(ctx: Sourcing, subject: str, kind: str) -> CurrentBest:
 
 
 def candidates_of(db: SyllabusDb, subject: str, kind: str) -> list[str]:
-    """Every artifact sha on record for the need: provide-row items with a
-    sha (any backend, this kind) plus a migrated machine-chosen marker.
-    judge-batch-pending:* marker rows carry no sha and match neither
-    branch below, so they are ignored on their own; de-duplicated as the
-    list is built.
+    """Every artifact sha on record for the need: every provide row's
+    items (record.rows_for/candidate_shas) plus a migrated machine-chosen
+    marker (picture only; carries no `kind` of its own, so it is read
+    straight off `assessments_of`, not through rows_for).
     """
-    shas: list[str] = []
-    for r in db.assessments_of(subject):
-        if r.port == "provide" and r.question.get("provides") in (kind, f"{kind}-bytes"):
-            for item in r.answer.get("items", []):
-                if isinstance(item, Mapping) and item.get("sha") and item["sha"] not in shas:
-                    shas.append(item["sha"])
-        elif r.port == "assess" and r.backend == "machine-chosen" and kind == "picture":
-            s = r.answer.get("sha")
-            if s and s not in shas:
-                shas.append(s)
+    shas = record.candidate_shas(record.rows_for(db, subject, kind))
+    if kind == "picture":
+        for r in db.assessments_of(subject):
+            if r.port == "assess" and r.backend == "machine-chosen":
+                s = r.answer.get("sha")
+                if s and s not in shas:
+                    shas.append(s)
     return shas
 
 
@@ -256,7 +253,7 @@ def _fit_pictures(ctx: Sourcing, subject: str, shas: Sequence[str],
     rubric = ctx.rubrics["picture-for-word"]
     params = _picture_params(ctx, subject)
     questions = [AssessQuestion(subject=subject, role="picture-for-word", artifact_sha=s,
-                                rubric=rubric, params=params) for s in shas]
+                                rubric=rubric, params=params, kind="picture") for s in shas]
     res = _judge_many(ctx, questions, tally)
     for v in res.resolved.values():
         _add(spend, "judge", v.cost, hit=v.hit)
@@ -277,7 +274,7 @@ def _prefer_pictures(ctx: Sourcing, subject: str, passing: Sequence[str],
     params = _picture_params(ctx, subject)
     pref = AssessQuestion(subject=subject, role="picture-preference", rubric=ctx.rubrics["picture-preference"],
                           params={"candidates": sorted(passing), "word": params["word"],
-                                  "meaning": params["meaning"]})
+                                  "meaning": params["meaning"]}, kind="picture")
     res = _judge_many(ctx, [pref], tally)
     for v in res.resolved.values():
         _add(spend, "judge", v.cost, hit=v.hit)
@@ -327,7 +324,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     query = _phrase(ctx, need.subject) or (w.meaning if w and w.meaning else need.subject)
     try:
         hits = ctx.provider.ask(source, Question(subject=need.subject, provides="picture",
-                                                 params={"query": query}))
+                                                 params={"query": query}, kind="picture"))
     except (TransportError, KeyError):
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend,
                        excluded=tally.excluded)
@@ -337,7 +334,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
         url = item["url"]
         try:
             got = ctx.provider.ask("imgfetch", Question(subject=need.subject, provides="picture-bytes",
-                                                        params={"url": url}))
+                                                        params={"url": url}, kind="picture"))
         except (TransportError, KeyError):
             continue
         _add(spend, "imgfetch", got.cost, hit=got.hit)
@@ -373,7 +370,8 @@ def _assess_recordings(ctx: Sourcing, subject: str, shas: Sequence[str], role: s
     per-question TransportError (ffprobe missing) is dropped by ask_many's
     own inline loop, not fatal to the rest.
     """
-    questions = [AssessQuestion(subject=subject, role=role, artifact_sha=s) for s in shas]
+    questions = [AssessQuestion(subject=subject, role=role, artifact_sha=s, kind="recording")
+                for s in shas]
     res = ctx.assessor.ask_many("mechanical", questions)
     for v in res.resolved.values():
         _add(spend, "mechanical", v.cost, hit=v.hit)
@@ -389,7 +387,8 @@ def _assess_members(ctx: Sourcing, members: Mapping[str, str],
     (dropped by a TransportError) counts as failing -- nothing to rank on.
     """
     role = ROLE_FOR_KIND["recording"]
-    questions = {m: AssessQuestion(subject=m, role=role, artifact_sha=s) for m, s in members.items()}
+    questions = {m: AssessQuestion(subject=m, role=role, artifact_sha=s, kind="recording")
+                for m, s in members.items()}
     res = ctx.assessor.ask_many("mechanical", list(questions.values()))
     for v in res.resolved.values():
         _add(spend, "mechanical", v.cost, hit=v.hit)
@@ -399,7 +398,8 @@ def _assess_members(ctx: Sourcing, members: Mapping[str, str],
 
 def _forvo_items(ctx: Sourcing, subject: str, thai: str,
                  spend: dict[str, tuple[int, float]]) -> list[Mapping]:
-    ans = ctx.provider.ask("forvo", Question(subject=subject, provides="recording", params={"word": thai}))
+    ans = ctx.provider.ask("forvo", Question(subject=subject, provides="recording",
+                                             params={"word": thai}, kind="recording"))
     _add(spend, "forvo", ans.cost, hit=ans.hit)
     return [i for i in ans.items if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
 
@@ -433,7 +433,8 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
     try:
         got = ctx.provider.ask("audiofetch", Question(subject=subject, provides="recording-bytes",
                                                       params={"url": url, "speaker": user,
-                                                              "speaker_kind": "native", "source": "forvo"}))
+                                                              "speaker_kind": "native", "source": "forvo"},
+                                                      kind="recording"))
     except TransportError:
         return None
     _add(spend, "audiofetch", got.cost, hit=got.hit)
@@ -450,7 +451,8 @@ def _synthesize(ctx: Sourcing, subject: str, thai: str, voice: str | None,
     if voice:
         params["voice"] = voice
     try:
-        got = ctx.provider.ask("tts", Question(subject=subject, provides="recording", params=params))
+        got = ctx.provider.ask("tts", Question(subject=subject, provides="recording",
+                                               params=params, kind="recording"))
     except TransportError:
         return None
     _add(spend, "tts", got.cost, hit=got.hit)
@@ -516,7 +518,8 @@ def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
     ctx.db.append(port="assess", backend="mechanical",
                   key=key, subject=pair_id,
                   question={"role": ROLE_FOR_KIND["rendition"], "artifact_sha": artifact_sha,
-                            "rubric": None, "params": {"members": dict(members)}},
+                            "rubric": None, "kind": "rendition",
+                            "params": {"members": dict(members)}},
                   answer={"value": ok, "evidence": evidence})
 
 
@@ -653,6 +656,7 @@ def _mechanical_fills(ctx: Sourcing, syl: Syllabus, targets_by_id: Mapping[str, 
     filled = [t for t in syl.targets if syl.fills(s, t)]
     ctx.db.append(port="assess", backend="mechanical", key=key, subject=ts,
                  question={"role": "sentence-for-target", "artifact_sha": ts, "rubric": None,
+                          "kind": "sentence",
                           "params": {"fills": [t.id for t in filled],
                                     "claimed": [c for c in draft.get("targets", []) if c in targets_by_id],
                                     "state_id": state_id}},
@@ -704,7 +708,8 @@ def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], mode
         candidates.append((s, AssessQuestion(
             subject=ts, role="sentence-for-target", artifact_sha=None,
             rubric=ctx.rubrics["sentence-for-target"],
-            params={"text": text, "word": syl.word(filled_open[0].word).thai})))
+            params={"text": text, "word": syl.word(filled_open[0].word).thai},
+            kind="sentence")))
     if not candidates:
         return [], False
     res = _judge_many(ctx, [q for _, q in candidates], tally)
@@ -771,7 +776,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> SentenceOutcome
                                excluded=tally.excluded)
     try:
         ans = ctx.provider.ask("llm-sentence", Question(subject="run", provides="sentence",
-                                                        params={"prompt": _sentence_prompt(syl, targets)}))
+                                                        params={"prompt": _sentence_prompt(syl, targets)},
+                                                        kind="sentence"))
     except (TransportError, KeyError):
         return SentenceOutcome(drafted=0, adopted=tuple(adopted), pending=pending, spend=spend,
                                excluded=tally.excluded)

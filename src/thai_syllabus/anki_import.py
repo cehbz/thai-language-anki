@@ -53,7 +53,7 @@ therefore NOT written as a normal learner rating (which
 derivations.current_best always treats as authoritative outright,
 regardless of AUTHORITY_ORDER -- writing one would let an unqualified
 flag silently override a mechanically-verified recording). Instead it
-lands as a `{"kind": "reverify-request", ...}` row: no `"value"` key
+lands as a `{"kind": "reverify", ...}` row: no `"value"` key
 recognized by `derivations.LEARNER_RANK`, so it is invisible to
 current_best's fold and exists purely as a signal a future
 judge/mechanical run can query for and act on -- "queues machine
@@ -263,11 +263,11 @@ def _import_flags(col: _Collection, db: SyllabusDb,
 
         if role in TONE_CORRECTNESS_ROLES:
             question = {"role": role, "artifact_sha": artifact_sha,
-                       "kind": "reverify-request", "flag_import_key": existing_key}
+                       "kind": "reverify", "flag_import_key": existing_key}
             answer = {"flagged": True, "flag": card["flags"]}
         else:
             question = {"role": role, "artifact_sha": artifact_sha,
-                       "flag_import_key": existing_key}
+                       "kind": "rating", "flag_import_key": existing_key}
             answer = {"value": "unacceptable-none", "flag": card["flags"]}
         db.append(port="assess", backend="learner", key=key, subject=identity.anchor,
                  question=question, answer=answer)
