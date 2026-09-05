@@ -97,7 +97,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
          f"drafted={report.drafted} excluded={report.excluded} "
          f"unserved={report.unserved} budgeted={report.budgeted} "
-         f"deferred={report.deferred} unreachable={report.unreachable} "
+         f"deferred={report.deferred} preferences={report.preferences} "
+         f"unreachable={report.unreachable} "
          f"batch_id={report.batch_id}")
     for name, spend in sorted(report.spend.items()):
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")

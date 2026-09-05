@@ -42,7 +42,7 @@ __all__ = [
     "ExhaustedStatus", "exhausted",
     "improved",
     "directed",
-    "QueueEntry", "queue", "QueuedNeeds", "queued",
+    "QueueEntry", "queue", "QueuedNeeds", "queued", "available_subjects",
     "passing_pictures", "pictures_awaiting_preference",
     "challengers",
     "reasks",
@@ -504,17 +504,41 @@ class QueuedNeeds:
     unserved: int = 0
 
 
+def available_subjects(syllabus) -> frozenset[str]:
+    """Every subject `_gap_candidates` names -- the need list `available`
+    counts (run.RunReport). A subject a batch question names but that has
+    left this set (its need already satisfied, e.g. a picture whose fit
+    passed) is not pending on run.py's own account: only its former need
+    made it one, and that need is gone.
+    """
+    return frozenset(subject for subject, _kind, _subject_kind in _gap_candidates(syllabus))
+
+
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
-         attempt_cap: int, provenance_source: Callable[[str], str | None]) -> list[QueueEntry]:
+         attempt_cap: int, provenance_source: Callable[[str], str | None],
+         collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
-                  provenance_source=provenance_source).entries
+                  provenance_source=provenance_source,
+                  collected_this_run=collected_this_run).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
-          attempt_cap: int, provenance_source: Callable[[str], str | None]) -> QueuedNeeds:
+          attempt_cap: int, provenance_source: Callable[[str], str | None],
+          collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
+    """`collected_this_run` -- (subject, kind) needs a resolve-time
+    preference question (or anything else this same run already
+    collected before the queue was built) named: skipped exactly like an
+    already-pending need, so it is never both re-attempted by the loop
+    and accounted for by that earlier question in the same run
+    (run.RunReport's one-bucket-per-need rule). Keyed by kind, not just
+    subject -- unlike `pending` (whose stored marker names subjects
+    only), so a word's other still-open needs (e.g. its recording) are
+    never skipped merely because its picture also got a resolve-time
+    question this run.
+    """
     entries: list[QueueEntry] = []
     candidates = _gap_candidates(syllabus)
     out_of_options = 0
@@ -526,8 +550,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
             # either: it can never become an entry, exhausted, or pending.
             unserved += 1
             continue
-        if pending(cache, subject, kind):
-            continue  # a batch is still out -- pending is reported, not queued
+        if pending(cache, subject, kind) or (subject, kind) in collected_this_run:
+            continue  # already has a question outstanding -- reported once, not queued again
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
                             provenance_source=provenance_source)
         if best.rank >= _GOOD_RANK:

@@ -34,6 +34,7 @@ from .derivations import (
     QueuedNeeds,
     QueueEntry,
     adoptable_drafts,
+    available_subjects,
     improved,
     next_source,
     queued,
@@ -78,9 +79,10 @@ LEARNER_DEFAULT_SESSION_BUDGET = Budget(max_asks=20)
 @dataclass(frozen=True)
 class RunReport:
     """"a run that did almost nothing must look like one" (F10): every
-    count is a subject count, not an ask count, and `available` is every
-    need Syllabus.gaps() listed -- so `available` always equals `attempted`
-    + `exhausted` + `pending` + `unserved` + `budgeted` + `deferred`.
+    count is a need count -- one (subject, kind) -- not an ask count, and
+    `available` is every need Syllabus.gaps() listed -- so `available`
+    always equals `attempted` + `exhausted` + `pending` + `unserved` +
+    `budgeted` + `deferred`, every need in exactly one bucket.
 
     `attempted`: needs whose Source was asked (the one that met a dead
     judge included -- its ask was made and appended), plus, when the
@@ -91,8 +93,25 @@ class RunReport:
     separately counts the drafts it produced, whether or not they covered
     a Target). `improved`: needs whose current-best artifact changed.
     `exhausted`: needs with no source left, whether the queue dropped
-    them or the loop found none. `pending`: subjects with a question in
-    an unresolved batch, this run's own submission included.
+    them or the loop found none. `pending`: needs -- (subject, kind), read
+    off each question's own fields, one per need however many questions
+    it carries -- with a question in an unresolved batch, this run's own
+    submission included, narrowed to needs whose subject `available` still
+    counts (a need dropped from `pending` this way is not lost from the
+    identity: it already left `available` too, satisfied by the very
+    verdict that raised the question). A batch an earlier run left
+    outstanding is reported from its marker, which records subjects and
+    no kinds, so that run counts subjects. The loop below never re-attempts the
+    specific (subject, kind) need a resolve-time question already named,
+    whichever bucket it lands in -- one bucket per need, always (a word's
+    other still-open needs, e.g. its recording, are untouched by its
+    picture's own resolve-time question).
+    `preferences`: questions asked to rank a word's passing pictures once
+    their fits resolved (derivations.pictures_awaiting_preference) whose
+    need has therefore left `available` -- outside the identity below.
+    One that has not (a learner rejection with no acceptable floor keeps
+    the need open even as a new candidate joins its passing set) is a
+    `pending` need instead, never both.
     `sentences_adopted`: drafts this run covered open Targets with.
     `unserved`: needs whose kind has no Source and no per-run pass either
     (derivations.QueuedNeeds.unserved). `budgeted`: needs skipped this run
@@ -101,10 +120,16 @@ class RunReport:
     attempt out entirely, every open Target need within the per-run cap
     it would have been handed. `deferred`: available needs this run never
     even considered -- the open Targets beyond the per-run cap (handed or
-    not, the excess was never looked at), plus, when the run ended before
-    looking at any need at all (a batch still out from the previous run,
-    or the judge unreachable while resolving one), `available` minus
-    `pending`; zero in every other case.
+    not, the excess was never looked at), plus the needs a resolve-time
+    question named on a run whose batch never went out at all (a judge
+    dead at the sentence attempt, inside the loop, or at the submit: the
+    loop skipped them and their question is collected again next run),
+    plus the queued needs past the one a dead judge stopped the loop at
+    (every one of them would have met the same dead wire, so none was
+    tried), plus, when the run ended before looking at any need at all (a batch
+    still out from the previous run, or the judge unreachable while
+    resolving one), `available` minus `pending`; zero in every other
+    case.
 
     The "what went wrong" fields: `excluded` counts questions the judge
     could not prepare (candidates dropped, not candidates rejected),
@@ -127,6 +152,7 @@ class RunReport:
     unserved: int = 0
     budgeted: int = 0
     deferred: int = 0
+    preferences: int = 0
 
 
 @dataclass
@@ -145,6 +171,13 @@ class _Tally:
     questions: list[PreparedQuestion] = field(default_factory=list)
     source_failures: dict[str, int] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
+    preferences: int = 0
+    # Needs whose own attempt this run collected judge questions for --
+    # not yet counted as `attempted`, because whether they land in
+    # `pending` or fall back to `attempted` is only known once submit()
+    # (below, in run()) resolves the whole batch's fate. Internal only:
+    # never a RunReport field.
+    pending_candidates: int = 0
 
     def collect(self, result: AttemptResult) -> None:
         """What an attempt produced, whatever the need was: its questions,
@@ -188,7 +221,14 @@ def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
     still_out = ctx.assessor.unresolved_batch()
     if still_out is not None:
         return still_out[0], frozenset(still_out[1])
-    tally.collect(preference_attempt(ctx, sorted(subjects)))
+    preference = preference_attempt(ctx, sorted(subjects))
+    tally.collect(preference)
+    # Whether each of these ranks a need that has since left `available`
+    # (-> `preferences`) or one a learner rejection with no acceptable
+    # floor kept open even as a new candidate joined its passing set (->
+    # `pending` instead) is decided once, in run(), against the same
+    # `available_subjects` snapshot `pending` itself uses -- not here,
+    # before `_adopt_sentences` has even run this same resolve.
     return None
 
 
@@ -216,11 +256,13 @@ def _spent_on(source: str, carried: Mapping[str, Spend], tally: _Tally) -> Spend
     return Spend(asks=already.asks + mine.asks, cost=already.cost + mine.cost)
 
 
-def _needs(ctx: Sourcing) -> QueuedNeeds:
+def _needs(ctx: Sourcing,
+          collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
                   prior=ctx.provenance_prior, sources_for=ctx.sources_for,
                   attempt_cap=ctx.attempt_cap,
-                  provenance_source=provenance_source_for(ctx.db))
+                  provenance_source=provenance_source_for(ctx.db),
+                  collected_this_run=collected_this_run)
 
 
 def _open_target_count(ctx: Sourcing) -> int:
@@ -233,15 +275,19 @@ def _open_target_count(ctx: Sourcing) -> int:
 
 
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
-                   carried: Mapping[str, Spend], tally: _Tally) -> None:
+                   carried: Mapping[str, Spend], tally: _Tally) -> int:
     """One Source per need -- the cheapest not yet tried since current-best
     last changed. A Source that fails on the wire is skipped for the rest
-    of the run; an unreachable judge stops it there and then, leaving the
-    still-open needs counted in `available`, rather than grinding the
-    queue against a dead wire.
+    of the run; an unreachable judge stops it there and then, rather than
+    grinding the queue against a dead wire.
+
+    Returns how many entries the loop never reached -- zero unless a dead
+    judge stopped it -- so `run()` can defer them; "sentence" entries are
+    left out of that count, the per-run sentence attempt having already
+    accounted for every open Target.
     """
     dead_sources: set[str] = set()
-    for entry in entries:
+    for index, entry in enumerate(entries):
         if entry.kind == "sentence":
             continue  # the per-run sentence attempt covers every open Target
         need = Need(entry.subject, entry.kind, entry.subject_kind)
@@ -264,16 +310,24 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
         except JudgeUnreachable:
             tally.unreachable = True
             tally.attempted += 1
-            return
+            return sum(1 for later in entries[index + 1:] if later.kind != "sentence")
         except TransportError as e:
             dead_sources.add(source)
             tally.source_failures[source] = tally.source_failures.get(source, 0) + 1
             _log.warning("source %s failed for %s/%s: %s", source, need.subject, need.kind, e)
             continue
         tally.collect(result)
-        tally.attempted += int(result.attempted)
+        if result.questions:
+            # Its verdict is now this run's own submission to make --
+            # `pending` (once submit() below settles the batch's fate)
+            # accounts for it; counting it here too would double it
+            # against `available`.
+            tally.pending_candidates += 1
+        else:
+            tally.attempted += int(result.attempted)
         if improved(before, current_best_of(ctx, need.subject, need.kind)):
             tally.improved += 1
+    return 0
 
 
 def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
@@ -301,18 +355,28 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         except JudgeUnreachable:
             tally.unreachable = True
             needs = _needs(ctx)
-            pending = frozenset(previous[1])
+            pending = len(frozenset(previous[1]) & available_subjects(ctx.syllabus))
             return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
-                           extra_deferred=needs.available - len(pending))
+                           extra_deferred=needs.available - pending)
     tally.sentences_adopted += _adopt_sentences(ctx)
     if still_out is not None:
         # The run ended here, before it ever looked at a need: every
         # available need this run never considered (not even pending, in
         # a still-earlier batch) is deferred, not lost.
         needs = _needs(ctx)
-        pending = still_out[1]
+        pending = len(frozenset(still_out[1]) & available_subjects(ctx.syllabus))
         return _finish(ctx, tally, needs, batch_id=still_out[0], pending=pending,
-                       extra_deferred=needs.available - len(pending))
+                       extra_deferred=needs.available - pending)
+
+    # (subject, kind) needs a resolve-time preference question already
+    # named -- the only questions collected this early. Whichever bucket
+    # each lands in below (pending or preferences), the loop must not
+    # also attempt that same need: run.RunReport's one-bucket-per-need
+    # rule. Kept per-kind, not per-subject, so a word's other still-open
+    # needs (e.g. its recording) are never held back by its picture's
+    # own resolve-time question.
+    collected_at_resolve = frozenset(
+        (q.question.subject, q.question.kind) for q in tally.questions)
 
     # Measured before the attempt runs (or is gated out): sentence_attempt
     # hands over at most `sentence_targets_per_run` of these (the per-run
@@ -329,7 +393,9 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             handed = min(open_before, sentence_targets_per_run)
             tally.attempted += handed
             tally.deferred += open_before - handed
-            return _finish(ctx, tally, _needs(ctx), batch_id=None, pending=frozenset())
+            _fold_unsubmitted(tally, collected_at_resolve)
+            return _finish(ctx, tally, _needs(ctx, collected_at_resolve), batch_id=None,
+                           pending=0)
         # An inline transport answers inside that attempt: what it
         # verified there is adoptable in this same run.
         tally.sentences_adopted += _adopt_sentences(ctx)
@@ -352,23 +418,61 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         tally.budgeted += handed
         tally.deferred += open_before - handed
 
-    needs = _needs(ctx)
-    _try_each_need(ctx, needs.entries, budgets, carried, tally)
+    needs = _needs(ctx, collected_at_resolve)
+    unreached = _try_each_need(ctx, needs.entries, budgets, carried, tally)
     if tally.unreachable:
-        return _finish(ctx, tally, needs, batch_id=None, pending=frozenset())
+        # The dead judge stopped the loop where it stood: every queued
+        # need past that point was never looked at this run.
+        tally.deferred += unreached
+        _fold_unsubmitted(tally, collected_at_resolve)
+        return _finish(ctx, tally, needs, batch_id=None, pending=0)
 
     try:
         batch_id = ctx.assessor.submit(tally.questions)
     except JudgeUnreachable:
         tally.unreachable = True
-        return _finish(ctx, tally, needs, batch_id=None, pending=frozenset())
-    pending = (frozenset(q.question.subject for q in tally.questions)
-               if batch_id is not None else frozenset())
+        _fold_unsubmitted(tally, collected_at_resolve)
+        return _finish(ctx, tally, needs, batch_id=None, pending=0)
+    if batch_id is None:
+        # Nothing collected (submit() is a no-op on an empty batch): the
+        # same fold, over counts that are both zero unless a question was
+        # collected -- and a collected question is always submitted.
+        _fold_unsubmitted(tally, collected_at_resolve)
+        pending = 0
+    else:
+        # One bucket per need, decided against one snapshot: a
+        # resolve-time question whose subject is still an available need
+        # (a learner rejection with no acceptable floor, kept open even
+        # as a new candidate joined its passing set) is pending, not a
+        # preference asked in vain; one whose need has since left
+        # `available` is the reverse -- outside the identity, never
+        # double-counted into `pending` too. Membership is by subject
+        # (`available_subjects` is what a need's subject is measured
+        # against); the bucket each lands in counts needs, one per
+        # (subject, kind) however many questions that need carries.
+        avail = available_subjects(ctx.syllabus)
+        pending = len({(q.question.subject, q.question.kind) for q in tally.questions
+                       if q.question.subject in avail})
+        tally.preferences = sum(1 for subject, _kind in collected_at_resolve
+                                if subject not in avail)
     return _finish(ctx, tally, needs, batch_id=batch_id, pending=pending)
 
 
+def _fold_unsubmitted(tally: _Tally, collected_at_resolve: frozenset[tuple[str, str]]) -> None:
+    """The bucket every question this run collected but never sent falls
+    back to. A need whose own attempt raised one was asked -- its ask is
+    on the record -- so it is `attempted` after all; a need a resolve-time
+    question named was never attempted by the loop at all (it skipped
+    every `collected_at_resolve` need) and its question is collected
+    again next run, so it is `deferred`.
+    """
+    tally.attempted += tally.pending_candidates
+    tally.pending_candidates = 0
+    tally.deferred += len(collected_at_resolve)
+
+
 def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str | None,
-            pending: frozenset[str], extra_deferred: int = 0) -> RunReport:
+            pending: int, extra_deferred: int = 0) -> RunReport:
     """The run's own outcome, as one durable row and one return value.
     `deferred` is `tally.deferred` (the sentence attempt's per-run-cap
     excess, accumulated as the run went) plus `extra_deferred`, which is
@@ -379,11 +483,11 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
     report = RunReport(
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
-        pending=len(pending), sentences_adopted=tally.sentences_adopted,
+        pending=pending, sentences_adopted=tally.sentences_adopted,
         drafted=tally.drafted, excluded=tally.excluded, unreachable=tally.unreachable,
         batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend,
         unserved=needs.unserved, budgeted=tally.budgeted,
-        deferred=tally.deferred + extra_deferred)
+        deferred=tally.deferred + extra_deferred, preferences=tally.preferences)
     _persist_report(ctx.db, report)
     return report
 
@@ -406,5 +510,5 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "spend": {name: {"asks": s.asks, "cost": s.cost}
                           for name, s in report.spend.items()},
                 "unserved": report.unserved, "budgeted": report.budgeted,
-                "deferred": report.deferred},
+                "deferred": report.deferred, "preferences": report.preferences},
         cost=sum(s.cost for s in report.spend.values()))

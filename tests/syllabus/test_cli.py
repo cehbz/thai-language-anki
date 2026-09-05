@@ -258,15 +258,15 @@ def test_run_prints_every_report_field_in_its_summary_line(deck, monkeypatch, ca
                         lambda ctx, budgets, **kw: RunReport(
                             attempted=1, improved=1, exhausted=2, available=9, pending=1,
                             sentences_adopted=1, drafted=3, excluded=0, unserved=4,
-                            budgeted=5, deferred=6, unreachable=False, batch_id="batch-7",
-                            source_failures={"openverse": 2}))
+                            budgeted=5, deferred=6, preferences=7, unreachable=False,
+                            batch_id="batch-7", source_failures={"openverse": 2}))
     rc = cli.main(["run", "--deck", str(deck)])
     assert rc == 0
     text = capsys.readouterr().out
     for field in ("attempted=1", "improved=1", "exhausted=2", "available=9", "pending=1",
                  "sentences_adopted=1", "drafted=3", "excluded=0", "unserved=4",
-                 "budgeted=5", "deferred=6", "unreachable=False", "batch_id=batch-7",
-                 "openverse=2"):
+                 "budgeted=5", "deferred=6", "preferences=7", "unreachable=False",
+                 "batch_id=batch-7", "openverse=2"):
         assert field in text
 
 

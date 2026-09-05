@@ -21,8 +21,9 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion
 from thai_syllabus.wiring import build_sourcing, load_syllabus
 
-from .builders import target, word
+from .builders import sentence, target, word
 from .fakes import FakeTokenizer
+from .test_run import RICE, _Llm as _DraftLlm, _deck as _batch_fixture_deck, _wire, fake_batch, fake_search
 
 
 def _deck(tmp_path):
@@ -145,3 +146,233 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     # two candidate pictures per word -> a preference question ran and its
     # positional bonus lifted the winner above a bare judge pass (50.0).
     assert current_best_of(ctx, "orange", "picture").rank > 50
+
+
+class _OneHit:
+    """One picture-search hit -- unlike the two-hit search fakes elsewhere,
+    this never leaves more than one candidate passing fit, so it can never
+    trigger a preference question: the fit verdict alone resolves the need
+    in one batch round trip."""
+
+    def cache_key(self, q):
+        return "onehit:" + q.params["query"]
+
+    def fetch(self, q):
+        return RawAnswer(items=({"url": f"https://x/{q.subject}.jpg",
+                                 "source": "openverse", "licence": "by"},))
+
+
+class _Tts:
+    """A synthesized recording: writes real bytes to the media store and
+    answers with the resulting sha -- the shape provider.TtsBackend.fetch
+    answers with for real."""
+
+    def __init__(self, media_store):
+        self._media_store = media_store
+
+    def cache_key(self, q):
+        return "tts:" + q.params["voice"] + ":" + q.params["text"]
+
+    def fetch(self, q):
+        sha = self._media_store.write(q.params["text"].encode(), "mp3")
+        return RawAnswer(items=({"sha": sha, "ext": "mp3"},))
+
+
+def test_two_runs_over_a_batch_judge_resolve_a_picture_and_escalate_a_recording(
+        tmp_path, fake_search, fake_batch):
+    """The picture need pends in a judge batch (spec 3 section 7); the
+    second run resolves that batch first, and separately escalates the
+    still-open recording need to its next Source (forvo silent, tts
+    answers), which closes inline under the mechanical authority.
+    """
+    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    ctx.provider._backends["openverse"] = _OneHit()
+    ctx.provider._backends["tts"] = _Tts(ctx.media_store)
+    ctx.assessor._backends["mechanical"].evaluate = lambda q: RawVerdict(value=True, evidence="1.0s")
+
+    r1 = run(ctx, budgets={})
+    assert r1.batch_id is not None
+    assert r1.pending >= 1
+    assert r1.improved == 0
+
+    fake_batch.complete_all(r1.batch_id, passed=True)   # the one candidate fits
+    r2 = run(ctx, budgets={})
+
+    assert r2.improved >= 1
+    assert r2.pending == 0
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is not None
+
+    for report in (r1, r2):
+        assert (report.available == report.attempted + report.exhausted + report.pending
+               + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batch(
+        tmp_path, fake_search, fake_batch):
+    """Fix round 1: a picture whose fit verdicts both pass leaves two
+    ranked-nothing candidates; the preference question that ranks them,
+    raised while resolving the batch that carried those fits, is counted
+    under `preferences`, not `pending` -- the picture's own need is
+    already satisfied by the time it is asked. The recording and the
+    sentence that also close in r1 keep "rice" out of every other gap, so
+    by the time r2 submits the preference question as its own new batch,
+    "rice" is not an available need at all any more and the identity
+    still holds on both reports.
+    """
+    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+               llm=_DraftLlm(json.dumps({"sentences": [
+                   {"text": "ข้าว", "gloss": "rice", "targets": ["rice/receptive"]}]})))
+    ctx.provider._backends["forvo"] = _Forvo()
+    ctx.assessor._backends["mechanical"].evaluate = lambda q: RawVerdict(value=True, evidence="1.0s")
+    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
+
+    r1 = run(ctx, budgets={})
+    assert r1.batch_id is not None
+    assert r1.preferences == 0   # nothing has fit yet -- no ranking to ask for
+
+    fake_batch.complete_all(r1.batch_id, passed=True)   # both pictures fit; the sentence is natural
+    r2 = run(ctx, budgets={})
+
+    assert r2.batch_id is not None and r2.batch_id != r1.batch_id
+    assert r2.preferences == 1
+    assert r2.pending == 0   # the ranked need is already satisfied, not owed
+
+    for report in (r1, r2):
+        assert (report.available == report.attempted + report.exhausted + report.pending
+               + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once(
+        tmp_path, fake_search, fake_batch):
+    """Fix round 2: a learner "unacceptable-none" on the current picture,
+    with no acceptable floor, reopens the need -- the machine's own
+    passing candidates are untouched by that rejection. When the batch
+    this run resolves lands a third passing candidate, the preference
+    question that ranks all three is for a subject still an available
+    need: it must land in `pending` exactly once, never also in
+    `preferences`, and the loop must not also re-attempt the same
+    subject this same run (one bucket per subject).
+    """
+    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    ctx.provider._backends["forvo"] = _Forvo()
+    ctx.assessor._backends["mechanical"].evaluate = lambda q: RawVerdict(value=True, evidence="1.0s")
+    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
+    # No LLM/judge round trip needed to close the Target: with_sentences
+    # is exactly the effect _adopt_sentences has on ctx.syllabus.
+    ctx.syllabus = ctx.syllabus.with_sentences((sentence("ข้าว", gloss="rice"),))
+
+    # The word's own recording, already settled.
+    ctx.db.add_speaker(Speaker(id="somchai", kind="native"))
+    ctx.db.add_media(sha="rice-rec", kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id="somchai")
+    ctx.db.append(port="provide", backend="forvo", key="forvo:rice-preseed", subject="rice",
+                 question={"kind": "recording", "subject_kind": "word"},
+                 answer={"items": [{"sha": "rice-rec"}]})
+    ctx.db.append(port="assess", backend="mechanical", key="mech:rice-rec", subject="rice",
+                 question={"role": "recording-for-word", "artifact_sha": "rice-rec",
+                          "kind": "recording", "subject_kind": "word"},
+                 answer={"value": True})
+
+    # Two already-passing picture candidates from two already-tried
+    # sources (real media: a re-attempt over all candidates on record --
+    # the reopened need's own -- would otherwise need to prepare them
+    # too), then the learner's rejection of the first -- no acceptable
+    # floor, so the need stays open despite two machine passes on record.
+    shas = {}
+    for source, seed in (("openverse", "pic-a"), ("wikimedia", "pic-b")):
+        shas[seed] = ctx.media_store.add_image(_jpeg_bytes(seed), "jpg").sha
+        ctx.db.add_media(sha=shas[seed], kind="picture", ext="jpg", source=source,
+                         origin=f"https://{source}/{seed}.jpg", licence="by",
+                         acquired=date(2026, 1, 1))
+        ctx.db.append(port="provide", backend=source, key=f"{source}:rice-{seed}", subject="rice",
+                     question={"kind": "picture", "subject_kind": "word"},
+                     answer={"items": [{"sha": shas[seed]}]})
+        ctx.db.append(port="assess", backend="judge", key=f"judge:x:{shas[seed]}:picture-for-word",
+                     subject="rice",
+                     question={"role": "picture-for-word", "artifact_sha": shas[seed],
+                              "rubric": None, "kind": "picture", "subject_kind": "word"},
+                     answer={"value": True})
+    ctx.db.append(port="assess", backend="learner", key="learner:rice:pic-a",
+                 subject="rice",
+                 question={"role": "picture-for-word", "artifact_sha": shas["pic-a"],
+                          "kind": "rating"},
+                 answer={"value": "unacceptable-none"})
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is None   # rejected, no floor
+
+    r0 = run(ctx, budgets={})   # escalates the reopened need to its next (third) source
+    assert r0.batch_id is not None and r0.pending >= 1
+
+    asks_before = list(fake_search.asks)
+    fake_batch.complete_all(r0.batch_id, passed=True)   # the third candidate fits too
+    r1 = run(ctx, budgets={})
+
+    assert fake_search.asks == asks_before   # the loop did not re-attempt "rice" this run
+    assert r1.batch_id is not None   # the preference question over all three, its own new batch
+    assert r1.pending == 1
+    assert r1.preferences == 0
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is None   # still rejected
+
+    for report in (r0, r1):
+        assert (report.available == report.attempted + report.exhausted + report.pending
+               + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_preference(
+        tmp_path, fake_search, fake_batch):
+    """Fix round 3: `collected_this_run` is keyed per (subject, kind), not
+    just subject -- pending() itself only ever names subjects, but the
+    loop-skip this feeds must not hold back a word's OTHER still-open
+    need merely because its picture also raised a resolve-time
+    preference question this same run.
+    """
+    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    ctx.provider._backends["tts"] = _Tts(ctx.media_store)   # forvo stays silent (_wire's default)
+    ctx.assessor._backends["mechanical"].evaluate = lambda q: RawVerdict(value=True, evidence="1.0s")
+    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
+    ctx.syllabus = ctx.syllabus.with_sentences((sentence("ข้าว", gloss="rice"),))
+
+    # Two already-passing picture candidates, then the learner's rejection
+    # of the first -- no acceptable floor, so the picture need stays open
+    # (its own resolve-time preference question lands in `pending`, not
+    # `preferences`); the recording need is left untouched, open too.
+    shas = {}
+    for source, seed in (("openverse", "pic-a"), ("wikimedia", "pic-b")):
+        shas[seed] = ctx.media_store.add_image(_jpeg_bytes(seed), "jpg").sha
+        ctx.db.add_media(sha=shas[seed], kind="picture", ext="jpg", source=source,
+                         origin=f"https://{source}/{seed}.jpg", licence="by",
+                         acquired=date(2026, 1, 1))
+        ctx.db.append(port="provide", backend=source, key=f"{source}:rice-{seed}", subject="rice",
+                     question={"kind": "picture", "subject_kind": "word"},
+                     answer={"items": [{"sha": shas[seed]}]})
+        ctx.db.append(port="assess", backend="judge", key=f"judge:x:{shas[seed]}:picture-for-word",
+                     subject="rice",
+                     question={"role": "picture-for-word", "artifact_sha": shas[seed],
+                              "rubric": None, "kind": "picture", "subject_kind": "word"},
+                     answer={"value": True})
+    ctx.db.append(port="assess", backend="learner", key="learner:rice:pic-a",
+                 subject="rice",
+                 question={"role": "picture-for-word", "artifact_sha": shas["pic-a"],
+                          "kind": "rating"},
+                 answer={"value": "unacceptable-none"})
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is None   # rejected, no floor
+
+    r0 = run(ctx, budgets={})   # escalates the picture to a third source; forvo finds nothing
+    assert r0.batch_id is not None and r0.pending >= 1
+
+    fake_batch.complete_all(r0.batch_id, passed=True)   # the third candidate fits too
+    r1 = run(ctx, budgets={})   # resolves it -- a preference question over all three -- and,
+                                # in the SAME run, escalates the still-open recording to tts
+
+    assert r1.pending == 1 and r1.preferences == 0        # the picture's preference, still a need
+    assert r1.improved == 1                               # the recording, attempted this run
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is None      # still rejected
+    assert current_best_of(ctx, "rice", "recording").artifact_sha is not None
+
+    for report in (r0, r1):
+        assert (report.available == report.attempted + report.exhausted + report.pending
+               + report.unserved + report.budgeted + report.deferred)
