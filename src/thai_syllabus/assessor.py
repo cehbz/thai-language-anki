@@ -9,7 +9,6 @@ feedback surfaces, same as provider.py's learner -- ask() raises).
 """
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import subprocess
@@ -18,13 +17,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .cachekeys import CacheKey, JudgeKey, MechanicalKey, sha
+from . import record
+from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, sha
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
-    "Assessor", "ManyResult", "LearnerAskNotSupported", "BatchPending",
+    "Assessor", "ManyResult", "PreparedQuestion", "LearnerAskNotSupported",
+    "PreparationError", "JudgeUnreachable",
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "parse_preference",
@@ -53,8 +54,8 @@ class AssessQuestion:
 @dataclass(frozen=True)
 class Verdict:
     """`hit` is the port's own answer to "was this served from the cache?"
-    -- the only authority on it, since only ask()/ask_many()/ask_batch()
-    know which branch they took (a caller comparing `ts` against its own
+    -- the only authority on it, since only ask()/ask_many() know which
+    branch they took (a caller comparing `ts` against its own
     start time counts a row this same caller wrote a moment ago as a fresh
     ask every time it re-reads it).
     """
@@ -82,19 +83,19 @@ class LearnerAskNotSupported(RuntimeError):
     """
 
 
-class BatchPending(RuntimeError):
-    """Raised by Assessor.ask_batch(): a batch is submitted or still
-    processing. Carries `batch_id`, `pending_keys` (cache keys not yet
-    resolved), and `resolved` (cache keys already resolved this call).
+class PreparationError(Exception):
+    """Raised by a backend's prompt builder or attachment resolver: the
+    question cannot be asked (a missing or unreadable artifact). Never
+    cached -- it says the candidate is unusable, not that the backend is
+    unreachable.
     """
-    def __init__(self, batch_id: str, pending_keys: list[str],
-                resolved: dict[str, "Verdict"], excluded: Sequence[str] = ()):
-        super().__init__(f"batch {batch_id!r} not ready: "
-                         f"{len(pending_keys)} question(s) still pending")
-        self.batch_id = batch_id
-        self.pending_keys = pending_keys
-        self.resolved = resolved
-        self.excluded = list(excluded)
+
+
+class JudgeUnreachable(Exception):
+    """Raised by Assessor.ask_many when every question it put on the wire
+    failed -- nothing can be judged at all, distinct from a question
+    excluded for being unpreparable.
+    """
 
 
 @runtime_checkable
@@ -104,18 +105,31 @@ class AssessBackend(Protocol):
 
 
 @dataclass(frozen=True)
+class PreparedQuestion:
+    """One batch-transport miss, already built: prompt_builder/attachments
+    ran exactly once, here in ask_many. submit() consumes this directly
+    and calls neither builder again.
+    """
+    question: AssessQuestion
+    key: CacheKey
+    prompt: str
+    attachments: list[Path]
+
+
+@dataclass(frozen=True)
 class ManyResult:
-    """Assessor.ask_many's answer: `resolved` (cache key -> Verdict),
-    `pending` (cache keys still awaiting a batch), `excluded` (cache keys
-    of questions the backend could not PREPARE -- an artifact sha that
-    resolves to no file, a prompt builder that raised). An excluded
-    question was never put on the wire and is not cached; it says the
-    candidate is unusable, NOT that the backend is unreachable, and
-    callers must tell those apart (attempts._judge_many does).
+    """Assessor.ask_many's answer: `resolved` (cache key -> Verdict, cache
+    hits and inline answers), `collected` (PreparedQuestions with no
+    verdict yet -- populated only under a batch transport; nothing is
+    submitted here), `excluded` (encoded key -> the PreparationError
+    reason a question could not be prepared). An excluded question was
+    never put on the wire and is not cached; it says the candidate is
+    unusable, NOT that the backend is unreachable, and callers must tell
+    those apart (attempts._judge_many does).
     """
     resolved: dict[CacheKey, Verdict]
-    pending: list[CacheKey]
-    excluded: list[CacheKey] = field(default_factory=list)
+    collected: list[PreparedQuestion] = field(default_factory=list)
+    excluded: dict[str, str] = field(default_factory=dict)
 
 
 class Assessor:
@@ -134,70 +148,78 @@ class Assessor:
         """
         return self._backends[backend].cache_key(question)
 
-    def _preparation_failure(self, impl: AssessBackend,
-                             question: AssessQuestion) -> str | None:
+    def _build(self, impl: AssessBackend, question: AssessQuestion) -> tuple[str, list[Path]]:
         """Runs a backend's own preparation steps (prompt_builder,
-        attachments) ahead of the wire, so a question it cannot PREPARE --
-        an artifact sha resolving to no file, a prompt builder that
-        raises -- is distinguishable from a wire that will not answer.
-        Returns the failure's message, or None when the question is
-        preparable (including for a backend with no preparation step at
-        all, e.g. mechanical). This is what ask_batch has always done in
-        its own payload loop; the inline path was collapsing both failures
-        into one silent `continue`.
+        attachments) exactly once, for a batch-transport miss ask_many is
+        about to collect -- submit() consumes the result directly and
+        never calls either again. A backend with no preparation step at
+        all (e.g. mechanical) builds an empty prompt and no attachments.
+        Raises PreparationError (uncaught here) for the caller to turn
+        into an exclusion.
         """
         builder = getattr(impl, "prompt_builder", None)
         attachments = getattr(impl, "attachments", None)
-        if builder is None and attachments is None:
-            return None
-        try:
-            if builder is not None:
-                builder(question)
-            if attachments is not None:
-                attachments(question)
-        except TransportError as e:
-            return str(e)
-        return None
+        prompt = builder(question) if builder is not None else ""
+        paths = attachments(question) if attachments is not None else []
+        return prompt, paths
 
     def ask_many(self, backend: str, questions: Sequence[AssessQuestion]
                 ) -> ManyResult:
         """Cache-first over many questions in one call. An inline backend
-        (`complete` set) loops ask(): a question it cannot prepare goes to
-        `excluded`, and one whose wire fails is dropped entirely (absent
-        from all three lists -- that is what an unreachable backend looks
-        like). A batch-only backend (`complete` is None, `batch_transport`
-        set) delegates to ask_batch and turns BatchPending into
-        ManyResult's fields. Any other exception -- unknown backend,
-        learner/listener, a non-TransportError failure -- propagates.
+        (`complete` set) executes every miss now: an unpreparable one goes
+        to `excluded`; one whose wire fails is dropped and logged; if
+        every question put on the wire failed, raises JudgeUnreachable
+        (nothing can be judged at all). A batch-only backend (`complete`
+        is None, `batch_transport` set) never touches the wire here: an
+        unpreparable miss goes to `excluded`, every other miss is returned
+        in `collected` for a caller to hand to submit(). Any other
+        exception -- unknown backend, learner/listener -- propagates.
         """
         impl = self._backends[backend]
-        if getattr(impl, "complete", None) is None and getattr(impl, "batch_transport", None) is not None:
-            try:
-                resolved, excluded = self._ask_batch(backend, questions)
-                return ManyResult(resolved=resolved, pending=[], excluded=excluded)
-            except BatchPending as e:
-                return ManyResult(resolved=dict(e.resolved), pending=list(e.pending_keys),
-                                  excluded=list(e.excluded))
+        is_batch = (getattr(impl, "complete", None) is None
+                   and getattr(impl, "batch_transport", None) is not None)
         resolved: dict[CacheKey, Verdict] = {}
-        excluded: list[CacheKey] = []
+        excluded: dict[str, str] = {}
+        collected: list[PreparedQuestion] = []
+        wire_attempts = 0
+        wire_failures = 0
         for q in questions:
             key = impl.cache_key(q)
             # Only on a miss: a cached verdict needs no preparation, so a
             # candidate whose file has since vanished still reads back.
-            if self._cache.latest("assess", backend, key) is None:
-                reason = self._preparation_failure(impl, q)
-                if reason is not None:
+            cached = self._cache.latest("assess", backend, key)
+            if cached is not None:
+                resolved[key] = _verdict_from_cached(cached)
+                continue
+            if is_batch:
+                try:
+                    prompt, paths = self._build(impl, q)
+                except PreparationError as e:
                     _log.warning("%s backend cannot prepare a question (key=%s): %s",
-                                 backend, key.encode(), reason)
-                    excluded.append(key)
+                                 backend, key.encode(), e)
+                    excluded[key.encode()] = str(e)
                     continue
+                collected.append(PreparedQuestion(question=q, key=key, prompt=prompt,
+                                                  attachments=paths))
+                continue
             try:
                 resolved[key] = self.ask(backend, q)
+            except PreparationError as e:
+                _log.warning("%s backend cannot prepare a question (key=%s): %s",
+                             backend, key.encode(), e)
+                excluded[key.encode()] = str(e)
+                continue
             except TransportError as e:
                 _log.warning("%s backend dropped a question (key=%s): %s",
                              backend, key.encode(), e)
+                wire_attempts += 1
+                wire_failures += 1
                 continue
-        return ManyResult(resolved=resolved, pending=[], excluded=excluded)
+            wire_attempts += 1
+        if wire_attempts and wire_attempts == wire_failures:
+            raise JudgeUnreachable(
+                f"{backend} answered none of {wire_attempts} question(s) on the wire")
+        return ManyResult(resolved=resolved, collected=collected, excluded=excluded)
 
     def ask(self, backend: str, question: AssessQuestion) -> Verdict:
         if backend == "learner":
@@ -213,12 +235,12 @@ class Assessor:
         cached = self._cache.latest("assess", backend, key)
         if cached is not None:
             return _verdict_from_cached(cached)
-        raw = impl.fetch(question)  # transport errors propagate uncached
+        raw = impl.fetch(question)  # transport/preparation errors propagate uncached
         ts = self._append_verdict(backend, key, question, raw)
         return Verdict(value=raw.value, cost=raw.cost, ts=ts,
                        evidence=raw.evidence, suggestion=raw.suggestion)
 
-    def _append_verdict(self, backend: str, key: CacheKey, question: AssessQuestion,
+    def _append_verdict(self, backend: str, key: CacheKey | str, question: AssessQuestion,
                         raw: RawVerdict) -> int:
         answer: dict[str, Any] = {"value": raw.value}
         if raw.evidence is not None:
@@ -231,149 +253,97 @@ class Assessor:
                      "rubric": question.rubric, "kind": question.kind},
             answer=answer, cost=raw.cost)
 
-    # --- judge's batch transport: many questions, one submission ---------
+    # --- judge's batch transport: one submission, one resolution ---------
 
-    def ask_batch(self, backend: str, questions: Sequence[AssessQuestion]
-                  ) -> dict[CacheKey, Verdict]:
-        """Resolves every question already cached, keyed by cache key
-        (not subject). A question whose prompt_builder/attachments raises
-        TransportError is excluded entirely -- not cached, not pending,
-        not in any marker row -- the rest of the batch still submits. For
-        what's left, resumes a pending batch (submitting one if none
-        exists), persisting a batch-pending cache row plus one
-        `judge-batch-pending:{subject}` marker row per distinct subject.
-        Raises BatchPending with what resolved and what remains pending.
+    def submit(self, prepared: Sequence[PreparedQuestion]) -> str | None:
+        """Sends every entry in `prepared` (ask_many's `collected` -- each
+        already built, prompt_builder/attachments never called again here)
+        as one Message Batch, and appends one marker row (subject "batch",
+        key BatchMarkerKey(batch_id)) naming what was submitted, in
+        parallel lists aligned by index. Returns the batch id, or None
+        when `prepared` is empty (nothing submitted, nothing appended).
         """
-        resolved, _excluded = self._ask_batch(backend, questions)
-        return resolved
+        if not prepared:
+            return None
+        impl = self._backends["judge"]
+        requests: dict[str, tuple[str, list[Path]]] = {}
+        keys: list[str] = []
+        subjects: list[str] = []
+        roles: list[str] = []
+        artifact_shas: list[str | None] = []
+        rubrics: list[str | None] = []
+        kinds: list[str] = []
+        for p in prepared:
+            requests[_custom_id(p.key)] = (p.prompt, p.attachments)
+            keys.append(p.key.encode())
+            subjects.append(p.question.subject)
+            roles.append(p.question.role)
+            artifact_shas.append(p.question.artifact_sha)
+            rubrics.append(p.question.rubric)
+            kinds.append(p.question.kind)
+        batch_id = impl.batch_transport.submit(requests)
+        self._record.append(
+            port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+            question={"kind": "batch", "batch_id": batch_id, "keys": keys, "subjects": subjects,
+                     "roles": roles, "artifact_shas": artifact_shas, "rubrics": rubrics,
+                     "kinds": kinds},
+            answer={"status": "submitted"}, cost=0.0)
+        return batch_id
 
-    def _ask_batch(self, backend: str, questions: Sequence[AssessQuestion]
-                   ) -> tuple[dict[CacheKey, Verdict], list[CacheKey]]:
-        """ask_batch's body, additionally returning the cache keys it
-        excluded (see ManyResult.excluded) -- ask_batch keeps the plain
-        `dict` return its own callers expect, ask_many wants both.
+    def resolve(self, batch_id: str) -> dict[str, Verdict]:
+        """Fetches the batch's results and appends a verdict row per
+        succeeded question (keyed by that question's own submitted key),
+        then appends a marker row releasing it: "resolved" once the batch
+        ended, "expired"/"failed" for a batch that will never answer --
+        either way a question with no verdict row carries none and
+        re-asks on a later run. A no-op (returns {}) while the batch is
+        still "in_progress", or once it has already been resolved.
         """
-        impl = self._backends[backend]
-        resolved: dict[CacheKey, Verdict] = {}
-        misses: list[tuple[CacheKey, AssessQuestion]] = []
-        for q in questions:
-            key = impl.cache_key(q)
-            cached = self._cache.latest("assess", backend, key)
-            if cached is not None:
-                resolved[key] = _verdict_from_cached(cached)
-            else:
-                misses.append((key, q))
-        excluded: list[CacheKey] = []
-        if not misses:
-            return resolved, excluded
-
-        payloads: dict[CacheKey, tuple[str, list[Path]]] = {}
-        submittable: list[tuple[CacheKey, AssessQuestion]] = []
-        for key, q in misses:
-            try:
-                payloads[key] = (impl.prompt_builder(q), impl.attachments(q))
-            except TransportError as e:
-                # excluded: not cached, not pending, not marked -- and
-                # reported, so the caller can tell an unusable candidate
-                # from a transport that never answered.
-                _log.warning("%s backend cannot prepare a question (key=%s): %s",
-                             backend, key.encode(), e)
-                excluded.append(key)
-                continue
-            submittable.append((key, q))
-        if not submittable:
-            return resolved, excluded
-
-        miss_keys = [key for key, _ in submittable]
-        request_set_key = _batch_request_set_key(miss_keys)
-        pending = self._cache.latest("assess", backend, request_set_key)
-        if pending is not None and pending.answer.get("kind") == "batch-pending":
-            batch_id = pending.answer["batch_id"]
-        else:
-            requests = {_custom_id(key): payloads[key] for key, _ in submittable}
-            batch_id = impl.batch_transport.submit(requests)
-            self._record.append(
-                port="assess", backend=backend, key=request_set_key,
-                subject=request_set_key,
-                question={"kind": "batch", "keys": sorted(k.encode() for k in miss_keys)},
-                answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
-            by_subject: dict[str, list[CacheKey]] = {}
-            for key, q in submittable:
-                by_subject.setdefault(q.subject, []).append(key)
-            for subject, keys in by_subject.items():
-                self._record.append(
-                    port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                    subject=subject, question={"kind": "batch", "keys": [k.encode() for k in keys]},
-                    answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
-            raise BatchPending(batch_id, miss_keys, resolved, excluded)
-
+        marker = self._cache.latest("assess", "judge", BatchMarkerKey(batch_id))
+        if marker is None or marker.answer.get("status") != "submitted":
+            return {}
+        impl = self._backends["judge"]
         status = impl.batch_transport.status(batch_id)
         if status == "in_progress":
-            raise BatchPending(batch_id, miss_keys, resolved, excluded)
-
-        if status == "ended":
-            results = impl.batch_transport.results(batch_id)
-        else:
-            # A terminal status other than "ended" (canceled/expired/
-            # errored, or anything this transport reports that isn't in
-            # {"in_progress", "ended"}) means the batch will never
-            # produce results -- treat it as ended with nothing rather
-            # than calling results() (which may itself raise for a batch
-            # that never completed) and abandon every key still missing.
-            _log.warning(
-                "%s batch %s ended with status %r (not \"ended\"); treating "
-                "as ended with no results -- %d question(s) abandoned",
-                backend, batch_id, status, len(submittable))
-            results = {}
-
-        abandoned: list[CacheKey] = []
-        for key, q in submittable:
-            completion = results.get(_custom_id(key))
+            return {}
+        results = impl.batch_transport.results(batch_id) if status == "ended" else {}
+        n = len(marker.question["keys"])
+        artifact_shas = marker.question.get("artifact_shas") or [None] * n
+        rubrics = marker.question.get("rubrics") or [None] * n
+        kinds = marker.question.get("kinds") or [""] * n
+        resolved: dict[str, Verdict] = {}
+        for key_str, subject, role, artifact_sha, rubric, kind in zip(
+                marker.question["keys"], marker.question["subjects"], marker.question["roles"],
+                artifact_shas, rubrics, kinds):
+            completion = results.get("q" + sha(key_str))
             if completion is None:
-                abandoned.append(key)
                 continue
-            raw = impl._parse(completion.text, q)
-            raw = RawVerdict(value=raw.value, evidence=raw.evidence,
-                             suggestion=raw.suggestion, cost=impl._cost(completion))
-            ts = self._append_verdict(backend, key, q, raw)
-            resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
-                                    evidence=raw.evidence, suggestion=raw.suggestion)
-        if abandoned:
-            # A key with no successful result never gets a verdict row,
-            # so derivations.pending()'s marker-driven check would report
-            # it pending forever (spec 3 section 3: batch starvation). A
-            # superseding judge-batch-pending:{subject} marker with the
-            # abandoned keys removed clears it -- newest-wins, and the
-            # key was never cached, so a later run asks it again fresh.
-            self._supersede_batch_pending(backend, batch_id, submittable, abandoned)
-            raise BatchPending(batch_id, abandoned, resolved, excluded)
-        return resolved, excluded
+            question = AssessQuestion(subject=subject, role=role, artifact_sha=artifact_sha,
+                                      rubric=rubric, kind=kind)
+            parsed = impl._parse(completion.text, question)
+            raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
+                             suggestion=parsed.suggestion, cost=impl._cost(completion))
+            ts = self._append_verdict("judge", key_str, question, raw)
+            resolved[key_str] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
+                                        evidence=raw.evidence, suggestion=raw.suggestion)
+        final_status = "resolved" if status == "ended" else ("expired" if status == "expired" else "failed")
+        self._record.append(
+            port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+            question={"kind": "batch", "batch_id": batch_id}, answer={"status": final_status})
+        return resolved
 
-    def _supersede_batch_pending(self, backend: str, batch_id: str,
-                                 submittable: Sequence[tuple[CacheKey, AssessQuestion]],
-                                 abandoned: Sequence[CacheKey]) -> None:
-        """One `judge-batch-pending:{subject}` marker row per subject that
-        has an abandoned key in this batch, naming only the keys still
-        genuinely unresolved (the abandoned ones dropped). `latest()`
-        reads newest-wins, so this row supersedes the submit-time marker
-        for that subject without touching subjects the batch fully
-        resolved.
+    def unresolved_batch(self) -> tuple[str, frozenset[str]] | None:
+        """The (batch_id, subjects) of the newest marker whose latest
+        status is "submitted" -- the batch a run must resolve before it
+        submits its own (spec 3 section 7). None while no batch is out.
+        Reads through record.unresolved_batch, the same fold
+        derivations.pending() reads through.
         """
-        abandoned_set = set(abandoned)
-        by_subject: dict[str, list[CacheKey]] = {}
-        for key, q in submittable:
-            by_subject.setdefault(q.subject, []).append(key)
-        for subject, keys in by_subject.items():
-            subject_abandoned = [k for k in keys if k in abandoned_set]
-            if not subject_abandoned:
-                continue
-            remaining = [k for k in keys if k not in abandoned_set]
-            self._record.append(
-                port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                subject=subject,
-                question={"kind": "batch", "keys": [k.encode() for k in remaining]},
-                answer={"kind": "batch-pending", "batch_id": batch_id,
-                       "abandoned": [k.encode() for k in subject_abandoned]}, cost=0.0)
+        found = record.unresolved_batch(self._cache)
+        if found is None:
+            return None
+        batch_id, subjects, _roles = found
+        return batch_id, frozenset(subjects)
 
 
 def _verdict_from_cached(cached) -> Verdict:
@@ -381,10 +351,6 @@ def _verdict_from_cached(cached) -> Verdict:
     return Verdict(value=a["value"], cost=0.0, ts=cached.ts,
                    evidence=a.get("evidence"), suggestion=a.get("suggestion"),
                    hit=True)
-
-
-def _batch_request_set_key(keys: Sequence[CacheKey]) -> str:
-    return "judge-batch:" + sha(",".join(sorted(k.encode() for k in keys)))
 
 
 def _custom_id(key: CacheKey) -> str:
@@ -459,10 +425,12 @@ def sentence_prompt(q: AssessQuestion) -> str:
            '"suggestion": <string or null>}.')
 
 
-def parse_preference(text: str) -> RawVerdict:
+def parse_preference(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """Parses a picture_preference_prompt response: `value` is the ranked
     list of candidate shas, best first (empty on any parse failure --
     never raises, same as _default_parse_judge_response's failure mode).
+    `question` is unused -- accepted so this can serve as a JudgeBackend
+    parse_response directly, which is always called with (text, question).
     """
     try:
         data = json.loads(text)
@@ -472,10 +440,11 @@ def parse_preference(text: str) -> RawVerdict:
     return RawVerdict(value=list(ranking or []), evidence=(data or {}).get("evidence"))
 
 
-def _generic_value_parser(text: str) -> RawVerdict:
+def _generic_value_parser(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """The {"value", "evidence", "suggestion"} shape both picture_fit_prompt
     and sentence_prompt ask for -- also the fallback for any role with no
-    entry in _DEFAULT_JUDGE_BUILDERS.
+    entry in _DEFAULT_JUDGE_BUILDERS. `question` is unused -- see
+    parse_preference's docstring.
     """
     try:
         data = json.loads(text)
@@ -513,7 +482,7 @@ def _fallback_judge_prompt(question: AssessQuestion) -> str:
 # version dispatched the two separately and a preference completion's
 # {"ranking": [...]} silently parsed to value=None).
 _DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
-                                        Callable[[str], RawVerdict]]] = {
+                                        Callable[..., RawVerdict]]] = {
     "picture-for-word": (picture_fit_prompt, _generic_value_parser),
     "sentence-for-target": (sentence_prompt, _generic_value_parser),
     "picture-preference": (picture_preference_prompt, parse_preference),
@@ -543,17 +512,8 @@ class JudgeBackend:
     price: Price | None = None  # api/batch: dollar cost from actual token usage
     quota_cost_per_call: float = 0.0  # cli: flat subscription-quota cost (no token usage on the wire)
 
-    def __post_init__(self) -> None:
-        try:
-            n_params = len(inspect.signature(self.parse_response).parameters)
-        except (TypeError, ValueError):
-            n_params = 1
-        self._parser_wants_question = n_params >= 2
-
     def _parse(self, text: str, question: AssessQuestion) -> RawVerdict:
-        if self._parser_wants_question:
-            return self.parse_response(text, question)
-        return self.parse_response(text)
+        return self.parse_response(text, question)
 
     def _attachment_shas(self, question: AssessQuestion) -> list[str]:
         if question.role == "picture-preference":
@@ -561,10 +521,11 @@ class JudgeBackend:
         return [question.artifact_sha] if question.artifact_sha else []
 
     def attachments(self, question: AssessQuestion) -> list[Path]:
-        """Resolves every required sha to a path; raises TransportError
-        (uncached) for any sha resolve_path can't resolve, rather than
-        silently dropping it -- a dropped candidate shifts a preference
-        prompt's positions, and a dropped fit artifact judges no image.
+        """Resolves every required sha to a path; raises PreparationError
+        (uncached, never put on the wire) for any sha resolve_path can't
+        resolve, rather than silently dropping it -- a dropped candidate
+        shifts a preference prompt's positions, and a dropped fit artifact
+        judges no image.
         """
         if self.resolve_path is None:
             return []
@@ -572,7 +533,7 @@ class JudgeBackend:
         for s in self._attachment_shas(question):
             p = self.resolve_path(s)
             if p is None:
-                raise TransportError(f"no file resolves for artifact sha {s!r}")
+                raise PreparationError(f"artifact not found: {s}")
             paths.append(p)
         return paths
 

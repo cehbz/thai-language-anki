@@ -15,6 +15,8 @@ from thai_syllabus.derivations import (
     pending,
     queue,
 )
+from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
+from thai_syllabus.cachekeys import BatchMarkerKey
 from thai_syllabus.entities import MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.ports import Answer
@@ -432,15 +434,55 @@ def test_role_scoped_rubric_mapping_marks_only_that_role_stale(db):
     assert current_best(db, "w", "picture", current_rubric={"sentence-for-target": "x"}).artifact_sha == "a"
 
 
-def test_pending_when_a_batch_marker_key_has_no_verdict_yet(db):
+def _batch_marker_submitted(db, batch_id, subjects, roles):
+    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+              question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
+                       "roles": list(roles)},
+              answer={"status": "submitted"})
+
+
+def _batch_marker_resolved(db, batch_id, status="resolved"):
+    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+              question={"kind": "batch", "batch_id": batch_id}, answer={"status": status})
+
+
+def test_pending_true_while_submitted_false_once_resolved(db):
     _provide(db, "w", "picture", "openverse", ["a"])
-    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
-              question={"keys": ["judge:r:a:picture-for-word"]},
-              answer={"kind": "batch-pending", "batch_id": "b1"})
+    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"])
     assert pending(db, "w", "picture") is True
-    db.append(port="assess", backend="judge", key="judge:r:a:picture-for-word", subject="w",
-              question={"role": "picture-for-word", "artifact_sha": "a", "rubric": "r"},
-              answer={"value": True})
+    _batch_marker_resolved(db, "b1")
+    assert pending(db, "w", "picture") is False
+
+
+def test_pending_is_true_after_submit_and_false_after_resolve(db):
+    """The same contract, exercised through Assessor.submit()/resolve()
+    rather than a hand-built marker row.
+    """
+    class BT:
+        def __init__(self):
+            self.status_value = "in_progress"
+
+        def submit(self, requests):
+            return "b1"
+
+        def status(self, batch_id):
+            return self.status_value
+
+        def results(self, batch_id):
+            return {}
+
+    bt = BT()
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=bt)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="a", rubric="r",
+                       kind="picture")
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+
+    assert pending(db, "w", "picture") is True
+
+    bt.status_value = "ended"
+    a.resolve(bid)
+
     assert pending(db, "w", "picture") is False
 
 
@@ -460,9 +502,7 @@ def test_batch_pending_marker_row_never_ranks_or_counts_as_an_attempt(db):
 
 def test_queue_excludes_pending_needs(db):
     syl = _FakeSyllabus(_FakeGaps(words_missing_pictures=("w", "v")))
-    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
-              question={"keys": ["judge:r:a:picture-for-word"]},
-              answer={"kind": "batch-pending", "batch_id": "b1"})
+    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"])
     assert [e.subject for e in queue(syl, db)] == ["v"]
 
 

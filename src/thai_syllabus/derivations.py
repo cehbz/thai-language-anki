@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Union
 
 from . import record
-from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND
+from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
 from .ports import Answer, CacheReader, StudyReader
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
@@ -360,24 +360,20 @@ def _gap_candidates(syllabus) -> list[tuple[str, str]]:
 
 
 def pending(cache: CacheReader, subject: str, kind: str) -> bool:
-    """True while a judge batch is out and hasn't resolved every key this
-    kind's role cares about (spec 3 section 3 amendment): the newest
-    `judge-batch-pending:{subject}` marker row (its own kind is "batch",
-    so record.rows_for never returns it for a need kind) names the keys a
-    batch submitted; any of those keys, whose role matches this kind,
-    still lacking a verdict row means the batch hasn't come back yet.
+    """True while a judge batch is out and hasn't resolved (spec 3
+    section 3 amendment): `subject` appears in the newest unresolved
+    batch marker's subjects (record.unresolved_batch) paired with
+    `kind`'s own role. Resolving the batch (Assessor.resolve) always
+    releases the whole marker at once, so this needs no per-key verdict
+    check -- once resolved, every subject it named stops being pending,
+    whether or not each of its questions actually got a verdict.
     """
-    marker = cache.latest("assess", "judge", f"judge-batch-pending:{subject}")
-    if marker is None:
+    found = record.unresolved_batch(cache)
+    if found is None:
         return False
-    role = ROLE_FOR_KIND.get(kind, kind)
-    roles = {role, "picture-preference"} if kind == "picture" else {role}
-    for key in marker.question.get("keys", []):
-        if key.rsplit(":", 1)[-1] not in roles:
-            continue
-        if cache.latest("assess", "judge", key) is None:
-            return True
-    return False
+    _batch_id, subjects, roles = found
+    role = role_for(kind)
+    return any(s == subject and r == role for s, r in zip(subjects, roles))
 
 
 def _has_untried_option(rows: Sequence[Answer], current_rubric: Rubric,

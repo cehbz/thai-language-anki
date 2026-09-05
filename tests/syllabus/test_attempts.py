@@ -690,12 +690,13 @@ def test_sentence_attempt_adopts_on_a_later_run_once_a_batch_verdict_lands(ctx):
 # --- C1: an UNREACHABLE judge ends the attempt, like an unavailable one ----
 #
 # Distinct from "no judge backend registered" (KeyError, above): the backend
-# IS registered, but its transport cannot answer. Either shape -- ask_many
-# raising TransportError (the batch branch's submit), or ask_many swallowing
-# a per-question TransportError and returning nothing resolved and nothing
-# pending (the inline branch) -- means nothing can be judged, so the attempt
-# must end before any Source spend rather than searching for candidates no
-# one can assess.
+# IS registered, but its transport cannot answer. An inline transport that
+# fails every question raises JudgeUnreachable out of ask_many (re-raised by
+# _judge_many as TransportError); the attempt must end before any Source
+# spend rather than searching for candidates no one can assess. A batch
+# transport never touches the wire from ask_many -- its misses come back in
+# `collected` instead, so a batch judge cannot be found unreachable here at
+# all; the attempt reports pending, same as any other batch miss.
 
 def _seed_unjudged_candidate(c, payload=b"good-old"):
     """One candidate on record and unjudged, so the pre-search assess step
@@ -725,21 +726,25 @@ def test_unreachable_inline_judge_ends_the_picture_attempt_before_any_search(ctx
     assert any(r.levelname == "WARNING" for r in caplog.records)
 
 
-def test_unreachable_batch_judge_ends_the_picture_attempt_before_any_search(ctx, caplog):
+def test_a_batch_judge_reports_pending_rather_than_unreachable(ctx):
+    """A batch transport's misses are collected, never put on the wire from
+    ask_many, so a batch judge is never "unreachable" here -- an unasked
+    candidate reports pending and the attempt ends before any Source spend,
+    same as test_picture_attempt_reports_pending_under_a_batch_judge with a
+    pre-existing candidate instead of a freshly-searched one.
+    """
     c, search, _judge = ctx
     _seed_unjudged_candidate(c)
 
     class BT:
         def submit(self, requests):
-            raise TransportError("batch submit failed: 401")
+            raise AssertionError("ask_many must not submit a batch")
     c.assessor = Assessor(record=c.db, cache=c.db, backends={
         "judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
 
-    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
-        out = attempt(c, Need("orange", "picture"), "openverse")
+    out = attempt(c, Need("orange", "picture"), "openverse")
     assert search.calls == 0
-    assert out == Outcome(False, False, False, {}, excluded=0, unreachable=True)
-    assert any(r.levelname == "WARNING" for r in caplog.records)
+    assert out == Outcome(False, True, False, {}, excluded=0, unreachable=False)
 
 
 def test_unreachable_judge_ends_the_sentence_attempt_before_any_draft(ctx, caplog):

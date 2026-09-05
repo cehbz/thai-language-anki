@@ -26,7 +26,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import requests
 
-from .assessor import Price
+from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import sha
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError
@@ -76,15 +76,6 @@ class RawAnswer:
     """What a Backend.fetch() returns before Provider wraps it with a ts."""
     items: tuple[Any, ...] = ()
     cost: float = 0.0
-
-
-class LearnerAskNotSupported(RuntimeError):
-    """Provider.ask("learner", ...) always raises this (spec 3 roster:
-    learner has "n/a (no question key); rows are acts ... asked via the
-    feedback screen only"). The learner backend never executes; its rows
-    arrive through RecordWriter.append from the feedback surfaces (spec 5),
-    not through ask().
-    """
 
 
 @runtime_checkable

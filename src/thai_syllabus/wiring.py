@@ -8,10 +8,10 @@ Secrets are resolved lazily (secrets.SecretStore's own contract, spec 3
 section 5): a backend whose secret is never touched must never cause a
 file/1Password read merely by being constructed into the roster.
 Secret-backed backends (pexels, forvo, tts, the judge/llm api transport)
-are wrapped in `_LazyBackend` / `_LazyTransport`, which defer building the
-real backend/transport object -- and therefore calling
-`SecretStore.get()` -- until their first `cache_key`/`fetch`/`complete`
-call. `Provider.__init__`/`Assessor.__init__` both do `dict(backends)`
+are wrapped in `_Lazy`, which defers building the real backend/transport
+object -- and therefore calling `SecretStore.get()` -- until their first
+`cache_key`/`fetch`/`complete` call. `Provider.__init__`/`Assessor.__init__`
+both do `dict(backends)`
 over the mapping they're given, which forces every VALUE already in that
 dict to exist as an object -- but never calls any METHOD on those
 objects -- so wrapping only the secret-needing backends in a thin
@@ -105,7 +105,7 @@ from .rulebook import RULES, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay, rubrics_
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport, Completion
+from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
@@ -114,9 +114,12 @@ __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budget
 
 # --- laziness helpers -------------------------------------------------------
 
-class _LazyBackend:
-    """A Backend (cache_key + fetch) that defers building the real backend
-    -- and therefore any SecretStore.get() it needs -- until first use.
+class _Lazy:
+    """Defers building the real object -- and therefore any
+    SecretStore.get() it needs -- until first use. Stands in for a
+    Backend (cache_key + fetch), a `.complete(prompt)`-shaped transport, a
+    batch transport (submit/status/results), or `tts.Tts` (synthesize):
+    whatever a caller does with the resolved object, this forwards.
     """
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
@@ -127,55 +130,11 @@ class _LazyBackend:
             self._impl = self._factory()
         return self._impl
 
-    def cache_key(self, question: Any) -> str:
-        return self._resolve().cache_key(question)
-
-    def fetch(self, question: Any) -> Any:
-        return self._resolve().fetch(question)
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
 
 
-class _LazyTransport:
-    """A `.complete(prompt) -> Completion`-shaped object that defers
-    building the real transport until first call -- used both as
-    LlmBackend.transport (an object with .complete) and, via its bound
-    `.complete` method, as JudgeBackend.complete (a bare callable) -- see
-    _judge_transport below.
-    """
-    def __init__(self, factory: Callable[[], Any]):
-        self._factory = factory
-        self._impl: Any = None
-
-    def complete(self, prompt: str, attachments: Sequence[Path] = ()) -> Completion:
-        if self._impl is None:
-            self._impl = self._factory()
-        return self._impl.complete(prompt, attachments)
-
-
-class _LazyBatchTransport:
-    """Same deferral for the batch transport's three-method shape
-    (submit/status/results), so a judge configured for batch never
-    resolves its secret until a batch is actually submitted or polled.
-    """
-    def __init__(self, factory: Callable[[], Any]):
-        self._factory = factory
-        self._impl: Any = None
-
-    def _resolve(self) -> Any:
-        if self._impl is None:
-            self._impl = self._factory()
-        return self._impl
-
-    def submit(self, requests: Mapping[str, tuple[str, Sequence[Path]]]) -> str:
-        return self._resolve().submit(requests)
-
-    def status(self, batch_id: str) -> str:
-        return self._resolve().status(batch_id)
-
-    def results(self, batch_id: str) -> dict[str, Completion | None]:
-        return self._resolve().results(batch_id)
-
-
-def _claude_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
+def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     """A lazy `.complete(prompt)` transport for the ONE Claude account
     providers.yaml configures (judge.transport/model) -- shared by the
     judge Assessor backend's cli/api transport and the llm Provider
@@ -184,14 +143,14 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
     """
     kind = cfg.judge.transport
     if kind == "cli":
-        return _LazyTransport(lambda: ClaudeCliTransport())
+        return _Lazy(lambda: ClaudeCliTransport())
     if kind == "api":
-        return _LazyTransport(lambda: ClaudeApiTransport(
+        return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
     return None
 
 
-def _llm_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
+def _llm_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     """The single-question transport llm-sentence/phrase/entry draft on.
     The judge's own cli/api transport where one exists; under a BATCH
     judge -- which has no single-question transport at all -- a lazy api
@@ -205,7 +164,7 @@ def _llm_transport(cfg: ProvidersConfig, secrets) -> _LazyTransport | None:
         return transport
     if "anthropic" not in cfg.secrets:
         return None
-    return _LazyTransport(lambda: ClaudeApiTransport(
+    return _Lazy(lambda: ClaudeApiTransport(
         api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
 
 
@@ -235,10 +194,10 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     backends: dict[str, Backend] = {
         "openverse": openverse_backend(search_proxy=cfg.search_proxy),
         "wikimedia": wikimedia_backend(search_proxy=cfg.search_proxy),
-        "pexels": _LazyBackend(lambda: pexels_backend(
+        "pexels": _Lazy(lambda: pexels_backend(
             api_key=secrets.get("pexels") or "", search_proxy=cfg.search_proxy)),
-        "forvo": _LazyBackend(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
-        "tts": _LazyBackend(lambda: TtsBackend(
+        "forvo": _Lazy(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
+        "tts": _Lazy(lambda: TtsBackend(
             tts=_lazy_google_tts(secrets),
             voices=list(cfg.tts_male_voices) + list(cfg.tts_female_voices),
             media=media_store, pick_voice=pick_voice,
@@ -266,24 +225,15 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     return Provider(record=db, cache=db, backends=backends)
 
 
-def _lazy_google_tts(secrets):
+def _lazy_google_tts(secrets) -> _Lazy:
     """tts.Tts is a Protocol (`.synthesize(text, voice) -> bytes`);
     TtsBackend.fetch calls `self.tts.synthesize(...)` directly, so this
-    thin object -- not GoogleTts itself -- is what actually goes into the
+    lazy wrapper -- not GoogleTts itself -- is what actually goes into the
     TtsBackend, deferring the google_tts secret until synthesis happens.
     """
     from .tts import GoogleTts
 
-    @dataclass
-    class _LazyGoogleTts:
-        _impl: Any = None
-
-        def synthesize(self, text: str, voice: str) -> bytes:
-            if self._impl is None:
-                self._impl = GoogleTts(api_key=secrets.get("google_tts") or "")
-            return self._impl.synthesize(text, voice)
-
-    return _LazyGoogleTts()
+    return _Lazy(lambda: GoogleTts(api_key=secrets.get("google_tts") or ""))
 
 
 # --- build_assessor ----------------------------------------------------
@@ -329,11 +279,15 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
     complete = None
     batch_transport = None
     if kind == "batch":
-        batch_transport = _LazyBatchTransport(lambda: ClaudeBatchTransport(
+        batch_transport = _Lazy(lambda: ClaudeBatchTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
     else:
         transport = _claude_transport(cfg, secrets)
-        complete = transport.complete if transport is not None else None
+        if transport is not None:
+            # Wrapped, not extracted as `transport.complete` directly: the
+            # `.complete` lookup on `transport` (a _Lazy) resolves it, so
+            # this closure defers that lookup to the moment it is called.
+            complete = lambda prompt, attachments=(): transport.complete(prompt, attachments)
     return JudgeBackend(model=cfg.judge.model, transport=kind, complete=complete,
                         batch_transport=batch_transport)
 

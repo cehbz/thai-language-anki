@@ -12,14 +12,17 @@ unusable this run, nothing is cached, the attempt may still succeed on
 what's already on record. An unavailable OR unreachable Assessor is
 different: nothing can be judged at all, so it ends the whole attempt
 before any Source is tried, rather than spending on a search whose
-results could never be assessed. Three shapes mean that, all handled the
+results could never be assessed. Two shapes mean that, both handled the
 same way (see `_judge_many`): Assessor.ask_many raising KeyError (no
-"judge" backend registered), raising TransportError (the batch branch's
-submit failed), or coming back with nothing resolved, nothing pending
-AND nothing excluded for a non-empty question list (the inline branch
-swallowed a per-question TransportError on every question). Each is
-logged at WARNING -- a run that judged nothing must say so, not look
-like a run that found nothing.
+"judge" backend registered) or raising JudgeUnreachable (every question
+it put on the wire failed). Each is logged at WARNING -- a run that
+judged nothing must say so, not look like a run that found nothing.
+
+A batch transport never raises JudgeUnreachable from ask_many -- it
+collects its misses instead of asking the wire. Until run.py drives
+Assessor.submit()/resolve() (a later task), a batch judge's misses being
+`collected` is this module's only pending signal, same as it was under
+the old ask_batch/BatchPending shape.
 
 A question the judge EXCLUDED (ManyResult.excluded: it could not be
 prepared -- an artifact sha resolving to no file) is not that. The judge
@@ -51,9 +54,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from .assessor import AssessQuestion, Assessor
+from .assessor import AssessQuestion, Assessor, JudgeUnreachable
 from .authority import ROLE_FOR_KIND
-from .cachekeys import CacheKey, MechanicalKey
+from .cachekeys import MechanicalKey
 from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
 from .entities import Sentence, Target, text_sha
@@ -123,12 +126,12 @@ class SentenceOutcome:
 
 @dataclass
 class _Tally:
-    """One attempt's judge bookkeeping: the cache keys the judge could not
-    prepare, as a SET -- an attempt asks the same fit question twice (once
-    before the Source, once after), and one unusable candidate is one
-    exclusion, not two.
+    """One attempt's judge bookkeeping: the encoded keys of questions the
+    judge could not prepare, as a SET -- an attempt asks the same fit
+    question twice (once before the Source, once after), and one unusable
+    candidate is one exclusion, not two.
     """
-    excluded_keys: set[CacheKey] = field(default_factory=set)
+    excluded_keys: set[str] = field(default_factory=set)
 
     @property
     def excluded(self) -> int:
@@ -206,10 +209,9 @@ def _picture_params(ctx: Sourcing, subject: str) -> dict[str, Any]:
 def _judge_many(ctx: Sourcing, questions: Sequence[AssessQuestion], tally: _Tally):
     """Assessor.ask_many("judge", ...) under the unreachable-judge
     contract (module docstring). The judge is UNREACHABLE when ask_many
-    raises TransportError, or when resolved, pending AND excluded are all
-    empty for a non-empty question list -- nothing came back and nothing
-    was even attempted, so no verdict can be had; logged at WARNING and
-    raised as TransportError for the caller to end the attempt on.
+    raises JudgeUnreachable (every question it put on the wire failed) --
+    logged at WARNING and re-raised as TransportError, the exception every
+    caller already ends its attempt on.
 
     An EXCLUDED question is the opposite case: the judge is reachable and
     answered what it could, but that question could not be prepared (an
@@ -224,20 +226,14 @@ def _judge_many(ctx: Sourcing, questions: Sequence[AssessQuestion], tally: _Tall
     """
     try:
         res = ctx.assessor.ask_many("judge", questions)
-    except TransportError as e:
+    except JudgeUnreachable as e:
         _log.warning("judge unreachable (%s); ending the attempt before any source spend", e)
-        raise
+        raise TransportError(str(e)) from e
     if res.excluded:
         tally.excluded_keys.update(res.excluded)
         _log.warning("the judge could not prepare %d of %d question(s) (%s); "
                      "those candidates are unusable -- continuing the attempt",
-                     len(res.excluded), len(questions),
-                     ", ".join(k.encode() for k in res.excluded))
-    if questions and not res.resolved and not res.pending and not res.excluded:
-        _log.warning("judge answered none of %d question(s), reported none pending and "
-                     "excluded none; ending the attempt before any source spend",
-                     len(questions))
-        raise TransportError("the judge resolved no questions and reported none pending")
+                     len(res.excluded), len(questions), ", ".join(res.excluded))
     return res
 
 
@@ -257,7 +253,7 @@ def _fit_pictures(ctx: Sourcing, subject: str, shas: Sequence[str],
     res = _judge_many(ctx, questions, tally)
     for v in res.resolved.values():
         _add(spend, "judge", v.cost, hit=v.hit)
-    if res.pending:
+    if res.collected:
         return [], True
     passing = sorted(s for s, q in zip(shas, questions)
                      if (v := res.resolved.get(ctx.assessor.key_of("judge", q))) is not None
@@ -278,7 +274,7 @@ def _prefer_pictures(ctx: Sourcing, subject: str, passing: Sequence[str],
     res = _judge_many(ctx, [pref], tally)
     for v in res.resolved.values():
         _add(spend, "judge", v.cost, hit=v.hit)
-    return bool(res.pending)
+    return bool(res.collected)
 
 
 def _assess_all_candidates(ctx: Sourcing, subject: str,
@@ -723,7 +719,7 @@ def _verify_and_judge(ctx: Sourcing, syl: Syllabus, drafts: Sequence[dict], mode
     adopted = select_cover(passing, open_targets)
     for s in adopted:
         _adopt(ctx, s, model)
-    return adopted, bool(res.pending)
+    return adopted, bool(res.collected)
 
 
 def _prior_drafts(ctx: Sourcing) -> list[dict]:

@@ -14,7 +14,8 @@ from collections.abc import Mapping, Sequence
 from .ports import Answer, CacheReader
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
-          "ratings_for_role", "directions", "judge_verdicts", "latest_query"]
+          "ratings_for_role", "directions", "judge_verdicts", "latest_query",
+          "unresolved_batch"]
 
 # The bytes-fetching backends write the candidate a Source ask already
 # caused, not an ask of their own (spec 3 section 3: an attempt is one
@@ -104,3 +105,25 @@ def latest_query(rows: Sequence[Answer]) -> str | None:
     latest = max(asks, key=lambda r: r.ts)
     params = latest.question.get("params", {}) or {}
     return params.get("query") or params.get("url") or params.get("text")
+
+
+def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """The (batch_id, subjects, roles) of the newest judge-batch marker
+    row (subject "batch") whose latest status is "submitted" -- subjects
+    and roles are parallel lists aligned by index, naming every question
+    that batch asked. None while no batch is out. Shared by
+    Assessor.unresolved_batch and derivations.pending, so both read the
+    marker rows exactly the same way.
+    """
+    rows = [r for r in cache.assessments_of("batch") if r.question.get("kind") == "batch"]
+    latest_by_key: dict[str, Answer] = {}
+    for r in rows:
+        prev = latest_by_key.get(r.key_sha)
+        if prev is None or r.ts > prev.ts:
+            latest_by_key[r.key_sha] = r
+    submitted = [r for r in latest_by_key.values() if r.answer.get("status") == "submitted"]
+    if not submitted:
+        return None
+    newest = max(submitted, key=lambda r: r.ts)
+    return (newest.question["batch_id"], tuple(newest.question.get("subjects", [])),
+           tuple(newest.question.get("roles", [])))
