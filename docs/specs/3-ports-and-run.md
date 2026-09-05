@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 4, proposed 2026-09-05 against principles r2 and architecture
+Revision 5, proposed 2026-09-05 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -19,6 +19,9 @@ Revision log:
   Evidence: implementation review 2026-09-04.
 - r4 2026-09-05: keys are typed values; the encoding is a storage
   identity, never parsed. User ruling 2026-09-05.
+- r5 2026-09-05: a Source transport failure skips the source for the
+  run and is counted, only the judge stops the run; RunReport accounts
+  for every need gaps() lists. Evidence: Task B3 and B4 reviews.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -242,7 +245,10 @@ run(syllabus, budgets):
                                                # inline, else collect
   submit(questions) as one batch; append its marker  # no-op if empty
   RunReport {attempted, improved, exhausted, pending, excluded,
-             unreachable, available, spend per source}
+             unreachable, available, source_failures, spend per source}
+  # available = every need gaps() lists; exhausted = those queue()
+  # excluded as exhausted; pending = subjects with a question in this
+  # run's batch or an earlier unresolved one
 ```
 
 improved = the need's current-best artifact sha differs after the
@@ -250,7 +256,10 @@ attempt; a re-ranking among unchanged artifacts is not improvement.
 excluded = questions that could not be prepared (missing or unreadable
 artifact), reported per need and skipped. unreachable = the judge could
 not be reached; the run stops at the first such attempt and exits
-non-zero (fail fast; nothing after it is attempted). Every ask appends;
+non-zero (fail fast; nothing after it is attempted). A Source that
+cannot be reached does not stop the run: the source is skipped for the
+rest of the run, needs whose next source it is stay untouched, and the
+report counts it under source_failures[source]. Every ask appends;
 kill-safe anywhere. The run is transport-agnostic.
 
 ## 8. Rules added

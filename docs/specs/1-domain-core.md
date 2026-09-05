@@ -1,11 +1,8 @@
 # Spec 1: Domain core
 
-Revision 3, proposed 2026-09-04 against principles r2 and architecture
-r2 (r1 promoted 2026-09-04 as written on 2026-09-02 against the
-principles draft). Re-checked against principles r1 and architecture r1
-on 2026-09-04; the revisions that re-check proposed enter as r2 on
-approval. Revision process as in docs/architecture.md: proposals on
-evidence, explicit approval per revision, numbered log.
+Revision 4, proposed 2026-09-05 against principles r2 and architecture
+r2. Revision process as in docs/architecture.md: proposals on evidence,
+explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -19,6 +16,9 @@ Revision log:
   off the aggregate; frequency resolved by the loader. The r2 log
   overstated grapheme containment: the rule was already registered.
   Evidence: implementation review 2026-09-04.
+- r4 2026-09-05: scene/fit joins the F3 row (a scene picture is judged
+  against the sentence it illustrates). Evidence: Task B4 review found
+  no scene rubric existed outside test fixtures.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -213,7 +213,7 @@ violated by construction.
 | A4 | compile (a missing artifact drops the card, counted) |
 | F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, rendition/mixed-speakers, coverage/confusions |
 | F2 | syllabus/closure, coverage/categories (measure), category/single-membership |
-| F3 | picture/fit (judged), picture/preference (judged), target/picture-required; front-gloss policy provisional |
+| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required; front-gloss policy provisional |
 | F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
 | F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
 | F7, E2 | target/recording-required, sentence/recording-required, recording/synthetic, sentence/synthetic-productive |
