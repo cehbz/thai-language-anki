@@ -79,9 +79,14 @@ class Gaps:
 
 @dataclass(frozen=True)
 class DroppedCard:
-    """One (subject, template) compile.py left out of the package because
-    a current-best artifact its FRONT depends on was missing -- "never an
-    empty front" (spec 4 section 3). Counted, not silently swallowed.
+    """One (subject, template) compile.py left out of the package,
+    counted rather than silently swallowed, for one of two reasons:
+    a gate field left the card with no content (e.g. no productive
+    Target, spelling not tested -- reason starts "gated: ..."), or a
+    current-best artifact its FRONT depends on is missing -- "never an
+    empty front" (spec 4 section 3; reason starts "no current-best "
+    or is "no name word"/"no name recording" for a grapheme, "no
+    rendition" for a minimal pair).
     """
     family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
     kind: str      # the template name, e.g. "Listening", "Production"

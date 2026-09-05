@@ -43,7 +43,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     try:
         result = compile_syllabus(syllabus, db, media_store, args.out, force=args.force)
     except GateRefusal as e:
-        print(f"compile refused: gate is closed ({len(e.report.findings)} finding(s)); "
+        print(f"compile refused: gate is closed ({e.blocking} finding(s)); "
              f"pass --force to compile anyway")
         for f in e.report.findings:
             print(f"  {f.rule}: {f.evidence} (note {f.note_id})")

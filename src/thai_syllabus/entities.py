@@ -159,15 +159,16 @@ class Grapheme:
     by `create`, which needs the resolved keyword Word (not just its id).
 
     `name_word` (spec 4, section 1) is the recited letter name as its own
-    Word -- e.g. for ก the name-word is "กอ" ("gɔɔ"), distinct from the
-    keyword "ไก่" ("gài", chicken): the grapheme/Reading card's NameThai
-    field is the two words' `thai` concatenated ("กอ ไก่"). No containment
-    invariant applies to it (unlike keyword, a name-word need not spell out
-    the symbol itself -- consonant names substitute a vowel, e.g. ก -> กอ,
-    not ก-something containing ก verbatim in every class). Defaults to
-    None: curated data may not carry it yet, and compile()'s NameThai
-    rendering degrades gracefully (falls back to symbol + keyword) when
-    absent.
+    Word -- e.g. for ก the name-word is "กอ ไก่" ("gɔɔ gài"), distinct from
+    the keyword "ไก่" ("gài", chicken): the grapheme/Reading card's
+    NameThai field is the name word's own `thai`, unmodified. No
+    containment invariant applies to it (unlike keyword, a name-word need
+    not spell out the symbol itself -- consonant names substitute a
+    vowel, e.g. ก -> กอ, not ก-something containing ก verbatim in every
+    class). Defaults to None: curated data may not carry it yet. compile()
+    drops a grapheme's Reading card, counted, when it has no name_word or
+    the name_word has no current-best recording (spec 4 section 1) -- no
+    substitute name or audio is ever rendered.
     """
     symbol: str
     kind: Literal["consonant", "vowel_sign", "tone_mark"]

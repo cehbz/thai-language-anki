@@ -97,13 +97,14 @@ import sqlite3
 import tempfile
 import time
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import genanki
 
+from . import ipa
 from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
 from .rulebook import sentence_note_id
@@ -118,12 +119,15 @@ __all__ = ["compile_syllabus", "GateRefusal", "thai_cloze"]
 
 class GateRefusal(Exception):
     """compile() refuses: report().gate is False and force was not set
-    (spec 4 section 2). Carries the report so callers can inspect why.
+    (spec 4 section 2). Carries the report so callers can inspect why;
+    `blocking` counts only the unwaived error-severity findings among
+    report.findings -- the same findings that closed the gate, not every
+    finding report() carries (a waived error or a warn never blocks).
     """
-    def __init__(self, report: Report):
-        blocking = [f for f in report.findings]
+    def __init__(self, report: Report, blocking: Sequence[Finding]):
+        self.blocking = len(blocking)
         super().__init__(
-            f"compile refused: gate is closed ({len(blocking)} finding(s)); "
+            f"compile refused: gate is closed ({self.blocking} finding(s)); "
             f"pass force=True to compile anyway")
         self.report = report
 
@@ -440,7 +444,7 @@ def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
         word.meaning,
         resolver.img(word.id, "picture"),
         resolver.sound(word.id, "recording"),
-        _ipa(word),
+        ipa.render(word.pron),
         classifier_word.thai if classifier_word else "",
         "",  # FrontGloss: F3 variant point, empty by default (spec 4 section 1)
         "1" if productive else "",   # TestSpelling: parked, mirrors ProductiveTarget for now
@@ -452,17 +456,6 @@ def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
                         guid=_guid("word", word.id))
     due = positions.word_index[word.id] * STRIDE
     return note, due
-
-
-def _ipa(word: Word) -> str:
-    """A readable IPA-ish rendering of `word.pron` (spec 1's Pronunciation
-    doesn't carry a pre-rendered string -- entities.py's Syllable exposes
-    onset/vowel/coda). Not a phonetically rigorous IPA transcription
-    (tone marking, length diacritics), just a stable per-syllable join
-    good enough for a card's back; refining it is out of this spec's
-    scope.
-    """
-    return ".".join(f"{s.onset}{s.vowel}{s.coda}" for s in word.pron.syllables)
 
 
 def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
@@ -498,8 +491,8 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
             choices,
             resolver.rendition_sound(pair.id, recordings[i].sha),
             member.thai,
-            _ipa(member),
-            " / ".join(_ipa(members[j]) for j in other_indices),
+            ipa.render(member.pron),
+            " / ".join(ipa.render(members[j].pron) for j in other_indices),
             "".join(resolver.rendition_sound(pair.id, recordings[j].sha) for j in other_indices),
             "",
             compile_id,
@@ -510,38 +503,46 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
     return notes
 
 
+@dataclass(frozen=True)
+class _GraphemeBuild:
+    """Either a built note or the reason its card was dropped -- exactly
+    one of `note`/`due` and `dropped_reason` is set. `dropped_reason` is
+    None also when the grapheme isn't compiled at all and isn't counted
+    (not in order(), or its keyword is unresolved -- syllabus/closure
+    already flags that).
+    """
+    note: genanki.Note | None
+    due: int | None
+    dropped_reason: str | None
+
+
 def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver,
-                   compile_id: str, positions: _Positions) -> tuple[genanki.Note, int] | None:
+                   compile_id: str, positions: _Positions) -> _GraphemeBuild:
     if grapheme.symbol not in positions.entry_index:
-        return None
+        return _GraphemeBuild(None, None, None)
     keyword = syllabus.find_word(grapheme.keyword)
     if keyword is None:
-        return None  # syllabus/closure already flags this
+        return _GraphemeBuild(None, None, None)  # syllabus/closure already flags this
     name_word = syllabus.find_word(grapheme.name_word) if grapheme.name_word else None
+    if name_word is None:
+        return _GraphemeBuild(None, None, "no name word")
 
-    # name_word.thai IS the full recited name (e.g. กอ ไก่ "gɔɔ gài", the
-    # letter ก) -- one Word, never composed with the keyword.
-    name_thai = name_word.thai if name_word else f"{grapheme.symbol} {keyword.thai}"
-
-    audio = ""
-    audio_subject = None
-    if name_word is not None:
-        audio = resolver.sound(name_word.id, "recording")
-        audio_subject = name_word.id if audio else None
+    # NameThai is the name word's own text (e.g. กอ ไก่ "gɔɔ gài", the
+    # recited name of the letter ก) -- one Word whose recording says the
+    # whole name; no substitute audio (spec 4 section 1).
+    audio = resolver.sound(name_word.id, "recording")
     if not audio:
-        audio = resolver.sound(keyword.id, "recording")
-        audio_subject = keyword.id if audio else audio_subject
+        return _GraphemeBuild(None, None, "no name recording")
 
     tags = ["family::grapheme", f"grapheme::{grapheme.symbol}",
            f"compile::{compile_id}", "kind::reading"]
     tags += resolver.src_tag("img", keyword.id, "picture")
-    if audio_subject:
-        tags += resolver.src_tag("audio", audio_subject, "recording")
+    tags += resolver.src_tag("audio", name_word.id, "recording")
 
     fields = [
         grapheme.symbol,
         grapheme.sound,
-        name_thai,
+        name_word.thai,
         keyword.thai,
         keyword.meaning,
         resolver.img(keyword.id, "picture"),
@@ -552,7 +553,7 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     note = genanki.Note(model=GRAPHEME_MODEL, fields=fields, tags=tags,
                         guid=_guid("grapheme", grapheme.symbol))
     due = positions.entry_index[grapheme.symbol] * STRIDE
-    return note, due
+    return _GraphemeBuild(note, due, None)
 
 
 def _sentence_note(sentence: Sentence, target: Target, due_block: int,
@@ -643,10 +644,59 @@ def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Findi
 
 # --- assembly ------------------------------------------------------------
 
+@dataclass(frozen=True)
+class _DropCause:
+    """What a (model, template) pair's card-generation depends on: either
+    a `gate_field`, whose emptiness on the note means the card wasn't
+    asked for at all (the reason is `gate_reason`), or, when the gate
+    field is unset or present, the `artifact_kind` whose current-best
+    absence is why the card has no front (the reason is
+    "no current-best <artifact_kind>").
+    """
+    gate_field: str | None
+    gate_reason: str | None
+    artifact_kind: str
+
+
+# One entry per (model name, template name) whose card presence is
+# resolved through genanki's own required-field computation (verified
+# against genanki.Model._req / Note._front_back_cards for these exact
+# qfmt strings) rather than through an upfront check before any note
+# exists -- word and sentence, not grapheme or minimal_pair (their drop
+# reasons are decided before their fields/note are ever built, spec 4
+# section 1/3, and are already exhaustive with no generic fallback).
+_TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
+    ("word", "Listening"): _DropCause(None, None, "recording"),
+    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "recording"),
+    ("word", "Reading"): _DropCause(None, None, "recording"),
+    ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested", "recording"),
+    ("sentence", "Cloze"): _DropCause("Productive", "gated: no productive Target", "recording"),
+    ("sentence", "Listening"): _DropCause(None, None, "recording"),
+}
+
+
+def _template_drop_reason(model_name: str, template_name: str,
+                          fields_by_name: Mapping[str, str]) -> str:
+    """Looks up `(model_name, template_name)` in _TEMPLATE_DROP_CAUSES --
+    KeyError (not a generic reason) when a template has no registered
+    cause, so a renamed template fails loudly instead of being
+    misreported as a missing artifact.
+    """
+    cause = _TEMPLATE_DROP_CAUSES[(model_name, template_name)]
+    if cause.gate_field is not None and not fields_by_name[cause.gate_field]:
+        return cause.gate_reason
+    return f"no current-best {cause.artifact_kind}"
+
+
 def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
-                 subject: str, reason: str) -> list[DroppedCard]:
+                 subject: str) -> list[DroppedCard]:
+    """One DroppedCard per template the note didn't generate a card for,
+    reason from _template_drop_reason.
+    """
     present_ords = {c.ord for c in note.cards}
-    return [DroppedCard(family=family, kind=tpl["name"], subject=subject, reason=reason)
+    fields_by_name = dict(zip((f["name"] for f in model.fields), note.fields))
+    return [DroppedCard(family=family, kind=tpl["name"], subject=subject,
+                        reason=_template_drop_reason(model.name, tpl["name"], fields_by_name))
            for ord_, tpl in enumerate(model.templates) if ord_ not in present_ords]
 
 
@@ -688,17 +738,26 @@ def _stamp_due(apkg_path: Path, due_by_guid_ord: dict[tuple[str, int], int]) -> 
                 zf.write(db_path if name == "collection.anki2" else tmp_dir / name, name)
 
 
+def _blocking_findings(findings: tuple[Finding, ...], syllabus: "Syllabus") -> list[Finding]:
+    """Unwaived error-severity findings among `findings` -- the ones that
+    close the gate (Syllabus.report()'s own filter, reused here so
+    GateRefusal counts exactly what refused the compile).
+    """
+    return [f for f in findings if syllabus._severity(f.rule) == "error"
+           and not syllabus.assessments.is_waived(f)]
+
+
 def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore",
                      out_path: str | Path, *, force: bool = False,
                      now: Callable[[], float] = time.time) -> Compile:
     report = syllabus.report()
     warnings: list[str] = []
     if not report.gate:
+        blocking = _blocking_findings(report.findings, syllabus)
         if not force:
-            raise GateRefusal(report)
-        for f in report.findings:
-            if syllabus._severity(f.rule) == "error" and not syllabus.assessments.is_waived(f):
-                warnings.append(f"{f.rule}: {f.evidence} (note {f.note_id})")
+            raise GateRefusal(report, blocking)
+        for f in blocking:
+            warnings.append(f"{f.rule}: {f.evidence} (note {f.note_id})")
 
     out_path = Path(out_path)
     state_id = syllabus.state_id()
@@ -724,12 +783,9 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
         if built is None:
             continue
         note, base_due = built
+        dropped.extend(_dropped_for(note, WORD_MODEL, "word", word.id))
         if not note.cards:
-            dropped.extend(_dropped_for(note, WORD_MODEL, "word", word.id,
-                                        "no current-best artifact resolves for any template"))
             continue
-        dropped.extend(_dropped_for(note, WORD_MODEL, "word", word.id,
-                                    "no current-best artifact resolves"))
         deck.add_note(note)
         _record_fronts(front_entries, WORD_MODEL, word.id, note)
         for c in note.cards:
@@ -755,9 +811,14 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
 
     for grapheme in syllabus.graphemes:
         built = _grapheme_note(grapheme, syllabus, resolver, compile_id, positions)
-        if built is None:
+        if built.dropped_reason is not None:
+            dropped.append(DroppedCard(family="grapheme", kind="Reading",
+                                       subject=grapheme.symbol,
+                                       reason=built.dropped_reason))
             continue
-        note, base_due = built
+        if built.note is None:
+            continue
+        note, base_due = built.note, built.due
         if not note.cards:
             dropped.append(DroppedCard(family="grapheme", kind="Reading",
                                        subject=grapheme.symbol,
@@ -774,14 +835,10 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
         if built is None:
             continue
         note, base_due = built
-        if not note.cards:
-            dropped.extend(_dropped_for(note, SENTENCE_MODEL, "sentence",
-                                        f"{target.id}:{sentence_note_id(sentence)}",
-                                        "ThaiCloze field unexpectedly empty"))
-            continue
         dropped.extend(_dropped_for(note, SENTENCE_MODEL, "sentence",
-                                    f"{target.id}:{sentence_note_id(sentence)}",
-                                    "no current-best artifact resolves"))
+                                    f"{target.id}:{sentence_note_id(sentence)}"))
+        if not note.cards:
+            continue
         deck.add_note(note)
         _record_fronts(front_entries, SENTENCE_MODEL,
                        f"{target.id}:{sentence_note_id(sentence)}", note)
@@ -792,12 +849,11 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
 
     unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)
     front_findings = _duplicate_front_findings(front_entries) if unique_front_rule else []
-    blocking_front_findings = [f for f in front_findings
-                               if unique_front_rule.severity == "error"
-                               and not syllabus.assessments.is_waived(f)]
+    blocking_front_findings = _blocking_findings(tuple(front_findings), syllabus)
     if blocking_front_findings and not force:
         raise GateRefusal(replace(report, gate=False,
-                                  findings=report.findings + tuple(front_findings)))
+                                  findings=report.findings + tuple(front_findings)),
+                          blocking_front_findings)
     for f in blocking_front_findings:
         warnings.append(f"{f.rule}: {f.evidence} (note {f.note_id})")
     gate = report.gate and not blocking_front_findings

@@ -15,7 +15,10 @@ import pytest
 
 from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.cachekeys import rendition_identity
-from thai_syllabus.compile import GateRefusal, STRIDE, compile_syllabus, thai_cloze
+from thai_syllabus.compile import (
+    GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
+    compile_syllabus, thai_cloze,
+)
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
     Target, Word,
@@ -258,6 +261,27 @@ def test_compile_refuses_when_the_gate_is_closed(fx):
     assert not fx.out_path.exists()
 
 
+def test_gate_refusal_counts_unwaived_errors_only(fx):
+    from thai_syllabus.rules import Rule, Finding
+
+    def one_error(s):
+        return [Finding(rule="test/one-error", note_id="x", evidence="bad")]
+
+    def one_warn(s):
+        return [Finding(rule="test/one-warn", note_id="y", evidence="minor")]
+
+    rules = (
+        Rule(id="test/one-error", principle="F1", severity="error",
+            shape="check", check=one_error),
+        Rule(id="test/one-warn", principle="F1", severity="warn",
+            shape="check", check=one_warn),
+    )
+    syllabus = syllabus_with_rules(_small_syllabus(_SplitTokenizer({})), rules)
+    with pytest.raises(GateRefusal) as excinfo:
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    assert excinfo.value.blocking == 1
+
+
 # _RULES_WITHOUT_COMPLETENESS plus card/unique-front (dropped from it
 # above) -- every other completeness check still excluded, so a fixture
 # with no picture, no recording index, and no sentence stays gate-clean
@@ -407,6 +431,19 @@ def test_word_note_production_card_is_dropped_without_a_productive_target(fx):
     assert ("word", "Production", "pom") in dropped_kinds
 
 
+def test_dropped_reason_distinguishes_gate_from_missing(fx):
+    # pom/gin are gated out (no productive Target, so no productive test);
+    # rice has a productive Target and every artifact seeded -- nothing
+    # drops it. The two pom reasons name the gate, not a missing artifact.
+    syllabus = _fully_seeded(fx)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    reasons = {(d.subject, d.kind): d.reason for d in compiled.report.dropped}
+    assert reasons[("pom", "Production")] == "gated: no productive Target"
+    assert reasons[("pom", "Spelling")] == "gated: spelling not tested"
+    assert ("rice", "Production") not in reasons
+    assert ("rice", "Spelling") not in reasons
+
+
 def test_word_note_listening_dropped_and_counted_when_audio_is_missing(fx):
     tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
     syllabus = _small_syllabus(tokenizer)
@@ -435,8 +472,58 @@ def test_word_note_listening_dropped_and_counted_when_audio_is_missing(fx):
     dropped_kinds = {(d.family, d.kind, d.subject) for d in compiled.report.dropped}
     assert ("word", "Listening", "pom") in dropped_kinds
 
+    reasons = {(d.subject, d.kind): d.reason for d in compiled.report.dropped}
+    assert reasons[("pom", "Listening")] == "no current-best recording"
+    assert reasons[("pom", "Production")] == "gated: no productive Target"
+    assert reasons[("pom", "Spelling")] == "gated: spelling not tested"
 
-def test_grapheme_note_name_thai_and_audio_fallback(fx):
+
+def test_word_spelling_dropped_for_missing_recording_when_productive(fx):
+    # rice has a productive Target (TestSpelling is truthy) but no
+    # recording seeded -- Listening and Spelling both drop for the
+    # missing artifact, not the gate; Production (gated only by
+    # ProductiveTarget, never by Audio) still generates.
+    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
+    syllabus = _small_syllabus(tokenizer)
+    fx.seed_picture("rice", "cooked rice")
+    # Deliberately do NOT seed rice's recording.
+    fx.seed_recording("pom", "I")
+    fx.seed_recording("gin", "eat")
+    fx.seed_picture("chicken", "chicken")
+    fx.seed_recording("letter-name:ko", "gɔɔ")
+    fx.seed_recording("near", "near")
+    fx.seed_recording("far", "far")
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    pkg = read_apkg(fx.out_path)
+    models = pkg["models"]
+    word_model = next(m for m in models.values() if m["name"] == "word")
+    field_names = [f["name"] for f in word_model["flds"]]
+    rice_note = next(n for n in pkg["notes"] if str(n["mid"]) == word_model["id"]
+                     and dict(zip(field_names, n["flds"]))["Thai"] == "ข้าว")
+    tmpl_names = [t["name"] for t in word_model["tmpls"]]
+    rice_cards = [c for c in pkg["cards"] if c["nid"] == rice_note["id"]]
+    generated = {tmpl_names[c["ord"]] for c in rice_cards}
+    assert "Listening" not in generated
+    assert "Spelling" not in generated
+    assert "Production" in generated
+
+    reasons = {(d.subject, d.kind): d.reason for d in compiled.report.dropped}
+    assert reasons[("rice", "Listening")] == "no current-best recording"
+    assert reasons[("rice", "Spelling")] == "no current-best recording"
+
+
+def test_every_word_and_sentence_template_has_a_registered_drop_cause():
+    # A renamed or added template with no entry must fail loudly (a
+    # KeyError from _template_drop_reason), not silently report a
+    # generic reason -- this pins that every template genanki can
+    # actually build for these two models is covered.
+    for model in (WORD_MODEL, SENTENCE_MODEL):
+        for tpl in model.templates:
+            assert (model.name, tpl["name"]) in _TEMPLATE_DROP_CAUSES
+
+
+def test_grapheme_note_name_thai_is_the_name_words_own_text(fx):
     syllabus = _fully_seeded(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
     pkg = read_apkg(fx.out_path)
@@ -445,7 +532,7 @@ def test_grapheme_note_name_thai_and_audio_fallback(fx):
     field_names = [f["name"] for f in g_model["flds"]]
     note = next(n for n in pkg["notes"] if str(n["mid"]) == g_model["id"])
     fields = dict(zip(field_names, note["flds"]))
-    assert fields["NameThai"] == "กอ ไก่"  # "gɔɔ gài" -- letter name + keyword
+    assert fields["NameThai"] == "กอ ไก่"  # "gɔɔ gài" -- the name word's own text
     assert fields["KeywordThai"] == "ไก่"  # chicken
     assert fields["Audio"].startswith("[sound:")
 
@@ -453,31 +540,31 @@ def test_grapheme_note_name_thai_and_audio_fallback(fx):
     assert note["guid"] == genanki.guid_for("grapheme", "ก")
 
 
-def test_grapheme_audio_falls_back_to_keyword_when_name_word_recording_absent(fx):
-    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
-    syllabus = _small_syllabus(tokenizer)
-    fx.seed_picture("rice", "cooked rice")
-    fx.seed_recording("rice", "cooked rice")
-    fx.seed_recording("pom", "I")
-    fx.seed_recording("gin", "eat")
+def test_grapheme_without_a_name_recording_is_dropped_not_substituted(fx):
+    chicken = _word("chicken", "ไก่", "chicken")
+    ko_name = _word("letter-name:ko", "กอ ไก่", "the letter ก (recited name)")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken,
+                               name_word=ko_name)
+    syllabus = Syllabus(words=(chicken, ko_name), graphemes=(grapheme,),
+                        tokenizer=_SplitTokenizer({}),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_picture("chicken", "chicken")
-    fx.seed_recording("near", "near")
-    fx.seed_recording("far", "far")
-    # NOT seeding letter-name:ko's recording -- Audio must fall back to
-    # the keyword's (chicken's) recording instead.
     fx.seed_recording("chicken", "chicken")
+    # NOT seeding letter-name:ko's recording -- the keyword's recording
+    # must never substitute for it.
 
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    assert compiled.report.dropped == (
+        DroppedCard(family="grapheme", kind="Reading", subject="ก",
+                   reason="no name recording"),)
+
     pkg = read_apkg(fx.out_path)
-    models = pkg["models"]
-    g_model = next(m for m in models.values() if m["name"] == "grapheme")
-    field_names = [f["name"] for f in g_model["flds"]]
-    note = next(n for n in pkg["notes"] if str(n["mid"]) == g_model["id"])
-    fields = dict(zip(field_names, note["flds"]))
-    assert fields["Audio"].startswith("[sound:")
+    assert not any("family::grapheme" in n["tags"] for n in pkg["notes"])
 
 
-def test_grapheme_name_thai_degrades_gracefully_without_a_name_word(fx):
+def test_grapheme_without_a_name_word_is_dropped_not_fabricated(fx):
     tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
     chicken = _word("chicken", "ไก่", "chicken")
     grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
@@ -500,14 +587,12 @@ def test_grapheme_name_thai_degrades_gracefully_without_a_name_word(fx):
     fx.seed_recording("gin", "eat")
     fx.seed_recording("chicken", "chicken")
 
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    dropped_kinds = {(d.family, d.kind, d.subject): d.reason for d in compiled.report.dropped}
+    assert dropped_kinds[("grapheme", "Reading", "ก")] == "no name word"
+
     pkg = read_apkg(fx.out_path)
-    models = pkg["models"]
-    g_model = next(m for m in models.values() if m["name"] == "grapheme")
-    field_names = [f["name"] for f in g_model["flds"]]
-    note = next(n for n in pkg["notes"] if str(n["mid"]) == g_model["id"])
-    fields = dict(zip(field_names, note["flds"]))
-    assert fields["NameThai"] == "ก ไก่"  # symbol + keyword, no name_word
+    assert not any("family::grapheme" in n["tags"] for n in pkg["notes"])
 
 
 # --- compile: minimal_pair notes play the pair's rendition ---------------

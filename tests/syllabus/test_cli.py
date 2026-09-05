@@ -141,24 +141,32 @@ def test_compile_prints_dropped_cards(tmp_path, capsys):
 
 # --- compile: gate / --force plumbing (monkeypatched compile_syllabus) ----
 
-def test_compile_refuses_and_reports_findings_when_gate_is_closed(
+def test_compile_refuses_and_reports_the_blocking_count_and_findings(
         tmp_path, monkeypatch, capsys):
+    # Two findings, only one of them blocking (the fake GateRefusal's
+    # `blocking` names just the first) -- the printed count must be the
+    # blocking count, not every finding on the report, while every
+    # finding (blocking or not) is still listed.
     root = _write_curated_dir(tmp_path / "deck")
+    findings = (
+        Finding(rule="syllabus/closure", note_id="t-rice", evidence="bad reference"),
+        Finding(rule="test/warn-only", note_id="t-rice", evidence="fyi"),
+    )
     report = Report(syllabus_state_id="s", rulebook_id="r",
-                    findings=(Finding(rule="syllabus/closure", note_id="t-rice",
-                                      evidence="bad reference"),),
-                    metrics=(), gate=False)
+                    findings=findings, metrics=(), gate=False)
 
     def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False):
         assert force is False
-        raise GateRefusal(report)
+        raise GateRefusal(report, findings[:1])
 
     monkeypatch.setattr(cli, "compile_syllabus", fake_compile_syllabus)
     rc = cli.main(["compile", "--deck", str(root), "--out", str(tmp_path / "out.apkg")])
     assert rc == 1
     text = capsys.readouterr().out
+    assert "gate is closed (1 finding(s))" in text
     assert "syllabus/closure" in text
     assert "bad reference" in text
+    assert "test/warn-only" in text
 
 
 def test_compile_force_flag_is_threaded_to_compile_syllabus(tmp_path, monkeypatch):
