@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from .attempts import Need, SOURCES, Sourcing, attempt, sentence_attempt, sources_for
-from .derivations import exhausted, queue
+from .attempts import Need, Sourcing, attempt, provenance_source_for, sentence_attempt, sources_for
+from .derivations import DEFAULT_ATTEMPT_CAP, exhausted, queue
 from .ports import CacheReader, RecordWriter
 
 __all__ = ["Budget", "Spend", "RunReport", "run"]
@@ -118,8 +118,9 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         report.pending += 1
     ctx.syllabus = ctx.syllabus.with_sentences(so.adopted)
 
-    entries = queue(ctx.syllabus, ctx.db, budgets=budgets, current_rubric=ctx.rubrics,
-                    known_sources={k: set(v) for k, v in SOURCES.items()})
+    entries = queue(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics, prior=ctx.provenance_prior,
+                    sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                    provenance_source=provenance_source_for(ctx.db))
     # Sentence needs are covered once per run by sentence_attempt above, so
     # this loop never sees them and they are not work left over: counting
     # them in `available` reported as still-to-do exactly what the run had
@@ -157,7 +158,8 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         if unreachable:
             report.unreachable = True
             break
-        if exhausted(ctx.db, entry.subject, entry.kind, current_rubric=ctx.rubrics).exhausted:
+        if exhausted(ctx.db, entry.subject, entry.kind, sources=sources_for(entry.kind),
+                    attempt_cap=DEFAULT_ATTEMPT_CAP).exhausted:
             report.exhausted += 1
 
     report.available = len(entries) - report.attempted

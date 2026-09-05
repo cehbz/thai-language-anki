@@ -418,7 +418,8 @@ def test_carried_verdicts_do_not_rank(old_deck, old_data, tmp_path):
            if a.question.get("rubric") == LEGACY_PICTURE_RUBRIC]
     assert rows
     best = current_best(db, "slow", "picture",
-                        current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC})
+                        current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC}, prior=(),
+                        provenance_source=lambda s: None)
     assert best.artifact_sha is None
 
 

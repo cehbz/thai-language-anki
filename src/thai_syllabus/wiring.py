@@ -76,7 +76,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .assessor import AssessBackend, Assessor, JudgeBackend, Price, duration_mechanical_backend
-from .attempts import Sourcing
+from .attempts import Sourcing, provenance_source_for
 from .curated import (
     CuratedBundle,
     ProvidersConfig,
@@ -393,13 +393,13 @@ class _DbMediaIndex:
     provenance_prior: Sequence[str] = ()
 
     def _best(self, subject: str, kind: str):
-        """current_best, but with the SAME current_rubric/provenance_prior/
-        provenance run.py's queue/attempt loop uses -- so this index and a
-        live run never disagree about what's current-best.
+        """current_best, but with the SAME current_rubric/prior run.py's
+        queue/attempt loop uses -- so this index and a live run never
+        disagree about what's current-best.
         """
-        return current_best(self.db, subject, kind, current_rubric=dict(self.rubrics) or None,
-                            provenance_prior=self.provenance_prior,
-                            provenance=self.db.media_provenance)
+        return current_best(self.db, subject, kind, current_rubric=dict(self.rubrics),
+                            prior=self.provenance_prior,
+                            provenance_source=provenance_source_for(self.db))
 
     def _deciding_row(self, subject: str, artifact_sha: str):
         """The newest mechanical assess row for `subject` whose

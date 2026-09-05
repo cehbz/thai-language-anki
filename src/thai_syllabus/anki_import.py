@@ -247,7 +247,9 @@ def _import_flags(col: _Collection, db: SyllabusDb,
         artifact_sha = None
         if provide_kind is not None:
             from .derivations import current_best
-            artifact_sha = current_best(db, identity.anchor, provide_kind).artifact_sha
+            artifact_sha = current_best(db, identity.anchor, provide_kind,
+                                        current_rubric={}, prior=(),
+                                        provenance_source=lambda s: None).artifact_sha
 
         existing_key = f"flag-import:{card_id}:{card['flags']}"
         if role in TONE_CORRECTNESS_ROLES:

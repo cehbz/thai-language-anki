@@ -187,12 +187,14 @@ def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(comp
     conn.close()
 
     from thai_syllabus.derivations import current_best
-    before = current_best(fx.db, "rice", "recording")
+    before = current_best(fx.db, "rice", "recording", current_rubric={}, prior=(),
+                          provenance_source=lambda s: None)
 
     report = import_collection(collection_path, fx.db)
     assert report.flags_imported == 1
 
-    after = current_best(fx.db, "rice", "recording")
+    after = current_best(fx.db, "rice", "recording", current_rubric={}, prior=(),
+                         provenance_source=lambda s: None)
     # A tone-correctness flag must NOT override current_best (the learner
     # is unqualified there, spec 3's AUTHORITY_ORDER) -- it queues
     # re-verification instead.

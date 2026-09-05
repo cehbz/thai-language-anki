@@ -98,11 +98,16 @@ def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):
 
 def test_run_counts_a_kind_with_no_registered_sources_as_available_not_attempted(db, monkeypatch):
     # SOURCES has no entry for "grapheme-keyword" -- sources_for() returns
-    # () and the need is never attempted, but it was still queued.
+    # () so derivations.next_source/exhausted see no source to try at all;
+    # spec 3 section 6's exhausted() now excludes such a subject from the
+    # queue outright (never queued, never attempted) rather than surfacing
+    # it as leftover "available" work -- reconciling run.py's
+    # attempted/available/exhausted counts with an upstream-filtered queue
+    # is B4/B5's task.
     calls = _patch(monkeypatch, {})
     r = run(_ctx(db, _Syl(_Gaps(graphemes=("g1",)))), {})
     assert calls == []
-    assert r.attempted == 0 and r.available == 1
+    assert r.attempted == 0 and r.available == 0
 
 
 # --- apply sentence adoptions before computing the queue -------------------
@@ -242,8 +247,12 @@ def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
 def test_available_excludes_the_sentence_entries_the_loop_skips(db, monkeypatch):
     """Sentence needs are handled once per run by sentence_attempt, so the
     per-need loop skips them -- counting them as "available" reported work
-    still to do that this run had already done."""
+    still to do that this run had already done. The grapheme need has no
+    registered source at all, so derivations.exhausted excludes it from
+    the queue outright (see test_run_counts_a_kind_with_no_registered_
+    sources_as_available_not_attempted) -- neither need is left over.
+    """
     calls = _patch(monkeypatch, {}, sentence=SentenceOutcome(0, (), False, {}))
     r = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2"), graphemes=("g1",)))), {})
     assert calls == []                      # no per-subject attempt for either kind
-    assert r.available == 1                 # the grapheme need only
+    assert r.available == 0

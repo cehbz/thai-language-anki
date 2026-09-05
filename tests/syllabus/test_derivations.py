@@ -1,25 +1,34 @@
-"""Tests for derivations.py (spec 3 section 3): pure folds over synthetic
-cache rows -- current_best's regression guard and challenger-not-silent-
-swap, exhausted's reopen conditions, queue's F10 order, confusion_weights.
-No real store: a tiny in-memory CacheReader built directly from Answer
-rows the test constructs.
+"""Tests for derivations.py (spec 3 section 6): pure folds over synthetic
+cache rows -- current_best's regression guard, pending, next_source,
+exhausted, improved, directed, queue's F10 buckets, challengers, reasks,
+confusion_weights. No real store for most cases: a tiny in-memory
+CacheReader built directly from Answer rows the test constructs; a handful
+of current_best cases exercise the real SyllabusDb for genuine
+assessments_of ordering.
 """
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
 from thai_syllabus.derivations import (
+    CurrentBest,
+    challengers,
     confusion_weights,
     current_best,
+    directed,
     exhausted,
+    improved,
+    next_source,
     pending,
     queue,
+    reasks,
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
 from thai_syllabus.cachekeys import BatchMarkerKey
 from thai_syllabus.entities import MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId
-from thai_syllabus.ports import Answer
+from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
@@ -46,6 +55,18 @@ class FakeCache:
         return sorted((r for r in self.rows if r.subject == subject), key=lambda r: r.ts)
 
 
+@pytest.fixture
+def cache():
+    return FakeCache([])
+
+
+def _no_provenance(artifact_sha: str) -> str | None:
+    """provenance_source for every call that doesn't test the provenance-
+    prior tie-break itself: no candidate gets a bonus.
+    """
+    return None
+
+
 _ts = [0]
 
 
@@ -60,7 +81,7 @@ def provide_row(subject, kind, backend="openverse", items=(), ts=None):
     not by a suffixed kind.
     """
     ts = ts if ts is not None else _next_ts()
-    return Answer(port="provide", backend=backend, key=f"{backend}:{subject}",
+    return Answer(port="provide", backend=backend, key=f"{backend}:{subject}:{ts}",
                  key_sha="x", subject=subject, question={"kind": kind, "params": {}},
                  answer={"items": list(items)}, cost=0.0, ts=ts)
 
@@ -71,7 +92,7 @@ def judge_row(subject, kind, artifact_sha, value, rubric="rubric-v1", ts=None,
     answer = {"value": value}
     if suggestion:
         answer["suggestion"] = suggestion
-    return Answer(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}",
+    return Answer(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}:{ts}",
                  key_sha="x", subject=subject,
                  question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
                           "rubric": rubric, "kind": kind},
@@ -80,7 +101,7 @@ def judge_row(subject, kind, artifact_sha, value, rubric="rubric-v1", ts=None,
 
 def learner_row(subject, kind, artifact_sha, rating, ts=None):
     ts = ts if ts is not None else _next_ts()
-    return Answer(port="assess", backend="learner", key=f"learner:{subject}:{artifact_sha}",
+    return Answer(port="assess", backend="learner", key=f"learner:{subject}:{artifact_sha}:{ts}",
                  key_sha="x", subject=subject,
                  question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
                           "rubric": None, "kind": "rating"},
@@ -89,132 +110,298 @@ def learner_row(subject, kind, artifact_sha, rating, ts=None):
 
 def direction_row(subject, ts=None):
     ts = ts if ts is not None else _next_ts()
-    return Answer(port="assess", backend="learner", key=f"learner:direction:{subject}",
+    return Answer(port="assess", backend="learner", key=f"learner:direction:{subject}:{ts}",
                  key_sha="x", subject=subject, question={"kind": "direction"},
                  answer={"direction": "try a red one"}, cost=0.0, ts=ts)
 
 
+def card_flag_row(subject, ts=None):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend="learner", key=f"learner:card-flag:{subject}:{ts}",
+                 key_sha="x", subject=subject, question={"kind": "card-flag"},
+                 answer={"note": "front is blank"}, cost=0.0, ts=ts)
+
+
+def reverify_row(subject, role, ts=None):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend="learner", key=f"learner:reverify:{subject}:{ts}",
+                 key_sha="x", subject=subject,
+                 question={"kind": "reverify", "role": role},
+                 answer={"flagged": True}, cost=0.0, ts=ts)
+
+
+def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording"):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend="mechanical", key=f"mech:{subject}:{artifact_sha}:{ts}",
+                 key_sha="x", subject=subject,
+                 question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
+                          "kind": kind},
+                 answer={"value": value}, cost=0.0, ts=ts)
+
+
+# --- fixture helpers matching the task brief's representative scenarios ----
+
+def seed_ask(cache, subject, kind, *, source, ts):
+    cache.rows.append(provide_row(subject, kind, backend=source, ts=ts))
+
+
+def seed_artifact(cache, subject, artifact_sha, *, ts, judge_pass, rubric="rubric-v1"):
+    """One provide row producing `artifact_sha` (a bytes-fetch row, not a
+    Source ask of its own) and, when `judge_pass`, a passing judge verdict
+    on it at the same ts.
+    """
+    cache.rows.append(provide_row(subject, "picture", backend="imgfetch",
+                                  items=[{"sha": artifact_sha}], ts=ts))
+    if judge_pass:
+        cache.rows.append(judge_row(subject, "picture", artifact_sha, True, rubric=rubric, ts=ts))
+
+
+def seed_judge_pass(cache, subject, artifact_sha, *, rubric):
+    seed_artifact(cache, subject, artifact_sha, ts=_next_ts(), judge_pass=True, rubric=rubric)
+
+
+def seed_rating(cache, subject, artifact_sha, rating):
+    cache.rows.append(learner_row(subject, "picture", artifact_sha, rating, ts=_next_ts()))
+
+
+def seed_card_flag(cache, subject):
+    cache.rows.append(card_flag_row(subject, ts=_next_ts()))
+
+
+R = "rubric-v1"
+
+
+def sources_for(kind):
+    return ("openverse", "wikimedia", "pexels")
+
+
+def no_sources(kind):
+    return ()
+
+
 # --- current_best: basics -------------------------------------------------
 
-def test_current_best_is_none_with_no_history():
-    cache = FakeCache([])
-    best = current_best(cache, "rice", "picture")
+def test_current_best_is_none_with_no_history(cache):
+    best = current_best(cache, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha is None
-    assert best.source == "none"
+    assert best.source is None
 
 
-def test_current_best_prefers_the_best_passing_judge_verdict():
-    rows = [
+def test_current_best_prefers_the_best_passing_judge_verdict(cache):
+    cache.rows += [
         judge_row("rice", "picture", "sha-a", False),
         judge_row("rice", "picture", "sha-b", True),
     ]
-    best = current_best(FakeCache(rows), "rice", "picture")
+    best = current_best(cache, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha == "sha-b"
     assert best.source == "judge"
 
 
-def test_current_best_learner_choice_wins_outright_over_judge():
-    rows = [
+def test_current_best_carries_the_speaker_a_provide_item_names(cache):
+    cache.rows.append(provide_row("pair-1", "rendition", backend="forvo",
+                                  items=[{"member": "near", "sha": "a" * 64,
+                                         "speaker": {"id": "forvo:somchai", "kind": "native",
+                                                    "sex": "male"}}]))
+    cache.rows.append(mechanical_row("pair-1", "rendition-for-pair", "a" * 64, True,
+                                     kind="rendition"))
+    best = current_best(cache, "pair-1", "rendition", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.speaker.id == "forvo:somchai"
+    assert best.speaker.sex == "male"
+
+
+def test_current_best_learner_choice_wins_outright_over_judge(cache):
+    cache.rows += [
         judge_row("rice", "picture", "sha-a", True),
         learner_row("rice", "picture", "sha-b", "acceptable"),
     ]
-    best = current_best(FakeCache(rows), "rice", "picture")
+    best = current_best(cache, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha == "sha-b"
     assert best.source == "learner"
 
 
 # --- regression guard ------------------------------------------------------
 
-def test_regression_guard_never_ranks_below_a_learner_acceptable_rating():
-    rows = [
+def test_regression_guard_never_ranks_below_a_learner_acceptable_rating(cache):
+    cache.rows += [
         learner_row("rice", "picture", "sha-a", "acceptable", ts=1),
         # a later, unrelated learner rating for a DIFFERENT artifact that
         # is itself below "acceptable" must not drag current_best's rank
         # below the floor the learner already set.
         learner_row("rice", "picture", "sha-c", "unacceptable-use-this", ts=2),
     ]
-    best = current_best(FakeCache(rows), "rice", "picture")
+    best = current_best(cache, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.rank >= 80.0  # never below "acceptable"
 
 
-def test_regression_guard_survives_a_worse_rubric_rerun():
-    rows = [
+def test_regression_guard_survives_a_worse_rubric_rerun(cache):
+    cache.rows += [
         learner_row("rice", "picture", "sha-a", "good", ts=1),
         judge_row("rice", "picture", "sha-a", False, rubric="rubric-v2", ts=2),
     ]
-    best = current_best(FakeCache(rows), "rice", "picture", current_rubric="rubric-v2")
+    best = current_best(cache, "rice", "picture",
+                        current_rubric={"picture-for-word": "rubric-v2"}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha == "sha-a"
     assert best.rank >= 100.0
 
 
-# --- challenger: presented, never silently swapped -----------------------
+# --- improved --------------------------------------------------------------
 
-def test_a_new_higher_ranked_unrated_artifact_becomes_a_challenger_not_a_swap():
-    rows = [
-        learner_row("rice", "picture", "sha-a", "acceptable", ts=1),
-        judge_row("rice", "picture", "sha-new", True, ts=2),  # unrated by the learner
-    ]
-    best = current_best(FakeCache(rows), "rice", "picture")
-    assert best.artifact_sha == "sha-a"  # NOT silently swapped
-    assert best.source == "learner"
-    assert best.challenger == "sha-new"
+def test_improved_is_false_when_only_the_rank_changed():
+    assert improved(CurrentBest("a" * 64, "judge", 50.0), CurrentBest("a" * 64, "judge", 60.0)) is False
 
 
-def test_no_challenger_when_no_unrated_artifact_has_passed_judgement():
-    rows = [
-        learner_row("rice", "picture", "sha-a", "good", ts=1),
-        judge_row("rice", "picture", "sha-b", False, ts=2),  # unrated, but FAILED
-    ]
-    best = current_best(FakeCache(rows), "rice", "picture")
-    assert best.challenger is None
+def test_improved_is_true_on_a_new_artifact():
+    assert improved(CurrentBest(None, None, -1.0), CurrentBest("a" * 64, "judge", 50.0)) is True
 
 
-# --- exhausted: attempt cap + reopen conditions --------------------------
+def test_improved_is_false_when_the_new_pick_is_also_none():
+    assert improved(CurrentBest(None, None, -1.0), CurrentBest(None, None, -1.0)) is False
 
-def test_not_exhausted_before_the_attempt_cap():
-    rows = [provide_row("rice", "picture") for _ in range(3)]
-    status = exhausted(FakeCache(rows), "rice", "picture", attempt_cap=8)
+
+# --- pending -----------------------------------------------------------
+
+def _batch_marker_submitted(db, batch_id, subjects, roles):
+    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+              question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
+                       "roles": list(roles)},
+              answer={"status": "submitted"})
+
+
+def _batch_marker_resolved(db, batch_id, status="resolved"):
+    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+              question={"kind": "batch", "batch_id": batch_id}, answer={"status": status})
+
+
+def test_pending_true_while_submitted_false_once_resolved(db):
+    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"])
+    assert pending(db, "w", "picture") is True
+    _batch_marker_resolved(db, "b1")
+    assert pending(db, "w", "picture") is False
+
+
+def test_pending_via_assessor_submit_and_resolve(db):
+    """The same contract, exercised through Assessor.submit()/resolve()
+    rather than a hand-built marker row.
+    """
+    class BT:
+        def __init__(self):
+            self.status_value = "in_progress"
+
+        def submit(self, requests):
+            return "b1"
+
+        def status(self, batch_id):
+            return self.status_value
+
+        def results(self, batch_id):
+            return {}
+
+    bt = BT()
+    jb = JudgeBackend(model="m", transport="batch", batch_transport=bt)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="a", rubric="r",
+                       kind="picture")
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+
+    assert pending(db, "w", "picture") is True
+
+    bt.status_value = "ended"
+    a.resolve(bid)
+
+    assert pending(db, "w", "picture") is False
+
+
+# --- next_source -----------------------------------------------------------
+
+def test_next_source_skips_a_source_asked_since_current_best_last_changed(cache):
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=1)  # before any artifact existed
+    seed_artifact(cache, "rice", "a" * 64, ts=2, judge_pass=True)  # current-best changes here
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)  # asked again, since the change
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "openverse"
+
+
+def test_next_source_with_no_artifact_counts_every_ask(cache):
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "wikimedia"
+
+
+def test_next_source_is_none_once_every_source_asked_since_the_change(cache):
+    seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=True)
+    seed_ask(cache, "rice", "picture", source="openverse", ts=2)
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)
+    seed_ask(cache, "rice", "picture", source="pexels", ts=4)
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) is None
+
+
+# --- exhausted ---------------------------------------------------------
+
+def test_not_exhausted_while_a_source_remains_untried(cache):
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8)
     assert status.exhausted is False
-    assert status.attempts == 3
 
 
-def test_exhausted_when_the_cap_is_reached_and_recent_attempts_dont_outrank():
-    rows = [learner_row("rice", "picture", "sha-a", "acceptable", ts=0)]
-    rows += [provide_row("rice", "picture", items=[{"sha": f"sha-x{i}"}])
-            for i in range(8)]
-    status = exhausted(FakeCache(rows), "rice", "picture", k=2, attempt_cap=8)
+def test_exhausted_once_every_source_is_asked_since_the_change(cache):
+    seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=False)
+    seed_ask(cache, "rice", "picture", source="openverse", ts=2)
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)
+    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8)
+    assert status.exhausted is True
+    assert status.attempts == 2
+
+
+def test_exhausted_once_the_attempt_cap_is_reached_even_with_sources_left(cache):
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia", "pexels"),
+                       attempt_cap=1)
     assert status.exhausted is True
 
 
-def test_reopened_by_a_recent_attempt_out_ranking_current_best():
-    # No learner rating yet -- current_best is judge-only, so a later,
-    # better-judged candidate among the last k attempts can out-rank it
-    # (this does NOT apply once a learner has rated something acceptable+:
-    # the regression guard means a mere judge pass can never out-rank
-    # that -- see the regression-guard tests above).
-    rows = [judge_row("rice", "picture", "sha-a", False, ts=0)]
-    rows += [provide_row("rice", "picture", items=[{"sha": f"sha-x{i}"}]) for i in range(7)]
-    last = provide_row("rice", "picture", items=[{"sha": "sha-great"}])
-    rows.append(last)
-    rows.append(judge_row("rice", "picture", "sha-great", 99.0, ts=last.ts + 1))
-    status = exhausted(FakeCache(rows), "rice", "picture", k=2, attempt_cap=8)
-    assert status.exhausted is False
-    assert "out-rank" in status.reason
+def test_reopened_by_a_new_source_in_the_roster(cache):
+    seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=False)
+    seed_ask(cache, "rice", "picture", source="openverse", ts=2)
+    status_before = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=8)
+    status_after = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"),
+                             attempt_cap=8)
+    assert status_before.exhausted is True
+    assert status_after.exhausted is False
 
 
-def test_reopened_by_any_learner_direction():
-    # exhausted() itself only looks at attempts/ranks; a direction row
-    # doesn't retroactively un-exhaust past attempts, but it DOES show up
-    # as a fresh candidate for queue()'s bucket-1 (directed) ordering --
-    # covered in the queue tests below. This test documents that
-    # exhausted() alone does not special-case directions (queue does).
-    rows = [learner_row("rice", "picture", "sha-a", "acceptable", ts=0)]
-    rows += [provide_row("rice", "picture", items=[{"sha": f"sha-x{i}"}]) for i in range(8)]
-    before = exhausted(FakeCache(rows), "rice", "picture", k=2, attempt_cap=8)
-    assert before.exhausted is True
+# --- directed ------------------------------------------------------------
+
+def test_directed_true_on_a_direction_row(cache):
+    cache.rows.append(direction_row("rice"))
+    assert directed(cache, "rice") is True
 
 
-# --- queue: F10 order ------------------------------------------------------
+def test_directed_true_on_a_card_flag_row(cache):
+    cache.rows.append(card_flag_row("rice"))
+    assert directed(cache, "rice") is True
+
+
+def test_directed_true_on_an_unconsumed_reverify_row(cache):
+    cache.rows.append(reverify_row("rice", "recording-for-word", ts=1))
+    assert directed(cache, "rice") is True
+
+
+def test_directed_false_once_a_reverify_row_is_answered_by_a_newer_mechanical_verdict(cache):
+    cache.rows.append(reverify_row("rice", "recording-for-word", ts=1))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "sha-a", True, ts=2))
+    assert directed(cache, "rice") is False
+
+
+def test_directed_false_with_no_flags_at_all(cache):
+    cache.rows.append(judge_row("rice", "picture", "sha-a", True))
+    assert directed(cache, "rice") is False
+
+
+# --- queue: F10 buckets ------------------------------------------------------
 
 class _FakeGaps:
     def __init__(self, words_missing_pictures=(), words_missing_recordings=(),
@@ -231,77 +418,187 @@ class _FakeGaps:
 class _FakeSyllabus:
     _gaps: _FakeGaps
     targets: list = field(default_factory=list)
+    words: list = field(default_factory=list)
+    pairs: list = field(default_factory=list)
 
     def gaps(self):
         return self._gaps
 
 
-def test_queue_puts_no_artifact_subjects_first():
-    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice", "dog")))
-    rows = [judge_row("dog", "picture", "sha-d", True)]  # dog has SOME candidate, still not acceptable
-    q = queue(syllabus, FakeCache(rows))
-    assert [(e.subject, e.bucket) for e in q] == [("dog", 1), ("rice", 1)] or \
-          {e.subject for e in q if e.bucket == 1} == {"rice", "dog"}
+def _one_word_syllabus(subject="rice"):
+    return _FakeSyllabus(_FakeGaps(words_missing_pictures=(subject,)))
 
 
-def test_queue_puts_directed_subjects_before_undirected_within_bucket_1():
-    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice", "dog")))
-    rows = [direction_row("dog")]
-    q = queue(syllabus, FakeCache(rows))
-    assert [e.subject for e in q] == ["dog", "rice"]
+def _queue(syllabus, cache, **kwargs):
+    kwargs.setdefault("current_rubric", {"picture-for-word": R})
+    kwargs.setdefault("prior", ())
+    kwargs.setdefault("sources_for", sources_for)
+    kwargs.setdefault("attempt_cap", 8)
+    kwargs.setdefault("provenance_source", _no_provenance)
+    return queue(syllabus, cache, **kwargs)
 
 
-def test_queue_never_includes_a_good_or_exhausted_subject():
-    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice", "dog")))
-    rows = [learner_row("rice", "picture", "sha-a", "good", ts=1)]
-    rows += [provide_row("dog", "picture", items=[{"sha": f"s{i}"}]) for i in range(8)]
-    rows += [learner_row("dog", "picture", "sha-a", "acceptable", ts=0)]
-    q = queue(syllabus, FakeCache(rows))
-    subjects = {e.subject for e in q}
-    assert "rice" not in subjects   # good
-    assert "dog" not in subjects    # exhausted
+def test_bucket_1_when_no_artifact_exists(cache):
+    syllabus = _one_word_syllabus()
+    entries = _queue(syllabus, cache)
+    assert [e.bucket for e in entries] == [1]
 
 
-def test_queue_orders_bucket_3_by_verdict_rank_ascending_then_attempts():
+def test_bucket_1_when_the_learner_rejected_the_current_artifact(cache):
+    syllabus = _one_word_syllabus()
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    seed_rating(cache, "rice", "a" * 64, "unacceptable-use-this")
+    entry = next(e for e in _queue(syllabus, cache) if e.subject == "rice")
+    assert entry.bucket == 1
+
+
+def test_bucket_1_no_artifact_excluded_once_exhausted_and_undirected(cache):
+    syllabus = _one_word_syllabus()
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=2)
+    seed_ask(cache, "rice", "picture", source="pexels", ts=3)
+    entries = _queue(syllabus, cache)
+    assert entries == []
+
+
+def test_bucket_1_exhausted_but_directed_stays_queued(cache):
+    syllabus = _one_word_syllabus()
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=2)
+    seed_ask(cache, "rice", "picture", source="pexels", ts=3)
+    seed_card_flag(cache, "rice")
+    entries = _queue(syllabus, cache)
+    assert len(entries) == 1
+    assert entries[0].bucket == 1
+    assert entries[0].directed is True
+
+
+def test_bucket_2_when_the_rubric_changed_since_the_verdict(cache):
+    # The artifact is anchored by a LEARNER rating (unaffected by rubric
+    # staleness -- learner choice wins outright), so it stays current-best
+    # while its own judge verdict, under the old rubric, is stale under
+    # the new one -- exactly "a rubric change left the current artifact
+    # without a verdict under current_rubric".
+    syllabus = _one_word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "acceptable")
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="rubric-v1",
+                                ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache,
+                                   current_rubric={"picture-for-word": "rubric-v2"},
+                                   sources_for=no_sources)
+                if e.subject == "rice")
+    assert entry.bucket == 2
+
+
+def test_bucket_2_when_a_judge_suggestion_is_unasked(cache):
+    syllabus = _one_word_syllabus()
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, ts=2, suggestion="a redder one"))
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources) if e.subject == "rice")
+    assert entry.bucket == 2
+
+
+def test_judge_passed_unrated_picture_queues_in_bucket_3(cache):
+    syllabus = _one_word_syllabus()
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources) if e.subject == "rice")
+    assert entry.bucket == 3
+
+
+def test_bucket_3_orders_by_rank_ascending_then_attempts(cache):
     syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("a", "b")))
-    rows = [
-        learner_row("a", "picture", "sha-a", "acceptable", ts=1),
-        provide_row("a", "picture", ts=2),
-        learner_row("b", "picture", "sha-b", "good", ts=1),  # would be bucket-excluded (good)
-    ]
-    # give "b" a lower rank via a second, worse learner re-rating so it's
-    # still eligible (acceptable, not good) and compare attempt counts
-    rows = [
-        learner_row("a", "picture", "sha-a", "acceptable", ts=1),
-        provide_row("a", "picture", ts=2),
-        provide_row("a", "picture", ts=3),
-        learner_row("b", "picture", "sha-b", "acceptable", ts=1),
-    ]
-    q = queue(syllabus, FakeCache(rows))
-    # both are bucket 3 (acceptable, no untried lever); "b" has fewer
-    # attempts than "a", both rank 80 -- attempts ascending puts "b" first
-    bucket3 = [e for e in q if e.bucket == 3]
-    assert [e.subject for e in bucket3] == ["b", "a"]
+    seed_artifact(cache, "a", "sha-a", ts=1, judge_pass=True)
+    cache.rows.append(judge_row("a", "picture", "sha-a", 90.0, ts=2))
+    seed_artifact(cache, "b", "sha-b", ts=3, judge_pass=True)
+    entries = _queue(syllabus, cache, sources_for=no_sources)
+    bucket3 = [e for e in entries if e.bucket == 3]
+    assert [e.subject for e in bucket3] == ["b", "a"]  # b (rank 50) ranks below a (rank 90)
 
 
-def test_queue_flags_bucket_2_when_the_rubric_changed_since_the_verdict():
-    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",)))
-    rows = [
-        learner_row("rice", "picture", "sha-a", "acceptable", ts=1),
-        judge_row("rice", "picture", "sha-a", True, rubric="rubric-v1", ts=2),
-    ]
-    q = queue(syllabus, FakeCache(rows), current_rubric="rubric-v2")
-    assert q[0].bucket == 2
+def test_good_subjects_are_excluded_from_the_queue(cache):
+    syllabus = _one_word_syllabus()
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    seed_rating(cache, "rice", "a" * 64, "good")
+    assert _queue(syllabus, cache) == []
 
 
-def test_queue_respects_the_learner_budgets_max_asks():
-    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("a", "b", "c")))
+def test_pending_subjects_are_excluded_from_the_queue(db):
+    syllabus = _one_word_syllabus()
+    _batch_marker_submitted(db, "b1", ["rice"], ["picture-for-word"])
+    assert _queue(syllabus, db) == []
 
-    class _Budget:
-        max_asks = 2
 
-    q = queue(syllabus, FakeCache([]), budgets={"learner": _Budget()})
-    assert len(q) == 2
+def test_directed_subjects_sort_first_within_their_bucket(cache):
+    # "dog" < "rice" alphabetically, so flagging "rice" (not "dog") proves
+    # the ordering comes from `directed`, not from the subject tie-break.
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice", "dog")))
+    seed_card_flag(cache, "rice")
+    entries = _queue(syllabus, cache)
+    assert [e.subject for e in entries] == ["rice", "dog"]
+
+
+def test_card_flag_directs_the_subject(cache):
+    syllabus = _one_word_syllabus()
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    seed_card_flag(cache, "rice")
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources) if e.subject == "rice")
+    assert entry.directed is True
+
+
+# --- challengers -------------------------------------------------------
+
+def test_challenger_found_for_a_learner_accepted_picture(cache):
+    syllabus = _one_word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "acceptable")
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "b" * 64}], ts=_next_ts()))
+    cache.rows.append(judge_row("rice", "picture", "b" * 64, True, rubric=R, ts=_next_ts()))
+    found = challengers(cache, syllabus, current_rubric={"picture-for-word": R}, prior=(),
+                        provenance_source=_no_provenance)
+    assert found == [("rice", "a" * 64, "b" * 64)]
+
+
+def test_no_challenger_when_no_machine_candidate_outranks_the_accepted_pick(cache):
+    syllabus = _one_word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "acceptable")
+    # the accepted artifact carries its own passing machine verdict too
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric=R, ts=_next_ts()))
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "b" * 64}], ts=_next_ts()))
+    cache.rows.append(judge_row("rice", "picture", "b" * 64, False, rubric=R, ts=_next_ts()))
+    found = challengers(cache, syllabus, current_rubric={"picture-for-word": R}, prior=(),
+                        provenance_source=_no_provenance)
+    assert found == []  # "b" fails judge fit -- no passing unrated candidate exists
+
+
+# --- reasks ----------------------------------------------------------------
+
+def test_reasks_flags_a_good_rated_card_with_enough_lapses(cache):
+    syllabus = SimpleNamespace(words=[SimpleNamespace(id="rice")], pairs=[])
+    seed_rating(cache, "rice", "a" * 64, "good")
+
+    class _Study:
+        def records(self, card_key):
+            return [StudyRecord(card_key=card_key, compile_id="c1", ts=i, grade=1, time_ms=100)
+                   for i in range(3)] if card_key == "rice::picture" else []
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
+                   card_keys_for=lambda s: [f"{s}::picture"])
+    assert found == [("rice", "rice::picture")]
+
+
+def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
+    syllabus = SimpleNamespace(words=[SimpleNamespace(id="rice")], pairs=[])
+    seed_rating(cache, "rice", "a" * 64, "good")
+
+    class _Study:
+        def records(self, card_key):
+            return [StudyRecord(card_key=card_key, compile_id="c1", ts=1, grade=4, time_ms=100)]
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
+                   card_keys_for=lambda s: [f"{s}::picture"])
+    assert found == []
 
 
 # --- confusion_weights ----------------------------------------------------
@@ -354,11 +651,10 @@ def test_confusion_weights_increases_with_lapse_rate():
     assert weights["tone:mid-low"] == pytest.approx(1.0 * (1 + 2 / 3))
 
 
-# --- authority-driven current_best, preference, provenance prior, pending -
+# --- authority-driven current_best, preference, provenance prior -----------
 #
 # These exercise the real SyllabusDb (the `db` fixture) rather than
-# FakeCache: they need genuine `assessments_of` ordering/newest-wins and
-# `latest()` lookups for `pending()`'s marker-row check.
+# FakeCache: they need genuine `assessments_of` ordering/newest-wins.
 
 def _provide(db, subject, kind, backend, shas, ts=None):
     db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{len(shas)}",
@@ -366,7 +662,6 @@ def _provide(db, subject, kind, backend, shas, ts=None):
               answer={"items": [{"sha": s} for s in shas]}, ts=ts)
 
 
-# role -> need kind, for the two roles this section's fixtures verdict under.
 _KIND_BY_ROLE = {"picture-for-word": "picture", "recording-for-word": "recording"}
 
 
@@ -380,7 +675,8 @@ def _verdict(db, subject, backend, role, sha, value, rubric="r"):
 def test_mechanical_pass_ranks_a_recording(db):
     _provide(db, "w", "recording", "forvo", ["s1"])
     _verdict(db, "w", "mechanical", "recording-for-word", "s1", True, rubric=None)
-    best = current_best(db, "w", "recording")
+    best = current_best(db, "w", "recording", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha == "s1" and best.rank == 50.0 and best.source == "mechanical"
 
 
@@ -393,14 +689,17 @@ def test_mechanical_pass_ranks_a_recording_under_a_rubric_mapping_for_its_own_ro
     _provide(db, "w", "recording", "forvo", ["s1"])
     _verdict(db, "w", "mechanical", "recording-for-word", "s1", True, rubric=None)
     best = current_best(db, "w", "recording",
-                        current_rubric={"recording-for-word": "some judge rubric"})
+                        current_rubric={"recording-for-word": "some judge rubric"}, prior=(),
+                        provenance_source=_no_provenance)
     assert best.artifact_sha == "s1" and best.rank == 50.0 and best.source == "mechanical"
 
 
 def test_mechanical_never_ranks_a_picture(db):
     _provide(db, "w", "picture", "openverse", ["s1"])
     _verdict(db, "w", "mechanical", "picture-for-word", "s1", True, rubric=None)
-    assert current_best(db, "w", "picture").artifact_sha is None
+    best = current_best(db, "w", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha is None
 
 
 def test_preference_orders_passing_pictures(db):
@@ -412,151 +711,54 @@ def test_preference_orders_passing_pictures(db):
                         "kind": "picture", "params": {"candidates": ["a", "b", "c"]}},
               answer={"value": ["b", "c", "a"]})
     best = current_best(db, "w", "picture",
-                        current_rubric={"picture-for-word": "fit", "picture-preference": "pref"})
+                        current_rubric={"picture-for-word": "fit", "picture-preference": "pref"},
+                        prior=(), provenance_source=_no_provenance)
     assert best.artifact_sha == "b" and 50.0 < best.rank <= 70.0
 
 
 def test_provenance_prior_breaks_ties_below_one_rank_point(db):
-    _provide(db, "w", "recording", "tts", ["t"])
-    _provide(db, "w", "recording", "forvo", ["f"])
+    """Models the real two-step write (spec 3 section 3): forvo's own
+    Source ask carries no sha (a lookup only); the sha arrives on a
+    SEPARATE audiofetch bytes row, and the real Source name ("forvo")
+    lives only in the media table (db.add_media), never on that bytes
+    row's own backend. attempts.provenance_source_for(db) is exactly the
+    callable attempts.py/run.py/reviewserver.py wire in production --
+    a provenance_source that read the CACHE row's backend instead would
+    see "audiofetch", not "forvo", and this test would then pick "t" (tts,
+    a one-step write whose own backend already says "tts") over "f".
+    """
+    from datetime import date
+
+    from thai_syllabus.attempts import provenance_source_for
+
+    db.append(port="provide", backend="forvo", key="forvo:w", subject="w",
+             question={"kind": "recording", "params": {"word": "w"}}, answer={"items": []})
+    db.append(port="provide", backend="audiofetch", key="https://forvo.example/f.mp3",
+             subject="w",
+             question={"kind": "recording", "params": {"url": "https://forvo.example/f.mp3"}},
+             answer={"items": [{"sha": "f", "ext": "mp3"}]})
+    db.add_media(sha="f", kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.example/f.mp3", licence="cc-by",
+                acquired=date(2026, 1, 1))
+
+    db.append(port="provide", backend="tts", key="tts:w", subject="w",
+             question={"kind": "recording", "params": {"text": "w"}},
+             answer={"items": [{"sha": "t", "ext": "mp3", "voice": "v1"}]})
+    db.add_media(sha="t", kind="recording", ext="mp3", source="tts", origin="v1",
+                licence="google-tts", acquired=date(2026, 1, 1))
+
     for s in ("t", "f"):
         _verdict(db, "w", "mechanical", "recording-for-word", s, True, rubric=None)
-    prov = {"t": {"source": "tts"}, "f": {"source": "forvo"}}
-    best = current_best(db, "w", "recording", provenance_prior=("commission", "forvo", "tts"),
-                        provenance=prov.get)
+    best = current_best(db, "w", "recording", current_rubric={},
+                        prior=("commission", "forvo", "tts"),
+                        provenance_source=provenance_source_for(db))
     assert best.artifact_sha == "f" and 50.0 < best.rank < 51.0
 
 
 def test_role_scoped_rubric_mapping_marks_only_that_role_stale(db):
     _provide(db, "w", "picture", "openverse", ["a"])
     _verdict(db, "w", "judge", "picture-for-word", "a", True, rubric="old")
-    assert current_best(db, "w", "picture", current_rubric={"picture-for-word": "new"}).artifact_sha is None
-    assert current_best(db, "w", "picture", current_rubric={"sentence-for-target": "x"}).artifact_sha == "a"
-
-
-def _batch_marker_submitted(db, batch_id, subjects, roles):
-    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
-              question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
-                       "roles": list(roles)},
-              answer={"status": "submitted"})
-
-
-def _batch_marker_resolved(db, batch_id, status="resolved"):
-    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
-              question={"kind": "batch", "batch_id": batch_id}, answer={"status": status})
-
-
-def test_pending_true_while_submitted_false_once_resolved(db):
-    _provide(db, "w", "picture", "openverse", ["a"])
-    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"])
-    assert pending(db, "w", "picture") is True
-    _batch_marker_resolved(db, "b1")
-    assert pending(db, "w", "picture") is False
-
-
-def test_pending_is_true_after_submit_and_false_after_resolve(db):
-    """The same contract, exercised through Assessor.submit()/resolve()
-    rather than a hand-built marker row.
-    """
-    class BT:
-        def __init__(self):
-            self.status_value = "in_progress"
-
-        def submit(self, requests):
-            return "b1"
-
-        def status(self, batch_id):
-            return self.status_value
-
-        def results(self, batch_id):
-            return {}
-
-    bt = BT()
-    jb = JudgeBackend(model="m", transport="batch", batch_transport=bt)
-    a = Assessor(record=db, cache=db, backends={"judge": jb})
-    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="a", rubric="r",
-                       kind="picture")
-    bid = a.submit(a.ask_many("judge", [q]).collected)
-
-    assert pending(db, "w", "picture") is True
-
-    bt.status_value = "ended"
-    a.resolve(bid)
-
-    assert pending(db, "w", "picture") is False
-
-
-def test_batch_pending_marker_row_never_ranks_or_counts_as_an_attempt(db):
-    # The marker row's question has neither "provides" nor "role", so
-    # _matches_kind already excludes it from _rows_for -- it must not
-    # contribute a rank, a source, or an attempt count.
-    _provide(db, "w", "picture", "openverse", ["a"])
-    db.append(port="assess", backend="judge", key="judge-batch-pending:w", subject="w",
-              question={"keys": ["judge:r:a:picture-for-word"]},
-              answer={"kind": "batch-pending", "batch_id": "b1"})
-    best = current_best(db, "w", "picture")
-    assert best.artifact_sha is None
-    status = exhausted(db, "w", "picture", attempt_cap=1)
-    assert status.attempts == 1  # only the real provide row, not the marker
-
-
-def test_queue_excludes_pending_needs(db):
-    syl = _FakeSyllabus(_FakeGaps(words_missing_pictures=("w", "v")))
-    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"])
-    assert [e.subject for e in queue(syl, db)] == ["v"]
-
-
-def test_exhausted_counts_fetched_picture_bytes_shas_in_the_last_k_attempts():
-    """A picture sha only ever appears on an imgfetch row -- one whose own
-    `backend` (not kind) marks it as a bytes fetch, not a Source ask of
-    its own. A fold that ignored it saw neither the row nor its sha, so
-    the last-k candidate set was always empty and a freshly fetched,
-    freshly judged winner could never reopen an exhausted need. (The
-    bytes row is a candidate of the Source ask before it, not an attempt
-    of its own -- hence 7, not 8.)
-    """
-    rows = [judge_row("rice", "picture", "sha-a", False, ts=0)]
-    rows += [provide_row("rice", "picture") for _ in range(7)]
-    last = provide_row("rice", "picture", backend="imgfetch",
-                       items=[{"sha": "sha-great"}])
-    rows.append(last)
-    rows.append(judge_row("rice", "picture", "sha-great", 99.0, ts=last.ts + 1))
-    status = exhausted(FakeCache(rows), "rice", "picture", k=1, attempt_cap=7)
-    assert status.attempts == 7
-    assert status.exhausted is False and "out-rank" in status.reason
-
-
-def _searches_with_fetches(n):
-    """n whole picture attempts: each a Source ask (backend="openverse")
-    followed by the imgfetch row carrying the one candidate it produced
-    (same kind, distinguished from the ask by backend, not kind)."""
-    rows = []
-    for i in range(n):
-        rows.append(provide_row("rice", "picture"))
-        rows.append(provide_row("rice", "picture", backend="imgfetch",
-                                items=[{"sha": f"sha-{i}"}]))
-    return rows
-
-
-def test_exhausted_counts_source_asks_not_the_bytes_fetches_they_caused():
-    """An attempt is one Source ask. The imgfetch rows that follow it are
-    part of that same attempt, so counting every provide row burned the
-    attempt cap several times faster than a run actually attempts."""
-    status = exhausted(FakeCache(_searches_with_fetches(7)), "rice", "picture",
-                       k=2, attempt_cap=7)
-    assert status.attempts == 7          # seven searches, not fourteen rows
-
-
-def test_exhausted_last_k_covers_the_fetches_after_the_kth_last_source_ask():
-    def deck(great_index):
-        rows = _searches_with_fetches(7)
-        rows.append(judge_row("rice", "picture", f"sha-{great_index}", 99.0))
-        rows.append(judge_row("rice", "picture", "sha-other", False))
-        return FakeCache(rows)
-
-    # k=2: the window opens at the second-to-last Source ask, so both the
-    # sixth and the seventh attempt's fetches are inside it.
-    assert exhausted(deck(5), "rice", "picture", k=2, attempt_cap=7).exhausted is False
-    # sha-0 was fetched seven attempts ago -- outside the window, so nothing
-    # recent out-ranks the best that already stood.
-    assert exhausted(deck(0), "rice", "picture", k=2, attempt_cap=7).exhausted is True
+    assert current_best(db, "w", "picture", current_rubric={"picture-for-word": "new"},
+                        prior=(), provenance_source=_no_provenance).artifact_sha is None
+    assert current_best(db, "w", "picture", current_rubric={"sentence-for-target": "x"},
+                        prior=(), provenance_source=_no_provenance).artifact_sha == "a"

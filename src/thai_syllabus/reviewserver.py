@@ -86,7 +86,7 @@ from typing import Any
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, WaiverKey
 from .curated import load_curated
-from .derivations import LEARNER_RANK, current_best, exhausted, queue
+from .derivations import DEFAULT_ATTEMPT_CAP, LEARNER_RANK, challengers, current_best, exhausted, queue
 from .derivations import stale as _stale
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
@@ -119,6 +119,14 @@ ACTION_RATINGS: dict[int, str] = {
 }
 
 _role = role_for
+
+
+def _no_provenance(artifact_sha: str) -> str | None:
+    """The default provenance_source for every function below: no prior
+    tie-break bonus for any candidate. load_context wires the real one
+    (attempts.provenance_source_for(db)) onto ReviewContext.
+    """
+    return None
 
 
 # --- cache-row conventions: rows_for/candidate_shas/latest_query are
@@ -154,7 +162,7 @@ def _gloss_for(syllabus: Syllabus, subject: str, kind: str) -> str | None:
 
 
 def _judge_verdict_line(rows: Sequence[Answer], artifact_sha: str | None,
-                        current_rubric: str | Mapping[str, str] | None) -> str | None:
+                        current_rubric: Mapping[str, str]) -> str | None:
     if not artifact_sha:
         return None
     # derivations.stale (not a plain `== current_rubric`) so a role ->
@@ -183,9 +191,11 @@ def _artifact(sha: str | None) -> dict[str, str] | None:
 
 def _rate_question(syllabus: Syllabus, cache: CacheReader, subject: str, kind: str,
                    *, directed: bool = False, rank: float = 0.0, attempts: int = 0,
-                   current_rubric: str | Mapping[str, str] | None = None) -> dict[str, Any]:
+                   current_rubric: Mapping[str, str], prior: Sequence[str] = (),
+                   provenance_source: Callable[[str], str | None] = _no_provenance) -> dict[str, Any]:
     rows = _rows_for(cache, subject, kind)
-    best = current_best(cache, subject, kind, current_rubric=current_rubric)
+    best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
+                        provenance_source=provenance_source)
     current = _artifact(best.artifact_sha)
     if current is not None:
         current["verdict"] = _judge_verdict_line(rows, best.artifact_sha, current_rubric)
@@ -226,16 +236,30 @@ def _direction_question(syllabus: Syllabus, cache: CacheReader, subject: str, ki
     }
 
 
-def _challenger_question(syllabus: Syllabus, subject: str, kind: str, best) -> dict[str, Any]:
+def _kind_for_subject(syllabus: Syllabus, subject: str) -> str | None:
+    """The kind _gap_candidates first pairs `subject` with -- challengers()
+    names only (subject, current sha, challenger sha); the question shape
+    (role, gloss) still needs a kind.
+    """
+    for s, kind in _gap_candidates(syllabus):
+        if s == subject:
+            return kind
+    return None
+
+
+def _challenger_question(syllabus: Syllabus, subject: str, kind: str,
+                         current_sha: str, challenger_sha: str) -> dict[str, Any]:
     return {
         "type": "challenger", "subject": subject, "kind": kind, "role": _role(kind),
         "gloss": _gloss_for(syllabus, subject, kind),
-        "current": _artifact(best.artifact_sha), "challenger": _artifact(best.challenger),
+        "current": _artifact(current_sha), "challenger": _artifact(challenger_sha),
     }
 
 
 def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
-                     *, current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+                     *, current_rubric: Mapping[str, str], prior: Sequence[str] = (),
+                     provenance_source: Callable[[str], str | None] = _no_provenance
+                     ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     grouped = syllabus.study_by_confusion(study)
     for confusion in syllabus.confusions:
@@ -248,7 +272,8 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
         if not learner_rows:
             continue  # no prior answer to contradict -- nothing to re-ask
         latest = max(learner_rows, key=lambda r: r.ts)
-        best = current_best(cache, subject, kind, current_rubric=current_rubric)
+        best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
+                            provenance_source=provenance_source)
         out.append({
             "type": "reask", "subject": subject, "kind": kind, "role": _role(kind),
             "gloss": None, "original_answer": latest.answer.get("value"),
@@ -261,8 +286,10 @@ def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
 
 def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
                 budget: int = DEFAULT_LEARNER_BUDGET,
-                current_rubric: str | Mapping[str, str] | None = None,
-                k: int = 2, attempt_cap: int = 8) -> list[dict[str, Any]]:
+                current_rubric: Mapping[str, str], prior: Sequence[str] = (),
+                provenance_source: Callable[[str], str | None] = _no_provenance,
+                sources_for: Callable[[str], Sequence[str]] | None = None,
+                attempt_cap: int = DEFAULT_ATTEMPT_CAP) -> list[dict[str, Any]]:
     """The question session (spec 5 section 1): four kinds, data-driven
     from derivations.py, capped by the session-wide learner-attention
     budget. Highest expected gain first: F10-ordered rate questions
@@ -271,19 +298,26 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
     "something changed, come look" prompts that only appear in whatever
     budget the ordinary queue didn't use. A kind with no matching
     derivation input yields no questions (e.g. no StudyRecords -> kind 4
-    is empty) rather than erroring.
+    is empty) rather than erroring. `sources_for` defaults to attempts.py's
+    own picture/recording/rendition roster (spec 3's Source order).
     """
-    entries = queue(syllabus, cache, current_rubric=current_rubric)
+    if sources_for is None:
+        from .attempts import sources_for as sources_for  # noqa: PLW0127 (default roster)
+
+    entries = queue(syllabus, cache, current_rubric=current_rubric, prior=prior,
+                    sources_for=sources_for, attempt_cap=attempt_cap,
+                    provenance_source=provenance_source)
     items = [
         _rate_question(syllabus, cache, e.subject, e.kind, directed=e.directed,
-                       rank=e.rank, attempts=e.attempts, current_rubric=current_rubric)
+                       rank=e.rank, attempts=e.attempts, current_rubric=current_rubric,
+                       prior=prior, provenance_source=provenance_source)
         for e in entries
     ][:budget]
 
     if len(items) < budget:
         for subject, kind in _gap_candidates(syllabus):
-            status = exhausted(cache, subject, kind, k=k, attempt_cap=attempt_cap,
-                               current_rubric=current_rubric)
+            status = exhausted(cache, subject, kind, sources=sources_for(kind),
+                               attempt_cap=attempt_cap)
             if status.exhausted:
                 items.append(_direction_question(syllabus, cache, subject, kind,
                                                   status.attempts))
@@ -291,15 +325,19 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
                     break
 
     if len(items) < budget:
-        for subject, kind in _gap_candidates(syllabus):
-            best = current_best(cache, subject, kind, current_rubric=current_rubric)
-            if best.source == "learner" and best.challenger is not None:
-                items.append(_challenger_question(syllabus, subject, kind, best))
-                if len(items) >= budget:
-                    break
+        for subject, current_sha, challenger_sha in challengers(
+                cache, syllabus, current_rubric=current_rubric, prior=prior,
+                provenance_source=provenance_source):
+            kind = _kind_for_subject(syllabus, subject)
+            if kind is None:
+                continue
+            items.append(_challenger_question(syllabus, subject, kind, current_sha, challenger_sha))
+            if len(items) >= budget:
+                break
 
     if len(items) < budget and study is not None:
-        items.extend(_reask_questions(syllabus, cache, study, current_rubric=current_rubric))
+        items.extend(_reask_questions(syllabus, cache, study, current_rubric=current_rubric,
+                                      prior=prior, provenance_source=provenance_source))
 
     return items[:budget]
 
@@ -313,7 +351,9 @@ def build_queue(syllabus: Syllabus, cache: CacheReader, study: StudyReader | Non
 # else here.
 
 def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
-                     current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+                     current_rubric: Mapping[str, str], prior: Sequence[str] = (),
+                     provenance_source: Callable[[str], str | None] = _no_provenance
+                     ) -> list[dict[str, Any]]:
     words_by_id = {w.id: w for w in syllabus.words}
     targets_by_id = {t.id: t for t in syllabus.targets}
     pairs_by_id = {p.id: p for p in syllabus.pairs}
@@ -327,7 +367,8 @@ def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
             word = words_by_id.get(target.word) if target else None
             if target is None or word is None:
                 continue
-            best = current_best(cache, target.word, "picture", current_rubric=current_rubric)
+            best = current_best(cache, target.word, "picture", current_rubric=current_rubric, prior=prior,
+                                provenance_source=provenance_source)
             cards.append({
                 "index": index, "id": target.id, "kind": "target",
                 "front": {"thai": word.thai, "picture": (_artifact(best.artifact_sha) or {}).get("url")},
@@ -342,7 +383,8 @@ def simplified_cards(syllabus: Syllabus, cache: CacheReader, *,
             if any(m is None for m in members):
                 continue
             confusion = confusions_by_id.get(pair.confusion)
-            best = current_best(cache, members[0].id, "recording", current_rubric=current_rubric)
+            best = current_best(cache, members[0].id, "recording", current_rubric=current_rubric, prior=prior,
+                                provenance_source=provenance_source)
             other = members[1].thai if len(members) > 1 else None
             cards.append({
                 "index": index, "id": pair.id, "kind": "pair",
@@ -525,7 +567,10 @@ def _drill_stats(cache: CacheReader, syllabus: Syllabus) -> dict[str, dict[str, 
 
 def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | None = None, *,
                   session: SessionStats | None = None,
-                  current_rubric: str | Mapping[str, str] | None = None) -> dict[str, Any]:
+                  current_rubric: Mapping[str, str], prior: Sequence[str] = (),
+                  provenance_source: Callable[[str], str | None] = _no_provenance,
+                  sources_for: Callable[[str], Sequence[str]] | None = None,
+                  attempt_cap: int = DEFAULT_ATTEMPT_CAP) -> dict[str, Any]:
     """Spec 5 section 3: per-session (answered/queued, per-confusion drill
     accuracy, exhausted-remaining count) and per-deck (current-best
     coverage per need, learner good/acceptable/unacceptable counts).
@@ -537,17 +582,22 @@ def compute_stats(syllabus: Syllabus, cache: CacheReader, study: StudyReader | N
     but this module's read side only reads the newest one back -- no
     aggregation over the full history is implemented here yet.
     """
+    if sources_for is None:
+        from .attempts import sources_for as sources_for  # noqa: PLW0127 (default roster)
+
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
     exhausted_count = 0
 
     for subject, kind in _gap_candidates(syllabus):
-        best = current_best(cache, subject, kind, current_rubric=current_rubric)
+        best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
+                           provenance_source=provenance_source)
         bucket = coverage.setdefault(kind, {"covered": 0, "total": 0})
         bucket["total"] += 1
         if best.rank >= _ACCEPTABLE_FLOOR:
             bucket["covered"] += 1
-        if exhausted(cache, subject, kind, current_rubric=current_rubric).exhausted:
+        if exhausted(cache, subject, kind, sources=sources_for(kind),
+                    attempt_cap=attempt_cap).exhausted:
             exhausted_count += 1
 
         learner_rows = _ratings_for_role(cache.assessments_of(subject), _role(kind))
@@ -591,7 +641,9 @@ class ReviewContext:
     media_store: MediaStore
     study: StudyReader | None = None
     learner_budget: int = DEFAULT_LEARNER_BUDGET
-    current_rubric: str | Mapping[str, str] | None = None
+    current_rubric: Mapping[str, str] = field(default_factory=dict)
+    prior: Sequence[str] = ()
+    provenance_source: Callable[[str], str | None] = _no_provenance
     url_fetcher: Callable[[str], tuple[bytes, str]] | None = None
     cards_provider: Callable[..., list[dict[str, Any]]] = field(default=simplified_cards)
     session: SessionStats = field(default_factory=SessionStats)
@@ -632,16 +684,21 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             elif parsed.path == "/api/queue":
                 budget = int((qs.get("budget") or [ctx.learner_budget])[0])
                 items = build_queue(ctx.syllabus, ctx.cache, ctx.study, budget=budget,
-                                    current_rubric=ctx.current_rubric)
+                                    current_rubric=ctx.current_rubric, prior=ctx.prior,
+                                    provenance_source=ctx.provenance_source)
                 ctx.session.queued = len(items)
                 self._send_json(items)
             elif parsed.path == "/api/cards":
                 self._send_json(ctx.cards_provider(ctx.syllabus, ctx.cache,
-                                                    current_rubric=ctx.current_rubric))
+                                                    current_rubric=ctx.current_rubric,
+                                                    prior=ctx.prior,
+                                                    provenance_source=ctx.provenance_source))
             elif parsed.path == "/stats":
                 self._send_json(compute_stats(ctx.syllabus, ctx.cache, ctx.study,
                                               session=ctx.session,
-                                              current_rubric=ctx.current_rubric))
+                                              current_rubric=ctx.current_rubric,
+                                              prior=ctx.prior,
+                                              provenance_source=ctx.provenance_source))
             elif parsed.path.startswith("/media/"):
                 self._serve_media(urllib.parse.unquote(parsed.path[len("/media/"):]))
             else:
@@ -724,6 +781,7 @@ def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_
     one) reaches for provider/assessor/transport -- a module-level import
     would be a cycle the day wiring wants anything from here.
     """
+    from .attempts import provenance_source_for
     from .wiring import load_syllabus
 
     deck_dir = Path(deck_dir)
@@ -732,7 +790,8 @@ def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_
     media_store = MediaStore(deck_dir / "media")
     syllabus = load_syllabus(deck_dir, db=db, bundle=bundle)
     return ReviewContext(syllabus=syllabus, cache=db, record=db, media_store=media_store,
-                         study=db, learner_budget=learner_budget)
+                         study=db, learner_budget=learner_budget,
+                         provenance_source=provenance_source_for(db))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -131,14 +131,17 @@ def _learner(db, subject, kind, artifact_sha, rating):
 # --- build_queue: budget + F10 order ----------------------------------------
 
 def test_build_queue_respects_budget(syllabus, db):
-    items = rs.build_queue(syllabus, db, budget=1)
+    items = rs.build_queue(syllabus, db, budget=1, current_rubric={})
     assert len(items) == 1
 
 
 def test_build_queue_rate_order_matches_derivations_queue(syllabus, db):
+    from thai_syllabus.attempts import sources_for
+    from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP
     from thai_syllabus.derivations import queue as derive_queue
-    entries = derive_queue(syllabus, db)
-    items = rs.build_queue(syllabus, db, budget=len(entries))
+    entries = derive_queue(syllabus, db, current_rubric={}, prior=(), sources_for=sources_for,
+                           attempt_cap=DEFAULT_ATTEMPT_CAP, provenance_source=lambda s: None)
+    items = rs.build_queue(syllabus, db, budget=len(entries), current_rubric={})
     rate_items = [i for i in items if i["type"] == "rate"]
     assert [(i["subject"], i["kind"]) for i in rate_items] == \
            [(e.subject, e.kind) for e in entries]
@@ -147,7 +150,7 @@ def test_build_queue_rate_order_matches_derivations_queue(syllabus, db):
 def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(syllabus, db, w1):
     _provide(db, w1.id, "picture", query="rice photo", items=[{"sha": "sA"}, {"sha": "sB"}])
     _judge(db, w1.id, "picture", "sA", True, evidence="clear rice bowl")
-    items = rs.build_queue(syllabus, db, budget=50)
+    items = rs.build_queue(syllabus, db, budget=50, current_rubric={})
     rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
                 and i["kind"] == "picture")
     assert rated["gloss"] == "rice"
@@ -158,21 +161,25 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(syllab
 
 
 def test_build_queue_direction_kind_for_exhausted_subject(syllabus, db, w1):
-    _provide(db, w1.id, "picture", items=[{"sha": "s1"}])
-    _judge(db, w1.id, "picture", "s1", True)
-    _provide(db, w1.id, "picture", items=[{"sha": "s2"}])  # 2nd attempt, no judge verdict
-    items = rs.build_queue(syllabus, db, budget=50, k=1, attempt_cap=2)
+    # No candidate ever passes and every source in the roster (spec 3's
+    # openverse/wikimedia/pexels) has been asked -- next_source has
+    # nothing left, so the subject is exhausted (spec 3 section 6).
+    _provide(db, w1.id, "picture", backend="openverse", items=[])
+    _provide(db, w1.id, "picture", backend="wikimedia", items=[])
+    _provide(db, w1.id, "picture", backend="pexels", items=[])
+    items = rs.build_queue(syllabus, db, budget=50, current_rubric={})
     direction = [i for i in items if i["type"] == "direction" and i["subject"] == w1.id
                 and i["kind"] == "picture"]
     assert len(direction) == 1
-    assert direction[0]["attempts"] == 2
+    assert direction[0]["attempts"] == 3
     assert "openverse" in direction[0]["tried"]["sources"]
 
 
 def test_build_queue_challenger_kind_when_rubric_change_outranks_learner_pick(syllabus, db, w1):
     _learner(db, w1.id, "picture", "s-old", "acceptable")
     _judge(db, w1.id, "picture", "s-new", True, rubric="rubric-v2")
-    items = rs.build_queue(syllabus, db, budget=50, current_rubric="rubric-v2")
+    items = rs.build_queue(syllabus, db, budget=50,
+                           current_rubric={"picture-for-word": "rubric-v2"})
     challengers = [i for i in items if i["type"] == "challenger" and i["subject"] == w1.id]
     assert len(challengers) == 1
     assert challengers[0]["current"]["sha"] == "s-old"
@@ -198,7 +205,7 @@ def test_judge_verdict_line_honors_a_role_scoped_rubric_mapping(db, w1):
 def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(syllabus, db, pair, confusion):
     db.append_study(card_key=f"{pair.id}::recognition", compile_id="c1", grade=1, time_ms=900)
     _learner(db, confusion.id, "rendition", "rend-sha", "acceptable")
-    items = rs.build_queue(syllabus, db, study=db, budget=50)
+    items = rs.build_queue(syllabus, db, study=db, budget=50, current_rubric={})
     reasks = [i for i in items if i["type"] == "reask" and i["subject"] == confusion.id]
     assert len(reasks) == 1
     assert reasks[0]["original_answer"] == "acceptable"
@@ -208,7 +215,7 @@ def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(syll
 def test_build_queue_yields_no_reask_without_studyreader(syllabus, db, pair, confusion):
     db.append_study(card_key=f"{pair.id}::recognition", compile_id="c1", grade=1, time_ms=900)
     _learner(db, confusion.id, "rendition", "rend-sha", "acceptable")
-    items = rs.build_queue(syllabus, db, study=None, budget=50)
+    items = rs.build_queue(syllabus, db, study=None, budget=50, current_rubric={})
     assert not [i for i in items if i["type"] == "reask"]
 
 
@@ -292,9 +299,11 @@ def test_append_answer_same_answer_twice_is_idempotent_in_derived_state(db, w1):
     from thai_syllabus.derivations import current_best
     payload = {"subject": w1.id, "kind": "picture", "action": 4, "artifact_sha": "sA"}
     rs.append_answer(db, payload)
-    best_after_first = current_best(db, w1.id, "picture")
+    best_after_first = current_best(db, w1.id, "picture", current_rubric={}, prior=(),
+                                    provenance_source=lambda s: None)
     rs.append_answer(db, dict(payload))
-    best_after_second = current_best(db, w1.id, "picture")
+    best_after_second = current_best(db, w1.id, "picture", current_rubric={}, prior=(),
+                                     provenance_source=lambda s: None)
     assert best_after_first.artifact_sha == best_after_second.artifact_sha
     assert best_after_first.rank == best_after_second.rank
     assert best_after_first.source == best_after_second.source
@@ -366,7 +375,7 @@ def test_append_supply_url_fetch_is_cache_first(db, media_store, syllabus, w1):
 
 def test_simplified_cards_orders_and_renders_target_pair_grapheme(syllabus, db, w1, w2, pair, grapheme, keyword_word):
     _judge(db, w1.id, "picture", "sha-w1", True)
-    cards = rs.simplified_cards(syllabus, db)
+    cards = rs.simplified_cards(syllabus, db, current_rubric={})
     kinds = [c["kind"] for c in cards]
     assert "pair" in kinds and "grapheme" in kinds and "target" in kinds
     # order() puts sounds (pairs, then graphemes) before words (spec 1 order()).
@@ -417,7 +426,7 @@ def test_compute_stats_counts_ratings_coverage_exhausted_and_drills(syllabus, db
     rs.append_drill_result(db, confusion=confusion.id, pair_id=pair.id, correct=False)
 
     session = rs.SessionStats(answered=3, queued=10)
-    stats = rs.compute_stats(syllabus, db, session=session)
+    stats = rs.compute_stats(syllabus, db, session=session, current_rubric={})
 
     assert stats["session"] == {"answered": 3, "queued": 10}
     assert stats["ratings"]["good"] == 1
@@ -438,7 +447,7 @@ def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runre
              question={}, answer={"attempted": 1, "improved": 0, "exhausted": 0,
                                   "available": 2, "pending": 3, "sentences_adopted": 4},
              cost=0.0)
-    stats = rs.compute_stats(syllabus, db)
+    stats = rs.compute_stats(syllabus, db, current_rubric={})
     assert stats["pending"] == 3
     assert stats["sentences_adopted"] == 4
 

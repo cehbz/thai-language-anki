@@ -58,7 +58,7 @@ from .assessor import AssessQuestion, Assessor, JudgeUnreachable
 from .authority import ROLE_FOR_KIND
 from .cachekeys import MechanicalKey
 from .cachekeys import sha as _sha
-from .derivations import CurrentBest, current_best
+from .derivations import CurrentBest, current_best, improved as _improved
 from .entities import Sentence, Target, text_sha
 from .ids import WordId
 from .media import Provenance, Speaker
@@ -70,7 +70,8 @@ from .transport import TransportError
 from .tts import pick_voice
 
 __all__ = ["Need", "Sourcing", "Outcome", "SentenceOutcome", "SOURCES", "sources_for",
-           "candidates_of", "current_best_of", "attempt", "sentence_attempt", "select_cover"]
+           "candidates_of", "current_best_of", "provenance_source_for", "attempt",
+           "sentence_attempt", "select_cover"]
 
 _log = logging.getLogger(__name__)
 
@@ -149,10 +150,23 @@ def sources_for(kind: str) -> tuple[str, ...]:
     return SOURCES.get(kind, ())
 
 
+def provenance_source_for(db: SyllabusDb) -> Callable[[str], str | None]:
+    """current_best's provenance_source over `db`: the media table's own
+    `source` for a sha (SyllabusDb.media_provenance), not a cache row's
+    backend -- a candidate's bytes-fetch row (imgfetch/audiofetch) never
+    carries the Source name (forvo, openverse, ...) the prior order is
+    keyed on.
+    """
+    def get(sha: str) -> str | None:
+        prov = db.media_provenance(sha)
+        return prov.get("source") if prov else None
+    return get
+
+
 def current_best_of(ctx: Sourcing, subject: str, kind: str) -> CurrentBest:
     return current_best(ctx.db, subject, kind, current_rubric=ctx.rubrics,
-                        provenance_prior=ctx.provenance_prior,
-                        provenance=ctx.db.media_provenance)
+                        prior=ctx.provenance_prior,
+                        provenance_source=provenance_source_for(ctx.db))
 
 
 def candidates_of(db: SyllabusDb, subject: str, kind: str) -> list[str]:
@@ -312,7 +326,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     except TransportError:   # registered but unreachable -- the run stops on this
         return Outcome(attempted=False, pending=False, improved=False, spend=spend,
                        excluded=tally.excluded, unreachable=True)
-    if current_best_of(ctx, need.subject, need.kind).rank > before.rank:
+    if _improved(before, current_best_of(ctx, need.subject, need.kind)):
         return Outcome(attempted=_attempted(spend), pending=False, improved=True, spend=spend,
                        excluded=tally.excluded)
 
@@ -353,7 +367,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend,
                        excluded=tally.excluded, unreachable=True)
     after = current_best_of(ctx, need.subject, need.kind)
-    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank,
+    return Outcome(attempted=_attempted(spend), pending=False, improved=_improved(before, after),
                    spend=spend, excluded=tally.excluded)
 
 
@@ -465,7 +479,7 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
         _assess_recordings(ctx, need.subject, candidates_of(ctx.db, need.subject, "recording"), role, spend)
     except KeyError:
         return Outcome(attempted=False, pending=False, improved=False, spend=spend)
-    if current_best_of(ctx, need.subject, "recording").rank > before.rank:
+    if _improved(before, current_best_of(ctx, need.subject, "recording")):
         return Outcome(attempted=_attempted(spend), pending=False, improved=True, spend=spend)
 
     w = _word(ctx, need.subject)
@@ -492,7 +506,7 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
     except KeyError:
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
     after = current_best_of(ctx, need.subject, "recording")
-    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
+    return Outcome(attempted=_attempted(spend), pending=False, improved=_improved(before, after), spend=spend)
 
 
 def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
@@ -562,7 +576,7 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> Outcome:
         return Outcome(attempted=_attempted(spend), pending=False, improved=False, spend=spend)
 
     after = current_best_of(ctx, need.subject, "rendition")
-    return Outcome(attempted=_attempted(spend), pending=False, improved=after.rank > before.rank, spend=spend)
+    return Outcome(attempted=_attempted(spend), pending=False, improved=_improved(before, after), spend=spend)
 
 
 _ATTEMPTS = {"picture": _picture_attempt, "recording": _recording_attempt,

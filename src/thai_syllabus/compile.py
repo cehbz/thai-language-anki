@@ -287,7 +287,8 @@ class _Resolver:
     warnings: list[str] = field(default_factory=list)
 
     def artifact(self, subject: str, kind: str) -> tuple[str, str] | None:
-        best = current_best(self.db, subject, kind)
+        best = current_best(self.db, subject, kind, current_rubric={}, prior=(),
+                            provenance_source=lambda s: None)
         if best.artifact_sha is None:
             return None
         prov = self.db.media_provenance(best.artifact_sha)
