@@ -521,8 +521,8 @@ def rulebook_file_text(path: str | Path) -> str:
 # Per-backend settings: secret references (resolved by SecretStore, ported
 # in secrets.py), search_proxy, imgfetch/audiofetch paths, tts voice pools
 # (defaulting to tts.py's shipped male/female lists) + cost_per_char, judge
-# transport + model + price_per_mtok, image_candidates, batch limits, quotas, k and
-# attempt caps. One file; no env vars; no settings in two places (judged-
+# transport + model + price_per_mtok, image_candidates, batch limits, quotas
+# and attempt caps. One file; no env vars; no settings in two places (judged-
 # rule rubric TEXT stays in rulebook.yaml -- WHAT to ask; this file is HOW
 # to reach things).
 #
@@ -555,7 +555,6 @@ class ProvidersConfig:
     image_candidates: int = 5  # candidate images fetched per target word
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
-    k: int = 2                 # exhausted()'s "last k provide-attempts" default
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
 
     def secret_store(self, runner=None) -> SecretStore:
@@ -644,10 +643,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.image_candidates: {image_candidates!r} must be "
                       "a positive integer")
 
-    k = data.get("k", 2)
     attempt_cap = data.get("attempt_cap", 8)
-    if not isinstance(k, int) or k < 1:
-        errors.append(f"providers.k: {k!r} must be a positive integer")
     if not isinstance(attempt_cap, int) or attempt_cap < 1:
         errors.append(f"providers.attempt_cap: {attempt_cap!r} must be a positive integer")
 
@@ -661,7 +657,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, image_candidates=image_candidates,
         batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
-        k=k, attempt_cap=attempt_cap)
+        attempt_cap=attempt_cap)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -681,7 +677,6 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "image_candidates": config.image_candidates,
         "batch": dict(config.batch),
         "quotas": dict(config.quotas),
-        "k": config.k,
         "attempt_cap": config.attempt_cap,
     })
 

@@ -387,6 +387,11 @@ def test_tts_is_deterministic_same_subject_same_voice():
     assert pick_voice("subj-1", voices) == pick_voice("subj-1", voices)
 
 
+def test_voices_for_is_removed_the_pool_comes_from_providers_yaml_only():
+    import thai_syllabus.tts as tts_mod
+    assert not hasattr(tts_mod, "voices_for")
+
+
 def test_tts_items_carry_synthetic_speaker_kind():
     from thai_syllabus.provider import TtsBackend
 

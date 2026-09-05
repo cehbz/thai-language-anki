@@ -7,9 +7,9 @@ __init__.py). Consumed by provider.py's TtsBackend.
 The male/production rule ("a text filling any productive slot gets native
 audio ... receptive-only texts may stay TTS", and among TTS voices,
 "production draws male only") is a CALLER decision, not enforced here:
-`voices_for(usage)` exposes both pools; curated.py's providers.yaml loader
-and run.py decide which pool a given ask draws from (per the task brief:
-"the male/production rule applies at the caller").
+curated.py's providers.yaml loader supplies the male/female pools
+(defaulting to MALE_VOICES/FEMALE_VOICES below) and wiring.py/run.py pick
+which pool a given ask draws from.
 """
 import hashlib
 from dataclasses import dataclass, field
@@ -30,10 +30,6 @@ FEMALE_VOICES = [_CHIRP + n for n in [
     "Kore", "Laomedeia", "Leda", "Pulcherrima", "Sulafat",
     "Vindemiatrix", "Zephyr"]] + ["th-TH-Neural2-C", "th-TH-Standard-A"]
 THAI_VOICES = MALE_VOICES + FEMALE_VOICES
-
-
-def voices_for(usage: str) -> list[str]:
-    return MALE_VOICES if usage == "production" else THAI_VOICES
 
 
 def pick_voice(subject: str, voices: list[str]) -> str:

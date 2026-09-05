@@ -369,7 +369,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         provenance_prior=bundle.rulebook.provenance_prior,
         image_candidates=cfg.image_candidates,
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
-        query_hints=QUERY_HINTS, judge_model=cfg.judge.model)
+        query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
+        attempt_cap=cfg.attempt_cap)
     return ctx
 
 

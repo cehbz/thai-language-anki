@@ -136,13 +136,17 @@ class AttemptResult:
     under an inline transport. `excluded`: encoded key -> why a question
     could not be prepared. `spend`: per backend. `drafted`: the sentence
     drafts this attempt produced that fill an open Target (0 for every
-    attempt that is not the sentence attempt).
+    attempt that is not the sentence attempt). `targets_handed`: how many
+    open Targets the sentence attempt actually handed to the drafter --
+    `min(open Targets, max_targets)`, the per-run cap -- 0 for every other
+    attempt.
     """
     attempted: bool
     questions: list[PreparedQuestion] = field(default_factory=list)
     excluded: dict[str, str] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
     drafted: int = 0
+    targets_handed: int = 0
 
 
 # --- reading the record -----------------------------------------------------
@@ -601,9 +605,10 @@ def _fills(ctx: Sourcing, draft: SentenceDraft, targets_by_id: Mapping[str, Targ
 
 def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
-    each draft verified with fills() against the Targets it claims and,
-    where it fills one, put to the judge with its gloss. Adoption is the
-    run's, after the verdicts land."""
+    at most `max_targets` of them (AttemptResult.targets_handed says how
+    many), each draft verified with fills() against the Targets it claims
+    and, where it fills one, put to the judge with its gloss. Adoption is
+    the run's, after the verdicts land."""
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
     open_ids = set(syllabus.gaps().unfilled_targets[:max_targets])
@@ -635,7 +640,7 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend,
-                         drafted=len(questions))
+                         drafted=len(questions), targets_handed=len(targets))
 
 
 _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {

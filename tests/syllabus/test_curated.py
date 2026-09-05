@@ -413,10 +413,14 @@ def test_providers_config_round_trip(tmp_path):
                                   price_per_mtok=(2.0, 10.0)),
         image_candidates=7,
         batch={"max_requests": 1000}, quotas={"forvo": {"max_asks": 450}},
-        k=3, attempt_cap=10)
+        attempt_cap=10)
     curated.save_providers_config(path, config)
     loaded = curated.load_providers_config(path)
     assert loaded == config
+
+
+def test_providers_config_has_no_k_field():
+    assert not hasattr(curated.ProvidersConfig(), "k")
 
 
 def test_providers_judge_price_and_image_candidates_round_trip(tmp_path):

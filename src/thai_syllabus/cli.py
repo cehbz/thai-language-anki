@@ -78,10 +78,11 @@ def _parse_backend_cap(raw: str) -> tuple[str, int]:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     """Wires a Sourcing ctx via wiring.build_sourcing (provider/assessor
-    rosters, rubrics, provenance_prior, image_candidates, tts_voices,
-    judge_model -- all drawn from the deck's own curated/providers.yaml +
-    rulebook.yaml, never a bare Sourcing dataclass default), then layers
-    --backend-cap overrides onto default_budgets before running.
+    rosters, rubrics, provenance_prior, image_candidates, voice pools,
+    attempt_cap, judge_model -- all drawn from the deck's own
+    curated/providers.yaml + rulebook.yaml, never a bare Sourcing
+    dataclass default), then layers --backend-cap overrides onto
+    default_budgets before running.
     """
     cfg = load_providers_config(_providers_config_path(args.deck))
     ctx = build_sourcing(args.deck, cfg)
@@ -94,13 +95,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"attempted={report.attempted} improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
-         f"excluded={report.excluded} unreachable={report.unreachable}")
+         f"drafted={report.drafted} excluded={report.excluded} "
+         f"unserved={report.unserved} budgeted={report.budgeted} "
+         f"deferred={report.deferred} unreachable={report.unreachable} "
+         f"batch_id={report.batch_id}")
     for name, spend in sorted(report.spend.items()):
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
+    for name, count in sorted(report.source_failures.items()):
+        print(f"  source_failures: {name}={count}")
     # A run that could not reach the judge did not do its job: exit
     # non-zero so a script or a cron job notices instead of reading a
     # zero-attempt run as "nothing left to do".
-    return 1 if report.unreachable else 0
+    if report.unreachable:
+        print("run: the judge is unreachable; stopped early", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run", help="the batch sourcing run (spec 3 section 4)")
     p.add_argument("--deck", type=Path, required=True)
     p.add_argument("--backend-cap", action="append", default=[], metavar="NAME=N",
-                   help="override a backend's max_asks budget for this run, "
+                   help="cap NAME's asks at N per day, measured from the record "
+                        "(spend since local midnight plus this run's own), "
                         "e.g. --backend-cap forvo=100 (repeatable)")
 
     args = parser.parse_args(argv)

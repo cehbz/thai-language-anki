@@ -574,6 +574,18 @@ def test_sentence_attempt_reports_the_drafts_it_produced(tmp_path):
     assert sentence_attempt(_sentence_ctx(tmp_path / "none", '{"sentences": []}')).drafted == 0
 
 
+def test_sentence_attempt_reports_how_many_open_targets_it_was_handed(tmp_path):
+    """`targets_handed` is min(open Targets, max_targets) -- the per-run
+    cap run.py needs to tell "handed" apart from "left for another run".
+    """
+    text = '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'\
+           ' "targets": ["rice/receptive", "eat/receptive"]}]}'   # กินข้าว: eat rice
+    ctx = _sentence_ctx(tmp_path / "uncapped", text)
+    assert sentence_attempt(ctx).targets_handed == 2   # both open Targets, well under the cap
+    ctx = _sentence_ctx(tmp_path / "capped", text)
+    assert sentence_attempt(ctx, max_targets=1).targets_handed == 1
+
+
 def test_sentence_attempt_adopts_nothing_itself(tmp_path):
     ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
                                   ' "targets": ["rice/receptive", "eat/receptive"]}]}')

@@ -79,18 +79,32 @@ LEARNER_DEFAULT_SESSION_BUDGET = Budget(max_asks=20)
 class RunReport:
     """"a run that did almost nothing must look like one" (F10): every
     count is a subject count, not an ask count, and `available` is every
-    need Syllabus.gaps() listed -- so attempted, exhausted and pending
-    account for the same population.
+    need Syllabus.gaps() listed -- so `available` always equals `attempted`
+    + `exhausted` + `pending` + `unserved` + `budgeted` + `deferred`.
 
     `attempted`: needs whose Source was asked (the one that met a dead
-    judge included -- its ask was made and appended). `improved`: needs
-    whose current-best artifact changed. `exhausted`: needs with no source
-    left, whether the queue dropped them or the loop found none.
-    `pending`: subjects with a question in an unresolved batch, this run's
-    own submission included. `sentences_adopted`: drafts this run covered
-    open Targets with; `drafted`: drafts the sentence attempt produced,
-    which is how the open Targets are served -- no Source is asked per
-    Target, so a Target is never attempted or exhausted.
+    judge included -- its ask was made and appended), plus, when the
+    sentence attempt ran this run, every open Target need it was handed
+    -- at most `max_targets` (the per-run cap) of them, whatever the
+    attempt's own AttemptResult.targets_handed says (no Source is asked
+    per Target; the attempt itself is what serves them -- `drafted`
+    separately counts the drafts it produced, whether or not they covered
+    a Target). `improved`: needs whose current-best artifact changed.
+    `exhausted`: needs with no source left, whether the queue dropped
+    them or the loop found none. `pending`: subjects with a question in
+    an unresolved batch, this run's own submission included.
+    `sentences_adopted`: drafts this run covered open Targets with.
+    `unserved`: needs whose kind has no Source and no per-run pass either
+    (derivations.QueuedNeeds.unserved). `budgeted`: needs skipped this run
+    because their Source's day budget was already spent -- a per-need skip
+    in the loop, or, when the llm-sentence budget gated the sentence
+    attempt out entirely, every open Target need within the per-run cap
+    it would have been handed. `deferred`: available needs this run never
+    even considered -- the open Targets beyond the per-run cap (handed or
+    not, the excess was never looked at), plus, when the run ended before
+    looking at any need at all (a batch still out from the previous run,
+    or the judge unreachable while resolving one), `available` minus
+    `pending`; zero in every other case.
 
     The "what went wrong" fields: `excluded` counts questions the judge
     could not prepare (candidates dropped, not candidates rejected),
@@ -110,6 +124,9 @@ class RunReport:
     batch_id: str | None = None
     source_failures: dict[str, int] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
+    unserved: int = 0
+    budgeted: int = 0
+    deferred: int = 0
 
 
 @dataclass
@@ -122,6 +139,8 @@ class _Tally:
     excluded: int = 0
     sentences_adopted: int = 0
     drafted: int = 0
+    budgeted: int = 0
+    deferred: int = 0
     unreachable: bool = False
     questions: list[PreparedQuestion] = field(default_factory=list)
     source_failures: dict[str, int] = field(default_factory=dict)
@@ -204,6 +223,15 @@ def _needs(ctx: Sourcing) -> QueuedNeeds:
                   provenance_source=provenance_source_for(ctx.db))
 
 
+def _open_target_count(ctx: Sourcing) -> int:
+    """How many Targets are still unfilled right now -- `queued()` excludes
+    "sentence" kind needs from `entries`/`exhausted`/`unserved` entirely
+    (the run's own sentence attempt serves them, not a Source), so this is
+    the only place their count reaches `attempted`/`budgeted`/`deferred`.
+    """
+    return len(ctx.syllabus.gaps().unfilled_targets)
+
+
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally) -> None:
     """One Source per need -- the cheapest not yet tried since current-best
@@ -228,6 +256,7 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
             continue
         budget = budgets.get(source)
         if budget is not None and budget.exceeded_by(_spent_on(source, carried, tally)):
+            tally.budgeted += 1
             continue
         before = current_best_of(ctx, need.subject, need.kind)
         try:
@@ -259,6 +288,11 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     one batch is ever outstanding.
     """
     tally = _Tally(spend={name: Spend() for name in budgets})
+    # Read before any ask this run makes lands on the record -- the
+    # sentence attempt's own llm-sentence row, once appended, would
+    # otherwise count twice against its day budget: once read back here,
+    # once already in `tally.spend`.
+    carried = _spent_today(ctx, budgets)
     previous = ctx.assessor.unresolved_batch()
     still_out = previous
     if previous is not None:
@@ -266,24 +300,60 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             still_out = _resolve_previous_batch(ctx, tally, previous)
         except JudgeUnreachable:
             tally.unreachable = True
-            return _finish(ctx, tally, _needs(ctx), batch_id=previous[0],
-                           pending=frozenset(previous[1]))
+            needs = _needs(ctx)
+            pending = frozenset(previous[1])
+            return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
+                           extra_deferred=needs.available - len(pending))
     tally.sentences_adopted += _adopt_sentences(ctx)
     if still_out is not None:
-        return _finish(ctx, tally, _needs(ctx), batch_id=still_out[0],
-                       pending=still_out[1])
+        # The run ended here, before it ever looked at a need: every
+        # available need this run never considered (not even pending, in
+        # a still-earlier batch) is deferred, not lost.
+        needs = _needs(ctx)
+        pending = still_out[1]
+        return _finish(ctx, tally, needs, batch_id=still_out[0], pending=pending,
+                       extra_deferred=needs.available - len(pending))
 
-    try:
-        tally.collect(sentence_attempt(ctx, max_targets=sentence_targets_per_run))
-    except JudgeUnreachable:
-        tally.unreachable = True
-        return _finish(ctx, tally, _needs(ctx), batch_id=None, pending=frozenset())
-    # An inline transport answers inside that attempt: what it verified
-    # there is adoptable in this same run.
-    tally.sentences_adopted += _adopt_sentences(ctx)
+    # Measured before the attempt runs (or is gated out): sentence_attempt
+    # hands over at most `sentence_targets_per_run` of these (the per-run
+    # cap), so anything beyond it was never even considered this run.
+    open_before = _open_target_count(ctx)
+    sentence_budget = budgets.get("llm-sentence")
+    if sentence_budget is None or not sentence_budget.exceeded_by(
+            _spent_on("llm-sentence", carried, tally)):
+        try:
+            result = sentence_attempt(ctx, max_targets=sentence_targets_per_run)
+            tally.collect(result)
+        except JudgeUnreachable:
+            tally.unreachable = True
+            handed = min(open_before, sentence_targets_per_run)
+            tally.attempted += handed
+            tally.deferred += open_before - handed
+            return _finish(ctx, tally, _needs(ctx), batch_id=None, pending=frozenset())
+        # An inline transport answers inside that attempt: what it
+        # verified there is adoptable in this same run.
+        tally.sentences_adopted += _adopt_sentences(ctx)
+        # The sentence attempt served every open Target within the
+        # per-run cap it was handed -- no Source is asked per Target, so
+        # this is how they reach `attempted` (a Target the drafts covered
+        # has already left gaps() by now and needs no separate
+        # accounting); the excess beyond the cap was never considered
+        # this run at all, so it is deferred instead.
+        excess = open_before - result.targets_handed
+        tally.attempted += _open_target_count(ctx) - excess
+        tally.deferred += excess
+    else:
+        # The llm-sentence budget kept the attempt from running at all:
+        # every open Target need within the per-run cap it would have
+        # been handed is budget-constrained, same as a per-need Source
+        # skip below; the excess beyond the cap is deferred, same as when
+        # the attempt runs.
+        handed = min(open_before, sentence_targets_per_run)
+        tally.budgeted += handed
+        tally.deferred += open_before - handed
 
     needs = _needs(ctx)
-    _try_each_need(ctx, needs.entries, budgets, _spent_today(ctx, budgets), tally)
+    _try_each_need(ctx, needs.entries, budgets, carried, tally)
     if tally.unreachable:
         return _finish(ctx, tally, needs, batch_id=None, pending=frozenset())
 
@@ -298,14 +368,22 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
 
 
 def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str | None,
-            pending: frozenset[str]) -> RunReport:
-    """The run's own outcome, as one durable row and one return value."""
+            pending: frozenset[str], extra_deferred: int = 0) -> RunReport:
+    """The run's own outcome, as one durable row and one return value.
+    `deferred` is `tally.deferred` (the sentence attempt's per-run-cap
+    excess, accumulated as the run went) plus `extra_deferred`, which is
+    nonzero only when the run ended before it ever looked at a need at
+    all (a batch still out, or the judge unreachable while resolving
+    one): every available need it never considered, pending or not.
+    """
     report = RunReport(
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=len(pending), sentences_adopted=tally.sentences_adopted,
         drafted=tally.drafted, excluded=tally.excluded, unreachable=tally.unreachable,
-        batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend)
+        batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend,
+        unserved=needs.unserved, budgeted=tally.budgeted,
+        deferred=tally.deferred + extra_deferred)
     _persist_report(ctx.db, report)
     return report
 
@@ -326,5 +404,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "excluded": report.excluded, "unreachable": report.unreachable,
                 "batch_id": report.batch_id, "source_failures": dict(report.source_failures),
                 "spend": {name: {"asks": s.asks, "cost": s.cost}
-                          for name, s in report.spend.items()}},
+                          for name, s in report.spend.items()},
+                "unserved": report.unserved, "budgeted": report.budgeted,
+                "deferred": report.deferred},
         cost=sum(s.cost for s in report.spend.values()))

@@ -67,6 +67,12 @@ _GOOD_RANK = LEARNER_RANK["good"]
 # configured value.
 DEFAULT_ATTEMPT_CAP = 8
 
+# The one artifact kind with no Source (attempts.SOURCES has no entry for
+# it) and no per-run pass either -- unlike "sentence", which the run's own
+# sentence attempt serves. queued() counts its needs as unserved rather
+# than entering, exhausting, or pending them.
+_UNSERVED_KIND = "grapheme-keyword"
+
 
 def _judge_rank(value) -> float:
     if isinstance(value, bool):
@@ -480,13 +486,22 @@ def _gap_candidates(syllabus) -> list[tuple[str, str, str]]:
 class QueuedNeeds:
     """queue()'s entries and what the same pass left out: `available` is
     every need gaps() lists, `exhausted` the needs among them dropped for
-    being out of sources with nothing directing them. One pass, so a
-    caller reporting against every gap folds the record once (spec 3
+    being out of sources with nothing directing them, `unserved` the needs
+    whose kind has no Source at all (attempts.SOURCES) and no per-run pass
+    covering it either -- so `available` equals `exhausted` + `unserved` +
+    the needs left in `entries`, for every kind except "sentence": an
+    unfilled Target has no Source either, but IS served by the run's own
+    per-run sentence attempt (up to its own per-run cap on how many it
+    hands the drafter at once), so this fold excludes it from `entries`,
+    `exhausted` and `unserved` alike and leaves it to the run itself
+    (run.RunReport.attempted/budgeted/deferred) to account for. One pass,
+    so a caller reporting against every gap folds the record once (spec 3
     section 7's RunReport).
     """
     entries: list[QueueEntry]
     available: int
     exhausted: int
+    unserved: int = 0
 
 
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
@@ -503,7 +518,14 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     entries: list[QueueEntry] = []
     candidates = _gap_candidates(syllabus)
     out_of_options = 0
+    unserved = 0
     for subject, kind, subject_kind in candidates:
+        if kind == _UNSERVED_KIND:
+            # No Source serves this kind (attempts.SOURCES has no entry
+            # for it) and, unlike "sentence", no per-run pass covers it
+            # either: it can never become an entry, exhausted, or pending.
+            unserved += 1
+            continue
         if pending(cache, subject, kind):
             continue  # a batch is still out -- pending is reported, not queued
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
@@ -535,7 +557,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
                                   attempts=attempts))
 
     entries.sort(key=lambda e: (e.bucket, not e.directed, e.rank, e.attempts, e.subject, e.kind))
-    return QueuedNeeds(entries=entries, available=len(candidates), exhausted=out_of_options)
+    return QueuedNeeds(entries=entries, available=len(candidates), exhausted=out_of_options,
+                       unserved=unserved)
 
 
 # --- the preference question a resolved batch leaves open ------------------

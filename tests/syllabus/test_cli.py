@@ -253,6 +253,39 @@ def test_run_exits_1_when_the_judge_was_unreachable(deck, monkeypatch, capsys):
     assert "unreachable=True" in capsys.readouterr().out
 
 
+def test_run_prints_every_report_field_in_its_summary_line(deck, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(
+                            attempted=1, improved=1, exhausted=2, available=9, pending=1,
+                            sentences_adopted=1, drafted=3, excluded=0, unserved=4,
+                            budgeted=5, deferred=6, unreachable=False, batch_id="batch-7",
+                            source_failures={"openverse": 2}))
+    rc = cli.main(["run", "--deck", str(deck)])
+    assert rc == 0
+    text = capsys.readouterr().out
+    for field in ("attempted=1", "improved=1", "exhausted=2", "available=9", "pending=1",
+                 "sentences_adopted=1", "drafted=3", "excluded=0", "unserved=4",
+                 "budgeted=5", "deferred=6", "unreachable=False", "batch_id=batch-7",
+                 "openverse=2"):
+        assert field in text
+
+
+@pytest.fixture
+def deck_with_dead_judge(tmp_path):
+    root = _write_curated_dir(tmp_path / "deck")
+    (root / "curated" / "providers.yaml").write_text(yaml.safe_dump(
+        {"imgfetch_path": "/opt/bin/imgfetch", "audiofetch_path": "/opt/bin/audiofetch",
+         "judge": {"transport": "cli", "model": "m"}}))
+    return root
+
+
+def test_cli_run_exits_1_when_the_judge_is_unreachable(deck_with_dead_judge, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(unreachable=True))
+    assert cli.main(["run", "--deck", str(deck_with_dead_judge)]) == 1
+    assert "unreachable" in capsys.readouterr().err
+
+
 # --- logging: warnings must reach the terminal (item 3) --------------------
 
 def test_main_configures_logging_so_module_warnings_reach_stderr(deck):

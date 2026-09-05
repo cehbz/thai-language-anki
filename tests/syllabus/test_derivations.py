@@ -470,6 +470,25 @@ def test_a_need_out_of_sources_is_counted_exhausted(cache):
     assert found.entries == [] and found.exhausted == 1 and found.available == 1
 
 
+def test_grapheme_keyword_needs_with_no_source_count_as_unserved(cache):
+    """No Source serves "grapheme-keyword" (attempts.SOURCES) and no
+    per-run pass covers it either -- unlike an unfilled sentence Target,
+    it never becomes available work, exhausted, or an entry: it sits in
+    its own unserved count so every gap()-listed need is accounted for.
+    """
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _FakeSyllabus(_FakeGaps(graphemes_missing_keyword_data=("g1", "g2")))
+    found = _queued(syllabus, cache, sources_for=real_sources_for)
+    assert found.unserved == 2
+    assert found.entries == [] and found.exhausted == 0 and found.available == 2
+
+
+def test_a_need_no_source_serves_reports_zero_unserved(cache):
+    found = _queued(_one_word_syllabus(), cache)
+    assert found.unserved == 0
+
+
 def test_bucket_1_when_no_artifact_exists(cache):
     syllabus = _one_word_syllabus()
     entries = _queue(syllabus, cache)

@@ -716,6 +716,18 @@ def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
     assert ctx.provenance_prior == ("commission", "forvo", "tts")
 
 
+def test_build_sourcing_threads_caps_and_pools(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "attempt_cap: 3\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n"
+        "tts: {male_voices: [th-TH-Chirp3-HD-Puck], "
+        "female_voices: [th-TH-Chirp3-HD-Aoede]}\n", encoding="utf-8")
+    ctx = build_sourcing(root)
+    assert ctx.attempt_cap == 3    # value written by the fixture
+    assert ctx.voices["male"] and ctx.voices["female"]
+
+
 def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
     # load_syllabus, left to open its own SyllabusDb, would give
     # Sourcing.db and syllabus.assessments/media.db two separate

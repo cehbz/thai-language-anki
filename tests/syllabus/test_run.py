@@ -272,7 +272,10 @@ def test_a_batch_still_in_progress_holds_the_next_run_back(
 
 def test_run_stops_at_the_first_unreachable_judge(ctx_inline_dead_judge):
     report = run(ctx_inline_dead_judge, budgets={})
-    assert report.unreachable and report.attempted == 1
+    # 1 for rice's still-open Target (the sentence attempt ran and handed
+    # it over, drafting nothing) + 1 for the picture need that hit the
+    # dead judge before the loop stopped.
+    assert report.unreachable and report.attempted == 2
 
 
 def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_batch):
@@ -389,6 +392,51 @@ def test_run_reports_every_need_gaps_lists_as_available(db, monkeypatch):
     assert report.available == 3
 
 
+def test_run_reports_unserved_needs_from_the_queue(db, monkeypatch):
+    """grapheme-keyword needs (no Source, no per-run pass) are queued()'s
+    own count, threaded through unchanged."""
+    def fake_queued(syllabus, cache, **kwargs):
+        return run_mod.QueuedNeeds(entries=[], available=2, exhausted=0, unserved=2)
+
+    monkeypatch.setattr(run_mod, "queued", fake_queued)
+    _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps())), {})
+    assert report.unserved == 2
+    assert db.latest("run", "runreport", "runreport").answer["unserved"] == 2
+
+
+def test_a_cap_of_one_on_llm_sentence_with_no_prior_spend_lets_the_sentence_attempt_run(
+        db, monkeypatch):
+    calls = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        calls.append(1)
+        return AttemptResult(True, drafted=1)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    report = run(_ctx(db, _Syl(_Gaps())), {"llm-sentence": Budget(max_asks=1)})
+    assert calls == [1]
+    assert report.drafted == 1
+
+
+def test_a_cap_of_one_on_llm_sentence_already_spent_today_skips_the_sentence_attempt(
+        db, monkeypatch):
+    calls = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        calls.append(1)
+        return AttemptResult(True, drafted=1)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    midnight = run_mod.day_start_ns(date.today())
+    _row_today(db, "llm-sentence", "x", ts=midnight + 1)
+    report = run(_ctx(db, _Syl(_Gaps())), {"llm-sentence": Budget(max_asks=1)})
+    assert calls == []
+    assert report.drafted == 0
+
+
 def test_run_counts_a_need_with_no_source_left_as_exhausted(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     monkeypatch.setattr(run_mod, "next_source", lambda *a, **k: None)
@@ -414,8 +462,9 @@ def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):
 
 def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):
     calls = _patch(monkeypatch, {})
-    run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {"forvo": Budget(max_asks=1)})
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {"forvo": Budget(max_asks=1)})
     assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
+    assert report.budgeted == 1
 
 
 def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
@@ -484,10 +533,15 @@ def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db,
 
     assessor = _Stuck(outstanding=("batch-0", frozenset({"a", "b"})))
     calls = _patch(monkeypatch, {})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",))), assessor), {})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"))), assessor), {})
     assert assessor.resolved == ["batch-0"] and report.pending == 2
     assert report.batch_id == "batch-0"
     assert calls == [] and assessor.submitted == [] and report.attempted == 0
+    # The run ended here, before it ever looked at anything: "a"/"b" are
+    # pending (still out in the batch), "c" is deferred (never even that).
+    assert report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_run_collects_the_preference_questions_of_a_resolved_batch(db, monkeypatch):
@@ -499,10 +553,83 @@ def test_run_collects_the_preference_questions_of_a_resolved_batch(db, monkeypat
 
 def test_unfilled_targets_are_available_work_and_never_exhausted(db, monkeypatch):
     """The sentence attempt serves every open Target once per run: no
-    Source is asked per Target, so none of them is ever out of options."""
-    _patch(monkeypatch, {}, sentence_result=AttemptResult(True, drafted=2))
+    Source is asked per Target, so none of them is ever out of options --
+    every open Target within the per-run cap it was handed counts under
+    `attempted` instead (the drafts not closing any of them here), and
+    the identity
+    available == attempted + exhausted + pending + unserved + budgeted + deferred
+    still holds.
+    """
+    _patch(monkeypatch, {},
+          sentence_result=AttemptResult(True, drafted=2, targets_handed=3))
     report = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2", "t3")))), {})
-    assert report.available == 3 and report.exhausted == 0 and report.attempted == 0
+    assert report.available == 3 and report.exhausted == 0 and report.attempted == 3
+    assert report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_the_llm_sentence_gate_skipping_the_attempt_leaves_open_targets_budgeted(
+        db, monkeypatch):
+    """When the llm-sentence budget keeps the sentence attempt from
+    running at all, every open Target need within the per-run cap it
+    would have been handed is budget-constrained, not silently missing
+    from the identity."""
+    calls = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        calls.append(1)
+        return AttemptResult(True, drafted=1, targets_handed=2)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    midnight = run_mod.day_start_ns(date.today())
+    _row_today(db, "llm-sentence", "x", ts=midnight + 1)
+    report = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2")))),
+                {"llm-sentence": Budget(max_asks=1)})
+    assert calls == []
+    assert report.available == 2 and report.attempted == 0 and report.budgeted == 2
+    assert report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_the_sentence_attempts_per_run_cap_defers_the_excess_when_it_runs(db, monkeypatch):
+    """45 open Targets, the default 40-per-run cap: the attempt hands over
+    only 40 (`attempted`), the other 5 were never even considered this
+    run (`deferred`), and the identity still holds."""
+    sentences = tuple(f"t{i}" for i in range(45))
+    _patch(monkeypatch, {},
+          sentence_result=AttemptResult(True, drafted=40, targets_handed=40))
+    report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))), {})
+    assert report.attempted == 40 and report.deferred == 5
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_the_sentence_attempts_per_run_cap_defers_the_excess_when_the_gate_skips_it(
+        db, monkeypatch):
+    """45 open Targets, the llm-sentence budget already spent: the gate
+    keeps the attempt from running at all, but only the first 40 (the
+    per-run cap) are budget-constrained -- the other 5 were never even
+    considered this run either way."""
+    calls = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        calls.append(1)
+        return AttemptResult(True, drafted=40, targets_handed=40)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    midnight = run_mod.day_start_ns(date.today())
+    _row_today(db, "llm-sentence", "x", ts=midnight + 1)
+    sentences = tuple(f"t{i}" for i in range(45))
+    report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))),
+                {"llm-sentence": Budget(max_asks=1)})
+    assert calls == []
+    assert report.budgeted == 40 and report.deferred == 5
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_run_reports_the_drafts_the_sentence_attempt_produced(db, monkeypatch):
@@ -565,10 +692,15 @@ def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch
 
     assessor = _DeadResolve(outstanding=("batch-0", frozenset({"a"})))
     calls = _patch(monkeypatch, {})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",))), assessor), {})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
     assert report.unreachable is True and calls == [] and assessor.submitted == []
     assert report.batch_id == "batch-0" and report.pending == 1
     assert db.latest("run", "runreport", "runreport").answer["unreachable"] is True
+    # "a" is pending (in the batch the dead resolve never released); "b"
+    # is deferred -- this run never got far enough to even ask about it.
+    assert report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_judge_that_cannot_be_reached_to_submit_stops_the_run(db, monkeypatch):
@@ -670,7 +802,8 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     answer = db.latest("run", "runreport", "runreport").answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
                            "sentences_adopted", "drafted", "excluded", "unreachable",
-                           "batch_id", "source_failures", "spend"}
+                           "batch_id", "source_failures", "spend", "unserved", "budgeted",
+                           "deferred"}
 
 
 # --- Spend ------------------------------------------------------------
