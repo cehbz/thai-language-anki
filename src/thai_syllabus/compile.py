@@ -1,93 +1,21 @@
 """compile_syllabus (spec 4): translate a Syllabus into an Anki .apkg.
 
-`compile_syllabus(syllabus, db, media_store, out_path, *, force=False)` is
-an application service, a free function rather than a Syllabus method,
-because it needs two dependencies (a CacheReader for
-`derivations.current_best`, and a MediaStore to stage bytes into the
-package) that spec 1's frozen Syllabus dataclass has no field for, and
-because "the translation of Syllabus state into Anki's domain" (spec 4's
-own framing) is a distinct concern from the aggregate's pure,
-storage-agnostic domain logic in syllabus.py. `db` is typed concretely as
-store.SyllabusDb (not just the narrower CacheReader Protocol) because
-compile also needs its non-Protocol `media_provenance` (extension/source/
-speaker lookups) -- consistent with how migrate.py already depends on
-SyllabusDb directly.
+`compile_syllabus(syllabus, db, media_store, out_path, *, force=False,
+now=time.time)` takes a Syllabus, a SyllabusDb (current-best artifact
+lookups and media provenance), a MediaStore (staged media bytes on disk)
+and an output path. It writes one .apkg: one note per word, grapheme and
+(sentence, target) pair with a card-yielding skill, one note per
+minimal-pair member; every note tagged, due-stamped from
+Syllabus.order(), and stamped with this compile's CompileId.
 
-Ambiguities the terse spec text left implicit, resolved here (not
-redesigns -- nothing here contradicts spec 4, it fills gaps the prose
-didn't spell out):
+It refuses (raises GateRefusal) when Syllabus.report().gate is False, or
+when the compiled notes produce duplicate card fronts under rule
+card/unique-front, unless `force=True` -- a forced compile stamps the
+blocking findings into CompileReport.warnings instead of raising.
 
-- **Production's "(productive Target only)" gate**: a word compiles to
-  ONE note (guid = word id, spec 4 section 2) carrying every template;
-  genanki only drops a per-note CARD automatically based on whether
-  fields its qfmt structurally needs are empty (verified against
-  genanki's Model._req / Note._front_back_cards). Since "does this word
-  have a productive Target" is a fact about the SYLLABUS, not something
-  expressible as emptiness of the fields spec 4 §1 lists for `word`, an
-  extra boolean field, `ProductiveTarget`, gates it -- exactly the same
-  pattern `TestSpelling` already uses to gate `Spelling`. `TestSpelling`
-  itself has no curated source yet either (no Target/Word field says
-  "test this word's spelling"); until one exists, it mirrors
-  `ProductiveTarget`'s value (spelling is tested for words the learner is
-  expected to produce). Both are parked-variant placeholders, same
-  footing as FrontGloss's "pending study input" (spec 4 §1).
-- **Reading's "staged after its graphemes"**: falls out for free from
-  Syllabus.order()'s own structure (`[*sounds, *words]`, spec 1 section
-  3) -- EVERY grapheme precedes EVERY word target unconditionally, so the
-  due-stride block for any word (see below) already sits after every
-  grapheme's block. No extra logic needed here beyond using order()'s
-  existing sequence.
-- **Sentence Listening's "back full text"**: `ThaiCloze` has the target
-  permanently blanked (spec 4 section 5: no native Anki cloze type, so
-  this field is literal pre-blanked text, not a togglable reveal) -- the
-  unblanked sentence isn't recoverable from it. An extra `Thai` field
-  (the sentence's full, unmodified text) carries it, alongside the spec's
-  literal `ThaiCloze`/`TargetWord`/... list.
-- **minimal_pair's ">2 members' audio individually playable"**: a pair
-  has 2-3 members (spec 1 section 1); `OtherAudio` concatenates one
-  `[sound:...]` tag per other member -- Anki renders each as its own
-  playable control, so this covers 3-member pairs without extra fields.
-- **minimal_pair's audio source**: every member note of a pair plays the
-  PAIR's current-best rendition (spec 3 section 5), resolved through
-  `syllabus.media.rendition(pair.id)`, never a member's own current-best
-  word recording. A pair with no current-best rendition compiles no notes
-  for either member (DroppedCard reason "no rendition").
-- **a card's word/pair anchor**: a word note's anchor is the word id
-  (a word note aggregates every Target the word has into one note, guid
-  = word id too, spec 4 section 2). A pair member note's anchor is its
-  MemberKey, "<pair_id>:<speaker>:<i>" -- anki_import.py's revlog import
-  writes the pair id alone as the study row's anchor, with the member's
-  speaker/index carried in separate columns (spec 2 section 2).
-- **Bury-siblings options group** (spec 4 section 2's "the shipped deck
-  options group sets bury-siblings"): genanki's own default dconf (the
-  "Default" preset every genanki.Deck uses) already ships
-  `new.bury=true` and `rev.bury=true` (verified against
-  genanki.package.APKG_COL) -- nothing here needs to edit it; a compile
-  test asserts this rather than re-implementing it.
-
-Media (spec 4 section 3): every artifact reference is resolved via
-`derivations.current_best(db, subject, kind)` -- never a raw "does the
-word have a picture" boolean (spec 1's narrower MediaIndex protocol
-can't tell compile() the SHA-, so compile() reads the CacheReader
-surface directly, same as spec 3's own derivations do) -- then staged
-into the package under its content-sha basename (`media/objects/<sha>.
-<ext>`, already collision-free, so no basename renaming is needed unlike
-thai_deck_gen/compiler/build.py's `_resolve_media`, which had to
-namespace collisions among non-content-addressed deck-relative refs). A
-missing current-best artifact leaves the dependent field empty; genanki's
-own required-field computation (see above) then drops exactly the
-card(s) whose front needed it, and CompileReport.dropped is compiled by
-comparing each note's requested templates against the cards genanki
-actually generated for it.
-
-Due stamping (spec 4 section 2, "sibling cards ... offset by a stride"):
-genanki writes ONE `due` value per NOTE onto every one of its sibling
-cards (verified against genanki.Note.write_to_db) -- there is no
-per-template due at Note-construction time. So, like
-thai_deck_gen/compiler/build.py's `stamp_due`, this reopens the written
-.apkg's collection.anki2 and overwrites `cards.due` directly, but keyed
-by (note guid, card ord) rather than guid alone, so sibling cards land at
-distinct, stride-separated due values instead of collapsing onto one.
+It counts every card a template did not produce, with a reason
+(CompileReport.dropped), and returns a Compile carrying the compile id,
+gate/forced status, and notes/cards written.
 """
 from __future__ import annotations
 
@@ -97,8 +25,9 @@ import sqlite3
 import tempfile
 import time
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -118,11 +47,9 @@ __all__ = ["compile_syllabus", "GateRefusal", "thai_cloze"]
 
 
 class GateRefusal(Exception):
-    """compile() refuses: report().gate is False and force was not set
-    (spec 4 section 2). Carries the report so callers can inspect why;
-    `blocking` counts only the unwaived error-severity findings among
-    report.findings -- the same findings that closed the gate, not every
-    finding report() carries (a waived error or a warn never blocks).
+    """Raised when compile refuses: report().gate is False and force was
+    not set. Carries the report; `blocking` is the count of unwaived
+    error-severity findings that closed the gate.
     """
     def __init__(self, report: Report, blocking: Sequence[Finding]):
         self.blocking = len(blocking)
@@ -132,8 +59,7 @@ class GateRefusal(Exception):
         self.report = report
 
 
-# --- CSS (ported out of thai_deck_gen's compiler/build.py CARD_CSS; spec 4
-# section 3: "CSS retains only final fit-to-viewport" for images) --------
+# --- CSS (spec 4 section 3: "CSS retains only final fit-to-viewport") ---
 
 CARD_CSS = """
 .card { font-family: sans-serif; font-size: 24px; text-align: center;
@@ -209,25 +135,21 @@ MINIMAL_PAIR_MODEL = _model(
                '<div class="other"><span class="ipa">[{{OtherIpa}}]</span> {{OtherAudio}}</div>',
     }])
 
-# Audio is a field but not referenced by qfmt (a grapheme's front is
-# always its Symbol -- media never gates this card, spec 4 section 1:
-# "one card; no reverse family"); it belongs on the back, so it's added
-# after `_model`'s ReviewNote/CompileId append point by building the
-# genanki.Model directly rather than through the `_model` helper.
-GRAPHEME_MODEL = genanki.Model(
-    _model_id("grapheme"), "grapheme",
-    fields=[{"name": f} for f in
-           ["Symbol", "Sound", "NameThai", "KeywordThai", "KeywordGloss",
-            "KeywordPicture", "Audio", "ReviewNote", "CompileId"]],
-    templates=[{
+# Audio is a field but not referenced by qfmt: a grapheme's front is
+# always its Symbol -- media never gates this card (spec 4 section 1:
+# "one card; no reverse family"); Audio renders on the back only.
+GRAPHEME_MODEL = _model(
+    "grapheme",
+    ["Symbol", "Sound", "NameThai", "KeywordThai", "KeywordGloss",
+     "KeywordPicture", "Audio"],
+    [{
         "name": "Reading",
         "qfmt": '<div class="thai">{{Symbol}}</div>',
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{NameThai}}</div>'
                '{{KeywordPicture}}<div class="thai">{{KeywordThai}}</div>'
                '{{#KeywordGloss}}<div class="gloss">{{KeywordGloss}}</div>{{/KeywordGloss}}'
                '{{Audio}}<div class="ipa">{{Sound}}</div>',
-    }],
-    css=CARD_CSS)
+    }])
 
 SENTENCE_MODEL = _model(
     "sentence",
@@ -256,16 +178,11 @@ def _guid(family: str, *parts: str) -> str:
     return genanki.guid_for(family, *parts)
 
 
-# --- ThaiCloze: tokenized boundary replacement, never str.replace --------
-
 def thai_cloze(tokens: list[str], target_thai: str, blank: str = "___") -> str:
-    """Blank every token that boundary-matches `target_thai` (Syllabus.
-    _boundary_match's own rule: exact match, or a compound token starting/
-    ending with it) and rejoin. A whole matching token is blanked, never a
-    substring within it -- this is what actually prevents the "ยา"/
-    "โรงพยาบาล" corruption (str.replace would blind-match the substring
-    anywhere; token-boundary matching only ever considers whole tokens, and
-    "โรงพยาบาล" does not start or end with "ยา", so it is never touched).
+    """Blanks every token that boundary-matches `target_thai` (exact
+    match, or a compound token starting/ending with it) and rejoins.
+    Blanks a whole token, never a substring, so "โรงพยาบาล" ("hospital")
+    is untouched when blanking "ยา" ("medicine").
     """
     def matches(tok: str) -> bool:
         return tok == target_thai or tok.startswith(target_thai) or tok.endswith(target_thai)
@@ -277,12 +194,11 @@ def thai_cloze(tokens: list[str], target_thai: str, blank: str = "___") -> str:
 
 @dataclass
 class _Resolver:
-    """Resolves (subject, kind) to the CURRENT-BEST artifact (spec 3
-    derivations.current_best over `db` as a CacheReader), staged into the
-    package under its content-sha basename. `used` collects every
-    basename actually referenced, for _stage_media; `warnings` collects
-    non-fatal data-integrity notes (e.g. a resolved sha with no
-    media-table provenance row) that land in CompileReport.warnings.
+    """Resolves (subject, kind) to the current-best artifact, staged
+    under its content-sha basename. `used` maps each referenced basename
+    to its on-disk path (handed to genanki.Package as media_files);
+    `warnings` collects non-fatal data-integrity notes for
+    CompileReport.warnings.
     """
     db: "SyllabusDb"
     media_store: "MediaStore"
@@ -320,10 +236,8 @@ class _Resolver:
         return f'<img src="{got[0]}.{got[1]}">' if got else ""
 
     def rendition_sound(self, pair_id: str, sha: str) -> str:
-        """[sound:sha.ext] for one member sha of `pair_id`'s already-
-        resolved rendition (MediaIndex.rendition) -- ext comes from the
-        media table; a missing provenance row or on-disk object warns and
-        yields "" (the caller has already confirmed the rendition exists).
+        """[sound:sha.ext] for one member sha of `pair_id`'s rendition;
+        a missing provenance row or on-disk object warns and yields "".
         """
         prov = self.provenance(sha)
         if prov is None:
@@ -357,13 +271,10 @@ class _Resolver:
 
 @dataclass
 class _Positions:
-    """Where each order()-entry's due BLOCK starts, in STRIDE units, plus
-    one due block per (sentence, target) fill (spec 4 section 2): a
-    sentence's own block comes straight from its order() entry -- never
-    recomputed here. An entry's block is `width` units wide (a pair:
-    len(members); everything else: 1), so blocks are cumulative rather
-    than one-per-position -- a multi-member pair's block never overlaps
-    the next order()-entry's (spec 4 section 2, A5).
+    """Where each order()-entry's due block starts, in STRIDE units, plus
+    one due block per (sentence, target) fill. An entry's block is
+    `width` units wide (a pair: len(members); everything else: 1), so
+    blocks are cumulative and never overlap.
     """
     entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
     target_index: dict[str, int]          # target id -> block start
@@ -374,8 +285,7 @@ class _Positions:
 
 def _order_entry_width(entry: OrderEntry, pairs_by_id: Mapping[str, MinimalPair]) -> int:
     """Due-block width of one order() entry, in STRIDE units: a pair
-    needs one unit per member (_pair_notes places member i at
-    base_due + i * STRIDE); every other kind needs exactly one.
+    needs one unit per member; every other kind needs exactly one.
     """
     if entry.kind == "pair":
         pair = pairs_by_id.get(entry.id)
@@ -420,10 +330,9 @@ def _positions(syllabus: "Syllabus") -> _Positions:
 
 
 # --- note builders -----------------------------------------------------
-# Each returns (genanki.Note, due, family, subject) or None when the
-# family has nothing to compile for this item; the caller detects
-# per-template drops by comparing note.cards against the model's
-# templates after construction.
+# One builder per family, called from that family's *_items generator
+# below; each returns (genanki.Note, due) or None for an item with
+# nothing to compile.
 
 def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
                compile_id: str, positions: _Positions) -> tuple[genanki.Note, int] | None:
@@ -461,14 +370,11 @@ def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
 def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
                 resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> list[tuple[genanki.Note, int]]:
-    """One note per member of `pair`, both playing `recordings` (the
-    pair's current-best rendition, one Recording per member in member
-    order -- MediaIndex.rendition, already confirmed non-None by the
-    caller). `Choices` lists every member in that same fixed order on
-    every note, so which member is this note's own stimulus never shows
-    through choice position (spec 4 section 1). Member notes sit a
-    STRIDE apart (index 0 at `base_due`, index 1 at `base_due + STRIDE`,
-    ... -- spec 4 section 2, A5).
+    """One note per member of `pair`, all playing `recordings` (the
+    pair's current-best rendition, one per member, in member order).
+    `Choices` lists every member in that same fixed order on every note,
+    so which member is this note's own stimulus never shows through
+    choice position. Member notes sit one STRIDE apart.
     """
     base_due = positions.entry_index[pair.id] * STRIDE
     members = [syllabus.find_word(m) for m in pair.members]
@@ -507,9 +413,8 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
 class _GraphemeBuild:
     """Either a built note or the reason its card was dropped -- exactly
     one of `note`/`due` and `dropped_reason` is set. `dropped_reason` is
-    None also when the grapheme isn't compiled at all and isn't counted
-    (not in order(), or its keyword is unresolved -- syllabus/closure
-    already flags that).
+    also None when the grapheme isn't compiled at all and isn't counted
+    (not in order(), or its keyword is unresolved).
     """
     note: genanki.Note | None
     due: int | None
@@ -567,10 +472,8 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
     text_sha = sentence_note_id(sentence)
     productive = target.skill == "productive"
 
-    # kind = "recording"/"picture": the artifact kinds are the same ones a
-    # word's audio and picture carry, and text_sha as the subject is what
-    # tells a sentence's apart (attempts.Need's subject_kind names the same
-    # distinction on the sourcing side).
+    # A sentence's audio/picture are resolved by (text_sha, kind), the
+    # same artifact kinds a word's audio and picture carry.
     tags = ["family::sentence", f"target::{target.id}", f"sentence::{text_sha}",
            f"compile::{compile_id}", "kind::cloze", "kind::listening"]
     tags += resolver.src_tag("audio", text_sha, "recording")
@@ -647,24 +550,20 @@ def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Findi
 @dataclass(frozen=True)
 class _DropCause:
     """What a (model, template) pair's card-generation depends on: either
-    a `gate_field`, whose emptiness on the note means the card wasn't
-    asked for at all (the reason is `gate_reason`), or, when the gate
-    field is unset or present, the `artifact_kind` whose current-best
-    absence is why the card has no front (the reason is
-    "no current-best <artifact_kind>").
+    a `gate_field`, whose emptiness means the card wasn't asked for
+    (reason `gate_reason`), or the `artifact_kind` whose current-best
+    absence is why the card has no front ("no current-best
+    <artifact_kind>").
     """
     gate_field: str | None
     gate_reason: str | None
     artifact_kind: str
 
 
-# One entry per (model name, template name) whose card presence is
-# resolved through genanki's own required-field computation (verified
-# against genanki.Model._req / Note._front_back_cards for these exact
-# qfmt strings) rather than through an upfront check before any note
-# exists -- word and sentence, not grapheme or minimal_pair (their drop
-# reasons are decided before their fields/note are ever built, spec 4
-# section 1/3, and are already exhaustive with no generic fallback).
+# One entry per (model name, template name) for word and sentence, whose
+# card presence is resolved through genanki's own required-field
+# computation rather than decided before the note is built (grapheme and
+# minimal_pair decide their one drop reason before building the note).
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Listening"): _DropCause(None, None, "recording"),
     ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "recording"),
@@ -700,20 +599,11 @@ def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
            for ord_, tpl in enumerate(model.templates) if ord_ not in present_ords]
 
 
-def _stage_media(used: dict[str, Path], tmp_dir: Path) -> list[Path]:
-    # Content-sha basenames are already globally unique -- unlike
-    # thai_deck_gen/compiler/build.py's _resolve_media (deck-relative
-    # refs, needs collision namespacing), objects can be handed to
-    # genanki straight from media/objects/ with no staging copy needed.
-    return list(used.values())
-
-
 def _stamp_due(apkg_path: Path, due_by_guid_ord: dict[tuple[str, int], int]) -> None:
-    """Post-process pass (ported out of thai_deck_gen's compiler/build.py
-    stamp_due): genanki writes one `due` per NOTE onto every sibling card
-    (verified against genanki.Note.write_to_db), so per-template stride
-    separation needs this direct sqlite rewrite, keyed by (guid, ord)
-    instead of guid alone.
+    """genanki writes one `due` per note onto every one of its sibling
+    cards; this reopens the written .apkg's collection.anki2 and
+    overwrites `cards.due` directly, keyed by (note guid, card ord), so
+    sibling cards land at distinct, stride-separated due values.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -747,6 +637,84 @@ def _blocking_findings(findings: tuple[Finding, ...], syllabus: "Syllabus") -> l
            and not syllabus.assessments.is_waived(f)]
 
 
+@dataclass(frozen=True)
+class Built:
+    """One compiled note ready for the deck. `base_due` is the due value
+    for card ord 0; sibling cards land at base_due + card.ord. `model`
+    and `subject` are used to record this note's card fronts for
+    card/unique-front.
+    """
+    note: genanki.Note
+    base_due: int
+    family: str
+    subject: str
+    model: genanki.Model
+
+
+def _gated_items(built: tuple[genanki.Note, int] | None, model: genanki.Model,
+                 family: str, subject: str) -> Iterator[Built | DroppedCard]:
+    """DroppedCards for `built`'s un-produced templates, then its Built
+    record if any card survived; nothing when `built` is None.
+    """
+    if built is None:
+        return
+    note, base_due = built
+    yield from _dropped_for(note, model, family, subject)
+    if note.cards:
+        yield Built(note, base_due, family, subject, model)
+
+
+def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
+                positions: _Positions) -> Iterator[Built | DroppedCard]:
+    targeted_word_ids = {t.word for t in syllabus.targets}
+    for word in syllabus.words:
+        if word.id not in targeted_word_ids:
+            continue
+        built = _word_note(syllabus, word, resolver, compile_id, positions)
+        yield from _gated_items(built, WORD_MODEL, "word", word.id)
+
+
+def _pair_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
+                positions: _Positions) -> Iterator[Built | DroppedCard]:
+    for pair in syllabus.pairs:
+        if pair.id not in positions.entry_index:
+            continue
+        recordings = syllabus.media.rendition(pair.id)
+        if recordings is None:
+            yield DroppedCard(family="minimal_pair", kind="Recognition",
+                              subject=pair.id, reason="no rendition")
+            continue
+        for note, base_due in _pair_notes(pair, syllabus, recordings, resolver,
+                                          compile_id, positions):
+            yield Built(note, base_due, "minimal_pair", note.fields[0], MINIMAL_PAIR_MODEL)
+
+
+def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
+                    positions: _Positions) -> Iterator[Built | DroppedCard]:
+    for grapheme in syllabus.graphemes:
+        built = _grapheme_note(grapheme, syllabus, resolver, compile_id, positions)
+        if built.dropped_reason is not None:
+            yield DroppedCard(family="grapheme", kind="Reading",
+                              subject=grapheme.symbol, reason=built.dropped_reason)
+            continue
+        if built.note is None:
+            continue
+        note, base_due = built.note, built.due
+        if not note.cards:
+            yield DroppedCard(family="grapheme", kind="Reading", subject=grapheme.symbol,
+                              reason="Symbol field unexpectedly empty")
+            continue
+        yield Built(note, base_due, "grapheme", grapheme.symbol, GRAPHEME_MODEL)
+
+
+def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
+                    compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
+    for sentence, target, due_block in positions.sentence_entries:
+        built = _sentence_note(sentence, target, due_block, syllabus, resolver, compile_id)
+        subject = f"{target.id}:{sentence_note_id(sentence)}"
+        yield from _gated_items(built, SENTENCE_MODEL, "sentence", subject)
+
+
 def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore",
                      out_path: str | Path, *, force: bool = False,
                      now: Callable[[], float] = time.time) -> Compile:
@@ -775,77 +743,21 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     due_by_guid_ord: dict[tuple[str, int], int] = {}
     front_entries: list[tuple[str, str, str]] = []
 
-    targeted_word_ids = {t.word for t in syllabus.targets}
-    for word in syllabus.words:
-        if word.id not in targeted_word_ids:
+    family_items = chain(
+        _word_items(syllabus, resolver, compile_id, positions),
+        _pair_items(syllabus, resolver, compile_id, positions),
+        _grapheme_items(syllabus, resolver, compile_id, positions),
+        _sentence_items(syllabus, resolver, compile_id, positions))
+    for item in family_items:
+        if isinstance(item, DroppedCard):
+            dropped.append(item)
             continue
-        built = _word_note(syllabus, word, resolver, compile_id, positions)
-        if built is None:
-            continue
-        note, base_due = built
-        dropped.extend(_dropped_for(note, WORD_MODEL, "word", word.id))
-        if not note.cards:
-            continue
-        deck.add_note(note)
-        _record_fronts(front_entries, WORD_MODEL, word.id, note)
-        for c in note.cards:
-            due_by_guid_ord[(note.guid, c.ord)] = base_due + c.ord
+        deck.add_note(item.note)
+        _record_fronts(front_entries, item.model, item.subject, item.note)
+        for c in item.note.cards:
+            due_by_guid_ord[(item.note.guid, c.ord)] = item.base_due + c.ord
         notes_written += 1
-        cards_written += len(note.cards)
-
-    for pair in syllabus.pairs:
-        if pair.id not in positions.entry_index:
-            continue
-        recordings = syllabus.media.rendition(pair.id)
-        if recordings is None:
-            dropped.append(DroppedCard(family="minimal_pair", kind="Recognition",
-                                       subject=pair.id, reason="no rendition"))
-            continue
-        for note, base_due in _pair_notes(pair, syllabus, recordings, resolver,
-                                          compile_id, positions):
-            deck.add_note(note)
-            _record_fronts(front_entries, MINIMAL_PAIR_MODEL, note.fields[0], note)
-            due_by_guid_ord[(note.guid, 0)] = base_due
-            notes_written += 1
-            cards_written += len(note.cards)
-
-    for grapheme in syllabus.graphemes:
-        built = _grapheme_note(grapheme, syllabus, resolver, compile_id, positions)
-        if built.dropped_reason is not None:
-            dropped.append(DroppedCard(family="grapheme", kind="Reading",
-                                       subject=grapheme.symbol,
-                                       reason=built.dropped_reason))
-            continue
-        if built.note is None:
-            continue
-        note, base_due = built.note, built.due
-        if not note.cards:
-            dropped.append(DroppedCard(family="grapheme", kind="Reading",
-                                       subject=grapheme.symbol,
-                                       reason="Symbol field unexpectedly empty"))
-            continue
-        deck.add_note(note)
-        _record_fronts(front_entries, GRAPHEME_MODEL, grapheme.symbol, note)
-        due_by_guid_ord[(note.guid, 0)] = base_due
-        notes_written += 1
-        cards_written += len(note.cards)
-
-    for sentence, target, due_block in positions.sentence_entries:
-        built = _sentence_note(sentence, target, due_block, syllabus, resolver, compile_id)
-        if built is None:
-            continue
-        note, base_due = built
-        dropped.extend(_dropped_for(note, SENTENCE_MODEL, "sentence",
-                                    f"{target.id}:{sentence_note_id(sentence)}"))
-        if not note.cards:
-            continue
-        deck.add_note(note)
-        _record_fronts(front_entries, SENTENCE_MODEL,
-                       f"{target.id}:{sentence_note_id(sentence)}", note)
-        for c in note.cards:
-            due_by_guid_ord[(note.guid, c.ord)] = base_due + c.ord
-        notes_written += 1
-        cards_written += len(note.cards)
+        cards_written += len(item.note.cards)
 
     unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)
     front_findings = _duplicate_front_findings(front_entries) if unique_front_rule else []
@@ -862,12 +774,11 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_out = out_path.with_suffix(out_path.suffix + ".tmp")
-    with tempfile.TemporaryDirectory() as tmp:
-        media_paths = _stage_media(resolver.used, Path(tmp))
-        genanki.Package(deck, media_files=[str(p) for p in media_paths]).write_to_file(
-            str(tmp_out), timestamp=now())
+    media_paths = [str(p) for p in resolver.used.values()]
+    genanki.Package(deck, media_files=media_paths).write_to_file(
+        str(tmp_out), timestamp=now())
     _stamp_due(tmp_out, due_by_guid_ord)
-    os.replace(tmp_out, out_path)  # atomic (thai_deck_gen/compiler/build.py's pattern)
+    os.replace(tmp_out, out_path)  # atomic
 
     compile_report = CompileReport(
         compile_id=compile_id, gate=gate, forced=force,
