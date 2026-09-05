@@ -22,7 +22,7 @@ from typing import Any, Literal, TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .ids import ConfusionId, PairId, WordId
-    from .media import Speaker
+    from .media import Recording, Speaker
     from .rules import Finding
 
 
@@ -83,6 +83,13 @@ class MediaIndex(Protocol):
         """
         ...
 
+    def rendition(self, pair_id: "PairId") -> "tuple[Recording, ...] | None":
+        """The pair's current-best rendition (spec 3 section 5): one
+        Recording per member, in member order; None when the pair has no
+        current-best rendition.
+        """
+        ...
+
     def picture_sha(self, word: "WordId") -> str | None:
         """The current-best picture's artifact sha, or None."""
         ...
@@ -122,6 +129,9 @@ class NullMediaIndex:
 
     def rendition_provenance(self, pair_id: "PairId") -> tuple[Mapping[str, Any], ...]:
         return ()
+
+    def rendition(self, pair_id: "PairId") -> "tuple[Recording, ...] | None":
+        return None
 
     def picture_sha(self, word: "WordId") -> str | None:
         return None

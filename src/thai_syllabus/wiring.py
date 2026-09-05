@@ -72,6 +72,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -90,7 +91,7 @@ from .curated import (
 from .derivations import current_best
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
-from .media import Speaker
+from .media import Provenance, Recording, Speaker
 from .query import QUERY_HINTS
 from .provider import (
     Backend,
@@ -492,6 +493,37 @@ class _DbMediaIndex:
             if prov is not None:
                 rows.append(prov)
         return tuple(rows)
+
+    def rendition(self, pair_id: PairId) -> tuple[Recording, ...] | None:
+        """The pair's current-best rendition (ports.py's MediaIndex.
+        rendition): one Recording per member, in member order, built from
+        the deciding "rendition" row's params["members"] (word id -> sha)
+        and each sha's `media` row. None when the pair has no current-best
+        rendition, or when a member's sha has no media provenance row.
+        """
+        best = self._best(pair_id, "rendition")
+        if best.artifact_sha is None:
+            return None
+        row = self._deciding_row(pair_id, best.artifact_sha)
+        members = row.question.get("params", {}).get("members", {}) if row else {}
+        pair = next((p for p in self.pairs if p.id == pair_id), None)
+        if pair is None:
+            return None
+
+        recordings: list[Recording] = []
+        for member in pair.members:
+            sha = members.get(member)
+            prov = self.db.media_provenance(sha) if sha else None
+            speaker = prov.get("speaker") if prov else None
+            if prov is None or speaker is None:
+                return None
+            recordings.append(Recording(
+                sha=sha,
+                provenance=Provenance(source=prov["source"], origin=prov["origin"],
+                                      licence=prov["licence"],
+                                      acquired=date.fromisoformat(prov["acquired"])),
+                speaker=speaker))
+        return tuple(recordings)
 
     def picture_sha(self, word: WordId) -> str | None:
         return self._best(word, "picture").artifact_sha

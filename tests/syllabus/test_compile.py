@@ -8,11 +8,13 @@ tests/gen/helpers_apkg.py already use.
 The `ยา`/`โรงพยาบาล` (medicine/hospital) substring-corruption case is
 table-tested directly against `thai_cloze`, without a full compile.
 """
+import dataclasses
 from datetime import date
 
 import pytest
 
 from thai_syllabus.authority import ROLE_FOR_KIND
+from thai_syllabus.cachekeys import rendition_identity
 from thai_syllabus.compile import GateRefusal, STRIDE, compile_syllabus, thai_cloze
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
@@ -22,8 +24,10 @@ from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import RULES, sentence_note_id
+from thai_syllabus.rules import DroppedCard
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
+from thai_syllabus.wiring import _DbMediaIndex
 
 from tests.gen.helpers_apkg import read_apkg
 
@@ -124,6 +128,31 @@ class Fixture:
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "picture", sha)
         return sha
+
+    def seed_rendition(self, pair: MinimalPair, texts: dict[str, str],
+                       speaker="somchai") -> dict[str, str]:
+        """Writes the passing "rendition" mechanical verdict (spec 3
+        section 5) that makes `pair.id` resolve a current-best rendition:
+        one recording per member, all under the same speaker. Returns
+        member id -> sha.
+        """
+        self.db.add_speaker(Speaker(id=speaker, kind="native"))
+        shas: dict[str, str] = {}
+        for member in pair.members:
+            sha = self.media.write(f"rendition:{pair.id}:{member}:{texts[member]}".encode(),
+                                   ext="mp3")
+            self.db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                              origin="https://forvo.com/x", licence="cc-by",
+                              acquired=date(2026, 1, 1), speaker_id=speaker)
+            shas[member] = sha
+        self.db.append(port="assess", backend="rendition", key=f"rendition:{pair.id}",
+                       subject=pair.id,
+                       question={"role": "rendition-for-pair",
+                                "artifact_sha": rendition_identity(shas),
+                                "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                                "params": {"members": shas}},
+                       answer={"value": True})
+        return shas
 
 
 @pytest.fixture
@@ -480,28 +509,145 @@ def test_grapheme_name_thai_degrades_gracefully_without_a_name_word(fx):
     assert fields["NameThai"] == "ก ไก่"  # symbol + keyword, no name_word
 
 
+# --- compile: minimal_pair notes play the pair's rendition ---------------
+
+def _pair_only_syllabus(tokenizer) -> tuple[Syllabus, MinimalPair]:
+    near = _word("near", "ใกล้", "near", tone="mid")
+    far = _word("far", "ไกล", "far", tone="low")
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    pair = MinimalPair.create(id=PairId("p1"), confusion=confusion, members=(near, far))
+    syllabus = Syllabus(words=(near, far), pairs=(pair,), confusions=(confusion,),
+                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    return syllabus, pair
+
+
+def _compile_pair(fx, *, with_rendition: bool):
+    """Compiles a Syllabus holding one pair (p1: near/far), its `media`
+    port a real _DbMediaIndex over `fx.db`; seeds a passing rendition
+    first unless `with_rendition` is False. Returns (compiled, shas, notes)
+    where `shas` is member id -> the seeded rendition's sha (empty when
+    none was seeded) and each of `notes` is {fields, tags, due}.
+    """
+    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    shas = fx.seed_rendition(pair, {"near": "near", "far": "far"}) if with_rendition else {}
+    syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    pkg = read_apkg(fx.out_path)
+    pair_model = next((m for m in pkg["models"].values() if m["name"] == "minimal_pair"), None)
+    if pair_model is None:
+        return compiled, shas, []
+    field_names = [f["name"] for f in pair_model["flds"]]
+    raw_notes = [n for n in pkg["notes"] if str(n["mid"]) == pair_model["id"]]
+    notes = [{"fields": dict(zip(field_names, n["flds"])),
+             "tags": n["tags"].split(" "),
+             "due": min(c["due"] for c in pkg["cards"] if c["nid"] == n["id"])}
+            for n in raw_notes]
+    return compiled, shas, notes
+
+
 def test_minimal_pair_notes_one_per_member_with_playable_audio_both_sides(fx):
-    syllabus = _fully_seeded(fx)
+    compiled, shas, notes = _compile_pair(fx, with_rendition=True)
+    assert len(notes) == 2  # one per member
+
+    by_stimulus = {n["fields"]["Stimulus"]: n for n in notes}
+    near = by_stimulus["ใกล้"]  # near
+    assert near["fields"]["MemberKey"].startswith("p1:")
+    assert near["fields"]["Audio"] == f"[sound:{shas['near']}.mp3]"
+    assert near["fields"]["OtherAudio"] == f"[sound:{shas['far']}.mp3]"
+
+    for n in notes:
+        assert n["fields"]["CompileId"] == compiled.compile_id
+        assert "family::minimal_pair" in n["tags"]
+        assert "confusion::tone:mid-low" in n["tags"]
+        assert "pair::p1" in n["tags"]
+
+
+def test_pair_notes_use_the_rendition_not_member_recordings(fx):
+    _compiled, shas, notes = _compile_pair(fx, with_rendition=True)
+    audio = {n["fields"]["Audio"] for n in notes}
+    assert audio == {f"[sound:{shas['near']}.mp3]", f"[sound:{shas['far']}.mp3]"}
+    assert len({n["fields"]["Speaker"] for n in notes}) == 1
+
+
+def test_pair_without_a_rendition_is_dropped_and_counted(fx):
+    compiled, _shas, notes = _compile_pair(fx, with_rendition=False)
+    assert notes == []
+    assert compiled.report.dropped == (
+        DroppedCard(family="minimal_pair", kind="Recognition", subject="p1",
+                   reason="no rendition"),)
+
+
+def test_pair_choices_are_in_member_order_on_both_notes(fx):
+    _compiled, _shas, notes = _compile_pair(fx, with_rendition=True)
+    choices = {n["fields"]["Choices"] for n in notes}
+    assert choices == {"ใกล้ / ไกล"}  # near / far, in member order on every note
+
+
+def test_pair_member_notes_are_not_adjacent(fx):
+    _compiled, _shas, notes = _compile_pair(fx, with_rendition=True)
+    dues = sorted(n["due"] for n in notes)
+    assert dues[1] - dues[0] >= STRIDE
+
+
+def test_two_pair_blocks_and_a_following_word_target_never_overlap(fx):
+    # order() places pairs (sorted by id) before word targets: pA, then
+    # pB, then chicken/receptive -- pA's and pB's due blocks must each be
+    # wide enough for their own members (width = member count) before the
+    # next entry's block starts, or pB's/chicken's dues would collide with
+    # pA's/pB's own member dues (the fix round 1 regression).
+    tokenizer = _SplitTokenizer({})
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    near = _word("near", "ใกล้", "near", tone="mid")
+    far = _word("far", "ไกล", "far", tone="low")
+    pair_a = MinimalPair.create(id=PairId("pA"), confusion=confusion, members=(near, far))
+    dog = _word("dog", "หมา", "dog", tone="mid")        # dog
+    horse = _word("horse", "ม้า", "horse", tone="low")  # horse
+    pair_b = MinimalPair.create(id=PairId("pB"), confusion=confusion, members=(dog, horse))
+    chicken = _word("chicken", "ไก่", "chicken")
+    target = Target(id=TargetId("chicken/receptive"), word=chicken.id, skill="receptive")
+
+    syllabus = Syllabus(words=(near, far, dog, horse, chicken), targets=(target,),
+                        pairs=(pair_a, pair_b), confusions=(confusion,),
+                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    fx.seed_rendition(pair_a, {"near": "near", "far": "far"})
+    fx.seed_rendition(pair_b, {"dog": "dog", "horse": "horse"})
+    syllabus = dataclasses.replace(
+        syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair_a, pair_b)))
+
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
     pkg = read_apkg(fx.out_path)
-    models = pkg["models"]
-    pair_model = next(m for m in models.values() if m["name"] == "minimal_pair")
-    field_names = [f["name"] for f in pair_model["flds"]]
-    pair_notes = [n for n in pkg["notes"] if str(n["mid"]) == pair_model["id"]]
-    assert len(pair_notes) == 2  # one per member
 
-    by_thai = {dict(zip(field_names, n["flds"]))["Thai"]: n for n in pair_notes}
-    near_fields = dict(zip(field_names, by_thai["ใกล้"]["flds"]))
-    assert near_fields["MemberKey"].startswith("tone:mid-low/klai:")
-    assert near_fields["Audio"].startswith("[sound:")
-    assert near_fields["OtherAudio"].startswith("[sound:")
-    assert near_fields["OtherThai"] == "ไกล"
+    pair_model = next(m for m in pkg["models"].values() if m["name"] == "minimal_pair")
+    word_model = next(m for m in pkg["models"].values() if m["name"] == "word")
+    word_field_names = [f["name"] for f in word_model["flds"]]
 
-    for note in pair_notes:
-        tags = note["tags"].split(" ")
-        assert "family::minimal_pair" in tags
-        assert "confusion::tone:mid-low" in tags
-        assert "pair::tone:mid-low/klai" in tags
+    def dues_of(note_id: str) -> list[int]:
+        return [c["due"] for c in pkg["cards"] if c["nid"] == note_id]
+
+    def pair_member_dues(pair_id: str) -> list[int]:
+        notes = [n for n in pkg["notes"] if str(n["mid"]) == pair_model["id"]
+                and n["flds"][0].split(":")[0] == pair_id]
+        return [d for n in notes for d in dues_of(n["id"])]
+
+    a_dues = pair_member_dues("pA")
+    b_dues = pair_member_dues("pB")
+    chicken_note = next(n for n in pkg["notes"] if str(n["mid"]) == word_model["id"]
+                        and dict(zip(word_field_names, n["flds"]))["Thai"] == "ไก่")  # chicken
+    chicken_dues = dues_of(chicken_note["id"])
+
+    assert len(a_dues) == len(b_dues) == 2  # one due per member, both pairs
+    assert chicken_dues
+
+    all_dues = a_dues + b_dues + chicken_dues
+    assert len(all_dues) == len(set(all_dues))  # every due, across every block, is distinct
+    assert max(a_dues) - min(a_dues) < STRIDE * len(pair_a.members)  # inside pA's own block
+    assert max(b_dues) - min(b_dues) < STRIDE * len(pair_b.members)  # inside pB's own block
+    assert max(a_dues) < min(b_dues)        # pA's block ends before pB's starts
+    assert max(b_dues) < min(chicken_dues)  # pB's block ends before chicken's starts
 
 
 def test_sentence_note_cloze_and_listening(fx):

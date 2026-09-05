@@ -47,12 +47,14 @@ class FakeMediaIndex:
                 rendition_speakers: dict[str, frozenset[str]] | None = None,
                 recording_provenance: dict[str, dict] | None = None,
                 rendition_provenance: dict[str, tuple] | None = None,
+                renditions: dict[str, tuple] | None = None,
                 speakers: dict[str, tuple] | None = None):
         self._pictures = set(pictures or set())
         self._recordings = dict(recording_speakers or {})
         self._renditions = dict(rendition_speakers or {})
         self._recording_provenance = dict(recording_provenance or {})
         self._rendition_provenance = dict(rendition_provenance or {})
+        self._pair_renditions = dict(renditions or {})
         self._speakers = dict(speakers or {})
 
     def has_picture(self, word) -> bool:
@@ -69,6 +71,9 @@ class FakeMediaIndex:
 
     def rendition_provenance(self, pair_id) -> tuple:
         return self._rendition_provenance.get(pair_id, ())
+
+    def rendition(self, pair_id) -> tuple | None:
+        return self._pair_renditions.get(pair_id)
 
     def picture_sha(self, word) -> str | None:
         return f"sha-{word}" if word in self._pictures else None

@@ -47,6 +47,11 @@ didn't spell out):
   has 2-3 members (spec 1 section 1); `OtherAudio` concatenates one
   `[sound:...]` tag per other member -- Anki renders each as its own
   playable control, so this covers 3-member pairs without extra fields.
+- **minimal_pair's audio source**: every member note of a pair plays the
+  PAIR's current-best rendition (spec 3 section 5), resolved through
+  `syllabus.media.rendition(pair.id)`, never a member's own current-best
+  word recording. A pair with no current-best rendition compiles no notes
+  for either member (DroppedCard reason "no rendition").
 - **card_key's word/pair anchor** (ports.py's StudyRecord docstring says
   "target/pair/grapheme id"): for a WORD's cards this is the WORD id, not
   a specific Target id -- a word note aggregates every Target the word
@@ -108,7 +113,7 @@ import genanki
 from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
 from .rulebook import sentence_note_id
-from .rules import Compile, CompileReport, DroppedCard, Finding, Report
+from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
 
 if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
@@ -195,16 +200,15 @@ WORD_MODEL = _model(
 
 MINIMAL_PAIR_MODEL = _model(
     "minimal_pair",
-    ["MemberKey", "Thai", "Ipa", "Audio", "OtherThai", "OtherIpa", "OtherAudio"],
+    ["MemberKey", "Speaker", "Choices", "Audio", "Stimulus", "Ipa", "OtherIpa", "OtherAudio"],
     [{
         "name": "Recognition",
         "qfmt": '{{Audio}}<div>Which word did you hear?</div>'
-               '<div class="choices">{{Thai}} / {{OtherThai}}</div>',
+               '<div class="choices">{{Choices}}</div>',
         "afmt": '{{FrontSide}}<hr id="answer">'
-               '<div class="answer">you heard: {{Thai}} '
-               '<span class="ipa">[{{Ipa}}]</span> {{Audio}}</div>'
-               '<div class="other">{{OtherThai}} '
-               '<span class="ipa">[{{OtherIpa}}]</span> {{OtherAudio}}</div>',
+               '<div class="answer">you heard: {{Stimulus}} '
+               '<span class="ipa">[{{Ipa}}]</span></div>'
+               '<div class="other"><span class="ipa">[{{OtherIpa}}]</span> {{OtherAudio}}</div>',
     }])
 
 # Audio is a field but not referenced by qfmt (a grapheme's front is
@@ -297,16 +301,16 @@ class _Resolver:
                 f"current-best {kind} {best.artifact_sha!r} for {subject!r} "
                 f"has no media provenance row -- skipped")
             return None
-        ext = prov["ext"]
-        path = self.media_store.path_for(best.artifact_sha, ext)
+        return self._stage(best.artifact_sha, prov["ext"], f"subject={subject!r} kind={kind!r}")
+
+    def _stage(self, sha: str, ext: str, context: str) -> tuple[str, str] | None:
+        path = self.media_store.path_for(sha, ext)
         if not path.exists():
-            self.warnings.append(
-                f"media object missing on disk: {best.artifact_sha}.{ext} "
-                f"(subject={subject!r} kind={kind!r})")
+            self.warnings.append(f"media object missing on disk: {sha}.{ext} ({context})")
             return None
-        basename = f"{best.artifact_sha}.{ext}"
+        basename = f"{sha}.{ext}"
         self.used[basename] = path
-        return best.artifact_sha, ext
+        return sha, ext
 
     def sound(self, subject: str, kind: str) -> str:
         got = self.artifact(subject, kind)
@@ -315,6 +319,21 @@ class _Resolver:
     def img(self, subject: str, kind: str) -> str:
         got = self.artifact(subject, kind)
         return f'<img src="{got[0]}.{got[1]}">' if got else ""
+
+    def rendition_sound(self, pair_id: str, sha: str) -> str:
+        """[sound:sha.ext] for one member sha of `pair_id`'s already-
+        resolved rendition (MediaIndex.rendition) -- ext comes from the
+        media table; a missing provenance row or on-disk object warns and
+        yields "" (the caller has already confirmed the rendition exists).
+        """
+        prov = self.provenance(sha)
+        if prov is None:
+            self.warnings.append(
+                f"rendition member sha {sha!r} for pair {pair_id!r} has no "
+                "media provenance row -- skipped")
+            return ""
+        got = self._stage(sha, prov["ext"], f"pair={pair_id!r}")
+        return f"[sound:{got[0]}.{got[1]}]" if got else ""
 
     def provenance(self, sha: str) -> dict[str, Any] | None:
         return self.db.media_provenance(sha)
@@ -339,42 +358,61 @@ class _Resolver:
 
 @dataclass
 class _Positions:
-    """Where each order()-entry sits, plus one due block per (sentence,
-    target) fill (spec 4 section 2): a sentence's own position comes
-    straight from its order() entry -- never recomputed here.
+    """Where each order()-entry's due BLOCK starts, in STRIDE units, plus
+    one due block per (sentence, target) fill (spec 4 section 2): a
+    sentence's own block comes straight from its order() entry -- never
+    recomputed here. An entry's block is `width` units wide (a pair:
+    len(members); everything else: 1), so blocks are cumulative rather
+    than one-per-position -- a multi-member pair's block never overlaps
+    the next order()-entry's (spec 4 section 2, A5).
     """
-    entry_index: dict[str, int]           # grapheme symbol / pair id -> position
-    target_index: dict[str, int]          # target id -> position
-    word_index: dict[str, int]            # word id -> min position of its targets
+    entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
+    target_index: dict[str, int]          # target id -> block start
+    word_index: dict[str, int]            # word id -> min block start of its targets
     sentence_entries: list[tuple[Sentence, Target, int]]  # (sentence, target, due block index)
     order_length: int
 
 
+def _order_entry_width(entry: OrderEntry, pairs_by_id: Mapping[str, MinimalPair]) -> int:
+    """Due-block width of one order() entry, in STRIDE units: a pair
+    needs one unit per member (_pair_notes places member i at
+    base_due + i * STRIDE); every other kind needs exactly one.
+    """
+    if entry.kind == "pair":
+        pair = pairs_by_id.get(entry.id)
+        return len(pair.members) if pair is not None else 1
+    return 1
+
+
 def _positions(syllabus: "Syllabus") -> _Positions:
     order_list = syllabus.order()
+    pairs_by_id = {p.id: p for p in syllabus.pairs}
     entry_index: dict[str, int] = {}
     target_index: dict[str, int] = {}
     word_index: dict[str, int] = {}
     sentence_position: dict[str, int] = {}
     target_word = {t.id: t.word for t in syllabus.targets}
-    for i, entry in enumerate(order_list):
+    block = 0
+    for entry in order_list:
         if entry.kind == "word_target":
-            target_index[entry.id] = i
+            target_index[entry.id] = block
             word = target_word[entry.id]
-            word_index[word] = min(word_index.get(word, i), i)
+            word_index[word] = min(word_index.get(word, block), block)
         elif entry.kind == "sentence":
-            sentence_position[entry.id] = i
+            sentence_position[entry.id] = block
         else:
-            entry_index[entry.id] = i
+            entry_index[entry.id] = block
+        block += _order_entry_width(entry, pairs_by_id)
+    total_blocks = block
 
     fills_entries: list[tuple[Sentence, Target, int]] = []
     for s in syllabus.sentences:
         for t in syllabus.targets:
             if syllabus.fills(s, t):
-                position = sentence_position.get(sentence_note_id(s), len(order_list))
+                position = sentence_position.get(sentence_note_id(s), total_blocks)
                 fills_entries.append((s, t, position))
     fills_entries.sort(key=lambda e: (e[2], sentence_note_id(e[0]), e[1].id))
-    sentence_entries = [(s, t, len(order_list) + i)
+    sentence_entries = [(s, t, total_blocks + i)
                         for i, (s, t, _) in enumerate(fills_entries)]
 
     return _Positions(entry_index=entry_index, target_index=target_index,
@@ -432,38 +470,47 @@ def _ipa(word: Word) -> str:
     return ".".join(f"{s.onset}{s.vowel}{s.coda}" for s in word.pron.syllables)
 
 
-def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", resolver: _Resolver,
-                compile_id: str, positions: _Positions) -> list[tuple[genanki.Note, int]]:
-    if pair.id not in positions.entry_index:
-        return []
+def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
+                resolver: _Resolver, compile_id: str,
+                positions: _Positions) -> list[tuple[genanki.Note, int]]:
+    """One note per member of `pair`, both playing `recordings` (the
+    pair's current-best rendition, one Recording per member in member
+    order -- MediaIndex.rendition, already confirmed non-None by the
+    caller). `Choices` lists every member in that same fixed order on
+    every note, so which member is this note's own stimulus never shows
+    through choice position (spec 4 section 1). Member notes sit a
+    STRIDE apart (index 0 at `base_due`, index 1 at `base_due + STRIDE`,
+    ... -- spec 4 section 2, A5).
+    """
     base_due = positions.entry_index[pair.id] * STRIDE
     members = [syllabus.find_word(m) for m in pair.members]
     if any(m is None for m in members):
         return []  # syllabus/closure already flags this; compile just skips it
 
+    choices = " / ".join(m.thai for m in members)
     notes = []
     for i, member in enumerate(members):
-        others = [m for j, m in enumerate(members) if j != i]
-        speaker = resolver.speaker(member.id, "recording")
+        other_indices = [j for j in range(len(members)) if j != i]
+        speaker = recordings[i].speaker.id
         member_key = f"{pair.id}:{speaker}:{i}"
-        tags = [f"family::minimal_pair", f"pair::{pair.id}",
+        tags = ["family::minimal_pair", f"pair::{pair.id}",
                f"confusion::{pair.confusion}", f"compile::{compile_id}",
-               "kind::recognition"]
-        tags += resolver.src_tag("audio", member.id, "recording")
+               "kind::recognition", f"audio-src::{recordings[i].provenance.source}"]
         fields = [
             member_key,
+            speaker,
+            choices,
+            resolver.rendition_sound(pair.id, recordings[i].sha),
             member.thai,
             _ipa(member),
-            resolver.sound(member.id, "recording"),
-            " / ".join(o.thai for o in others),
-            " / ".join(_ipa(o) for o in others),
-            "".join(resolver.sound(o.id, "recording") for o in others),
+            " / ".join(_ipa(members[j]) for j in other_indices),
+            "".join(resolver.rendition_sound(pair.id, recordings[j].sha) for j in other_indices),
             "",
             compile_id,
         ]
         note = genanki.Note(model=MINIMAL_PAIR_MODEL, fields=fields, tags=tags,
                             guid=_guid("minimal_pair", member_key))
-        notes.append((note, base_due + i))
+        notes.append((note, base_due + i * STRIDE))
     return notes
 
 
@@ -693,12 +740,15 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
         cards_written += len(note.cards)
 
     for pair in syllabus.pairs:
-        for note, base_due in _pair_notes(pair, syllabus, resolver, compile_id, positions):
-            if not note.cards:
-                dropped.append(DroppedCard(family="minimal_pair", kind="Recognition",
-                                           subject=note.fields[0],
-                                           reason="no current-best recording resolves"))
-                continue
+        if pair.id not in positions.entry_index:
+            continue
+        recordings = syllabus.media.rendition(pair.id)
+        if recordings is None:
+            dropped.append(DroppedCard(family="minimal_pair", kind="Recognition",
+                                       subject=pair.id, reason="no rendition"))
+            continue
+        for note, base_due in _pair_notes(pair, syllabus, recordings, resolver,
+                                          compile_id, positions):
             deck.add_note(note)
             _record_fronts(front_entries, MINIMAL_PAIR_MODEL, note.fields[0], note)
             due_by_guid_ord[(note.guid, 0)] = base_due
