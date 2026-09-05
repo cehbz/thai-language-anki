@@ -12,10 +12,10 @@ nanosecond resolution combined with a per-connection monotonic bump (see
 a synthetic surrogate key.
 
 AssessmentReader.verdict / .is_waived / RecordWriter.append /
-StudyReader.records are all implemented here exactly as ports.py declares
-them; SyllabusDb also exposes some extra, non-Protocol methods (
-assessments_of, append_judge_verdict, append_waiver, append_study,
-add_sentence, add_media, set_pair_confusions) that spec 2 section 3 or the
+StudyReader.records / StudyReader.study_rows are all implemented here
+exactly as ports.py declares them; SyllabusDb also exposes some extra,
+non-Protocol methods (assessments_of, append_judge_verdict, append_waiver,
+append_study, add_sentence, add_media) that spec 2 section 3 or the
 migration/testing surface needs but spec 1's frozen Protocols do not
 declare.
 
@@ -88,7 +88,6 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -160,9 +159,9 @@ create table if not exists study (
     compile_id text not null,
     ts integer not null,
     grade integer not null,
-    time_ms integer not null
+    time_ms integer not null,
+    primary key (card_key, ts)
 );
-create index if not exists study_card_key on study (card_key);
 """
 
 
@@ -195,36 +194,28 @@ def _row_to_answer(row: tuple) -> Answer:
                  answer=json.loads(answer), cost=cost, ts=ts)
 
 
+def _row_to_study_record(row: tuple) -> StudyRecord:
+    card_key, compile_id, ts, grade, time_ms = row
+    return StudyRecord(card_key=card_key, compile_id=compile_id, ts=ts,
+                       grade=grade, time_ms=time_ms)
+
+
 class SyllabusDb:
     """The append-only sqlite store: sentences, media provenance, cache,
     study (spec 2 section 2). One connection, WAL mode, one transaction
     per append.
     """
 
-    def __init__(self, path: str | Path,
-                pair_confusions: Mapping[str, str] | None = None):
+    def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(self.path, isolation_level=None)
         self._con.execute("pragma journal_mode=WAL")
         self._con.executescript(_SCHEMA)
         self._last_ts = 0
-        # card_key -> confusion resolution for StudyReader.records(confusion):
-        # the study table only stores card_key, so aggregating "every pair
-        # card under this confusion" needs curated pairs' confusion field,
-        # which this store doesn't own (curated.py does). Callers that want
-        # confusion-level study queries supply the mapping explicitly.
-        self._pair_confusions: dict[str, str] = dict(pair_confusions or {})
 
     def close(self) -> None:
         self._con.close()
-
-    def set_pair_confusions(self, pair_confusions: Mapping[str, str]) -> None:
-        """pair_id -> confusion_id, from curated/pairs.yaml. Used only by
-        StudyReader.records() when asked for a confusion rather than a
-        literal card_key.
-        """
-        self._pair_confusions = dict(pair_confusions)
 
     def _next_ts(self, requested: int | None = None) -> int:
         base = requested if requested is not None else time.time_ns()
@@ -330,8 +321,12 @@ class SyllabusDb:
     # --- study / StudyReader ----------------------------------------------
 
     def append_study(self, *, card_key: str, compile_id: str, grade: int,
-                     time_ms: int, ts: int | None = None) -> None:
-        """`ts` defaults to an auto-generated, collision-avoided value (via
+                     time_ms: int, ts: int | None = None) -> bool:
+        """Insert-or-ignore on the table's primary key (card_key, ts).
+        Returns True if a new row was inserted, False if that exact
+        (card_key, ts) pair already had one.
+
+        `ts` defaults to an auto-generated, collision-avoided value (via
         `_next_ts`, the cache table's own convention) for callers with no
         externally meaningful timestamp of their own. An EXPLICIT `ts` --
         anki_import.py's revlog import passes the revlog row's own
@@ -347,45 +342,27 @@ class SyllabusDb:
         if ts is None:
             ts = self._next_ts()
         with self._con:
-            self._con.execute(
-                "insert into study (card_key, compile_id, ts, grade, time_ms) "
-                "values (?, ?, ?, ?, ?)", (card_key, compile_id, ts, grade, time_ms))
+            cur = self._con.execute(
+                "insert or ignore into study (card_key, compile_id, ts, grade, "
+                "time_ms) values (?, ?, ?, ?, ?)",
+                (card_key, compile_id, ts, grade, time_ms))
+            return cur.rowcount > 0
 
-    def records(self, card_key_or_confusion: str) -> list[StudyRecord]:
-        key = card_key_or_confusion
-        card_keys: list[str]
-        if key in self._pair_confusions.values():
-            card_keys = [ck for ck, pair_confusion
-                        in self._card_keys_by_pair_confusion(key)]
-        else:
-            card_keys = [key]
-        if not card_keys:
-            return []
-        placeholders = ",".join("?" for _ in card_keys)
+    def records(self, card_key: str) -> list[StudyRecord]:
         rows = self._con.execute(
-            f"select card_key, compile_id, ts, grade, time_ms from study "
-            f"where card_key in ({placeholders}) order by ts asc", card_keys
-        ).fetchall()
-        return [StudyRecord(card_key=r[0], compile_id=r[1], ts=r[2],
-                            grade=r[3], time_ms=r[4]) for r in rows]
+            "select card_key, compile_id, ts, grade, time_ms from study "
+            "where card_key=? order by ts asc", (card_key,)).fetchall()
+        return [_row_to_study_record(r) for r in rows]
 
-    def _card_keys_by_pair_confusion(self, confusion: str):
-        """Every study card_key belonging to a pair whose confusion is
-        `confusion`. card_key convention: "<pair_id>::<card kind>" -- the
-        pair id is the segment before the first "::".
+    def study_rows(self) -> list[StudyRecord]:
+        """Every `study` row, ordered by ts, for callers (the Syllabus
+        aggregate) that group study history themselves rather than
+        querying one card_key at a time.
         """
-        pair_ids = {pid for pid, c in self._pair_confusions.items()
-                   if c == confusion}
-        if not pair_ids:
-            return []
-        all_card_keys = self._con.execute(
-            "select distinct card_key from study").fetchall()
-        matches = []
-        for (ck,) in all_card_keys:
-            pair_id = ck.split("::", 1)[0]
-            if pair_id in pair_ids:
-                matches.append((ck, confusion))
-        return matches
+        rows = self._con.execute(
+            "select card_key, compile_id, ts, grade, time_ms from study "
+            "order by ts asc").fetchall()
+        return [_row_to_study_record(r) for r in rows]
 
     # --- sentences ----------------------------------------------------
 

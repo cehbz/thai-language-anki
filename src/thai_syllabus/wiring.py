@@ -370,8 +370,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     Opens `db`/`bundle` exactly once and hands them to load_syllabus,
     rather than letting load_syllabus open its own second SyllabusDb/
     CuratedBundle -- so `Sourcing.db` and `syllabus.assessments`/
-    `syllabus.media.db` are the SAME connection (one `set_pair_confusions`
-    call, one place a run's writes and the Syllabus's reads meet).
+    `syllabus.media.db` are the SAME connection, one place a run's writes
+    and the Syllabus's reads meet.
     """
     root = Path(deck_root)
     if cfg is None:
@@ -561,14 +561,13 @@ def load_syllabus(deck_root: str | Path, *,
     original single-caller shape) when omitted, but build_sourcing passes
     its own so the Syllabus's AssessmentReader/MediaIndex and the
     Sourcing ctx's `db` are the SAME SyllabusDb connection, not two
-    separate ones racing to call `set_pair_confusions` on one only.
+    separate connections whose writes and reads could disagree.
     """
     root = Path(deck_root)
     if bundle is None:
         bundle = load_curated(root / "curated")
     if db is None:
         db = SyllabusDb(root / "syllabus.db")
-    db.set_pair_confusions({p.id: p.confusion for p in bundle.pairs})
     rules = apply_overlay(RULES, bundle.rulebook)
     sentences = tuple(db.all_sentences())
     media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=bundle.words, sentences=sentences,

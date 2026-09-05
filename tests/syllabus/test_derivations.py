@@ -15,8 +15,14 @@ from thai_syllabus.derivations import (
     pending,
     queue,
 )
+from thai_syllabus.entities import MinimalPair, SoundConfusion
+from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.ports import Answer
 from thai_syllabus.store import SyllabusDb
+from thai_syllabus.syllabus import Syllabus
+
+from .builders import syl, word
+from .fakes import FakeTokenizer
 
 
 @pytest.fixture
@@ -295,11 +301,17 @@ def test_queue_respects_the_learner_budgets_max_asks():
 # --- confusion_weights ----------------------------------------------------
 
 class _FakeStudyReader:
-    def __init__(self, records_by_confusion):
-        self._records = records_by_confusion
+    """No real store: study_by_confusion (Syllabus) is what folds these
+    rows by confusion; this fake only serves study_rows/records.
+    """
+    def __init__(self, rows):
+        self._rows = list(rows)
 
-    def records(self, confusion_id):
-        return self._records.get(confusion_id, [])
+    def records(self, card_key):
+        return [r for r in self._rows if r.card_key == card_key]
+
+    def study_rows(self):
+        return list(self._rows)
 
 
 @dataclass
@@ -311,15 +323,28 @@ class _Rec:
     time_ms: int = 100
 
 
+def _confusion_syllabus(confusion_id: str, pair_id: str) -> Syllabus:
+    confusion = SoundConfusion(id=ConfusionId(confusion_id), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_w = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    low_w = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId(pair_id), confusion=confusion, members=(mid_w, low_w))
+    return Syllabus(pairs=(pair,), confusions=(confusion,), tokenizer=FakeTokenizer())
+
+
 def test_confusion_weights_keeps_the_seed_with_no_study_history():
-    weights = confusion_weights({"tone:mid-low": 2.0}, _FakeStudyReader({}), ["tone:mid-low"])
+    syllabus = _confusion_syllabus("tone:mid-low", "p1")
+    weights = confusion_weights({"tone:mid-low": 2.0}, syllabus, _FakeStudyReader([]))
     assert weights["tone:mid-low"] == 2.0
 
 
 def test_confusion_weights_increases_with_lapse_rate():
-    records = [_Rec(grade=1), _Rec(grade=1), _Rec(grade=4)]  # 2/3 lapses
-    reader = _FakeStudyReader({"tone:mid-low": records})
-    weights = confusion_weights({"tone:mid-low": 1.0}, reader, ["tone:mid-low"])
+    syllabus = _confusion_syllabus("tone:mid-low", "p1")
+    records = [_Rec(card_key="p1::recognition", grade=1),
+              _Rec(card_key="p1::recognition", grade=1),
+              _Rec(card_key="p1::recognition", grade=4)]  # 2/3 lapses
+    reader = _FakeStudyReader(records)
+    weights = confusion_weights({"tone:mid-low": 1.0}, syllabus, reader)
     assert weights["tone:mid-low"] == pytest.approx(1.0 * (1 + 2 / 3))
 
 

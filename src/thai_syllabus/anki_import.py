@@ -25,12 +25,10 @@ Revlog idempotence (spec 4 section 4, "idempotent by (card_key, ts)"):
 `ts` is the revlog row's OWN id (Anki's epoch-ms review timestamp,
 already unique per review) -- store.py's `append_study(ts=...)` stores it
 verbatim rather than through the cache table's collision-avoiding
-`_next_ts` bump (see its docstring). Before each insert this module
-checks `db.records(card_key)` for an existing row at that exact ts and
-skips if found, since the `study` table itself carries no uniqueness
-constraint of its own (spec 2 keeps it a plain append-only table); the
-check is done here, at the application layer, rather than by adding a
-schema constraint spec 2 doesn't otherwise call for.
+`_next_ts` bump (see its docstring). The `study` table's primary key is
+(card_key, ts); `append_study` is insert-or-ignore against that key and
+reports whether it inserted, so a reimport's duplicate rows are detected
+by the store, not by a read-then-write check here.
 
 Flag import (spec 4 section 4, "role from the card kind"): the card-kind
 -> Assessor role mapping is this module's own resolution -- spec 3's
@@ -216,13 +214,12 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
             skips.append(("revlog", str(card_id),
                           "card not recognized (no family:: tag, or model/template unknown)"))
             continue
-        existing = db.records(identity.card_key)
-        if any(r.ts == rev_id for r in existing):
+        inserted = db.append_study(card_key=identity.card_key, compile_id=identity.compile_id,
+                                   grade=int(ease), time_ms=int(time_ms), ts=int(rev_id))
+        if not inserted:
             skipped += 1
-            skips.append(("revlog", f"{identity.card_key}@{rev_id}", "already imported"))
+            skips.append(("revlog", f"{identity.card_key}@{rev_id}", "skipped: already present"))
             continue
-        db.append_study(card_key=identity.card_key, compile_id=identity.compile_id,
-                        grade=int(ease), time_ms=int(time_ms), ts=int(rev_id))
         imported += 1
     return imported, skipped
 

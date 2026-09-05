@@ -78,7 +78,6 @@ def pair(confusion, w1, w2):
 @pytest.fixture
 def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
     targets = (target("t-rice", w1.id), target("t-near", w2.id))
-    db.set_pair_confusions({pair.id: confusion.id})
     return Syllabus(words=(w1, w2, keyword_word), targets=targets, pairs=(pair,),
                     graphemes=(grapheme,), confusions=(confusion,), assessments=db,
                     tokenizer=FakeTokenizer())
@@ -428,7 +427,7 @@ def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runre
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
 
 @pytest.fixture
-def live_server(syllabus, tmp_path, media_store, pair, confusion):
+def live_server(syllabus, tmp_path, media_store):
     # sqlite3 connections are single-thread by default (store.py's
     # SyllabusDb doesn't override that -- out of this module's scope to
     # change), and HTTPServer.serve_forever() handles requests on the
@@ -442,7 +441,6 @@ def live_server(syllabus, tmp_path, media_store, pair, confusion):
 
     def run() -> None:
         db_local = SyllabusDb(db_path)
-        db_local.set_pair_confusions({pair.id: confusion.id})
         # syllabus.assessments must be db_local too: Syllabus.gaps() reads
         # waivers/verdicts through it, and that query must run on this
         # server thread, not the fixture thread that built `syllabus`.

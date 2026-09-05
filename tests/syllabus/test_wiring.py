@@ -711,7 +711,7 @@ def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
 def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
     # load_syllabus, left to open its own SyllabusDb, would give
     # Sourcing.db and syllabus.assessments/media.db two separate
-    # connections -- e.g. set_pair_confusions would land on only one.
+    # connections whose writes and reads could disagree.
     # build_sourcing must open db/bundle once and inject them.
     root = _minimal_deck(tmp_path)
     (root / "curated" / "providers.yaml").write_text(

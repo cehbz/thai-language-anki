@@ -38,6 +38,7 @@ from typing import Union
 
 from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND
 from .ports import Answer, CacheReader, StudyReader
+from .syllabus import Syllabus
 
 __all__ = [
     "CurrentBest", "current_best",
@@ -486,16 +487,20 @@ def queue(syllabus, cache: CacheReader, *, budgets: Mapping[str, object] | None 
 
 # --- confusion_weights ---------------------------------------------------
 
-def confusion_weights(seed: Mapping[str, float], study: StudyReader,
-                      confusion_ids: Sequence[str]) -> dict[str, float]:
-    """curated seed x StudyReader lapse rates (spec 3 section 3). A
-    StudyRecord grade <= 1 (Anki's "again") counts as a lapse; a
-    confusion with no study history yet just keeps its seed weight.
+def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
+                      study: StudyReader) -> dict[str, float]:
+    """curated seed x the aggregate's own study grouping (spec 3 section
+    3). A StudyRecord grade <= 1 (Anki's "again") counts as a lapse; a
+    confusion with no study history yet just keeps its seed weight. Every
+    confusion iterated is one the Syllabus itself carries
+    (`syllabus.confusions`), not an arbitrary caller-supplied id list.
     """
+    grouped = syllabus.study_by_confusion(study)
     weights: dict[str, float] = {}
-    for cid in confusion_ids:
+    for confusion in syllabus.confusions:
+        cid = confusion.id
         base = seed.get(cid, 1.0)
-        records = study.records(cid)
+        records = grouped.get(cid, [])
         if not records:
             weights[cid] = base
             continue

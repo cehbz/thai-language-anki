@@ -229,10 +229,11 @@ class CacheReader(Protocol):
 
 @runtime_checkable
 class StudyReader(Protocol):
-    """Read side of the `study` table (spec 2 section 3). `records` takes
-    either a card_key (exact match against the table) or a ConfusionId
-    (aggregated over every pair card_key carrying that confusion -- see
-    store.py's SyllabusDb.records for how that aggregation is resolved,
-    since the study table itself only stores card_key, not confusion).
+    """Read side of the `study` table (spec 2 section 3). `records` is an
+    exact match on one card_key; `study_rows` returns every row, ordered
+    by ts, so a caller (the Syllabus aggregate's study_by_confusion) can
+    group study history over its own pairs without querying one card_key
+    at a time.
     """
-    def records(self, card_key_or_confusion: str) -> list["StudyRecord"]: ...
+    def records(self, card_key: str) -> list["StudyRecord"]: ...
+    def study_rows(self) -> list["StudyRecord"]: ...

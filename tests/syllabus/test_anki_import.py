@@ -129,6 +129,21 @@ def test_revlog_import_is_idempotent_by_card_key_and_ts(compiled):
     assert len(fx.db.records("rice::listening")) == 1
 
 
+def test_revlog_import_reports_a_duplicate_as_skipped_already_present(compiled):
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    card_id, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                (1_700_000_000_000, card_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db)
+    r2 = import_collection(collection_path, fx.db)
+    assert any(k == "revlog" and reason == "skipped: already present"
+              for k, ident, reason in r2.skips)
+
+
 def test_revlog_import_skips_an_unrecognized_card_with_a_reason(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)

@@ -256,17 +256,28 @@ def test_study_is_append_only(db):
     assert con.execute("select count(*) from study").fetchone()[0] == 2
 
 
-def test_records_by_confusion_aggregates_pair_card_keys(db):
-    db.set_pair_confusions({"mp-1": "tone:mid-low", "mp-2": "tone:mid-low",
-                            "mp-3": "aspiration:labial"})
-    db.append_study(card_key="mp-1::pair_card", compile_id="c1", grade=2,
-                    time_ms=500)
-    db.append_study(card_key="mp-2::pair_card", compile_id="c1", grade=4,
-                    time_ms=700)
-    db.append_study(card_key="mp-3::pair_card", compile_id="c1", grade=1,
-                    time_ms=300)
-    records = db.records("tone:mid-low")
-    assert {r.card_key for r in records} == {"mp-1::pair_card", "mp-2::pair_card"}
+def test_append_study_ignores_a_duplicate(db):
+    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
+                           grade=3, time_ms=900)
+    assert not db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
+                               grade=3, time_ms=900)
+    assert len(db.records("rice::listening")) == 1
+
+
+def test_append_study_with_a_new_ts_for_a_known_card_key_is_not_a_duplicate(db):
+    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=5,
+                           grade=3, time_ms=900)
+    assert db.append_study(card_key="rice::listening", compile_id="c1", ts=6,
+                           grade=4, time_ms=800)
+    assert len(db.records("rice::listening")) == 2
+
+
+def test_study_rows_returns_every_row_ordered_by_ts(db):
+    db.append_study(card_key="k2", compile_id="c1", ts=2, grade=1, time_ms=100)
+    db.append_study(card_key="k1", compile_id="c1", ts=1, grade=2, time_ms=100)
+    rows = db.study_rows()
+    assert [r.card_key for r in rows] == ["k1", "k2"]
+    assert [r.ts for r in rows] == [1, 2]
 
 
 # --- sentences / media provenance --------------------------------------

@@ -53,10 +53,12 @@ didn't spell out):
   has into one note (guid = word id too, spec 4 section 2), so no single
   Target id anchors it uniquely; ports.py's phrasing is read as shorthand
   for "the order()-entry identity", which bottoms out at the word for word
-  cards. For pairs it IS the pair id (not MemberKey) -- store.py's
-  existing, untouched `_card_keys_by_pair_confusion` already parses
-  card_key as "<pair_id>::<kind>" for confusion-level StudyReader
-  queries, so this compiles cards under exactly that shape.
+  cards. For pairs it IS the pair id (not MemberKey) -- Syllabus.
+  study_by_confusion strips the card_key's trailing "::<kind>" and
+  matches what remains against a known pair id (exact, or the longest
+  pair id it starts with, since a pair id may itself contain ":") to
+  group pair StudyRecords by confusion, so this compiles cards under
+  exactly the "<pair_id>::<kind>" shape.
 - **Bury-siblings options group** (spec 4 section 2's "the shipped deck
   options group sets bury-siblings"): genanki's own default dconf (the
   "Default" preset every genanki.Deck uses) already ships

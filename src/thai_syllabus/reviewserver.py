@@ -45,10 +45,11 @@ list):
     StudyReader lookups need a card_key convention that compile (spec 4;
     `compile_syllabus`, an application service, not a Syllabus method) has
     not fixed for word/sentence cards. The one StudyReader lookup already
-    well-defined is confusion-level (store.py's pair_confusions
-    aggregation), so this module implements kind 4 over confusions only: a
-    confusion with StudyRecord lapses (grade <= 1) AND an existing learner
-    rating on its rendition is a contradiction worth re-asking. Per the
+    well-defined is confusion-level (Syllabus.study_by_confusion, grouped
+    over the aggregate's own pairs), so this module implements kind 4 over
+    confusions only: a confusion with StudyRecord lapses (grade <= 1) AND
+    an existing learner rating on its rendition is a contradiction worth
+    re-asking. Per the
     task brief, "missing derivation inputs mean that kind simply yields no
     questions" -- word/sentence-level re-asks yield none until that
     card_key convention is fixed.
@@ -300,8 +301,9 @@ def _challenger_question(syllabus: Syllabus, subject: str, kind: str, best) -> d
 def _reask_questions(syllabus: Syllabus, cache: CacheReader, study: StudyReader,
                      *, current_rubric: str | Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    grouped = syllabus.study_by_confusion(study)
     for confusion in syllabus.confusions:
-        records = study.records(confusion.id)
+        records = grouped.get(confusion.id, [])
         lapses = [r for r in records if r.grade <= 1]
         if not lapses:
             continue

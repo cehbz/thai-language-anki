@@ -13,8 +13,11 @@ from functools import cached_property
 from typing import Any
 
 from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
-from .ids import CategoryName, WordId
-from .ports import AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, Tokenizer
+from .ids import CategoryName, ConfusionId, WordId
+from .ports import (
+    AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, StudyReader,
+    StudyRecord, Tokenizer,
+)
 from .profile import Profile
 from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
@@ -285,6 +288,38 @@ class Syllabus:
                     graphemes_missing_keyword_data=note_ids("grapheme/keyword-picture-required"),
                     sentence_recordings=note_ids("sentence/recording-required"),
                     scene_pictures=scene_pictures)
+
+    # --- study_by_confusion -------------------------------------------------
+
+    def study_by_confusion(self, study: StudyReader) -> dict[ConfusionId, list[StudyRecord]]:
+        """Every pair-card StudyRecord, grouped by the confusion of the
+        pair it belongs to, via this aggregate's own `pairs` -- the study
+        table stores only card_key, not confusion. A card_key's anchor is
+        everything before its last "::" (the card kind). A pair card's
+        anchor is either exactly a pair id (today's compiler shape,
+        "<pair_id>::<card kind>") or a pair id followed by
+        ":<speaker>:<i>" (the MemberKey shape,
+        "<pair_id>:<speaker>:<i>::<card kind>") -- since a pair id may
+        itself contain ":" (e.g. "tone:mid-low/kai"), the pair is
+        resolved by an exact match against the anchor first, else the
+        LONGEST known pair id `p` such that the anchor starts with
+        `p + ":"`. An anchor matching no pair is not a pair card and is
+        skipped.
+        """
+        confusion_by_pair = {p.id: p.confusion for p in self.pairs}
+        pair_ids_longest_first = sorted(confusion_by_pair, key=len, reverse=True)
+        grouped: dict[ConfusionId, list[StudyRecord]] = {}
+        for record in study.study_rows():
+            anchor = record.card_key.rsplit("::", 1)[0]
+            confusion = confusion_by_pair.get(anchor)
+            if confusion is None:
+                pair_id = next((p for p in pair_ids_longest_first
+                               if anchor.startswith(p + ":")), None)
+                confusion = confusion_by_pair.get(pair_id) if pair_id is not None else None
+            if confusion is None:
+                continue
+            grouped.setdefault(confusion, []).append(record)
+        return grouped
 
     # --- content-hash staleness marker ------------------------------------
 
