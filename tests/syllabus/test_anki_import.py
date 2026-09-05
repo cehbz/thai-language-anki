@@ -8,6 +8,7 @@ flags, and ReviewNote text directly into the extracted collection.anki2
 -- exactly what a learner's real Anki session would produce -- before
 running the importer against that path, read-only.
 """
+import dataclasses
 import json
 import sqlite3
 import zipfile
@@ -15,11 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from thai_syllabus.anki_import import import_collection
+from thai_syllabus.anki_import import card_identities, import_collection
 from thai_syllabus.cachekeys import sha
 from thai_syllabus.compile import compile_syllabus
+from thai_syllabus.wiring import _DbMediaIndex
 
-from .test_compile import Fixture, _fully_seeded
+from .test_compile import Fixture, _fully_seeded, _pair_only_syllabus, _SplitTokenizer
 
 
 @pytest.fixture
@@ -220,6 +222,99 @@ def test_flag_import_is_idempotent_per_flags_state(compiled):
     assert report2.flags_skipped >= 1
 
 
+def _find_pair_card(conn, pair_id: str):
+    """(card_id, note_id) for the first Recognition card of any member
+    note of `pair_id` (its MemberKey starts with "<pair_id>:")."""
+    models, notes, cards = _models_notes_cards(conn)
+    pair_model = next(m for m in models.values() if m["name"] == "minimal_pair")
+    member_key_idx = _field_index(pair_model, "MemberKey")
+    target_nid = None
+    for nid, mid, flds, tags in notes:
+        if str(mid) != pair_model["id"]:
+            continue
+        if flds.split("\x1f")[member_key_idx].startswith(pair_id + ":"):
+            target_nid = nid
+            break
+    assert target_nid is not None
+    for cid, nid, ord_ in cards:
+        if nid == target_nid:
+            return cid, target_nid
+    raise AssertionError(f"no Recognition card found for pair {pair_id!r}")
+
+
+def _find_sentence_card(conn, target_id: str, template_name: str):
+    """(card_id, note_id) for the given template on the sentence note
+    tagged target::TARGET_ID."""
+    models, notes, cards = _models_notes_cards(conn)
+    sentence_model = next(m for m in models.values() if m["name"] == "sentence")
+    tmpl_ord = next(i for i, t in enumerate(sentence_model["tmpls"])
+                    if t["name"] == template_name)
+    target_tag = f"target::{target_id}"
+    target_nid = None
+    for nid, mid, flds, tags in notes:
+        if str(mid) != sentence_model["id"]:
+            continue
+        if target_tag in [t for t in tags.split(" ") if t]:
+            target_nid = nid
+            break
+    assert target_nid is not None
+    for cid, nid, ord_ in cards:
+        if nid == target_nid and ord_ == tmpl_ord:
+            return cid, target_nid
+    raise AssertionError(f"no {template_name} card found for target {target_id!r}")
+
+
+def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
+    # Both member notes' cards anchor on a per-member MemberKey (task
+    # C2) -- a flag is about the PAIR (its rendition, current_best, and
+    # compile's own audio resolution are all keyed on the pair id), so
+    # the assessment row must land under the pair id, not a member's key.
+    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
+    syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pair_flag_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_pair_card(conn, "p1")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db)
+    assert report.flags_imported == 1
+
+    rows = fx.db.assessments_of("p1")
+    flag_rows = [r for r in rows if r.backend == "learner"
+                and r.question.get("kind") == "rating"]
+    assert len(flag_rows) == 1
+
+
+def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
+    # A sentence's recording rows live under its text_sha (compile.py's
+    # own resolver.sound(text_sha, "recording")) -- a flag on the
+    # sentence's Listening card must land under that same subject.
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db)
+    assert report.flags_imported == 1
+
+    rows = fx.db.assessments_of(text_sha)
+    flag_rows = [r for r in rows if r.backend == "learner"]
+    assert len(flag_rows) >= 1
+
+
 # --- ReviewNote harvest ----------------------------------------------------
 
 def test_review_note_harvest_appends_a_learner_row_keyed_by_note_and_text_sha(compiled):
@@ -322,6 +417,23 @@ def test_review_note_cleared_field_appends_nothing_and_retracts_nothing(compiled
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
     assert len(harvest_rows) == 1  # the earlier row is untouched, still there
     assert harvest_rows[0].answer["text"] == "a note"
+
+
+# --- card identity ---------------------------------------------------------
+
+def test_pair_member_cards_have_distinct_card_keys(fx):
+    # Both member notes of one pair used to anchor on the pair id alone,
+    # so their Recognition cards collapsed onto one card_key -- the
+    # anchor is now each member's own MemberKey (pair id, speaker, index).
+    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
+    syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pair_extracted")
+
+    identities = card_identities(collection_path)
+    keys = {i.card_key for i in identities if i.family == "minimal_pair"}
+    assert keys == {"p1:s1:0::recognition", "p1:s1:1::recognition"}
 
 
 # --- read-only ---------------------------------------------------------

@@ -380,7 +380,8 @@ def test_word_note_has_expected_fields_guid_and_tags(fx):
 
     tags = rice_note["tags"].split(" ")
     assert "family::word" in tags
-    assert "target::rice" in tags
+    assert "word::rice" in tags
+    assert not any(t.startswith("target::") for t in tags)
     assert f"compile::{compiled.compile_id}" in tags
 
 
@@ -684,6 +685,7 @@ def test_sentence_note_cloze_and_listening(fx):
     assert fields["TargetWord"] == "ข้าว"
     assert fields["Audio"].startswith("[sound:")
     assert fields["Gloss"] == "I eat rice"
+    assert fields["Productive"] == "1"
 
     tmpl_names = [t["name"] for t in s_model["tmpls"]]
     cards = [c for c in pkg["cards"] if c["nid"] == rice_note["id"]]
@@ -693,6 +695,34 @@ def test_sentence_note_cloze_and_listening(fx):
     pom_note = by_target["pom/receptive"]
     pom_fields = dict(zip(field_names, pom_note["flds"]))
     assert pom_fields["ThaiCloze"] == "___กินข้าว"
+
+
+def test_receptive_sentence_note_gets_no_cloze_card(fx):
+    # pom/receptive's sentence note (skill="receptive") must not carry a
+    # Cloze card -- only a productive Target's sentence note does (spec 4
+    # section 1: Productive gates the Cloze card).
+    syllabus = _fully_seeded(fx)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    pkg = read_apkg(fx.out_path)
+    models = pkg["models"]
+    s_model = next(m for m in models.values() if m["name"] == "sentence")
+    field_names = [f["name"] for f in s_model["flds"]]
+    s_notes = [n for n in pkg["notes"] if str(n["mid"]) == s_model["id"]]
+
+    by_target = {}
+    for n in s_notes:
+        tags = n["tags"].split(" ")
+        target_tag = next(t for t in tags if t.startswith("target::"))
+        by_target[target_tag.split("::", 1)[1]] = n
+
+    pom_note = by_target["pom/receptive"]
+    pom_fields = dict(zip(field_names, pom_note["flds"]))
+    assert pom_fields["Productive"] == ""
+
+    tmpl_names = [t["name"] for t in s_model["tmpls"]]
+    cards = [c for c in pkg["cards"] if c["nid"] == pom_note["id"]]
+    generated = {tmpl_names[c["ord"]] for c in cards}
+    assert generated == {"Listening"}
 
 
 # --- due / bury-siblings ---------------------------------------------------

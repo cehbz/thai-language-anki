@@ -7,19 +7,23 @@ parameter is always the caller's to supply -- never hardcoded to
 ~/Library/.../collection.anki2 (the actual location on a real machine),
 so tests and any future caller point it at whatever collection they mean.
 
-Card identity -> (family, card_key, compile_id) is read from compile.py's
-own tags/CompileId convention (see compile.py's module docstring for the
-tag shapes this depends on: family::, target::/pair::/grapheme::/
-sentence::, CompileId as a note field). `card_key`'s KIND component
-(Listening/Production/.../Cloze) is read from the card's own template
-name via the collection's `col.models` JSON and the card's `ord` --
-NOT parsed out of a tag -- because Anki tags are a NOTE-level property
-shared by every sibling card, so a single `kind::` tag cannot
-disambiguate which of several sibling cards a given review or flag
-belongs to; the template name is unambiguous and already present in the
-collection compile.py wrote. (The `kind::` tags compile.py DOES emit are
-for the Anki browser's own tag-based search/filtering, not for this
-module's identity reconstruction.)
+Card identity -> (family, anchor, card_key, compile_id) is read from
+compile.py's own tags/CompileId convention (see compile.py's module
+docstring for the tag shapes this depends on: family::, word::/pair::/
+grapheme::/target::/sentence::/member::/speaker::, CompileId as a note
+field). Every tag is atomic (one part per tag); an anchor spanning
+several tags (a pair member's MemberKey, a sentence's target+sha) is
+built by composing those tags' values, never by parsing one tag's value
+into parts, and never by reading MemberKey or any other note field back.
+`card_key`'s KIND component (Listening/Production/.../Cloze) is read
+from the card's own template name via the collection's `col.models`
+JSON and the card's `ord` -- NOT parsed out of a tag -- because Anki
+tags are a NOTE-level property shared by every sibling card, so a
+single `kind::` tag cannot disambiguate which of several sibling cards
+a given review or flag belongs to; the template name is unambiguous and
+already present in the collection compile.py wrote. (The `kind::` tags
+compile.py DOES emit are for the Anki browser's own tag-based search/
+filtering, not for this module's identity reconstruction.)
 
 Revlog idempotence (spec 4 section 4, "idempotent by (card_key, ts)"):
 `ts` is the revlog row's OWN id (Anki's epoch-ms review timestamp,
@@ -75,7 +79,7 @@ from typing import Any
 from .cachekeys import LearnerKey, LearnerNoteKey, ReverifyKey, sha
 from .store import SyllabusDb
 
-__all__ = ["ImportReport", "import_collection"]
+__all__ = ["ImportReport", "card_identities", "import_collection"]
 
 # card kind (template name, lowercased) -> Assessor role, for the two
 # templates whose front is unambiguously one specific artifact; every
@@ -113,24 +117,48 @@ def _tag_value(tags: list[str], prefix: str) -> str | None:
     return None
 
 
-def _anchor_for(family: str, tags: list[str]) -> str | None:
-    if family == "word":
-        # target:: on a word note holds the WORD id, not a Target id (a
-        # word note aggregates every Target the word has into one note --
-        # see compile.py's module docstring, "card_key's word/pair
-        # anchor").
-        return _tag_value(tags, "target")
-    if family == "minimal_pair":
-        return _tag_value(tags, "pair")
-    if family == "grapheme":
-        return _tag_value(tags, "grapheme")
-    if family == "sentence":
-        target = _tag_value(tags, "target")
-        text_sha = _tag_value(tags, "sentence")
-        if target is None or text_sha is None:
-            return None
-        return f"{target}:{text_sha}"
-    return None
+def _word_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
+    word_id = _tag_value(tags, "word")
+    if word_id is None:
+        return None
+    return word_id, {"word_id": word_id}
+
+
+def _pair_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
+    # The anchor is the member's MemberKey, composed from three atomic
+    # tags -- never read back from the note's own MemberKey field.
+    pair_id = _tag_value(tags, "pair")
+    speaker_id = _tag_value(tags, "speaker")
+    member_index = _tag_value(tags, "member")
+    if pair_id is None or speaker_id is None or member_index is None:
+        return None
+    anchor = f"{pair_id}:{speaker_id}:{member_index}"
+    return anchor, {"pair_id": pair_id, "speaker_id": speaker_id,
+                    "member_index": member_index}
+
+
+def _grapheme_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
+    symbol = _tag_value(tags, "grapheme")
+    if symbol is None:
+        return None
+    return symbol, {"grapheme_symbol": symbol}
+
+
+def _sentence_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
+    target_id = _tag_value(tags, "target")
+    sentence_sha = _tag_value(tags, "sentence")
+    if target_id is None or sentence_sha is None:
+        return None
+    anchor = f"{target_id}:{sentence_sha}"
+    return anchor, {"target_id": target_id, "sentence_sha": sentence_sha}
+
+
+_ANCHOR_BUILDERS: dict[str, Any] = {
+    "word": _word_anchor,
+    "minimal_pair": _pair_anchor,
+    "grapheme": _grapheme_anchor,
+    "sentence": _sentence_anchor,
+}
 
 
 @dataclass(frozen=True)
@@ -168,6 +196,17 @@ class _CardIdentity:
     card_key: str
     compile_id: str
     note_id: int
+    # Anchor parts, kept alongside the composed `anchor` string so a
+    # future column-writing importer never re-parses it; populated per
+    # family (see _word_anchor/_pair_anchor/_grapheme_anchor/
+    # _sentence_anchor).
+    word_id: str | None = None
+    pair_id: str | None = None
+    speaker_id: str | None = None
+    member_index: str | None = None
+    grapheme_symbol: str | None = None
+    target_id: str | None = None
+    sentence_sha: str | None = None
 
 
 def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
@@ -184,9 +223,11 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     family = _tag_value(tags, "family")
     if family is None:
         return None
-    anchor = _anchor_for(family, tags)
-    if anchor is None:
+    builder = _ANCHOR_BUILDERS.get(family)
+    built = builder(tags) if builder is not None else None
+    if built is None:
         return None
+    anchor, parts = built
     tmpls = model["tmpls"]
     ord_ = card["ord"]
     if not (0 <= ord_ < len(tmpls)):
@@ -197,7 +238,19 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     compile_id = note["flds"][compile_idx] if compile_idx is not None else ""
     return _CardIdentity(family=family, anchor=anchor, kind_slug=kind_slug,
                          card_key=card_key, compile_id=compile_id,
-                         note_id=card["nid"])
+                         note_id=card["nid"], **parts)
+
+
+def card_identities(collection_path: str | Path) -> list[_CardIdentity]:
+    """Every card's identity in `collection_path`, read read-only."""
+    conn = _connect_readonly(collection_path)
+    try:
+        col = _load_collection(conn)
+    finally:
+        conn.close()
+    return [identity for identity in
+           (_identify_card(col, card_id) for card_id in col.cards)
+           if identity is not None]
 
 
 # --- revlog import -------------------------------------------------------
@@ -231,6 +284,25 @@ def _flag_role(kind_slug: str) -> tuple[str, str | None]:
     return _ARTIFACT_ROLE_BY_KIND.get(kind_slug, ("card-flag", None))
 
 
+# family -> the _CardIdentity field naming that family's own ENTITY
+# subject: a word's id, a pair's id, a grapheme's symbol, a sentence's
+# text_sha. This is what rendition rows, current_best, and compile's own
+# audio/picture resolution are all keyed on -- never a per-card anchor
+# (a pair member's MemberKey names one card, not the pair the learner's
+# flag is about).
+_ENTITY_SUBJECT_FIELD: dict[str, str] = {
+    "word": "word_id",
+    "minimal_pair": "pair_id",
+    "grapheme": "grapheme_symbol",
+    "sentence": "sentence_sha",
+}
+
+
+def _entity_subject(identity: _CardIdentity) -> str | None:
+    field_name = _ENTITY_SUBJECT_FIELD.get(identity.family)
+    return getattr(identity, field_name) if field_name is not None else None
+
+
 def _import_flags(col: _Collection, db: SyllabusDb,
                   skips: list[tuple[str, str, str]]) -> tuple[int, int]:
     imported = 0
@@ -239,7 +311,8 @@ def _import_flags(col: _Collection, db: SyllabusDb,
         if not card["flags"]:
             continue
         identity = _identify_card(col, card_id)
-        if identity is None:
+        subject = _entity_subject(identity) if identity is not None else None
+        if subject is None:
             skipped += 1
             skips.append(("flag", str(card_id), "card not recognized"))
             continue
@@ -247,13 +320,13 @@ def _import_flags(col: _Collection, db: SyllabusDb,
         artifact_sha = None
         if provide_kind is not None:
             from .derivations import current_best
-            artifact_sha = current_best(db, identity.anchor, provide_kind,
+            artifact_sha = current_best(db, subject, provide_kind,
                                         current_rubric={}, prior=(),
                                         provenance_source=lambda s: None).artifact_sha
 
         existing_key = f"flag-import:{card_id}:{card['flags']}"
         if role in TONE_CORRECTNESS_ROLES:
-            key = ReverifyKey(artifact_sha=artifact_sha, anchor=identity.anchor, role=role)
+            key = ReverifyKey(artifact_sha=artifact_sha, anchor=subject, role=role)
         else:
             key = LearnerKey(artifact_sha=artifact_sha, role=role)
 
@@ -271,14 +344,14 @@ def _import_flags(col: _Collection, db: SyllabusDb,
             question = {"role": role, "artifact_sha": artifact_sha,
                        "kind": "rating", "flag_import_key": existing_key}
             answer = {"value": "unacceptable-none", "flag": card["flags"]}
-        db.append(port="assess", backend="learner", key=key, subject=identity.anchor,
+        db.append(port="assess", backend="learner", key=key, subject=subject,
                  question=question, answer=answer)
         # A second row under `existing_key` records "this exact flags
         # value on this card has been imported", the idempotence marker
         # `_import_flags` checks above -- kept distinct from the rating/
         # reverify row itself (whose key must stay the readable
         # learner:ARTIFACT:ROLE shape derivations.py folds over).
-        db.append(port="assess", backend="learner", key=existing_key, subject=identity.anchor,
+        db.append(port="assess", backend="learner", key=existing_key, subject=subject,
                  question={"kind": "flag-import-marker", "card_id": card_id},
                  answer={"flags": card["flags"]})
         imported += 1

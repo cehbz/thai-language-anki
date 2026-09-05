@@ -52,18 +52,12 @@ didn't spell out):
   `syllabus.media.rendition(pair.id)`, never a member's own current-best
   word recording. A pair with no current-best rendition compiles no notes
   for either member (DroppedCard reason "no rendition").
-- **card_key's word/pair anchor** (ports.py's StudyRecord docstring says
-  "target/pair/grapheme id"): for a WORD's cards this is the WORD id, not
-  a specific Target id -- a word note aggregates every Target the word
-  has into one note (guid = word id too, spec 4 section 2), so no single
-  Target id anchors it uniquely; ports.py's phrasing is read as shorthand
-  for "the order()-entry identity", which bottoms out at the word for word
-  cards. For pairs it IS the pair id (not MemberKey) -- Syllabus.
-  study_by_confusion strips the card_key's trailing "::<kind>" and
-  matches what remains against a known pair id (exact, or the longest
-  pair id it starts with, since a pair id may itself contain ":") to
-  group pair StudyRecords by confusion, so this compiles cards under
-  exactly the "<pair_id>::<kind>" shape.
+- **card_key's word/pair anchor**: a word note's anchor is the word id
+  (a word note aggregates every Target the word has into one note, guid
+  = word id too, spec 4 section 2). A pair member note's anchor is its
+  MemberKey, "<pair_id>:<speaker>:<i>" -- Syllabus.study_by_confusion
+  resolves this back to a confusion by matching the longest known pair
+  id the anchor starts with, since a pair id may itself contain ":".
 - **Bury-siblings options group** (spec 4 section 2's "the shipped deck
   options group sets bury-siblings"): genanki's own default dconf (the
   "Default" preset every genanki.Deck uses) already ships
@@ -234,10 +228,11 @@ GRAPHEME_MODEL = genanki.Model(
 SENTENCE_MODEL = _model(
     "sentence",
     ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture", "Gloss",
-     "GrammarNote"],
+     "GrammarNote", "Productive"],
     [{
         "name": "Cloze",
-        "qfmt": '<div class="cloze">{{ThaiCloze}}</div>{{ScenePicture}}',
+        "qfmt": '{{#Productive}}<div class="cloze">{{ThaiCloze}}</div>'
+               '{{ScenePicture}}{{/Productive}}',
         "afmt": '{{FrontSide}}<hr id="answer"><div class="target">{{TargetWord}}</div>'
                '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}'
                '{{#GrammarNote}}<div class="grammar">{{GrammarNote}}</div>{{/GrammarNote}}',
@@ -435,7 +430,7 @@ def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
                      for t in syllabus.targets)
     classifier_word = syllabus.find_word(word.classifier) if word.classifier else None
 
-    tags = [f"family::word", f"target::{word.id}", f"compile::{compile_id}"]
+    tags = [f"family::word", f"word::{word.id}", f"compile::{compile_id}"]
     tags += [f"kind::{tpl['name'].lower()}" for tpl in WORD_MODEL.templates]
     tags += resolver.src_tag("img", word.id, "picture")
     tags += resolver.src_tag("audio", word.id, "recording")
@@ -494,7 +489,8 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
         speaker = recordings[i].speaker.id
         member_key = f"{pair.id}:{speaker}:{i}"
         tags = ["family::minimal_pair", f"pair::{pair.id}",
-               f"confusion::{pair.confusion}", f"compile::{compile_id}",
+               f"confusion::{pair.confusion}", f"member::{i}", f"speaker::{speaker}",
+               f"compile::{compile_id}",
                "kind::recognition", f"audio-src::{recordings[i].provenance.source}"]
         fields = [
             member_key,
@@ -568,6 +564,7 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
     tokens = syllabus.tokenizer.tokens(sentence.text)
     cloze = thai_cloze(tokens, target_word.thai)
     text_sha = sentence_note_id(sentence)
+    productive = target.skill == "productive"
 
     # kind = "recording"/"picture": the artifact kinds are the same ones a
     # word's audio and picture carry, and text_sha as the subject is what
@@ -586,7 +583,8 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
         resolver.img(text_sha, "picture"),
         sentence.gloss,
         "",  # GrammarNote: no curated source yet
-        "",
+        "1" if productive else "",   # Productive
+        "",  # ReviewNote
         compile_id,
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
