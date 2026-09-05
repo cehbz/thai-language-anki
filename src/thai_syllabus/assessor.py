@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .cachekeys import sha
+from .cachekeys import CacheKey, JudgeKey, MechanicalKey, sha
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError
 
@@ -95,7 +95,7 @@ class BatchPending(RuntimeError):
 
 @runtime_checkable
 class AssessBackend(Protocol):
-    def cache_key(self, question: AssessQuestion) -> str: ...
+    def cache_key(self, question: AssessQuestion) -> CacheKey: ...
     def fetch(self, question: AssessQuestion) -> RawVerdict: ...  # may raise -- not cached
 
 
@@ -109,9 +109,9 @@ class ManyResult:
     candidate is unusable, NOT that the backend is unreachable, and
     callers must tell those apart (attempts._judge_many does).
     """
-    resolved: dict[str, Verdict]
-    pending: list[str]
-    excluded: list[str] = field(default_factory=list)
+    resolved: dict[CacheKey, Verdict]
+    pending: list[CacheKey]
+    excluded: list[CacheKey] = field(default_factory=list)
 
 
 class Assessor:
@@ -123,7 +123,7 @@ class Assessor:
         self._cache = cache
         self._backends = dict(backends)
 
-    def key_of(self, backend: str, question: AssessQuestion) -> str:
+    def key_of(self, backend: str, question: AssessQuestion) -> CacheKey:
         """The cache key `backend` would use for `question` -- lets a
         caller holding a ManyResult (keyed by cache key) map its entries
         back to the question that produced them.
@@ -174,8 +174,8 @@ class Assessor:
             except BatchPending as e:
                 return ManyResult(resolved=dict(e.resolved), pending=list(e.pending_keys),
                                   excluded=list(e.excluded))
-        resolved: dict[str, Verdict] = {}
-        excluded: list[str] = []
+        resolved: dict[CacheKey, Verdict] = {}
+        excluded: list[CacheKey] = []
         for q in questions:
             key = impl.cache_key(q)
             # Only on a miss: a cached verdict needs no preparation, so a
@@ -184,13 +184,14 @@ class Assessor:
                 reason = self._preparation_failure(impl, q)
                 if reason is not None:
                     _log.warning("%s backend cannot prepare a question (key=%s): %s",
-                                 backend, key, reason)
+                                 backend, key.encode(), reason)
                     excluded.append(key)
                     continue
             try:
                 resolved[key] = self.ask(backend, q)
             except TransportError as e:
-                _log.warning("%s backend dropped a question (key=%s): %s", backend, key, e)
+                _log.warning("%s backend dropped a question (key=%s): %s",
+                             backend, key.encode(), e)
                 continue
         return ManyResult(resolved=resolved, pending=[], excluded=excluded)
 
@@ -213,7 +214,7 @@ class Assessor:
         return Verdict(value=raw.value, cost=raw.cost, ts=ts,
                        evidence=raw.evidence, suggestion=raw.suggestion)
 
-    def _append_verdict(self, backend: str, key: str, question: AssessQuestion,
+    def _append_verdict(self, backend: str, key: CacheKey, question: AssessQuestion,
                         raw: RawVerdict) -> int:
         answer: dict[str, Any] = {"value": raw.value}
         if raw.evidence is not None:
@@ -228,7 +229,7 @@ class Assessor:
     # --- judge's batch transport: many questions, one submission ---------
 
     def ask_batch(self, backend: str, questions: Sequence[AssessQuestion]
-                  ) -> dict[str, Verdict]:
+                  ) -> dict[CacheKey, Verdict]:
         """Resolves every question already cached, keyed by cache key
         (not subject). A question whose prompt_builder/attachments raises
         TransportError is excluded entirely -- not cached, not pending,
@@ -242,14 +243,14 @@ class Assessor:
         return resolved
 
     def _ask_batch(self, backend: str, questions: Sequence[AssessQuestion]
-                   ) -> tuple[dict[str, Verdict], list[str]]:
+                   ) -> tuple[dict[CacheKey, Verdict], list[CacheKey]]:
         """ask_batch's body, additionally returning the cache keys it
         excluded (see ManyResult.excluded) -- ask_batch keeps the plain
         `dict` return its own callers expect, ask_many wants both.
         """
         impl = self._backends[backend]
-        resolved: dict[str, Verdict] = {}
-        misses: list[tuple[str, AssessQuestion]] = []
+        resolved: dict[CacheKey, Verdict] = {}
+        misses: list[tuple[CacheKey, AssessQuestion]] = []
         for q in questions:
             key = impl.cache_key(q)
             cached = self._cache.latest("assess", backend, key)
@@ -257,12 +258,12 @@ class Assessor:
                 resolved[key] = _verdict_from_cached(cached)
             else:
                 misses.append((key, q))
-        excluded: list[str] = []
+        excluded: list[CacheKey] = []
         if not misses:
             return resolved, excluded
 
-        payloads: dict[str, tuple[str, list[Path]]] = {}
-        submittable: list[tuple[str, AssessQuestion]] = []
+        payloads: dict[CacheKey, tuple[str, list[Path]]] = {}
+        submittable: list[tuple[CacheKey, AssessQuestion]] = []
         for key, q in misses:
             try:
                 payloads[key] = (impl.prompt_builder(q), impl.attachments(q))
@@ -271,7 +272,7 @@ class Assessor:
                 # reported, so the caller can tell an unusable candidate
                 # from a transport that never answered.
                 _log.warning("%s backend cannot prepare a question (key=%s): %s",
-                             backend, key, e)
+                             backend, key.encode(), e)
                 excluded.append(key)
                 continue
             submittable.append((key, q))
@@ -288,15 +289,16 @@ class Assessor:
             batch_id = impl.batch_transport.submit(requests)
             self._record.append(
                 port="assess", backend=backend, key=request_set_key,
-                subject=request_set_key, question={"keys": sorted(miss_keys)},
+                subject=request_set_key,
+                question={"keys": sorted(k.encode() for k in miss_keys)},
                 answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
-            by_subject: dict[str, list[str]] = {}
+            by_subject: dict[str, list[CacheKey]] = {}
             for key, q in submittable:
                 by_subject.setdefault(q.subject, []).append(key)
             for subject, keys in by_subject.items():
                 self._record.append(
                     port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                    subject=subject, question={"keys": keys},
+                    subject=subject, question={"keys": [k.encode() for k in keys]},
                     answer={"kind": "batch-pending", "batch_id": batch_id}, cost=0.0)
             raise BatchPending(batch_id, miss_keys, resolved, excluded)
 
@@ -319,7 +321,7 @@ class Assessor:
                 backend, batch_id, status, len(submittable))
             results = {}
 
-        abandoned: list[str] = []
+        abandoned: list[CacheKey] = []
         for key, q in submittable:
             completion = results.get(_custom_id(key))
             if completion is None:
@@ -343,8 +345,8 @@ class Assessor:
         return resolved, excluded
 
     def _supersede_batch_pending(self, backend: str, batch_id: str,
-                                 submittable: Sequence[tuple[str, AssessQuestion]],
-                                 abandoned: Sequence[str]) -> None:
+                                 submittable: Sequence[tuple[CacheKey, AssessQuestion]],
+                                 abandoned: Sequence[CacheKey]) -> None:
         """One `judge-batch-pending:{subject}` marker row per subject that
         has an abandoned key in this batch, naming only the keys still
         genuinely unresolved (the abandoned ones dropped). `latest()`
@@ -353,7 +355,7 @@ class Assessor:
         resolved.
         """
         abandoned_set = set(abandoned)
-        by_subject: dict[str, list[str]] = {}
+        by_subject: dict[str, list[CacheKey]] = {}
         for key, q in submittable:
             by_subject.setdefault(q.subject, []).append(key)
         for subject, keys in by_subject.items():
@@ -363,9 +365,9 @@ class Assessor:
             remaining = [k for k in keys if k not in abandoned_set]
             self._record.append(
                 port="assess", backend=backend, key=f"judge-batch-pending:{subject}",
-                subject=subject, question={"keys": remaining},
+                subject=subject, question={"keys": [k.encode() for k in remaining]},
                 answer={"kind": "batch-pending", "batch_id": batch_id,
-                       "abandoned": subject_abandoned}, cost=0.0)
+                       "abandoned": [k.encode() for k in subject_abandoned]}, cost=0.0)
 
 
 def _verdict_from_cached(cached) -> Verdict:
@@ -375,33 +377,28 @@ def _verdict_from_cached(cached) -> Verdict:
                    hit=True)
 
 
-def _batch_request_set_key(keys) -> str:
-    return "judge-batch:" + sha(",".join(sorted(keys)))
+def _batch_request_set_key(keys: Sequence[CacheKey]) -> str:
+    return "judge-batch:" + sha(",".join(sorted(k.encode() for k in keys)))
 
 
-def _custom_id(key: str) -> str:
+def _custom_id(key: CacheKey) -> str:
     """A batch custom_id, restricted to [a-zA-Z0-9_-] (anthropic's batch
     API constraint) -- cache keys carry ':' and other readable punctuation,
     so this hashes the key rather than using it verbatim.
     """
-    return "q" + sha(key)
+    return "q" + sha(key.encode())
 
 
 # --- judge: one implementation, three transports ----------------------------
-# key = "judge:sha(RUBRIC):ARTIFACT_SHA:ROLE". ARTIFACT_SHA is already a
-# content hash of the artifact bytes (Picture/Recording are content-
-# addressed, spec 1 section 1) -- re-hashing it would just reproduce the
-# same value, so it goes into the key as-is rather than sha(sha(...)).
-#
-# When a question has no artifact at all (a text-only judgment -- e.g. a
-# judged Rule's per-sentence "is this natural?" verdict, spec 1 section 4 /
-# spec 4 section "key-convention debt"), the key falls back to the
-# question's `subject` instead of a bare placeholder: two different
-# subjects judged under the same rubric+role must not collide onto one
-# cache row. This is also the convention store.py's judged-rule verdict
-# path merges into (see store.py's module docstring) -- role there is the
-# judged rule's id and subject is the note_id, so the two paths share
-# exactly this key shape.
+# cache_key() returns a cachekeys.JudgeKey: identity is the artifact sha
+# (already a content hash, spec 1 section 1 -- not re-hashed), the
+# candidate-set identity for picture-preference (cachekeys.
+# preference_identity), or the question's subject when there is no
+# artifact at all -- a text-only judgment (e.g. a judged Rule's
+# per-sentence "is this natural?" verdict) must still distinguish two
+# subjects judged under the same rubric+role, not collide onto one cache
+# row. A judged Rule's verdict (Syllabus._judged_findings) builds the same
+# JudgeKey shape, role=rule.role, so the two paths share one cache row.
 
 @dataclass(frozen=True)
 class Price:
@@ -573,12 +570,8 @@ class JudgeBackend:
             paths.append(p)
         return paths
 
-    def cache_key(self, question: AssessQuestion) -> str:
-        if question.role == "picture-preference":
-            identity = sha(",".join(sorted(question.params.get("candidates", []))))
-        else:
-            identity = question.artifact_sha or question.subject
-        return f"judge:{sha(question.rubric or '')}:{identity}:{question.role}"
+    def cache_key(self, question: AssessQuestion) -> JudgeKey:
+        return JudgeKey.for_question(question)
 
     def _cost(self, completion: Completion) -> float:
         if self.price is not None:
@@ -607,10 +600,10 @@ class MechanicalBackend:
     mech:CHECK:CODE_VERSION:sha(ARTIFACT) only where no parameters express
     the question").
     """
-    key_fn: Callable[[AssessQuestion], str]
+    key_fn: Callable[[AssessQuestion], MechanicalKey]
     evaluate: Callable[[AssessQuestion], RawVerdict]
 
-    def cache_key(self, question: AssessQuestion) -> str:
+    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         return self.key_fn(question)
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
@@ -641,8 +634,9 @@ def duration_mechanical_backend(
         runner: Callable[..., Any] = subprocess.run) -> MechanicalBackend:
     duration_of = duration_of or (lambda path: ffprobe_duration_seconds(path, runner=runner))
 
-    def key_fn(question: AssessQuestion) -> str:
-        return f"mech:duration:{lo}-{hi}:{question.artifact_sha or '-'}"
+    def key_fn(question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="duration", params=f"{lo}-{hi}",
+                             artifact_sha=question.artifact_sha or "-")
 
     def evaluate(question: AssessQuestion) -> RawVerdict:
         path = resolve_path(question.artifact_sha)
@@ -656,8 +650,9 @@ def duration_mechanical_backend(
 def format_mechanical_backend(
         *, expected_ext: str, code_version: str = "v1",
         resolve_ext: Callable[[str | None], str]) -> MechanicalBackend:
-    def key_fn(question: AssessQuestion) -> str:
-        return f"mech:format:{code_version}:{question.artifact_sha or '-'}"
+    def key_fn(question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="format", params=code_version,
+                             artifact_sha=question.artifact_sha or "-")
 
     def evaluate(question: AssessQuestion) -> RawVerdict:
         ext = resolve_ext(question.artifact_sha)

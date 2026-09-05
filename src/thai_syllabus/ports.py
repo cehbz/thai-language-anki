@@ -42,15 +42,11 @@ class AssessmentReader(Protocol):
     channel waivers arrive through: a waiver is an assessment of a finding's
     identity (rule, note_id, artifact_sha).
     """
-    def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None,
-                rubric: str | None = None) -> bool | None:
-        """True/False for a cached judged-rule verdict; None if the
-        (rule, note, artifact) has not been assessed yet. `rubric` is the
-        judged Rule's rubric text (spec 4's merged key convention --
-        store.py's module docstring: this reads the SAME
-        judge:sha(RUBRIC):IDENTITY:ROLE row shape assessor.py's
-        JudgeBackend writes, with ROLE=rule_id).
+    def verdict(self, backend: str, key: Any) -> "Answer | None":
+        """The newest cache row for (backend, key), or None if it has not
+        been assessed yet. `key` is built by the caller through spec 3's
+        cachekeys.py (a judged Rule's verdict: cachekeys.JudgeKey with
+        role=rule.role); the reader reads what it is handed.
         """
         ...
 
@@ -103,9 +99,7 @@ class NullAssessmentReader:
     """No cached verdicts, no waivers -- the default when a caller has no
     AssessmentReader to plug in yet.
     """
-    def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None,
-                rubric: str | None = None) -> bool | None:
+    def verdict(self, backend: str, key: Any) -> "Answer | None":
         return None
 
     def is_waived(self, finding: "Finding") -> bool:
@@ -147,12 +141,12 @@ class Answer:
     sortable, collision-resistant substitute for the cache table's `ts`
     column -- see store.py's docstring for why).
 
-    `key` is spec 3's readable canonical cache key (e.g. "forvo:WORD",
-    "judge:sha(RUBRIC):sha(ARTIFACT):ROLE" with the real shas substituted
-    in) -- what the backend actually asked. `key_sha` is its indexed
-    digest (spec 2's `cache.key_sha` column); the two always correspond
-    (key_sha = sha256(key)), `key` is kept alongside it for readability
-    and for derivations that need to parse/prefix-match the raw key.
+    `key` is the readable string a cachekeys.py CacheKey's encode()
+    produced (or a plain string, for ports this task does not cover) --
+    what the backend actually asked. `key_sha` is its indexed digest
+    (spec 2's `cache.key_sha` column); the two always correspond
+    (key_sha = sha256(key)); `key` is kept alongside it for inspection
+    only -- no module reads it back to rebuild a key.
     """
     port: str
     backend: str

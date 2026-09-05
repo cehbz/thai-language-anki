@@ -124,8 +124,8 @@ def test_judge_cache_key_shape():
     q = AssessQuestion(subject="s", role="picture-for-word",
                        artifact_sha="deadbeef", rubric="does this fit?")
     key = backend.cache_key(q)
-    assert key.startswith("judge:")
-    assert key.endswith(":deadbeef:picture-for-word")
+    assert key.encode().startswith("judge:")
+    assert key.encode().endswith(":deadbeef:picture-for-word")
 
 
 def test_judge_key_changes_when_the_rubric_changes_but_not_the_artifact():
@@ -138,7 +138,7 @@ def test_judge_key_changes_when_the_rubric_changes_but_not_the_artifact():
 def test_judge_key_reuses_the_artifact_sha_verbatim_not_double_hashed():
     backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
     q = AssessQuestion(subject="s", role="r", artifact_sha="deadbeef", rubric="x")
-    assert "deadbeef" in backend.cache_key(q)
+    assert "deadbeef" in backend.cache_key(q).encode()
 
 
 def test_judge_key_falls_back_to_subject_when_there_is_no_artifact():
@@ -150,7 +150,7 @@ def test_judge_key_falls_back_to_subject_when_there_is_no_artifact():
     q1 = AssessQuestion(subject="sentence-1", role="r", rubric="x")
     q2 = AssessQuestion(subject="sentence-2", role="r", rubric="x")
     assert backend.cache_key(q1) != backend.cache_key(q2)
-    assert "sentence-1" in backend.cache_key(q1)
+    assert "sentence-1" in backend.cache_key(q1).encode()
 
 
 def test_judge_fetch_builds_a_prompt_and_parses_the_response():
@@ -202,7 +202,7 @@ def test_ask_batch_submits_once_and_persists_a_batch_pending_row(db):
     q1 = AssessQuestion(subject="w1", role="picture-for-word", artifact_sha="a1", rubric="r")
     q2 = AssessQuestion(subject="w2", role="picture-for-word", artifact_sha="a2", rubric="r")
     k1, k2 = backend.cache_key(q1), backend.cache_key(q2)
-    cid1, cid2 = "q" + sha(k1), "q" + sha(k2)
+    cid1, cid2 = "q" + sha(k1.encode()), "q" + sha(k2.encode())
 
     with pytest.raises(BatchPending) as exc:
         assessor.ask_batch("judge", [q1, q2])
@@ -233,8 +233,8 @@ def test_ask_batch_resumes_and_writes_individual_verdicts_once_ended(db):
         assessor.ask_batch("judge", [q1, q2])
 
     bt._status = "ended"
-    bt._results = {"q" + sha(k1): Completion(text='{"value": true, "evidence": "good"}'),
-                   "q" + sha(k2): Completion(text='{"value": false, "evidence": "blurry"}')}
+    bt._results = {"q" + sha(k1.encode()): Completion(text='{"value": true, "evidence": "good"}'),
+                   "q" + sha(k2.encode()): Completion(text='{"value": false, "evidence": "blurry"}')}
     results = assessor.ask_batch("judge", [q1, q2])
     assert results[k1].value is True
     assert results[k2].value is False
@@ -282,7 +282,7 @@ def test_ask_batch_drops_an_errored_key_from_the_pending_marker_once_ended(db):
     bt._status = "ended"
     # q_bad's result errored/canceled/expired -- results() omits it, exactly
     # as ClaudeBatchTransport.results does for a non-succeeded result.
-    bt._results = {"q" + sha(k_ok): Completion(text='{"value": true, "evidence": "good"}')}
+    bt._results = {"q" + sha(k_ok.encode()): Completion(text='{"value": true, "evidence": "good"}')}
 
     with pytest.raises(BatchPending) as exc:
         assessor.ask_batch("judge", [q_ok, q_bad])
@@ -291,8 +291,8 @@ def test_ask_batch_drops_an_errored_key_from_the_pending_marker_once_ended(db):
 
     marker = db.latest("assess", "judge", "judge-batch-pending:w")
     assert marker is not None
-    assert marker.question["keys"] == [k_ok]  # the errored key is absent
-    assert marker.answer["abandoned"] == [k_bad]
+    assert marker.question["keys"] == [k_ok.encode()]  # the errored key is absent
+    assert marker.answer["abandoned"] == [k_bad.encode()]
 
     from thai_syllabus.derivations import pending as derive_pending
     assert derive_pending(db, "w", "picture") is False
@@ -332,7 +332,7 @@ def test_ask_batch_treats_a_non_ended_terminal_status_as_all_abandoned_and_logs(
 
     marker = db.latest("assess", "judge", "judge-batch-pending:w")
     assert marker.question["keys"] == []
-    assert marker.answer["abandoned"] == [k]
+    assert marker.answer["abandoned"] == [k.encode()]
 
     from thai_syllabus.derivations import pending as derive_pending
     assert derive_pending(db, "w", "picture") is False
@@ -344,7 +344,7 @@ def test_duration_mechanical_key_is_parameter_explicit():
     backend = duration_mechanical_backend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
-    assert key == "mech:duration:0.2-5.0:deadbeef"
+    assert key.encode() == "mech:duration:0.2-5.0:deadbeef"
 
 
 def test_duration_mechanical_passes_within_range():
@@ -370,7 +370,7 @@ def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
                                         resolve_ext=lambda sha: "mp3")
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
-    assert key == "mech:format:v2:deadbeef"
+    assert key.encode() == "mech:format:v2:deadbeef"
 
 
 def test_format_mechanical_evaluates_extension_match():
@@ -466,7 +466,7 @@ def test_preference_question_key_and_attachments(tmp_path):
                       prompt_builder=picture_preference_prompt)
     q = AssessQuestion(subject="w", role="picture-preference", rubric="pref",
                        params={"candidates": ["sha-b", "sha-a"], "word": "x", "meaning": "y"})
-    assert jb.cache_key(q).endswith(":picture-preference")
+    assert jb.cache_key(q).encode().endswith(":picture-preference")
     assert jb.cache_key(q) == jb.cache_key(AssessQuestion(
         subject="w", role="picture-preference", rubric="pref",
         params={"candidates": ["sha-a", "sha-b"]}))
@@ -521,7 +521,7 @@ def test_ask_many_batch_returns_pending_keys_and_writes_per_subject_marker(db):
     assert res.resolved == {} and set(res.pending) == {jb.cache_key(q) for q in qs}
     marker = db.latest("assess", "judge", "judge-batch-pending:w")
     assert marker is not None and marker.answer["batch_id"] == "batch_9"
-    assert set(marker.question["keys"]) == {jb.cache_key(q) for q in qs}
+    assert set(marker.question["keys"]) == {jb.cache_key(q).encode() for q in qs}
 
 
 def test_ask_many_batch_writes_one_marker_row_per_subject_with_only_its_own_keys(db):
@@ -540,8 +540,8 @@ def test_ask_many_batch_writes_one_marker_row_per_subject_with_only_its_own_keys
 
     m1 = db.latest("assess", "judge", "judge-batch-pending:w1")
     m2 = db.latest("assess", "judge", "judge-batch-pending:w2")
-    assert m1 is not None and m1.question["keys"] == [jb.cache_key(q1)]
-    assert m2 is not None and m2.question["keys"] == [jb.cache_key(q2)]
+    assert m1 is not None and m1.question["keys"] == [jb.cache_key(q1).encode()]
+    assert m2 is not None and m2.question["keys"] == [jb.cache_key(q2).encode()]
 
 
 def test_ask_many_batch_excludes_a_question_whose_sha_cannot_be_resolved(db, tmp_path):
@@ -568,9 +568,9 @@ def test_ask_many_batch_excludes_a_question_whose_sha_cannot_be_resolved(db, tmp
 
     res = a.ask_many("judge", [q_ok, q_bad])
 
-    assert set(bt.submitted) == {"q" + sha(jb.cache_key(q_ok))}  # only the resolvable one submitted
+    assert set(bt.submitted) == {"q" + sha(jb.cache_key(q_ok).encode())}  # only the resolvable one submitted
     marker = db.latest("assess", "judge", "judge-batch-pending:w1")
-    assert marker is not None and marker.question["keys"] == [jb.cache_key(q_ok)]
+    assert marker is not None and marker.question["keys"] == [jb.cache_key(q_ok).encode()]
     assert db.latest("assess", "judge", "judge-batch-pending:w2") is None  # excluded, no marker
     assert res.resolved == {}
     assert res.pending == [jb.cache_key(q_ok)]
@@ -718,7 +718,7 @@ def test_ask_many_logs_a_warning_naming_the_dropped_question_key(db, caplog):
         res = a.ask_many("judge", [q])
     assert res.resolved == {} and res.pending == []
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert warnings and jb.cache_key(q) in warnings[0].getMessage()
+    assert warnings and jb.cache_key(q).encode() in warnings[0].getMessage()
 
 
 # --- excluded: a question the backend cannot PREPARE is not a dead wire ----

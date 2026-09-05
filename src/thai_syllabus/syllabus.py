@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
 
+from .cachekeys import JudgeKey
 from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
 from .ids import CategoryName, ConfusionId, WordId
 from .ports import (
@@ -221,14 +222,12 @@ class Syllabus:
     def _judged_findings(self, rule: Rule) -> list[Finding]:
         findings = []
         for note_id, artifact_sha in rule.judged_subjects(self):
-            # rubric passed through: the merged spec-3 key convention
-            # (spec 4 "key-convention debt"; see store.py's module
-            # docstring) keys a judged rule's verdict exactly like
-            # assessor.JudgeBackend does -- report() reads verdicts under
-            # rule.role, which defaults to the rule id.
-            verdict = self.assessments.verdict(rule.role, note_id, artifact_sha,
-                                               rubric=rule.rubric)
-            if verdict is False:
+            # for_rule() builds the same key assessor.JudgeBackend.cache_key
+            # builds for a direct Assessor.ask("judge", ...) call under the
+            # same rubric/artifact/role -- one convention, one row.
+            key = JudgeKey.for_rule(rule.rubric, artifact_sha, note_id, rule.role)
+            answer = self.assessments.verdict("judge", key)
+            if answer is not None and answer.answer.get("value") is False:
                 findings.append(Finding(rule=rule.id, note_id=note_id,
                                         artifact_sha=artifact_sha,
                                         evidence="judged: fail"))

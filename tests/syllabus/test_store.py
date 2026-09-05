@@ -8,15 +8,56 @@ from datetime import date
 
 import pytest
 
+from thai_syllabus.cachekeys import JudgeKey, WaiverKey, sha
 from thai_syllabus.media import Speaker
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.rules import Finding
 from thai_syllabus.store import MediaStore, SyllabusDb
 
 
+def _append_judge_verdict(db, *, rule_id, note_id, verdict, artifact_sha=None,
+                          rubric=None, evidence=None, cost=0.0):
+    """Test helper: builds the JudgeKey the way Syllabus.report() does
+    (JudgeKey.for_rule) and calls the new key-taking append_judge_verdict.
+    """
+    key = JudgeKey.for_rule(rubric, artifact_sha, note_id, rule_id)
+    answer = {"value": verdict}
+    if evidence is not None:
+        answer["evidence"] = evidence
+    db.append_judge_verdict(key=key, subject=note_id,
+                            question={"role": rule_id, "artifact_sha": artifact_sha,
+                                     "rubric": rubric},
+                            answer=answer, cost=cost)
+
+
+def _judge_key(rule_id, note_id, artifact_sha=None, rubric=None):
+    return JudgeKey.for_rule(rubric, artifact_sha, note_id, rule_id)
+
+
 @pytest.fixture
 def db(tmp_path):
     return SyllabusDb(tmp_path / "syllabus.db")
+
+
+def test_store_does_not_build_keys():
+    import thai_syllabus.store as s
+    assert not hasattr(s, "_judge_verdict_key")
+    assert not hasattr(s, "_finding_key")
+    assert not hasattr(s, "_finding_subject")
+
+
+def test_waiver_is_visible_under_the_note_subject(db):
+    key = WaiverKey(rule_id="picture/fit", note_id="rice", artifact_sha="a" * 64)
+    db.append("assess", "learner", key, "rice", {"kind": "waiver"}, {"waived": True}, 0.0)
+    assert any(a.question.get("kind") == "waiver" for a in db.assessments_of("rice"))
+
+
+def test_judge_backend_key_equals_cachekeys(db):
+    from thai_syllabus.assessor import AssessQuestion, JudgeBackend
+    q = AssessQuestion(subject="rice", role="picture-for-word", artifact_sha="a" * 64, rubric="R")
+    backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
+    assert backend.cache_key(q) == JudgeKey(rubric_sha=sha("R"), identity="a" * 64,
+                                            role="picture-for-word")
 
 
 # --- schema / WAL -----------------------------------------------------
@@ -126,27 +167,23 @@ def test_assessments_of_orders_newest_last(db):
 
 def test_verdict_is_exact_key_newest_row(db):
     # two different (rule, note_id) pairs must not collide
-    db.append_judge_verdict(rule_id="pair/exact-confusion", note_id="mp-1",
-                            verdict=False)
-    db.append_judge_verdict(rule_id="pair/exact-confusion", note_id="mp-1",
-                            verdict=True)  # re-judged, newest wins
-    db.append_judge_verdict(rule_id="pair/exact-confusion", note_id="mp-2",
-                            verdict=False)
-    assert db.verdict("pair/exact-confusion", "mp-1") is True
-    assert db.verdict("pair/exact-confusion", "mp-2") is False
-    assert db.verdict("pair/exact-confusion", "unknown") is None
+    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1", verdict=False)
+    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1",
+                          verdict=True)  # re-judged, newest wins
+    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-2", verdict=False)
+    assert db.verdict("judge", _judge_key("pair/exact-confusion", "mp-1")).answer["value"] is True
+    assert db.verdict("judge", _judge_key("pair/exact-confusion", "mp-2")).answer["value"] is False
+    assert db.verdict("judge", _judge_key("pair/exact-confusion", "unknown")) is None
 
 
 def test_verdict_distinguishes_notes_with_no_artifact_sha(db):
     # Two different notes judged under the same rule and no artifact_sha
     # must not collide -- the merged spec-3 key convention falls back to
     # note_id (see store.py's module docstring), not a shared placeholder.
-    db.append_judge_verdict(rule_id="sentence/register-natural", note_id="s-1",
-                            verdict=True)
-    db.append_judge_verdict(rule_id="sentence/register-natural", note_id="s-2",
-                            verdict=False)
-    assert db.verdict("sentence/register-natural", "s-1") is True
-    assert db.verdict("sentence/register-natural", "s-2") is False
+    _append_judge_verdict(db, rule_id="sentence/register-natural", note_id="s-1", verdict=True)
+    _append_judge_verdict(db, rule_id="sentence/register-natural", note_id="s-2", verdict=False)
+    assert db.verdict("judge", _judge_key("sentence/register-natural", "s-1")).answer["value"] is True
+    assert db.verdict("judge", _judge_key("sentence/register-natural", "s-2")).answer["value"] is False
 
 
 def test_verdict_key_matches_the_spec_3_judge_backend_convention(db):
@@ -159,24 +196,25 @@ def test_verdict_key_matches_the_spec_3_judge_backend_convention(db):
     q = AssessQuestion(subject="mp-1", role="pair/exact-confusion",
                        artifact_sha="aaa", rubric="is this pair exact?")
     expected_key = backend.cache_key(q)
-    db.append_judge_verdict(rule_id="pair/exact-confusion", note_id="mp-1",
-                            artifact_sha="aaa", verdict=True,
-                            rubric="is this pair exact?")
+    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1",
+                          artifact_sha="aaa", verdict=True,
+                          rubric="is this pair exact?")
     row = db._con.execute(  # white-box: confirm it landed under the shared key
         "select key from cache where port='assess' and backend='judge'").fetchone()
-    assert row[0] == expected_key
-    assert db.verdict("pair/exact-confusion", "mp-1", "aaa",
-                      rubric="is this pair exact?") is True
+    assert row[0] == expected_key.encode()
+    answer = db.verdict("judge", _judge_key("pair/exact-confusion", "mp-1", "aaa",
+                                            rubric="is this pair exact?"))
+    assert answer.answer["value"] is True
 
 
 def test_verdict_keys_on_artifact_sha_too(db):
-    db.append_judge_verdict(rule_id="media/picture-fit", note_id="w-1",
-                            artifact_sha="aaa", verdict=True)
-    db.append_judge_verdict(rule_id="media/picture-fit", note_id="w-1",
-                            artifact_sha="bbb", verdict=False)
-    assert db.verdict("media/picture-fit", "w-1", "aaa") is True
-    assert db.verdict("media/picture-fit", "w-1", "bbb") is False
-    assert db.verdict("media/picture-fit", "w-1") is None
+    _append_judge_verdict(db, rule_id="media/picture-fit", note_id="w-1",
+                          artifact_sha="aaa", verdict=True)
+    _append_judge_verdict(db, rule_id="media/picture-fit", note_id="w-1",
+                          artifact_sha="bbb", verdict=False)
+    assert db.verdict("judge", _judge_key("media/picture-fit", "w-1", "aaa")).answer["value"] is True
+    assert db.verdict("judge", _judge_key("media/picture-fit", "w-1", "bbb")).answer["value"] is False
+    assert db.verdict("judge", _judge_key("media/picture-fit", "w-1")) is None
 
 
 def test_is_waived_reads_learner_waiver_rows(db):

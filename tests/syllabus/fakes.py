@@ -1,4 +1,5 @@
 """Fakes for testing the Syllabus aggregate: no pythainlp, no anthropic."""
+from thai_syllabus.ports import Answer
 from thai_syllabus.rules import Finding
 
 
@@ -15,19 +16,26 @@ class FakeTokenizer:
 
 
 class FakeAssessmentReader:
+    """`verdicts` is keyed the way tests read (rule_id, note_id,
+    artifact_sha) -> bool, not by the cachekeys.JudgeKey report() actually
+    passes to verdict() -- this fake tests report()'s logic in isolation
+    from store.py's actual key mechanics, matching a JudgeKey by its role
+    (rule_id) and identity (artifact_sha, falling back to note_id).
+    """
     def __init__(self, verdicts: dict[tuple[str, str, str | None], bool] | None = None,
                 waived: set[tuple[str, str, str | None]] | None = None):
         self._verdicts = dict(verdicts or {})
         self._waived = set(waived or set())
 
-    def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None,
-                rubric: str | None = None) -> bool | None:
-        # `rubric` is accepted (matching the real AssessmentReader.verdict
-        # signature -- spec 4's merged key convention) but not part of this
-        # fake's lookup key: FakeAssessmentReader tests report()'s logic in
-        # isolation from store.py's actual key mechanics.
-        return self._verdicts.get((rule_id, note_id, artifact_sha))
+    def verdict(self, backend: str, key) -> Answer | None:
+        role = getattr(key, "role", None)
+        identity = getattr(key, "identity", None)
+        for (rule_id, note_id, artifact_sha), value in self._verdicts.items():
+            if rule_id == role and identity == (artifact_sha or note_id):
+                return Answer(port="assess", backend=backend, key_sha="", key="",
+                             subject=note_id, question={}, answer={"value": value},
+                             cost=0.0, ts=0)
+        return None
 
     def is_waived(self, finding: Finding) -> bool:
         return finding.identity() in self._waived

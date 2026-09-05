@@ -46,6 +46,7 @@ from typing import Any
 import genanki
 import yaml
 
+from .cachekeys import JudgeKey
 from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
 from .ids import TargetId, WordId
@@ -460,17 +461,21 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
                 continue
 
             failed_rules = cand.get("failed_rules") or []
+            judge_key = JudgeKey.for_rule(PICTURE_FIT_RUBRIC, sha, word_id, "picture-for-word")
             if cand.get("passed"):
-                db.append_judge_verdict(rule_id="picture-for-word", note_id=word_id,
-                                        artifact_sha=sha, verdict=True,
-                                        rubric=PICTURE_FIT_RUBRIC,
-                                        evidence="migrated: passed every picture rule")
+                db.append_judge_verdict(
+                    key=judge_key, subject=word_id,
+                    question={"role": "picture-for-word", "artifact_sha": sha,
+                             "rubric": PICTURE_FIT_RUBRIC},
+                    answer={"value": True, "evidence": "migrated: passed every picture rule"})
                 report.bump(report.cache, "judge_pass")
             elif failed_rules:
-                db.append_judge_verdict(rule_id="picture-for-word", note_id=word_id,
-                                        artifact_sha=sha, verdict=False,
-                                        rubric=PICTURE_FIT_RUBRIC,
-                                        evidence="migrated: failed " + ", ".join(failed_rules))
+                db.append_judge_verdict(
+                    key=judge_key, subject=word_id,
+                    question={"role": "picture-for-word", "artifact_sha": sha,
+                             "rubric": PICTURE_FIT_RUBRIC},
+                    answer={"value": False,
+                           "evidence": "migrated: failed " + ", ".join(failed_rules)})
                 report.bump(report.cache, "judge_fail")
             else:
                 report.bump(report.cache, "judge_unrecorded")

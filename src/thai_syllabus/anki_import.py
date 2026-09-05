@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .cachekeys import sha
+from .cachekeys import LearnerKey, LearnerNoteKey, ReverifyKey, sha
 from .store import SyllabusDb
 
 __all__ = ["ImportReport", "import_collection"]
@@ -249,12 +249,11 @@ def _import_flags(col: _Collection, db: SyllabusDb,
             from .derivations import current_best
             artifact_sha = current_best(db, identity.anchor, provide_kind).artifact_sha
 
+        existing_key = f"flag-import:{card_id}:{card['flags']}"
         if role in TONE_CORRECTNESS_ROLES:
-            key = f"learner:reverify:{artifact_sha or identity.anchor}:{role}"
-            existing_key = f"flag-import:{card_id}:{card['flags']}"
+            key = ReverifyKey(artifact_sha=artifact_sha, anchor=identity.anchor, role=role)
         else:
-            key = f"learner:{artifact_sha or identity.anchor}:{role}"
-            existing_key = f"flag-import:{card_id}:{card['flags']}"
+            key = LearnerKey(artifact_sha=artifact_sha, role=role)
 
         already = db.latest("assess", "learner", existing_key)
         if already is not None:
@@ -300,14 +299,15 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
         text = note["flds"][idx].strip()
         if not text:
             continue  # cleared/empty: appends nothing, retracts nothing
-        key = f"learner-note:{note_id}:{sha(text)}"
+        text_sha = sha(text)
+        key = LearnerNoteKey(anchor=str(note_id), text_sha=text_sha)
         already = db.latest("assess", "learner-note", key)
         if already is not None:
             skipped += 1
             skips.append(("review_note", f"note {note_id}", "already harvested (unchanged text)"))
             continue
         db.append(port="assess", backend="learner-note", key=key, subject=str(note_id),
-                 question={"note_id": note_id, "text_sha": sha(text)},
+                 question={"note_id": note_id, "text_sha": text_sha},
                  answer={"text": text})
         imported += 1
     return imported, skipped

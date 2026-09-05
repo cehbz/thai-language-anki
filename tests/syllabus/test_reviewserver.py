@@ -264,6 +264,21 @@ def test_append_answer_waiver_uses_finding_identity_key(db):
     assert db.is_waived(Finding(rule="r1", note_id="n1", artifact_sha="sA", evidence=""))
 
 
+def test_waivers_from_either_write_path_appear_under_the_note_subject(db):
+    # store.append_waiver and reviewserver.append_answer's waiver branch
+    # are two separate RecordWriter callers; both must land the waiver
+    # under subject=note_id, so assessments_of(note_id) sees it either way.
+    db.append_waiver(rule_id="r1", note_id="n1", artifact_sha=None,
+                     waived=True, reason="from the store path")
+    rs.append_answer(db, {"finding": {"rule": "r2", "note_id": "n1",
+                                      "artifact_sha": None}, "waived": True,
+                          "reason": "from the reviewserver path"})
+    kinds_and_reasons = [(a.question.get("kind"), a.answer.get("reason"))
+                        for a in db.assessments_of("n1")]
+    assert ("waiver", "from the store path") in kinds_and_reasons
+    assert ("waiver", "from the reviewserver path") in kinds_and_reasons
+
+
 def test_append_answer_rejects_unknown_rating(db, w1):
     with pytest.raises(ValueError):
         rs.append_answer(db, {"subject": w1.id, "kind": "picture", "action": 3,

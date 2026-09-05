@@ -83,6 +83,7 @@ from pathlib import Path
 from typing import Any
 
 from .authority import role_for
+from .cachekeys import DrillKey, LearnerKey, WaiverKey
 from .curated import load_curated
 from .derivations import LEARNER_RANK, current_best, exhausted, queue
 from .derivations import stale as _stale
@@ -134,28 +135,6 @@ def _matches_kind(question: Mapping, kind: str) -> bool:
 
 def _rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
     return [r for r in cache.assessments_of(subject) if _matches_kind(r.question, kind)]
-
-
-def _learner_key(role: str, artifact_sha: str | None) -> str:
-    """learner:ARTIFACT_SHA:ROLE (spec 3 section 2 roster). ARTIFACT_SHA is
-    already a content hash (Picture/Recording are content-addressed, spec 1
-    section 1) so it goes into the key as-is, not sha(sha(...)) -- same
-    reasoning as assessor.py's JudgeBackend.cache_key.
-    """
-    return f"learner:{artifact_sha or '-'}:{role}"
-
-
-def _finding_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    """The finding-identity key spec 5 section 2 names as /api/answer's
-    other keying scheme ("or the finding identity for waivers") -- store.py
-    SyllabusDb's own private waiver convention, duplicated here so this
-    module works against any RecordWriter, not just SyllabusDb.
-    """
-    return f"waiver:{rule_id}:{note_id}:{artifact_sha or '-'}"
-
-
-def _finding_subject(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    return json.dumps([rule_id, note_id, artifact_sha], sort_keys=True)
 
 
 def _gap_candidates(syllabus: Syllabus) -> list[tuple[str, str]]:
@@ -445,7 +424,7 @@ def append_gallery_note(record: RecordWriter, *, card_id: str, kind: str, text: 
     (the learner-only "cards (flags)" role).
     """
     role = "card-flag"
-    key = f"learner:{card_id}:{role}"
+    key = LearnerKey(artifact_sha=str(card_id), role=role)
     return record.append(port="assess", backend="learner", key=key, subject=str(card_id),
                          question={"role": role, "kind": kind, "card_id": card_id},
                          answer={"kind": "rating", "rating": None, "note": text})
@@ -460,7 +439,7 @@ def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
     Subject = confusion id, so /stats can fold every drill for a confusion
     with one assessments_of(confusion) read.
     """
-    key = f"learner:drill:{pair_id}:{confusion}"
+    key = DrillKey(pair_id=pair_id, confusion=confusion)
     return record.append(port="assess", backend="learner", key=key, subject=confusion,
                          question={"kind": "drill", "pair": pair_id, "confusion": confusion},
                          answer={"correct": bool(correct)})
@@ -468,9 +447,8 @@ def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
 
 def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The one write path for question-session answers (spec 5 section 1):
-    every answer appends one learner cache row keyed
-    learner:ARTIFACT_SHA:ROLE, or the finding identity for a waiver.
-    `payload` shapes:
+    every answer appends one learner cache row keyed by cachekeys.LearnerKey,
+    or cachekeys.WaiverKey for a waiver. `payload` shapes:
       rate/reask:  {subject, kind, action: 1-4, artifact_sha?, note?}
       challenger:  {subject, kind, action: "keep"|"switch", artifact_sha?}
       waiver:      {finding: {rule, note_id, artifact_sha?}, waived?, reason?}
@@ -484,9 +462,8 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
         finding = payload["finding"]
         rule_id, note_id = finding["rule"], finding["note_id"]
         artifact_sha = finding.get("artifact_sha")
-        key = _finding_key(rule_id, note_id, artifact_sha)
-        subject = _finding_subject(rule_id, note_id, artifact_sha)
-        ts = record.append(port="assess", backend="learner", key=key, subject=subject,
+        key = WaiverKey(rule_id=rule_id, note_id=note_id, artifact_sha=artifact_sha)
+        ts = record.append(port="assess", backend="learner", key=key, subject=note_id,
                            question={"kind": "waiver", "rule": rule_id, "note_id": note_id,
                                     "artifact_sha": artifact_sha},
                            answer={"waived": bool(payload.get("waived", True)),
@@ -513,7 +490,7 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
     answer: dict[str, Any] = {"value": rating}
     if payload.get("note"):
         answer["note"] = payload["note"]
-    key = _learner_key(role, artifact_sha)
+    key = LearnerKey(artifact_sha=artifact_sha, role=role)
     ts = record.append(port="assess", backend="learner", key=key, subject=subject,
                        question={"role": role, "artifact_sha": artifact_sha, "rubric": None},
                        answer=answer)
@@ -550,7 +527,7 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
         raise ValueError(f"unknown supply source {source!r}")
 
     role = _role(kind)
-    key = _learner_key(role, artifact_sha)
+    key = LearnerKey(artifact_sha=artifact_sha, role=role)
     answer_row: dict[str, Any] = {
         "value": "unacceptable-use-this",
         "provenance": {"source": "learner", "origin": source},

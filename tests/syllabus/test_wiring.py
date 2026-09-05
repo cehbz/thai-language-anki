@@ -19,6 +19,7 @@ import yaml
 
 from thai_syllabus import secrets as secrets_mod
 from thai_syllabus.assessor import Assessor, Price
+from thai_syllabus.cachekeys import JudgeKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
     JudgeConfig,
@@ -403,11 +404,15 @@ def test_load_syllabus_wires_a_real_assessment_reader(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     syllabus = load_syllabus(root)
     db = SyllabusDb(root / "syllabus.db")
-    db.append_judge_verdict(rule_id="r1", note_id="n1", verdict=True)
+    key = JudgeKey(rubric_sha=sha(""), identity="n1", role="r1")
+    db.append_judge_verdict(key=key, subject="n1",
+                            question={"role": "r1", "artifact_sha": None, "rubric": None},
+                            answer={"value": True})
     # a fresh load_syllabus call re-opens the same db file -- the verdict
     # written above must be visible through Syllabus.assessments.
     syllabus2 = load_syllabus(root)
-    assert syllabus2.assessments.verdict("r1", "n1") is True
+    answer = syllabus2.assessments.verdict("judge", key)
+    assert answer is not None and answer.answer["value"] is True
 
 
 def test_load_syllabus_sentences_come_from_the_db(tmp_path):

@@ -2,14 +2,22 @@
 MediaStore, the content-addressed writer for media/objects/ (spec 2
 section 1).
 
-Ground rules from the spec: five tables and nothing else; WAL mode; one
-transaction per append; caches are never evicted -- a re-ask appends, it
-never updates or deletes. `ts` is stored as an integer count of
-nanoseconds since the epoch (not the ISO string spec 2's prose examples
-might suggest) because the `cache` table's primary key is (key_sha, ts):
-nanosecond resolution combined with a per-connection monotonic bump (see
-`_next_ts`) makes same-microsecond collisions impossible without needing
-a synthetic surrogate key.
+Five tables and nothing else; WAL mode; one transaction per append;
+caches are never evicted -- a re-ask appends, it never updates or
+deletes. `ts` is stored as an integer count of nanoseconds since the
+epoch (not the ISO string spec 2's prose examples might suggest) because
+the `cache` table's primary key is (key_sha, ts): nanosecond resolution
+combined with a per-connection monotonic bump (see `_next_ts`) makes
+same-microsecond collisions impossible without needing a synthetic
+surrogate key.
+
+Every key is a cachekeys.py CacheKey, or a plain string (the Provide
+port's backends key that way); `append`/`latest`/`verdict` accept either
+and store `key.encode()` under the `key` column -- readable, for
+inspection only -- and `sha256(key.encode())` under `key_sha`, the
+indexed column every lookup matches on (`cachekeys.sha` is a different,
+16-hex primitive: the one key dataclasses use to fold a large component,
+e.g. a rubric, into their own encode()).
 
 AssessmentReader.verdict / .is_waived / RecordWriter.append /
 StudyReader.records / StudyReader.study_rows are all implemented here
@@ -18,69 +26,6 @@ non-Protocol methods (assessments_of, append_judge_verdict, append_waiver,
 append_study, add_sentence, add_media) that spec 2 section 3 or the
 migration/testing surface needs but spec 1's frozen Protocols do not
 declare.
-
-Cache-row conventions used by the higher-level convenience methods (judge
-verdicts, waivers) -- these predate spec 3's per-backend Provider/Assessor
-key functions (provider.py/assessor.py own those; see their module
-docstrings) but, per spec 4's "key-convention debt" item, the judge-verdict
-one is no longer a separate convention:
-
-  - judge verdict (MERGED into spec 3's judge-backend key, spec 4):
-                     port="assess", backend="judge",
-                     key = "judge:sha(RUBRIC):IDENTITY:ROLE" -- exactly
-                     assessor.JudgeBackend.cache_key's shape, with ROLE =
-                     the judged Rule's id (a judged Rule has no separate
-                     Assessor "role" of its own; the rule id fills that
-                     slot) and IDENTITY = artifact_sha when the judged
-                     subject is an artifact, else note_id verbatim (per
-                     cachekeys.sha's "only sha large/binary components"
-                     rule -- note_id is already short and readable, so it
-                     is not re-hashed). Falling back to note_id rather
-                     than a bare placeholder matters here specifically:
-                     report() judges MANY distinct non-artifact subjects
-                     (e.g. one register check per sentence) under ONE
-                     shared rubric+role, so a placeholder would silently
-                     collide their verdicts (assessor.py's JudgeBackend
-                     makes the same fallback, to its own `subject`, for
-                     the identical reason -- see its module comment).
-                     subject = note_id (spec 3's AssessQuestion.subject
-                     shape), NOT the old finding-identity JSON blob --
-                     that blob remains the WAIVER convention's subject
-                     only (below), a deliberately separate, unmerged
-                     concept (learner authority over findings, not judge
-                     verdicts). question = {"role": rule_id,
-                     "artifact_sha": ..., "rubric": ...} and
-                     answer = {"value": bool, ...} -- both exactly
-                     Assessor._append_verdict's shape, so a judged Rule's
-                     verdict and a direct Assessor.ask("judge", ...) call
-                     under the same (rubric, role, identity) land on the
-                     SAME row: one convention, not two. verdict() is an
-                     EXACT key_sha match, newest row wins.
-
-                     The now-retired convention was
-                     "rule-verdict:RULE_ID:NOTE_ID:ARTIFACT_SHA" with
-                     answer={"verdict": bool} and subject = the
-                     finding-identity JSON blob; rows written under it
-                     (e.g. by an older migration run) will not be found
-                     by the merged verdict() -- acceptable per spec 2
-                     section 4 item 5's "changed questions must re-judge
-                     anyway".
-  - learner waiver:  port="assess", backend="learner",
-                     key = "waiver:RULE_ID:NOTE_ID:ARTIFACT_SHA"
-                     (ARTIFACT_SHA is "-" when absent), subject = same
-                     finding identity, question = {"kind": "waiver",
-                     rule, note_id, artifact_sha},
-                     answer = {"waived": bool, "reason"}.
-                     is_waived() folds newest-wins over matching rows
-                     (the learner backend's standard cache policy).
-                     Explicitly OUT of the spec-4 merge (item 4 scopes it
-                     to "the judge verdict path" only): a waiver is a
-                     learner-authority fact about a Finding's identity,
-                     not a judge verdict, and spec 3's roster gives the
-                     learner backend its own separate key shape
-                     ("learner:sha(ARTIFACT):ROLE, no rubric") that this
-                     convention does not claim to match either -- left as
-                     its own, pre-existing thing.
 """
 from __future__ import annotations
 
@@ -88,12 +33,13 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from .cachekeys import sha
+from .cachekeys import CacheKey, WaiverKey
 from .entities import Sentence
 from .media import Provenance, Speaker
 from .ports import Answer, StudyRecord
@@ -165,26 +111,12 @@ create table if not exists study (
 """
 
 
+def _key_text(key: "str | CacheKey") -> str:
+    return key.encode() if isinstance(key, CacheKey) else key
+
+
 def _key_sha(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-
-def _judge_verdict_key(rule_id: str, note_id: str, artifact_sha: str | None,
-                       rubric: str | None) -> str:
-    """The merged spec-3 judge-backend key shape (see module docstring):
-    role = rule_id; identity = artifact_sha, falling back to note_id.
-    Exactly assessor.JudgeBackend.cache_key's formula.
-    """
-    identity = artifact_sha or note_id
-    return f"judge:{sha(rubric or '')}:{identity}:{rule_id}"
-
-
-def _finding_key(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    return f"waiver:{rule_id}:{note_id}:{artifact_sha or '-'}"
-
-
-def _finding_subject(rule_id: str, note_id: str, artifact_sha: str | None) -> str:
-    return json.dumps([rule_id, note_id, artifact_sha], sort_keys=True)
 
 
 def _row_to_answer(row: tuple) -> Answer:
@@ -224,26 +156,27 @@ class SyllabusDb:
 
     # --- RecordWriter --------------------------------------------------
 
-    def append(self, port: str, backend: str, key: str, subject: str,
+    def append(self, port: str, backend: str, key: "str | CacheKey", subject: str,
                question: Any, answer: Any, cost: float = 0.0,
                ts: int | None = None) -> int:
         ts = self._next_ts(ts)
+        key_text = _key_text(key)
         with self._con:
             self._con.execute(
                 "insert into cache (port, backend, key, key_sha, subject, "
                 "question, answer, cost, ts) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (port, backend, key, _key_sha(key), subject,
+                (port, backend, key_text, _key_sha(key_text), subject,
                  json.dumps(question, sort_keys=True),
                  json.dumps(answer, sort_keys=True), cost, ts))
         return ts
 
     # --- CacheReader (spec 3): the general cache-first read surface -------
 
-    def latest(self, port: str, backend: str, key: str) -> Answer | None:
+    def latest(self, port: str, backend: str, key: "str | CacheKey") -> Answer | None:
         row = self._con.execute(
             "select port, backend, key, key_sha, subject, question, answer, "
             "cost, ts from cache where port=? and backend=? and key_sha=? "
-            "order by ts desc limit 1", (port, backend, _key_sha(key))
+            "order by ts desc limit 1", (port, backend, _key_sha(_key_text(key)))
         ).fetchone()
         if row is None:
             return None
@@ -251,24 +184,16 @@ class SyllabusDb:
 
     # --- AssessmentReader ------------------------------------------------
 
-    def verdict(self, rule_id: str, note_id: str,
-                artifact_sha: str | None = None,
-                rubric: str | None = None) -> bool | None:
-        key = _judge_verdict_key(rule_id, note_id, artifact_sha, rubric)
-        row = self._con.execute(
-            "select answer from cache where port='assess' and backend='judge' "
-            "and key_sha=? order by ts desc limit 1",
-            (_key_sha(key),)).fetchone()
-        if row is None:
-            return None
-        return bool(json.loads(row[0])["value"])
+    def verdict(self, backend: str, key: "str | CacheKey") -> Answer | None:
+        return self.latest("assess", backend, key)
 
     def is_waived(self, finding: "Finding") -> bool:
-        subject = _finding_subject(finding.rule, finding.note_id,
-                                   finding.artifact_sha)
+        key = WaiverKey(rule_id=finding.rule, note_id=finding.note_id,
+                        artifact_sha=finding.artifact_sha)
         row = self._con.execute(
             "select answer from cache where port='assess' and backend='learner' "
-            "and subject=? order by ts desc limit 1", (subject,)).fetchone()
+            "and key_sha=? order by ts desc limit 1",
+            (_key_sha(key.encode()),)).fetchone()
         if row is None:
             return False
         return bool(json.loads(row[0])["waived"])
@@ -280,42 +205,28 @@ class SyllabusDb:
             (subject,)).fetchall()
         return [_row_to_answer(r) for r in rows]
 
-    # --- convenience writers for the judge/waiver conventions -------------
-    #
-    # Readable per spec 3's "canonical readable strings, sha() only on
-    # large/binary components" rule -- but NOT spec 3's own judge-backend
-    # key (judge:sha(RUBRIC):sha(ARTIFACT):ROLE, owned by assessor.py). This
-    # is spec 1/2's separate, already-shipped convention for judged-*rule*
-    # verdicts consumed by Syllabus.report() through AssessmentReader.verdict
-    # (keyed on rule_id/note_id/artifact_sha, not rubric text/role) -- see
-    # the module docstring above.
+    # --- convenience writers ------------------------------------------------
 
-    def append_judge_verdict(self, *, rule_id: str, note_id: str,
-                             verdict: bool, artifact_sha: str | None = None,
-                             rubric: str | None = None,
-                             evidence: str | None = None,
+    def append_judge_verdict(self, *, key: "str | CacheKey", subject: str,
+                             question: Mapping[str, Any], answer: Mapping[str, Any],
                              cost: float = 0.0) -> None:
-        key = _judge_verdict_key(rule_id, note_id, artifact_sha, rubric)
-        # subject = note_id, matching spec 3's AssessQuestion.subject shape
-        # (the merged convention -- see module docstring); NOT the old
-        # finding-identity blob, which stays the waiver convention's own.
-        question = {"role": rule_id, "artifact_sha": artifact_sha,
-                    "rubric": rubric}
-        answer: dict[str, Any] = {"value": verdict}
-        if evidence is not None:
-            answer["evidence"] = evidence
-        self.append(port="assess", backend="judge", key=key, subject=note_id,
-                    question=question, answer=answer, cost=cost)
+        """port="assess", backend="judge"; `key` is built by the caller
+        through cachekeys.JudgeKey -- this does not construct one.
+        """
+        self.append(port="assess", backend="judge", key=key, subject=subject,
+                    question=dict(question), answer=dict(answer), cost=cost)
 
     def append_waiver(self, *, rule_id: str, note_id: str,
                       artifact_sha: str | None, waived: bool,
                       reason: str = "") -> None:
-        key = _finding_key(rule_id, note_id, artifact_sha)
-        subject = _finding_subject(rule_id, note_id, artifact_sha)
+        """port="assess", backend="learner", key=cachekeys.WaiverKey(...);
+        subject=note_id, so assessments_of(note_id) sees the waiver.
+        """
+        key = WaiverKey(rule_id=rule_id, note_id=note_id, artifact_sha=artifact_sha)
         question = {"kind": "waiver", "rule": rule_id, "note_id": note_id,
                     "artifact_sha": artifact_sha}
         answer = {"waived": waived, "reason": reason}
-        self.append(port="assess", backend="learner", key=key, subject=subject,
+        self.append(port="assess", backend="learner", key=key, subject=note_id,
                     question=question, answer=answer)
 
     # --- study / StudyReader ----------------------------------------------

@@ -53,6 +53,7 @@ from typing import Any
 
 from .assessor import AssessQuestion, Assessor
 from .authority import ROLE_FOR_KIND
+from .cachekeys import CacheKey, MechanicalKey
 from .cachekeys import sha as _sha
 from .derivations import CurrentBest, current_best
 from .entities import Sentence, Target, text_sha
@@ -126,7 +127,7 @@ class _Tally:
     before the Source, once after), and one unusable candidate is one
     exclusion, not two.
     """
-    excluded_keys: set[str] = field(default_factory=set)
+    excluded_keys: set[CacheKey] = field(default_factory=set)
 
     @property
     def excluded(self) -> int:
@@ -233,7 +234,8 @@ def _judge_many(ctx: Sourcing, questions: Sequence[AssessQuestion], tally: _Tall
         tally.excluded_keys.update(res.excluded)
         _log.warning("the judge could not prepare %d of %d question(s) (%s); "
                      "those candidates are unusable -- continuing the attempt",
-                     len(res.excluded), len(questions), ", ".join(res.excluded))
+                     len(res.excluded), len(questions),
+                     ", ".join(k.encode() for k in res.excluded))
     if questions and not res.resolved and not res.pending and not res.excluded:
         _log.warning("judge answered none of %d question(s), reported none pending and "
                      "excluded none; ending the attempt before any source spend",
@@ -509,9 +511,11 @@ def _record_rendition(ctx: Sourcing, pair_id: str, members: Mapping[str, str],
     ok = all(passed.values())
     evidence = context if ok else (
         f"{context}; failing: {', '.join(sorted(m for m, p in passed.items() if not p))}")
+    artifact_sha = _sha(joined)
+    key = MechanicalKey(check="rendition", params=f"v1:{pair_id}", artifact_sha=artifact_sha)
     ctx.db.append(port="assess", backend="mechanical",
-                  key=f"mech:rendition:v1:{pair_id}:{_sha(joined)}", subject=pair_id,
-                  question={"role": ROLE_FOR_KIND["rendition"], "artifact_sha": _sha(joined),
+                  key=key, subject=pair_id,
+                  question={"role": ROLE_FOR_KIND["rendition"], "artifact_sha": artifact_sha,
                             "rubric": None, "params": {"members": dict(members)}},
                   answer={"value": ok, "evidence": evidence})
 
@@ -642,7 +646,7 @@ def _mechanical_fills(ctx: Sourcing, syl: Syllabus, targets_by_id: Mapping[str, 
     later run with that same state_id reads it back instead of
     re-verifying and re-appending a row for the identical question.
     """
-    key = f"mech:fills:v1:{ts}"
+    key = MechanicalKey(check="fills", params="v1", artifact_sha=ts)
     cached = ctx.db.latest("assess", "mechanical", key)
     if cached is not None and cached.question.get("params", {}).get("state_id") == state_id:
         return [targets_by_id[i] for i in cached.question["params"].get("fills", []) if i in targets_by_id]
