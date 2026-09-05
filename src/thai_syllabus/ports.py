@@ -220,6 +220,13 @@ class CacheReader(Protocol):
         """
         ...
 
+    def rows_since(self, port: str, backend: str, since_ts: int) -> list["Answer"]:
+        """Every row of (port, backend) at or after `since_ts`, oldest
+        first -- the window a per-day budget is summed over (spec 3
+        section 7: spend is summed from the record).
+        """
+        ...
+
 
 @runtime_checkable
 class StudyReader(Protocol):

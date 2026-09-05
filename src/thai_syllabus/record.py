@@ -21,7 +21,7 @@ from .ports import Answer, CacheReader
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "directions", "judge_verdicts", "latest_query",
-          "unresolved_batch", "subject_kind_of", "DRAFT_SUBJECT", "SentenceDraft",
+          "asks_since", "spend_since", "unresolved_batch", "subject_kind_of", "DRAFT_SUBJECT", "SentenceDraft",
           "drafts_in", "sentence_drafts"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
@@ -128,6 +128,19 @@ def latest_query(rows: Sequence[Answer]) -> str | None:
     latest = max(asks, key=lambda r: r.ts)
     params = latest.question.get("params", {}) or {}
     return params.get("query") or params.get("url") or params.get("text")
+
+
+def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
+    """How many Source asks `backend` made at or after `since_ts` -- the
+    asks a per-day budget counts (a bytes-fetch row is not an ask of its
+    own).
+    """
+    return len(source_asks(cache.rows_since("provide", backend, since_ts)))
+
+
+def spend_since(cache: CacheReader, backend: str, since_ts: int) -> float:
+    """What those asks cost, in `backend`'s own currency."""
+    return sum(r.cost for r in source_asks(cache.rows_since("provide", backend, since_ts)))
 
 
 def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:

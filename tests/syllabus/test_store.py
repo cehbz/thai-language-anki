@@ -140,6 +140,20 @@ def test_latest_does_not_cross_backends_on_the_same_key_text(db):
     assert db.latest("provide", "tts", "same-key").answer == {"items": ["tts"]}
 
 
+def test_rows_since_returns_that_port_and_backend_from_the_window_onward(db):
+    db.append(port="provide", backend="forvo", key="k1", subject="rice",
+              question={"kind": "recording"}, answer={"items": []}, cost=1.0, ts=100)
+    db.append(port="provide", backend="forvo", key="k2", subject="fish",
+              question={"kind": "recording"}, answer={"items": []}, cost=2.0, ts=300)
+    db.append(port="provide", backend="tts", key="k3", subject="rice",
+              question={"kind": "recording"}, answer={"items": []}, cost=0.0, ts=300)
+    db.append(port="assess", backend="forvo", key="k4", subject="rice",
+              question={"kind": "recording"}, answer={"value": True}, cost=0.0, ts=300)
+    rows = db.rows_since("provide", "forvo", 200)
+    assert [(r.subject, r.cost) for r in rows] == [("fish", 2.0)]
+    assert [r.subject for r in db.rows_since("provide", "forvo", 0)] == ["rice", "fish"]
+
+
 def test_satisfies_the_cache_reader_protocol(db):
     from thai_syllabus.ports import CacheReader
     assert isinstance(db, CacheReader)

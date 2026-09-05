@@ -280,6 +280,8 @@ class Assessor:
         key BatchMarkerKey(batch_id)) naming what was submitted, in
         parallel lists aligned by index. Returns the batch id, or None
         when `prepared` is empty (nothing submitted, nothing appended).
+        Raises JudgeUnreachable when the transport cannot be reached:
+        nothing was submitted and no marker was appended.
         """
         if not prepared:
             return None
@@ -303,7 +305,10 @@ class Assessor:
             kinds.append(p.question.kind)
             subject_kinds.append(p.question.subject_kind)
             params.append(dict(p.question.params))
-        batch_id = impl.batch_transport.submit(requests)
+        try:
+            batch_id = impl.batch_transport.submit(requests)
+        except TransportError as e:
+            raise JudgeUnreachable(f"the judge's batch transport refused a submission: {e}") from e
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
             question={"kind": "batch", "batch_id": batch_id, "keys": keys, "subjects": subjects,
@@ -319,16 +324,22 @@ class Assessor:
         ended, "expired"/"failed" for a batch that will never answer --
         either way a question with no verdict row carries none and
         re-asks on a later run. A no-op (returns {}) while the batch is
-        still "in_progress", or once it has already been resolved.
+        still "in_progress", or once it has already been resolved. Raises
+        JudgeUnreachable when the transport cannot be reached: the marker
+        stays submitted and the batch is read again on a later run.
         """
         marker = self._cache.latest("assess", "judge", BatchMarkerKey(batch_id))
         if marker is None or marker.answer.get("status") != "submitted":
             return {}
         impl = self._backends["judge"]
-        status = impl.batch_transport.status(batch_id)
-        if status == "in_progress":
-            return {}
-        results = impl.batch_transport.results(batch_id) if status == "ended" else {}
+        try:
+            status = impl.batch_transport.status(batch_id)
+            if status == "in_progress":
+                return {}
+            results = impl.batch_transport.results(batch_id) if status == "ended" else {}
+        except TransportError as e:
+            raise JudgeUnreachable(
+                f"the judge's batch transport could not be read for {batch_id}: {e}") from e
         n = len(marker.question["keys"])
         artifact_shas = marker.question.get("artifact_shas") or [None] * n
         rubrics = marker.question.get("rubrics") or [None] * n

@@ -205,6 +205,13 @@ class SyllabusDb:
             (subject,)).fetchall()
         return [_row_to_answer(r) for r in rows]
 
+    def rows_since(self, port: str, backend: str, since_ts: int) -> list[Answer]:
+        rows = self._con.execute(
+            "select port, backend, key, key_sha, subject, question, answer, "
+            "cost, ts from cache where port=? and backend=? and ts>=? order by ts asc",
+            (port, backend, since_ts)).fetchall()
+        return [_row_to_answer(r) for r in rows]
+
     # --- convenience writers ------------------------------------------------
 
     def append_judge_verdict(self, *, key: "str | CacheKey", subject: str,

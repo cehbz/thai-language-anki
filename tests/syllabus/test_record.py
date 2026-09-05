@@ -5,6 +5,7 @@ by each row's own explicit question["kind"] -- never inferred from a
 import pytest
 
 from thai_syllabus.record import (
+    asks_since,
     candidate_shas,
     directions,
     judge_verdicts,
@@ -13,6 +14,7 @@ from thai_syllabus.record import (
     ratings_for_role,
     rows_for,
     source_asks,
+    spend_since,
 )
 from thai_syllabus.store import SyllabusDb
 
@@ -124,3 +126,27 @@ def test_latest_query_reads_the_newest_source_asks_params(cache):
 
 def test_latest_query_is_none_with_no_source_ask(cache):
     assert latest_query([]) is None
+
+
+# --- the spend window a per-day budget is measured over --------------------
+
+def test_asks_since_counts_that_backend_s_source_asks_in_the_window(cache):
+    cache.append("provide", "forvo", "k1", "rice", {"kind": "recording"}, {"items": []},
+                 1.0, ts=100)
+    cache.append("provide", "forvo", "k2", "fish", {"kind": "recording"}, {"items": []},
+                 2.0, ts=300)
+    cache.append("provide", "tts", "k3", "rice", {"kind": "recording"}, {"items": []},
+                 0.5, ts=300)
+    cache.append("provide", "audiofetch", "k4", "rice", {"kind": "recording"},
+                 {"items": []}, 0.0, ts=300)   # bytes, not a Source ask
+    assert asks_since(cache, "forvo", 200) == 1
+    assert asks_since(cache, "forvo", 0) == 2
+
+
+def test_spend_since_sums_the_cost_of_those_asks(cache):
+    cache.append("provide", "forvo", "k1", "rice", {"kind": "recording"}, {"items": []},
+                 1.0, ts=100)
+    cache.append("provide", "forvo", "k2", "fish", {"kind": "recording"}, {"items": []},
+                 2.5, ts=300)
+    assert spend_since(cache, "forvo", 200) == pytest.approx(2.5)
+    assert spend_since(cache, "forvo", 0) == pytest.approx(3.5)

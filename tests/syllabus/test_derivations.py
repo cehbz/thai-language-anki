@@ -22,7 +22,10 @@ from thai_syllabus.derivations import (
     improved,
     next_source,
     pending,
+    passing_pictures,
+    pictures_awaiting_preference,
     queue,
+    queued,
     reasks,
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
@@ -440,6 +443,33 @@ def _queue(syllabus, cache, **kwargs):
     return queue(syllabus, cache, **kwargs)
 
 
+def _queued(syllabus, cache, **kwargs):
+    kwargs.setdefault("current_rubric", {"picture-for-word": R})
+    kwargs.setdefault("prior", ())
+    kwargs.setdefault("sources_for", sources_for)
+    kwargs.setdefault("attempt_cap", 8)
+    kwargs.setdefault("provenance_source", _no_provenance)
+    return queued(syllabus, cache, **kwargs)
+
+
+def test_a_need_no_source_serves_is_available_but_never_exhausted(cache):
+    """An unfilled Target is served by the run's own sentence attempt, not
+    by a Source: it counts as available work, never as out of options."""
+    syllabus = _FakeSyllabus(_FakeGaps(unfilled_targets=("t1", "t2", "t3")),
+                             targets=[target("t1", "rice"), target("t2", "fish"),
+                                      target("t3", "corn")])
+    found = _queued(syllabus, cache, sources_for=no_sources)
+    assert found.available == 3 and found.exhausted == 0
+
+
+def test_a_need_out_of_sources_is_counted_exhausted(cache):
+    syllabus = _one_word_syllabus()
+    for source in sources_for("picture"):
+        seed_ask(cache, "rice", "picture", source=source, ts=_next_ts())
+    found = _queued(syllabus, cache)
+    assert found.entries == [] and found.exhausted == 1 and found.available == 1
+
+
 def test_bucket_1_when_no_artifact_exists(cache):
     syllabus = _one_word_syllabus()
     entries = _queue(syllabus, cache)
@@ -718,6 +748,49 @@ def test_preference_orders_passing_pictures(db):
     assert best.artifact_sha == "b" and 50.0 < best.rank <= 70.0
 
 
+# --- pictures_awaiting_preference ----------------------------------------
+
+_FIT = {"picture-for-word": "fit", "picture-preference": "pref"}
+
+
+def _preference_row(db, subject, candidates, rubric="pref"):
+    db.append(port="assess", backend="judge",
+              key=f"judge:x:{'-'.join(candidates)}:picture-preference", subject=subject,
+              question={"role": "picture-preference", "artifact_sha": None, "rubric": rubric,
+                        "kind": "picture", "params": {"candidates": list(candidates)}},
+              answer={"value": list(candidates)})
+
+
+def test_more_than_one_passing_picture_and_no_ranking_awaits_a_preference(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b"])
+    for s in ("a", "b"):
+        _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
+    assert pictures_awaiting_preference(db, "w", current_rubric=_FIT) == ("a", "b")
+
+
+def test_one_passing_picture_awaits_no_preference(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b"])
+    _verdict(db, "w", "judge", "picture-for-word", "a", True, rubric="fit")
+    _verdict(db, "w", "judge", "picture-for-word", "b", False, rubric="fit")
+    assert pictures_awaiting_preference(db, "w", current_rubric=_FIT) == ()
+
+
+def test_a_ranked_passing_set_awaits_no_second_preference(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b"])
+    for s in ("a", "b"):
+        _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
+    _preference_row(db, "w", ["a", "b"])
+    assert pictures_awaiting_preference(db, "w", current_rubric=_FIT) == ()
+
+
+def test_a_new_passing_candidate_awaits_its_own_preference(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b", "c"])
+    for s in ("a", "b", "c"):
+        _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
+    _preference_row(db, "w", ["a", "b"])   # ranked before c passed
+    assert pictures_awaiting_preference(db, "w", current_rubric=_FIT) == ("a", "b", "c")
+
+
 def test_provenance_prior_breaks_ties_below_one_rank_point(db):
     """Models the real two-step write (spec 3 section 3): forvo's own
     Source ask carries no sha (a lookup only); the sha arrives on a
@@ -881,3 +954,11 @@ def test_a_stale_judge_verdict_does_not_make_a_draft_adoptable(cache):
     cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="old-R")]
     assert adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_passing_pictures_are_the_candidates_the_current_fit_rubric_passed(db):
+    _provide(db, "w", "picture", "openverse", ["a", "b", "c"])
+    _verdict(db, "w", "judge", "picture-for-word", "a", True, rubric="fit")
+    _verdict(db, "w", "judge", "picture-for-word", "b", False, rubric="fit")
+    _verdict(db, "w", "judge", "picture-for-word", "c", True, rubric="stale fit")
+    assert passing_pictures(db, "w", current_rubric=_FIT) == ("a",)

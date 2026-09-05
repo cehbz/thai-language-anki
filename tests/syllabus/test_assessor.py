@@ -809,3 +809,39 @@ def test_a_verdict_row_keeps_the_params_the_question_carried(tmp_path):
     row = db.assessments_of("s")[-1]
     assert row.question["params"] == {"target": "t1"}
     assert row.question["subject_kind"] == "sentence"
+
+
+# --- a judge whose batch wire is down (spec 3 section 7: the run stops) ----
+
+class _DeadBatch:
+    """A batch transport whose every call fails on the wire."""
+
+    def submit(self, requests):
+        raise TransportError("batch submit failed: 503")
+
+    def status(self, batch_id):
+        raise TransportError("batch status failed: 503")
+
+    def results(self, batch_id):
+        raise TransportError("batch results failed: 503")
+
+
+def test_submit_that_cannot_reach_the_wire_is_an_unreachable_judge(db, fake_batch):
+    a = Assessor(record=db, cache=db,
+                 backends={"judge": JudgeBackend(model="m", transport="batch",
+                                                 batch_transport=fake_batch)})
+    prepared = a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected
+    dead = Assessor(record=db, cache=db,
+                    backends={"judge": JudgeBackend(model="m", transport="batch",
+                                                    batch_transport=_DeadBatch())})
+    with pytest.raises(JudgeUnreachable):
+        dead.submit(prepared)
+
+
+def test_resolve_that_cannot_reach_the_wire_is_an_unreachable_judge(
+        assessor_with_batch_transport, db):
+    a = assessor_with_batch_transport
+    bid = a.submit(a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected)
+    a._backends["judge"].batch_transport = _DeadBatch()
+    with pytest.raises(JudgeUnreachable):
+        a.resolve(bid)

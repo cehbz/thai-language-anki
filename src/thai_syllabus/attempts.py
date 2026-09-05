@@ -34,7 +34,13 @@ from . import record
 from .assessor import AssessQuestion, Assessor, PreparedQuestion
 from .authority import role_for
 from .cachekeys import RenditionAskKey, rendition_identity
-from .derivations import CurrentBest, current_best
+from .derivations import (
+    DEFAULT_ATTEMPT_CAP,
+    CurrentBest,
+    current_best,
+    passing_pictures,
+    pictures_awaiting_preference,
+)
 from .entities import Target, Word
 from .ids import PairId, WordId
 from .media import Speaker
@@ -48,7 +54,7 @@ from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
            "sources_for", "provenance_source_for", "current_best_of",
-           "attempt", "sentence_attempt"]
+           "attempt", "sentence_attempt", "preference_attempt"]
 
 _log = logging.getLogger(__name__)
 
@@ -117,6 +123,10 @@ class Sourcing:
         "male": tuple(MALE_VOICES), "female": tuple(FEMALE_VOICES)})
     query_hints: Mapping[str, str] = field(default_factory=lambda: dict(QUERY_HINTS))
     judge_model: str = "llm"
+    # The Sources each artifact kind may be asked for, cheapest first, and
+    # the attempt count exhausted() stops at.
+    sources_for: Callable[[str], Sequence[str]] = field(default=sources_for)
+    attempt_cap: int = DEFAULT_ATTEMPT_CAP
 
 
 @dataclass(frozen=True)
@@ -124,12 +134,15 @@ class AttemptResult:
     """`attempted`: a Source ask was made, hit or miss. `questions`: the
     judge questions this attempt collected for the run's batch, empty
     under an inline transport. `excluded`: encoded key -> why a question
-    could not be prepared. `spend`: per backend.
+    could not be prepared. `spend`: per backend. `drafted`: the sentence
+    drafts this attempt produced that fill an open Target (0 for every
+    attempt that is not the sentence attempt).
     """
     attempted: bool
     questions: list[PreparedQuestion] = field(default_factory=list)
     excluded: dict[str, str] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
+    drafted: int = 0
 
 
 # --- reading the record -----------------------------------------------------
@@ -281,20 +294,51 @@ def _judge_pictures(ctx: Sourcing, need: Need, query: str,
     collected = list(result.collected)
     excluded = dict(result.excluded)
     if ctx.assessor.inline and need.subject_kind == "word":
-        passing = sorted(sha for sha, q in zip(shas, questions)
-                         if (v := result.resolved.get(ctx.assessor.key_of("judge", q))) is not None
-                         and v.value is True)
+        passing = passing_pictures(ctx.db, need.subject, current_rubric=ctx.rubrics)
         if len(passing) > 1:
-            preference = ctx.assessor.ask_many("judge", [AssessQuestion(
-                subject=need.subject, role="picture-preference",
-                rubric=ctx.rubrics["picture-preference"],
-                params={"candidates": passing, "word": params["word"],
-                        "meaning": params["meaning"]}, kind=need.kind,
-                subject_kind=need.subject_kind)])
+            preference = ctx.assessor.ask_many("judge", [_preference_question(
+                ctx, need, passing, params["word"], params["meaning"])])
             _count_verdicts(spend, "judge", preference)
             collected += preference.collected
             excluded.update(preference.excluded)
     return AttemptResult(attempted=True, questions=collected, excluded=excluded, spend=spend)
+
+
+def _preference_question(ctx: Sourcing, need: Need, candidates: Sequence[str],
+                         thing: str, gloss: str) -> AssessQuestion:
+    """One ordering question over a need's passing pictures, carrying the
+    need's own kind and subject kind. The candidate set is its identity
+    (cachekeys.preference_identity), so a set that grows is a new
+    question."""
+    return AssessQuestion(subject=need.subject, role="picture-preference",
+                          rubric=ctx.rubrics["picture-preference"],
+                          params={"candidates": list(candidates), "word": thing,
+                                  "meaning": gloss},
+                          kind=need.kind, subject_kind=need.subject_kind)
+
+
+def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
+    """The ordering question for each of `subjects` that is a word whose
+    passing pictures have none (derivations.pictures_awaiting_preference)
+    -- what a batch transport leaves open until its fit verdicts land, and
+    the run asks once they have.
+    """
+    spend: dict[str, Spend] = {}
+    questions: list[AssessQuestion] = []
+    for subject in sorted(subjects):
+        word = ctx.syllabus.find_word(WordId(subject))
+        if word is None:
+            continue
+        candidates = pictures_awaiting_preference(ctx.db, subject, current_rubric=ctx.rubrics)
+        if candidates:
+            questions.append(_preference_question(
+                ctx, Need(subject, "picture", "word"), candidates, word.thai, word.meaning))
+    if not questions:
+        return AttemptResult(attempted=False)
+    result = ctx.assessor.ask_many("judge", questions)
+    _count_verdicts(spend, "judge", result)
+    return AttemptResult(attempted=True, questions=list(result.collected),
+                         excluded=dict(result.excluded), spend=spend)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------
@@ -590,7 +634,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     result = ctx.assessor.ask_many("judge", questions)
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),
-                         excluded=dict(result.excluded), spend=spend)
+                         excluded=dict(result.excluded), spend=spend,
+                         drafted=len(questions))
 
 
 _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {

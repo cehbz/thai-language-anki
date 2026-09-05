@@ -42,7 +42,8 @@ __all__ = [
     "ExhaustedStatus", "exhausted",
     "improved",
     "directed",
-    "QueueEntry", "queue",
+    "QueueEntry", "queue", "QueuedNeeds", "queued",
+    "passing_pictures", "pictures_awaiting_preference",
     "challengers",
     "reasks",
     "confusion_weights",
@@ -475,11 +476,34 @@ def _gap_candidates(syllabus) -> list[tuple[str, str, str]]:
     return out
 
 
+@dataclass(frozen=True)
+class QueuedNeeds:
+    """queue()'s entries and what the same pass left out: `available` is
+    every need gaps() lists, `exhausted` the needs among them dropped for
+    being out of sources with nothing directing them. One pass, so a
+    caller reporting against every gap folds the record once (spec 3
+    section 7's RunReport).
+    """
+    entries: list[QueueEntry]
+    available: int
+    exhausted: int
+
+
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
          attempt_cap: int, provenance_source: Callable[[str], str | None]) -> list[QueueEntry]:
+    return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
+                  sources_for=sources_for, attempt_cap=attempt_cap,
+                  provenance_source=provenance_source).entries
+
+
+def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
+          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
+          attempt_cap: int, provenance_source: Callable[[str], str | None]) -> QueuedNeeds:
     entries: list[QueueEntry] = []
-    for subject, kind, subject_kind in _gap_candidates(syllabus):
+    candidates = _gap_candidates(syllabus)
+    out_of_options = 0
+    for subject, kind, subject_kind in candidates:
         if pending(cache, subject, kind):
             continue  # a batch is still out -- pending is reported, not queued
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
@@ -497,6 +521,8 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         if best.artifact_sha is None or rejected:
             status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap)
             if status.exhausted and not is_directed:
+                if sources:
+                    out_of_options += 1  # a Source could have served it and none is left
                 continue  # out of machine options and nothing directs it -- excluded
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources):
@@ -509,7 +535,43 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
                                   attempts=attempts))
 
     entries.sort(key=lambda e: (e.bucket, not e.directed, e.rank, e.attempts, e.subject, e.kind))
-    return entries
+    return QueuedNeeds(entries=entries, available=len(candidates), exhausted=out_of_options)
+
+
+# --- the preference question a resolved batch leaves open ------------------
+
+def passing_pictures(cache: CacheReader, subject: str, *,
+                     current_rubric: Mapping[str, str]) -> tuple[str, ...]:
+    """`subject`'s picture candidates whose fit verdict under the current
+    rubric passed, sorted -- the set a preference question orders (spec 3
+    section 6). The one place that set is decided: an attempt reads it
+    back after its own fit questions resolved, and the run reads it back
+    once a batch does.
+    """
+    rows = record.rows_for(cache, subject, "picture")
+    role = role_of(cache, subject, "picture", rows)
+    return tuple(sorted({r.question["artifact_sha"]
+                        for r in record.judge_verdicts(rows, role)
+                        if r.answer.get("value") is True and r.question.get("artifact_sha")
+                        and not _stale(r, current_rubric)}))
+
+
+def pictures_awaiting_preference(cache: CacheReader, subject: str, *,
+                                 current_rubric: Mapping[str, str]) -> tuple[str, ...]:
+    """`subject`'s picture candidates passing fit under the current rubric,
+    when more than one passes and no picture-preference verdict under that
+    rubric ranks exactly that set. Empty otherwise -- the set to put to the
+    judge, once its fit verdicts are in (spec 3 section 6: preference
+    orders passing pictures).
+    """
+    passing = passing_pictures(cache, subject, current_rubric=current_rubric)
+    if len(passing) < 2:
+        return ()
+    ranked = [r for r in record.judge_verdicts(cache.assessments_of(subject),
+                                              "picture-preference")
+             if not _stale(r, current_rubric)
+             and set(r.question.get("params", {}).get("candidates", [])) == set(passing)]
+    return () if ranked else passing
 
 
 # --- challengers -----------------------------------------------------------

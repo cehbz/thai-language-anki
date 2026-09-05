@@ -562,6 +562,18 @@ def test_sentence_attempt_collects_a_judge_question_carrying_the_text_and_gloss(
     assert question.artifact_sha is None       # a sentence judgment attaches no artifact
 
 
+def test_sentence_attempt_reports_the_drafts_it_produced(tmp_path):
+    """`drafted` counts the drafts that fill an open Target, whatever the
+    transport did with their judge questions."""
+    text = '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'\
+           ' "targets": ["rice/receptive", "eat/receptive"]}]}'   # กินข้าว: eat rice
+    # one deck per call: the drafting ask is cached, and a shared db would
+    # hand the later calls the first call's answer.
+    assert sentence_attempt(_sentence_ctx(tmp_path / "batch", text, batch=True)).drafted == 1
+    assert sentence_attempt(_sentence_ctx(tmp_path / "inline", text)).drafted == 1
+    assert sentence_attempt(_sentence_ctx(tmp_path / "none", '{"sentences": []}')).drafted == 0
+
+
 def test_sentence_attempt_adopts_nothing_itself(tmp_path):
     ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
                                   ' "targets": ["rice/receptive", "eat/receptive"]}]}')
