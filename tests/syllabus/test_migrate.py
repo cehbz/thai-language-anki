@@ -2,17 +2,20 @@
 against a small synthetic old-deck fixture built under tmp_path. Never
 touches ~/decks or the real data/ directory.
 """
+import io
 import json
+import sqlite3
 
 import genanki
 import pytest
 import yaml
+from PIL import Image
 
 from thai_syllabus import curated
 from thai_syllabus.derivations import current_best
-from thai_syllabus.migrate import MigrationReport, migrate
+from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate
 from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
-from thai_syllabus.store import SyllabusDb
+from thai_syllabus.store import IMAGE_MAX_LONG_EDGE, SyllabusDb
 
 PW1_GUID = genanki.guid_for("picture_word", "pw-1")
 
@@ -31,17 +34,43 @@ def _write_jsonl(path, rows):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _img_bytes(size, color, fmt="JPEG"):
+    buf = io.BytesIO()
+    Image.new("RGB", size, color=color).save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def _row_count(db_path, table):
+    con = sqlite3.connect(db_path)
+    try:
+        return con.execute(f"select count(*) from {table}").fetchone()[0]
+    finally:
+        con.close()
+
+
+def _append_word_rows(old_data, *rows):
+    word_list = old_data / "word_list_th.yaml"
+    existing = yaml.safe_load(word_list.read_text(encoding="utf-8"))
+    existing.extend(rows)
+    word_list.write_text(yaml.safe_dump(existing, allow_unicode=True, sort_keys=False),
+                         encoding="utf-8")
+
+
 @pytest.fixture
 def old_deck(tmp_path):
     d = tmp_path / "old_deck"
     (d / "media" / "images").mkdir(parents=True)
-    (d / "media" / "images" / "pw-1.jpg").write_bytes(b"picture-bytes-1")
-    (d / "media" / "images" / "pw-2.jpg").write_bytes(b"slow-picture-bytes")
-    (d / "media" / "images" / "sp-k.jpg").write_bytes(b"picture-bytes-sp-k")
+    # pw-1's own image is oversized (1000x600): exercises normalization at
+    # ingest (spec 4 section 3) end to end.
+    (d / "media" / "images" / "pw-1.jpg").write_bytes(_img_bytes((1000, 600), "red"))
+    (d / "media" / "images" / "pw-2.jpg").write_bytes(_img_bytes((4, 4), "blue"))
+    (d / "media" / "images" / "sp-k.jpg").write_bytes(_img_bytes((4, 4), "green"))
 
     _write_yaml(d / "notes" / "picture_words.yaml", [
-        {"id": "pw-1", "thai": "ไก่", "ipa": "kaj˨˩", "image": "images/pw-1.jpg"},
-        {"id": "pw-2", "thai": "ช้า", "image": "images/pw-2.jpg"},
+        {"id": "pw-1", "thai": "ไก่", "category": "Animals",  # ไก่ = chicken
+         "ipa": "kaj˨˩", "image": "images/pw-1.jpg"},
+        {"id": "pw-2", "thai": "ช้า", "category": "Adjectives",  # ช้า = slow
+         "image": "images/pw-2.jpg"},
     ])
     _write_yaml(d / "notes" / "spelling_sound.yaml", [
         {"id": "sp-1", "pattern": "ก", "image": "images/sp-k.jpg"},
@@ -56,12 +85,15 @@ def old_deck(tmp_path):
         {"file": "media/images/missing.jpg", "channel": "pexels",
          "origin": "https://example.com/missing.jpg", "license": "pexels",
          "fetched": "2026-08-30"},
+        {"file": "media/audio/pw-1.mp3", "channel": "tts",
+         "origin": "https://example.com/pw-1.mp3", "license": "cc0",
+         "fetched": "2026-08-29"},  # audio is out of scope; regenerates
     ]})
 
     cand_dir = d / "work" / "candidates" / "pw-1"
     cand_dir.mkdir(parents=True)
-    (cand_dir / "0.jpg").write_bytes(b"candidate-0")
-    (cand_dir / "1.jpg").write_bytes(b"candidate-1-passed")
+    (cand_dir / "0.jpg").write_bytes(_img_bytes((4, 4), "yellow"))
+    (cand_dir / "1.jpg").write_bytes(_img_bytes((4, 4), "orange"))
     _write_yaml(cand_dir / "candidates.yaml", {
         "corpora": ["openverse"],
         "candidates": [
@@ -75,14 +107,10 @@ def old_deck(tmp_path):
              "failed_rules": ["judge/image-irrelevant"], "accepted": False},
         ]})
 
-    # pw-2's own chosen image (images/pw-2.jpg) shares bytes with candidate
-    # 0.jpg, which is recorded as a full pass -- this is the scenario where
-    # a judge PASS on the SAME sha the deck already picked must outrank the
-    # bare machine-chosen marker in current_best (source == "judge").
     cand_dir2 = d / "work" / "candidates" / "pw-2"
     cand_dir2.mkdir(parents=True)
-    (cand_dir2 / "0.jpg").write_bytes(b"slow-picture-bytes")
-    (cand_dir2 / "1.jpg").write_bytes(b"other-candidate-slow")
+    (cand_dir2 / "0.jpg").write_bytes(_img_bytes((4, 4), "purple"))
+    (cand_dir2 / "1.jpg").write_bytes(_img_bytes((4, 4), "cyan"))
     _write_yaml(cand_dir2 / "candidates.yaml", {
         "corpora": ["openverse"],
         "candidates": [
@@ -94,8 +122,8 @@ def old_deck(tmp_path):
         ]})
 
     _write_jsonl(d / "work" / "forvo_lookups.jsonl", [
-        {"word": "ไก่", "items": [{"id": 1}], "fetched": "2026-08-29"},
-        {"word": "หมา", "items": [], "fetched": "2026-08-30"},
+        {"word": "ไก่", "items": [{"id": 1}], "fetched": "2026-08-29"},  # ไก่ = chicken
+        {"word": "หมา", "items": [], "fetched": "2026-08-30"},  # หมา = dog
         "{not valid json",  # deliberately malformed
     ])
 
@@ -120,13 +148,13 @@ def old_data(tmp_path):
     d = tmp_path / "old_data"
     d.mkdir()
     _write_yaml(d / "word_list_th.yaml", [
-        {"id": "chicken", "thai": "ไก่", "gloss": "chicken", "category": "Animals",
+        {"id": "chicken", "thai": "ไก่", "gloss": "chicken", "category": "Animals",  # ไก่ = chicken
          "classifier": "ตัว", "picturable": True, "part_of_speech": "noun"},
-        {"id": "dog", "thai": "หมา", "gloss": "dog", "category": "Animals",
+        {"id": "dog", "thai": "หมา", "gloss": "dog", "category": "Animals",  # หมา = dog
          "picturable": True},
-        {"id": "human-directed", "thai": "ผู้ชาย", "gloss": "man", "category": "People",
+        {"id": "human-directed", "thai": "ผู้ชาย", "gloss": "man", "category": "People",  # ผู้ชาย = man
          "image_query": "a man standing", "image_query_source": "human"},
-        {"id": "slow", "thai": "ช้า", "gloss": "slow", "category": "Adjectives"},
+        {"id": "slow", "thai": "ช้า", "gloss": "slow", "category": "Adjectives"},  # ช้า = slow
         # deliberately malformed: missing 'thai'
         {"id": "broken-row", "gloss": "nothing here"},
     ])
@@ -157,6 +185,8 @@ def test_migration_report_counts_and_no_silent_drops(old_deck, old_data, tmp_pat
     assert report.media["objects_written"] >= 2
     assert any(u.source == "media_manifest.yaml" and "missing.jpg" in u.identity
               for u in report.unmigratable)
+    # the one audio entry in the manifest is counted, not silently skipped
+    assert report.audio_skipped == 1
 
     # candidates: pw-1 (1 fail, 1 pass) + pw-2 (1 pass, 1 fail); pw-1's
     # missing.jpg is dropped (candidate image missing on disk)
@@ -178,6 +208,9 @@ def test_migration_report_counts_and_no_silent_drops(old_deck, old_data, tmp_pat
     # StudyRecords: none migrate
     assert report.study["records"] == 0
 
+    # no ambiguous (thai, category) forms in the base fixture
+    assert report.ambiguous == []
+
 
 def test_migrated_curated_data_loads_cleanly(old_deck, old_data, tmp_path):
     new_root = tmp_path / "new_root"
@@ -197,17 +230,31 @@ def test_migrated_media_bytes_are_content_addressed(old_deck, old_data, tmp_path
     import hashlib
     new_root = tmp_path / "new_root"
     migrate(old_deck, old_data, new_root)
-    sha = hashlib.sha256(b"picture-bytes-1").hexdigest()
-    assert (new_root / "media" / "objects" / f"{sha}.jpg").read_bytes() == b"picture-bytes-1"
+    objects = list((new_root / "media" / "objects").glob("*"))
+    assert objects
+    for obj in objects:
+        assert hashlib.sha256(obj.read_bytes()).hexdigest() == obj.stem
 
 
-def test_machine_chosen_marker_on_current_deck_images(old_deck, old_data, tmp_path):
+def test_migrate_normalizes_images(old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)
+    objects = list((new_root / "media" / "objects").glob("*"))
+    assert objects
+    saw_bounded = False
+    for obj in objects:
+        with Image.open(obj) as im:
+            assert max(im.size) <= IMAGE_MAX_LONG_EDGE
+            if max(im.size) == IMAGE_MAX_LONG_EDGE:
+                saw_bounded = True
+    assert saw_bounded  # pw-1.jpg (1000x600) was bounded down to the limit
+
+
+def test_migrate_writes_no_marker(old_deck, old_data, tmp_path):
     new_root = tmp_path / "new_root"
     migrate(old_deck, old_data, new_root)
     db = SyllabusDb(new_root / "syllabus.db")
-    answers = db.assessments_of("chicken")
-    kinds = [a.answer.get("marker") for a in answers if a.backend == "machine-chosen"]
-    assert "machine-chosen" in kinds
+    assert not any(a.backend == "machine-chosen" for a in db.assessments_of("chicken"))
     assert db.assessments_of("pw-1") == []  # old note id is never a subject
 
 
@@ -249,6 +296,19 @@ def test_migration_is_idempotent_wrt_media_cas(old_deck, old_data, tmp_path):
     assert objects_after_first == objects_after_second
 
 
+def test_migrate_twice_appends_nothing(old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)
+    n_cache = _row_count(new_root / "syllabus.db", "cache")
+    n_media = _row_count(new_root / "syllabus.db", "media")
+    report = migrate(old_deck, old_data, new_root)
+    assert _row_count(new_root / "syllabus.db", "cache") == n_cache
+    assert _row_count(new_root / "syllabus.db", "media") == n_media
+    assert sum(report.already_present.values()) > 0
+    assert report.already_present["media"] > 0
+    assert report.media.get("objects_written", 0) == 0
+
+
 def test_does_not_touch_judge_cache_sqlite(old_deck, old_data, tmp_path):
     # judge_cache.sqlite is retired, not migrated (item 5) -- if present it
     # must never be opened/read.
@@ -266,7 +326,7 @@ def test_candidates_yaml_bare_list_shape_is_handled(old_deck, old_data, tmp_path
     # (no word id to rank a verdict under) and is itself reported.
     cand_dir = old_deck / "work" / "candidates" / "pw-bare"
     cand_dir.mkdir(parents=True)
-    (cand_dir / "0.jpg").write_bytes(b"bare-candidate-0")
+    (cand_dir / "0.jpg").write_bytes(_img_bytes((4, 4), "magenta"))
     _write_yaml(cand_dir / "candidates.yaml", [
         {"file": "0.jpg", "url": "https://example.com/0.jpg", "source": "openverse",
          "license": "cc0", "passed": False, "failed_rules": ["judge/image-irrelevant"],
@@ -297,23 +357,71 @@ def test_missing_waivers_yaml_is_not_an_error(old_deck, old_data, tmp_path):
     assert report.cache.get("waiver", 0) == 0
 
 
-# --- new for this task: subjects are word ids, candidates.yaml verdicts
-# rank, learner rows by word ---------------------------------------------
+# --- new for this task: (thai, category) joins, carried verdicts never
+# rank, no marker, and idempotence -----------------------------------------
 
-def test_chosen_picture_with_a_recorded_pass_ranks_as_current_best(old_deck, old_data, tmp_path):
+def test_migrate_joins_pictures_by_thai_and_category(old_deck, old_data, tmp_path):
+    # ร้อน (hot) covers both an Adjectives sense ("hot") and a Seasons
+    # sense ("hot (weather)"); the picture note is filed under Seasons, so
+    # it must join "hot-weather", never "hot".
+    _append_word_rows(
+        old_data,
+        {"id": "hot", "thai": "ร้อน", "gloss": "hot", "category": "Adjectives"},
+        {"id": "hot-weather", "thai": "ร้อน", "gloss": "hot (weather)", "category": "Seasons"},
+    )
+    (old_deck / "media" / "images" / "pw-hot.jpg").write_bytes(_img_bytes((4, 4), "brown"))
+    notes = old_deck / "notes" / "picture_words.yaml"
+    notes.write_text(notes.read_text(encoding="utf-8")
+                     + "- id: pw-hot\n  thai: ร้อน\n  category: Seasons\n"
+                       "  image: images/pw-hot.jpg\n", encoding="utf-8")
+    cand_dir = old_deck / "work" / "candidates" / "pw-hot"
+    cand_dir.mkdir(parents=True)
+    (cand_dir / "0.jpg").write_bytes(_img_bytes((4, 4), "brown"))
+    _write_yaml(cand_dir / "candidates.yaml", {
+        "corpora": ["openverse"],
+        "candidates": [
+            {"file": "0.jpg", "url": "https://example.com/hot-0.jpg", "source": "openverse",
+             "license": "cc0", "passed": True, "failed_rules": [], "accepted": True},
+        ]})
+
     report = migrate(old_deck, old_data, tmp_path / "new")
     db = SyllabusDb(tmp_path / "new" / "syllabus.db")
-    best = current_best(db, "slow", "picture", current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC})
-    assert best.artifact_sha is not None and best.source == "judge"
-    assert report.cache["judge_pass"] == 2 and report.cache["judge_fail"] == 2
-    assert any(r.backend == "machine-chosen" for r in db.assessments_of("slow"))
-    assert db.assessments_of("pw-2") == []
+    hot_weather_verdicts = [a for a in db.assessments_of("hot-weather")
+                            if a.question.get("rubric") == LEGACY_PICTURE_RUBRIC]
+    hot_verdicts = [a for a in db.assessments_of("hot")
+                   if a.question.get("rubric") == LEGACY_PICTURE_RUBRIC]
+    assert hot_weather_verdicts and not hot_verdicts
+    assert report.ambiguous == []
+
+
+def test_migrate_reports_a_form_ambiguous_under_the_key(old_deck, old_data, tmp_path):
+    # เย็น covers both "cool" and "cold" -- two Adjectives rows share the
+    # exact same (thai, category) key, so the key joins nothing.
+    _append_word_rows(
+        old_data,
+        {"id": "cool", "thai": "เย็น", "gloss": "cool", "category": "Adjectives"},
+        {"id": "cold", "thai": "เย็น", "gloss": "cold", "category": "Adjectives"},
+    )
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    assert report.ambiguous == [("เย็น", "Adjectives")]
+
+
+def test_carried_verdicts_do_not_rank(old_deck, old_data, tmp_path):
+    migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    rows = [a for a in db.assessments_of("slow")
+           if a.question.get("rubric") == LEGACY_PICTURE_RUBRIC]
+    assert rows
+    best = current_best(db, "slow", "picture",
+                        current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC})
+    assert best.artifact_sha is None
 
 
 def test_unmapped_note_thai_is_reported(old_deck, old_data, tmp_path):
     notes = old_deck / "notes" / "picture_words.yaml"
     notes.write_text(notes.read_text(encoding="utf-8")
-                     + "- id: pw-9\n  thai: ไม่มี\n  image: images/pw-1.jpg\n", encoding="utf-8")
+                     + "- id: pw-9\n  thai: ไม่มี\n  category: Animals\n"  # ไม่มี = "none"
+                       "  image: images/pw-1.jpg\n", encoding="utf-8")
     report = migrate(old_deck, old_data, tmp_path / "new")
     assert any(u.identity == "pw-9" and "no word" in u.reason for u in report.unmigratable)
 
@@ -339,40 +447,8 @@ def test_guid_matching_no_picture_word_note_is_reported(old_deck, old_data, tmp_
               for u in report.unmigratable)
 
 
-def test_homograph_word_list_rows_are_counted(old_deck, old_data, tmp_path):
-    word_list = old_data / "word_list_th.yaml"
-    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
-    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)", "category": "Animals"})
-    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
-                         encoding="utf-8")
-    report = migrate(old_deck, old_data, tmp_path / "new")
-    assert report.curated["homograph_rows"] == 1
-
-
-def test_homograph_word_list_rows_are_reported_as_unmigratable(old_deck, old_data, tmp_path):
-    """A homograph row still becomes its own Word, but it can never be the
-    join target for the note-keyed rows sharing its Thai form -- those go
-    to the first row. A counter alone left that silent: the report has to
-    name the row and the word its picture note joined to instead.
-    """
-    word_list = old_data / "word_list_th.yaml"
-    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
-    rows.append({"id": "chicken-2", "thai": "ไก่", "gloss": "chicken (again)", "category": "Animals"})
-    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
-                         encoding="utf-8")
-    report = migrate(old_deck, old_data, tmp_path / "new")
-    dropped = [u for u in report.unmigratable
-              if u.source == "data/word_list_th.yaml" and u.identity == "chicken-2"]
-    assert len(dropped) == 1
-    assert dropped[0].reason == "homograph of chicken: the picture note joins to that word"
-
-
 def test_word_list_row_without_a_category_is_reported_and_refused(old_deck, old_data, tmp_path):
-    word_list = old_data / "word_list_th.yaml"
-    rows = yaml.safe_load(word_list.read_text(encoding="utf-8"))
-    rows.append({"id": "cat-less", "thai": "แมว", "gloss": "cat"})  # แมว = cat
-    word_list.write_text(yaml.safe_dump(rows, allow_unicode=True, sort_keys=False),
-                         encoding="utf-8")
+    _append_word_rows(old_data, {"id": "cat-less", "thai": "แมว", "gloss": "cat"})  # แมว = cat
     report = migrate(old_deck, old_data, tmp_path / "new")
 
     dropped = [u for u in report.unmigratable

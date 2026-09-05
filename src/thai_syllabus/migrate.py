@@ -1,58 +1,66 @@
 """The one-shot migration (spec 2 section 4): old thai-ff deck + old
 word-list data -> the new <deck>/ layout (curated/*.yaml, media/objects/,
-syllabus.db). Idempotent (media/cache writes are content-addressed or
-naturally re-askable; running it twice just re-derives the same rows --
-cache is append-only so a second run does add duplicate cache rows, which
-is the documented append-is-checkpoint behaviour, not a bug).
+syllabus.db). Idempotent: every cache append checks db.latest(port,
+backend, key) first, so a second run appends no new cache row and counts
+the skip in MigrationReport.already_present; media writes are already
+idempotent (content-addressed, insert-or-ignore provenance).
 
-Only items 1-4 and 6 of spec 2 section 4 are implemented, exactly:
-  1. word list -> curated/words.yaml + curated/targets.yaml (also builds
-     the thai -> word id join key everything below is keyed through)
-  2. judged images -> media CAS + provenance + judge-backend cache rows
-     under role="picture-for-word"/PICTURE_FIT_RUBRIC (candidates.yaml's
-     recorded passed/failed_rules become judge PASS/FAIL rows so
-     derivations.current_best can rank them) + a machine-chosen marker on
-     the deck's currently-selected images
+Implements items 1-4 and 6 of spec 2 section 4:
+  1. word list -> curated/words.yaml + curated/targets.yaml, refusing any
+     row with no category
+  2. judged images -> media CAS + provenance (through ingest_picture,
+     which normalizes at ingest per spec 4 section 3) + judge-backend
+     cache rows under LEGACY_PICTURE_RUBRIC (a candidates.yaml verdict
+     never says which rubric version judged, so it is carried as
+     evidence that never ranks under the current rubric); no marker of
+     the old deck's chosen picture is written
   3. Forvo answers -> provide/forvo cache rows, hit and miss alike
   4. proof-gallery notes + waivers.yaml -> learner assessment rows
-  6. StudyRecords: nothing is written to the `study` table -- item 6 says
-     none migrate, so migrate() never calls SyllabusDb.append_study.
-Item 5 (judge_cache.sqlite) is explicitly retired: this module never
-opens work/judge_cache.sqlite.
+  6. StudyRecords: nothing is written to the `study` table
+Item 5 (judge_cache.sqlite) is retired: this module never opens
+work/judge_cache.sqlite.
 
 Old word ids are gloss slugs (e.g. "slow"); old picture-word note ids are
-pw-NNN and never coincide with a word id. Everything the old deck keyed by
-note id (machine-chosen markers, candidates.yaml verdicts, proof-note
-learner rows) is re-keyed here under the word id found by joining the
-note's Thai form against the word list (_note_subjects). Spelling-sound
-notes never migrate (no graphemes migrate this cutover) and always drop.
+pw-NNN and never coincide with a word id. An old picture note joins a
+word-list row by (thai, category) (join_key): a key matching more than
+one row is reported in MigrationReport.ambiguous and left unjoined; a
+note whose key matches no row is reported unmatched. Everything the old
+deck keyed by note id (candidates.yaml verdicts, proof-note learner rows)
+is re-keyed here under the word id the join finds. Spelling-sound notes
+never migrate (no graphemes migrate this cutover) and always drop.
 
 Every row this migration cannot place is reported, never silently
-dropped -- see MigrationReport.unmigratable and the ambiguity notes below
-each step for the conventions this implementation had to invent where the
-spec fixes only the destination shape, not the source-to-destination
-mapping (spec 3, which owns per-backend cache-key functions, is out of
-scope for spec 2 and wasn't available to this implementation).
+dropped -- see MigrationReport.unmigratable.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import genanki
 import yaml
 
-from .cachekeys import JudgeKey
+from .cachekeys import JudgeKey, LearnerNoteKey, WaiverKey
+from .cachekeys import sha as _key_component_sha
 from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
 from .ids import TargetId, WordId
+from .media import Provenance
 from .profile import Profile
-from .rulebook import PICTURE_FIT_RUBRIC
 from .store import MediaStore, SyllabusDb
+
+# A candidates.yaml verdict's rubric is unknown (the old record never said
+# which rubric version judged); carried under this id, it can never equal
+# a live rubric text's sha, so derivations.current_best's staleness check
+# always excludes it from ranking (spec 3 section 6).
+LEGACY_PICTURE_RUBRIC = "legacy-picture-rules"
+
+# The old deck's one note model for picture-word notes -- proof_notes.jsonl
+# rows carry an Anki guid computed from this model and the note id.
+_PICTURE_WORD_MODEL = "picture_word"
 
 # --- IPA -> Pronunciation ----------------------------------------------
 #
@@ -137,6 +145,9 @@ class MigrationReport:
     cache: dict[str, int] = field(default_factory=dict)
     study: dict[str, int] = field(default_factory=lambda: {"records": 0})
     unmigratable: list[UnmigratableItem] = field(default_factory=list)
+    ambiguous: list[tuple[str, str]] = field(default_factory=list)
+    already_present: dict[str, int] = field(default_factory=dict)
+    audio_skipped: int = 0
 
     def drop(self, source: str, identity: str, reason: str) -> None:
         self.unmigratable.append(UnmigratableItem(source, identity, reason))
@@ -183,27 +194,62 @@ def _date_of(value: Any, fallback: date) -> date:
     return fallback
 
 
-def _midnight_utc_ns(d: date) -> int:
-    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1_000_000_000)
-
-
-def _write_media(media_store: MediaStore, data: bytes, ext: str) -> tuple[str, bool]:
-    """Like MediaStore.write, but also reports whether the object was
-    newly written (for accurate report counts) -- computed by hashing
-    before the write since MediaStore.write itself only returns the sha.
+def join_key(thai: str, category: str) -> tuple[str, str]:
+    """The (thai, category) pair an old picture note and a word-list row
+    join on (spec 2 section 4 item 2).
     """
-    sha = hashlib.sha256(data).hexdigest()
-    is_new = not media_store.has(sha, ext)
-    media_store.write(data, ext=ext)
-    return sha, is_new
+    return (thai, category)
+
+
+def ingest_picture(media_store: MediaStore, db: SyllabusDb, data: bytes, ext: str,
+                   provenance: Provenance) -> tuple[str, bool]:
+    """Normalizes `data` through MediaStore.add_image (spec 4 section 3;
+    `ext` is only add_image's fallback hint for an undetectable format)
+    and records `provenance` as a media row if the resulting sha is new.
+    Returns (sha, is_new) -- is_new is db.add_media's own insert-or-ignore
+    result, so a caller can count a re-run's skips. Idempotent: a repeat
+    call with the same bytes writes the object and the provenance row at
+    most once. Raises ValueError if `data` cannot be decoded as an image.
+    """
+    result = media_store.add_image(data, ext=ext)
+    is_new = db.add_media(sha=result.sha, kind="picture", ext=result.ext,
+                          source=provenance.source, origin=provenance.origin,
+                          licence=provenance.licence, acquired=provenance.acquired)
+    return result.sha, is_new
+
+
+def _ingest_and_count(media_store: MediaStore, db: SyllabusDb, report: MigrationReport,
+                      data: bytes, ext: str, provenance: Provenance) -> str:
+    """ingest_picture, counted: a new object bumps report.media
+    ["objects_written"], a re-run hit bumps report.already_present["media"].
+    """
+    sha, is_new = ingest_picture(media_store, db, data, ext, provenance)
+    if is_new:
+        report.bump(report.media, "objects_written")
+    else:
+        report.bump(report.already_present, "media")
+    return sha
+
+
+def _record_once(db: SyllabusDb, report: MigrationReport, bucket: str, *,
+                 port: str, backend: str, key: Any, write) -> None:
+    """Runs `write()` -- a zero-argument call that appends one cache row
+    under (port, backend, key) -- only if no row already exists there;
+    otherwise counts the skip in report.already_present[bucket].
+    """
+    if db.latest(port, backend, key) is not None:
+        report.bump(report.already_present, bucket)
+        return
+    write()
+    report.bump(report.cache, bucket)
 
 
 # --- item 1: word list -----------------------------------------------------
 
 def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                        report: MigrationReport
-                       ) -> tuple[list[tuple[Word, str | None]], list[Target], dict[str, str]]:
+                       ) -> tuple[list[tuple[Word, str | None]], list[Target],
+                                 dict[tuple[str, str], str], set[tuple[str, str]]]:
     rows = _load_yaml(old_data / "word_list_th.yaml") or []
     picture_words = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     ipa_by_thai: dict[str, str] = {}
@@ -215,7 +261,8 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
     word_rows: list[tuple[Word, str | None]] = []
     targets: list[Target] = []
     seen_ids: set[str] = set()
-    thai_to_word_id: dict[str, str] = {}
+    word_id_by_thai: dict[str, str] = {}          # first-seen, classifier lookups only
+    word_ids_by_key: dict[tuple[str, str], list[str]] = {}
     classifier_words_by_thai: dict[str, Word] = {}
 
     def pron_for(thai: str, source: str, identity: str) -> Pronunciation:
@@ -230,8 +277,6 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
             report.bump(report.curated, "words_without_pronunciation")
             return _PLACEHOLDER_PRON
 
-    # pass 1: real word-list rows (also seeds thai_to_word_id for classifier
-    # resolution below).
     good_rows = []
     for i, row in enumerate(rows):
         identity = row.get("id") if isinstance(row, dict) else None
@@ -245,20 +290,7 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
             report.drop("data/word_list_th.yaml", row["id"], "duplicate id")
             continue
         seen_ids.add(row["id"])
-        if row["thai"] in thai_to_word_id:
-            # First row with this Thai form wins the join key; later rows
-            # sharing it (homographs in the old data) still become their
-            # own Word/Target below, they just can't be the join target
-            # for note-keyed rows sharing that Thai form. Reported item by
-            # item as well as counted -- "no silent drops" means naming the
-            # row and the word its picture note went to instead, not just
-            # how many such rows there were.
-            report.bump(report.curated, "homograph_rows")
-            report.drop("data/word_list_th.yaml", row["id"],
-                        f"homograph of {thai_to_word_id[row['thai']]}: "
-                        "the picture note joins to that word")
-        else:
-            thai_to_word_id[row["thai"]] = row["id"]
+        word_id_by_thai.setdefault(row["thai"], row["id"])
         good_rows.append(row)
 
     for row in good_rows:
@@ -270,8 +302,8 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
         classifier_id: str | None = None
         classifier_thai = row.get("classifier")
         if classifier_thai:
-            if classifier_thai in thai_to_word_id:
-                classifier_id = thai_to_word_id[classifier_thai]
+            if classifier_thai in word_id_by_thai:
+                classifier_id = word_id_by_thai[classifier_thai]
             else:
                 classifier_id = f"classifier:{classifier_thai}"
                 if classifier_thai not in classifier_words_by_thai:
@@ -288,6 +320,7 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                          category))
         targets.append(Target(id=TargetId(f"{word_id}/receptive"), word=WordId(word_id),
                               skill="receptive", introduction="picture_card"))
+        word_ids_by_key.setdefault(join_key(row["thai"], category), []).append(word_id)
 
         if row.get("image_query") and row.get("image_query_source") == "human":
             # Not one of spec 3's roster rows (a direction carries no
@@ -295,12 +328,16 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
             # learner:sha(ARTIFACT):ROLE template doesn't fit) -- kept
             # readable and namespaced under the learner backend anyway.
             key = f"learner:direction:image_query:{word_id}"
-            db.append(port="assess", backend="learner", key=key, subject=word_id,
-                     question={"kind": "direction", "of": "image_query"},
-                     answer={"direction": row["image_query"]})
-            report.bump(report.cache, "direction")
+            _record_once(db, report, "direction", port="assess", backend="learner", key=key,
+                        write=lambda k=key, s=word_id, v=row["image_query"]: db.append(
+                            port="assess", backend="learner", key=k, subject=s,
+                            question={"kind": "direction", "of": "image_query"},
+                            answer={"direction": v}))
         # Dropped, per spec 2 section 4 item 1: picturable, emphasis,
         # image_query (non-human source), split_of, part_of_speech.
+
+    ambiguous_keys = {k for k, ids in word_ids_by_key.items() if len(ids) > 1}
+    word_id_by_key = {k: ids[0] for k, ids in word_ids_by_key.items() if len(ids) == 1}
 
     # Classifier words are synthesized, untargeted closure words (spec 1:
     # closure words are in no category).
@@ -309,27 +346,33 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                len(classifier_words_by_thai))
     report.bump(report.curated, "words", len(word_rows))
     report.bump(report.curated, "targets", len(targets))
-    return word_rows, targets, thai_to_word_id
+    return word_rows, targets, word_id_by_key, ambiguous_keys
 
 
-# --- note subjects: old note id -> word id, via the Thai-form join ---------
+# --- note subjects: old note id -> word id, via the (thai, category) join --
 #
 # Word ids are gloss slugs (e.g. "slow"); old picture-word note ids are
-# pw-NNN -- they never coincide, so the row and the note share only the
-# Thai form. Everything keyed by note id in the old deck (marker rows,
-# candidates.yaml verdicts, proof-note learner rows) must land under the
+# pw-NNN -- they never coincide, so the row and the note join on
+# (thai, category) instead. Everything keyed by note id in the old deck
+# (candidates.yaml verdicts, proof-note learner rows) must land under the
 # word id this join finds, not the note id.
 
-def _note_subjects(old_deck: Path, thai_to_word_id: dict[str, str],
+def _note_subjects(old_deck: Path, word_id_by_key: dict[tuple[str, str], str],
+                   ambiguous_keys: set[tuple[str, str]],
                    report: MigrationReport) -> dict[str, str]:
     subjects: dict[str, str] = {}
     picture_words = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     for note in picture_words:
         note_id = note.get("id", "<unknown>")
-        word_id = thai_to_word_id.get(note.get("thai"))
+        key = join_key(note.get("thai", ""), note.get("category", ""))
+        if key in ambiguous_keys:
+            report.drop("notes/picture_words.yaml", note_id,
+                        f"(thai, category) {key} matches more than one word row")
+            continue
+        word_id = word_id_by_key.get(key)
         if word_id is None:
             report.drop("notes/picture_words.yaml", note_id,
-                        "no word with this Thai form")
+                        "no word with this Thai form and category")
             continue
         subjects[note_id] = word_id
 
@@ -349,74 +392,50 @@ def _migrate_media_manifest(old_deck: Path, media_store: MediaStore, db: Syllabu
     manifest = _load_yaml(old_deck / "media_manifest.yaml") or {}
     for i, entry in enumerate(manifest.get("entries", [])):
         rel = entry.get("file", "")
-        if not rel.startswith("media/images/"):
-            continue  # audio is explicitly out of scope for migration
         identity = rel or f"<entry {i}>"
+        if not rel.startswith("media/images/"):
+            report.audio_skipped += 1  # audio regenerates; not migrated
+            continue
         src_path = old_deck / rel
         if not src_path.exists():
             report.drop("media_manifest.yaml", identity, "file missing on disk")
             continue
-        data = src_path.read_bytes()
         ext = src_path.suffix.lstrip(".") or "bin"
-        sha, is_new_object = _write_media(media_store, data, ext=ext)
-        inserted = db.add_media(sha=sha, kind="picture", ext=ext,
-                                source=entry.get("channel", "unknown"),
-                                origin=entry.get("origin", ""),
-                                licence=entry.get("license", "unknown"),
-                                acquired=_date_of(entry.get("fetched"), date(1970, 1, 1)))
-        if is_new_object:
-            report.bump(report.media, "objects_written")
-        if inserted:
-            report.bump(report.media, "provenance_rows")
-
-
-def _resolve_note_image_sha(old_deck: Path, note_image: str, media_store: MediaStore,
-                            db: SyllabusDb, report: MigrationReport,
-                            source: str, identity: str) -> str | None:
-    path = old_deck / "media" / note_image
-    if not path.exists():
-        report.drop(source, identity, f"image file missing on disk: {note_image}")
-        return None
-    data = path.read_bytes()
-    ext = path.suffix.lstrip(".") or "bin"
-    sha, is_new_object = _write_media(media_store, data, ext=ext)
-    if is_new_object:
-        report.bump(report.media, "objects_written")
-    if not db.has_media(sha):
-        # Not in media_manifest.yaml (unexpected but not fatal) -- record
-        # minimal provenance so the media table stays the single source of
-        # truth for every object under media/objects/.
-        db.add_media(sha=sha, kind="picture", ext=ext, source="legacy-current",
-                    origin=note_image, licence="unknown",
-                    acquired=date(1970, 1, 1))
-        report.bump(report.media, "provenance_rows")
-    return sha
+        try:
+            _ingest_and_count(media_store, db, report, src_path.read_bytes(), ext,
+                              Provenance(source=entry.get("channel", "unknown"),
+                                        origin=entry.get("origin", ""),
+                                        licence=entry.get("license", "unknown"),
+                                        acquired=_date_of(entry.get("fetched"), date(1970, 1, 1))))
+        except ValueError as exc:
+            report.drop("media_manifest.yaml", identity, str(exc))
 
 
 def _migrate_current_deck_images(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
-                                 note_subjects: dict[str, str],
                                  report: MigrationReport) -> None:
     # Picture words only -- spelling-sound notes never migrate (see
-    # _note_subjects) so their images are left to _migrate_media_manifest
-    # (CAS/provenance still land, just with no marker row on top).
+    # _note_subjects) so their images are left to _migrate_media_manifest.
+    # No cache row is written for the deck's current picture (no marker of
+    # the old deck's choice); a legacy verdict on the same sha still lands
+    # through _migrate_candidates when a candidates.yaml entry names it.
     notes = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     for note in notes:
         image = note.get("image")
         if not image:
             continue
         note_id = note.get("id", "<unknown>")
-        word_id = note_subjects.get(note_id)
-        if word_id is None:
-            continue  # already reported by _note_subjects
-        sha = _resolve_note_image_sha(old_deck, image, media_store, db, report,
-                                      "notes/picture_words.yaml", note_id)
-        if sha is None:
+        path = old_deck / "media" / image
+        if not path.exists():
+            report.drop("notes/picture_words.yaml", note_id,
+                        f"image file missing on disk: {image}")
             continue
-        key = f"machine-chosen:{word_id}:{sha}"
-        db.append(port="assess", backend="machine-chosen", key=key, subject=word_id,
-                 question={"note_id": note_id, "word": note.get("thai")},
-                 answer={"marker": "machine-chosen", "sha": sha})
-        report.bump(report.cache, "machine_chosen")
+        ext = path.suffix.lstrip(".") or "bin"
+        try:
+            _ingest_and_count(media_store, db, report, path.read_bytes(), ext,
+                              Provenance(source="legacy-current", origin=image,
+                                        licence="unknown", acquired=date(1970, 1, 1)))
+        except ValueError as exc:
+            report.drop("notes/picture_words.yaml", note_id, str(exc))
 
 
 def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
@@ -432,8 +451,9 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
                         "no word mapped for this picture note")
         data = _load_yaml(cand_file) or {}
         # Two on-disk shapes seen in the wild: {"corpora": [...], "candidates":
-        # [...]} (current) and a bare top-level list (an older layout some
-        # candidates.yaml files were never migrated off of). Handle both.
+        # [...]} (current) and a bare top-level list (measured 2026-09-04:
+        # 67 of 580 real candidates.yaml files use the bare shape). Handle
+        # both.
         candidates = data.get("candidates", []) if isinstance(data, dict) else data
         for i, cand in enumerate(candidates):
             identity = f"{note_id}/{cand.get('file', f'<item {i}>')}"
@@ -444,39 +464,40 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
             if not img_path.exists():
                 report.drop("work/candidates", identity, "candidate image missing on disk")
                 continue
-            data_bytes = img_path.read_bytes()
             ext = img_path.suffix.lstrip(".") or "bin"
-            sha, is_new_object = _write_media(media_store, data_bytes, ext=ext)
-            if is_new_object:
-                report.bump(report.media, "objects_written")
-            if not db.has_media(sha):
-                acquired = date.fromtimestamp(img_path.stat().st_mtime)
-                db.add_media(sha=sha, kind="picture", ext=ext,
-                            source=cand.get("source", "unknown"),
-                            origin=cand.get("url", ""),
-                            licence=cand.get("license", "unknown"), acquired=acquired)
-                report.bump(report.media, "provenance_rows")
+            try:
+                sha = _ingest_and_count(
+                    media_store, db, report, img_path.read_bytes(), ext,
+                    Provenance(source=cand.get("source", "unknown"),
+                              origin=cand.get("url", ""),
+                              licence=cand.get("license", "unknown"),
+                              acquired=date.fromtimestamp(img_path.stat().st_mtime)))
+            except ValueError as exc:
+                report.drop("work/candidates", identity, str(exc))
+                continue
 
             if word_id is None:
                 continue
 
             failed_rules = cand.get("failed_rules") or []
-            judge_key = JudgeKey.for_rule(PICTURE_FIT_RUBRIC, sha, word_id, "picture-for-word")
+            judge_key = JudgeKey.for_rule(LEGACY_PICTURE_RUBRIC, sha, word_id,
+                                          "picture-for-word")
+            question = {"role": "picture-for-word", "artifact_sha": sha,
+                       "rubric": LEGACY_PICTURE_RUBRIC}
             if cand.get("passed"):
-                db.append_judge_verdict(
-                    key=judge_key, subject=word_id,
-                    question={"role": "picture-for-word", "artifact_sha": sha,
-                             "rubric": PICTURE_FIT_RUBRIC},
-                    answer={"value": True, "evidence": "migrated: passed every picture rule"})
-                report.bump(report.cache, "judge_pass")
+                _record_once(
+                    db, report, "judge_pass", port="assess", backend="judge", key=judge_key,
+                    write=lambda k=judge_key, s=word_id, q=question: db.append_judge_verdict(
+                        key=k, subject=s, question=q,
+                        answer={"value": True, "evidence": "migrated: passed every picture rule"}))
             elif failed_rules:
-                db.append_judge_verdict(
-                    key=judge_key, subject=word_id,
-                    question={"role": "picture-for-word", "artifact_sha": sha,
-                             "rubric": PICTURE_FIT_RUBRIC},
-                    answer={"value": False,
-                           "evidence": "migrated: failed " + ", ".join(failed_rules)})
-                report.bump(report.cache, "judge_fail")
+                _record_once(
+                    db, report, "judge_fail", port="assess", backend="judge", key=judge_key,
+                    write=lambda k=judge_key, s=word_id, q=question, fr=failed_rules:
+                        db.append_judge_verdict(
+                            key=k, subject=s, question=q,
+                            answer={"value": False,
+                                   "evidence": "migrated: failed " + ", ".join(fr)}))
             else:
                 report.bump(report.cache, "judge_unrecorded")
 
@@ -495,26 +516,28 @@ def _migrate_forvo(old_deck: Path, db: SyllabusDb, report: MigrationReport) -> N
             report.drop("work/forvo_lookups.jsonl", f"line {line_no}",
                         "missing 'word'")
             continue
-        fetched = _date_of(entry.get("fetched"), date(1970, 1, 1))
-        # spec 3 roster: forvo's key is "forvo:WORD" (never re-asked; the
-        # answer outlives the quota).
-        db.append(port="provide", backend="forvo", key=f"forvo:{word}", subject=word,
-                 question={"word": word}, answer={"items": entry.get("items", [])},
-                 ts=_midnight_utc_ns(fetched))
-        report.bump(report.cache, "forvo")
+        # spec 3 roster: forvo's key is "forvo:WORD" (never re-asked). No
+        # explicit ts: an idempotence check keyed on (port, backend, key)
+        # alone must not race a deterministic ts into the cache table's
+        # (key_sha, ts) primary key on a second run.
+        key = f"forvo:{word}"
+        items = entry.get("items", [])
+        _record_once(db, report, "forvo", port="provide", backend="forvo", key=key,
+                    write=lambda k=key, w=word, it=items: db.append(
+                        port="provide", backend="forvo", key=k, subject=w,
+                        question={"word": w}, answer={"items": it}))
 
 
 # --- item 4: proof-gallery notes + waivers ---------------------------------
 
 def _migrate_proof_notes(old_deck: Path, note_subjects: dict[str, str], db: SyllabusDb,
                          report: MigrationReport) -> None:
-    # proof_notes.jsonl carries an Anki guid, not the old note id -- invert
-    # genanki.guid_for(entry["model"], note_id) over every old picture-word
-    # note id to recover which note (and therefore which word) each row
-    # belongs to.
-    picture_word_ids = [n.get("id") for n in
-                        (_load_yaml(old_deck / "notes" / "picture_words.yaml") or [])
-                        if n.get("id")]
+    # proof_notes.jsonl carries an Anki guid, not the old note id -- the
+    # guid -> note id map is built once, from every picture-word note's own
+    # (fixed) model.
+    picture_words = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
+    guid_to_note_id = {genanki.guid_for(_PICTURE_WORD_MODEL, n["id"]): n["id"]
+                      for n in picture_words if n.get("id")}
     path = old_deck / "work" / "proof_notes.jsonl"
     for line_no, entry, error in _load_jsonl(path):
         if error is not None:
@@ -525,16 +548,14 @@ def _migrate_proof_notes(old_deck: Path, note_subjects: dict[str, str], db: Syll
         if not guid:
             report.drop("work/proof_notes.jsonl", f"line {line_no}", "missing 'guid'")
             continue
-        model = entry.get("model", "")
-        note_id = next((nid for nid in picture_word_ids
-                        if genanki.guid_for(model, nid) == guid), None)
+        note_id = guid_to_note_id.get(guid)
         if note_id is None:
             report.drop("work/proof_notes.jsonl", guid,
                         "guid matches no picture-word note")
             continue
         word_id = note_subjects.get(note_id)
         if word_id is None:
-            continue  # already reported by _note_subjects (unmapped Thai)
+            continue  # already reported by _note_subjects (unmapped Thai/category)
         try:
             ts = int(datetime.fromisoformat(entry["ts"]).timestamp() * 1_000_000_000)
         except (KeyError, ValueError):
@@ -544,14 +565,18 @@ def _migrate_proof_notes(old_deck: Path, note_subjects: dict[str, str], db: Syll
         # carrying a note but no verdict, per spec 2 section 4 item 4's
         # "kind per content: rating, direction, waiver" (this content is
         # closest to "rating": a learner reaction to a specific card).
-        db.append(port="assess", backend="learner",
-                 key=f"learner:note:{word_id}:{guid}", subject=word_id,
-                 question={"kind": "note", "guid": guid,
-                          "note_id": entry.get("note_id"), "model": model,
-                          "tags": entry.get("tags", [])},
-                 answer={"kind": "rating", "rating": None, "note": entry.get("text", "")},
-                 ts=ts)
-        report.bump(report.cache, "learner_rating")
+        # Keyed by (word id, text sha) so an edited text is a new row and
+        # a repeated text is an exact-key hit, not by guid (spec 4
+        # section 4's ReviewNote-harvest convention, reused here).
+        text = entry.get("text", "")
+        key = LearnerNoteKey(anchor=word_id, text_sha=_key_component_sha(text))
+        question = {"kind": "note", "guid": guid, "note_id": entry.get("note_id"),
+                   "model": entry.get("model", ""), "tags": entry.get("tags", [])}
+        answer = {"kind": "rating", "rating": None, "note": text}
+        _record_once(db, report, "learner_rating", port="assess", backend="learner", key=key,
+                    write=lambda k=key, s=word_id, q=question, a=answer, t=ts: db.append(
+                        port="assess", backend="learner", key=k, subject=s,
+                        question=q, answer=a, ts=t))
 
 
 def _migrate_waivers(old_deck: Path, db: SyllabusDb, report: MigrationReport) -> None:
@@ -564,10 +589,13 @@ def _migrate_waivers(old_deck: Path, db: SyllabusDb, report: MigrationReport) ->
             report.drop("waivers.yaml", f"<row {i}>",
                         "missing required field(s) among rule/note_id")
             continue
-        db.append_waiver(rule_id=row["rule"], note_id=row["note_id"],
-                         artifact_sha=row.get("artifact_sha"), waived=True,
-                         reason=row.get("reason", ""))
-        report.bump(report.cache, "waiver")
+        key = WaiverKey(rule_id=row["rule"], note_id=row["note_id"],
+                        artifact_sha=row.get("artifact_sha"))
+        _record_once(db, report, "waiver", port="assess", backend="learner", key=key,
+                    write=lambda r=row: db.append_waiver(
+                        rule_id=r["rule"], note_id=r["note_id"],
+                        artifact_sha=r.get("artifact_sha"), waived=True,
+                        reason=r.get("reason", "")))
 
 
 # --- entry point -------------------------------------------------------
@@ -580,16 +608,18 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     db = SyllabusDb(new_root / "syllabus.db")
     report = MigrationReport()
 
-    word_rows, targets, thai_to_word_id = _migrate_word_list(old_data, old_deck, db, report)
+    word_rows, targets, word_id_by_key, ambiguous_keys = \
+        _migrate_word_list(old_data, old_deck, db, report)
+    report.ambiguous = sorted(ambiguous_keys)
     save_curated(curated_dir, CuratedBundle(
         words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
         confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(), categories=build_categories(word_rows)))
 
-    note_subjects = _note_subjects(old_deck, thai_to_word_id, report)
+    note_subjects = _note_subjects(old_deck, word_id_by_key, ambiguous_keys, report)
 
     _migrate_media_manifest(old_deck, media_store, db, report)
-    _migrate_current_deck_images(old_deck, media_store, db, note_subjects, report)
+    _migrate_current_deck_images(old_deck, media_store, db, report)
     _migrate_candidates(old_deck, media_store, db, note_subjects, report)
     _migrate_forvo(old_deck, db, report)
     _migrate_proof_notes(old_deck, note_subjects, db, report)
