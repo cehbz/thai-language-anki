@@ -21,6 +21,13 @@ def preference_identity(candidates) -> str:
     return sha(",".join(sorted(candidates)))
 
 
+def rendition_identity(members) -> str:
+    """A rendition's artifact identity: the member recordings it is made
+    of, as one sha (member -> artifact sha, ordered by member).
+    """
+    return sha(",".join(members[m] for m in sorted(members)))
+
+
 class CacheKey:
     """Base for the key dataclasses below. `kind` names the concrete key
     (its class name); `encode()` is the canonical string a `cache` row's
@@ -141,6 +148,19 @@ class MechanicalKey(CacheKey):
 
     def encode(self) -> str:
         return f"mech:{self.check}:{self.params}:{self.artifact_sha}"
+
+
+@dataclass(frozen=True)
+class RenditionAskKey(CacheKey):
+    """provide:SOURCE:rendition:PAIR_ID -- one Source's rendition ask for
+    one MinimalPair, appended under the pair even though the per-member
+    lookups it made are cached under the members.
+    """
+    source: str
+    pair_id: str
+
+    def encode(self) -> str:
+        return f"provide:{self.source}:rendition:{self.pair_id}"
 
 
 @dataclass(frozen=True)

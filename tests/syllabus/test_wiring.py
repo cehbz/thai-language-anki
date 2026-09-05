@@ -491,7 +491,7 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
 # --- _DbMediaIndex: rendition_provenance/rendition_speakers's two-level read
 #
 # A pair's rendition is current-best under its OWN subject (the pair id,
-# role "rendition-for-pair" -- attempts._record_rendition's mechanical row);
+# role "rendition-for-pair" -- the "rendition" backend's row);
 # that row's params["members"] names which per-member recording actually
 # backs it. Only absent a pair-level rendition row does rendition_provenance
 # fall back to each member's own current-best recording -- and
@@ -543,9 +543,9 @@ def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_ro
                 origin="https://forvo.com/x", licence="cc-by",
                 acquired=date(2026, 1, 1), speaker_id="somchai")
 
-    # attempts._record_rendition's own row shape.
-    db.append(port="assess", backend="mechanical",
-             key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
+    # the "rendition" mechanical backend's own row shape.
+    db.append(port="assess", backend="rendition",
+             key=f"mech:rendition:{pair.id}:joined", subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
@@ -604,11 +604,11 @@ def test_speakers_of_rendition_returns_the_pairs_rendition_speaker_once(db):
     db.add_media(sha="sha-far-rendition", kind="recording", ext="mp3", source="forvo",
                 origin="https://forvo.com/x", licence="cc-by",
                 acquired=date(2026, 1, 1), speaker_id="somchai")
-    # attempts._record_rendition's own row shape -- both members' current-
+    # the "rendition" backend's own row shape -- both members' current-
     # best rendition rows resolve to the SAME speaker, so speakers_of must
     # report it once, not twice.
-    db.append(port="assess", backend="mechanical",
-             key=f"mech:rendition:v1:{pair.id}:joined", subject=pair.id,
+    db.append(port="assess", backend="rendition",
+             key=f"mech:rendition:{pair.id}:joined", subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
@@ -629,8 +629,8 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     real_confusion, real_pair = _tone_pair(db)
     _seed_member_recording(db, "near", "sha-near-own", "somchai")
     _seed_member_recording(db, "far", "sha-far-own", "somchai")
-    db.append(port="assess", backend="mechanical",
-             key=f"mech:rendition:v1:{real_pair.id}:joined", subject=real_pair.id,
+    db.append(port="assess", backend="rendition",
+             key=f"mech:rendition:{real_pair.id}:joined", subject=real_pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-own", "far": "sha-far-own"}}},

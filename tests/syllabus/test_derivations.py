@@ -13,6 +13,7 @@ import pytest
 
 from thai_syllabus.derivations import (
     CurrentBest,
+    adoptable_drafts,
     challengers,
     confusion_weights,
     current_best,
@@ -26,13 +27,13 @@ from thai_syllabus.derivations import (
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
 from thai_syllabus.cachekeys import BatchMarkerKey
-from thai_syllabus.entities import MinimalPair, SoundConfusion
+from thai_syllabus.entities import MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import syl, word
+from .builders import sentence, syl, target, word
 from .fakes import FakeTokenizer
 
 
@@ -130,9 +131,10 @@ def reverify_row(subject, role, ts=None):
                  answer={"flagged": True}, cost=0.0, ts=ts)
 
 
-def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording"):
+def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording",
+                   backend="mechanical"):
     ts = ts if ts is not None else _next_ts()
-    return Answer(port="assess", backend="mechanical", key=f"mech:{subject}:{artifact_sha}:{ts}",
+    return Answer(port="assess", backend=backend, key=f"mech:{subject}:{artifact_sha}:{ts}",
                  key_sha="x", subject=subject,
                  question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
                           "kind": kind},
@@ -205,7 +207,7 @@ def test_current_best_carries_the_speaker_a_provide_item_names(cache):
                                          "speaker": {"id": "forvo:somchai", "kind": "native",
                                                     "sex": "male"}}]))
     cache.rows.append(mechanical_row("pair-1", "rendition-for-pair", "a" * 64, True,
-                                     kind="rendition"))
+                                     kind="rendition", backend="rendition"))
     best = current_best(cache, "pair-1", "rendition", current_rubric={}, prior=(),
                         provenance_source=_no_provenance)
     assert best.speaker.id == "forvo:somchai"
@@ -762,3 +764,120 @@ def test_role_scoped_rubric_mapping_marks_only_that_role_stale(db):
                         prior=(), provenance_source=_no_provenance).artifact_sha is None
     assert current_best(db, "w", "picture", current_rubric={"sentence-for-target": "x"},
                         prior=(), provenance_source=_no_provenance).artifact_sha == "a"
+
+
+# --- adoptable_drafts: what the run adopts a cover of -----------------------
+
+_DRAFT_JSON = ('{"sentences": [{"text": "\u0e01\u0e34\u0e19", "gloss": "eat", '
+               '"targets": ["eat/receptive"]}]}')          # กิน: eat
+_DRAFT_SHA = text_sha("กิน")                # กิน: eat
+
+
+def _draft_syllabus(sentences=()):
+    return Syllabus(words=(word("eat", "กิน", "eat"),),   # กิน: eat
+                    targets=(target("eat/receptive", "eat"),),
+                    sentences=tuple(sentences), tokenizer=FakeTokenizer())
+
+
+def _fills_row(value=True, ts=None):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend="fills", key=f"fills:{ts}", key_sha="x",
+                 subject=_DRAFT_SHA,
+                 question={"role": "sentence-for-target", "artifact_sha": None, "rubric": None,
+                          "kind": "sentence", "subject_kind": "sentence",
+                          "params": {"target": "eat/receptive"}},
+                 answer={"value": value}, cost=0.0, ts=ts)
+
+
+def _sentence_verdict(backend, value, rubric=None, ts=None):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend=backend, key=f"{backend}:{ts}", key_sha="x",
+                 subject=_DRAFT_SHA,
+                 question={"role": "sentence-for-target", "artifact_sha": None,
+                          "rubric": rubric, "kind": "sentence", "subject_kind": "sentence",
+                          "params": {}},
+                 answer={"value": value}, cost=0.0, ts=ts)
+
+
+def _drafted(cache):
+    cache.rows.append(provide_row("sentence-drafts", "sentence", backend="llm-sentence",
+                                  items=[]))
+    cache.rows[-1].answer["items"] = [_DRAFT_JSON]
+    return cache
+
+
+def test_adoptable_drafts_offers_a_draft_that_fills_and_the_judge_passed(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="R")]
+    adoptable = adoptable_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert [(s.text, tuple(t.id for t in ts)) for s, ts in adoptable] == [
+        ("กิน", ("eat/receptive",))]        # กิน: eat
+    assert adoptable[0][0].gloss == "eat"
+
+
+def test_an_adopted_draft_carries_the_drafting_model_and_the_runs_clock(cache):
+    from datetime import date as _date
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="R")]
+    adopted, _targets = adoptable_drafts(cache, _draft_syllabus(),
+                                         current_rubric={"sentence-for-target": "R"},
+                                         model="claude-x", today=lambda: _date(2026, 9, 5))[0]
+    assert adopted.provenance.origin == "claude-x"
+    assert adopted.provenance.acquired == _date(2026, 9, 5)
+
+
+def test_a_target_confirmed_by_two_fills_rows_is_offered_once(cache):
+    """A draft re-verified on a later run has a second fills row for the
+    same target; the cover must not see it twice."""
+    _drafted(cache)
+    cache.rows += [_fills_row(), _fills_row(), _sentence_verdict("judge", True, rubric="R")]
+    _sentence, targets = adoptable_drafts(cache, _draft_syllabus(),
+                                          current_rubric={"sentence-for-target": "R"})[0]
+    assert [t.id for t in targets] == ["eat/receptive"]
+
+
+def test_a_draft_the_judge_failed_is_not_adoptable(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", False, rubric="R")]
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_a_learner_rating_outranks_the_judge_on_a_draft(cache):
+    """Authority order for sentence-for-target is learner > judge: a draft
+    the learner called acceptable is adoptable however the judge voted."""
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", False, rubric="R"),
+                   _sentence_verdict("learner", "acceptable")]
+    assert len(adoptable_drafts(cache, _draft_syllabus(),
+                                current_rubric={"sentence-for-target": "R"})) == 1
+
+
+def test_a_learner_rejection_outranks_a_judge_pass_on_a_draft(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="R"),
+                   _sentence_verdict("learner", "unacceptable-none")]
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_a_draft_that_fills_nothing_is_not_adoptable(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(value=False), _sentence_verdict("judge", True, rubric="R")]
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_a_draft_already_adopted_is_not_offered_again(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="R")]
+    adopted = sentence("กิน", gloss="eat")   # กิน: eat
+    assert adoptable_drafts(cache, _draft_syllabus([adopted]),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_a_stale_judge_verdict_does_not_make_a_draft_adoptable(cache):
+    _drafted(cache)
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="old-R")]
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []

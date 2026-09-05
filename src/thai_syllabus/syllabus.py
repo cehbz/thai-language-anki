@@ -14,7 +14,7 @@ from typing import Any
 
 from .cachekeys import JudgeKey
 from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
-from .ids import CategoryName, ConfusionId, WordId
+from .ids import CategoryName, ConfusionId, PairId, WordId
 from .ports import (
     AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, StudyReader,
     StudyRecord, Tokenizer,
@@ -84,6 +84,50 @@ class Syllabus:
 
     def category_of(self, word_id: WordId) -> CategoryName | None:
         return self._category_by_word.get(word_id)
+
+    @cached_property
+    def _sentence_index(self) -> dict[str, Sentence]:
+        return {s.text_sha: s for s in self.sentences}
+
+    def sentence(self, text_sha: str) -> Sentence:
+        """The adopted Sentence with that text_sha; KeyError names it."""
+        found = self._sentence_index.get(text_sha)
+        if found is None:
+            raise KeyError(f"no sentence with text_sha {text_sha!r} in the syllabus")
+        return found
+
+    @cached_property
+    def _pair_index(self) -> dict[PairId, MinimalPair]:
+        return {p.id: p for p in self.pairs}
+
+    def pair(self, pair_id: PairId) -> MinimalPair:
+        """The MinimalPair with that id; KeyError names it."""
+        found = self._pair_index.get(pair_id)
+        if found is None:
+            raise KeyError(f"no minimal pair {pair_id!r} in the syllabus")
+        return found
+
+    # --- the voice a recording may draw (E2, E7) ------------------------
+
+    def serves_productive(self, word_id: WordId) -> bool:
+        """Whether anything recorded for this word plays on a productive
+        back: it has a productive Target.
+        """
+        return any(t.word == word_id and t.skill == "productive" for t in self.targets)
+
+    def sentence_serves_productive(self, sentence: Sentence) -> bool:
+        """Whether this sentence fills a productive Target, so its own
+        recording plays on a productive back.
+        """
+        return any(self.fills(sentence, t) for t in self.targets if t.skill == "productive")
+
+    def pair_voice_constraint(self, pair_id: PairId) -> str:
+        """A rendition speaks for every member at once, so the pair takes
+        the strictest of its members' constraints: "male" if any member
+        serves a productive Target, "any" otherwise.
+        """
+        return ("male" if any(self.serves_productive(m) for m in self.pair(pair_id).members)
+                else "any")
 
     def _emphasis_weight(self, word_id: WordId) -> float:
         category = self.category_of(word_id)
@@ -216,6 +260,27 @@ class Syllabus:
 
     def with_sentences(self, new: Sequence[Sentence]) -> "Syllabus":
         return dataclasses.replace(self, sentences=self.sentences + tuple(new))
+
+    def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
+              ) -> list[tuple[Sentence, tuple[Target, ...]]]:
+        """The drafts worth adopting, greedily: the one filling the most
+        still-unfilled Targets (gaps().unfilled_targets), then the next,
+        until no draft fills one. Each is returned with the Targets it is
+        adopted for. Ties go to the shorter text, then the lower text_sha,
+        so the same draft set always yields the same choice.
+        """
+        uncovered = set(self.gaps().unfilled_targets)
+        remaining = sorted(drafts, key=lambda d: (len(d[0].text), d[0].text_sha))
+        chosen: list[tuple[Sentence, tuple[Target, ...]]] = []
+        while remaining:
+            best = max(remaining, key=lambda d: len({t.id for t in d[1]} & uncovered))
+            gained = tuple(t for t in best[1] if t.id in uncovered)
+            if not gained:
+                break
+            chosen.append((best[0], gained))
+            uncovered -= {t.id for t in gained}
+            remaining.remove(best)
+        return chosen
 
     # --- report() ------------------------------------------------------
 

@@ -24,16 +24,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from . import record
-from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND
-from .media import Speaker
+from .authority import AUTHORITY_ORDER, role_for
+from .entities import Sentence, Target
+from .media import Provenance, Speaker
 from .ports import Answer, CacheReader, StudyReader
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
 
 __all__ = [
     "CurrentBest", "current_best",
+    "role_of", "adoptable_drafts",
     "pending",
     "attempts_since_change", "next_source",
     "ExhaustedStatus", "exhausted",
@@ -90,12 +93,12 @@ def _ratings_by_artifact(rating_rows: Sequence[Answer]) -> dict[str, tuple[int, 
 def _stale(row: Answer, current_rubric: Mapping[str, str]) -> bool:
     """True when a verdict row's rubric no longer matches the mapping's
     entry for its own role. A role absent from `current_rubric` is never
-    stale on that account. Mechanical rows carry no rubric at all
-    (`rubric: None` -- they check ground truth, e.g. recording
-    duration/format, not a judge prompt); a rubric change can never make
-    one stale, so a mechanical row with no rubric is exempted first.
+    stale on that account. A rubric is a judge parameter: every other
+    backend carries none (mechanical and the other ground-truth checks
+    answer about the artifact, the learner answers about the role), so a
+    rubric change can never make one of their rows stale.
     """
-    if row.question.get("rubric") is None and row.backend == "mechanical":
+    if row.question.get("rubric") is None and row.backend != "judge":
         return False
     role = row.question.get("role")
     if role in current_rubric:
@@ -109,17 +112,15 @@ def _stale(row: Answer, current_rubric: Mapping[str, str]) -> bool:
 stale = _stale
 
 
-def _machine_ranks(rows: Sequence[Answer], kind: str,
+def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
                    current_rubric: Mapping[str, str]) -> tuple[dict[str, float], dict[str, str]]:
-    """Authority-driven machine rank per artifact (spec 3 section 6): for
-    the kind's role, walk AUTHORITY_ORDER[role] skipping "learner" (the
-    learner is folded in separately by current_best); the first backend in
-    that order with a verdict row for an artifact decides its rank.
-    Returns (ranks, sources) -- sources names the deciding backend per
-    sha, for CurrentBest.source. Pictures additionally fold in preference-
-    row bonuses (_apply_preference).
+    """Authority-driven machine rank per artifact (spec 3 section 6): walk
+    AUTHORITY_ORDER[role] skipping "learner" (the learner is folded in
+    separately by current_best); the first backend in that order with a
+    verdict row for an artifact decides its rank. Returns (ranks, sources)
+    -- sources names the deciding backend per sha, for CurrentBest.source.
+    Pictures additionally fold in preference-row bonuses.
     """
-    role = ROLE_FOR_KIND.get(kind, kind)
     order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
     by_backend: dict[str, dict[str, float]] = {}
     for r in rows:
@@ -229,14 +230,24 @@ class CurrentBest:
     speaker: Speaker | None = None
 
 
+def role_of(cache: CacheReader, subject: str, kind: str,
+            rows: Sequence[Answer] | None = None) -> str:
+    """The Assess role this (subject, kind) is judged under: the kind's
+    role for the kind of thing the subject is, as the subject's own rows
+    name it (record.subject_kind_of).
+    """
+    rows = record.rows_for(cache, subject, kind) if rows is None else rows
+    return role_for(kind, record.subject_kind_of(rows))
+
+
 def current_best(cache: CacheReader, subject: str, kind: str, *,
                  current_rubric: Mapping[str, str], prior: Sequence[str] = (),
                  provenance_source: Callable[[str], str | None]) -> CurrentBest:
     rows = record.rows_for(cache, subject, kind)
-    role = ROLE_FOR_KIND.get(kind, kind)
+    role = role_of(cache, subject, kind, rows)
     rating_rows = record.ratings_for_role(cache.assessments_of(subject), role)
     learner_ratings = _ratings_by_artifact(rating_rows)
-    machine_ranks, machine_sources = _machine_ranks(rows, kind, current_rubric)
+    machine_ranks, machine_sources = _machine_ranks(rows, kind, role, current_rubric)
     _apply_prior(machine_ranks, prior, provenance_source)
 
     latest_learner_row = max(rating_rows, key=lambda r: r.ts, default=None)
@@ -432,23 +443,31 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
 class QueueEntry:
     subject: str
     kind: str
-    bucket: int   # 1 = no-artifact/unacceptable, 2 = untried lever, 3 = acceptable/unrated
+    # What `subject` is (word | pair | sentence | grapheme) -- the attempt
+    # and the role both turn on it, and an id alone does not say.
+    subject_kind: str = "word"
+    bucket: int = 3   # 1 = no-artifact/unacceptable, 2 = untried lever, 3 = acceptable/unrated
     directed: bool = False
     rank: float = 0.0
     attempts: int = 0
 
 
-def _gap_candidates(syllabus) -> list[tuple[str, str]]:
+def _gap_candidates(syllabus) -> list[tuple[str, str, str]]:
+    """(subject, artifact kind, subject kind) per gap. A sentence's own
+    recording and scene picture carry the same artifact kinds a word's do
+    -- "recording", "picture" -- and are told apart by their subject kind.
+    """
     gaps = syllabus.gaps()
     target_word = {t.id: t.word for t in syllabus.targets}
-    candidates: list[tuple[str, str]] = []
-    candidates += [(w, "picture") for w in gaps.words_missing_pictures]
-    candidates += [(w, "recording") for w in gaps.words_missing_recordings]
-    candidates += [(target_word.get(t, t), "sentence") for t in gaps.unfilled_targets]
-    candidates += [(c, "rendition") for c in gaps.missing_renditions]
-    candidates += [(g, "grapheme-keyword") for g in gaps.graphemes_missing_keyword_data]
-    seen: set[tuple[str, str]] = set()
-    out: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
+    candidates += [(w, "picture", "word") for w in gaps.words_missing_pictures]
+    candidates += [(w, "recording", "word") for w in gaps.words_missing_recordings]
+    candidates += [(target_word.get(t, t), "sentence", "word") for t in gaps.unfilled_targets]
+    candidates += [(c, "rendition", "pair") for c in gaps.missing_renditions]
+    candidates += [(g, "grapheme-keyword", "grapheme")
+                  for g in gaps.graphemes_missing_keyword_data]
+    seen: set[tuple[str, str, str]] = set()
+    out: list[tuple[str, str, str]] = []
     for c in candidates:
         if c not in seen:
             seen.add(c)
@@ -460,7 +479,7 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
          attempt_cap: int, provenance_source: Callable[[str], str | None]) -> list[QueueEntry]:
     entries: list[QueueEntry] = []
-    for subject, kind in _gap_candidates(syllabus):
+    for subject, kind, subject_kind in _gap_candidates(syllabus):
         if pending(cache, subject, kind):
             continue  # a batch is still out -- pending is reported, not queued
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
@@ -468,10 +487,10 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         if best.rank >= _GOOD_RANK:
             continue  # good -- never queued
 
-        role = ROLE_FOR_KIND.get(kind, kind)
+        rows = record.rows_for(cache, subject, kind)
+        role = role_of(cache, subject, kind, rows)
         rejected = _current_artifact_unacceptable(cache, subject, role, best.artifact_sha)
         is_directed = directed(cache, subject)
-        rows = record.rows_for(cache, subject, kind)
         sources = sources_for(kind)
         attempts = len(record.source_asks(rows))
 
@@ -485,8 +504,9 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         else:
             bucket = 3
 
-        entries.append(QueueEntry(subject=subject, kind=kind, bucket=bucket,
-                                  directed=is_directed, rank=best.rank, attempts=attempts))
+        entries.append(QueueEntry(subject=subject, kind=kind, subject_kind=subject_kind,
+                                  bucket=bucket, directed=is_directed, rank=best.rank,
+                                  attempts=attempts))
 
     entries.sort(key=lambda e: (e.bucket, not e.directed, e.rank, e.attempts, e.subject, e.kind))
     return entries
@@ -503,16 +523,16 @@ def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, st
     switched, only ever presented.
     """
     out: list[tuple[str, str, str]] = []
-    for subject, kind in _gap_candidates(syllabus):
+    for subject, kind, _subject_kind in _gap_candidates(syllabus):
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
                             provenance_source=provenance_source)
         if best.source != "learner" or best.artifact_sha is None:
             continue
         rows = record.rows_for(cache, subject, kind)
-        role = ROLE_FOR_KIND.get(kind, kind)
+        role = role_of(cache, subject, kind, rows)
         rating_rows = record.ratings_for_role(cache.assessments_of(subject), role)
         rated = set(_ratings_by_artifact(rating_rows))
-        machine_ranks, _sources = _machine_ranks(rows, kind, current_rubric)
+        machine_ranks, _sources = _machine_ranks(rows, kind, role, current_rubric)
         _apply_prior(machine_ranks, prior, provenance_source)
         # Compared against the accepted artifact's OWN machine rank (0.0
         # when it has none), never against best.rank -- the learner's
@@ -542,7 +562,7 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *, lapse_threshold:
                + [(w.id, "recording") for w in syllabus.words]
                + [(p.id, "rendition") for p in syllabus.pairs])
     for subject, kind in subjects:
-        role = ROLE_FOR_KIND.get(kind, kind)
+        role = role_of(cache, subject, kind)
         ratings = record.ratings_for_role(cache.assessments_of(subject), role)
         if not ratings:
             continue
@@ -579,3 +599,56 @@ def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
         lapse_rate = lapses / len(records)
         weights[cid] = base * (1.0 + lapse_rate)
     return weights
+
+
+# --- adoptable_drafts -------------------------------------------------------
+
+def _role_rank(rows: Sequence[Answer], role: str,
+               current_rubric: Mapping[str, str]) -> tuple[str, float] | None:
+    """(deciding backend, rank) for a text-only verdict on `role`: walk
+    AUTHORITY_ORDER[role] and let the first backend with a non-stale row
+    decide, so a learner rating outranks a judge pass on the same draft.
+    None when no backend has spoken.
+    """
+    for backend in AUTHORITY_ORDER.get(role, ("judge",)):
+        spoken = [r for r in rows if r.port == "assess" and r.backend == backend
+                 and r.question.get("role") == role and not _stale(r, current_rubric)]
+        if not spoken:
+            continue
+        value = max(spoken, key=lambda r: r.ts).answer.get("value")
+        if backend == "learner":
+            return backend, LEARNER_RANK.get(value, _JUDGE_FAIL_RANK)
+        return backend, _judge_rank(value)
+    return None
+
+
+def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
+                     model: str = "llm", today: Callable[[], date] = date.today
+                     ) -> list[tuple[Sentence, tuple[Target, ...]]]:
+    """Every sentence draft on record that is not adopted yet, whose
+    fills() rows confirm at least one Target and whose assessment on
+    sentence-for-target passes -- with those Targets. The run adopts a
+    cover of these (Syllabus.cover). Authority order decides: a learner
+    rating on the draft outranks the judge's verdict on it. `model` is the
+    LLM that drafted them and `today` the run's own clock; both go on the
+    adopted Sentence's provenance.
+    """
+    adopted = {s.text_sha for s in syllabus.sentences}
+    targets_by_id = {t.id: t for t in syllabus.targets}
+    provenance = Provenance(source="llm", origin=model, licence="generated", acquired=today())
+    out: list[tuple[Sentence, tuple[Target, ...]]] = []
+    for draft in record.sentence_drafts(cache):
+        if draft.text_sha in adopted:
+            continue
+        rows = cache.assessments_of(draft.text_sha)
+        role = role_for("sentence", record.subject_kind_of(rows))
+        confirmed = {target for r in rows if r.backend == "fills"
+                    and r.answer.get("value") is True
+                    and (target := r.question.get("params", {}).get("target")) in targets_by_id}
+        filled = tuple(targets_by_id[t] for t in sorted(confirmed))
+        ranked = _role_rank(rows, role, current_rubric)
+        if not filled or ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
+            continue
+        out.append((Sentence(text=draft.text, gloss=draft.gloss, voice="learner_voice",
+                             provenance=provenance), filled))
+    return out

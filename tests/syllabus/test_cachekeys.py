@@ -10,9 +10,11 @@ from thai_syllabus.cachekeys import (
     LearnerKey,
     LearnerNoteKey,
     MechanicalKey,
+    RenditionAskKey,
     ReverifyKey,
     WaiverKey,
     preference_identity,
+    rendition_identity,
     sha,
 )
 
@@ -82,3 +84,14 @@ def test_keys_are_hashable_and_equal_by_value():
     b = JudgeKey(rubric_sha="x", identity="y", role="z")
     assert a == b and hash(a) == hash(b)
     assert {a, b} == {a}
+
+
+def test_a_rendition_ask_key_names_its_source_and_pair():
+    assert RenditionAskKey(source="forvo", pair_id="tone:mid-low/kai").encode() == (
+        "provide:forvo:rendition:tone:mid-low/kai")
+
+
+def test_a_rendition_identity_is_its_member_set_whatever_the_order():
+    assert (rendition_identity({"near": "a", "far": "b"})
+            == rendition_identity({"far": "b", "near": "a"}))
+    assert rendition_identity({"near": "a"}) != rendition_identity({"near": "b"})

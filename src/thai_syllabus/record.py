@@ -1,21 +1,32 @@
 """The record, read through one module (spec 3 section 6): pure folds
 over `cache` rows. Every provide/assess row a writer appends names its
-need kind (picture | recording | rendition | sentence | grapheme-keyword)
-or, for a learner row, its own row kind (rating | direction | waiver |
-card-flag | note | drill | reverify) in question["kind"]; a judge-batch
-marker row's kind is "batch". A fold here reads that field, `backend`,
-`port`, `subject`, and `answer` only -- never an encoded key, and never a
+artifact kind (picture | recording | rendition | sentence |
+grapheme-keyword) or, for a learner row, its own row kind (rating |
+direction | waiver | card-flag | note | drill | reverify) in
+question["kind"], and the kind of thing its subject is (word | pair |
+sentence | grapheme) in question["subject_kind"]; a judge-batch marker
+row's kind is "batch". A fold here reads those fields, `backend`, `port`,
+`subject`, and `answer` only -- never an encoded key, and never a
 `provides`/`role` string matched by prefix or membership.
 """
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
+from .entities import text_sha
 from .ports import Answer, CacheReader
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "directions", "judge_verdicts", "latest_query",
-          "unresolved_batch"]
+          "unresolved_batch", "subject_kind_of", "DRAFT_SUBJECT", "SentenceDraft",
+          "drafts_in", "sentence_drafts"]
+
+# The subject every sentence-drafting ask is appended under: drafts are
+# proposed for a run's open Targets as a set, not for one subject.
+DRAFT_SUBJECT = "sentence-drafts"
 
 # The bytes-fetching backends write the candidate a Source ask already
 # caused, not an ask of their own (spec 3 section 3: an attempt is one
@@ -41,6 +52,18 @@ def rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
     oldest first.
     """
     return [r for r in cache.assessments_of(subject) if r.question.get("kind") == kind]
+
+
+def subject_kind_of(rows: Sequence[Answer]) -> str:
+    """The kind of thing these rows' subject is, as the rows themselves
+    name it (question["subject_kind"]) -- "word" for a row written before
+    the field existed, and for every subject that is a word.
+    """
+    for r in rows:
+        subject_kind = r.question.get("subject_kind")
+        if subject_kind:
+            return str(subject_kind)
+    return "word"
 
 
 def source_asks(rows: Sequence[Answer]) -> list[Answer]:
@@ -127,3 +150,42 @@ def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[st
     newest = max(submitted, key=lambda r: r.ts)
     return (newest.question["batch_id"], tuple(newest.question.get("subjects", [])),
            tuple(newest.question.get("roles", [])))
+
+
+# --- sentence drafts --------------------------------------------------------
+
+@dataclass(frozen=True)
+class SentenceDraft:
+    """One drafted sentence as the LLM answered it: text, L1 gloss, and
+    the Targets it claims to fill."""
+    text: str
+    gloss: str
+    claimed: tuple[str, ...]
+
+    @property
+    def text_sha(self) -> str:
+        return text_sha(self.text)
+
+
+def _strip_fences(text: str) -> str:
+    return re.sub(r"^```[a-z]*\n|\n```$", "", text.strip())
+
+
+def drafts_in(text: str) -> list[SentenceDraft]:
+    """The drafts one llm answer item carries; empty when it is not the
+    JSON the drafting prompt asked for."""
+    try:
+        data = json.loads(_strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return []
+    drafted = (data.get("sentences") if isinstance(data, Mapping) else None) or []
+    return [SentenceDraft(text=str(d["text"]).strip(), gloss=str(d.get("gloss") or ""),
+                          claimed=tuple(d.get("targets") or []))
+            for d in drafted if isinstance(d, Mapping) and d.get("text")]
+
+
+def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
+    """Every sentence draft any run's drafting ask produced, newest ask
+    last -- what there is to adopt once the verdicts land."""
+    return [draft for row in rows_for(cache, DRAFT_SUBJECT, "sentence") if row.port == "provide"
+            for item in row.answer.get("items", []) for draft in drafts_in(str(item))]

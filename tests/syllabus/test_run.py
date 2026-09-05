@@ -1,20 +1,21 @@
-"""Tests for run.py (spec 3 sections 4/7): a pending-aware loop over
-derivations.queue()'s entries, escalating attempts.SOURCES per kind via
-attempts.attempt(), plus one per-run attempts.sentence_attempt() pass --
-against Sourcing fakes (no real Provider/Assessor/network).
+"""Tests for run.py (spec 3 section 7): one sentence attempt over the open
+Targets, adoption of what the judge passed, then one Source per queued need
+-- against Sourcing fakes (no real Provider/Assessor/network).
 """
 import pytest
 
-from thai_syllabus.attempts import Outcome, SentenceOutcome, Sourcing
+from thai_syllabus.assessor import JudgeUnreachable
+from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
 from thai_syllabus.run import (
     FORVO_DEFAULT_DAILY_BUDGET,
     LEARNER_DEFAULT_SESSION_BUDGET,
     Budget,
-    Spend,
     run,
 )
 from thai_syllabus import run as run_mod
 from thai_syllabus.store import SyllabusDb
+
+from .builders import sentence
 
 
 @pytest.fixture
@@ -31,15 +32,17 @@ class _Gaps:
 
 class _Syl:
     def __init__(self, gaps):
-        self._gaps, self.targets = gaps, []
+        self._gaps, self.targets, self.sentences = gaps, [], ()
 
     def gaps(self):
         return self._gaps
 
+    def cover(self, drafts):
+        return []
+
     def with_sentences(self, new):
-        # a real Syllabus.with_sentences returns a new immutable value;
-        # this fake's gaps() ignores sentences entirely, so returning self
-        # is behaviourally equivalent for these tests.
+        # the real Syllabus.with_sentences returns a new immutable value;
+        # this fake's gaps() ignores sentences entirely.
         return self
 
 
@@ -48,46 +51,50 @@ def _ctx(db, syl):
                     rubrics={}, provenance_prior=())
 
 
-def _patch(monkeypatch, outcomes, sentence=SentenceOutcome(0, (), False, {})):
+def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=()):
+    """Replaces attempt/sentence_attempt/adoptable_drafts. A `results` entry
+    that is an exception class is raised instead of returned."""
     calls = []
 
     def fake_attempt(ctx, need, source):
         calls.append((need, source))
-        return outcomes.get((need.subject, source), Outcome(True, False, False, {source: (1, 0.0)}))
+        result = results.get((need.subject, source),
+                             AttemptResult(True, spend={source: Spend(1, 0.0)}))
+        if isinstance(result, type) and issubclass(result, Exception):
+            raise result("no judge")
+        return result
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        if isinstance(sentence_result, type) and issubclass(sentence_result, Exception):
+            raise sentence_result("no judge")
+        return sentence_result
+
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
-    monkeypatch.setattr(run_mod, "sentence_attempt", lambda ctx, max_targets=40: sentence)
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts",
+                        lambda cache, syllabus, **kwargs: list(drafts))
     return calls
 
 
-# --- escalation over SOURCES ----------------------------------------------
+# --- one source per need per run (spec 3 section 7) ------------------------
 
-def test_run_escalates_sources_until_improved(db, monkeypatch):
-    calls = _patch(monkeypatch, {("w", "wikimedia"): Outcome(True, False, True, {"wikimedia": (1, 0.0)})})
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("w",)))), {})
-    assert [s for _, s in calls] == ["openverse", "wikimedia"]
-    assert r.attempted == 1 and r.improved == 1 and r.pending == 0
-
-
-def test_run_stops_a_pending_need_without_escalating(db, monkeypatch):
-    calls = _patch(monkeypatch, {("w", "openverse"): Outcome(True, True, False, {})})
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("w",)))), {})
-    assert [s for _, s in calls] == ["openverse"] and r.pending == 1
+def test_run_asks_one_source_per_need_and_leaves_escalation_to_the_next_run(db, monkeypatch):
+    calls = _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("w",)))), {})
+    assert [s for _need, s in calls] == ["openverse"]
+    assert report.attempted == 1 and report.pending == 0
 
 
-def test_run_skips_a_source_whose_budget_is_spent(db, monkeypatch):
+def test_run_counts_a_need_whose_questions_went_unanswered_as_pending(db, monkeypatch):
+    _patch(monkeypatch, {("w", "openverse"): AttemptResult(True, questions=["q"])})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("w",)))), {})
+    assert report.pending == 1
+
+
+def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {"forvo": Budget(max_asks=1)})
-    forvo_calls = [n for n, s in calls if s == "forvo"]
-    assert len(forvo_calls) == 1 and len([1 for _, s in calls if s == "tts"]) == 2
-
-
-def test_run_counts_adopted_sentences_and_persists_pending(db, monkeypatch):
-    from .builders import sentence
-    _patch(monkeypatch, {}, sentence=SentenceOutcome(2, (sentence("x"),), True, {"llm-sentence": (1, 0.0)}))
-    r = run(_ctx(db, _Syl(_Gaps())), {})
-    assert r.sentences_adopted == 1 and r.pending == 1
-    row = db.latest("run", "runreport", "runreport")
-    assert row.answer["pending"] == 1 and row.answer["sentences_adopted"] == 1
+    assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
 
 
 def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):
@@ -96,68 +103,60 @@ def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):
     assert calls == []
 
 
-def test_run_counts_a_kind_with_no_registered_sources_as_available_not_attempted(db, monkeypatch):
-    # SOURCES has no entry for "grapheme-keyword" -- sources_for() returns
-    # () so derivations.next_source/exhausted see no source to try at all;
-    # spec 3 section 6's exhausted() now excludes such a subject from the
-    # queue outright (never queued, never attempted) rather than surfacing
-    # it as leftover "available" work -- reconciling run.py's
-    # attempted/available/exhausted counts with an upstream-filtered queue
-    # is B4/B5's task.
+def test_run_counts_a_kind_with_no_registered_sources_as_neither_attempted_nor_available(
+        db, monkeypatch):
+    # SOURCES has no entry for "grapheme-keyword", so derivations.exhausted
+    # excludes such a subject from the queue outright.
     calls = _patch(monkeypatch, {})
-    r = run(_ctx(db, _Syl(_Gaps(graphemes=("g1",)))), {})
+    report = run(_ctx(db, _Syl(_Gaps(graphemes=("g1",)))), {})
     assert calls == []
-    assert r.attempted == 0 and r.available == 0
+    assert report.attempted == 0 and report.available == 0
 
 
-# --- apply sentence adoptions before computing the queue -------------------
+# --- adoption: the cover over what the judge passed ------------------------
 
 class _AdoptingSyl:
-    """Stands in for `Syllabus.with_sentences`'s real effect (shrinking
-    `gaps().unfilled_targets`) without any real fills()/Syllabus machinery
-    -- `with_sentences` here just drops whatever target ids its adopted
-    items name (via a bare `.target_id`, not a real Sentence)."""
+    """Stands in for the real Syllabus's adoption effect: cover() takes the
+    verified drafts whose Targets are still open, and with_sentences()
+    closes those Targets."""
     def __init__(self, unfilled_targets):
-        self.targets = []
+        self.targets, self.sentences = [], ()
         self._unfilled = tuple(unfilled_targets)
+        self._covered: tuple[str, ...] = ()
 
     def gaps(self):
         return _Gaps(sentences=self._unfilled)
 
+    def cover(self, drafts):
+        chosen = [(s, ts) for s, ts in drafts if any(t in self._unfilled for t in ts)]
+        self._covered = tuple(t for _s, ts in chosen for t in ts)
+        return chosen
+
     def with_sentences(self, new):
-        filled = {getattr(s, "target_id", s) for s in new}
-        return _AdoptingSyl(t for t in self._unfilled if t not in filled)
+        return _AdoptingSyl(t for t in self._unfilled if t not in self._covered)
 
 
-class _AdoptedMarker:
-    def __init__(self, target_id):
-        self.target_id = target_id
-
-
-def test_run_applies_sentence_adoptions_before_computing_the_queue(db, monkeypatch):
+def test_run_adopts_a_cover_of_the_adoptable_drafts_before_computing_the_queue(db, monkeypatch):
     captured = []
 
     def fake_queue(syllabus, cache, **kwargs):
         captured.append(syllabus)
-        # a queue entry per still-open target, standing in for whatever
-        # non-sentence need derivations.queue would actually produce --
-        # what matters here is whether "t1" (already adopted) is still
-        # among them.
         from thai_syllabus.derivations import QueueEntry
         return [QueueEntry(subject=t, kind="picture", bucket=1)
-               for t in syllabus.gaps().unfilled_targets]
+                for t in syllabus.gaps().unfilled_targets]
 
     monkeypatch.setattr(run_mod, "queue", fake_queue)
-    calls = _patch(monkeypatch, {("t2", "openverse"): Outcome(True, False, True, {"openverse": (1, 0.0)})},
-                  sentence=SentenceOutcome(1, (_AdoptedMarker("t1"),), False, {}))
+    calls = _patch(monkeypatch, {}, drafts=[(sentence("x"), ("t1",))])
 
-    run(_ctx(db, _AdoptingSyl(("t1", "t2"))), {})
+    report = run(_ctx(db, _AdoptingSyl(("t1", "t2"))), {})
 
-    assert captured[0].gaps().unfilled_targets == ("t2",)  # t1 already dropped
-    assert [n.subject for n, _ in calls] == ["t2"]  # never attempted for t1
+    assert report.sentences_adopted == 1
+    assert [s.text for s in db.all_sentences()] == ["x"]
+    assert captured[0].gaps().unfilled_targets == ("t2",)   # t1 already covered
+    assert [n.subject for n, _s in calls] == ["t2"]
 
 
-# --- documented defaults (spec 3 section 4) -------------------------------
+# --- documented defaults (spec 3 section 7) -------------------------------
 
 def test_forvo_default_daily_budget_is_450_asks():
     assert FORVO_DEFAULT_DAILY_BUDGET.max_asks == 450
@@ -178,12 +177,8 @@ def test_a_run_that_does_almost_nothing_still_appends_a_row(db, monkeypatch):
 
 def test_two_runs_each_get_their_own_keyed_row(db, monkeypatch):
     _patch(monkeypatch, {})
-
-    def new_ctx():
-        return _ctx(db, _Syl(_Gaps()))
-
-    run(new_ctx(), {})
-    run(new_ctx(), {})
+    run(_ctx(db, _Syl(_Gaps())), {})
+    run(_ctx(db, _Syl(_Gaps())), {})
     rows = [r for r in db.assessments_of("run") if r.port == "run"]
     assert len(rows) == 2
     assert rows[0].ts != rows[1].ts
@@ -197,62 +192,55 @@ def test_spend_add_increments_by_given_asks():
     assert s.asks == 3 and s.cost == pytest.approx(0.6)
 
 
-def test_spend_exceeds_checks_asks_and_cost():
-    assert Spend(asks=5).exceeds(Budget(max_asks=5))
-    assert not Spend(asks=4).exceeds(Budget(max_asks=5))
-    assert Spend(cost=1.0).exceeds(Budget(max_cost=1.0))
-    assert not Spend(cost=0.5).exceeds(Budget(max_cost=1.0))
+def test_a_budget_says_when_a_spend_has_reached_it():
+    assert Budget(max_asks=5).exceeded_by(Spend(asks=5))
+    assert not Budget(max_asks=5).exceeded_by(Spend(asks=4))
+    assert Budget(max_cost=1.0).exceeded_by(Spend(cost=1.0))
+    assert not Budget(max_cost=1.0).exceeded_by(Spend(cost=0.5))
 
 
 # --- the report counts what went wrong ------------------------------------
 
-def test_run_stops_at_the_first_unreachable_attempt(db, monkeypatch):
+def test_run_stops_at_the_first_unreachable_judge(db, monkeypatch):
     """An unreachable judge is a dead wire, not a per-need failure: every
     remaining need would fail the same way. The run stops and says so
     instead of grinding through the whole queue in silence."""
-    calls = _patch(monkeypatch, {
-        ("a", "openverse"): Outcome(False, False, False, {}, unreachable=True)})
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
-    assert [n.subject for n, _ in calls] == ["a"]   # no escalation, no second need
-    assert r.unreachable is True
-    assert r.available == 2                          # both needs still to do
-    row = db.latest("run", "runreport", "runreport")
-    assert row.answer["unreachable"] is True
+    calls = _patch(monkeypatch, {("a", "openverse"): JudgeUnreachable})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert [n.subject for n, _s in calls] == ["a"]   # no second need
+    assert report.unreachable is True
+    assert report.available == 2                     # both needs still to do
+    assert db.latest("run", "runreport", "runreport").answer["unreachable"] is True
+
+
+def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, sentence_result=JudgeUnreachable)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert calls == []                               # no need attempted at all
+    assert report.unreachable is True
 
 
 def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
     _patch(monkeypatch, {
-        ("a", "openverse"): Outcome(True, False, True, {}, excluded=1),
-        ("b", "openverse"): Outcome(True, False, True, {}, excluded=2)},
-        sentence=SentenceOutcome(0, (), False, {}, excluded=3))
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
-    assert r.excluded == 6
-    assert db.latest("run", "runreport", "runreport").answer["excluded"] == 6
+        ("a", "openverse"): AttemptResult(True, excluded={"k1": "gone"}),
+        ("b", "openverse"): AttemptResult(True, excluded={"k2": "gone", "k3": "gone"})},
+        sentence_result=AttemptResult(False, excluded={"k4": "gone"}))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert report.excluded == 4
+    assert db.latest("run", "runreport", "runreport").answer["excluded"] == 4
 
 
 def test_a_run_with_nothing_wrong_reports_zero_excluded_and_reachable(db, monkeypatch):
     _patch(monkeypatch, {})
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert r.excluded == 0 and r.unreachable is False
-
-
-def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
-    calls = _patch(monkeypatch, {},
-                   sentence=SentenceOutcome(0, (), False, {}, unreachable=True))
-    r = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert calls == []                               # no need attempted at all
-    assert r.unreachable is True
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert report.excluded == 0 and report.unreachable is False
 
 
 def test_available_excludes_the_sentence_entries_the_loop_skips(db, monkeypatch):
     """Sentence needs are handled once per run by sentence_attempt, so the
-    per-need loop skips them -- counting them as "available" reported work
-    still to do that this run had already done. The grapheme need has no
-    registered source at all, so derivations.exhausted excludes it from
-    the queue outright (see test_run_counts_a_kind_with_no_registered_
-    sources_as_available_not_attempted) -- neither need is left over.
-    """
-    calls = _patch(monkeypatch, {}, sentence=SentenceOutcome(0, (), False, {}))
-    r = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2"), graphemes=("g1",)))), {})
-    assert calls == []                      # no per-subject attempt for either kind
-    assert r.available == 0
+    per-need loop skips them -- counting them as "available" would report
+    work still to do that this run had already done."""
+    calls = _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2"), graphemes=("g1",)))), {})
+    assert calls == []
+    assert report.available == 0

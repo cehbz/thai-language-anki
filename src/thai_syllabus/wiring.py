@@ -75,7 +75,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from .assessor import AssessBackend, Assessor, JudgeBackend, Price, duration_mechanical_backend
+from .assessor import (AssessBackend, Assessor, JudgeBackend, Price,
+                       duration_mechanical_backend, fills_mechanical_backend,
+                       rendition_mechanical_backend)
 from .attempts import Sourcing, provenance_source_for
 from .curated import (
     CuratedBundle,
@@ -89,6 +91,7 @@ from .derivations import current_best
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Speaker
+from .query import QUERY_HINTS
 from .provider import (
     Backend,
     FetchBackend,
@@ -252,13 +255,28 @@ def _resolver(db: SyllabusDb, media_store: MediaStore):
     return resolve
 
 
+def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
+    """artifact sha -> the speaker id its media row names, or None."""
+    def speaker_of(sha: str) -> str | None:
+        prov = db.media_provenance(sha)
+        return prov.get("speaker_id") if prov else None
+    return speaker_of
+
+
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
-                   *, secret_store=None) -> Assessor:
+                   *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None
+                   ) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge"
     (transport+model, resolve_path/price/quota_cost_per_call wired from
-    cfg and the db+media_store) and "mechanical" (duration check, same
-    resolve_path); "listener"/"learner" need no roster entry -- Assessor.
-    ask() already special-cases both.
+    cfg and the db+media_store), "mechanical" (duration check, same
+    resolve_path), "rendition" (one speaker across a pair's members) and,
+    where `syllabus_of` names one, "fills" (does a drafted sentence fill
+    the Target it claims). "listener"/"learner" need no roster entry --
+    Assessor.ask() already special-cases both.
+
+    `syllabus_of` is a callable rather than a Syllabus: a run adopts
+    sentences into its Syllabus as it goes, and the fills check must see
+    the one the attempt is asking about.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -270,7 +288,10 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "judge": judge,
         "mechanical": duration_mechanical_backend(
             resolve_path=lambda sha: str(resolve(sha) or "")),
+        "rendition": rendition_mechanical_backend(speaker_of=_speaker_of(db)),
     }
+    if syllabus_of is not None:
+        backends["fills"] = fills_mechanical_backend(syllabus_of)
     return Assessor(record=db, cache=db, backends=backends)
 
 
@@ -317,15 +338,19 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     """Assembles a Sourcing ctx (attempts.py) for one deck: load_syllabus
     (overlay-applied rules), the db-backed provider/assessor rosters, and
     every value that reaches a cache key -- rubrics, provenance_prior,
-    image_candidates, tts_voices, judge_model -- drawn from the deck's own
-    curated/providers.yaml + rulebook.yaml, never a bare Sourcing dataclass
-    default.
+    image_candidates, voices, query_hints, judge_model -- drawn from the
+    deck's own curated/providers.yaml + rulebook.yaml, never a bare
+    Sourcing dataclass default.
 
     Opens `db`/`bundle` exactly once and hands them to load_syllabus,
     rather than letting load_syllabus open its own second SyllabusDb/
     CuratedBundle -- so `Sourcing.db` and `syllabus.assessments`/
     `syllabus.media.db` are the SAME connection, one place a run's writes
     and the Syllabus's reads meet.
+
+    The "fills" Assess backend reads `ctx.syllabus` through a closure over
+    the ctx this function is about to return, since a run adopts sentences
+    into it between attempts.
     """
     root = Path(deck_root)
     if cfg is None:
@@ -337,12 +362,15 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     # rubrics_for covers registered judged Rules only; "sentence-for-target"
     # (attempts.py) is a judge role with no Rule, added here directly.
     rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
-    return Sourcing(syllabus=syllabus, provider=build_provider(cfg, db, media_store),
-                    assessor=build_assessor(cfg, db, media_store), db=db, media_store=media_store,
-                    rubrics=rubrics,
-                    provenance_prior=bundle.rulebook.provenance_prior,
-                    image_candidates=cfg.image_candidates, tts_voices=tuple(cfg.tts_male_voices),
-                    judge_model=cfg.judge.model)
+    ctx = Sourcing(
+        syllabus=syllabus, provider=build_provider(cfg, db, media_store),
+        assessor=build_assessor(cfg, db, media_store, syllabus_of=lambda: ctx.syllabus),
+        db=db, media_store=media_store, rubrics=rubrics,
+        provenance_prior=bundle.rulebook.provenance_prior,
+        image_candidates=cfg.image_candidates,
+        voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
+        query_hints=QUERY_HINTS, judge_model=cfg.judge.model)
+    return ctx
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------
@@ -373,8 +401,8 @@ class _DbMediaIndex:
 
     rendition_provenance/rendition_speakers are a two-level read, not a
     single current_best lookup: a pair's rendition is current-best under
-    its OWN subject (the pair id, role "rendition-for-pair" --
-    attempts._record_rendition's mechanical row), and that row's
+    its OWN subject (the pair id, role "rendition-for-pair" -- the
+    "rendition" mechanical backend's row), and that row's
     `params["members"]` (word id -> sha) names which per-member recording
     actually backs it -- not necessarily each member's own current-best
     recording. Only when NO pair-level rendition row is current-best yet
@@ -402,16 +430,15 @@ class _DbMediaIndex:
                             provenance_source=provenance_source_for(self.db))
 
     def _deciding_row(self, subject: str, artifact_sha: str):
-        """The newest mechanical assess row for `subject` whose
+        """The newest "rendition" assess row for `subject` whose
         artifact_sha matches current-best's pick -- the row _best()'s rank
-        actually came from, so its own `params` (e.g. rendition's
-        `members`) can be read back. Filtered to backend="mechanical" (the
-        only backend AUTHORITY_ORDER["rendition-for-pair"] names) so a
-        learner row under the same pair subject/artifact_sha can never
-        shadow it.
+        actually came from, so its own `params["members"]` can be read
+        back. Filtered to that backend (the only one
+        AUTHORITY_ORDER["rendition-for-pair"] names) so a learner row under
+        the same pair subject/artifact_sha can never shadow it.
         """
         rows = [r for r in self.db.assessments_of(subject) if r.port == "assess"
-               and r.backend == "mechanical" and r.question.get("artifact_sha") == artifact_sha]
+               and r.backend == "rendition" and r.question.get("artifact_sha") == artifact_sha]
         return rows[-1] if rows else None
 
     def has_picture(self, word: WordId) -> bool:

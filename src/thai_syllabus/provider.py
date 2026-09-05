@@ -50,10 +50,12 @@ class Question:
     # provides: picture | recording | sentence | pair | phrase | entry
     provides: str
     params: Mapping[str, Any] = field(default_factory=dict)
-    # The need kind (picture | recording | rendition | sentence |
-    # grapheme-keyword) the caller is asking toward -- record.py's folds
-    # read this back verbatim; Provider never derives it from `provides`.
+    # The artifact kind (picture | recording | rendition | sentence |
+    # grapheme-keyword) the caller is asking toward, and the kind of thing
+    # `subject` is (word | pair | sentence | grapheme) -- record.py's folds
+    # read both back verbatim; Provider derives neither from `provides`.
     kind: str = ""
+    subject_kind: str = "word"
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,7 @@ class Provider:
         ts = self._record.append(
             port="provide", backend=backend, key=key, subject=question.subject,
             question={"provides": question.provides, "kind": question.kind,
+                     "subject_kind": question.subject_kind,
                      "params": dict(question.params)},
             answer={"items": list(raw.items)}, cost=raw.cost)
         return ProviderAnswer(items=raw.items, cost=raw.cost, ts=ts)

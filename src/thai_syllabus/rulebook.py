@@ -249,8 +249,23 @@ PICTURE_FIT_RUBRIC = (
 PICTURE_PREFERENCE_RUBRIC = ("Rank the attached candidates by how well each, as the only picture "
                              "on a flashcard, evokes the word for a learner: concrete, "
                              "unambiguous, no answer-revealing text.")
-SENTENCE_FOR_TARGET_RUBRIC = (SENTENCE_REGISTER_RUBRIC
-                              + " Is it natural, grammatical, something a native speaker would say?")
+SENTENCE_FOR_TARGET_RUBRIC = (
+    SENTENCE_REGISTER_RUBRIC
+    + " Is it natural, grammatical, something a native speaker would say?"
+    + " And does the English gloss offered with it state what the sentence"
+    + " actually says? A gloss that misstates the sentence fails the"
+    + " candidate, however good the Thai is.")
+
+SCENE_FIT_RUBRIC = (
+    "Does this picture depict the scene the sentence describes? The card "
+    "shows the picture beside the sentence, so the picture has to fit what "
+    "is being said -- the people, objects and action the sentence names -- "
+    "not merely share a topic with it. If it fails, give a `suggestion`: "
+    "the search phrase that would have found a better picture.\n\n"
+    "Fail only if text in the image reveals the answer: the Thai sentence "
+    "itself, its English translation, or a romanized spelling of it. "
+    "Incidental text passes -- watermarks, photographer credits, shop "
+    "signage, product packaging, text in unrelated languages.")
 
 
 def rubrics_for(rules: Sequence[Rule]) -> dict[str, str]:
@@ -415,6 +430,22 @@ def _picture_fit_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
 PICTURE_FIT = Rule(id="picture/fit", principle="F3", severity="warn", shape="judged",
                    rubric=PICTURE_FIT_RUBRIC, role="picture-for-word",
                    judged_subjects=_picture_fit_subjects)
+
+
+# --- scene/fit (judged, F3) --------------------------------------------------
+# Whether a sentence's scene picture depicts what the sentence says --
+# picture/fit's counterpart for a sentence subject (role
+# "scene-for-sentence"). A scene picture is optional, so report() asks about
+# a sentence only once one exists.
+
+def _scene_fit_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
+    return [(sentence_note_id(s), sha) for s in syllabus.sentences
+           if (sha := syllabus.media.picture_sha(sentence_note_id(s))) is not None]
+
+
+SCENE_FIT = Rule(id="scene/fit", principle="F3", severity="warn", shape="judged",
+                 rubric=SCENE_FIT_RUBRIC, role="scene-for-sentence",
+                 judged_subjects=_scene_fit_subjects)
 
 
 # --- picture/preference (judged, F3) -----------------------------------------
@@ -664,6 +695,7 @@ RULES: list[Rule] = [
     RENDITION_MIXED_SPEAKERS,
     SENTENCE_SYNTHETIC_PRODUCTIVE,
     PICTURE_FIT,
+    SCENE_FIT,
     PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
     WORD_PRONUNCIATION_CORROBORATED,

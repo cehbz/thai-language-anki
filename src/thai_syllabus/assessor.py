@@ -14,11 +14,13 @@ import logging
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from . import record
-from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, sha
+from .cachekeys import (BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey,
+                        rendition_identity, sha)
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError
 
@@ -29,7 +31,8 @@ __all__ = [
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "parse_preference",
-    "MechanicalBackend", "duration_mechanical_backend",
+    "MechanicalBackend", "duration_mechanical_backend", "fills_mechanical_backend",
+    "rendition_mechanical_backend",
     "format_mechanical_backend", "ffprobe_duration_seconds",
 ]
 
@@ -45,10 +48,12 @@ class AssessQuestion:
     artifact_sha: str | None = None
     rubric: str | None = None  # machine backends only
     params: Mapping[str, Any] = field(default_factory=dict)
-    # The need kind (picture | recording | rendition | sentence |
-    # grapheme-keyword) this verdict ranks toward -- record.py's folds
-    # read this back verbatim; Assessor never derives it from `role`.
+    # The artifact kind (picture | recording | rendition | sentence |
+    # grapheme-keyword) this verdict ranks toward, and the kind of thing
+    # `subject` is (word | pair | sentence | grapheme) -- record.py's folds
+    # read both back verbatim; Assessor derives neither from `role`.
     kind: str = ""
+    subject_kind: str = "word"
 
 
 @dataclass(frozen=True)
@@ -147,6 +152,17 @@ class Assessor:
         back to the question that produced them.
         """
         return self._backends[backend].cache_key(question)
+
+    @property
+    def inline(self) -> bool:
+        """Whether the judge answers inside ask_many. False under a batch
+        transport, whose misses come back in `collected` instead -- so a
+        caller that only makes sense once every verdict is in (the picture
+        preference question) asks the transport, not the shape of one
+        result, which a run of pure cache hits cannot tell apart.
+        """
+        judge = self._backends.get("judge")
+        return judge is not None and getattr(judge, "complete", None) is not None
 
     def _build(self, impl: AssessBackend, question: AssessQuestion) -> tuple[str, list[Path]]:
         """Runs a backend's own preparation steps (prompt_builder,
@@ -250,7 +266,9 @@ class Assessor:
         return self._record.append(
             port="assess", backend=backend, key=key, subject=question.subject,
             question={"role": question.role, "artifact_sha": question.artifact_sha,
-                     "rubric": question.rubric, "kind": question.kind},
+                     "rubric": question.rubric, "kind": question.kind,
+                     "subject_kind": question.subject_kind,
+                     "params": dict(question.params)},
             answer=answer, cost=raw.cost)
 
     # --- judge's batch transport: one submission, one resolution ---------
@@ -273,6 +291,8 @@ class Assessor:
         artifact_shas: list[str | None] = []
         rubrics: list[str | None] = []
         kinds: list[str] = []
+        subject_kinds: list[str] = []
+        params: list[dict] = []
         for p in prepared:
             requests[_custom_id(p.key)] = (p.prompt, p.attachments)
             keys.append(p.key.encode())
@@ -281,12 +301,14 @@ class Assessor:
             artifact_shas.append(p.question.artifact_sha)
             rubrics.append(p.question.rubric)
             kinds.append(p.question.kind)
+            subject_kinds.append(p.question.subject_kind)
+            params.append(dict(p.question.params))
         batch_id = impl.batch_transport.submit(requests)
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
             question={"kind": "batch", "batch_id": batch_id, "keys": keys, "subjects": subjects,
                      "roles": roles, "artifact_shas": artifact_shas, "rubrics": rubrics,
-                     "kinds": kinds},
+                     "kinds": kinds, "subject_kinds": subject_kinds, "params": params},
             answer={"status": "submitted"}, cost=0.0)
         return batch_id
 
@@ -311,15 +333,18 @@ class Assessor:
         artifact_shas = marker.question.get("artifact_shas") or [None] * n
         rubrics = marker.question.get("rubrics") or [None] * n
         kinds = marker.question.get("kinds") or [""] * n
+        subject_kinds = marker.question.get("subject_kinds") or ["word"] * n
+        params = marker.question.get("params") or [{}] * n
         resolved: dict[str, Verdict] = {}
-        for key_str, subject, role, artifact_sha, rubric, kind in zip(
+        for key_str, subject, role, artifact_sha, rubric, kind, subject_kind, question_params in zip(
                 marker.question["keys"], marker.question["subjects"], marker.question["roles"],
-                artifact_shas, rubrics, kinds):
+                artifact_shas, rubrics, kinds, subject_kinds, params):
             completion = results.get("q" + sha(key_str))
             if completion is None:
                 continue
             question = AssessQuestion(subject=subject, role=role, artifact_sha=artifact_sha,
-                                      rubric=rubric, kind=kind)
+                                      rubric=rubric, kind=kind, subject_kind=subject_kind,
+                                      params=question_params or {})
             parsed = impl._parse(completion.text, question)
             raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
                              suggestion=parsed.suggestion, cost=impl._cost(completion))
@@ -418,8 +443,11 @@ def picture_preference_prompt(q: AssessQuestion) -> str:
 
 def sentence_prompt(q: AssessQuestion) -> str:
     p = q.params
-    return (f"You are evaluating one Thai sentence for a flashcard.\n{_UNTRUSTED}\n"
-           f"Sentence: {_field(p.get('text', ''))}\nTarget word: {_field(p.get('word', ''))}\n\n"
+    return (f"You are evaluating one Thai sentence, and the English gloss offered with it, "
+           f"for a flashcard.\n{_UNTRUSTED}\n"
+           f"Sentence: {_field(p.get('text', ''))}\n"
+           f"English gloss offered for it: {_field(p.get('gloss') or '(none given)')}\n"
+           f"Target word: {_field(p.get('word', ''))}\n\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
            '"suggestion": <string or null>}.')
@@ -610,6 +638,79 @@ def duration_mechanical_backend(
         duration = duration_of(path)
         ok = lo <= duration <= hi
         return RawVerdict(value=ok, evidence=f"duration={duration:.3f}s")
+
+    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+def fills_mechanical_backend(syllabus_of: Callable[[], Any]) -> MechanicalBackend:
+    """`fills()` as an Assess backend (spec 3 section 4's mechanical roles):
+    does the drafted text in `params["text"]` fill the Target named by
+    `params["target"]`? Keyed on the target and the text's sha, so a draft
+    verified once is never re-verified. `syllabus_of` reads the Syllabus at
+    ask time, since a run adopts sentences into it as it goes.
+    """
+    def key_fn(question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="fills", params=question.params["target"],
+                             artifact_sha=question.subject)
+
+    def evaluate(question: AssessQuestion) -> RawVerdict:
+        from .entities import Sentence
+        from .media import Provenance
+
+        syllabus = syllabus_of()
+        target_id = question.params["target"]
+        target = next((t for t in syllabus.targets if t.id == target_id), None)
+        if target is None:
+            raise PreparationError(f"fills: no target {target_id!r} in the syllabus")
+        draft = Sentence(text=question.params["text"], gloss=question.params.get("gloss", ""),
+                         voice="learner_voice",
+                         provenance=Provenance(source="llm", origin="draft",
+                                               licence="generated", acquired=date.today()))
+        ok = syllabus.fills(draft, target)
+        return RawVerdict(value=ok,
+                          evidence=f"fills {target_id}" if ok else f"does not fill {target_id}")
+
+    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+def rendition_mechanical_backend(
+        speaker_of: Callable[[str], str | None]) -> MechanicalBackend:
+    """The rendition check (spec 3 section 5), the one decider on whether
+    a set of member recordings IS a rendition: one speaker across the
+    members named in `params["members"]` (member -> artifact sha), and
+    every one of them passing its own mechanical checks, whose verdicts
+    the asker hands over in `params["member_checks"]` (member -> bool).
+    The artifact they form is the member set, identified by
+    cachekeys.rendition_identity.
+    """
+    def key_fn(question: AssessQuestion) -> MechanicalKey:
+        members = question.params["members"]
+        return MechanicalKey(check="rendition", params=question.subject,
+                             artifact_sha=rendition_identity(members))
+
+    def evaluate(question: AssessQuestion) -> RawVerdict:
+        members = question.params["members"]
+        if not members:
+            raise PreparationError(
+                f"rendition: no member recordings for pair {question.subject!r}")
+        checks = question.params.get("member_checks") or {}
+        unchecked = sorted(m for m in members if m not in checks)
+        if unchecked:
+            raise PreparationError(
+                f"rendition: no mechanical verdict for member(s) "
+                f"{', '.join(unchecked)} of pair {question.subject!r}")
+        speakers = {member: speaker_of(artifact_sha) for member, artifact_sha in members.items()}
+        unattributed = sorted(m for m, s in speakers.items() if not s)
+        if unattributed:
+            return RawVerdict(value=False,
+                              evidence=f"no speaker recorded for: {', '.join(unattributed)}")
+        distinct = sorted(set(speakers.values()))
+        failing = sorted(m for m, ok in checks.items() if not ok)
+        evidence = (f"speaker {distinct[0]}" if len(distinct) == 1
+                    else f"speakers {distinct}")
+        if failing:
+            evidence = f"{evidence}; failing: {', '.join(failing)}"
+        return RawVerdict(value=len(distinct) == 1 and not failing, evidence=evidence)
 
     return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
 

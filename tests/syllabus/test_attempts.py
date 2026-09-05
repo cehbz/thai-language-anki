@@ -1,851 +1,617 @@
-"""attempts.py: assess-first, then one Source; every candidate judged; current-best re-derived.
-Real SyllabusDb + MediaStore; fake Provider/Assessor backends; no network."""
-import dataclasses
+"""attempts.py: one Source asked under the need's own subject, what it
+returns ingested, the speaker recorded, and the judge questions collected.
+Real SyllabusDb + MediaStore; fake Provide/Assess backends; no network."""
 import hashlib
 import io
-import logging
 from datetime import date
-from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
 
-from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend, MechanicalBackend, RawVerdict
-from thai_syllabus.attempts import (Need, Outcome, SentenceOutcome, Sourcing, _phrase, attempt,
-                                    candidates_of, sentence_attempt, sources_for)
-from thai_syllabus.entities import MinimalPair, Sentence, SoundConfusion
-from thai_syllabus.media import Provenance
-from thai_syllabus.provider import FetchBackend, Provider, Question, RawAnswer, TtsBackend
+from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable, MechanicalBackend,
+                                    RawVerdict, fills_mechanical_backend,
+                                    rendition_mechanical_backend)
+from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, attempt, current_best_of,
+                                    sentence_attempt, sources_for)
+from thai_syllabus.cachekeys import rendition_identity
+from thai_syllabus.derivations import exhausted
+from thai_syllabus.record import DRAFT_SUBJECT, sentence_drafts
+from thai_syllabus.entities import Category, MinimalPair, Sentence, SoundConfusion, text_sha
+from thai_syllabus.media import Provenance, Speaker
+from thai_syllabus.provider import FetchBackend, Provider, RawAnswer, TtsBackend
+from thai_syllabus.record import rows_for
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
-
-# This fixture's own role -> rubric map (rulebook.rubrics_for only covers
-# roles a judged Rule registers; "sentence-for-target" is a sourcing-time
-# judge role with no report()-time Rule).
-_RUBRICS = {"picture-for-word": PICTURE_FIT_RUBRIC,
-           "picture-preference": PICTURE_PREFERENCE_RUBRIC,
-           "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, TransportError
+from thai_syllabus.tts import pick_voice
 
 from .builders import target, word
 from .fakes import FakeTokenizer
 
+# This fixture's own role -> rubric map (rulebook.rubrics_for covers only
+# roles a judged Rule registers).
+_RUBRICS = {"picture-for-word": PICTURE_FIT_RUBRIC,
+            "picture-preference": PICTURE_PREFERENCE_RUBRIC,
+            "scene-for-sentence": PICTURE_FIT_RUBRIC,
+            "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
+
+_MALE = ("th-M-a", "th-M-b")
+_FEMALE = ("th-F-a", "th-F-b")
+
+
+# --- fake backends ----------------------------------------------------------
 
 class _Search:
+    """Records every query it was asked, answers one hit per url."""
     def __init__(self, urls):
-        self.urls, self.calls = urls, 0
+        self.urls, self.queries = list(urls), []
 
     def cache_key(self, q):
         return f"search:{q.params['query']}"
 
     def fetch(self, q):
-        self.calls += 1
-        return RawAnswer(items=tuple({"url": u, "source": "openverse", "licence": "by"} for u in self.urls))
+        self.queries.append(q.params["query"])
+        return RawAnswer(items=tuple({"url": u, "source": "openverse", "licence": "by"}
+                                     for u in self.urls))
 
 
 def _jpeg_bytes(url: str) -> bytes:
-    """A valid, decodable JPEG unique to `url` (distinct urls must still
-    content-address to distinct shas) whose dominant color -- green for a
-    "good" url, red otherwise -- encodes the fit signal _is_good_image
-    reads back; add_image requires real image bytes, so the fetcher can no
-    longer smuggle the url text itself into the stored file.
-    """
+    """A decodable JPEG unique to `url`; green for a "good" url, red
+    otherwise -- the fit signal _Judge reads back off the pixels."""
     digest = hashlib.sha256(url.encode()).digest()
-    if "good" in url:
-        color = (digest[0] % 50, 200 + digest[1] % 56, digest[2] % 50)
-    else:
-        color = (200 + digest[0] % 56, digest[1] % 50, digest[2] % 50)
+    colour = ((digest[0] % 50, 200 + digest[1] % 56, digest[2] % 50) if "good" in url
+              else (200 + digest[0] % 56, digest[1] % 50, digest[2] % 50))
     buf = io.BytesIO()
-    PILImage.new("RGB", (4, 4), color).save(buf, format="JPEG", quality=95)
+    PILImage.new("RGB", (4, 4), colour).save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
 
-def _fetcher(url):
-    return _jpeg_bytes(url), "jpg"
-
-
-def _is_good_image(path) -> bool:
-    """True for a fresh fetch (_jpeg_bytes: green means good) and for a
-    pre-existing legacy media row written raw, pre-dating add_image's
-    normalization requirement (the literal text "good" in its bytes)."""
-    try:
-        r, g, b = PILImage.open(path).convert("RGB").getpixel((0, 0))
-        return g > r
-    except Exception:
-        return b"good" in Path(path).read_bytes()
-
-
 class _Judge:
-    """Verdict by attachment count: more than one attachment means a
-    preference (ranking) question; one attachment is a fit question,
-    decided by its file's pixel color (see _jpeg_bytes/_is_good_image)."""
+    """More than one attachment is a preference question; one attachment is
+    a fit question, answered from the image's own colour."""
     def __init__(self):
         self.calls = []
 
     def __call__(self, prompt, attachments=()):
-        self.calls.append([Path(a).name for a in attachments])
+        self.calls.append([str(a) for a in attachments])
         if len(attachments) > 1:
-            names = [Path(a).stem for a in attachments]
-            return Completion(text='{"ranking": ' + str(names).replace("'", '"') + '}')
-        ok = any(_is_good_image(a) for a in attachments)
-        return Completion(text='{"value": %s, "evidence": "e"}' % ("true" if ok else "false"))
+            names = [str(a).rsplit("/", 1)[-1].split(".")[0] for a in attachments]
+            return Completion(text='{"ranking": ' + str(names).replace("'", '"') + "}")
+        green = any(_is_green(a) for a in attachments)
+        return Completion(text='{"value": %s, "evidence": "e"}' % ("true" if green else "false"))
 
 
-@pytest.fixture
-def ctx(tmp_path):
-    db = SyllabusDb(tmp_path / "syllabus.db")
-    media = MediaStore(tmp_path / "media")
-    judge = _Judge()
-    syl = Syllabus(words=(word("orange", "ส้ม", "orange"),),
-                   targets=(target("orange/receptive", "orange"),),
-                   tokenizer=FakeTokenizer())
-
-    def resolve(sha):
-        prov = db.media_provenance(sha)
-        return media.path_for(sha, prov["ext"]) if prov else None
-
-    search = _Search(["https://x/bad1.jpg", "https://x/good.jpg", "https://x/good2.jpg"])
-    provider = Provider(record=db, cache=db, backends={
-        "openverse": search,
-        "imgfetch": FetchBackend(media=media, fetcher=_fetcher)})
-    jb = JudgeBackend(model="m", transport="api", complete=judge, resolve_path=resolve)
-    assessor = Assessor(record=db, cache=db, backends={"judge": jb})
-    sourcing = Sourcing(syllabus=syl, provider=provider, assessor=assessor, db=db, media_store=media,
-                        rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts"),
-                        image_candidates=3, today=lambda: date(2026, 9, 3))
-    return sourcing, search, judge
-
-
-def _prime_legacy_passer(c: Sourcing, thai_word: str = "ส้ม") -> str:
-    """A picture already on record, already fit-verified (as if judged in
-    an earlier run) -- pre-seeds current_best without going through a
-    whole attempt(). The cache key for a fit verdict is rubric+artifact+
-    role only (JudgeBackend.cache_key), so this matches what
-    _fit_pictures will later read regardless of params.
-    """
-    legacy_sha = c.media_store.write(b"good-legacy", "jpg")
-    c.db.add_media(sha=legacy_sha, kind="picture", ext="jpg", source="legacy", origin="", licence="?",
-                   acquired=date(2026, 1, 1))
-    c.db.append(port="assess", backend="machine-chosen", key=f"machine-chosen:orange:{legacy_sha}",
-               subject="orange", question={"note_id": "pw-1", "word": thai_word},
-               answer={"marker": "machine-chosen", "sha": legacy_sha})
-    c.assessor.ask("judge", AssessQuestion(subject="orange", role="picture-for-word",
-                                           artifact_sha=legacy_sha, rubric=c.rubrics["picture-for-word"]))
-    return legacy_sha
-
-
-def test_sources_for_picture_is_cost_ordered():
-    assert sources_for("picture") == ("openverse", "wikimedia", "pexels")
-
-
-def test_picture_attempt_fetches_judges_all_and_improves(ctx):
-    c, search, judge = ctx
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert (out.attempted, out.pending, out.improved) == (True, False, True)
-    fit_calls = [call for call in judge.calls if len(call) == 1]
-    assert len(fit_calls) == 3                       # every candidate judged, not stop-at-first-pass
-    assert any(len(call) == 2 for call in judge.calls)  # one preference call over the two passes
-    assert len(candidates_of(c.db, "orange", "picture")) == 3
-    from thai_syllabus.attempts import current_best_of
-    best = current_best_of(c, "orange", "picture")
-    assert best.artifact_sha is not None and best.rank > 50.0
-
-
-def test_picture_attempt_spend_accounting(ctx):
-    c, search, judge = ctx
-    out1 = attempt(c, Need("orange", "picture"), "openverse")
-    assert out1.spend["judge"][0] == 4          # 3 fit + 1 preference
-    assert out1.spend["imgfetch"][0] == 3
-
-    out2 = attempt(c, Need("orange", "picture"), "openverse")
-    assert all(asks == 0 for asks, _cost in out2.spend.values())
-    assert out2.improved is False
-
-
-def test_picture_attempt_assesses_existing_candidates_before_searching(ctx):
-    # a migrated/unjudged candidate already on record
-    c, search, judge = ctx
-    sha = c.media_store.write(b"good-old", "jpg")
-    c.db.add_media(sha=sha, kind="picture", ext="jpg", source="legacy", origin="", licence="?",
-                   acquired=date(2026, 1, 1))
-    c.db.append(port="assess", backend="machine-chosen", key=f"machine-chosen:orange:{sha}",
-               subject="orange", question={"note_id": "pw-1", "word": "ส้ม"},
-               answer={"marker": "machine-chosen", "sha": sha})
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert out.improved and search.calls == 0
-
-
-def test_picture_attempt_records_provenance_for_each_fetched_candidate(ctx):
-    c, search, judge = ctx
-    attempt(c, Need("orange", "picture"), "openverse")
-    for sha in candidates_of(c.db, "orange", "picture"):
-        prov = c.db.media_provenance(sha)
-        assert prov and prov["source"] == "openverse" and prov["ext"] == "jpg"
-
-
-def test_picture_attempt_reports_pending_under_a_batch_judge(ctx):
-    c, search, judge = ctx
-
-    class BT:
-        def submit(self, requests):
-            return "b1"
-
-        def status(self, batch_id):
-            return "in_progress"
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={
-        "judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert out.pending and not out.improved and out.attempted
-
-
-def test_unknown_kind_is_not_attempted(ctx):
-    c, search, judge = ctx
-    assert attempt(c, Need("x", "grapheme-keyword"), "llm") == Outcome(False, False, False, {})
-
-
-# --- preference runs over the WHOLE passing set, not just what's newly fit -
-
-def test_preference_runs_over_the_whole_passing_set_not_just_new_shas(ctx):
-    c, search, judge = ctx
-    legacy_sha = _prime_legacy_passer(c)  # already-verified, ranks equal to before -- doesn't short-circuit
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert out.improved
-    pref_calls = [call for call in judge.calls if len(call) > 1]
-    assert len(pref_calls) == 1
-    assert len(pref_calls[0]) == 3                       # legacy + both new passers
-    assert any(legacy_sha in name for name in pref_calls[0])
-
-
-def test_preference_runs_with_one_legacy_and_one_new_passer(ctx):
-    c, search, judge = ctx
-    search.urls = ["https://x/bad1.jpg", "https://x/good.jpg"]  # exactly one new passer
-    _prime_legacy_passer(c)
-    attempt(c, Need("orange", "picture"), "openverse")
-    pref_calls = [call for call in judge.calls if len(call) > 1]
-    assert len(pref_calls) == 1
-    assert len(pref_calls[0]) == 2
-
-
-# --- an unavailable Assessor ends the attempt before any Source is tried ---
-
-def test_unavailable_judge_backend_ends_the_attempt_before_any_search(ctx):
-    c, search, judge = ctx
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "judge" backend at all
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert search.calls == 0
-    assert out == Outcome(False, False, False, {})
-
-
-# --- per-url fetch failure is skipped, not fatal to the attempt -----------
-
-def test_per_url_fetch_transport_error_is_skipped(ctx):
-    c, search, judge = ctx
-    search.urls = ["https://x/bad1.jpg", "https://x/boom.jpg", "https://x/good.jpg"]
-
-    def flaky_fetcher(url):
-        if "boom" in url:
-            raise TransportError("refused")
-        return _jpeg_bytes(url), "jpg"
-
-    c.provider = Provider(record=c.db, cache=c.db, backends={
-        "openverse": search, "imgfetch": FetchBackend(media=c.media_store, fetcher=flaky_fetcher)})
-    attempt(c, Need("orange", "picture"), "openverse")
-    assert len(candidates_of(c.db, "orange", "picture")) == 2  # boom.jpg's url produced no candidate
-
-
-# --- candidates_of: de-dup and marker-row exclusion -------------------------
-
-def test_candidates_of_dedups_shas_and_ignores_batch_pending_markers(ctx):
-    c, search, judge = ctx
-    c.db.append(port="provide", backend="imgfetch", key="url1", subject="orange",
-               question={"kind": "picture", "params": {"url": "url1"}},
-               answer={"items": [{"sha": "sha1", "ext": "jpg"}]})
-    c.db.append(port="provide", backend="imgfetch", key="url2", subject="orange",
-               question={"kind": "picture", "params": {"url": "url2"}},
-               answer={"items": [{"sha": "sha1", "ext": "jpg"}]})  # same sha, different url -- not a dup
-    c.db.append(port="assess", backend="judge", key="judge-batch-pending:orange", subject="orange",
-               question={"keys": ["k1"]}, answer={"kind": "batch-pending", "batch_id": "b1"})
-    assert candidates_of(c.db, "orange", "picture") == ["sha1"]
-
-
-# --- _phrase precedence: direction > suggestion newer than last provide > None (caller falls back) -
-
-def test_phrase_is_none_when_nothing_is_on_record(ctx):
-    c, _search, _judge = ctx
-    assert _phrase(c, "orange") is None
-
-
-def test_phrase_direction_wins_over_a_judge_suggestion(ctx):
-    c, _search, _judge = ctx
-    c.db.append(port="assess", backend="judge", key="k1", subject="orange",
-               question={"role": "picture-for-word"}, answer={"value": False, "suggestion": "sugg"})
-    c.db.append(port="assess", backend="learner", key="k2", subject="orange",
-               question={}, answer={"direction": "dir"})
-    assert _phrase(c, "orange") == "dir"
-
-
-def test_phrase_falls_back_to_a_suggestion_newer_than_the_last_provide(ctx):
-    c, _search, _judge = ctx
-    c.db.append(port="provide", backend="openverse", key="search:x", subject="orange",
-               question={"provides": "picture", "params": {"query": "x"}}, answer={"items": []})
-    c.db.append(port="assess", backend="judge", key="k1", subject="orange",
-               question={"role": "picture-for-word"}, answer={"value": False, "suggestion": "fresh phrase"})
-    assert _phrase(c, "orange") == "fresh phrase"
-
-
-def test_phrase_ignores_a_suggestion_older_than_the_last_provide(ctx):
-    c, _search, _judge = ctx
-    c.db.append(port="assess", backend="judge", key="k1", subject="orange",
-               question={"role": "picture-for-word"}, answer={"value": False, "suggestion": "stale phrase"})
-    c.db.append(port="provide", backend="openverse", key="search:x", subject="orange",
-               question={"provides": "picture", "params": {"query": "x"}}, answer={"items": []})
-    assert _phrase(c, "orange") is None
-
-
-# --- Task 8: recording and rendition attempts; mechanical verdicts rank recordings
-
-def _mech_duration(ok=True):
-    def key_fn(q):
-        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
-
-    def evaluate(q):
-        return RawVerdict(value=ok, evidence="duration=1.0s")
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
-
-
-def _mech_duration_failing_for(bad_subject):
-    """Fails only the member whose AssessQuestion.subject is bad_subject --
-    exercises that _assess_members asks under each member's OWN subject
-    (not the pair id), the only way a per-member fake can single one out.
-    """
-    def key_fn(q):
-        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
-
-    def evaluate(q):
-        ok = q.subject != bad_subject
-        return RawVerdict(value=ok, evidence="duration=1.0s" if ok else "too short")
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+def _is_green(path) -> bool:
+    r, g, b = PILImage.open(path).convert("RGB").getpixel((0, 0))
+    return g > r
 
 
 class _Forvo:
     def __init__(self, items_by_word):
-        self.items_by_word = items_by_word
-        self.calls = 0
+        self.items_by_word = dict(items_by_word)
 
     def cache_key(self, q):
         return f"forvo:{q.params['word']}"
 
     def fetch(self, q):
-        self.calls += 1
         return RawAnswer(items=tuple(self.items_by_word.get(q.params["word"], ())), cost=1.0)
 
 
 class _Tts:
+    def __init__(self):
+        self.voices = []
+
     def synthesize(self, text, voice):
+        self.voices.append(voice)
         return f"{text}-{voice}".encode()
 
+    @property
+    def last_voice(self):
+        return self.voices[-1]
 
-def _recording_backends(c, forvo_items):
-    media = c.media_store
-    forvo = _Forvo(forvo_items)
-    provider = Provider(record=c.db, cache=c.db, backends={
-        "forvo": forvo,
-        "audiofetch": FetchBackend(media=media, fetcher=lambda url: (url.encode(), "mp3")),
-        "tts": TtsBackend(tts=_Tts(), voices=["v1", "v2"], media=media, pick_voice=lambda s, v: v[0])})
-    return provider, forvo
-
-
-def _recording_ctx(c, forvo_items):
-    provider, _forvo = _recording_backends(c, forvo_items)
-    c.provider = provider
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={"mechanical": _mech_duration()})
-    return c
-
-
-def _pair_syllabus(conf):
-    return Syllabus(
-        words=(word("white", "ขาว", "white"), word("news", "ข่าว", "news")),
-        targets=(target("white/receptive", "white"), target("news/receptive", "news")),
-        confusions=(conf,),
-        pairs=(MinimalPair(id="pair-1", confusion=conf.id, members=("white", "news")),),
-        tokenizer=FakeTokenizer())
-
-
-def test_forvo_recording_attempt_downloads_checks_and_ranks(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
-    out = attempt(c, Need("orange", "recording"), "forvo")
-    assert out.improved and out.spend["forvo"] == (1, 1.0)
-    from thai_syllabus.attempts import current_best_of
-    best = current_best_of(c, "orange", "recording")
-    prov = c.db.media_provenance(best.artifact_sha)
-    assert best.source == "mechanical" and prov["speaker_id"] == "forvo:kris"
-    assert prov["speaker"].kind == "native"
-
-
-def test_tts_recording_attempt_marks_synthetic_provenance(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {})
-    assert not attempt(c, Need("orange", "recording"), "forvo").improved
-    out = attempt(c, Need("orange", "recording"), "tts")
-    assert out.improved
-    from thai_syllabus.attempts import current_best_of
-    prov = c.db.media_provenance(current_best_of(c, "orange", "recording").artifact_sha)
-    assert prov["speaker"].kind == "synthetic" and prov["source"] == "tts"
-
-
-def test_rendition_attempt_intersects_forvo_speakers(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {
-        "ขาว": [{"pathmp3": "https://f/a1.mp3", "username": "kris"}, {"pathmp3": "https://f/a2.mp3", "username": "x"}],
-        "ข่าว": [{"pathmp3": "https://f/b1.mp3", "username": "kris"}]})
-    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
-    c.syllabus = _pair_syllabus(conf)
-    out = attempt(c, Need("pair-1", "rendition"), "forvo")
-    assert out.improved
-    from thai_syllabus.attempts import current_best_of
-    best = current_best_of(c, "pair-1", "rendition")
-    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
-    members = rows[-1].question["params"]["members"]
-    assert set(members) == {"white", "news"}
-    assert {c.db.media_provenance(s)["speaker_id"] for s in members.values()} == {"forvo:kris"}
-    assert rows[-1].answer["value"] is True
-    assert rows[-1].question["kind"] == "rendition"  # record.rows_for reads this back
-    # each member's own recording need benefits too -- mechanical verdicts
-    # are recorded under the member's own subject, not the pair id.
-    assert current_best_of(c, "white", "recording").artifact_sha is not None
-    assert current_best_of(c, "news", "recording").artifact_sha is not None
-
-
-def test_rendition_attempt_falls_to_one_tts_voice(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {"ขาว": [{"pathmp3": "https://f/a.mp3", "username": "p"}],
-                           "ข่าว": [{"pathmp3": "https://f/b.mp3", "username": "q"}]})
-    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
-    c.syllabus = _pair_syllabus(conf)
-    assert not attempt(c, Need("pair-1", "rendition"), "forvo").improved
-    out = attempt(c, Need("pair-1", "rendition"), "tts")
-    assert out.improved
-    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
-    speakers = {c.db.media_provenance(s)["speaker_id"] for s in rows[-1].question["params"]["members"].values()}
-    assert len(speakers) == 1
-    from thai_syllabus.tts import pick_voice
-    expected_voice = pick_voice("pair-1", list(c.tts_voices))
-    origins = {c.db.media_provenance(s)["origin"] for s in rows[-1].question["params"]["members"].values()}
-    assert origins == {expected_voice}
-    # symmetry with forvo: the tts branch mechanically checks each member
-    # too, under the member's own subject.
-    from thai_syllabus.attempts import current_best_of
-    assert current_best_of(c, "white", "recording").artifact_sha is not None
-    assert current_best_of(c, "news", "recording").artifact_sha is not None
-
-
-def test_rendition_attempt_records_false_when_a_member_fails_mechanically(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {"ขาว": [{"pathmp3": "https://f/a1.mp3", "username": "kris"}],
-                           "ข่าว": [{"pathmp3": "https://f/b1.mp3", "username": "kris"}]})
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={"mechanical": _mech_duration_failing_for("news")})
-    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
-    c.syllabus = _pair_syllabus(conf)
-    out = attempt(c, Need("pair-1", "rendition"), "forvo")
-    assert not out.improved
-    rows = [r for r in c.db.assessments_of("pair-1") if r.backend == "mechanical"]
-    assert rows[-1].answer["value"] is False
-    assert "news" in rows[-1].answer["evidence"]
-
-
-def test_recording_attempt_second_run_is_fully_cached(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
-    attempt(c, Need("orange", "recording"), "forvo")
-    out2 = attempt(c, Need("orange", "recording"), "forvo")
-    assert out2.attempted is False
-    assert all(asks == 0 for asks, _cost in out2.spend.values())
-
-
-def test_recording_attempt_ends_before_any_source_when_assessor_unavailable(ctx):
-    c, _search, _judge = ctx
-    provider, forvo = _recording_backends(c, {"ส้ม": [{"pathmp3": "https://f/1.mp3", "username": "kris"}]})
-    c.provider = provider
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "mechanical" backend at all
-    out = attempt(c, Need("orange", "recording"), "forvo")
-    assert forvo.calls == 0
-    assert out == Outcome(False, False, False, {})
-
-
-def test_rendition_attempt_ends_before_any_source_when_assessor_unavailable(ctx):
-    c, _search, _judge = ctx
-    provider, forvo = _recording_backends(c, {
-        "ขาว": [{"pathmp3": "https://f/a.mp3", "username": "kris"}],
-        "ข่าว": [{"pathmp3": "https://f/b.mp3", "username": "kris"}]})
-    c.provider = provider
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "mechanical" backend at all
-    conf = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
-    c.syllabus = _pair_syllabus(conf)
-    out = attempt(c, Need("pair-1", "rendition"), "forvo")
-    assert forvo.calls == 0
-    assert out == Outcome(False, False, False, {})
-
-
-# --- Task 9: sentence attempt -- draft over open targets, verify with fills(), judge, adopt --
 
 class _Llm:
     def __init__(self, text):
         self.text, self.prompts = text, []
 
     def cache_key(self, q):
-        return "llm:sentence-drafter:m:" + str(hash(q.params["prompt"]))
+        return "llm:sentence-drafter:m:" + hashlib.sha256(
+            q.params["prompt"].encode()).hexdigest()[:16]
 
     def fetch(self, q):
         self.prompts.append(q.params["prompt"])
-        return RawAnswer(items=(self.text,), cost=0.0)
+        return RawAnswer(items=(self.text,))
 
 
-def _sentence_ctx(ctx, llm_text, judge_value="true"):
-    ctx.syllabus = Syllabus(
-        words=(word("orange", "ส้ม", "orange"), word("eat", "กิน", "eat")),
-        targets=(target("eat/receptive", "eat"), target("orange/receptive", "orange")),
-        frequency={"eat": 1, "orange": 2},
-        tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"], "ส้มอร่อย": ["ส้ม", "อร่อย"]}))
-    ctx.provider = Provider(record=ctx.db, cache=ctx.db, backends={"llm-sentence": _Llm(llm_text)})
+def _mechanical(ok=True, failing_subject=None):
+    def key_fn(q):
+        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
+
+    def evaluate(q):
+        passes = ok and q.subject != failing_subject
+        return RawVerdict(value=passes, evidence="duration=1.0s" if passes else "too short")
+    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+def _rendition_backend(db):
+    def speaker_of(sha):
+        prov = db.media_provenance(sha)
+        return prov.get("speaker_id") if prov else None
+    return rendition_mechanical_backend(speaker_of=speaker_of)
+
+
+def _batch_judge():
+    class _NeverSubmits:
+        def submit(self, requests):
+            raise AssertionError("ask_many must not submit a batch")
+    return JudgeBackend(model="m", transport="batch", batch_transport=_NeverSubmits())
+
+
+# --- contexts ---------------------------------------------------------------
+
+def _sourcing(tmp_path, syllabus, *, backends, assess, media=None) -> Sourcing:
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    return Sourcing(syllabus=syllabus, provider=Provider(record=db, cache=db, backends=backends),
+                    assessor=Assessor(record=db, cache=db, backends=assess), db=db,
+                    media_store=media or MediaStore(tmp_path / "media"), rubrics=dict(_RUBRICS),
+                    provenance_prior=("commission", "forvo", "tts"), image_candidates=3,
+                    today=lambda: date(2026, 9, 3),
+                    voices={"male": _MALE, "female": _FEMALE},
+                    query_hints={"Food": "food", "Colors": "color swatch"})
+
+
+def _word_syllabus(*, productive=False) -> Syllabus:
+    skill = "productive" if productive else "receptive"
+    return Syllabus(words=(word("rice", "ข้าว", "rice (cooked)"),),   # ข้าว: rice
+                    targets=(target(f"rice/{skill}", "rice", skill=skill),),
+                    categories=(Category(name="Food", members=frozenset({"rice"})),),
+                    tokenizer=FakeTokenizer())
+
+
+def _picture_ctx(tmp_path, syllabus=None, *, judge=None, urls=("https://x/bad.jpg",
+                                                               "https://x/good.jpg",
+                                                               "https://x/good2.jpg")):
+    media = MediaStore(tmp_path / "media")
+    search = _Search(urls)
+    complete = _Judge() if judge is None else judge
+    holder: list[Sourcing] = []
 
     def resolve(sha):
-        # Same resolver the `ctx` fixture wires for the picture path (returns
-        # None for a sha with no media row) -- wired here too so a sentence
-        # question's artifact_sha, if ever wrongly set to a non-artifact
-        # sha, actually exercises JudgeBackend.attachments()'s resolve
-        # instead of short-circuiting on resolve_path=None.
-        prov = ctx.db.media_provenance(sha)
-        return ctx.media_store.path_for(sha, prov["ext"]) if prov else None
+        prov = holder[0].db.media_provenance(sha)
+        path = media.path_for(sha, prov["ext"]) if prov else None
+        return path if path is not None and path.exists() else None
 
-    jb = JudgeBackend(model="m", transport="api", resolve_path=resolve,
-                      complete=lambda p, a=(): Completion(text='{"value": %s, "evidence": "e"}' % judge_value))
-    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": jb})
+    ctx = _sourcing(tmp_path, syllabus or _word_syllabus(), media=media, backends={
+        "openverse": search,
+        "imgfetch": FetchBackend(media=media, fetcher=lambda url: (_jpeg_bytes(url), "jpg"))},
+        assess={"judge": JudgeBackend(model="m", transport="api", complete=complete,
+                                      resolve_path=resolve)})
+    holder.append(ctx)
+    return ctx, search, complete
+
+
+def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None):
+    media = MediaStore(tmp_path / "media")
+    tts = _Tts()
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    ctx = _sourcing(tmp_path, syllabus, media=media, backends={
+        "forvo": _Forvo(forvo_items),
+        "audiofetch": FetchBackend(media=media, fetcher=lambda url: (url.encode(), "mp3")),
+        "tts": TtsBackend(tts=tts, voices=list(_MALE) + list(_FEMALE), media=media,
+                          pick_voice=pick_voice)},
+        assess={"mechanical": mechanical or _mechanical(),
+                "rendition": _rendition_backend(db)})
+    return ctx, tts
+
+
+def _pair_syllabus() -> Syllabus:
+    confusion = SoundConfusion(id="tone:rising-vs-low", dimension="tone", sounds=("rising", "low"))
+    return Syllabus(words=(word("white", "ขาว", "white"), word("news", "ข่าว", "news")),
+                    targets=(target("white/receptive", "white"), target("news/receptive", "news")),
+                    confusions=(confusion,),
+                    pairs=(MinimalPair(id="p1", confusion=confusion.id,
+                                       members=("white", "news")),),
+                    tokenizer=FakeTokenizer())
+
+
+# --- the source roster ------------------------------------------------------
+
+def test_sources_for_picture_is_cost_ordered():
+    assert sources_for("picture") == ("openverse", "wikimedia", "pexels")
+
+
+def test_a_sentence_and_a_word_share_the_recording_source_roster():
+    # the artifact kind is the same; only the subject differs
+    assert sources_for("recording") == ("forvo", "tts")
+
+
+def test_a_need_knows_the_role_its_subject_kind_puts_it_under():
+    assert Need("rice", "picture").role == "picture-for-word"
+    assert Need("sha", "picture", "sentence").role == "scene-for-sentence"
+    assert Need("rice", "recording").role == "recording-for-word"
+    assert Need("sha", "recording", "sentence").role == "recording-for-sentence"
+    assert Need("p1", "rendition", "pair").role == "rendition-for-pair"
+
+
+def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    with pytest.raises(ValueError, match="grapheme-keyword"):
+        attempt(ctx, Need("g1", "grapheme-keyword", "grapheme"), "llm")
+
+
+# --- picture: the query, the ingest, the fit questions ----------------------
+
+def test_picture_attempt_searches_the_gloss_head_term_with_the_category_qualifier(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["rice food"]
+
+
+def test_picture_attempt_searches_a_judge_suggestion_once_one_is_on_record(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    ctx.db.append(port="assess", backend="judge", key="k1", subject="rice",
+                  question={"role": "picture-for-word", "kind": "picture"},
+                  answer={"value": False, "suggestion": "a bowl of steamed jasmine rice"})
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["a bowl of steamed jasmine rice"]
+
+
+def test_picture_attempt_ingests_each_hit_with_its_provenance(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    res = attempt(ctx, Need("rice", "picture"), "openverse")
+    shas = [i["sha"] for r in rows_for(ctx.db, "rice", "picture") if r.port == "provide"
+            for i in r.answer["items"] if "sha" in i]
+    assert res.attempted and len(shas) == 3
+    for sha in shas:
+        prov = ctx.db.media_provenance(sha)
+        assert prov["source"] == "openverse" and prov["ext"] == "jpg"
+
+
+def test_picture_attempt_under_an_inline_judge_resolves_fit_and_preference_in_one_pass(tmp_path):
+    ctx, _search, judge = _picture_ctx(tmp_path)
+    res = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert res.questions == [] and res.excluded == {}
+    fits = [c for c in judge.calls if len(c) == 1]
+    preferences = [c for c in judge.calls if len(c) == 2]
+    assert len(fits) == 3 and len(preferences) == 1
+    best = current_best_of(ctx, "rice", "picture")
+    assert best.artifact_sha is not None and best.rank > 50.0
+
+
+def test_picture_attempt_under_batch_collects_fit_questions(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/a.jpg", "https://x/b.jpg"))
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": _batch_judge()})
+    res = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert res.attempted
+    assert {q.question.role for q in res.questions} == {"picture-for-word"}
+    assert len(res.questions) == 2
+
+
+def test_a_batch_deck_leaves_the_preference_question_to_the_run(tmp_path):
+    """Under a batch transport the preference ask belongs to the run's
+    resolve step. Gating it on "this attempt collected nothing" misfired
+    exactly here: on the second pass every fit is a cache hit, so the
+    attempt collects nothing and used to ask a preference inline anyway."""
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",
+                                                        "https://x/good2.jpg"))
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": _batch_judge()})
+    collected = attempt(ctx, Need("rice", "picture"), "openverse").questions
+    assert len(collected) == 2
+    for prepared in collected:                       # the batch's verdicts land
+        ctx.db.append(port="assess", backend="judge", key=prepared.key,
+                      subject=prepared.question.subject,
+                      question={"role": prepared.question.role, "kind": "picture",
+                                "artifact_sha": prepared.question.artifact_sha,
+                                "rubric": prepared.question.rubric,
+                                "subject_kind": "word", "params": {}},
+                      answer={"value": True})
+    assert attempt(ctx, Need("rice", "picture"), "openverse").questions == []
+
+
+def test_a_second_picture_attempt_spends_nothing_new(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    again = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert again.attempted
+    assert all(s.asks == 0 for s in again.spend.values())
+
+
+def test_the_search_ask_stays_on_the_record_when_the_judge_cannot_be_reached(tmp_path):
+    def boom(prompt, attachments=()):
+        raise TransportError("api transport failed: 401")
+    ctx, _search, _judge = _picture_ctx(tmp_path, judge=boom, urls=("https://x/good.jpg",))
+    with pytest.raises(JudgeUnreachable):
+        attempt(ctx, Need("rice", "picture"), "openverse")
+    assert rows_for(ctx.db, "rice", "picture")     # the search ask is on the record
+
+
+def test_a_candidate_the_judge_cannot_prepare_is_excluded_and_the_rest_are_judged(tmp_path):
+    ctx, _search, judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
+    ctx.db.add_media(sha="ghost", kind="picture", ext="jpg", source="legacy", origin="",
+                     licence="?", acquired=date(2026, 1, 1))
+    ctx.db.append(port="provide", backend="openverse", key="legacy", subject="rice",
+                  question={"provides": "picture", "kind": "picture", "params": {}},
+                  answer={"items": [{"sha": "ghost"}]})
+    res = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert list(res.excluded.values()) == ["artifact not found: ghost"]
+    assert current_best_of(ctx, "rice", "picture").artifact_sha != "ghost"
+
+
+# --- scene picture: the same attempt, subject = text_sha --------------------
+
+def _sentence(text="ข้าวอร่อย", gloss="the rice is tasty") -> Sentence:  # ข้าวอร่อย: tasty rice
+    return Sentence(text=text, gloss=gloss, voice="learner_voice",
+                    provenance=Provenance(source="llm", origin="m", licence="generated",
+                                          acquired=date(2026, 9, 3)))
+
+
+def test_scene_picture_attempt_searches_the_sentence_gloss_not_its_thai(tmp_path):
+    """Both image corpora index English metadata, so a Thai query matches
+    only the handful of Thai-captioned items they hold."""
+    sentence = _sentence()
+    ctx, search, _judge = _picture_ctx(
+        tmp_path, _word_syllabus().with_sentences([sentence]), urls=("https://x/good.jpg",))
+    res = attempt(ctx, Need(sentence.text_sha, "picture", "sentence"), "openverse")
+    assert search.queries == ["the rice is tasty"]
+    assert res.attempted and rows_for(ctx.db, sentence.text_sha, "picture")
+    verdicts = [r for r in ctx.db.assessments_of(sentence.text_sha) if r.port == "assess"]
+    assert {r.question["role"] for r in verdicts} == {"scene-for-sentence"}
+    assert {r.question["subject_kind"] for r in verdicts} == {"sentence"}
+
+
+def test_a_scene_picture_attempt_refuses_a_sentence_with_no_gloss(tmp_path):
+    sentence = _sentence(gloss="")
+    ctx, _search, _judge = _picture_ctx(
+        tmp_path, _word_syllabus().with_sentences([sentence]), urls=("https://x/good.jpg",))
+    with pytest.raises(ValueError, match="gloss"):
+        attempt(ctx, Need(sentence.text_sha, "picture", "sentence"), "openverse")
+
+
+# --- recording: the voice constraint and the speaker attributes -------------
+
+def test_recording_attempt_draws_any_sex_without_a_productive_target(tmp_path):
+    ctx, tts = _recording_ctx(tmp_path, _word_syllabus())
+    attempt(ctx, Need("rice", "recording"), "tts")
+    assert tts.last_voice in _MALE + _FEMALE
+    assert ctx.db.speaker(f"tts:{tts.last_voice}").sex in ("male", "female")
+
+
+def test_recording_attempt_draws_a_male_voice_for_a_productive_target(tmp_path):
+    ctx, tts = _recording_ctx(tmp_path, _word_syllabus(productive=True))
+    attempt(ctx, Need("rice", "recording"), "tts")
+    assert tts.last_voice in _MALE
+    assert ctx.db.speaker(f"tts:{tts.last_voice}") == Speaker(
+        id=f"tts:{tts.last_voice}", kind="synthetic", sex="male")
+
+
+def test_forvo_attempt_records_sex_and_country(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3", "sex": "m",
+                  "country": "Thailand"}]})   # ข้าว: rice
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert ctx.db.speaker("forvo:somchai") == Speaker("forvo:somchai", "native", sex="male",
+                                                      region="Thailand")
+    assert current_best_of(ctx, "rice", "recording").source == "mechanical"
+
+
+def test_a_productive_word_takes_only_a_forvo_speaker_forvo_calls_male(tmp_path):
+    """A recording that plays on a productive back has to be in the
+    learner's register (E2); an unstated sex is not a claim that it is."""
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(productive=True), {
+        "ข้าว": [{"username": "malee", "pathmp3": "https://f/1.mp3", "sex": "f"},   # ข้าว: rice
+                  {"username": "anon", "pathmp3": "https://f/2.mp3"},
+                  {"username": "somchai", "pathmp3": "https://f/3.mp3", "sex": "m"}]})
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert ctx.db.speaker("forvo:malee") is None and ctx.db.speaker("forvo:anon") is None
+    assert ctx.db.speaker("forvo:somchai").sex == "male"
+
+
+def test_a_receptive_word_takes_a_forvo_speaker_of_any_sex(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "malee", "pathmp3": "https://f/1.mp3", "sex": "f"}]})  # ข้าว: rice
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert ctx.db.speaker("forvo:malee").sex == "female"
+
+
+def test_forvo_attempt_leaves_an_attribute_forvo_did_not_give_unknown(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "anon", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert ctx.db.speaker("forvo:anon") == Speaker("forvo:anon", "native")
+
+
+def test_a_forvo_attempt_that_found_nothing_is_still_on_the_record(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    res = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert res.attempted
+    assert exhausted(ctx.db, "rice", "recording", sources=("forvo", "tts"),
+                     attempt_cap=8).attempts == 1
+
+
+def test_a_sentence_recording_keeps_the_recording_artifact_kind(tmp_path):
+    """compile and the media index look a sentence's audio up as a
+    "recording" under its text_sha; the subject kind, not the artifact
+    kind, is what makes it a sentence's."""
+    sentence = _sentence()
+    ctx, tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]))
+    attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
+    assert tts.voices == [pick_voice(sentence.text_sha, list(_MALE) + list(_FEMALE))]
+    best = current_best_of(ctx, sentence.text_sha, "recording")
+    assert ctx.db.media_provenance(best.artifact_sha)["speaker"].kind == "synthetic"
+    verdicts = [r for r in ctx.db.assessments_of(sentence.text_sha) if r.port == "assess"]
+    assert {r.question["role"] for r in verdicts} == {"recording-for-sentence"}
+
+
+def test_a_sentence_filling_a_productive_target_draws_a_male_voice(tmp_path):
+    sentence = _sentence(text="ข้าว")   # ข้าว: rice
+    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice"),),
+                        targets=(target("rice/productive", "rice", skill="productive"),),
+                        tokenizer=FakeTokenizer()).with_sentences([sentence])
+    ctx, tts = _recording_ctx(tmp_path, syllabus)
+    attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
+    assert tts.last_voice in _MALE
+
+
+# --- rendition: one answer under the pair, one speaker across the members ---
+
+def test_rendition_attempt_appends_under_the_pair(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"},   # ขาว: white
+                {"username": "malee", "pathmp3": "https://f/a2.mp3"}],
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    rows = rows_for(ctx.db, "p1", "rendition")
+    provided = [r for r in rows if r.port == "provide"]
+    assert provided and set(provided[-1].answer["items"][0]) >= {"member", "sha", "speaker"}
+    assert {i["speaker"]["id"] for i in provided[-1].answer["items"]} == {"forvo:somchai"}
+    assert exhausted(ctx.db, "p1", "rendition", sources=("forvo",), attempt_cap=8).attempts == 1
+
+
+def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    verdict = [r for r in ctx.db.assessments_of("p1") if r.backend == "rendition"][-1]
+    assert verdict.answer["value"] is True
+    assert set(verdict.question["params"]["members"]) == {"white", "news"}
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha is not None
+    # the members' own recording needs read the same verdicts
+    assert current_best_of(ctx, "white", "recording").artifact_sha is not None
+    assert current_best_of(ctx, "news", "recording").artifact_sha is not None
+
+
+def test_rendition_attempt_fails_the_check_when_a_member_recording_does_not(tmp_path):
+    """One speaker across the members is not enough: a member recording
+    that failed its own mechanical check must not leave the pair with a
+    current-best rendition."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]},  # ข่าว: news
+        mechanical=_mechanical(failing_subject="news"))
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    verdict = [r for r in ctx.db.assessments_of("p1") if r.backend == "rendition"][-1]
+    assert verdict.answer["value"] is False
+    assert "news" in verdict.answer["evidence"]
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
+
+
+def test_the_rendition_verdict_identifies_the_member_set_it_judged(tmp_path):
+    """The rendition backend, not the attempt, computes the artifact the
+    member set forms -- the identity current_best then ranks."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = [r for r in ctx.db.assessments_of("p1") if r.backend == "rendition"][-1]
+    members = row.question["params"]["members"]
+    assert row.question["artifact_sha"] == rendition_identity(members)
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha == rendition_identity(members)
+
+
+def test_a_source_that_cannot_guarantee_one_speaker_answers_empty(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "malee", "pathmp3": "https://f/b.mp3"}]})    # ข่าว: news
+    res = attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    provided = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"]
+    assert res.attempted and provided[-1].answer["items"] == []
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
+
+
+def test_rendition_attempt_falls_to_one_tts_voice_across_the_members(tmp_path):
+    ctx, tts = _recording_ctx(tmp_path, _pair_syllabus())
+    attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+    assert set(tts.voices) == {pick_voice("p1", list(_MALE) + list(_FEMALE))}
+    provided = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"]
+    assert {i["speaker"]["kind"] for i in provided[-1].answer["items"]} == {"synthetic"}
+
+
+# --- the sentence attempt: draft, verify with fills(), collect questions ----
+
+def _sentence_ctx(tmp_path, llm_text, *, judge_value="true", batch=False):
+    syllabus = Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),   # ข้าว: rice, กิน: eat
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+        frequency={"eat": 1, "rice": 2},
+        tokenizer=FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"],      # กินข้าว: eat rice
+                                 "ข้าวอร่อย": ["ข้าว", "อร่อย"],   # ข้าวอร่อย: tasty rice
+                                 "กิน": ["กิน"]}))                # กิน: eat
+    judge = (_batch_judge() if batch else JudgeBackend(
+        model="m", transport="api",
+        complete=lambda p, a=(): Completion(text='{"value": %s, "evidence": "e"}' % judge_value)))
+    holder = []
+    ctx = _sourcing(tmp_path, syllabus, backends={"llm-sentence": _Llm(llm_text)},
+                    assess={"judge": judge,
+                            "fills": fills_mechanical_backend(lambda: holder[0].syllabus)})
+    holder.append(ctx)
     return ctx
 
 
-def test_sentence_attempt_ends_before_any_draft_when_judge_unavailable(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={})  # no "judge" backend at all
-    out = sentence_attempt(c)
-    assert out == SentenceOutcome(0, (), False, {})
-    assert c.provider._backends["llm-sentence"].prompts == []  # no LLM ask
-    assert [r for r in c.db.assessments_of("run") if r.port == "provide"] == []  # no provide row
+def test_sentence_attempt_collects_a_judge_question_carrying_the_text_and_gloss(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["rice/receptive", "eat/receptive"]}]}',
+                        batch=True)
+    res = sentence_attempt(ctx)
+    assert res.attempted and len(res.questions) == 1
+    question = res.questions[0].question
+    assert question.role == "sentence-for-target"
+    assert question.params["text"] == "กินข้าว" and question.params["gloss"] == "eat rice"
+    assert question.artifact_sha is None       # a sentence judgment attaches no artifact
 
 
-def test_sentence_attempt_adopts_a_draft_that_fills_and_passes(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
-    out = sentence_attempt(c)
-    assert out.drafted == 1 and [s.text for s in out.adopted] == ["กินส้ม"] and not out.pending
-    assert [s.text for s in c.db.all_sentences()] == ["กินส้ม"]
-    syl = c.syllabus.with_sentences(out.adopted)
-    assert syl.gaps().unfilled_targets == ()
-    from thai_syllabus.entities import text_sha
-    mechanical_rows = [r for r in c.db.assessments_of(text_sha("กินส้ม")) if r.backend == "mechanical"]
-    assert mechanical_rows and mechanical_rows[0].question["kind"] == "sentence"
+def test_sentence_attempt_adopts_nothing_itself(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["rice/receptive", "eat/receptive"]}]}')
+    res = sentence_attempt(ctx)
+    assert res.questions == []                 # the inline judge answered
+    assert ctx.db.all_sentences() == []        # ...and the run, not the attempt, adopts
 
 
-def test_sentence_attempt_judges_with_no_attachments(ctx):
-    """A sentence-for-target judgment is text-only (the text rides in
-    params, read by sentence_prompt) -- its AssessQuestion.artifact_sha
-    must be None, not the text's own sha, or JudgeBackend.attachments()
-    tries to resolve that sha as a media artifact, finds no `media` row
-    (resolve_path -> None), and raises TransportError -- silently dropping
-    the question from ask_many's result before `complete` is ever called
-    (regression: this used to pass with 0 adopted instead of 1)."""
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}')
-    calls: list[list[str]] = []
-
-    def judge_complete(p, a=()):
-        calls.append(list(a))
-        return Completion(text='{"value": true, "evidence": "e"}')
-    c.assessor._backends["judge"].complete = judge_complete
-
-    out = sentence_attempt(c)
-
-    assert calls and calls[0] == []  # no attachments for a text-only sentence judgment
-    assert [s.text for s in out.adopted] == ["กินส้ม"]
+def test_sentence_attempt_records_a_fills_verdict_per_claimed_target(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["rice/receptive", "eat/receptive"]}]}')
+    sentence_attempt(ctx)
+    fills = [r for r in ctx.db.assessments_of(text_sha("กินข้าว"))   # กินข้าว: eat rice
+             if r.backend == "fills"]
+    assert {r.answer["value"] for r in fills} == {True}
+    assert len(fills) == 2
 
 
-def test_sentence_attempt_rejects_a_draft_with_a_new_word(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "ส้มอร่อย", "targets": ["orange/receptive"]}]}')
-    out = sentence_attempt(c)
-    assert out.drafted == 1 and out.adopted == () and c.db.all_sentences() == []
-    mech = [r for r in c.db.assessments_of(__import__("hashlib").sha256("ส้มอร่อย".encode()).hexdigest())
-           if r.backend == "mechanical"]
-    assert mech and mech[0].answer["value"] is False
+def test_sentence_attempt_does_not_judge_a_draft_that_fills_nothing(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "ข้าวอร่อย", "gloss": "tasty rice",'
+                                  ' "targets": ["rice/receptive"]}]}', batch=True)
+    res = sentence_attempt(ctx)
+    assert res.questions == []                 # อร่อย (tasty) is not a registered word
+    fills = [r for r in ctx.db.assessments_of(text_sha("ข้าวอร่อย"))   # ข้าวอร่อย: tasty rice
+             if r.backend == "fills"]
+    assert fills and fills[0].answer["value"] is False
 
 
-def test_sentence_prompt_lists_met_vocabulary_per_target(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": []}')
-    sentence_attempt(c)
-    prompt = c.provider._backends["llm-sentence"].prompts[0]
-    assert "target orange/receptive" in prompt and "กิน" in prompt and "male_colloquial" in prompt
+def test_sentence_attempt_is_not_attempted_when_no_target_is_open(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}')
+    ctx.syllabus = ctx.syllabus.with_sentences(   # กินข้าว: eat rice
+        [_sentence(text="กินข้าว", gloss="eat rice")])
+    res = sentence_attempt(ctx)
+    assert res == AttemptResult(attempted=False)
+    assert ctx.provider._backends["llm-sentence"].prompts == []
 
 
-def test_select_cover_adopts_the_fewest_sentences_that_cover_the_open_targets():
-    from thai_syllabus.attempts import select_cover
-    from .builders import sentence
-    ta, tb, tc = target("a/r", "a"), target("b/r", "b"), target("c/r", "c")
-    s_ab, s_a, s_c, s_b = sentence("ab"), sentence("a"), sentence("c"), sentence("b")
-    chosen = select_cover([(s_a, [ta]), (s_ab, [ta, tb]), (s_c, [tc]), (s_b, [tb])], {"a/r", "b/r", "c/r"})
-    assert [s.text for s in chosen] == ["ab", "c"]
+def test_the_drafting_prompt_carries_the_vocabulary_met_and_asks_for_a_gloss(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}')
+    sentence_attempt(ctx)
+    prompt = ctx.provider._backends["llm-sentence"].prompts[0]
+    assert "target rice/receptive" in prompt and "กิน" in prompt   # กิน: eat
+    assert "male_colloquial" in prompt and '"gloss"' in prompt
 
 
-def test_sentence_attempt_adopts_a_cover_not_every_passing_draft(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]},'
-                        ' {"text": "กิน", "targets": ["eat/receptive"]}]}')
-    c.syllabus = dataclasses.replace(c.syllabus, tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"], "กิน": ["กิน"]}))
-    out = sentence_attempt(c)
-    assert out.drafted == 2 and [s.text for s in out.adopted] == ["กินส้ม"]
-
-
-def test_sentence_attempt_judge_fail_is_not_adopted(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}', judge_value="false")
-    assert sentence_attempt(c).adopted == ()
-
-
-def test_sentence_attempt_second_run_reuses_the_mechanical_row_and_hits_the_judge_cache(ctx):
-    """A rejected draft resurfaces from _prior_drafts on every later run
-    (still un-adopted, targets still open) -- the mechanical fills() row
-    for it must not be rewritten a second time (same text, unchanged
-    Syllabus state_id), and its judge verdict must be a cache hit, not a
-    second real ask."""
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}', judge_value="false")
-    out1 = sentence_attempt(c)
-    assert out1.adopted == ()
-    text_sha = __import__("hashlib").sha256("กินส้ม".encode()).hexdigest()
-
-    def mech_rows():
-        return [r for r in c.db.assessments_of(text_sha) if r.backend == "mechanical"]
-    assert len(mech_rows()) == 1
-    out2 = sentence_attempt(c)
-    assert out2.adopted == ()
-    assert len(mech_rows()) == 1  # not rewritten on the second run
-    assert out2.spend.get("judge", (0, 0.0))[0] == 0  # the fail verdict was a cache hit
-
-
-def test_sentence_attempt_skips_judging_a_draft_that_only_covers_already_filled_targets(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": []}')
-    covering = Sentence(text="กินส้ม", gloss="eat orange", voice="learner_voice",  # eat orange
-                        provenance=Provenance(source="llm", origin="m", licence="generated",
-                                              acquired=date(2026, 9, 3)))
-    c.syllabus = c.syllabus.with_sentences([covering])
-    c.db.add_sentence(text_sha=__import__("hashlib").sha256("กินส้ม".encode()).hexdigest(),
-                      text="กินส้ม", gloss="eat orange", voice="learner_voice", source="llm",
-                      origin="m", licence="generated", acquired=date(2026, 9, 3))
-    # a stale prior-run draft that only fills the now-already-covered "eat" target
-    c.db.append(port="provide", backend="llm-sentence", key="stale", subject="run",
-               question={"provides": "sentence", "params": {"prompt": "stale"}},
-               answer={"items": ['{"sentences": [{"text": "กิน", "targets": ["eat/receptive"]}]}']})
-    out = sentence_attempt(c)
-    assert out.adopted == ()
-    assert out.spend.get("judge", (0, 0.0))[0] == 0  # never judged -- nothing open left to fill
-    stale_sha = __import__("hashlib").sha256("กิน".encode()).hexdigest()
-    mech = [r for r in c.db.assessments_of(stale_sha) if r.backend == "mechanical"]
-    assert mech and mech[0].answer["value"] is True  # mechanically fills eat -- just not an open target
-
-
-def test_sentence_attempt_adopts_on_a_later_run_once_a_batch_verdict_lands(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
-
-    class BT:
-        def submit(self, requests):
-            return "b1"
-
-        def status(self, batch_id):
-            return "in_progress"
-    c.assessor = Assessor(record=c.db, cache=c.db,
-                          backends={"judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
-    out1 = sentence_attempt(c)
-    assert out1.pending
-    assert out1.spend.get("llm-sentence", (0, 0.0))[0] == 1  # one real draft ask
-    # the verdict arrives (simulated) and the next run adopts without re-drafting
-    text_sha = __import__("hashlib").sha256("กินส้ม".encode()).hexdigest()
-    from thai_syllabus.cachekeys import sha
-    key = f"judge:{sha(c.rubrics['sentence-for-target'])}:{text_sha}:sentence-for-target"
-    c.db.append(port="assess", backend="judge", key=key, subject=text_sha,
-               question={"role": "sentence-for-target", "artifact_sha": None,
-                        "rubric": c.rubrics["sentence-for-target"]}, answer={"value": True})
-    c.assessor = Assessor(record=c.db, cache=c.db,
-                          backends={"judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
-    out2 = sentence_attempt(c)
-    assert [s.text for s in out2.adopted] == ["กินส้ม"]
-    assert len(c.provider._backends["llm-sentence"].prompts) == 1  # no re-draft
-    assert out2.spend.get("judge", (0, 0.0))[0] == 0  # the arrived verdict was a cache hit, not a real ask
-
-
-# --- C1: an UNREACHABLE judge ends the attempt, like an unavailable one ----
-#
-# Distinct from "no judge backend registered" (KeyError, above): the backend
-# IS registered, but its transport cannot answer. An inline transport that
-# fails every question raises JudgeUnreachable out of ask_many (re-raised by
-# _judge_many as TransportError); the attempt must end before any Source
-# spend rather than searching for candidates no one can assess. A batch
-# transport never touches the wire from ask_many -- its misses come back in
-# `collected` instead, so a batch judge cannot be found unreachable here at
-# all; the attempt reports pending, same as any other batch miss.
-
-def _seed_unjudged_candidate(c, payload=b"good-old"):
-    """One candidate on record and unjudged, so the pre-search assess step
-    has a real question to ask (with no candidates at all the judge is
-    never contacted before the search)."""
-    sha = c.media_store.write(payload, "jpg")
-    c.db.add_media(sha=sha, kind="picture", ext="jpg", source="legacy", origin="", licence="?",
-                   acquired=date(2026, 1, 1))
-    c.db.append(port="assess", backend="machine-chosen", key=f"machine-chosen:orange:{sha}",
-                subject="orange", question={"note_id": "pw-1", "word": "ส้ม"},
-                answer={"marker": "machine-chosen", "sha": sha})
-    return sha
-
-
-def test_unreachable_inline_judge_ends_the_picture_attempt_before_any_search(ctx, caplog):
-    c, search, _judge = ctx
-    _seed_unjudged_candidate(c)
-
-    def boom(prompt, attachments=()):
-        raise TransportError("api transport failed: 401")
-    c.assessor._backends["judge"].complete = boom
-
-    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
-        out = attempt(c, Need("orange", "picture"), "openverse")
-    assert search.calls == 0
-    assert out == Outcome(False, False, False, {}, excluded=0, unreachable=True)
-    assert any(r.levelname == "WARNING" for r in caplog.records)
-
-
-def test_a_batch_judge_reports_pending_rather_than_unreachable(ctx):
-    """A batch transport's misses are collected, never put on the wire from
-    ask_many, so a batch judge is never "unreachable" here -- an unasked
-    candidate reports pending and the attempt ends before any Source spend,
-    same as test_picture_attempt_reports_pending_under_a_batch_judge with a
-    pre-existing candidate instead of a freshly-searched one.
-    """
-    c, search, _judge = ctx
-    _seed_unjudged_candidate(c)
-
-    class BT:
-        def submit(self, requests):
-            raise AssertionError("ask_many must not submit a batch")
-    c.assessor = Assessor(record=c.db, cache=c.db, backends={
-        "judge": JudgeBackend(model="m", transport="batch", batch_transport=BT())})
-
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert search.calls == 0
-    assert out == Outcome(False, True, False, {}, excluded=0, unreachable=False)
-
-
-def test_unreachable_judge_ends_the_sentence_attempt_before_any_draft(ctx, caplog):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
-    # a prior-run draft, so the pre-draft judge step has a real question
-    c.db.append(port="provide", backend="llm-sentence", key="prior", subject="run",
-                question={"provides": "sentence", "params": {"prompt": "prior"}},
-                answer={"items": ['{"sentences": [{"text": "กินส้ม", '
-                                  '"targets": ["orange/receptive"]}]}']})
-
-    def boom(prompt, attachments=()):
-        raise TransportError("api transport failed: 401")
-    c.assessor._backends["judge"].complete = boom
-
-    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
-        out = sentence_attempt(c)
-    assert out == SentenceOutcome(0, (), False, {}, excluded=0, unreachable=True)
-    assert c.provider._backends["llm-sentence"].prompts == []   # no LLM ask
-    assert any(r.levelname == "WARNING" for r in caplog.records)
-
-
-def test_unreachable_judge_after_drafting_adopts_nothing(ctx):
-    c, _search, _judge = ctx
-    c = _sentence_ctx(c, '{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive"]}]}')
-
-    def boom(prompt, attachments=()):
-        raise TransportError("api transport failed: 401")
-    c.assessor._backends["judge"].complete = boom
-
-    out = sentence_attempt(c)
-    assert out.adopted == () and c.db.all_sentences() == []
-    assert out.unreachable is True
-
-
-# --- I3: hit/miss comes from the port, not a timestamp comparison ----------
-
-def test_a_verdict_re_read_after_the_search_counts_as_one_ask(ctx):
-    """The pre-search assess step asks a real fit verdict; the post-search
-    step re-reads the same verdict from the cache. Spend must count it
-    once -- a timestamp comparison against the attempt's start counted
-    every verdict this attempt itself wrote as a fresh ask each time it
-    was read back."""
-    c, search, judge = ctx
-    _seed_unjudged_candidate(c, b"bad-old")   # fails fit, so the attempt goes on to search
-    out = attempt(c, Need("orange", "picture"), "openverse")
-    assert search.calls == 1
-    # 1 pre-search fit (the seeded candidate) + 3 post-search fits + 1
-    # preference over the two passers = 5 real asks, and the judge fake
-    # counted exactly that many `complete` calls.
-    assert out.spend["judge"][0] == len(judge.calls) == 5
-
-
-# --- I5: the tts recording attempt draws from the configured voice pool ----
-
-def test_tts_recording_attempt_draws_a_pooled_voice(ctx):
-    c, _search, _judge = ctx
-    c = _recording_ctx(c, {})
-    c.tts_voices = ("th-M-a", "th-M-b")
-    attempt(c, Need("orange", "recording"), "tts")
-    from thai_syllabus.attempts import current_best_of
-    from thai_syllabus.tts import pick_voice
-    prov = c.db.media_provenance(current_best_of(c, "orange", "recording").artifact_sha)
-    assert prov["speaker_id"] == pick_voice("orange", list(c.tts_voices))
-    assert prov["speaker_id"] in c.tts_voices
-
-
-def test_a_candidate_the_judge_cannot_prepare_is_skipped_and_the_attempt_continues(ctx, caplog):
-    """A candidate with a media row but no file on disk is a question the
-    judge cannot PREPARE -- not an unreachable judge. The candidate is
-    unusable, so it is named at WARNING and skipped, and the attempt goes
-    on to search rather than ending before any Source ask (which would
-    wedge the subject: the stale row is still there on every later run).
-    """
-    c, search, _judge = ctx
-    c.db.add_media(sha="ghost", kind="picture", ext="jpg", source="legacy", origin="",
-                   licence="?", acquired=date(2026, 1, 1))
-    c.db.append(port="assess", backend="machine-chosen", key="machine-chosen:orange:ghost",
-                subject="orange", question={"note_id": "pw-1", "word": "ส้ม"},
-                answer={"marker": "machine-chosen", "sha": "ghost"})
-
-    resolve_row = c.assessor._backends["judge"].resolve_path
-
-    def resolve_existing(sha):
-        """The production resolver (wiring._resolver): a media row alone is
-        not enough, the object has to be on disk."""
-        path = resolve_row(sha)
-        return path if path is not None and path.exists() else None
-    c.assessor._backends["judge"].resolve_path = resolve_existing
-
-    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
-        out = attempt(c, Need("orange", "picture"), "openverse")
-
-    assert search.calls == 1                      # the attempt was NOT ended
-    assert out.improved and out.attempted
-    # ...and the run report must be able to SAY a candidate was dropped:
-    # one unusable candidate, counted once, even though the attempt judges
-    # the candidate set twice (before and after the Source).
-    assert out.excluded == 1
-    assert out.unreachable is False
-    from thai_syllabus.attempts import current_best_of
-    assert current_best_of(c, "orange", "picture").artifact_sha != "ghost"
-    assert any("ghost" in r.getMessage() or "unusable" in r.getMessage()
-               for r in caplog.records if r.levelname == "WARNING")
+def test_sentence_drafts_reads_back_every_draft_the_run_asked_for(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["rice/receptive"]}]}')
+    sentence_attempt(ctx)
+    drafts = sentence_drafts(ctx.db)
+    assert [(d.text, d.gloss, d.claimed) for d in drafts] == [
+        ("กินข้าว", "eat rice", ("rice/receptive",))]   # กินข้าว: eat rice
+    assert rows_for(ctx.db, DRAFT_SUBJECT, "sentence")

@@ -522,11 +522,10 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
     cloze = thai_cloze(tokens, target_word.thai)
     text_sha = sentence_note_id(sentence)
 
-    # kind = "recording"/"picture" (not "sentence-recording"/"scene-
-    # picture"): derivations.py's gap/kind vocabulary is just
-    # "picture"/"recording" throughout (see _gap_candidates); text_sha as
-    # the subject already disambiguates a sentence's own audio/picture
-    # from any word's, so no separate kind is needed here.
+    # kind = "recording"/"picture": the artifact kinds are the same ones a
+    # word's audio and picture carry, and text_sha as the subject is what
+    # tells a sentence's apart (attempts.Need's subject_kind names the same
+    # distinction on the sourcing side).
     tags = ["family::sentence", f"target::{target.id}", f"sentence::{text_sha}",
            f"compile::{compile_id}", "kind::cloze", "kind::listening"]
     tags += resolver.src_tag("audio", text_sha, "recording")

@@ -12,7 +12,8 @@ from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import OrderEntry, Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
-                                    PICTURE_PREFERENCE, PRINCIPLES, RULES, SENTENCE_REGISTER_NATURAL,
+                                    PICTURE_PREFERENCE, PRINCIPLES, RULES, SCENE_FIT_RUBRIC,
+                                    SENTENCE_FOR_TARGET_RUBRIC, SENTENCE_REGISTER_NATURAL,
                                     apply_overlay, rubrics_for, sentence_note_id,
                                     traceability_metric)
 from thai_syllabus.syllabus import Syllabus
@@ -85,7 +86,8 @@ def test_registered_rules_match_the_spec_table():
         "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
         "rendition/mixed-speakers", "coverage/confusions", "syllabus/closure",
         "coverage/categories", "category/single-membership", "picture/fit",
-        "picture/preference", "target/picture-required", "sentence/fills-novelty",
+        "picture/preference", "scene/fit", "target/picture-required",
+        "sentence/fills-novelty",
         "target/sentence-required", "grapheme/keyword-picture-required",
         "grapheme/keyword-contains-symbol", "target/recording-required",
         "sentence/recording-required", "recording/synthetic",
@@ -738,3 +740,14 @@ def test_order_sentence_after_words_flags_a_target_not_before_the_sentence():
     findings = _check_order_sentence_after_words(fixed)
     assert [f.rule for f in findings] == ["order/sentence-after-words"]
     assert findings[0].note_id == sentence_note_id(s)
+
+
+# --- scene/fit: a sentence's scene picture has its own rubric ---------------
+
+def test_the_scene_rubric_is_registered_for_the_scene_role():
+    assert rubrics_for(RULES)["scene-for-sentence"] == SCENE_FIT_RUBRIC
+    assert "scene the sentence describes" in SCENE_FIT_RUBRIC
+
+
+def test_the_sentence_rubric_asks_whether_the_gloss_states_the_meaning():
+    assert "gloss" in SENTENCE_FOR_TARGET_RUBRIC

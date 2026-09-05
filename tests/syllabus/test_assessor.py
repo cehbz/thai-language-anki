@@ -22,15 +22,17 @@ from thai_syllabus.assessor import (
     Price,
     RawVerdict,
     Verdict,
+    MechanicalBackend,
     duration_mechanical_backend,
     format_mechanical_backend,
+    rendition_mechanical_backend,
     parse_preference,
     picture_fit_prompt,
     picture_preference_prompt,
     sentence_prompt,
 )
 from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
-from thai_syllabus.cachekeys import sha
+from thai_syllabus.cachekeys import MechanicalKey, rendition_identity, sha
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 
@@ -260,7 +262,14 @@ def test_role_for_raises_keyerror_naming_the_kind():
 
 def test_role_for_kind_and_rendition_authority():
     assert ROLE_FOR_KIND["picture"] == "picture-for-word"
-    assert AUTHORITY_ORDER["rendition-for-pair"] == ("mechanical",)
+    assert AUTHORITY_ORDER["rendition-for-pair"] == ("rendition",)
+
+
+def test_role_for_reads_a_sentence_subject_into_its_own_role():
+    assert role_for("picture") == "picture-for-word"
+    assert role_for("picture", "sentence") == "scene-for-sentence"
+    assert role_for("recording", "sentence") == "recording-for-sentence"
+    assert role_for("rendition", "pair") == "rendition-for-pair"
 
 
 def test_price_costs_a_completion():
@@ -689,3 +698,114 @@ def test_ask_many_never_re_prepares_a_cached_verdict(db):
               answer={"value": True})
     res = a.ask_many("judge", [q])
     assert [v.value for v in res.resolved.values()] == [True] and res.excluded == {}
+
+
+# --- the rendition backend: one speaker across a pair's members -------------
+
+def _rendition(speakers):
+    return rendition_mechanical_backend(speaker_of=lambda sha: speakers.get(sha))
+
+
+def _rendition_question(members, checks=None):
+    return AssessQuestion(subject="p1", role="rendition-for-pair", kind="rendition",
+                          subject_kind="pair",
+                          params={"members": members,
+                                  "member_checks": {m: True for m in members}
+                                  if checks is None else checks})
+
+
+def test_a_rendition_by_one_speaker_passes():
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:somchai"})
+    verdict = backend.fetch(_rendition_question({"near": "a", "far": "b"}))
+    assert verdict.value is True and "forvo:somchai" in verdict.evidence
+
+
+def test_a_rendition_by_two_speakers_fails():
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:malee"})
+    verdict = backend.fetch(_rendition_question({"near": "a", "far": "b"}))
+    assert verdict.value is False
+    assert "forvo:malee" in verdict.evidence and "forvo:somchai" in verdict.evidence
+
+
+def test_a_member_recording_with_no_speaker_fails_the_rendition():
+    backend = _rendition({"a": "forvo:somchai"})
+    verdict = backend.fetch(_rendition_question({"near": "a", "far": "b"}))
+    assert verdict.value is False and "far" in verdict.evidence
+
+
+def test_a_rendition_whose_member_recording_failed_its_own_checks_fails():
+    """One speaker is not enough: a member recording that failed duration
+    is not part of a usable rendition, and the rendition check is the one
+    decider on that."""
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:somchai"})
+    verdict = backend.fetch(_rendition_question({"near": "a", "far": "b"},
+                                                checks={"near": True, "far": False}))
+    assert verdict.value is False and "far" in verdict.evidence
+
+
+def test_a_rendition_cannot_be_judged_without_its_members_own_verdicts():
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:somchai"})
+    with pytest.raises(PreparationError, match="far"):
+        backend.fetch(_rendition_question({"near": "a", "far": "b"}, checks={"near": True}))
+
+
+def test_the_rendition_key_identifies_the_member_set_not_its_order():
+    backend = _rendition({})
+    one = backend.cache_key(_rendition_question({"near": "a", "far": "b"}))
+    other = backend.cache_key(_rendition_question({"far": "b", "near": "a"}))
+    assert one == other
+    assert one.artifact_sha == rendition_identity({"near": "a", "far": "b"})
+    assert one.params == "p1"
+
+
+def test_a_rendition_with_no_members_cannot_be_prepared():
+    with pytest.raises(PreparationError):
+        _rendition({}).fetch(_rendition_question({}))
+
+
+# --- the judge's sentence prompt puts the gloss to the judge ---------------
+
+def test_the_sentence_prompt_renders_the_gloss_it_asks_about():
+    prompt = sentence_prompt(AssessQuestion(
+        subject="s", role="sentence-for-target", rubric="R", kind="sentence",
+        subject_kind="sentence",
+        params={"text": "กินข้าว", "gloss": "eat rice", "word": "กิน"}))   # กินข้าว: eat rice
+    assert "eat rice" in prompt and "กินข้าว" in prompt
+
+
+def test_the_sentence_prompt_says_so_when_no_gloss_was_offered():
+    prompt = sentence_prompt(AssessQuestion(
+        subject="s", role="sentence-for-target", rubric="R", kind="sentence",
+        params={"text": "กินข้าว", "word": "กิน"}))   # กินข้าว: eat rice
+    assert "(none given)" in prompt
+
+
+# --- Assessor.inline: the transport, not the shape of one result -----------
+
+def test_an_api_judge_is_inline_and_a_batch_judge_is_not(tmp_path):
+    db = SyllabusDb(tmp_path / "s.db")
+    api = Assessor(record=db, cache=db, backends={
+        "judge": JudgeBackend(model="m", transport="api", complete=lambda p, a=(): None)})
+    batch = Assessor(record=db, cache=db, backends={
+        "judge": JudgeBackend(model="m", transport="batch", batch_transport=object())})
+    assert api.inline is True and batch.inline is False
+
+
+def test_an_assessor_with_no_judge_at_all_is_not_inline(tmp_path):
+    db = SyllabusDb(tmp_path / "s.db")
+    assert Assessor(record=db, cache=db, backends={}).inline is False
+
+
+# --- a verdict row carries the params its question was asked with ----------
+
+def test_a_verdict_row_keeps_the_params_the_question_carried(tmp_path):
+    db = SyllabusDb(tmp_path / "s.db")
+    backend = MechanicalBackend(
+        key_fn=lambda q: MechanicalKey(check="c", params="v1", artifact_sha="a"),
+        evaluate=lambda q: RawVerdict(value=True))
+    assessor = Assessor(record=db, cache=db, backends={"mech": backend})
+    assessor.ask("mech", AssessQuestion(subject="s", role="r", kind="picture",
+                                        subject_kind="sentence", params={"target": "t1"}))
+    row = db.assessments_of("s")[-1]
+    assert row.question["params"] == {"target": "t1"}
+    assert row.question["subject_kind"] == "sentence"
