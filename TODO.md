@@ -1,40 +1,50 @@
 # TODO
 
-All items below run against the redesigned pipeline (src/thai_syllabus).
-The old packages (thai_deck_eval, thai_deck_gen) are superseded; their
-removal happens once the new pipeline has produced and survived a studied
-deck.
+All items run against src/thai_syllabus (the redesigned pipeline; its
+standard is docs/principles.md, docs/architecture.md and docs/specs/).
+The old packages (thai_deck_eval, thai_deck_gen) stay; their spec-level
+tests in tests/spec/test_deck_doctrine.py and test_generator_contract.py
+still run against them.
+
+## Review closure, remaining
+
+- B8: make the run's accounting identity hold on every return path
+  (four holes parked at Task B7's cap, 2026-09-06): the resolve-
+  unreachable and outstanding-batch branches count exhausted/unserved
+  twice; the sentence-attempt-unreachable branch defers none of the
+  loop's needs; needs skipped for a Source transport failure land in no
+  bucket; available dedups (word, sentence) while the drafted-target
+  count is per Target.
+- Final whole-branch review of the 2026-09-04 plan, then delete
+  .superpowers/sdd/2026-09-04-review-closure.
+- KB project node: full rewrite (its architecture/CLI/stores sections
+  describe the old pipeline; keep the NLP, judge and media measurements).
 
 ## Cutover
 
-Spec 3 was rewritten 2026-09-03 (docs/superpowers/specs/2026-09-03-ports-
-backends-design.md): the run had no assess step, picture attempts stopped
-at search, recordings never ranked, sentences were never produced, the
-gate passed an empty syllabus. The old deck is at ~/decks/thai-ff.20260903;
-the new deck root is ~/decks/thai-ff.
-
-- Write `~/decks/thai-ff/curated/providers.yaml` (secret references
-  including `anthropic`, proxy, imgfetch_path AND audiofetch_path, judge
-  transport batch + model + price, image_candidates -- the loader now
-  refuses a file missing any of those) and run the real migration:
-  `thai-syllabus migrate --old-deck ~/decks/thai-ff.20260903 --old-data
-  data --new-root ~/decks/thai-ff`. Migration carries candidates.yaml's
-  recorded pass/fail per candidate over as the judge fit verdict (the old
-  judge_cache.sqlite does not migrate): expect 410 of 654 chosen pictures
-  to rank on day one (measured 2026-09-03 on ~/decks/thai-ff.20260903;
-  scratch migration probe: 356 of 766 words still missing a picture); the
-  rest are judged by the first run's assess-first step.
-- First sourcing run against the migrated state, smoke-capped per source;
-  verify RunReport (attempted / improved / exhausted / pending / excluded
-  / unreachable / spend) against expectations; then the whole-syllabus
-  batch passes.
-- First `thai-syllabus compile`; delete-and-reimport in Anki; a proof
-  pass in `thai-syllabus review`. Testing-deck relaxations are severity
-  overrides in the deck's rulebook.yaml, recorded there.
-- First `thai-syllabus import` after a study session; verify StudyRecords
-  and flag/ReviewNote rows.
-- Retire the old packages, scripts/proof_gallery.py, and the old deck
-  work/ stores after one full loop succeeds.
+- Write `~/decks/thai-ff/curated/providers.yaml`: judge transport batch,
+  model, price_per_mtok (required), imgfetch_path and audiofetch_path
+  (required; ~/bin/imgfetch, ~/bin/audiofetch), image_candidates,
+  attempt_cap, tts male_voices and female_voices (both non-empty),
+  secrets forvo / google_tts / anthropic / pexels as 0600 files under
+  ~/.config/thai-deck-gen/ (the tts key file is google-tts.key),
+  search_proxy. The loader refuses a missing file or field; the review
+  screen also needs this file.
+- Migrate: `thai-syllabus migrate --old-deck ~/decks/thai-ff.20260903
+  --old-data data --new-root ~/decks/thai-ff`. Joins pictures by (thai,
+  category) and reports ambiguous forms; carries candidates.yaml
+  verdicts under a legacy rubric id that never ranks; idempotent (run it
+  twice, read already_present). Every current picture is judged by the
+  first run.
+- First run, batch judge, smoke-capped per source (`--backend-cap
+  NAME=N` is a per-day cap read from the record): expect every picture
+  question in one batch, nothing improved, pending == pictures. Second
+  run resolves it. Read the RunReport line: available == attempted +
+  exhausted + pending + unserved + budgeted + deferred (B8 closes the
+  known exceptions).
+- Compile, delete-and-reimport in Anki, proof pass in `thai-syllabus
+  review`, then `import` after a study session; verify study rows (family,
+  anchor, card_kind) and flag rows.
 
 ## Content decisions (user)
 
@@ -69,51 +79,6 @@ the new deck root is ~/decks/thai-ff.
   before the whole-syllabus batch pass, gather every judge question of a
   run into one batch and resolve on the next run (the pending derivation
   already supports this).
-
-## Follow-ups from the whole-arc review (2026-09-04)
-
-- reviewserver `_tried_summary` lists imgfetch/audiofetch rows and fetched
-  urls as "sources/phrases tried" in the direction prompt; filter to the
-  Source-ask rows (`provides == kind`) as `_latest_query` does.
-- `_picture_attempt`'s pre-search guard returns `attempted=False` even when
-  the fit questions were really asked before the judge failed; return
-  `_attempted(spend)`.
-- A dead judge ends each attempt, not the run: `run()` still escalates every
-  source for every need and re-asks the wire each time. Abort the run after
-  the first unreachable-judge attempt.
-- `load_providers_config` accepts an empty `tts.male_voices`; `pick_voice`
-  then divides by zero. Validate non-empty pools.
-- `exhausted(pair, "rendition")` is always 0 attempts: rendition asks are
-  recorded under the member subjects, never the pair.
-
-## Design follow-ups (round review, 2026-09-04)
-
-- Row conventions are parsed in three places (`derivations._matches_kind`
-  and `_machine_ranks`, plus reviewserver's private duplicates of
-  `_matches_kind`/`_rows_for`/`_gap_candidates`/`_candidate_shas`). One
-  row-reading module both import, and an explicit `kind` on every provide
-  row instead of inferring it from `provides`.
-- `derivations` imports `AUTHORITY_ORDER`/`ROLE_FOR_KIND` from `assessor`;
-  authority and the kind→role map are domain data for a small shared module.
-- `Assessor._preparation_failure` re-runs prompt/attachment preparation on
-  every inline miss to classify exclusions; replace with a distinct
-  `PreparationError` raised by the backend that `ask_many` maps to
-  `excluded`.
-- Batch resume state is a growing marker convention (`judge-batch-pending`
-  rows superseded by abandoned markers); revisit when batch granularity
-  moves to one batch per run.
-- `rulebook.py` imports rubric texts from `thai_deck_eval.judge.prompts`;
-  copy them into the rulebook before retiring the old packages.
-- Spec 3 §5 picture query: "gloss head term + category qualifier" is not
-  implementable (Word has no category); the query is the whole meaning.
-  Amend the spec or add the field.
-- Spec 3 §6: `pending` is implemented as "batch marker with an unresolved
-  key" (narrower than the spec's wording); a judge-passed, learner-unrated
-  picture queues in bucket 1 rather than 3; `RunReport.improved` counts a
-  preference bonus as improvement without an artifact change.
-- Migration joins picture notes to words by Thai form, first row wins for
-  the 39 homographs (45 word rows lose their picture, named in the report);
-  a (thai, gloss) key or a curated map would remove the shortcut.
 
 ## Nice to have
 
