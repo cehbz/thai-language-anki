@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 7, proposed 2026-09-06 against principles r2 and architecture
+Revision 8, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -29,6 +29,12 @@ Revision log:
   outcomes; a transient failure never advances a need. Evidence:
   audiofetch failures after a successful Forvo lookup advanced needs
   to TTS (final review follow-up).
+- r8 2026-09-06: on recording and rendition roles the learner vetoes
+  and never ranks upward. Evidence: Task B8 found a learner "good" on
+  a rendition with no known speaker ranking above the coverage
+  measure; user ruling 2026-09-06 (the learner may be hearing two
+  speakers, not the contrast, but can tell an unintelligible
+  recording).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -125,12 +131,14 @@ speaker-directed search does not exist.
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):ARTIFACT_SHA:ROLE | evidence; below learner where learner is qualified |
 | mechanical | recording duration/format; media resolvable; fills(); provenance rules | parameter-explicit, e.g. mech:duration:0.2-5.0:sha | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
-| learner | picture fit, sentence quality, recording flag, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; a recording flag queues re-verification, never outranks fact |
+| learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
 **Authority order per role** (domain data, spec 1 §4): picture-for-word:
-learner > judge. sentence-for-target: learner > judge. recording-for-word:
-listener (when calibrated) > mechanical; learner flags queue, never rank.
-rendition-for-pair: mechanical (one-speaker check).
+learner > judge. sentence-for-target: learner > judge. recording-for-word
+and recording-for-sentence: listener (when calibrated) > mechanical;
+the learner vetoes, never ranks. rendition-for-pair: the rendition
+backend (one-speaker check); the learner vetoes, never ranks. A vetoed
+artifact ranks again only when the learner re-rates it.
 
 **Provenance prior** (rulebook data, an ordered list of provenance kinds,
 e.g. commission > forvo > tts): orders eligible candidates only where no
