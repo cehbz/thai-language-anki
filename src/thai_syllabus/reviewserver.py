@@ -26,6 +26,7 @@ import re
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +49,7 @@ from .derivations import (
     queue,
     reasks,
 )
+from .media import Speaker
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
 from .record import (
@@ -498,40 +500,112 @@ def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -
     return None
 
 
-def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str, Any]:
-    """spec 5 section 1 kind 2's supply action (also usable stand-alone for
-    any subject): {subject, kind, source: "path"|"url", value, note?, ext?}.
-    A URL goes through the spec-3 imgfetch Provider path -- cache-first,
-    appends its own `provide` row via Provider.ask, exactly as any other
-    backend would. A local file path is a direct learner act with no
-    Provider backend behind it (there is no cache key to ask against: it is
-    read once and written to MediaStore), so it appends no provide row --
-    only the learner supply act below. Either way the artifact lands with
-    learner provenance and an implicit use-this rating (spec 5 section 1).
-    """
-    subject, kind = payload["subject"], payload["kind"]
-    source = payload["source"]
+_LEARNER_SPEAKER = Speaker(id="learner", kind="native")
 
+# Fallback extension when neither payload["ext"] nor the value's own
+# filename suffix names one (spec 4 section 3 -- pictures re-encode
+# through add_image regardless, so a wrong guess here never lands in
+# media/objects/; recordings keep whatever guess names their real bytes).
+_DEFAULT_EXT = {"picture": "jpg", "recording": "mp3"}
+
+
+def _guessed_ext(value: str, payload: Mapping[str, Any], kind: str) -> str:
+    if payload.get("ext"):
+        return str(payload["ext"])
+    suffix = Path(value).suffix.lstrip(".").lower()
+    return suffix or _DEFAULT_EXT[kind]
+
+
+def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
+                             source: str, value: str) -> tuple[str, str]:
+    """A picture always normalizes (spec 4 section 3): a URL's bytes
+    normalize inside imgfetch's FetchBackend (provides="picture-bytes");
+    a local file's bytes normalize through MediaStore.add_image directly.
+    """
     if source == "url":
         provider = Provider(ctx.record, ctx.cache,
                             {"imgfetch": FetchBackend(media=ctx.media_store,
-                                                      fetcher=ctx.url_fetcher)})
-        answer = provider.ask("imgfetch", Question(subject=subject, provides=f"{kind}-bytes",
-                                                    params={"url": payload["value"]}, kind=kind))
+                                                      fetcher=ctx.url_fetchers["picture"])})
+        answer = provider.ask("imgfetch", Question(subject=subject, provides="picture-bytes",
+                                                    params={"url": value}, kind="picture",
+                                                    subject_kind=payload.get("subject_kind",
+                                                                            "word")))
         if not answer.items:
-            return {"ok": False, "error": "fetch produced no artifact"}
-        artifact_sha = answer.items[0]["sha"]
-    elif source == "path":
-        data = Path(payload["value"]).read_bytes()
-        artifact_sha = ctx.media_store.write(data, payload.get("ext", "jpg"))
+            raise ValueError(f"append_supply: imgfetch produced no artifact for {value!r}")
+        item = answer.items[0]
+        return str(item["sha"]), str(item["ext"])
+    if source == "path":
+        data = Path(value).read_bytes()
+        ingest = ctx.media_store.add_image(data, _guessed_ext(value, payload, "picture"))
+        return ingest.sha, ingest.ext
+    raise ValueError(f"unknown supply source {source!r}")
+
+
+def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
+                               source: str, value: str) -> tuple[str, str]:
+    """A recording is never normalized (spec 4 section 3 normalizes
+    pictures only): a URL's bytes are fetched through audiofetch's
+    FetchBackend, which stores them raw under their real ext; a local
+    file's bytes go straight to MediaStore.write under the same real ext.
+    """
+    if source == "url":
+        provider = Provider(ctx.record, ctx.cache,
+                            {"audiofetch": FetchBackend(media=ctx.media_store,
+                                                        fetcher=ctx.url_fetchers["recording"])})
+        answer = provider.ask("audiofetch", Question(subject=subject, provides="recording-bytes",
+                                                      params={"url": value}, kind="recording",
+                                                      subject_kind=payload.get("subject_kind",
+                                                                              "word")))
+        if not answer.items:
+            raise ValueError(f"append_supply: audiofetch produced no artifact for {value!r}")
+        item = answer.items[0]
+        return str(item["sha"]), str(item["ext"])
+    if source == "path":
+        data = Path(value).read_bytes()
+        ext = _guessed_ext(value, payload, "recording")
+        return ctx.media_store.write(data, ext), ext
+    raise ValueError(f"unknown supply source {source!r}")
+
+
+def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str, Any]:
+    """spec 5 section 1 kind 2's supply action (also usable stand-alone for
+    any subject): {subject, kind: "picture"|"recording", source: "path"|
+    "url", value, note?, ext?}. The bytes go through the media ingest path
+    by kind (imgfetch/add_image for a picture, audiofetch/MediaStore.write
+    for a recording, spec 4 section 3), then a provenance row (spec 2
+    section 2's media table, source=learner) and, for a recording, the
+    "learner" native Speaker row a supplied recording's speaker_id names.
+    A URL goes through the matching Provider path -- cache-first, appends
+    its own `provide` row via Provider.ask, exactly as any other backend
+    would. A local file path is a direct learner act with no Provider
+    backend behind it (there is no cache key to ask against: it is read
+    once and written to MediaStore), so it appends no provide row -- only
+    the learner supply act below. Either way the artifact lands with
+    learner provenance and an implicit use-this rating (spec 5 section 1),
+    so derivations.current_best picks it.
+    """
+    subject, kind = payload["subject"], payload["kind"]
+    source, value = payload["source"], payload["value"]
+
+    if kind == "picture":
+        artifact_sha, ext = _ingest_supplied_picture(ctx, payload, subject, source, value)
+        speaker_id = None
+    elif kind == "recording":
+        artifact_sha, ext = _ingest_supplied_recording(ctx, payload, subject, source, value)
+        ctx.derivations.db.add_speaker(_LEARNER_SPEAKER)
+        speaker_id = _LEARNER_SPEAKER.id
     else:
-        raise ValueError(f"unknown supply source {source!r}")
+        raise ValueError(f"unknown supply kind {kind!r}")
+
+    ctx.derivations.db.add_media(sha=artifact_sha, kind=kind, ext=ext, source="learner",
+                                 origin=value, licence="learner", acquired=date.today(),
+                                 speaker_id=speaker_id)
 
     role = payload.get("role") or role_for(kind, payload.get("subject_kind", "word"))
     key = LearnerKey(artifact_sha=artifact_sha, role=role)
     answer_row: dict[str, Any] = {
         "value": "unacceptable-use-this",
-        "provenance": {"source": "learner", "origin": source},
+        "provenance": {"source": "learner", "origin": value},
     }
     if payload.get("note"):
         answer_row["note"] = payload["note"]
@@ -626,9 +700,16 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 
 # --- HTTP layer --------------------------------------------------------------
 
-def _find_media_file(media_store: MediaStore, sha: str) -> Path | None:
-    matches = sorted((media_store.root / "objects").glob(f"{sha}.*"))
-    return matches[0] if matches else None
+def _find_media_file(media_store: MediaStore, ext: str | None, sha: str) -> Path | None:
+    """The media/objects file for `sha`, at the extension its `media` table
+    provenance row recorded (spec 2 section 2) -- never a directory
+    listing: an object with no provenance row is not served, even when its
+    bytes happen to sit in objects/.
+    """
+    if ext is None:
+        return None
+    path = media_store.path_for(sha, ext)
+    return path if path.exists() else None
 
 
 @dataclass
@@ -643,14 +724,19 @@ class ReviewContext:
     derivations: "Derivations"
     study: StudyReader | None = None
     learner_budget: int = DEFAULT_LEARNER_BUDGET
-    url_fetcher: Callable[[str], tuple[bytes, str]] | None = None
+    # A supplied artifact's URL fetcher, by kind (spec 5 section 1 kind 2:
+    # imgfetch for pictures, audiofetch for recordings -- a recording URL
+    # sent to imgfetch is refused, since imgfetch expects an image).
+    url_fetchers: Mapping[str, Callable[[str], tuple[bytes, str]]] = field(default_factory=dict)
     cards_provider: Callable[["Derivations"], list[dict[str, Any]]] = field(
         default=compiled_cards)
     session: SessionStats = field(default_factory=SessionStats)
 
     def __post_init__(self) -> None:
-        if self.url_fetcher is None:
-            self.url_fetcher = tool_fetcher("imgfetch")
+        fetchers = dict(self.url_fetchers)
+        fetchers.setdefault("picture", tool_fetcher("imgfetch"))
+        fetchers.setdefault("recording", tool_fetcher("audiofetch"))
+        self.url_fetchers = fetchers
 
     @property
     def syllabus(self) -> Syllabus:
@@ -663,6 +749,13 @@ class ReviewContext:
     @property
     def record(self) -> RecordWriter:
         return self.derivations.db
+
+    def media_ext(self, sha: str) -> str | None:
+        """The ext its media table provenance row recorded, or None when
+        `sha` has none (spec 2 section 2 -- provenance is the media table,
+        never a filename glob)."""
+        provenance = self.derivations.db.media_provenance(sha)
+        return provenance["ext"] if provenance else None
 
     @property
     def media_store(self) -> MediaStore:
@@ -733,7 +826,7 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 self.send_error(404, "not found")
 
         def _serve_media(self, sha: str) -> None:
-            path = _find_media_file(ctx.media_store, sha)
+            path = _find_media_file(ctx.media_store, ctx.media_ext(sha), sha)
             if path is None or not path.exists():
                 self.send_error(404, f"missing media: {sha}")
                 return
@@ -808,12 +901,22 @@ def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_
     wiring is imported inside the function: reviewserver is on cli.py's
     import path and wiring reaches for provider/assessor/transport, which
     a module-level import would pull in to serve a page.
+
+    A supplied artifact's URL fetchers (spec 5 section 1 kind 2) come from
+    the same curated/providers.yaml imgfetch_path/audiofetch_path
+    build_provider wires the run's Provide backends from, so a URL a
+    learner supplies is fetched by the same tool the run would have used.
     """
+    from .curated import load_providers_config
     from .wiring import load_derivations
 
-    derivations = load_derivations(deck_dir)
+    root = Path(deck_dir)
+    cfg = load_providers_config(root / "curated" / "providers.yaml")
+    derivations = load_derivations(root, cfg)
+    url_fetchers = {"picture": tool_fetcher(cfg.imgfetch_path),
+                   "recording": tool_fetcher(cfg.audiofetch_path)}
     return ReviewContext(derivations=derivations, study=derivations.db,
-                         learner_budget=learner_budget)
+                         learner_budget=learner_budget, url_fetchers=url_fetchers)
 
 
 def main(argv: list[str] | None = None) -> int:

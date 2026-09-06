@@ -14,6 +14,7 @@ import http.client
 import io
 import json
 import threading
+from datetime import date
 from http.server import HTTPServer
 
 import pytest
@@ -497,15 +498,22 @@ def _png_bytes() -> bytes:
 
 # --- append_supply: path and url flows --------------------------------------
 
-def test_append_supply_from_local_path(tmp_path, derivations, db, media_store, w1):
-    src = tmp_path / "candidate.jpg"
-    src.write_bytes(b"fake-jpeg-bytes")
+def test_supplied_picture_is_normalized_recorded_and_visible(tmp_path, derivations, db,
+                                                             media_store, w1):
+    """spec 5 section 1 kind 2: a supplied picture goes through the media
+    ingest path (normalized, provenance row source=learner) and is what
+    current_best picks (the implicit use-this)."""
+    src = tmp_path / "candidate.png"
+    src.write_bytes(_png_bytes())
     ctx = rs.ReviewContext(derivations=derivations)
-    result = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
-                                    "value": str(src)})
-    assert result["ok"] is True
-    sha = result["artifact_sha"]
-    assert media_store.has(sha, "jpg")
+    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
+                                 "value": str(src)})
+    assert out["ok"] is True
+    sha = out["artifact_sha"]
+    assert media_store.has(sha, "png")  # add_image normalized it, not a raw write
+    assert db.media_provenance(sha)["source"] == "learner"
+    assert db.media_provenance(sha)["kind"] == "picture"
+    assert ctx.current_best(w1.id, "picture").artifact_sha == sha
     row = db.assessments_of(w1.id)[0]
     assert row.answer["value"] == "unacceptable-use-this"
     assert row.answer["provenance"]["source"] == "learner"
@@ -519,12 +527,13 @@ def test_append_supply_from_url_goes_through_imgfetch_provider(derivations, db, 
         assert url == "https://example.test/pic.png"
         return _png_bytes(), "png"
 
-    ctx = rs.ReviewContext(derivations=derivations, url_fetcher=fake_fetcher)
+    ctx = rs.ReviewContext(derivations=derivations, url_fetchers={"picture": fake_fetcher})
     result = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "url",
                                     "value": "https://example.test/pic.png"})
     assert result["ok"] is True
     sha = result["artifact_sha"]
     assert media_store.has(sha, "png")
+    assert db.media_provenance(sha)["source"] == "learner"
     rows = db.assessments_of(w1.id)
     assert any(r.port == "provide" and r.backend == "imgfetch" for r in rows)
     assert any(r.port == "assess" and r.answer["value"] == "unacceptable-use-this" for r in rows)
@@ -537,12 +546,52 @@ def test_append_supply_url_fetch_is_cache_first(derivations, db, media_store, w1
         calls.append(url)
         return _png_bytes(), "png"
 
-    ctx = rs.ReviewContext(derivations=derivations, url_fetcher=counting_fetcher)
+    ctx = rs.ReviewContext(derivations=derivations, url_fetchers={"picture": counting_fetcher})
     payload = {"subject": w1.id, "kind": "picture", "source": "url",
               "value": "https://example.test/pic.png"}
     rs.append_supply(ctx, payload)
     rs.append_supply(ctx, dict(payload))
     assert len(calls) == 1  # 2nd ask hits the cache, no 2nd fetch
+
+
+def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1):
+    """spec 5 section 1 kind 2: a recording URL is fetched by kind, through
+    audiofetch, never imgfetch (which refuses non-images)."""
+    calls = []
+
+    def fake_audio_fetcher(url):
+        calls.append(url)
+        return b"fake-mp3-bytes", "mp3"
+
+    ctx = rs.ReviewContext(derivations=derivations, url_fetchers={"recording": fake_audio_fetcher})
+    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "recording", "source": "url",
+                                 "value": "https://x/y.mp3"})
+    assert out["ok"] is True
+    assert calls == ["https://x/y.mp3"]
+    sha = out["artifact_sha"]
+    assert media_store.has(sha, "mp3")
+    provenance = db.media_provenance(sha)
+    assert provenance["source"] == "learner"
+    assert provenance["kind"] == "recording"
+    assert provenance["speaker_id"] == "learner"
+    assert db.speaker("learner").kind == "native"
+
+
+def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
+        tmp_path, derivations, db, media_store, w1):
+    """A local recording is a direct learner act (no Provider backend, no
+    cache key) -- MediaStore.write, not add_image: recordings are never
+    normalized (spec 4 section 3 normalizes pictures only)."""
+    src = tmp_path / "candidate.wav"
+    src.write_bytes(b"fake-wav-bytes")
+    ctx = rs.ReviewContext(derivations=derivations)
+    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "recording", "source": "path",
+                                 "value": str(src)})
+    assert out["ok"] is True
+    sha = out["artifact_sha"]
+    assert media_store.has(sha, "wav")
+    assert media_store.path_for(sha, "wav").read_bytes() == b"fake-wav-bytes"
+    assert db.media_provenance(sha)["speaker_id"] == "learner"
 
 
 # --- gallery / notes / drills ------------------------------------------------
@@ -831,7 +880,9 @@ def test_http_answer_refuses_a_rejection_naming_a_stale_artifact(live_server, w1
 
 def test_http_media_serves_bytes_by_sha(live_server, media_store):
     sha = media_store.write(b"hello-media", "jpg")
-    port, _db_path = live_server
+    port, db_path = live_server
+    SyllabusDb(db_path).add_media(sha=sha, kind="picture", ext="jpg", source="test",
+                                  origin="test", licence="test", acquired=date.today())
     status, body = _get(port, f"/media/{sha}")
     assert status == 200
     assert body == b"hello-media"
@@ -840,6 +891,16 @@ def test_http_media_serves_bytes_by_sha(live_server, media_store):
 def test_http_media_404_for_unknown_sha(live_server):
     port, _db_path = live_server
     status, _body = _get(port, "/media/does-not-exist")
+    assert status == 404
+
+
+def test_http_media_404_when_file_exists_but_has_no_provenance_row(live_server, media_store):
+    """`_find_media_file` reads the ext from the media table (spec 2
+    section 2): an object with no provenance row is not served by
+    globbing the objects directory for it."""
+    sha = media_store.write(b"orphan-bytes", "jpg")
+    port, _db_path = live_server
+    status, _body = _get(port, f"/media/{sha}")
     assert status == 404
 
 
