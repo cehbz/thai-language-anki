@@ -1,11 +1,8 @@
 # Spec 4: The Anki boundary
 
-Revision 3, proposed 2026-09-04 against principles r2 and architecture
-r2 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft). Re-checked against principles r1 and architecture r1
-on 2026-09-04; the revisions that re-check proposed enter as r2 on
-approval. Revision process as in docs/architecture.md: proposals on
-evidence, explicit approval per revision, numbered log.
+Revision 4, proposed 2026-09-06 against principles r2 and architecture
+r2. Revision process as in docs/architecture.md: proposals on evidence,
+explicit approval per revision, numbered log.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -17,6 +14,10 @@ Revision log:
   Sentence; word:: tags with the Target derived; flag roles by (family,
   kind), card-level flags direct the subject; harvest keyed by anchor.
   Evidence: implementation review 2026-09-04.
+- r4 2026-09-06: pair notes compiled from the rendition with Choices in
+  member order; atomic tags; cumulative due blocks per order() entry;
+  flag roles per (family, kind) with Production rating the picture; the
+  typed FlagKey. Evidence: Tasks C1-C4.
 
 Scope: Syllabus.compile() — the translation of Syllabus state into Anki's
 domain — and the return path: revlog, flags, and ReviewNote harvests.
@@ -48,11 +49,14 @@ it per gloss policy (pending study input). Meaning always renders on
 backs.
 
 **minimal_pair** (one note per rendition member):
-fields as current plus BOTH members' audio on the back — back shows both
-members, marks the stimulus ("you heard: ..."), each member's audio
-individually playable (F6b). First field = MemberKey
-"PAIRID:SPEAKER:INDEX" (unique; fixes the MemberIndex dupe-key defect).
-- Recognition: front stimulus audio + both spellings as choices, in
+fields MemberKey, Choices, Audio, OtherAudio, Stimulus, Speaker, plus
+per-member Thai/IPA, ReviewNote, CompileId. Both notes of a pair play the
+pair's current-best rendition (one speaker across members); a pair with
+no rendition compiles no notes and is counted as dropped. First field =
+MemberKey "PAIRID:SPEAKER:INDEX" (unique; the guid source; nothing reads
+it back). Back shows both members, marks the stimulus ("you heard: ..."),
+each member's audio individually playable (F6b).
+- Recognition: front stimulus audio + the Choices field, rendered in
   member order on every note so position never marks the stimulus.
 
 **grapheme**:
@@ -83,16 +87,20 @@ inside "hospital").
 - guid: word = word id; grapheme = symbol; pair = MemberKey;
   sentence = (target id, sentence text_sha). A replaced sentence resets
   its scheduling; everything else updates in place.
-- Tags: family::, kind:: (card kind), word::ID (word notes), pair::ID and
-  confusion::ID (pair notes), grapheme::SYMBOL, sentence::TARGET:SHA,
-  compile::ID, src tags for audio/image provenance. card_key (spec 2) =
-  anchor::kind; a word card's Target is derived from its kind (Listening
-  receptive, Production productive).
-- due: from Syllabus.order(); sibling cards of one note get separated due
-  values (offset by a stride), and the shipped deck options group sets
-  bury-siblings. The two member notes of a pair are not siblings: they
-  are placed a stride apart or interleaved with other pairs of the
-  confusion, and never adjacent (A5).
+- Tags are atomic, one part per tag, never composed or split: family::,
+  kind:: (card kind), word::ID (word notes), pair::ID, confusion::ID,
+  member::INDEX and speaker::ID (pair notes), grapheme::SYMBOL,
+  target::ID and sentence::SHA (sentence notes, two tags), compile::ID,
+  src tags for audio/image provenance. The import reads each tag's
+  value by prefix and writes the parts as study columns (spec 2); a word
+  card's Target is derived from its kind (Listening receptive, Production
+  productive).
+- due: from Syllabus.order(); each order() entry owns a block of
+  (notes it yields) × STRIDE, cumulative, so no two entries' notes share
+  a due; sibling cards of one note get separated due values within the
+  block, and the shipped deck options group sets bury-siblings. The two
+  member notes of a pair are not siblings: they sit a stride apart inside
+  the pair's block (A5).
 - compile refuses when report().gate fails, unless forced with declared
   warnings; the Compile value records compile id = syllabus state id +
   timestamp, stamped into every note's CompileId field.
@@ -114,13 +122,16 @@ retains only final fit-to-viewport.
   map card -> (card_key, compile id) via tags/CompileId; append study
   rows. Idempotent by (card_key, ts).
 - **Flag import**: flags become learner assessments (cache rows) on the
-  note's subject with role from (family, card kind); a flag on a
-  tone-correctness role appends a re-verification request instead of
-  overriding (authority per (backend, role)); a flag on a card with no
-  artifact role (Reading, Spelling, Recognition, Cloze) is a card-level
-  flag, which makes the subject directed in the queue (spec 3 §6) and
-  appears on the subject screen (spec 5). The idempotence key is the
-  (card, flags) fact itself; no marker rows.
+  entity's subject (word id, pair id, grapheme symbol, sentence text_sha)
+  with role from (family, card kind): word Listening and sentence
+  Listening flag the recording (tone role: a re-verification request,
+  never an override); word Production flags the current picture (a
+  learner picture-for-word rating on its sha); a card with no artifact
+  role (Reading, Spelling, Recognition, Cloze, grapheme Reading, or a
+  Production card whose word has no picture) is a card-level flag, which
+  makes the subject directed in the queue (spec 3 §6) and appears on the
+  subject screen (spec 5). The idempotence key is the typed
+  FlagKey(family, anchor, card_kind, flags); no marker rows.
 - **ReviewNote harvest**: read fields directly from the collection
   (read-only, proven); each non-empty note appends a learner row on the
   note's anchor (from its tags) under key learner-note:ANCHOR:sha(TEXT) — re-harvesting the same text is an

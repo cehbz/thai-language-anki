@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 4, proposed 2026-09-05 against principles r2 and architecture
+Revision 5, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -19,6 +19,9 @@ Revision log:
   columns written once at import; keys are typed values whose encoding
   is a storage identity, never parsed. Evidence: Task A10 review (a
   colon-bearing pair id broke a string parse); user ruling 2026-09-05.
+- r5 2026-09-06: study rows carry the entity id as anchor and a pair
+  card's member_index and speaker_id as columns. Evidence: Tasks A10,
+  C2, C4.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -79,14 +82,15 @@ cache(port, backend, key_sha, subject, question, answer, cost, ts)
   -- a re-ask appends a new row (newest-wins on read for the learner
   -- backend; exact-key hit for memoized backends). subject indexes the
   -- attempt record ("what was tried for X"), including empty answers.
-study(family, anchor, card_kind, compile_id, ts, grade, time_ms)
-      -- PK (family, anchor, card_kind, ts)
+study(family, anchor, card_kind, member_index, speaker_id, compile_id,
+      ts, grade, time_ms)  -- PK (family, anchor, card_kind, ts)
   -- store 4. The import reads a card's tags once and writes their parts
   -- as columns: family (word|minimal_pair|grapheme|sentence), anchor (the
-  -- note's guid source: word id, pair MemberKey, grapheme symbol, target
-  -- id + text_sha), card_kind. Nothing re-parses an anchor: a pair row's
-  -- pair id is matched exactly against the aggregate's pairs, and the
-  -- Target of a word card is derived from card_kind. Imported from
+  -- entity id: word id, pair id, grapheme symbol, sentence text_sha),
+  -- card_kind, and for a pair card member_index and speaker_id. Nothing
+  -- re-parses an anchor: a pair row's pair id is matched exactly against
+  -- the aggregate's pairs, and the Target of a word card is derived from
+  -- card_kind. Imported from
   -- revlog; append-only, insert-or-ignore. Anki flags do NOT land here:
   -- a flag imports as a learner assessment row in cache.
 ```
