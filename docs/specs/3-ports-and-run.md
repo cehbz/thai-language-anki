@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 5, proposed 2026-09-05 against principles r2 and architecture
+Revision 6, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -22,6 +22,9 @@ Revision log:
 - r5 2026-09-05: a Source transport failure skips the source for the
   run and is counted, only the judge stops the run; RunReport accounts
   for every need gaps() lists. Evidence: Task B3 and B4 reviews.
+- r6 2026-09-06: at most one batch outstanding; RunReport gains
+  unserved, budgeted, deferred and drafted with the accounting identity;
+  day budgets from the record. Evidence: Task B5 and B6 reviews.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -222,9 +225,14 @@ Implemented after cutover.
 Budget per source in its currency: {max_asks?, max_cost?}; forvo 450/day,
 learner 20/session. Spend is summed from the record for per-day budgets.
 
-One source per need per run; one judge batch per run. Escalation to the
-next source happens on the next run, for every transport alike, so the
-loop has one shape and a run is cheap and repeatable (F10).
+One source per need per run; one judge batch per run; at most one batch
+outstanding: when the previous run's batch is still in progress, the run
+adopts what has resolved, attempts nothing, submits nothing, and reports
+that batch's subjects as pending and the rest as deferred. Escalation to
+the next source happens on the next run, for every transport alike, so
+the loop has one shape and a run is cheap and repeatable (F10). Per-day
+budgets are measured from the record since the local day's start plus
+this run's spend.
 
 ```
 run(syllabus, budgets):
@@ -245,10 +253,34 @@ run(syllabus, budgets):
                                                # inline, else collect
   submit(questions) as one batch; append its marker  # no-op if empty
   RunReport {attempted, improved, exhausted, pending, excluded,
-             unreachable, available, source_failures, spend per source}
-  # available = every need gaps() lists; exhausted = those queue()
-  # excluded as exhausted; pending = subjects with a question in this
-  # run's batch or an earlier unresolved one
+             unreachable, available, unserved, budgeted, deferred,
+             drafted, preferences, source_failures, spend per source}
+  # available = every need gaps() lists, and
+  # available == attempted + exhausted + pending + unserved + budgeted
+  #              + deferred, always:
+  #   exhausted  = needs with a Source whose next source is None
+  #   pending    = needs (subject, kind) with a question in this run's
+  #                batch or the earlier unresolved one; the loop never
+  #                attempts a need that already has a question collected
+  #                this run, so a need lands in exactly one bucket; a
+  #                preference question on a picture that already satisfies
+  #                its need is counted under preferences, outside the
+  #                identity; questions collected but never submitted
+  #                (the judge died) and needs the loop never reached count
+  #                under deferred
+  #   unserved   = needs whose kind has no Source and no per-run pass yet
+  #   budgeted   = needs skipped because their Source's day budget was
+  #                spent (every open Target within the drafting cap when
+  #                the sentence drafter's budget is spent)
+  #   deferred   = needs the run never considered: an earlier batch is
+  #                still outstanding, the judge was unreachable at
+  #                resolve, or open Targets beyond the per-run drafting cap
+  #   attempted  counts needs whose attempt finished this run (inline
+  #              verdicts, or no questions raised); a need whose questions
+  #              await this run's batch counts as pending, not attempted;
+  #              plus the open Targets handed to the drafter (within the
+  #              cap) when the sentence attempt runs; drafted = the drafts
+  #              it produced
 ```
 
 improved = the need's current-best artifact sha differs after the
