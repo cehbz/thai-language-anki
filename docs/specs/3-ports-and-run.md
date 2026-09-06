@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 6, proposed 2026-09-06 against principles r2 and architecture
+Revision 7, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -25,6 +25,10 @@ Revision log:
 - r6 2026-09-06: at most one batch outstanding; RunReport gains
   unserved, budgeted, deferred and drafted with the accounting identity;
   day budgets from the record. Evidence: Task B5 and B6 reviews.
+- r7 2026-09-06: source selection and exhaustion fold over attempt
+  outcomes; a transient failure never advances a need. Evidence:
+  audiofetch failures after a successful Forvo lookup advanced needs
+  to TTS (final review follow-up).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -101,7 +105,7 @@ one speaker answers empty.
 |---|---|---|---|---|
 | openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key |
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo, iiprop=url) | wikimedia:query | free HTTP | same |
-| imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a fetch failure is not cached |
+| imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a fetch failure is a transient-failure outcome on the need, never cached against the url |
 | forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day | never re-asked |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
@@ -208,8 +212,21 @@ Implemented after cutover.
   inline transport a verdict arrives inside the attempt, an unpreparable
   question is excluded, and a judge that cannot be reached stops the
   run. A pending need gets no new attempt.
-- **exhausted(subject, kind)**: unchanged: the last k attempts produced no
-  candidate out-ranking current-best and the attempt cap is reached;
+- **outcome(subject, kind, source)**: what one attempt of a need at a
+  source produced: `candidates` (at least one artifact from it was
+  stored and checked), `nothing` (the source answered and nothing
+  usable came of it), or `transient-failure` (the ask or any fetch it
+  needed failed on the wire; retry). The attempt appends one outcome
+  row per source it asks (port `attempt`, backend = the source, key
+  AttemptOutcomeKey(subject, kind, source)); only `candidates` and
+  `nothing` count as tried.
+- **next_source(subject, kind)**: the first of the kind's sources,
+  cheapest first, with no `candidates` or `nothing` outcome since
+  current-best last changed. A `transient-failure` outcome never
+  advances the need.
+- **exhausted(subject, kind)**: over outcomes, not asks: the last k
+  attempts produced no candidate out-ranking current-best and the
+  attempt cap is reached;
   reopened by learner input, a rubric change, or a new source.
 - **queue(syllabus, budgets)**: order per the periodic-batch principle:
   (1) no artifact or learner-unacceptable, directed first (a learner
@@ -290,8 +307,10 @@ artifact), reported per need and skipped. unreachable = the judge could
 not be reached; the run stops at the first such attempt and exits
 non-zero (fail fast; nothing after it is attempted). A Source that
 cannot be reached does not stop the run: the source is skipped for the
-rest of the run, needs whose next source it is stay untouched, and the
-report counts it under source_failures[source]. Every ask appends;
+rest of the run, needs whose next source it is stay untouched and
+count under deferred, the need whose attempt failed records a
+`transient-failure` outcome and counts under deferred too, and the
+report counts the failure under source_failures[source]. Every ask appends;
 kill-safe anywhere. The run is transport-agnostic.
 
 ## 8. Rules added
