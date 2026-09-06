@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .authority import role_for
 from .cachekeys import FlagKey, LearnerNoteKey, ReverifyKey, sha
+from .compile import card_kind_of
 from .ports import StudyRecord
 from .store import SyllabusDb
 
@@ -230,7 +232,7 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     ord_ = card["ord"]
     if not (0 <= ord_ < len(tmpls)):
         return None
-    kind_slug = tmpls[ord_]["name"].lower()
+    kind_slug = card_kind_of(tmpls[ord_]["name"])
     compile_idx = _field_index(model, "CompileId")
     compile_id = note["flds"][compile_idx] if compile_idx is not None else ""
     return _CardIdentity(family=family, anchor=anchor, kind_slug=kind_slug,
@@ -284,14 +286,17 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
 
 # --- flag import -----------------------------------------------------------
 
-def _current_best_sha(db: SyllabusDb, subject: str, provide_kind: str) -> str | None:
+def _current_best_sha(db: SyllabusDb, subject: str, provide_kind: str, *,
+                      current_rubric: Mapping[str, str], prior: Sequence[str],
+                      provenance_source: Callable[[str], str | None]) -> str | None:
     from .derivations import current_best
-    return current_best(db, subject, provide_kind, current_rubric={}, prior=(),
-                        provenance_source=lambda s: None).artifact_sha
+    return current_best(db, subject, provide_kind, current_rubric=current_rubric, prior=prior,
+                        provenance_source=provenance_source).artifact_sha
 
 
-def _import_flags(col: _Collection, db: SyllabusDb,
-                  skips: list[tuple[str, str, str]]) -> tuple[int, int]:
+def _import_flags(col: _Collection, db: SyllabusDb, skips: list[tuple[str, str, str]], *,
+                  current_rubric: Mapping[str, str], prior: Sequence[str],
+                  provenance_source: Callable[[str], str | None]) -> tuple[int, int]:
     imported = 0
     skipped = 0
     for card_id, card in col.cards.items():
@@ -311,7 +316,9 @@ def _import_flags(col: _Collection, db: SyllabusDb,
         artifact_sha = None
 
         if tone_role is not None:
-            artifact_sha = _current_best_sha(db, subject, "recording")
+            artifact_sha = _current_best_sha(db, subject, "recording",
+                                             current_rubric=current_rubric, prior=prior,
+                                             provenance_source=provenance_source)
             key = ReverifyKey(artifact_sha=artifact_sha, anchor=subject, role=tone_role)
             role, row_kind = tone_role, "reverify"
             answer = {"flagged": True, "flag": flags}
@@ -319,7 +326,9 @@ def _import_flags(col: _Collection, db: SyllabusDb,
             role = "card-flag"
             if rated is not None:
                 rated_role, provide_kind = rated
-                artifact_sha = _current_best_sha(db, subject, provide_kind)
+                artifact_sha = _current_best_sha(db, subject, provide_kind,
+                                                 current_rubric=current_rubric, prior=prior,
+                                                 provenance_source=provenance_source)
                 if artifact_sha is not None:
                     role = rated_role
             key = FlagKey(family=identity.family, anchor=identity.anchor,
@@ -382,17 +391,24 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
 
 # --- the one command -------------------------------------------------------
 
-def import_collection(collection_path: str | Path, db: SyllabusDb) -> ImportReport:
+def import_collection(collection_path: str | Path, db: SyllabusDb, *,
+                      current_rubric: Mapping[str, str], prior: Sequence[str],
+                      provenance_source: Callable[[str], str | None]
+                      ) -> ImportReport:
     """Read `collection_path` (an Anki collection.anki2, or an extracted
     .apkg's own copy) read-only and import revlog rows, card flags, and
-    ReviewNote text into `db`. One pass, one report.
+    ReviewNote text into `db`. One pass, one report. `current_rubric`/
+    `prior`/`provenance_source` are the flag import's own current_best
+    parameters (wiring.Derivations carries the deck's real ones).
     """
     conn = _connect_readonly(collection_path)
     try:
         col = _load_collection(conn)
         skips: list[tuple[str, str, str]] = []
         revlog_imported, revlog_skipped = _import_revlog(conn, col, db, skips)
-        flags_imported, flags_skipped = _import_flags(col, db, skips)
+        flags_imported, flags_skipped = _import_flags(
+            col, db, skips, current_rubric=current_rubric, prior=prior,
+            provenance_source=provenance_source)
         notes_harvested, notes_skipped = _import_review_notes(col, db, skips)
     finally:
         conn.close()

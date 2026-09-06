@@ -260,7 +260,7 @@ class Assessor:
         return Verdict(value=raw.value, cost=raw.cost, ts=ts,
                        evidence=raw.evidence, suggestion=raw.suggestion)
 
-    def _append_verdict(self, backend: str, key: CacheKey | str, question: AssessQuestion,
+    def _append_verdict(self, backend: str, key: CacheKey, question: AssessQuestion,
                         raw: RawVerdict) -> int:
         answer: dict[str, Any] = {"value": raw.value}
         if raw.evidence is not None:
@@ -291,7 +291,6 @@ class Assessor:
             return None
         impl = self._backends["judge"]
         requests: dict[str, tuple[str, list[Path]]] = {}
-        keys: list[str] = []
         subjects: list[str] = []
         roles: list[str] = []
         artifact_shas: list[str | None] = []
@@ -301,7 +300,6 @@ class Assessor:
         params: list[dict] = []
         for p in prepared:
             requests[_custom_id(p.key)] = (p.prompt, p.attachments)
-            keys.append(p.key.encode())
             subjects.append(p.question.subject)
             roles.append(p.question.role)
             artifact_shas.append(p.question.artifact_sha)
@@ -315,13 +313,13 @@ class Assessor:
             raise JudgeUnreachable(f"the judge's batch transport refused a submission: {e}") from e
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
-            question={"kind": "batch", "batch_id": batch_id, "keys": keys, "subjects": subjects,
+            question={"kind": "batch", "batch_id": batch_id, "subjects": subjects,
                      "roles": roles, "artifact_shas": artifact_shas, "rubrics": rubrics,
                      "kinds": kinds, "subject_kinds": subject_kinds, "params": params},
             answer={"status": "submitted"}, cost=0.0)
         return batch_id
 
-    def resolve(self, batch_id: str) -> dict[str, Verdict]:
+    def resolve(self, batch_id: str) -> dict[CacheKey, Verdict]:
         """Fetches the batch's results and appends a verdict row per
         succeeded question (keyed by that question's own submitted key),
         then appends a marker row releasing it: "resolved" once the batch
@@ -344,28 +342,29 @@ class Assessor:
         except TransportError as e:
             raise JudgeUnreachable(
                 f"the judge's batch transport could not be read for {batch_id}: {e}") from e
-        n = len(marker.question["keys"])
+        n = len(marker.question["subjects"])
         artifact_shas = marker.question.get("artifact_shas") or [None] * n
         rubrics = marker.question.get("rubrics") or [None] * n
         kinds = marker.question.get("kinds") or [""] * n
         subject_kinds = marker.question.get("subject_kinds") or ["word"] * n
         params = marker.question.get("params") or [{}] * n
-        resolved: dict[str, Verdict] = {}
-        for key_str, subject, role, artifact_sha, rubric, kind, subject_kind, question_params in zip(
-                marker.question["keys"], marker.question["subjects"], marker.question["roles"],
+        resolved: dict[CacheKey, Verdict] = {}
+        for subject, role, artifact_sha, rubric, kind, subject_kind, question_params in zip(
+                marker.question["subjects"], marker.question["roles"],
                 artifact_shas, rubrics, kinds, subject_kinds, params):
-            completion = results.get("q" + sha(key_str))
-            if completion is None:
-                continue
             question = AssessQuestion(subject=subject, role=role, artifact_sha=artifact_sha,
                                       rubric=rubric, kind=kind, subject_kind=subject_kind,
                                       params=question_params or {})
+            key = JudgeKey.for_question(question)
+            completion = results.get(_custom_id(key))
+            if completion is None:
+                continue
             parsed = impl._parse(completion.text, question)
             raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
                              suggestion=parsed.suggestion, cost=impl._cost(completion))
-            ts = self._append_verdict("judge", key_str, question, raw)
-            resolved[key_str] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
-                                        evidence=raw.evidence, suggestion=raw.suggestion)
+            ts = self._append_verdict("judge", key, question, raw)
+            resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
+                                    evidence=raw.evidence, suggestion=raw.suggestion)
         final_status = "resolved" if status == "ended" else ("expired" if status == "expired" else "failed")
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
@@ -394,8 +393,8 @@ def _verdict_from_cached(cached) -> Verdict:
 
 
 def _custom_id(key: CacheKey) -> str:
-    """A batch custom_id: sha of the key, since anthropic's batch API
-    restricts a custom_id to [a-zA-Z0-9_-] and a cache key carries ':'.
+    """A batch custom_id: sha of the key. Anthropic's batch API restricts
+    a custom_id to [a-zA-Z0-9_-]; a cache key carries ':'.
     """
     return "q" + sha(key.encode())
 

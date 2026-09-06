@@ -35,13 +35,13 @@ from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
 from .rulebook import sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
+from .syllabus import Syllabus
 
 if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
-    from .syllabus import Syllabus
 
-__all__ = ["BuiltDeck", "build_deck", "CARD_CSS", "compile_syllabus", "field_values",
-          "GateRefusal", "render_card", "tag_value", "thai_cloze"]
+__all__ = ["BuiltDeck", "build_deck", "card_kind_of", "CARD_CSS", "compile_syllabus",
+          "field_values", "GateRefusal", "render_card", "tag_value", "thai_cloze"]
 
 
 class GateRefusal(Exception):
@@ -175,14 +175,11 @@ def _guid(family: str, *parts: str) -> str:
 
 def thai_cloze(tokens: list[str], target_thai: str, blank: str = "___") -> str:
     """Blanks every token that boundary-matches `target_thai` (exact, or
-    a compound starting or ending with it) and rejoins. A whole token,
-    never a substring: "โรงพยาบาล" ("hospital") survives blanking "ยา"
-    ("medicine").
+    a compound starting or ending with it, Syllabus.mentions_at's own
+    predicate) and rejoins. A whole token, never a substring:
+    "โรงพยาบาล" ("hospital") survives blanking "ยา" ("medicine").
     """
-    def matches(tok: str) -> bool:
-        return tok == target_thai or tok.startswith(target_thai) or tok.endswith(target_thai)
-
-    return "".join(blank if matches(tok) else tok for tok in tokens)
+    return "".join(blank if Syllabus.mentions_at([tok], target_thai) else tok for tok in tokens)
 
 
 # --- media resolution ------------------------------------------------------
@@ -195,18 +192,25 @@ _IMG_TAG = '<img src="{sha}.{ext}">'
 @dataclass
 class _Resolver:
     """Resolves (subject, kind) to the current-best artifact, staged
-    under its content-sha basename. `used` maps each referenced basename
-    to its on-disk path (genanki.Package's media_files); `warnings`
-    collects the non-fatal notes CompileReport.warnings carries.
+    under its content-sha basename. `current_rubric`/`prior`/
+    `provenance_source` are the same parameters derivations.current_best
+    ranks under everywhere else (wiring.Derivations); a stale-rubric
+    verdict is not current-best for compile, matching the rulebook.
+    `used` maps each referenced basename to its on-disk path
+    (genanki.Package's media_files); `warnings` collects the non-fatal
+    notes CompileReport.warnings carries.
     """
     db: "SyllabusDb"
     media_store: "MediaStore"
+    current_rubric: Mapping[str, str]
+    prior: Sequence[str]
+    provenance_source: Callable[[str], str | None]
     used: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def artifact(self, subject: str, kind: str) -> tuple[str, str] | None:
-        best = current_best(self.db, subject, kind, current_rubric={}, prior=(),
-                            provenance_source=lambda s: None)
+        best = current_best(self.db, subject, kind, current_rubric=self.current_rubric,
+                            prior=self.prior, provenance_source=self.provenance_source)
         if best.artifact_sha is None:
             return None
         prov = self.db.media_provenance(best.artifact_sha)
@@ -526,6 +530,15 @@ def field_values(model: genanki.Model, note: genanki.Note) -> dict[str, str]:
     return dict(zip((f["name"] for f in model.fields), note.fields))
 
 
+def card_kind_of(template_name: str) -> str:
+    """study.card_kind for a card (spec 4 section 2): a template's own
+    name, lowered. The one place this conversion happens -- anki_import.py's
+    revlog/flag import and reviewserver.py's gallery both read a card's
+    kind through this function.
+    """
+    return template_name.lower()
+
+
 def tag_value(note: genanki.Note, prefix: str) -> str | None:
     """The value of the one atomic tag on `note` reading "prefix::value"
     (spec 4 section 2's tag convention), or None when it carries none --
@@ -759,15 +772,21 @@ class BuiltDeck:
 
 
 def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore", *,
+               current_rubric: Mapping[str, str], prior: Sequence[str],
+               provenance_source: Callable[[str], str | None],
                compile_id: str | None = None) -> BuiltDeck:
     """Resolves media, positions due blocks, and builds one Built record
     per note that produced at least one card, in the family order
     compile_syllabus writes them (word, pair, grapheme, sentence).
     `compile_id` stamps every note's CompileId field (spec 4 section 2);
-    omitted, it is the syllabus state id alone.
+    omitted, it is the syllabus state id alone. `current_rubric`/`prior`/
+    `provenance_source` are current_best's own parameters (wiring.
+    Derivations carries the deck's real ones); build_deck resolves media
+    exactly as the run and the review screen do.
     """
     compile_id = compile_id if compile_id is not None else syllabus.state_id()
-    resolver = _Resolver(db=db, media_store=media_store)
+    resolver = _Resolver(db=db, media_store=media_store, current_rubric=current_rubric,
+                         prior=prior, provenance_source=provenance_source)
     positions = _positions(syllabus)
 
     dropped: list[DroppedCard] = []
@@ -794,7 +813,9 @@ def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore"
 
 
 def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore",
-                     out_path: str | Path, *, force: bool = False,
+                     out_path: str | Path, *, current_rubric: Mapping[str, str],
+                     prior: Sequence[str], provenance_source: Callable[[str], str | None],
+                     force: bool = False,
                      now: Callable[[], float] = time.time) -> Compile:
     report = syllabus.report()
     warnings: list[str] = []
@@ -810,7 +831,9 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     ts = int(now() * 1000)
     compile_id = f"{state_id}:{ts}"
 
-    built_deck = build_deck(syllabus, db, media_store, compile_id=compile_id)
+    built_deck = build_deck(syllabus, db, media_store, compile_id=compile_id,
+                            current_rubric=current_rubric, prior=prior,
+                            provenance_source=provenance_source)
 
     blocking_front_findings = _blocking_findings(built_deck.front_findings, syllabus)
     if blocking_front_findings and not force:

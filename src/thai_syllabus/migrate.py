@@ -35,7 +35,8 @@ from typing import Any
 import genanki
 import yaml
 
-from .cachekeys import JudgeKey, LearnerNoteKey, ProvideKey, WaiverKey
+from .authority import role_for
+from .cachekeys import DirectionKey, JudgeKey, LearnerNoteKey, ProvideKey, WaiverKey
 from .cachekeys import sha as _key_component_sha
 from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
@@ -312,15 +313,16 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
         word_ids_by_key.setdefault(join_key(row["thai"], category), []).append(word_id)
 
         if row.get("image_query") and row.get("image_query_source") == "human":
-            # Not one of spec 3's roster rows (a direction carries no
-            # artifact_sha yet, so the learner Assessor's own
-            # learner:sha(ARTIFACT):ROLE template doesn't fit) -- kept
-            # readable and namespaced under the learner backend anyway.
-            key = f"learner:direction:image_query:{word_id}"
+            # A typed direction on the word's picture (spec 5 section 1
+            # kind 2), role_for("picture", "word") = "picture-for-word".
+            role = role_for("picture", "word")
+            key = DirectionKey(subject=word_id, role=role,
+                              text_sha=_key_component_sha(row["image_query"]))
             _record_once(db, report, "direction", port="assess", backend="learner", key=key,
-                        write=lambda k=key, s=word_id, v=row["image_query"]: db.append(
+                        write=lambda k=key, s=word_id, r=role, v=row["image_query"]: db.append(
                             port="assess", backend="learner", key=k, subject=s,
-                            question={"kind": "direction", "of": "image_query"},
+                            question={"kind": "direction", "role": r,
+                                      "subject_kind": "word"},
                             answer={"direction": v}))
         # Dropped, per spec 2 section 4 item 1: picturable, emphasis,
         # image_query (non-human source), split_of, part_of_speech.

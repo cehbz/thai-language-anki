@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 
 from .assessor import JudgeUnreachable, PreparedQuestion
+from .cachekeys import RunReportKey
 from .attempts import (
     AttemptResult,
     Need,
@@ -222,9 +223,9 @@ def _needs(ctx: Sourcing,
 
 
 def _open_target_count(ctx: Sourcing) -> int:
-    """How many Targets are still unfilled. queued() leaves "sentence"
-    needs out of entries/exhausted/unserved, so this count is the only
-    one reaching attempted/budgeted/deferred for them.
+    """How many Targets are still unfilled. queued() emits no "sentence"
+    entry, exhausted count, or unserved count: this count is the one
+    reaching attempted/budgeted/deferred for them.
     """
     return len(ctx.syllabus.gaps().unfilled_targets)
 
@@ -234,17 +235,13 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     """One Source per need: the cheapest not yet tried since current-best
     last changed. A Source that fails on the wire is skipped for the rest
     of the run; an unreachable judge stops the loop. Returns how many
-    entries it never reached (zero unless a dead judge stopped it),
-    "sentence" entries aside, for run() to defer.
+    entries it never reached (zero unless a dead judge stopped it), for
+    run() to defer.
     """
     dead_sources: set[str] = set()
     for index, entry in enumerate(entries):
-        if entry.kind == "sentence":
-            continue  # the per-run sentence attempt covers every open Target
         need = Need(entry.subject, entry.kind, entry.subject_kind)
         sources = ctx.sources_for(need.kind)
-        if not sources:
-            continue  # no Source serves this kind: it is nobody's to attempt
         source = next_source(ctx.db, need.subject, need.kind, sources)
         if source is None:
             tally.exhausted += 1
@@ -261,7 +258,7 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
         except JudgeUnreachable:
             tally.unreachable = True
             tally.attempted += 1
-            return sum(1 for later in entries[index + 1:] if later.kind != "sentence")
+            return len(entries) - index - 1
         except TransportError as e:
             dead_sources.add(source)
             tally.source_failures[source] = tally.source_failures.get(source, 0) + 1
@@ -443,7 +440,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
     table's primary key is (key_sha, ts), so every call lands its own row.
     """
     record.append(
-        port="run", backend="runreport", key="runreport", subject="run",
+        port="run", backend="runreport", key=RunReportKey(), subject="run",
         question={"kind": "runreport"},
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,

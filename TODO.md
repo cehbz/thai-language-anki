@@ -35,7 +35,11 @@ still run against them.
   category) and reports ambiguous forms; carries candidates.yaml
   verdicts under a legacy rubric id that never ranks; idempotent (run it
   twice, read already_present). Every current picture is judged by the
-  first run.
+  first run. Provider cache rows are keyed by the current ProvideKey
+  encoding (source:kind:query): a syllabus.db written before 2026-09-06
+  would miss every provider cache row and a re-run of migrate into it
+  would duplicate the forvo rows, so migrate only into a fresh
+  syllabus.db.
 - First run, batch judge, smoke-capped per source (`--backend-cap
   NAME=N` is a per-day cap read from the record): expect every picture
   question in one batch, nothing improved, pending == pictures. Second
@@ -108,3 +112,5 @@ still run against them.
 - Meaning vs gloss on Word (a Word's meaning is the sense; the English
   gloss is its L1 rendering).
 - Exercise-latency measure; scene-picture prioritization budget.
+- Gallery note text: the row keeps answer["note"], but only its card-flag
+  label is read (directed(), card_flags); surface the text on the screen.

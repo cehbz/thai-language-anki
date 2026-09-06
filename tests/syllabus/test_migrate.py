@@ -351,7 +351,7 @@ def test_forvo_rows_use_the_spec_3_readable_key(old_deck, old_data, tmp_path):
     db = SyllabusDb(new_root / "syllabus.db")
     answers = [a for a in db.assessments_of("ไก่") if a.backend == "forvo"]  # chicken
     assert len(answers) == 1
-    assert answers[0].key == "forvo:ไก่"  # chicken
+    assert answers[0].key == "forvo::ไก่"  # chicken
     assert answers[0].question["kind"] == "recording"  # record.rows_for reads this back
 
 

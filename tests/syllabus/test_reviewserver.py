@@ -21,12 +21,16 @@ import pytest
 
 from PIL import Image as PILImage
 
+from thai_syllabus import record as record_mod
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
+from thai_syllabus.cachekeys import (DirectionKey, FlagKey, JudgeKey, LearnerKey, MechanicalKey,
+                                    ProvideKey, RunReportKey, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
-from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP
-from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion
+from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, directed
+from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
+from thai_syllabus.media import Provenance
 from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -113,14 +117,16 @@ def _provide(db, subject, kind, backend="openverse", items=(), query=None):
     ask is the attempt; the bytes rows are the candidates it produced.
     """
     params = {"query": query} if query else {}
-    ts = db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{query}",
+    ts = db.append(port="provide", backend=backend,
+                   key=ProvideKey(source=backend, kind="", query=str(query)),
                    subject=subject, question={"kind": kind, "params": params},
                    answer={"items": [i for i in items if not i.get("sha")]})
     for item in items:
         if not item.get("sha"):
             continue
         url = f"https://x/{item['sha']}.jpg"
-        ts = db.append(port="provide", backend="imgfetch", key=url, subject=subject,
+        ts = db.append(port="provide", backend="imgfetch",
+                       key=ProvideKey(source="", kind="", query=url), subject=subject,
                        question={"kind": kind, "params": {"url": url}},
                        answer={"items": [dict(item)]})
     return ts
@@ -131,7 +137,8 @@ def _judge(db, subject, kind, artifact_sha, value, rubric="rubric-v1", evidence=
     answer = {"value": value}
     if evidence:
         answer["evidence"] = evidence
-    return db.append(port="assess", backend="judge", key=f"judge:{subject}:{artifact_sha}",
+    return db.append(port="assess", backend="judge",
+                     key=JudgeKey.for_rule(rubric, artifact_sha, subject, role),
                      subject=subject,
                      question={"role": role, "artifact_sha": artifact_sha, "rubric": rubric,
                               "kind": kind},
@@ -141,7 +148,7 @@ def _judge(db, subject, kind, artifact_sha, value, rubric="rubric-v1", evidence=
 def _learner(db, subject, kind, artifact_sha, rating):
     role = role_for(kind)
     return db.append(port="assess", backend="learner",
-                     key=f"learner:{artifact_sha}:{role}", subject=subject,
+                     key=LearnerKey(artifact_sha=artifact_sha, role=role), subject=subject,
                      question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
                               "kind": "rating"},
                      answer={"value": rating})
@@ -179,6 +186,25 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(deriva
     assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB"}]
 
 
+# --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
+
+def test_gloss_for_a_sentence_subject_is_the_sentences_own_gloss(syllabus):
+    s = Sentence(text="ข้าวอร่อย", gloss="the rice is delicious", voice="learner_voice",
+                provenance=Provenance(source="test", origin="fixture", licence="cc0",
+                                      acquired=date(2026, 1, 1)))
+    with_sentence = dataclasses.replace(syllabus, sentences=(s,))
+    assert rs._gloss_for(with_sentence, s.text_sha, "sentence") == "the rice is delicious"
+
+
+def test_gloss_for_a_pair_subject_joins_the_members_meanings(syllabus, pair, w1, w2):
+    assert rs._gloss_for(syllabus, pair.id, "pair") == f"{w1.meaning} / {w2.meaning}"
+
+
+def test_gloss_for_an_unknown_sentence_or_pair_is_none(syllabus):
+    assert rs._gloss_for(syllabus, "no-such-sha", "sentence") is None
+    assert rs._gloss_for(syllabus, "no-such-pair", "pair") is None
+
+
 def test_build_queue_rate_item_lists_excluded_candidates_and_card_flags(derivations, db, w1):
     """spec 5 section 1 kind 1 / section 3: the rate question carries the
     candidates the judge could never even prepare (this run's own
@@ -188,14 +214,15 @@ def test_build_queue_rate_item_lists_excluded_candidates_and_card_flags(derivati
     _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
     _judge(db, w1.id, "picture", "sA", True)
     missing_sha = "c" * 64
-    db.append(port="run", backend="runreport", key="runreport", subject="run",
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"},
              answer={"excluded_items": [
                  {"subject": w1.id, "artifact_sha": missing_sha,
                   "reason": "artifact not found: " + missing_sha},
                  {"subject": "some-other-word", "artifact_sha": "x", "reason": "irrelevant"},
              ]})
-    db.append(port="assess", backend="learner", key=f"flag:word:{w1.id}:reading:1",
+    db.append(port="assess", backend="learner",
+             key=FlagKey(family="word", anchor=w1.id, card_kind="reading", flags=1),
              subject=w1.id,
              question={"kind": "card-flag", "role": "card-flag", "family": "word",
                       "anchor": w1.id, "card_kind": "reading", "flags": 1},
@@ -296,7 +323,9 @@ def test_verdict_line_never_shows_a_preference_rank_as_pass(db, w1):
     role only).
     """
     from thai_syllabus.derivations import judge_verdict
-    db.append(port="assess", backend="judge", key="judge:pref:sA,sB", subject=w1.id,
+    key = JudgeKey(rubric_sha=sha("r"), identity=preference_identity(["sA", "sB"]),
+                   role="picture-preference")
+    db.append(port="assess", backend="judge", key=key, subject=w1.id,
              question={"role": "picture-preference", "artifact_sha": None, "rubric": "r",
                       "kind": "picture", "params": {"candidates": ["sA", "sB"]}},
              answer={"value": ["sA", "sB"]})
@@ -314,9 +343,9 @@ def _pair_study_row(pair, **overrides) -> StudyRecord:
 def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(
         derivations, db, pair, confusion):
     db.append_study(_pair_study_row(pair))
-    _learner(db, confusion.id, "rendition", "rend-sha", "acceptable")
+    _learner(db, pair.id, "rendition", "rend-sha", "acceptable")
     items = rs.build_queue(derivations, study=db, budget=50)
-    reasks = [i for i in items if i["type"] == "reask" and i["subject"] == confusion.id]
+    reasks = [i for i in items if i["type"] == "reask" and i["subject"] == pair.id]
     assert len(reasks) == 1
     assert reasks[0]["original_answer"] == "acceptable"
     assert reasks[0]["evidence"][0]["anchor"] == pair.id
@@ -399,6 +428,31 @@ def test_append_answer_carries_optional_note(db, w1):
     assert row.answer["note"] == "too blurry"
 
 
+def test_a_rating_on_a_sentence_subject_carries_its_subject_kind(db):
+    """A learner rating row must name the kind of thing its subject is,
+    the same as every other row (record.py's own docstring) --
+    record.subject_kind_of misfiles a scene-for-sentence rating as
+    "word" without it.
+    """
+    rs.append_answer(db, {"subject": "sent-sha", "kind": "picture", "subject_kind": "sentence",
+                          "action": 4, "artifact_sha": "sha1"})
+    rows = db.assessments_of("sent-sha")
+    assert record_mod.subject_kind_of(rows) == "sentence"
+    assert record_mod.ratings_for_role(rows, "scene-for-sentence") != []
+
+
+def test_a_supplied_recording_on_a_sentence_subject_carries_its_subject_kind(
+        tmp_path, derivations, db):
+    ctx = rs.ReviewContext(derivations=derivations)
+    src = tmp_path / "clip.mp3"
+    src.write_bytes(b"fake-mp3-bytes")
+    rs.append_supply(ctx, {"subject": "sent-sha-2", "kind": "recording", "source": "path",
+                          "value": str(src), "subject_kind": "sentence"})
+    rows = db.assessments_of("sent-sha-2")
+    assert record_mod.subject_kind_of(rows) == "sentence"
+    assert record_mod.ratings_for_role(rows, "recording-for-sentence") != []
+
+
 def test_typed_direction_is_a_direction_row_not_a_rating(db, w1):
     """spec 5 section 1 kind 2: "a typed direction is recorded as a
     direction, not a rating" -- record.directions reads it back, and it
@@ -421,7 +475,6 @@ def test_typed_direction_key_is_typed_not_a_rating_key(db, w1):
     rs.append_answer(db, {"subject": w1.id, "kind": "picture",
                           "direction": "a woman pointing at herself"})
     row = db.assessments_of(w1.id)[0]
-    from thai_syllabus.cachekeys import DirectionKey, sha
     expected = DirectionKey(subject=w1.id, role="picture-for-word",
                             text_sha=sha("a woman pointing at herself"))
     assert row.key == expected.encode()
@@ -514,12 +567,15 @@ def test_supplied_picture_is_normalized_recorded_and_visible(tmp_path, derivatio
     assert db.media_provenance(sha)["source"] == "learner"
     assert db.media_provenance(sha)["kind"] == "picture"
     assert ctx.current_best(w1.id, "picture").artifact_sha == sha
-    row = db.assessments_of(w1.id)[0]
-    assert row.answer["value"] == "unacceptable-use-this"
-    assert row.answer["provenance"]["source"] == "learner"
-    assert row.question["kind"] == "rating"  # record.learner_ratings reads this back
-    # no provide row for a local path -- nothing to cache-key against.
-    assert not [r for r in db.assessments_of(w1.id) if r.port == "provide"]
+    rating_row = next(r for r in db.assessments_of(w1.id) if r.port == "assess")
+    assert rating_row.answer["value"] == "unacceptable-use-this"
+    assert rating_row.answer["provenance"]["source"] == "learner"
+    assert rating_row.question["kind"] == "rating"  # record.learner_ratings reads this back
+    # a local path also appends its own provide row (F1 defect 8), so
+    # record.candidate_shas and derivations._anchor_ts see the artifact.
+    provide_rows = [r for r in db.assessments_of(w1.id) if r.port == "provide"]
+    assert len(provide_rows) == 1
+    assert provide_rows[0].answer["items"] == [{"sha": sha, "ext": "png"}]
 
 
 def test_append_supply_from_url_goes_through_imgfetch_provider(derivations, db, media_store, w1):
@@ -580,9 +636,13 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
 
 def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
         tmp_path, derivations, db, media_store, w1):
-    """A local recording is a direct learner act (no Provider backend, no
-    cache key) -- MediaStore.write, not add_image: recordings are never
-    normalized (spec 4 section 3 normalizes pictures only)."""
+    """A local recording is a direct learner act -- MediaStore.write, not
+    add_image: recordings are never normalized (spec 4 section 3
+    normalizes pictures only). It still appends its own `provide` row
+    (backend="learner"), matching what a URL supply gets through
+    Provider.ask; record.candidate_shas and derivations._anchor_ts read
+    the artifact through that row (F1 defect 8).
+    """
     src = tmp_path / "candidate.wav"
     src.write_bytes(b"fake-wav-bytes")
     ctx = rs.ReviewContext(derivations=derivations)
@@ -594,20 +654,53 @@ def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
     assert media_store.path_for(sha, "wav").read_bytes() == b"fake-wav-bytes"
     assert db.media_provenance(sha)["speaker_id"] == "learner"
     assert ctx.current_best(w1.id, "recording").artifact_sha == sha
+    assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "recording"))
+
+
+def test_a_supplied_picture_from_local_path_also_appends_a_provide_row(
+        tmp_path, derivations, db, media_store, w1):
+    """The same fix (F1 defect 8), on the picture ingest path."""
+    src = tmp_path / "candidate.jpg"
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
+    src.write_bytes(buf.getvalue())
+    ctx = rs.ReviewContext(derivations=derivations)
+    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
+                                 "value": str(src)})
+    assert out["ok"] is True
+    sha = out["artifact_sha"]
+    assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "picture"))
 
 
 # --- gallery / notes / drills ------------------------------------------------
 
+def test_reviewserver_has_no_second_card_kind_vocabulary():
+    """reviewserver.py must derive a card's kind the same way
+    anki_import.py does (compile.card_kind_of), not keep a second,
+    family-prefixed vocabulary of its own.
+    """
+    from thai_syllabus import anki_import
+    from thai_syllabus.compile import card_kind_of
+
+    assert not hasattr(rs, "_CARD_KIND_NAMES")
+    for name in ("Reading", "Listening", "Cloze"):
+        assert card_kind_of(name) == name.lower()
+    # anki_import._identify_card's own kind_slug now runs through the
+    # same helper, proven directly here rather than through a full
+    # grapheme/sentence card built with real media on disk.
+    assert anki_import.card_kind_of is card_kind_of
+
+
 def test_gallery_cards_come_from_the_compile(deck_with_history):
     """spec 5 section 1: the proof gallery renders every card the Compile
-    would write. Card kinds are compile.py's own template names (family-
-    prefixed only where two families share a name); every card carries
-    its model's CSS, so the gallery shows what Anki shows (F4).
+    would write. A card's kind is compile.card_kind_of(template_name) --
+    the same bare, lowered template name anki_import.py's own card
+    identity uses (no family prefix; every card carries its model's CSS,
+    so the gallery shows what Anki shows (F4).
     """
     ctx = rs.load_context(deck_with_history)
     kinds = {c["kind"] for c in ctx.cards()}
-    assert kinds <= {"listening", "production", "reading", "spelling", "recognition",
-                     "grapheme-reading", "cloze", "sentence-listening"}
+    assert kinds <= {"listening", "production", "reading", "spelling", "recognition", "cloze"}
     assert all(c["css"] == CARD_CSS for c in ctx.cards())
 
 
@@ -620,7 +713,9 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
 
     _judge(db, w1.id, "picture", "sha-w1", True)
     cards = rs.compiled_cards(derivations)
-    built_deck = build_deck(derivations.syllabus, derivations.db, derivations.media_store)
+    built_deck = build_deck(derivations.syllabus, derivations.db, derivations.media_store,
+                            current_rubric=derivations.current_rubric, prior=derivations.prior,
+                            provenance_source=derivations.provenance_source)
 
     # sequential, in the due order build_deck assigns from Syllabus.order()
     # (spec 5 section 1: "every card rendered ... in introduction order") --
@@ -671,7 +766,9 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id=speaker)
         shas[member] = sha
-    db.append(port="assess", backend="rendition", key=f"rendition:{pair.id}", subject=pair.id,
+    rendition_key = MechanicalKey(check="rendition", params=str(pair.id),
+                                  artifact_sha=rendition_identity(shas))
+    db.append(port="assess", backend="rendition", key=rendition_key, subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),
                       "rubric": None, "kind": "rendition", "subject_kind": "pair",
                       "params": {"members": shas}},
@@ -704,12 +801,29 @@ def test_resolve_media_for_web_rewrites_img_and_sound_to_the_media_route():
 
 
 def test_append_gallery_note_appends_learner_row_not_a_file(db):
-    ts = rs.append_gallery_note(db, card_id="t-rice", kind="target", text="lovely bowl of rice")
+    ts = rs.append_gallery_note(db, subject="t-rice", card_id="t-rice", kind="target",
+                                text="lovely bowl of rice")
     assert isinstance(ts, int)
     rows = db.assessments_of("t-rice")
     assert len(rows) == 1
     assert rows[0].answer == {"kind": "rating", "rating": None, "note": "lovely bowl of rice"}
     assert rows[0].key == "learner:t-rice:card-flag"
+    assert rows[0].question["kind"] == "card-flag"  # derivations.directed()'s own test
+
+
+def test_a_gallery_note_on_a_pair_member_card_directs_the_pair_not_the_member(db, pair):
+    """A minimal-pair card's own MemberKey (e.g. "pair-id:speaker:0") is
+    the row's per-card anchor, never the entity subject
+    derivations.directed() and record.card_flags() key on -- that is the
+    pair's own id (Built.subject vs. card.subject in reviewserver.py's
+    own gallery data, spec 4 section 4).
+    """
+    member_key = f"{pair.id}:speaker-x:0"
+    rs.append_gallery_note(db, subject=pair.id, card_id=member_key, kind="recognition",
+                           text="static on this recording")
+    assert directed(db, pair.id)
+    assert record_mod.card_flags(db.assessments_of(pair.id)) == [f"{member_key}::recognition"]
+    assert db.assessments_of(member_key) == []  # never filed under the per-card anchor
 
 
 def test_append_drill_result_is_study_adjacent_not_study_table(db, confusion, pair):
@@ -749,8 +863,8 @@ def test_compute_stats_counts_ratings_coverage_exhausted_and_drills(
 def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runreport(
         derivations, syllabus, db):
     # run.py's _persist_report convention: port="run", backend="runreport",
-    # key="runreport", subject="run" -- one row per run() call, newest wins.
-    db.append(port="run", backend="runreport", key="runreport", subject="run",
+    # key=RunReportKey(), subject="run" -- one row per run() call, newest wins.
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={}, answer={"attempted": 1, "improved": 0, "exhausted": 0,
                                   "available": 2, "pending": 3, "sentences_adopted": 4},
              cost=0.0)
@@ -785,11 +899,11 @@ def _run_report_answer(**overrides):
 
 @pytest.fixture
 def ctx_with_two_runs(derivations, db):
-    db.append(port="run", backend="runreport", key="runreport", subject="run",
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"},
              answer=_run_report_answer(attempted=1, excluded=1, unreachable=False),
              cost=0.0)
-    db.append(port="run", backend="runreport", key="runreport", subject="run",
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"},
              answer=_run_report_answer(attempted=2, excluded=0, unreachable=True),
              cost=0.0)
@@ -999,18 +1113,21 @@ def deck_with_history(tmp_path):
     deck_db = SyllabusDb(root / "syllabus.db")
     for subject, sha, rubric in (("rice", "pic-rice", "a rubric this deck has moved off"),
                                  ("fish", "pic-fish", current_rubric)):
-        deck_db.append(port="provide", backend="openverse", key=f"openverse:{subject}",
+        deck_db.append(port="provide", backend="openverse",
+                       key=ProvideKey(source="openverse", kind="", query=subject),
                        subject=subject,
                        question={"kind": "picture", "params": {"query": subject}},
                        answer={"items": [{"sha": sha}]})
-        deck_db.append(port="assess", backend="judge", key=f"judge:{sha}:picture-for-word",
+        deck_db.append(port="assess", backend="judge",
+                       key=JudgeKey.for_rule(rubric, sha, subject, "picture-for-word"),
                        subject=subject,
                        question={"role": "picture-for-word", "artifact_sha": sha,
                                 "rubric": rubric, "kind": "picture"},
                        answer={"value": True})
     # one more source asked for rice since its candidate arrived: an attempt
     # the deck's own cap of 1 counts as its last.
-    deck_db.append(port="provide", backend="wikimedia", key="wikimedia:rice", subject="rice",
+    deck_db.append(port="provide", backend="wikimedia",
+                   key=ProvideKey(source="wikimedia", kind="", query="rice"), subject="rice",
                    question={"kind": "picture", "params": {"query": "rice"}},
                    answer={"items": []})
     deck_db.close()
@@ -1106,10 +1223,13 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
         encoding="utf-8")
     deck_db = SyllabusDb(root / "syllabus.db")
-    deck_db.append(port="provide", backend="openverse", key="openverse:orange",
+    deck_db.append(port="provide", backend="openverse",
+                   key=ProvideKey(source="openverse", kind="", query="orange"),
                    subject="orange", question={"kind": "picture", "params": {}},
                    answer={"items": [{"sha": "pic1"}]})
-    deck_db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
+    deck_db.append(port="assess", backend="judge",
+                   key=JudgeKey.for_rule(PICTURE_FIT_RUBRIC, "pic1", "orange",
+                                        "picture-for-word"),
                    subject="orange",
                    question={"role": "picture-for-word", "artifact_sha": "pic1",
                              "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
@@ -1125,4 +1245,33 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
     assert ctx.syllabus.media.picture_sha(WordId("orange")) == "pic1"
     # the rest of ReviewContext is unchanged
     assert ctx.cache is ctx.record
+
+
+def test_load_context_session_cap_comes_from_providers_yaml_learner_quota(tmp_path):
+    """spec 3 section 7's "learner 20/session" is wiring's own
+    budgets["learner"].max_asks, providers.yaml-configurable through the
+    same "quotas" path as forvo's day budget: load_context's
+    ReviewContext takes its session cap from the loaded Derivations
+    bundle, not a reviewserver-local default.
+    """
+    from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+    from thai_syllabus.entities import Category
+    from thai_syllabus.profile import Profile
+
+    root = tmp_path / "deck"
+    words = tuple(word(f"w{i}", f"คำ{i}", f"word {i}") for i in range(5))
+    save_curated(root / "curated", CuratedBundle(
+        words=words,
+        targets=tuple(target(f"w{i}/receptive", f"w{i}") for i in range(5)),
+        graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
+        rulebook=RulebookConfig(),
+        categories=(Category(name="Food", members=frozenset(w.id for w in words)),)))
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas:\n  learner: {max_asks: 3}\n", encoding="utf-8")
+
+    ctx = rs.load_context(root)
+
+    assert ctx.learner_budget == 3
+    assert len(ctx.questions()) == 3
     assert ctx.syllabus.assessments is ctx.cache

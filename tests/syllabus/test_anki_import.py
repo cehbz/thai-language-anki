@@ -87,7 +87,8 @@ def compiled(fx):
     to a plain collection.anki2 path ready for synthetic edits + import.
     """
     syllabus = _fully_seeded(fx)
-    compile_result = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_result = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "extracted")
     return fx, compile_result, collection_path
 
@@ -103,7 +104,8 @@ def test_revlog_import_appends_a_study_row_with_the_revlogs_own_ts(compiled):
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.revlog_imported == 1
 
     records = fx.db.records("word", "rice", "listening")
@@ -123,8 +125,10 @@ def test_revlog_import_is_idempotent_by_family_anchor_kind_and_ts(compiled):
     conn.commit()
     conn.close()
 
-    r1 = import_collection(collection_path, fx.db)
-    r2 = import_collection(collection_path, fx.db)
+    r1 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    r2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert r1.revlog_imported == 1
     assert r2.revlog_imported == 0
     assert r2.revlog_skipped >= 1
@@ -140,8 +144,10 @@ def test_revlog_import_reports_a_duplicate_as_skipped_already_present(compiled):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
-    r2 = import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    r2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert any(k == "revlog" and reason == "skipped: already present"
               for k, ident, reason in r2.skips)
 
@@ -155,7 +161,8 @@ def test_revlog_import_skips_an_unrecognized_card_with_a_reason(compiled):
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.revlog_skipped >= 1
     assert any(k == "revlog" and "999999999" in ident for k, ident, reason in report.skips)
 
@@ -178,7 +185,8 @@ def test_flag_on_a_production_card_with_a_current_picture_is_a_rating(compiled):
                            provenance_source=lambda s: None)
     assert picture.artifact_sha is not None
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     rows = fx.db.assessments_of("rice")
@@ -211,7 +219,8 @@ def test_flag_on_a_production_card_with_no_current_picture_is_a_card_flag(compil
     assert current_best(fx.db, "rice", "picture", current_rubric={}, prior=(),
                         provenance_source=lambda s: None).artifact_sha is None
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     rows = fx.db.assessments_of("rice")
@@ -228,7 +237,8 @@ def test_card_flag_on_a_reading_card_is_a_card_flag_row(compiled):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     rows = fx.db.assessments_of("rice")
     assert any(a.question.get("kind") == "card-flag" and a.question["family"] == "word"
@@ -241,7 +251,8 @@ def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
 
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_role_extracted")
 
     conn = _open_rw(collection_path)
@@ -250,7 +261,8 @@ def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     rows = [a for a in fx.db.assessments_of(text_sha) if a.backend == "learner"]
     assert rows and rows[-1].question["role"] == "recording-for-sentence"
@@ -265,7 +277,8 @@ def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(f
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
     fx.seed_picture(text_sha, "a man eating rice")
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flag_extracted")
 
     conn = _open_rw(collection_path)
@@ -279,7 +292,8 @@ def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(f
                          provenance_source=lambda s: None)
     assert scene.artifact_sha is not None
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     rating_rows = [r for r in fx.db.assessments_of(text_sha)
@@ -295,7 +309,8 @@ def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
 
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_noscene_extracted")
 
     conn = _open_rw(collection_path)
@@ -304,7 +319,8 @@ def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     rows = fx.db.assessments_of(text_sha)
     assert any(r.question.get("kind") == "card-flag" and r.question.get("card_kind") == "cloze"
@@ -320,9 +336,11 @@ def test_flag_import_is_idempotent(compiled):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     n = len(fx.db.assessments_of("rice"))
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert len(fx.db.assessments_of("rice")) == n
 
 
@@ -338,7 +356,8 @@ def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(comp
     before = current_best(fx.db, "rice", "recording", current_rubric={}, prior=(),
                           provenance_source=lambda s: None)
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     after = current_best(fx.db, "rice", "recording", current_rubric={}, prior=(),
@@ -362,8 +381,10 @@ def test_flag_import_is_idempotent_per_flags_state(compiled):
     conn.commit()
     conn.close()
 
-    import_collection(collection_path, fx.db)
-    report2 = import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    report2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report2.flags_imported == 0
     assert report2.flags_skipped >= 1
 
@@ -418,7 +439,8 @@ def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
     syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pair_flag_extracted")
 
     conn = _open_rw(collection_path)
@@ -427,7 +449,8 @@ def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     rows = fx.db.assessments_of("p1")
@@ -444,7 +467,8 @@ def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
 
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_extracted")
 
     conn = _open_rw(collection_path)
@@ -453,12 +477,52 @@ def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.flags_imported == 1
 
     rows = fx.db.assessments_of(text_sha)
     flag_rows = [r for r in rows if r.backend == "learner"]
     assert len(flag_rows) >= 1
+
+
+# --- reasks over a real import ---------------------------------------------
+
+def test_a_lapsed_sentence_card_imported_into_a_real_db_yields_one_sentence_reask(fx):
+    # derivations.reasks keys a sentence's StudyRecords by the sentence's
+    # own text_sha -- the entity subject import_collection writes revlog
+    # rows under (never a per-Target anchor); this walks a real
+    # SyllabusDb built by a real import, not only a fake StudyReader.
+    from thai_syllabus.cachekeys import LearnerKey
+    from thai_syllabus.derivations import reasks
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_reask_extracted")
+
+    fx.db.append(port="assess", backend="learner",
+                key=LearnerKey(artifact_sha="a" * 64, role="recording-for-sentence"),
+                subject=text_sha,
+                question={"role": "recording-for-sentence", "artifact_sha": "a" * 64,
+                         "rubric": None, "kind": "rating"},
+                answer={"value": "good"})
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                (1_700_000_000_000, card_id, 0, 1, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+    found = reasks(fx.db, fx.db, syllabus)
+    assert [(r.subject, r.kind, r.subject_kind, r.rating) for r in found] == \
+           [(text_sha, "recording", "sentence", "good")]
 
 
 # --- ReviewNote harvest ----------------------------------------------------
@@ -479,7 +543,8 @@ def test_review_note_row_is_keyed_by_anchor(compiled):
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.notes_harvested == 1
     assert any(a.key.startswith("learner-note:rice:") for a in fx.db.assessments_of("rice"))
 
@@ -493,7 +558,8 @@ def test_review_note_harvest_appends_a_learner_row_keyed_by_anchor_and_text_sha(
     conn.commit()
     conn.close()
 
-    report = import_collection(collection_path, fx.db)
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report.notes_harvested == 1
 
     rows = fx.db.assessments_of("rice")
@@ -513,8 +579,10 @@ def test_review_note_reharvest_of_the_same_text_is_a_no_op(compiled):
     conn.commit()
     conn.close()
 
-    r1 = import_collection(collection_path, fx.db)
-    r2 = import_collection(collection_path, fx.db)
+    r1 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    r2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert r1.notes_harvested == 1
     assert r2.notes_harvested == 0
     assert r2.notes_skipped >= 1
@@ -529,14 +597,16 @@ def test_review_note_edited_text_is_a_new_row(compiled):
     _set_review_note(conn, note_id, idx, "first version")
     conn.commit()
     conn.close()
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     conn = _open_rw(collection_path)
     _set_review_note(conn, note_id, idx, "edited version")
     conn.commit()
     conn.close()
 
-    report2 = import_collection(collection_path, fx.db)
+    report2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report2.notes_harvested == 1
     rows = fx.db.assessments_of("rice")
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
@@ -552,14 +622,16 @@ def test_review_note_cleared_field_appends_nothing_and_retracts_nothing(compiled
     _set_review_note(conn, note_id, idx, "a note")
     conn.commit()
     conn.close()
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     conn = _open_rw(collection_path)
     _set_review_note(conn, note_id, idx, "")
     conn.commit()
     conn.close()
 
-    report2 = import_collection(collection_path, fx.db)
+    report2 = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert report2.notes_harvested == 0
     rows = fx.db.assessments_of("rice")
     harvest_rows = [r for r in rows if r.backend == "learner-note"]
@@ -576,7 +648,8 @@ def test_pair_member_cards_have_distinct_anchors(fx):
     syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pair_extracted")
 
     identities = card_identities(collection_path)
@@ -589,7 +662,8 @@ def test_pair_member_cards_have_distinct_anchors(fx):
 def test_import_does_not_modify_the_collection_file(compiled):
     fx, compile_result, collection_path = compiled
     before = collection_path.read_bytes()
-    import_collection(collection_path, fx.db)
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     after = collection_path.read_bytes()
     assert before == after
 

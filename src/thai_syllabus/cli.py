@@ -25,8 +25,7 @@ from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
 from .run import Budget
 from .run import run as run_pipeline
-from .store import MediaStore, SyllabusDb
-from .wiring import build_sourcing, default_budgets, load_syllabus
+from .wiring import build_sourcing, default_budgets, load_derivations
 
 
 def _providers_config_path(deck: Path) -> Path:
@@ -34,11 +33,13 @@ def _providers_config_path(deck: Path) -> Path:
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
-    syllabus = load_syllabus(args.deck)
-    db = SyllabusDb(args.deck / "syllabus.db")
-    media_store = MediaStore(args.deck / "media")
+    derivations = load_derivations(args.deck)
     try:
-        result = compile_syllabus(syllabus, db, media_store, args.out, force=args.force)
+        result = compile_syllabus(derivations.syllabus, derivations.db, derivations.media_store,
+                                  args.out, force=args.force,
+                                  current_rubric=derivations.current_rubric,
+                                  prior=derivations.prior,
+                                  provenance_source=derivations.provenance_source)
     except GateRefusal as e:
         print(f"compile refused: gate is closed ({e.blocking} finding(s)); "
              f"pass --force to compile anyway")
@@ -152,8 +153,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "review":
         return reviewserver.main(["--deck", str(args.deck), "--port", str(args.port)])
     if args.command == "import":
-        db = SyllabusDb(args.deck / "syllabus.db")
-        report = anki_import.import_collection(args.collection, db)
+        derivations = load_derivations(args.deck)
+        report = anki_import.import_collection(
+            args.collection, derivations.db, current_rubric=derivations.current_rubric,
+            prior=derivations.prior, provenance_source=derivations.provenance_source)
         print(report)
         return 0
     if args.command == "compile":

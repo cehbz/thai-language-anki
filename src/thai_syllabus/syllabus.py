@@ -183,12 +183,16 @@ class Syllabus:
     # --- fills() -----------------------------------------------------------
 
     @staticmethod
-    def _boundary_match(tokens: list[str], thai: str) -> bool:
+    def mentions_at(tokens: list[str], thai: str) -> bool:
+        """Whether `thai` matches one of `tokens` at a boundary (exact, or
+        a compound starting or ending with it) -- the one boundary rule
+        fills(), mentions() and compile.thai_cloze's blanking all share.
+        """
         return any(tok == thai or tok.startswith(thai) or tok.endswith(thai)
                   for tok in tokens)
 
     def _words_used(self, tokens: list[str]) -> set[WordId]:
-        return {w.id for w in self.words if self._boundary_match(tokens, w.thai)}
+        return {w.id for w in self.words if self.mentions_at(tokens, w.thai)}
 
     @staticmethod
     def _has_lexical_content(tok: str) -> bool:
@@ -210,14 +214,14 @@ class Syllabus:
         """Whether `thai` appears in `sentence.text` at a token boundary
         (rulebook helper: exposes the same boundary rule fills() uses).
         """
-        return self._boundary_match(self.tokenizer.tokens(sentence.text), thai)
+        return self.mentions_at(self.tokenizer.tokens(sentence.text), thai)
 
     def fills(self, sentence: Sentence, target: Target) -> bool:
         tokens = self.tokenizer.tokens(sentence.text)
         target_word = self.word(target.word)
 
         # clause 1: word at a token boundary
-        if not self._boundary_match(tokens, target_word.thai):
+        if not self.mentions_at(tokens, target_word.thai):
             return False
 
         # clause 2: voice satisfies skill (other_voice fills receptive only)

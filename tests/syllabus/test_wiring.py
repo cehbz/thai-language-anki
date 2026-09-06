@@ -19,7 +19,7 @@ import yaml
 
 from thai_syllabus import secrets as secrets_mod
 from thai_syllabus.assessor import Assessor, Price
-from thai_syllabus.cachekeys import JudgeKey, sha
+from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
     JudgeConfig,
@@ -143,7 +143,7 @@ def test_resolving_the_pexels_backend_reads_only_the_pexels_secret(
     resolved = provider._backends["pexels"]._resolve()
     assert calls == ["pexels"]
     assert resolved.cache_key(Question(subject="s", provides="picture",
-                                       params={"query": "cat"})).encode() == "pexels:cat"
+                                       params={"query": "cat"})).encode() == "pexels::cat"
 
 
 def test_an_openverse_ask_never_touches_any_secret(cfg, db, media_store, monkeypatch):
@@ -432,14 +432,16 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
 
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
-    db.append(port="provide", backend="openverse", key="openverse:rice",
+    db.append(port="provide", backend="openverse",
+             key=ProvideKey(source="openverse", kind="", query="rice"),
              subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "abc"}]}, cost=0.0)
     # rubric must match load_syllabus's own rubrics_for(rules) (the default
     # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
     # threads current_rubric through current_best (Task 11), so a verdict
     # under a stale/mismatched rubric would not count.
-    db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(PICTURE_FIT_RUBRIC, "abc", "rice", "picture-for-word"),
              subject="rice",
              question={"role": "picture-for-word", "artifact_sha": "abc",
                       "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
@@ -453,22 +455,26 @@ def test_load_syllabus_media_index_reflects_current_best(tmp_path):
 
 def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_best(db):
     from datetime import date
-    db.append(port="provide", backend="openverse", key="openverse:rice",
+    db.append(port="provide", backend="openverse",
+             key=ProvideKey(source="openverse", kind="", query="rice"),
              subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "abc"}]}, cost=0.0)
-    db.append(port="assess", backend="judge", key="judge:x:abc:picture-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(None, "abc", "rice", "picture-for-word"),
              subject="rice",
              question={"role": "picture-for-word", "artifact_sha": "abc", "rubric": None,
                       "kind": "picture"},
              answer={"value": True}, cost=0.0)
-    db.append(port="provide", backend="forvo", key="forvo:rice",
+    db.append(port="provide", backend="forvo",
+             key=ProvideKey(source="forvo", kind="", query="rice"),
              subject="rice", question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec1"}]}, cost=0.0)
     # derivations.current_best does not yet rank a bare "mechanical" pass
     # for recordings (Task 5 adds that) -- a judge pass under role
     # "recording-for-word" is what makes a recording candidate current-best
     # today.
-    db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(None, "rec1", "rice", "recording-for-word"),
              subject="rice",
              question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None,
                       "kind": "recording"},
@@ -517,10 +523,12 @@ def _seed_member_recording(db, subject, sha, speaker_id, sex="unknown",
                            age_band="unknown", region="unknown"):
     db.add_speaker(Speaker(id=speaker_id, kind="native", sex=sex,
                            age_band=age_band, region=region))
-    db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
+    db.append(port="provide", backend="forvo",
+             key=ProvideKey(source="forvo", kind="", query=subject),
              subject=subject, question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": sha}]}, cost=0.0)
-    db.append(port="assess", backend="judge", key=f"judge:x:{sha}:recording-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(None, sha, subject, "recording-for-word"),
              subject=subject,
              question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None,
                       "kind": "recording"},
@@ -546,7 +554,8 @@ def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_ro
 
     # the "rendition" mechanical backend's own row shape.
     db.append(port="assess", backend="rendition",
-             key=f"mech:rendition:{pair.id}:joined", subject=pair.id,
+             key=MechanicalKey(check="rendition", params=str(pair.id), artifact_sha="joined"),
+             subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
@@ -609,7 +618,8 @@ def test_speakers_of_rendition_returns_the_pairs_rendition_speaker_once(db):
     # best rendition rows resolve to the SAME speaker, so speakers_of must
     # report it once, not twice.
     db.append(port="assess", backend="rendition",
-             key=f"mech:rendition:{pair.id}:joined", subject=pair.id,
+             key=MechanicalKey(check="rendition", params=str(pair.id), artifact_sha="joined"),
+             subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-rendition",
@@ -631,7 +641,8 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     _seed_member_recording(db, "near", "sha-near-own", "somchai")
     _seed_member_recording(db, "far", "sha-far-own", "somchai")
     db.append(port="assess", backend="rendition",
-             key=f"mech:rendition:{real_pair.id}:joined", subject=real_pair.id,
+             key=MechanicalKey(check="rendition", params=str(real_pair.id), artifact_sha="joined"),
+             subject=real_pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
                       "params": {"members": {"near": "sha-near-own", "far": "sha-far-own"}}},

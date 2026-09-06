@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
-from .cachekeys import DirectionKey, DrillKey, LearnerKey, WaiverKey, sha
-from .compile import CARD_CSS, build_deck, field_values, render_card, tag_value
+from .cachekeys import DirectionKey, DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey, sha
+from .compile import CARD_CSS, build_deck, card_kind_of, field_values, render_card, tag_value
 from .derivations import (
     DEFAULT_REASK_LAPSES,
     LEARNER_RANK,
@@ -48,6 +48,7 @@ from .derivations import (
     queue,
     reasks,
 )
+from .ids import PairId
 from .media import Speaker
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
@@ -61,6 +62,7 @@ from .record import (
     run_reports,
     source_asks,
 )
+from .run import LEARNER_DEFAULT_SESSION_BUDGET
 from .store import MediaStore
 from .syllabus import Syllabus
 
@@ -74,7 +76,6 @@ __all__ = [
 ]
 
 DEFAULT_PORT = 8877          # 8765 is reserved for AnkiConnect / proof_gallery.py
-DEFAULT_LEARNER_BUDGET = 20  # spec 3 section 4: session default, ~25 min
 
 # The rank an artifact must reach to count as covered (spec 5 section 3's
 # current-best coverage per need).
@@ -100,7 +101,23 @@ def _exhausted(d: "Derivations", subject: str, kind: str) -> ExhaustedStatus:
                      attempt_cap=d.attempt_cap)
 
 
-def _gloss_for(syllabus: Syllabus, subject: str) -> str | None:
+def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
+    """The English gloss a question shows beside its subject (spec 5
+    section 1 kind 1): a sentence's own gloss, a pair's members' meanings
+    joined, else a word's meaning. None when nothing matches.
+    """
+    if subject_kind == "sentence":
+        try:
+            return syllabus.sentence(subject).gloss
+        except KeyError:
+            return None
+    if subject_kind == "pair":
+        try:
+            pair = syllabus.pair(PairId(subject))
+        except KeyError:
+            return None
+        meanings = [w.meaning for m in pair.members if (w := syllabus.find_word(m)) is not None]
+        return " / ".join(meanings) if meanings else None
     word = syllabus.find_word(subject)
     return word.meaning if word is not None else None
 
@@ -136,7 +153,7 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
     return {
         "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role_for(kind, subject_kind),
-        "gloss": _gloss_for(d.syllabus, subject), "query": latest_query(rows),
+        "gloss": _gloss_for(d.syllabus, subject, subject_kind), "query": latest_query(rows),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
         # spec 5 section 1 kind 1 / section 3: candidates the judge could
@@ -184,7 +201,7 @@ def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind:
     rows = rows_for(d.db, subject, kind)
     return {
         "type": "direction", "subject": subject, "kind": kind, "subject_kind": subject_kind,
-        "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject),
+        "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject, subject_kind),
         "tried": _tried_summary(rows), "candidates": _tried_candidates(d, subject, kind, rows),
         "attempts": attempts,
     }
@@ -195,7 +212,7 @@ def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, 
         "type": "challenger", "subject": challenger.subject, "kind": challenger.kind,
         "subject_kind": challenger.subject_kind,
         "role": role_for(challenger.kind, challenger.subject_kind),
-        "gloss": _gloss_for(d.syllabus, challenger.subject),
+        "gloss": _gloss_for(d.syllabus, challenger.subject, challenger.subject_kind),
         "current": _artifact(challenger.current_sha),
         "challenger": _artifact(challenger.challenger_sha),
     }
@@ -214,7 +231,7 @@ def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any
             "type": "reask", "subject": found.subject, "kind": found.kind,
             "subject_kind": found.subject_kind,
             "role": role_for(found.kind, found.subject_kind),
-            "gloss": _gloss_for(d.syllabus, found.subject),
+            "gloss": _gloss_for(d.syllabus, found.subject, found.subject_kind),
             "original_answer": found.rating,
             "current": _artifact(best.artifact_sha),
             "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
@@ -224,10 +241,11 @@ def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any
 
 
 def build_queue(d: "Derivations", study: StudyReader | None = None, *,
-                budget: int = DEFAULT_LEARNER_BUDGET) -> list[dict[str, Any]]:
+                budget: int) -> list[dict[str, Any]]:
     """The question session (spec 5 section 1): four kinds from
     derivations.py under `d`'s parameters, capped by the learner-attention
-    budget. The F10-ordered rate questions fill it first; direction
+    budget (spec 3 section 7's "learner" Budget, ReviewContext's own
+    learner_budget). The F10-ordered rate questions fill it first; direction
     requests, challenger comparisons and re-asks fill what is left. A
     kind with no derivation input yields no questions.
     """
@@ -268,21 +286,6 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
 # note's own model template -- the gallery composes no card shape of its
 # own (principles F4: the learner judges the artifact the card will show).
 
-# Card kind = (model name, template name), lowercase, family-prefixed only
-# where two families' template names collide (word/grapheme both have
-# "Reading"; word/sentence both have "Listening") -- otherwise the bare
-# template name (spec 4 section 1's own card names).
-_CARD_KIND_NAMES: dict[tuple[str, str], str] = {
-    ("word", "Listening"): "listening",
-    ("word", "Production"): "production",
-    ("word", "Reading"): "reading",
-    ("word", "Spelling"): "spelling",
-    ("minimal_pair", "Recognition"): "recognition",
-    ("grapheme", "Reading"): "grapheme-reading",
-    ("sentence", "Cloze"): "cloze",
-    ("sentence", "Listening"): "sentence-listening",
-}
-
 _MEDIA_IMG_RE = re.compile(r'<img src="([^".]+)\.[A-Za-z0-9]+">')
 _MEDIA_SOUND_RE = re.compile(r'\[sound:([^.\]]+)\.[A-Za-z0-9]+\]')
 
@@ -314,7 +317,8 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
     note `confusion` and `stimulus_member`, which the gallery's pair
     drill logs against.
     """
-    built_deck = build_deck(d.syllabus, d.db, d.media_store)
+    built_deck = build_deck(d.syllabus, d.db, d.media_store, current_rubric=d.current_rubric,
+                            prior=d.prior, provenance_source=d.provenance_source)
     ordered = sorted(built_deck.built, key=lambda item: item.base_due)
 
     cards: list[dict[str, Any]] = []
@@ -324,7 +328,7 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
         entity_subject = tag_value(item.note, _ENTITY_TAG_PREFIX[item.family])
         for card in item.note.cards:
             template_name = item.model.templates[card.ord]["name"]
-            kind = _CARD_KIND_NAMES[(item.model.name, template_name)]
+            kind = card_kind_of(template_name)
             front, back = render_card(item.model, item.note, card.ord)
             entry: dict[str, Any] = {
                 "index": len(cards), "id": item.subject, "family": item.family,
@@ -343,14 +347,19 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
 
 # --- writes: notes, drills, answers, supply ---------------------------------
 
-def append_gallery_note(record: RecordWriter, *, card_id: str, kind: str, text: str) -> int:
-    """One gallery note as a learner assessment row (spec 5 section 1),
-    under role "card-flag" (AUTHORITY_ORDER's learner-only role).
+def append_gallery_note(record: RecordWriter, *, subject: str, card_id: str, kind: str,
+                        text: str) -> int:
+    """One gallery note as a card-level flag row (spec 4 section 4's
+    shape; spec 5 section 1), under role "card-flag" (AUTHORITY_ORDER's
+    learner-only role). `subject` is the card's own entity subject
+    (card.subject: a word/pair/grapheme/sentence id); `card_id` is the
+    row's own per-card anchor, `kind` its card_kind.
     """
     role = "card-flag"
     key = LearnerKey(artifact_sha=str(card_id), role=role)
-    return record.append(port="assess", backend="learner", key=key, subject=str(card_id),
-                         question={"role": role, "kind": kind, "card_id": card_id},
+    return record.append(port="assess", backend="learner", key=key, subject=str(subject),
+                         question={"role": role, "kind": "card-flag",
+                                  "anchor": str(card_id), "card_kind": kind},
                          answer={"kind": "rating", "rating": None, "note": text})
 
 
@@ -442,7 +451,7 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
     key = LearnerKey(artifact_sha=artifact_sha, role=role)
     ts = record.append(port="assess", backend="learner", key=key, subject=subject,
                        question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
-                                "kind": "rating"},
+                                "kind": "rating", "subject_kind": subject_kind},
                        answer=answer)
     return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": artifact_sha}
 
@@ -501,8 +510,25 @@ def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], s
     if source == "path":
         data = Path(value).read_bytes()
         ingest = ctx.media_store.add_image(data, _guessed_ext(value, payload, "picture"))
+        _append_supply_provide_row(ctx, subject=subject, value=value, kind="picture",
+                                   provides="picture-bytes", sha=ingest.sha, ext=ingest.ext,
+                                   subject_kind=payload.get("subject_kind", "word"))
         return ingest.sha, ingest.ext
     raise ValueError(f"unknown supply source {source!r}")
+
+
+def _append_supply_provide_row(ctx: "ReviewContext", *, subject: str, value: str, kind: str,
+                               provides: str, sha: str, ext: str, subject_kind: str) -> None:
+    """The provide row a local-path supply owes (spec 3 section 1: "an
+    attempt appends"), matching what a URL supply already gets through
+    Provider.ask. record.candidate_shas and derivations._anchor_ts read
+    this row to see the artifact a path supply added.
+    """
+    ctx.record.append(port="provide", backend="learner",
+                      key=ProvideKey(source="learner", kind="", query=value), subject=subject,
+                      question={"provides": provides, "kind": kind, "subject_kind": subject_kind,
+                               "params": {"path": value}},
+                      answer={"items": [{"sha": sha, "ext": ext}]})
 
 
 def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
@@ -527,7 +553,11 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
     if source == "path":
         data = Path(value).read_bytes()
         ext = _guessed_ext(value, payload, "recording")
-        return ctx.media_store.write(data, ext), ext
+        sha = ctx.media_store.write(data, ext)
+        _append_supply_provide_row(ctx, subject=subject, value=value, kind="recording",
+                                   provides="recording-bytes", sha=sha, ext=ext,
+                                   subject_kind=payload.get("subject_kind", "word"))
+        return sha, ext
     raise ValueError(f"unknown supply source {source!r}")
 
 
@@ -538,9 +568,9 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
     for a picture, audiofetch/MediaStore.write for a recording), then a
     provenance row with source=learner and, for a recording, the
     "learner" Speaker row. A URL goes through Provider.ask, appending its
-    own cache-first `provide` row; a local path appends none. Either way
-    the artifact lands with an implicit use-this rating, so
-    derivations.current_best picks it.
+    own cache-first `provide` row; a local path appends its own
+    (backend="learner"). Either way the artifact lands with an implicit
+    use-this rating, so derivations.current_best picks it.
     """
     subject, kind = payload["subject"], payload["kind"]
     source, value = payload["source"], payload["value"]
@@ -559,7 +589,8 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
                                  origin=value, licence="learner", acquired=date.today(),
                                  speaker_id=speaker_id)
 
-    role = payload.get("role") or role_for(kind, payload.get("subject_kind", "word"))
+    subject_kind = payload.get("subject_kind", "word")
+    role = payload.get("role") or role_for(kind, subject_kind)
     key = LearnerKey(artifact_sha=artifact_sha, role=role)
     answer_row: dict[str, Any] = {
         "value": "unacceptable-use-this",
@@ -569,7 +600,7 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
         answer_row["note"] = payload["note"]
     ts = ctx.record.append(port="assess", backend="learner", key=key, subject=subject,
                            question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
-                                    "kind": "rating"},
+                                    "kind": "rating", "subject_kind": subject_kind},
                            answer=answer_row)
     return {"ok": True, "ts": ts, "artifact_sha": artifact_sha}
 
@@ -641,7 +672,7 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     exhausted_count = sum(1 for subject, kind, _ in available_needs(d.syllabus)
                          if _exhausted(d, subject, kind).exhausted)
 
-    runreport = d.db.latest("run", "runreport", "runreport")
+    runreport = d.db.latest("run", "runreport", RunReportKey())
     runreport_answer = runreport.answer if runreport else {}
 
     return {
@@ -670,6 +701,18 @@ def _find_media_file(media_store: MediaStore, ext: str | None, sha: str) -> Path
     return path if path.exists() else None
 
 
+def _learner_session_budget(d: "Derivations") -> int:
+    """The question session's cap (spec 3 section 7's "learner 20/session",
+    spec 5 section 1): budgets["learner"].max_asks off the same loaded
+    Derivations bundle build_sourcing's own run() reads, falling back to
+    run.LEARNER_DEFAULT_SESSION_BUDGET for a bundle carrying no "learner"
+    entry (a bare Derivations built outside wiring.load_derivations).
+    """
+    budget = d.budgets.get("learner")
+    cap = budget.max_asks if budget is not None else None
+    return cap if cap is not None else LEARNER_DEFAULT_SESSION_BUDGET.max_asks
+
+
 @dataclass
 class ReviewContext:
     """One review session over one deck: its Derivations (the run's own
@@ -679,7 +722,10 @@ class ReviewContext:
     """
     derivations: "Derivations"
     study: StudyReader | None = None
-    learner_budget: int = DEFAULT_LEARNER_BUDGET
+    # None resolves in __post_init__ to derivations.budgets["learner"]'s
+    # own max_asks (spec 3 section 7), the same one Budget build_sourcing's
+    # run() reads -- an explicit value here (the CLI's --budget) overrides it.
+    learner_budget: int | None = None
     # A supplied artifact's URL fetcher, by kind (spec 5 section 1 kind 2:
     # imgfetch for pictures, audiofetch for recordings -- a recording URL
     # sent to imgfetch is refused, since imgfetch expects an image).
@@ -693,6 +739,8 @@ class ReviewContext:
         fetchers.setdefault("picture", tool_fetcher("imgfetch"))
         fetchers.setdefault("recording", tool_fetcher("audiofetch"))
         self.url_fetchers = fetchers
+        if self.learner_budget is None:
+            self.learner_budget = _learner_session_budget(self.derivations)
 
     @property
     def syllabus(self) -> Syllabus:
@@ -813,7 +861,9 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                     self._send_json(result)
                 elif parsed.path == "/api/note":
                     card_id = payload.get("card_id", payload.get("id"))
-                    ts = append_gallery_note(ctx.record, card_id=str(card_id),
+                    subject = payload.get("subject") or card_id
+                    ts = append_gallery_note(ctx.record, subject=str(subject),
+                                             card_id=str(card_id),
                                              kind=payload.get("kind", "note"),
                                              text=payload.get("text", ""))
                     self._send_json({"ok": True, "ts": ts})
@@ -842,16 +892,18 @@ def serve(ctx: ReviewContext, port: int) -> None:
         httpd.server_close()
 
 
-def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_BUDGET
+def load_context(deck_dir: str | Path, *, learner_budget: int | None = None
                  ) -> ReviewContext:
     """A ReviewContext over a deck directory (spec 2 section 1 layout).
     wiring.load_derivations supplies the same assembly build_sourcing
     hands the run: the Syllabus, one db connection as CacheReader/
-    RecordWriter/StudyReader, and the deck's rubric, provenance prior,
-    Source roster and attempt cap; the screen adds no parameter of its
-    own. The supplied-URL fetchers are providers.yaml's own
-    imgfetch_path/audiofetch_path. wiring is imported inside the function,
-    off cli.py's import path.
+    RecordWriter/StudyReader, the deck's rubric, provenance prior, Source
+    roster, attempt cap and budgets; the screen adds no parameter of its
+    own. `learner_budget` left None takes the session cap from that
+    bundle's own budgets["learner"] (spec 3 section 7); an explicit value
+    (the CLI's --budget) overrides it. The supplied-URL fetchers are
+    providers.yaml's own imgfetch_path/audiofetch_path. wiring is imported
+    inside the function, off cli.py's import path.
     """
     from .curated import load_providers_config
     from .wiring import load_derivations
@@ -869,8 +921,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", required=True, type=Path, help="deck directory (spec 2 layout)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--budget", type=int, default=DEFAULT_LEARNER_BUDGET,
-                        help="learner-attention session budget (spec 3 section 4)")
+    parser.add_argument("--budget", type=int, default=None,
+                        help="learner-attention session budget override (spec 3 section 7's "
+                             "\"learner\" Budget; default: providers.yaml's own quota)")
     args = parser.parse_args(argv)
 
     ctx = load_context(args.deck, learner_budget=args.budget)
@@ -1311,7 +1364,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     if (mode !== "gallery" || !galleryCards.length) { return; }
     var card = galleryCards[gIdx];
     openBox("noteInput", "noteText", function (text) {
-      postJson("/api/note", { card_id: card.id, kind: card.kind, text: text });
+      postJson("/api/note", { subject: card.subject, card_id: card.id, kind: card.kind, text: text });
     });
   }
 

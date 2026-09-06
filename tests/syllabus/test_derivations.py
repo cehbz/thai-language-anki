@@ -34,9 +34,10 @@ from thai_syllabus.derivations import (
     reasks,
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
-from thai_syllabus.cachekeys import BatchMarkerKey
+from thai_syllabus.cachekeys import (BatchMarkerKey, JudgeKey, MechanicalKey, ProvideKey,
+                                    preference_identity)
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, text_sha
-from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.syllabus import Syllabus
@@ -418,12 +419,21 @@ def test_directed_false_with_no_flags_at_all(cache):
 class _FakeGaps:
     def __init__(self, words_missing_pictures=(), words_missing_recordings=(),
                 unfilled_targets=(), missing_renditions=(),
-                graphemes_missing_keyword_data=()):
+                graphemes_missing_keyword_data=(), sentence_recordings=(),
+                scene_pictures=()):
         self.words_missing_pictures = words_missing_pictures
         self.words_missing_recordings = words_missing_recordings
         self.unfilled_targets = unfilled_targets
         self.missing_renditions = missing_renditions
         self.graphemes_missing_keyword_data = graphemes_missing_keyword_data
+        self.sentence_recordings = sentence_recordings
+        self.scene_pictures = scene_pictures
+
+
+@dataclass
+class _FakePair:
+    id: str
+    confusion: str
 
 
 @dataclass
@@ -494,6 +504,25 @@ def test_grapheme_keyword_needs_with_no_source_count_as_unserved(cache):
 def test_a_need_no_source_serves_reports_zero_unserved(cache):
     found = _queued(_one_word_syllabus(), cache)
     assert found.unserved == 0
+
+
+def test_exhausted_attempt_count_does_not_grow_from_a_learner_supply(cache):
+    """I2: a learner supply is an answer, not a Source ask, and does not
+    count toward exhausted()'s attempt count."""
+    cache.rows.append(provide_row("rice", "picture", backend="learner", ts=_next_ts()))
+    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8)
+    assert status.attempts == 0
+
+
+def test_queued_never_emits_a_sentence_entry_for_a_directed_subject(cache):
+    """I1: the run's own sentence attempt serves every open Target once
+    per run -- queued() emits no "sentence"-kind entry, directed or not.
+    """
+    cache.rows.append(direction_row("rice"))
+    syllabus = _FakeSyllabus(_FakeGaps(unfilled_targets=("t1",)),
+                             targets=[target("t1", "rice")])
+    found = _queued(syllabus, cache, sources_for=no_sources)
+    assert found.entries == []
 
 
 def test_bucket_1_when_no_artifact_exists(cache):
@@ -607,16 +636,31 @@ def test_card_flag_directs_the_subject(cache):
 # --- available_needs ---------------------------------------------------
 
 def test_available_needs_names_each_gap_with_its_subject_kind():
+    pair = _FakePair(id="p-rice-near", confusion="tone:mid-low")
     syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",),
                                        words_missing_recordings=("rice",),
                                        missing_renditions=("tone:mid-low",),
-                                       graphemes_missing_keyword_data=("k",)))
+                                       graphemes_missing_keyword_data=("k",),
+                                       sentence_recordings=("s1",),
+                                       scene_pictures=("s1",)),
+                             pairs=[pair])
     assert available_needs(syllabus) == [
         ("rice", "picture", "word"),
         ("rice", "recording", "word"),
-        ("tone:mid-low", "rendition", "pair"),
+        ("p-rice-near", "rendition", "pair"),
+        ("s1", "recording", "sentence"),
+        ("s1", "picture", "sentence"),
         ("k", "grapheme-keyword", "grapheme"),
     ]
+
+
+def test_available_needs_ignores_a_pair_whose_confusion_is_covered():
+    """A pair not named in gaps.missing_renditions (its confusion is
+    already covered) never becomes a rendition need.
+    """
+    pair = _FakePair(id="p-covered", confusion="tone:high-low")
+    syllabus = _FakeSyllabus(_FakeGaps(missing_renditions=()), pairs=[pair])
+    assert available_needs(syllabus) == []
 
 
 # --- all_needs -----------------------------------------------------------
@@ -784,6 +828,58 @@ def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
     assert found == []
 
 
+def test_reasks_produces_a_rendition_reask_keyed_by_pair_id(cache):
+    """I3: a rendition reask is keyed by the pair's own id -- the same id
+    attempts/all_needs/available_needs key a rendition need by -- not its
+    confusion.
+    """
+    pair = MinimalPair(id=PairId("p1"), confusion=ConfusionId("tone:mid-low"),
+                       members=(WordId("a"), WordId("b")))
+    syllabus = SimpleNamespace(words=[], sentences=[], confusions=[], pairs=[pair], targets=[])
+    cache.rows.append(Answer(port="assess", backend="learner", key="learner:p1:sha1", key_sha="x",
+                             subject="p1",
+                             question={"role": "rendition-for-pair", "artifact_sha": "sha1",
+                                      "rubric": None, "kind": "rating"},
+                             answer={"value": "good"}, cost=0.0, ts=_next_ts()))
+
+    class _Study:
+        def records(self, family, anchor, card_kind):
+            if (family, anchor, card_kind) == ("minimal_pair", "p1", "recognition"):
+                return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                    compile_id="c1", ts=i, grade=1, time_ms=100)
+                       for i in range(2)]
+            return []
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
+    assert [(r.subject, r.kind, r.subject_kind) for r in found] == [("p1", "rendition", "pair")]
+
+
+def test_reasks_produces_a_sentence_reask_keyed_by_text_sha(cache):
+    """I3: the sentence branch keys its StudyRecords by the sentence's own
+    text_sha -- the entity subject anki_import.py writes study rows
+    under, never a per-Target anchor.
+    """
+    s = sentence("ข้าว", gloss="rice")  # rice
+    syllabus = SimpleNamespace(words=[], pairs=[], confusions=[], sentences=[s], targets=[])
+    cache.rows.append(Answer(port="assess", backend="learner", key=f"learner:{s.text_sha}:sha1",
+                             key_sha="x", subject=s.text_sha,
+                             question={"role": "scene-for-sentence", "artifact_sha": "sha1",
+                                      "rubric": None, "kind": "rating"},
+                             answer={"value": "good"}, cost=0.0, ts=_next_ts()))
+
+    class _Study:
+        def records(self, family, anchor_arg, card_kind):
+            if (family, anchor_arg, card_kind) == ("sentence", s.text_sha, "cloze"):
+                return [StudyRecord(family=family, anchor=anchor_arg, card_kind=card_kind,
+                                    compile_id="c1", ts=i, grade=1, time_ms=100)
+                       for i in range(2)]
+            return []
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
+    assert [(r.subject, r.kind, r.subject_kind) for r in found] == \
+           [(s.text_sha, "picture", "sentence")]
+
+
 # --- confusion_weights ----------------------------------------------------
 
 class _FakeStudyReader:
@@ -845,7 +941,8 @@ def test_confusion_weights_increases_with_lapse_rate():
 # FakeCache: they need genuine `assessments_of` ordering/newest-wins.
 
 def _provide(db, subject, kind, backend, shas, ts=None):
-    db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{len(shas)}",
+    key = ProvideKey(source=backend, kind="", query=f"{subject}:{len(shas)}")
+    db.append(port="provide", backend=backend, key=key,
               subject=subject, question={"kind": kind, "params": {}},
               answer={"items": [{"sha": s} for s in shas]}, ts=ts)
 
@@ -854,7 +951,11 @@ _KIND_BY_ROLE = {"picture-for-word": "picture", "recording-for-word": "recording
 
 
 def _verdict(db, subject, backend, role, sha, value, rubric="r"):
-    db.append(port="assess", backend=backend, key=f"{backend}:{rubric}:{sha}:{role}",
+    if backend == "mechanical":
+        key = MechanicalKey(check=role, params=rubric or "", artifact_sha=sha)
+    else:
+        key = JudgeKey.for_rule(rubric, sha, subject, role)
+    db.append(port="assess", backend=backend, key=key,
               subject=subject, question={"role": role, "artifact_sha": sha, "rubric": rubric,
                                         "kind": _KIND_BY_ROLE[role]},
               answer={"value": value})
@@ -894,7 +995,9 @@ def test_preference_orders_passing_pictures(db):
     _provide(db, "w", "picture", "openverse", ["a", "b", "c"])
     for s in "abc":
         _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
-    db.append(port="assess", backend="judge", key="judge:x:abc:picture-preference", subject="w",
+    db.append(port="assess", backend="judge",
+              key=JudgeKey(rubric_sha="x", identity="abc", role="picture-preference"),
+              subject="w",
               question={"role": "picture-preference", "artifact_sha": None, "rubric": "pref",
                         "kind": "picture", "params": {"candidates": ["a", "b", "c"]}},
               answer={"value": ["b", "c", "a"]})
@@ -910,8 +1013,9 @@ _FIT = {"picture-for-word": "fit", "picture-preference": "pref"}
 
 
 def _preference_row(db, subject, candidates, rubric="pref"):
-    db.append(port="assess", backend="judge",
-              key=f"judge:x:{'-'.join(candidates)}:picture-preference", subject=subject,
+    key = JudgeKey(rubric_sha="x", identity=preference_identity(candidates),
+                   role="picture-preference")
+    db.append(port="assess", backend="judge", key=key, subject=subject,
               question={"role": "picture-preference", "artifact_sha": None, "rubric": rubric,
                         "kind": "picture", "params": {"candidates": list(candidates)}},
               answer={"value": list(candidates)})
@@ -962,9 +1066,11 @@ def test_provenance_prior_breaks_ties_below_one_rank_point(db):
 
     from thai_syllabus.attempts import provenance_source_for
 
-    db.append(port="provide", backend="forvo", key="forvo:w", subject="w",
+    db.append(port="provide", backend="forvo",
+             key=ProvideKey(source="forvo", kind="", query="w"), subject="w",
              question={"kind": "recording", "params": {"word": "w"}}, answer={"items": []})
-    db.append(port="provide", backend="audiofetch", key="https://forvo.example/f.mp3",
+    db.append(port="provide", backend="audiofetch",
+             key=ProvideKey(source="", kind="", query="https://forvo.example/f.mp3"),
              subject="w",
              question={"kind": "recording", "params": {"url": "https://forvo.example/f.mp3"}},
              answer={"items": [{"sha": "f", "ext": "mp3"}]})
@@ -972,7 +1078,8 @@ def test_provenance_prior_breaks_ties_below_one_rank_point(db):
                 origin="https://forvo.example/f.mp3", licence="cc-by",
                 acquired=date(2026, 1, 1))
 
-    db.append(port="provide", backend="tts", key="tts:w", subject="w",
+    db.append(port="provide", backend="tts",
+             key=ProvideKey(source="tts", kind="", query="w"), subject="w",
              question={"kind": "recording", "params": {"text": "w"}},
              answer={"items": [{"sha": "t", "ext": "mp3", "voice": "v1"}]})
     db.add_media(sha="t", kind="recording", ext="mp3", source="tts", origin="v1",
@@ -1108,6 +1215,19 @@ def test_a_draft_already_adopted_is_not_offered_again(cache):
 def test_a_stale_judge_verdict_does_not_make_a_draft_adoptable(cache):
     _drafted(cache)
     cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="old-R")]
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+_GLOSSLESS_DRAFT_JSON = ('{"sentences": [{"text": "กิน", "gloss": "", '
+                         '"targets": ["eat/receptive"]}]}')          # กิน: eat
+
+
+def test_adoptable_drafts_drops_a_draft_with_an_empty_gloss(cache):
+    cache.rows.append(provide_row("sentence-drafts", "sentence", backend="llm-sentence",
+                                  items=[]))
+    cache.rows[-1].answer["items"] = [_GLOSSLESS_DRAFT_JSON]
+    cache.rows += [_fills_row(), _sentence_verdict("judge", True, rubric="R")]
     assert adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 

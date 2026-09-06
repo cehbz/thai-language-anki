@@ -23,7 +23,7 @@ from datetime import date
 from pathlib import Path
 
 from thai_syllabus.authority import ROLE_FOR_KIND
-from thai_syllabus.cachekeys import rendition_identity
+from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
     Target, Word,
@@ -135,9 +135,10 @@ class SyllabusWorld:
                    out_path=tmp_path / "out" / "deck.apkg")
 
     def _pass_judge(self, subject: str, kind: str, sha: str) -> None:
+        role = ROLE_FOR_KIND.get(kind, kind)
         self.db.append(port="assess", backend="judge",
-                       key=f"judge:seed:{sha}:{kind}", subject=subject,
-                       question={"role": ROLE_FOR_KIND.get(kind, kind),
+                       key=JudgeKey.for_rule("seed", sha, subject, role), subject=subject,
+                       question={"role": role,
                                 "artifact_sha": sha, "rubric": "seed", "kind": kind},
                        answer={"value": True})
 
@@ -147,7 +148,8 @@ class SyllabusWorld:
         self.db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
                           origin="https://forvo.com/x", licence="cc-by",
                           acquired=date(2026, 1, 1), speaker_id=speaker)
-        self.db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
+        self.db.append(port="provide", backend="forvo",
+                       key=ProvideKey(source="forvo", kind="", query=subject),
                        subject=subject, question={"provides": "recording", "kind": "recording"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "recording", sha)
@@ -158,7 +160,8 @@ class SyllabusWorld:
         self.db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
                           origin="https://example.com/x.jpg", licence="cc0",
                           acquired=date(2026, 1, 1))
-        self.db.append(port="provide", backend="openverse", key=f"openverse:{subject}",
+        self.db.append(port="provide", backend="openverse",
+                       key=ProvideKey(source="openverse", kind="", query=subject),
                        subject=subject, question={"provides": "picture", "kind": "picture"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "picture", sha)
@@ -180,7 +183,9 @@ class SyllabusWorld:
                               origin="https://forvo.com/x", licence="cc-by",
                               acquired=date(2026, 1, 1), speaker_id=speaker)
             shas[member] = sha
-        self.db.append(port="assess", backend="rendition", key=f"rendition:{pair.id}",
+        self.db.append(port="assess", backend="rendition",
+                       key=MechanicalKey(check="rendition", params=str(pair.id),
+                                        artifact_sha=rendition_identity(shas)),
                        subject=pair.id,
                        question={"role": "rendition-for-pair",
                                 "artifact_sha": rendition_identity(shas),

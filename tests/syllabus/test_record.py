@@ -4,6 +4,7 @@ by each row's own explicit question["kind"] -- never inferred from a
 """
 import pytest
 
+from thai_syllabus.cachekeys import DirectionKey, JudgeKey, LearnerKey, ProvideKey, sha
 from thai_syllabus.record import (
     asks_since,
     candidate_shas,
@@ -26,9 +27,12 @@ def cache(tmp_path):
 
 
 def test_rows_for_selects_by_explicit_kind(cache):
-    cache.append("provide", "openverse", "k1", "rice", {"kind": "picture", "query": "rice"}, {"items": []}, 0)
-    cache.append("provide", "imgfetch", "k2", "rice", {"kind": "picture", "url": "u"}, {"items": [{"sha": "a"*64}]}, 0)
-    cache.append("provide", "forvo", "k3", "rice", {"kind": "recording"}, {"items": []}, 0)
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "rice", {"kind": "picture", "query": "rice"}, {"items": []}, 0)
+    cache.append("provide", "imgfetch", ProvideKey(source="", kind="", query="k2"),
+                "rice", {"kind": "picture", "url": "u"}, {"items": [{"sha": "a"*64}]}, 0)
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="k3"),
+                "rice", {"kind": "recording"}, {"items": []}, 0)
     rows = rows_for(cache, "rice", "picture")
     assert [r.backend for r in rows] == ["openverse", "imgfetch"]
     assert [r.backend for r in source_asks(rows)] == ["openverse"]
@@ -36,37 +40,56 @@ def test_rows_for_selects_by_explicit_kind(cache):
 
 
 def test_rows_for_ignores_a_row_with_no_matching_kind(cache):
-    cache.append("provide", "forvo", "k1", "rice", {"kind": "recording"}, {"items": []}, 0)
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="k1"),
+                "rice", {"kind": "recording"}, {"items": []}, 0)
     assert rows_for(cache, "rice", "picture") == []
 
 
 def test_source_asks_excludes_audiofetch_too(cache):
-    cache.append("provide", "forvo", "k1", "w", {"kind": "recording"}, {"items": []}, 0)
-    cache.append("provide", "audiofetch", "k2", "w", {"kind": "recording"},
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="k1"),
+                "w", {"kind": "recording"}, {"items": []}, 0)
+    cache.append("provide", "audiofetch", ProvideKey(source="", kind="", query="k2"),
+                "w", {"kind": "recording"},
                 {"items": [{"sha": "b" * 64}]}, 0)
     rows = rows_for(cache, "w", "recording")
     assert [r.backend for r in source_asks(rows)] == ["forvo"]
 
 
+def test_source_asks_excludes_a_learner_supply_row_too(cache):
+    """I2: a learner supply is an answer, not a Source ask (spec 3
+    section 1's vocabulary)."""
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "w", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0)
+    cache.append("provide", "learner", ProvideKey(source="learner", kind="", query="/tmp/x.jpg"),
+                "w", {"kind": "picture", "params": {"path": "/tmp/x.jpg"}},
+                {"items": [{"sha": "c" * 64}]}, 0)
+    rows = rows_for(cache, "w", "picture")
+    assert [r.backend for r in source_asks(rows)] == ["openverse"]
+
+
 def test_candidate_shas_is_first_seen_order_across_rows(cache):
-    cache.append("provide", "openverse", "k1", "w", {"kind": "picture"},
-                {"items": []}, 0)
-    cache.append("provide", "imgfetch", "k2", "w", {"kind": "picture"},
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "w", {"kind": "picture"}, {"items": []}, 0)
+    cache.append("provide", "imgfetch", ProvideKey(source="", kind="", query="k2"),
+                "w", {"kind": "picture"},
                 {"items": [{"sha": "s1"}, {"sha": "s2"}]}, 0)
-    cache.append("provide", "imgfetch", "k3", "w", {"kind": "picture"},
+    cache.append("provide", "imgfetch", ProvideKey(source="", kind="", query="k3"),
+                "w", {"kind": "picture"},
                 {"items": [{"sha": "s2"}, {"sha": "s3"}]}, 0)
     rows = rows_for(cache, "w", "picture")
     assert candidate_shas(rows) == ["s1", "s2", "s3"]
 
 
 def test_learner_ratings_selects_only_rating_kind_rows_newest_last(cache):
-    cache.append("assess", "learner", "learner:w:s1", "w",
-                {"kind": "direction", "role": "picture-for-word"}, {"direction": "try red"}, 0)
-    cache.append("assess", "learner", "learner:w:s1", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "learner",
+                DirectionKey(subject="w", role="picture-for-word", text_sha=sha("try red")),
+                "w", {"kind": "direction", "role": "picture-for-word"},
+                {"direction": "try red"}, 0)
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s1", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": "acceptable"}, 0)
-    cache.append("assess", "learner", "learner:w:s2", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s2"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s2", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s2"},
                 {"value": "good"}, 0)
     rows = cache.assessments_of("w")
     ratings = learner_ratings(rows)
@@ -74,11 +97,12 @@ def test_learner_ratings_selects_only_rating_kind_rows_newest_last(cache):
 
 
 def test_directions_selects_only_direction_kind_rows(cache):
-    cache.append("assess", "learner", "learner:w:1", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s1", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": "acceptable"}, 0)
-    cache.append("assess", "learner", "learner:direction:w", "w",
-                {"kind": "direction", "of": "image_query"}, {"direction": "try red"}, 0)
+    cache.append("assess", "learner",
+                DirectionKey(subject="w", role="picture-for-word", text_sha=sha("try red")),
+                "w", {"kind": "direction", "of": "image_query"}, {"direction": "try red"}, 0)
     rows = cache.assessments_of("w")
     result = directions(rows)
     assert len(result) == 1
@@ -89,14 +113,14 @@ def test_ratings_for_role_scopes_one_subjects_ratings_to_one_need(cache):
     # Two needs on the same subject (a word's picture and recording
     # ratings) must not bleed into each other -- both rows carry
     # kind="rating"; only the role tells them apart.
-    cache.append("assess", "learner", "learner:w:s1", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s1", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": "acceptable"}, 0)
-    cache.append("assess", "learner", "learner:w:s2", "w",
-                {"kind": "rating", "role": "recording-for-word", "artifact_sha": "s2"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s2", role="recording-for-word"),
+                "w", {"kind": "rating", "role": "recording-for-word", "artifact_sha": "s2"},
                 {"value": "good"}, 0)
-    cache.append("assess", "learner", "learner:w:s3", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s3"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s3", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s3"},
                 {"value": "bogus-not-a-real-rating"}, 0)
     rows = cache.assessments_of("w")
     picture_ratings = ratings_for_role(rows, "picture-for-word")
@@ -105,14 +129,14 @@ def test_ratings_for_role_scopes_one_subjects_ratings_to_one_need(cache):
 
 
 def test_latest_rating_is_the_newest_value_under_that_role(cache):
-    cache.append("assess", "learner", "learner:w:s1", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s1", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": "acceptable"}, 0)
-    cache.append("assess", "learner", "learner:w:s2", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s2"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s2", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s2"},
                 {"value": "good"}, 0)
-    cache.append("assess", "learner", "learner:w:s3", "w",
-                {"kind": "rating", "role": "recording-for-word", "artifact_sha": "s3"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s3", role="recording-for-word"),
+                "w", {"kind": "rating", "role": "recording-for-word", "artifact_sha": "s3"},
                 {"value": "unacceptable-none"}, 0)
     rows = cache.assessments_of("w")
     assert latest_rating(rows, "picture-for-word") == "good"
@@ -120,18 +144,18 @@ def test_latest_rating_is_the_newest_value_under_that_role(cache):
 
 
 def test_latest_rating_is_none_when_the_role_has_no_rating(cache):
-    cache.append("assess", "learner", "learner:w:s1", "w",
-                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "learner", LearnerKey(artifact_sha="s1", role="picture-for-word"),
+                "w", {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": "good"}, 0)
     assert latest_rating(cache.assessments_of("w"), "recording-for-word") is None
 
 
 def test_judge_verdicts_selects_by_role(cache):
-    cache.append("assess", "judge", "judge:w:s1", "w",
-                {"kind": "picture", "role": "picture-for-word", "artifact_sha": "s1"},
+    cache.append("assess", "judge", JudgeKey.for_rule(None, "s1", "w", "picture-for-word"),
+                "w", {"kind": "picture", "role": "picture-for-word", "artifact_sha": "s1"},
                 {"value": True}, 0)
-    cache.append("assess", "judge", "judge:w:pref", "w",
-                {"kind": "picture", "role": "picture-preference", "artifact_sha": None},
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "w-pref", "picture-preference"),
+                "w", {"kind": "picture", "role": "picture-preference", "artifact_sha": None},
                 {"value": ["s1"]}, 0)
     rows = cache.assessments_of("w")
     fit = judge_verdicts(rows, "picture-for-word")
@@ -139,10 +163,10 @@ def test_judge_verdicts_selects_by_role(cache):
 
 
 def test_latest_query_reads_the_newest_source_asks_params(cache):
-    cache.append("provide", "openverse", "k1", "w", {"kind": "picture", "params": {"query": "old"}},
-                {"items": []}, 0)
-    cache.append("provide", "openverse", "k2", "w", {"kind": "picture", "params": {"query": "new"}},
-                {"items": []}, 0)
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="old"),
+                "w", {"kind": "picture", "params": {"query": "old"}}, {"items": []}, 0)
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="new"),
+                "w", {"kind": "picture", "params": {"query": "new"}}, {"items": []}, 0)
     rows = rows_for(cache, "w", "picture")
     assert latest_query(rows) == "new"
 
@@ -151,25 +175,38 @@ def test_latest_query_is_none_with_no_source_ask(cache):
     assert latest_query([]) is None
 
 
+def test_latest_query_ignores_a_later_learner_supply_row(cache):
+    """I2: record.latest_query still returns the prior search phrase
+    after a local-path supply -- the supply is not a Source ask."""
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="rice"),
+                "w", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0)
+    cache.append("provide", "learner", ProvideKey(source="learner", kind="", query="/tmp/x.jpg"),
+                "w", {"kind": "picture", "params": {"path": "/tmp/x.jpg"}},
+                {"items": [{"sha": "c" * 64}]}, 0)
+    rows = rows_for(cache, "w", "picture")
+    assert latest_query(rows) == "rice"
+
+
 # --- the spend window a per-day budget is measured over --------------------
 
 def test_asks_since_counts_that_backend_s_source_asks_in_the_window(cache):
-    cache.append("provide", "forvo", "k1", "rice", {"kind": "recording"}, {"items": []},
-                 1.0, ts=100)
-    cache.append("provide", "forvo", "k2", "fish", {"kind": "recording"}, {"items": []},
-                 2.0, ts=300)
-    cache.append("provide", "tts", "k3", "rice", {"kind": "recording"}, {"items": []},
-                 0.5, ts=300)
-    cache.append("provide", "audiofetch", "k4", "rice", {"kind": "recording"},
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="rice"),
+                "rice", {"kind": "recording"}, {"items": []}, 1.0, ts=100)
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="fish"),
+                "fish", {"kind": "recording"}, {"items": []}, 2.0, ts=300)
+    cache.append("provide", "tts", ProvideKey(source="tts", kind="", query=sha("rice")),
+                "rice", {"kind": "recording"}, {"items": []}, 0.5, ts=300)
+    cache.append("provide", "audiofetch", ProvideKey(source="", kind="", query="k4"),
+                 "rice", {"kind": "recording"},
                  {"items": []}, 0.0, ts=300)   # bytes, not a Source ask
     assert asks_since(cache, "forvo", 200) == 1
     assert asks_since(cache, "forvo", 0) == 2
 
 
 def test_spend_since_sums_the_cost_of_those_asks(cache):
-    cache.append("provide", "forvo", "k1", "rice", {"kind": "recording"}, {"items": []},
-                 1.0, ts=100)
-    cache.append("provide", "forvo", "k2", "fish", {"kind": "recording"}, {"items": []},
-                 2.5, ts=300)
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="rice"),
+                "rice", {"kind": "recording"}, {"items": []}, 1.0, ts=100)
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="fish"),
+                "fish", {"kind": "recording"}, {"items": []}, 2.5, ts=300)
     assert spend_since(cache, "forvo", 200) == pytest.approx(2.5)
     assert spend_since(cache, "forvo", 0) == pytest.approx(3.5)

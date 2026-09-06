@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from thai_syllabus.cachekeys import JudgeKey, WaiverKey, sha
+from thai_syllabus.cachekeys import JudgeKey, LearnerKey, MechanicalKey, ProvideKey, WaiverKey, sha
 from thai_syllabus.media import Speaker
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.rules import Finding
@@ -77,7 +77,8 @@ def test_journal_mode_is_wal(db):
 def test_reopening_an_existing_db_does_not_lose_data(tmp_path):
     path = tmp_path / "syllabus.db"
     db1 = SyllabusDb(path)
-    db1.append(port="assess", backend="judge", key="k1", subject="s1",
+    db1.append(port="assess", backend="judge",
+               key=JudgeKey(rubric_sha="k1", identity="k1", role="k1"), subject="s1",
                question={"q": 1}, answer={"a": 1})
     db2 = SyllabusDb(path)
     assert len(db2.assessments_of("s1")) == 1
@@ -86,7 +87,8 @@ def test_reopening_an_existing_db_does_not_lose_data(tmp_path):
 # --- cache / RecordWriter / AssessmentReader ---------------------------
 
 def test_append_is_readable_via_assessments_of(db):
-    db.append(port="assess", backend="judge", key="k1", subject="subj-1",
+    db.append(port="assess", backend="judge",
+              key=JudgeKey(rubric_sha="k1", identity="k1", role="k1"), subject="subj-1",
               question={"rule": "r"}, answer={"verdict": True}, cost=0.5)
     answers = db.assessments_of("subj-1")
     assert len(answers) == 1
@@ -99,16 +101,19 @@ def test_append_is_readable_via_assessments_of(db):
 
 
 def test_cache_row_keeps_the_readable_key_alongside_its_hash(db):
-    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+    key = ProvideKey(source="forvo", kind="", query="ไก่")
+    db.append(port="provide", backend="forvo", key=key, subject="ไก่",
               question={"word": "ไก่"}, answer={"items": []})  # forvo:chicken
     answer = db.assessments_of("ไก่")[0]
-    assert answer.key == "forvo:ไก่"  # chicken
+    key_text = key.encode()
+    assert answer.key == key_text
     import hashlib
-    assert answer.key_sha == hashlib.sha256("forvo:ไก่".encode()).hexdigest()
+    assert answer.key_sha == hashlib.sha256(key_text.encode()).hexdigest()
 
 
 def test_append_returns_the_ts_the_row_was_written_under(db):
-    ts = db.append(port="provide", backend="forvo", key="forvo:x", subject="x",
+    ts = db.append(port="provide", backend="forvo",
+                   key=ProvideKey(source="forvo", kind="", query="x"), subject="x",
                    question={}, answer={"items": []})
     answer = db.assessments_of("x")[0]
     assert answer.ts == ts
@@ -117,36 +122,43 @@ def test_append_returns_the_ts_the_row_was_written_under(db):
 # --- CacheReader.latest(): the cache-first hit lookup ------------------
 
 def test_latest_is_none_on_a_cache_miss(db):
-    assert db.latest("provide", "forvo", "forvo:missing") is None
+    assert db.latest("provide", "forvo", ProvideKey(source="forvo", kind="",
+                                                    query="missing")) is None
 
 
 def test_latest_returns_the_newest_row_for_an_exact_key(db):
-    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+    key = ProvideKey(source="forvo", kind="", query="ไก่")
+    db.append(port="provide", backend="forvo", key=key, subject="ไก่",
               question={}, answer={"items": [1]})  # chicken
-    db.append(port="provide", backend="forvo", key="forvo:ไก่", subject="ไก่",
+    db.append(port="provide", backend="forvo", key=key, subject="ไก่",
               question={}, answer={"items": [2]})
-    hit = db.latest("provide", "forvo", "forvo:ไก่")
+    hit = db.latest("provide", "forvo", key)
     assert hit.answer == {"items": [2]}
 
 
 def test_latest_does_not_cross_backends_on_the_same_key_text(db):
-    # same literal key string, different backend -- must not collide.
-    db.append(port="provide", backend="forvo", key="same-key", subject="s",
+    # same literal key, different backend -- must not collide.
+    key = ProvideKey(source="", kind="", query="same-key")
+    db.append(port="provide", backend="forvo", key=key, subject="s",
               question={}, answer={"items": ["forvo"]})
-    db.append(port="provide", backend="tts", key="same-key", subject="s",
+    db.append(port="provide", backend="tts", key=key, subject="s",
               question={}, answer={"items": ["tts"]})
-    assert db.latest("provide", "forvo", "same-key").answer == {"items": ["forvo"]}
-    assert db.latest("provide", "tts", "same-key").answer == {"items": ["tts"]}
+    assert db.latest("provide", "forvo", key).answer == {"items": ["forvo"]}
+    assert db.latest("provide", "tts", key).answer == {"items": ["tts"]}
 
 
 def test_rows_since_returns_that_port_and_backend_from_the_window_onward(db):
-    db.append(port="provide", backend="forvo", key="k1", subject="rice",
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k1"), subject="rice",
               question={"kind": "recording"}, answer={"items": []}, cost=1.0, ts=100)
-    db.append(port="provide", backend="forvo", key="k2", subject="fish",
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k2"), subject="fish",
               question={"kind": "recording"}, answer={"items": []}, cost=2.0, ts=300)
-    db.append(port="provide", backend="tts", key="k3", subject="rice",
+    db.append(port="provide", backend="tts",
+              key=ProvideKey(source="tts", kind="", query="k3"), subject="rice",
               question={"kind": "recording"}, answer={"items": []}, cost=0.0, ts=300)
-    db.append(port="assess", backend="forvo", key="k4", subject="rice",
+    db.append(port="assess", backend="forvo",
+              key=MechanicalKey(check="k4", params="", artifact_sha=""), subject="rice",
               question={"kind": "recording"}, answer={"value": True}, cost=0.0, ts=300)
     rows = db.rows_since("provide", "forvo", 200)
     assert [(r.subject, r.cost) for r in rows] == [("fish", 2.0)]
@@ -159,9 +171,10 @@ def test_satisfies_the_cache_reader_protocol(db):
 
 
 def test_reask_appends_a_new_row_never_updates(db):
-    db.append(port="assess", backend="learner", key="k1", subject="subj-1",
+    key = LearnerKey(artifact_sha="k1", role="k1")
+    db.append(port="assess", backend="learner", key=key, subject="subj-1",
               question={"q": 1}, answer={"rating": "good"})
-    db.append(port="assess", backend="learner", key="k1", subject="subj-1",
+    db.append(port="assess", backend="learner", key=key, subject="subj-1",
               question={"q": 1}, answer={"rating": "bad"})
     con = sqlite3.connect(db.path)
     n = con.execute("select count(*) from cache").fetchone()[0]
@@ -169,9 +182,10 @@ def test_reask_appends_a_new_row_never_updates(db):
 
 
 def test_assessments_of_orders_newest_last(db):
-    db.append(port="assess", backend="learner", key="k1", subject="subj-1",
+    key = LearnerKey(artifact_sha="k1", role="k1")
+    db.append(port="assess", backend="learner", key=key, subject="subj-1",
               question={}, answer={"n": 1})
-    db.append(port="assess", backend="learner", key="k1", subject="subj-1",
+    db.append(port="assess", backend="learner", key=key, subject="subj-1",
               question={}, answer={"n": 2})
     answers = db.assessments_of("subj-1")
     assert [a.answer["n"] for a in answers] == [1, 2]

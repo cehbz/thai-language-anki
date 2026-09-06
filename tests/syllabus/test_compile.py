@@ -14,7 +14,7 @@ from datetime import date
 import pytest
 
 from thai_syllabus.authority import ROLE_FOR_KIND
-from thai_syllabus.cachekeys import rendition_identity
+from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.compile import (
     GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
     compile_syllabus, thai_cloze,
@@ -103,9 +103,10 @@ class Fixture:
         # a bare provide row alone is just an untried candidate. Seed a
         # trivial passing judge verdict so compile.py's current_best lookups
         # resolve these fixture artifacts.
+        role = ROLE_FOR_KIND.get(kind, kind)
         self.db.append(port="assess", backend="judge",
-                       key=f"judge:seed:{sha}:{kind}", subject=subject,
-                       question={"role": ROLE_FOR_KIND.get(kind, kind), "artifact_sha": sha,
+                       key=JudgeKey.for_rule("seed", sha, subject, role), subject=subject,
+                       question={"role": role, "artifact_sha": sha,
                                 "rubric": "seed", "kind": kind},
                        answer={"value": True})
 
@@ -115,7 +116,8 @@ class Fixture:
         self.db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
                           origin="https://forvo.com/x", licence="cc-by",
                           acquired=date(2026, 1, 1), speaker_id=speaker)
-        self.db.append(port="provide", backend="forvo", key=f"forvo:{subject}",
+        self.db.append(port="provide", backend="forvo",
+                       key=ProvideKey(source="forvo", kind="", query=subject),
                        subject=subject, question={"provides": "recording", "kind": "recording"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "recording", sha)
@@ -126,7 +128,8 @@ class Fixture:
         self.db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
                           origin="https://example.com/x.jpg", licence="cc0",
                           acquired=date(2026, 1, 1))
-        self.db.append(port="provide", backend="openverse", key=f"openverse:{subject}",
+        self.db.append(port="provide", backend="openverse",
+                       key=ProvideKey(source="openverse", kind="", query=subject),
                        subject=subject, question={"provides": "picture", "kind": "picture"},
                        answer={"items": [{"sha": sha}]})
         self._pass_judge(subject, "picture", sha)
@@ -148,7 +151,9 @@ class Fixture:
                               origin="https://forvo.com/x", licence="cc-by",
                               acquired=date(2026, 1, 1), speaker_id=speaker)
             shas[member] = sha
-        self.db.append(port="assess", backend="rendition", key=f"rendition:{pair.id}",
+        self.db.append(port="assess", backend="rendition",
+                       key=MechanicalKey(check="rendition", params=str(pair.id),
+                                        artifact_sha=rendition_identity(shas)),
                        subject=pair.id,
                        question={"role": "rendition-for-pair",
                                 "artifact_sha": rendition_identity(shas),
@@ -244,6 +249,30 @@ def test_thai_cloze_never_touches_a_non_matching_token():
     assert thai_cloze(tokens, "ยา") == "".join(tokens)
 
 
+# --- compile agrees with the rulebook about a stale rubric (F1 defect 4) --
+
+def test_resolver_agrees_with_the_rulebook_about_a_stale_rubric_verdict(fx):
+    """compile._Resolver must resolve current-best under the same
+    current_rubric derivations.current_best does: a verdict under a
+    rubric the deck has since moved off must not be current-best for
+    compile when it is not for the rulebook either, on the very same db.
+    """
+    from thai_syllabus.compile import _Resolver
+    from thai_syllabus.derivations import current_best
+
+    fx.seed_picture("rice", "cooked rice")  # judged under rubric "seed"
+    current_rubric = {"picture-for-word": "a rubric the deck has since moved on to"}
+
+    rulebook_best = current_best(fx.db, "rice", "picture", current_rubric=current_rubric,
+                                 prior=(), provenance_source=lambda s: None)
+    resolver = _Resolver(db=fx.db, media_store=fx.media, current_rubric=current_rubric,
+                         prior=(), provenance_source=lambda s: None)
+    compile_best = resolver.artifact("rice", "picture")
+
+    assert rulebook_best.artifact_sha is None   # stale -- current_best refuses it
+    assert compile_best is None                 # compile agrees: nothing to stage
+
+
 # --- compile: gate refusal ------------------------------------------------
 
 def test_compile_refuses_when_the_gate_is_closed(fx):
@@ -257,7 +286,8 @@ def test_compile_refuses_when_the_gate_is_closed(fx):
     syllabus = _small_syllabus(_SplitTokenizer({}))
     syllabus = syllabus_with_rules(syllabus, (rule,))
     with pytest.raises(GateRefusal):
-        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert not fx.out_path.exists()
 
 
@@ -278,7 +308,8 @@ def test_gate_refusal_counts_unwaived_errors_only(fx):
     )
     syllabus = syllabus_with_rules(_small_syllabus(_SplitTokenizer({})), rules)
     with pytest.raises(GateRefusal) as excinfo:
-        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert excinfo.value.blocking == 1
 
 
@@ -306,7 +337,8 @@ def test_compile_refuses_on_duplicate_card_fronts(fx):
     fx.seed_recording("rice-a", "recording a")
     fx.seed_recording("rice-b", "recording b")
     with pytest.raises(GateRefusal) as excinfo:
-        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert not fx.out_path.exists()
     assert any(f.rule == "card/unique-front" for f in excinfo.value.report.findings)
 
@@ -315,7 +347,8 @@ def test_compile_forced_past_duplicate_fronts_reports_the_finding_and_writes(fx)
     syllabus = _duplicate_front_syllabus(_SplitTokenizer({}))
     fx.seed_recording("rice-a", "recording a")
     fx.seed_recording("rice-b", "recording b")
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert fx.out_path.exists()
     assert compiled.report.gate is False
     assert any(f.rule == "card/unique-front" for f in compiled.report.findings)
@@ -333,7 +366,8 @@ def test_compile_with_distinct_fronts_reports_no_unique_front_finding(fx):
                         rules=_RULES_FOR_UNIQUE_FRONT)
     fx.seed_recording("rice", "recording rice")
     fx.seed_recording("dog", "recording dog")
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert compiled.report.gate is True
     assert compiled.report.findings == ()
 
@@ -348,7 +382,8 @@ def test_compile_forced_past_a_closed_gate_records_declared_warnings(fx):
                shape="check", check=always_fails)
     syllabus = _fully_seeded(fx)
     syllabus = syllabus_with_rules(syllabus, (rule,))
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert compiled.report.forced is True
     assert compiled.report.gate is False
     assert any("bad thing" in w for w in compiled.report.warnings)
@@ -364,7 +399,8 @@ def syllabus_with_rules(syllabus: Syllabus, rules) -> Syllabus:
 
 def test_compile_writes_an_apkg_and_stamps_compile_id_everywhere(fx):
     syllabus = _fully_seeded(fx)
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert fx.out_path.exists()
     assert compiled.report.gate is True
     assert compiled.report.forced is False
@@ -384,7 +420,8 @@ def test_compile_writes_an_apkg_and_stamps_compile_id_everywhere(fx):
 
 def test_word_note_has_expected_fields_guid_and_tags(fx):
     syllabus = _fully_seeded(fx)
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
 
@@ -414,7 +451,8 @@ def test_word_note_production_card_is_dropped_without_a_productive_target(fx):
     # even though both have a recording (word cards don't need a picture
     # to generate Listening/Reading).
     syllabus = _fully_seeded(fx)
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     word_model = next(m for m in models.values() if m["name"] == "word")
@@ -436,7 +474,8 @@ def test_dropped_reason_distinguishes_gate_from_missing(fx):
     # rice has a productive Target and every artifact seeded -- nothing
     # drops it. The two pom reasons name the gate, not a missing artifact.
     syllabus = _fully_seeded(fx)
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     reasons = {(d.subject, d.kind): d.reason for d in compiled.report.dropped}
     assert reasons[("pom", "Production")] == "gated: no productive Target"
     assert reasons[("pom", "Spelling")] == "gated: spelling not tested"
@@ -456,7 +495,8 @@ def test_word_note_listening_dropped_and_counted_when_audio_is_missing(fx):
     fx.seed_recording("near", "near")
     fx.seed_recording("far", "far")
 
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     word_model = next(m for m in models.values() if m["name"] == "word")
@@ -494,7 +534,8 @@ def test_word_spelling_dropped_for_missing_recording_when_productive(fx):
     fx.seed_recording("near", "near")
     fx.seed_recording("far", "far")
 
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     word_model = next(m for m in models.values() if m["name"] == "word")
@@ -525,7 +566,8 @@ def test_every_word_and_sentence_template_has_a_registered_drop_cause():
 
 def test_grapheme_note_name_thai_is_the_name_words_own_text(fx):
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     g_model = next(m for m in models.values() if m["name"] == "grapheme")
@@ -555,7 +597,8 @@ def test_grapheme_without_a_name_recording_is_dropped_not_substituted(fx):
     # NOT seeding letter-name:ko's recording -- the keyword's recording
     # must never substitute for it.
 
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert compiled.report.dropped == (
         DroppedCard(family="grapheme", kind="Reading", subject="ก",
                    reason="no name recording"),)
@@ -587,7 +630,8 @@ def test_grapheme_without_a_name_word_is_dropped_not_fabricated(fx):
     fx.seed_recording("gin", "eat")
     fx.seed_recording("chicken", "chicken")
 
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     dropped_kinds = {(d.family, d.kind, d.subject): d.reason for d in compiled.report.dropped}
     assert dropped_kinds[("grapheme", "Reading", "ก")] == "no name word"
 
@@ -619,7 +663,8 @@ def _compile_pair(fx, *, with_rendition: bool):
     syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
     shas = fx.seed_rendition(pair, {"near": "near", "far": "far"}) if with_rendition else {}
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
-    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     pair_model = next((m for m in pkg["models"].values() if m["name"] == "minimal_pair"), None)
     if pair_model is None:
@@ -704,7 +749,8 @@ def test_two_pair_blocks_and_a_following_word_target_never_overlap(fx):
     syllabus = dataclasses.replace(
         syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair_a, pair_b)))
 
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
 
     pair_model = next(m for m in pkg["models"].values() if m["name"] == "minimal_pair")
@@ -746,7 +792,8 @@ def test_sentence_note_cloze_and_listening(fx):
     # 1), so 4 notes here (pom/receptive, gin/receptive, rice/receptive,
     # rice/productive), each with its OWN target correctly blanked.
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     s_model = next(m for m in models.values() if m["name"] == "sentence")
@@ -787,7 +834,8 @@ def test_receptive_sentence_note_gets_no_cloze_card(fx):
     # Cloze card -- only a productive Target's sentence note does (spec 4
     # section 1: Productive gates the Cloze card).
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     s_model = next(m for m in models.values() if m["name"] == "sentence")
@@ -814,7 +862,8 @@ def test_receptive_sentence_note_gets_no_cloze_card(fx):
 
 def test_sibling_cards_get_distinct_due_values(fx):
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     word_model = next(m for m in models.values() if m["name"] == "word")
@@ -829,7 +878,8 @@ def test_sibling_cards_get_distinct_due_values(fx):
 
 def test_graphemes_are_due_before_any_word(fx):
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     g_model = next(m for m in models.values() if m["name"] == "grapheme")
@@ -848,7 +898,8 @@ def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
     # entry's position (compile._positions no longer derives it), which
     # sits after every word_target entry, including theirs.
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     s_model = next(m for m in models.values() if m["name"] == "sentence")
@@ -904,7 +955,8 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     fx.seed_recording(sentence_note_id(eat_rice), "กินข้าว")
     fx.seed_recording(sentence_note_id(dog_runs), "หมาวิ่ง")
 
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     models = pkg["models"]
     s_model = next(m for m in models.values() if m["name"] == "sentence")
@@ -935,7 +987,8 @@ def test_shipped_deck_options_group_already_buries_siblings(fx):
     from pathlib import Path
 
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     with tempfile.TemporaryDirectory() as tmp:
         with zipfile.ZipFile(fx.out_path) as zf:
             zf.extractall(tmp)
@@ -951,5 +1004,6 @@ def test_shipped_deck_options_group_already_buries_siblings(fx):
 
 def test_compile_leaves_no_leftover_tmp_file(fx):
     syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert list(fx.out_path.parent.glob("*.tmp")) == []

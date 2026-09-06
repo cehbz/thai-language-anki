@@ -8,10 +8,9 @@ of nanoseconds since the epoch, bumped monotonically per connection
 (`_next_ts`), so the `cache` table's (key_sha, ts) primary key never
 collides.
 
-`append`/`latest`/`verdict` take a cachekeys.py CacheKey or a plain
-string, and store `key.encode()` under the `key` column (readable, for
-inspection) and its sha256 under `key_sha`, the indexed column every
-lookup matches on.
+`append`/`latest`/`verdict` take a cachekeys.py CacheKey, and store
+`key.encode()` under the `key` column (readable, for inspection) and its
+sha256 under `key_sha`, the indexed column every lookup matches on.
 
 AssessmentReader, RecordWriter, CacheReader and StudyReader are
 implemented here as ports.py declares them; assessments_of, append_waiver,
@@ -105,8 +104,8 @@ create table if not exists study (
 """
 
 
-def _key_text(key: "str | CacheKey") -> str:
-    return key.encode() if isinstance(key, CacheKey) else key
+def _key_text(key: "CacheKey") -> str:
+    return key.encode()
 
 
 def _key_sha(key: str) -> str:
@@ -151,7 +150,7 @@ class SyllabusDb:
 
     # --- RecordWriter --------------------------------------------------
 
-    def append(self, port: str, backend: str, key: "str | CacheKey", subject: str,
+    def append(self, port: str, backend: str, key: "CacheKey", subject: str,
                question: Any, answer: Any, cost: float = 0.0,
                ts: int | None = None) -> int:
         ts = self._next_ts(ts)
@@ -167,7 +166,7 @@ class SyllabusDb:
 
     # --- CacheReader (spec 3): the general cache-first read surface -------
 
-    def latest(self, port: str, backend: str, key: "str | CacheKey") -> Answer | None:
+    def latest(self, port: str, backend: str, key: "CacheKey") -> Answer | None:
         row = self._con.execute(
             "select port, backend, key, key_sha, subject, question, answer, "
             "cost, ts from cache where port=? and backend=? and key_sha=? "
@@ -179,7 +178,7 @@ class SyllabusDb:
 
     # --- AssessmentReader ------------------------------------------------
 
-    def verdict(self, backend: str, key: "str | CacheKey") -> Answer | None:
+    def verdict(self, backend: str, key: "CacheKey") -> Answer | None:
         return self.latest("assess", backend, key)
 
     def is_waived(self, finding: "Finding") -> bool:

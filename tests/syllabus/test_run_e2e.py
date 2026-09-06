@@ -9,7 +9,10 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
+from thai_syllabus.assessor import AssessQuestion
 from thai_syllabus.attempts import current_best_of
+from thai_syllabus.cachekeys import (JudgeKey, LearnerKey, LlmPromptKey, MechanicalKey,
+                                    ProvideKey, sha)
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
 from thai_syllabus.entities import Category, text_sha
 from thai_syllabus.media import Speaker
@@ -54,7 +57,7 @@ class _Search:
     preference branch (_assess_all_candidates only asks a preference
     question over 2+ passing candidates)."""
     def cache_key(self, q):
-        return "s:" + q.params["query"]
+        return ProvideKey(source="openverse", kind="", query=q.params["query"])
 
     def fetch(self, q):
         return RawAnswer(items=(
@@ -64,7 +67,7 @@ class _Search:
 
 class _Forvo:
     def cache_key(self, q):
-        return "forvo:" + q.params["word"]
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
 
     def fetch(self, q):
         return RawAnswer(items=({"pathmp3": f"https://f/{q.params['word']}.mp3", "username": "kris"},), cost=1.0)
@@ -72,10 +75,11 @@ class _Forvo:
 
 class _Llm:
     def cache_key(self, q):
-        return "llm:sentence-drafter:m:x"
+        return LlmPromptKey(producer="sentence-drafter", model="m", prompt_sha="x")
 
     def fetch(self, q):
-        return RawAnswer(items=('{"sentences": [{"text": "กินส้ม", "targets": ["orange/receptive", "eat/receptive"]}]}',))
+        return RawAnswer(items=('{"sentences": [{"text": "กินส้ม", "gloss": "eat orange", '
+                                '"targets": ["orange/receptive", "eat/receptive"]}]}',))
 
 
 def _jpeg_bytes(seed: str) -> bytes:
@@ -126,10 +130,13 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     ctx.db.add_media(sha="sentence-rec", kind="recording", ext="mp3", source="forvo",
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id="somchai")
-    ctx.db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query=sentence_sha),
                  subject=sentence_sha, question={"kind": "recording"},
                  answer={"items": [{"sha": "sentence-rec"}]})
-    ctx.db.append(port="assess", backend="judge", key=f"judge:x:sentence-rec:recording-for-word",
+    rec_question = AssessQuestion(subject=sentence_sha, role="recording-for-word",
+                                  artifact_sha="sentence-rec", kind="recording")
+    ctx.db.append(port="assess", backend="judge", key=JudgeKey.for_question(rec_question),
                  subject=sentence_sha,
                  question={"role": "recording-for-word", "artifact_sha": "sentence-rec", "rubric": None,
                           "kind": "recording"},
@@ -154,7 +161,7 @@ class _OneHit:
     in one batch round trip."""
 
     def cache_key(self, q):
-        return "onehit:" + q.params["query"]
+        return ProvideKey(source="openverse", kind="", query=q.params["query"])
 
     def fetch(self, q):
         return RawAnswer(items=({"url": f"https://x/{q.subject}.jpg",
@@ -170,7 +177,7 @@ class _Tts:
         self._media_store = media_store
 
     def cache_key(self, q):
-        return "tts:" + q.params["voice"] + ":" + q.params["text"]
+        return ProvideKey(source="tts", kind=q.params["voice"], query=sha(q.params["text"]))
 
     def fetch(self, q):
         sha = self._media_store.write(q.params["text"].encode(), "mp3")
@@ -213,11 +220,13 @@ def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batc
     ranked-nothing candidates; the preference question that ranks them,
     raised while resolving the batch that carried those fits, is counted
     under `preferences`, not `pending` -- the picture's own need is
-    already satisfied by the time it is asked. The recording and the
-    sentence that also close in r1 keep "rice" out of every other gap, so
-    by the time r2 submits the preference question as its own new batch,
-    "rice" is not an available need at all any more and the identity
-    still holds on both reports.
+    already satisfied by the time it is asked. The word "rice" itself is
+    out of every other gap by r2, but the sentence it adopts there owes
+    its own recording and scene picture (Task F1 items 1-2 make running
+    them, in the same run, safe): the recording escalates past its one
+    prior forvo candidate to tts, and the scene picture is a fresh
+    openverse ask whose fit questions ride r2's own new batch, pending.
+    The identity still holds on both reports.
     """
     root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
@@ -231,12 +240,28 @@ def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batc
     assert r1.batch_id is not None
     assert r1.preferences == 0   # nothing has fit yet -- no ranking to ask for
 
+    # The sentence adopts in r2 (its sentence-for-target verdict resolves
+    # there); once adopted it owes its own recording and scene picture
+    # (F1 defect 2), and C1/I1 (Task F1 items 1-2) let them run in this
+    # same run: a prior forvo candidate is already on record, unrated, so
+    # the recording need escalates straight to tts.
+    sentence_sha = text_sha("ข้าว")  # rice
+    ctx.db.add_speaker(Speaker(id="somchai", kind="native"))
+    ctx.db.add_media(sha="rice-sentence-rec", kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id="somchai")
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query="ข้าว"),  # rice: the sentence's own text
+                 subject=sentence_sha,
+                 question={"kind": "recording", "subject_kind": "sentence"},
+                 answer={"items": [{"sha": "rice-sentence-rec"}]})
+
     fake_batch.complete_all(r1.batch_id, passed=True)   # both pictures fit; the sentence is natural
     r2 = run(ctx, budgets={})
 
     assert r2.batch_id is not None and r2.batch_id != r1.batch_id
     assert r2.preferences == 1
-    assert r2.pending == 0   # the ranked need is already satisfied, not owed
+    assert r2.pending == 1   # the sentence's own scene picture: a fresh need, genuinely pending
 
     for report in (r1, r2):
         assert (report.available == report.attempted + report.exhausted + report.pending
@@ -268,10 +293,13 @@ def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once
     ctx.db.add_media(sha="rice-rec", kind="recording", ext="mp3", source="forvo",
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id="somchai")
-    ctx.db.append(port="provide", backend="forvo", key="forvo:rice-preseed", subject="rice",
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query="rice"), subject="rice",
                  question={"kind": "recording", "subject_kind": "word"},
                  answer={"items": [{"sha": "rice-rec"}]})
-    ctx.db.append(port="assess", backend="mechanical", key="mech:rice-rec", subject="rice",
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="0.2-5.0", artifact_sha="rice-rec"),
+                 subject="rice",
                  question={"role": "recording-for-word", "artifact_sha": "rice-rec",
                           "kind": "recording", "subject_kind": "word"},
                  answer={"value": True})
@@ -287,15 +315,22 @@ def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once
         ctx.db.add_media(sha=shas[seed], kind="picture", ext="jpg", source=source,
                          origin=f"https://{source}/{seed}.jpg", licence="by",
                          acquired=date(2026, 1, 1))
-        ctx.db.append(port="provide", backend=source, key=f"{source}:rice-{seed}", subject="rice",
+        ctx.db.append(port="provide", backend=source,
+                     key=ProvideKey(source=source, kind="", query=f"rice-{seed}"),
+                     subject="rice",
                      question={"kind": "picture", "subject_kind": "word"},
                      answer={"items": [{"sha": shas[seed]}]})
-        ctx.db.append(port="assess", backend="judge", key=f"judge:x:{shas[seed]}:picture-for-word",
+        pic_question = AssessQuestion(subject="rice", role="picture-for-word",
+                                      artifact_sha=shas[seed], kind="picture",
+                                      subject_kind="word")
+        ctx.db.append(port="assess", backend="judge",
+                     key=JudgeKey.for_question(pic_question),
                      subject="rice",
                      question={"role": "picture-for-word", "artifact_sha": shas[seed],
                               "rubric": None, "kind": "picture", "subject_kind": "word"},
                      answer={"value": True})
-    ctx.db.append(port="assess", backend="learner", key="learner:rice:pic-a",
+    ctx.db.append(port="assess", backend="learner",
+                 key=LearnerKey(artifact_sha=shas["pic-a"], role="picture-for-word"),
                  subject="rice",
                  question={"role": "picture-for-word", "artifact_sha": shas["pic-a"],
                           "kind": "rating"},
@@ -335,6 +370,51 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
     ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
     ctx.syllabus = ctx.syllabus.with_sentences((sentence("ข้าว", gloss="rice"),))
 
+    # The sentence's text is the word's own thai spelling: its own
+    # recording/picture needs (F1 defect 2) share Forvo/TTS's
+    # content-addressed artifact sha with the word's -- outside this
+    # test's own subject (Fix round 3's own concern). Each is seeded
+    # here already carrying the verdict a real attempt leaves
+    # (mechanical for the recording, judge for the picture), not a
+    # learner override, so neither reaches `available_needs()` again.
+    sentence_sha = text_sha("ข้าว")  # rice
+    ctx.db.add_speaker(Speaker(id="somchai", kind="native"))
+    ctx.db.add_media(sha="sentence-rec-seed", kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id="somchai")
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query="ข้าว"),  # rice: the sentence's own text
+                 subject=sentence_sha,
+                 question={"kind": "recording", "subject_kind": "sentence"},
+                 answer={"items": [{"sha": "sentence-rec-seed"}]})
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="seed",
+                                   artifact_sha="sentence-rec-seed"),
+                 subject=sentence_sha,
+                 question={"role": "recording-for-sentence", "artifact_sha": "sentence-rec-seed",
+                          "kind": "recording", "subject_kind": "sentence"},
+                 answer={"value": True})
+    ctx.db.add_media(sha="sentence-pic-seed", kind="picture", ext="jpg", source="openverse",
+                     origin="https://x/rice.jpg", licence="by", acquired=date(2026, 1, 1))
+    ctx.db.append(port="provide", backend="openverse",
+                 # "rice": the sentence's own gloss -- _picture_query_for's
+                 # fallback query for a scene picture with no drafted phrase.
+                 key=ProvideKey(source="openverse", kind="", query="rice"),
+                 subject=sentence_sha,
+                 question={"kind": "picture", "subject_kind": "sentence"},
+                 answer={"items": [{"sha": "sentence-pic-seed"}]})
+    scene_question = AssessQuestion(subject=sentence_sha, role="scene-for-sentence",
+                                    artifact_sha="sentence-pic-seed",
+                                    rubric=ctx.rubrics["scene-for-sentence"], kind="picture",
+                                    subject_kind="sentence")
+    ctx.db.append(port="assess", backend="judge",
+                 key=JudgeKey.for_question(scene_question),
+                 subject=sentence_sha,
+                 question={"role": "scene-for-sentence", "artifact_sha": "sentence-pic-seed",
+                          "rubric": ctx.rubrics["scene-for-sentence"], "kind": "picture",
+                          "subject_kind": "sentence"},
+                 answer={"value": True})
+
     # Two already-passing picture candidates, then the learner's rejection
     # of the first -- no acceptable floor, so the picture need stays open
     # (its own resolve-time preference question lands in `pending`, not
@@ -345,15 +425,22 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
         ctx.db.add_media(sha=shas[seed], kind="picture", ext="jpg", source=source,
                          origin=f"https://{source}/{seed}.jpg", licence="by",
                          acquired=date(2026, 1, 1))
-        ctx.db.append(port="provide", backend=source, key=f"{source}:rice-{seed}", subject="rice",
+        ctx.db.append(port="provide", backend=source,
+                     key=ProvideKey(source=source, kind="", query=f"rice-{seed}"),
+                     subject="rice",
                      question={"kind": "picture", "subject_kind": "word"},
                      answer={"items": [{"sha": shas[seed]}]})
-        ctx.db.append(port="assess", backend="judge", key=f"judge:x:{shas[seed]}:picture-for-word",
+        pic_question = AssessQuestion(subject="rice", role="picture-for-word",
+                                      artifact_sha=shas[seed], kind="picture",
+                                      subject_kind="word")
+        ctx.db.append(port="assess", backend="judge",
+                     key=JudgeKey.for_question(pic_question),
                      subject="rice",
                      question={"role": "picture-for-word", "artifact_sha": shas[seed],
                               "rubric": None, "kind": "picture", "subject_kind": "word"},
                      answer={"value": True})
-    ctx.db.append(port="assess", backend="learner", key="learner:rice:pic-a",
+    ctx.db.append(port="assess", backend="learner",
+                 key=LearnerKey(artifact_sha=shas["pic-a"], role="picture-for-word"),
                  subject="rice",
                  question={"role": "picture-for-word", "artifact_sha": shas["pic-a"],
                           "kind": "rating"},

@@ -177,18 +177,20 @@ class MechanicalKey(CacheKey):
 
 @dataclass(frozen=True)
 class ProvideKey(CacheKey):
-    """SOURCE:KIND:QUERY, with empty components left out -- one Source
-    ask. `source` is the backend's own name (empty when the query alone
-    identifies the ask, as a fetch by url does), `kind` what varies the
-    ask within that source (a tts voice; empty where the source has one
-    ask shape), `query` what was asked for.
+    """SOURCE:KIND:QUERY -- one Source ask. `source` is the backend's own
+    name (empty when the query alone identifies the ask, as a fetch by
+    url does), `kind` what varies the ask within that source (a tts
+    voice; empty where the source has one ask shape), `query` what was
+    asked for. Every field renders at its own fixed position, empty or
+    not: encode() is injective over the three fields. No field's value is
+    ever read back as another's, whichever fields are empty.
     """
     source: str
     kind: str
     query: str
 
     def encode(self) -> str:
-        return ":".join(part for part in (self.source, self.kind, self.query) if part)
+        return f"{self.source}:{self.kind}:{self.query}"
 
 
 @dataclass(frozen=True)
@@ -239,3 +241,13 @@ class BatchMarkerKey(CacheKey):
 
     def encode(self) -> str:
         return f"batch-marker:{self.batch_id}"
+
+
+@dataclass(frozen=True)
+class RunReportKey(CacheKey):
+    """runreport -- the constant label under which run.py appends one
+    summary row per run() call. The `cache` table's primary key is
+    (key_sha, ts), so every call still lands its own row.
+    """
+    def encode(self) -> str:
+        return "runreport"

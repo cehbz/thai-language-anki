@@ -101,11 +101,30 @@ def test_a_provide_key_joins_its_source_kind_and_query():
     assert isinstance(key, CacheKey)
 
 
-def test_a_provide_key_leaves_out_the_components_it_has_none_of():
+def test_a_provide_key_still_reads_cleanly_with_an_empty_kind():
     assert ProvideKey(source="openverse", kind="", query="rice bowl").encode() == (
-        "openverse:rice bowl")
+        "openverse::rice bowl")
     assert ProvideKey(source="", kind="", query="https://x/y.jpg").encode() == (
-        "https://x/y.jpg")
+        "::https://x/y.jpg")
+
+
+def test_a_provide_key_encode_is_injective_over_which_field_is_empty():
+    """Every field renders at its own fixed position: source-only,
+    kind-only and query-only triples (and every triple with two fields
+    set) all encode to distinct strings -- an empty field is never read
+    back as a different one.
+    """
+    variants = [
+        ProvideKey(source="a", kind="", query=""),
+        ProvideKey(source="", kind="a", query=""),
+        ProvideKey(source="", kind="", query="a"),
+        ProvideKey(source="a", kind="b", query=""),
+        ProvideKey(source="a", kind="", query="b"),
+        ProvideKey(source="", kind="a", query="b"),
+        ProvideKey(source="a", kind="b", query="c"),
+    ]
+    encoded = [v.encode() for v in variants]
+    assert len(encoded) == len(set(encoded))
 
 
 def test_an_llm_prompt_key_names_producer_model_and_prompt_sha():

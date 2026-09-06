@@ -4,6 +4,7 @@ persistence/resume), the mechanical backend, and the learner/listener
 non-implementations. Real SyllabusDb for cache-first behavior; fakes for
 transports -- no network, no subprocess, no anthropic import.
 """
+import hashlib
 import importlib
 import pkgutil
 from pathlib import Path
@@ -32,7 +33,7 @@ from thai_syllabus.assessor import (
     sentence_prompt,
 )
 from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
-from thai_syllabus.cachekeys import MechanicalKey, rendition_identity, sha
+from thai_syllabus.cachekeys import BatchMarkerKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 
@@ -55,9 +56,9 @@ def db(tmp_path):
 
 
 class _FakeBackend:
-    def __init__(self, key="k", raises=None, value=True, evidence=None,
+    def __init__(self, key=None, raises=None, value=True, evidence=None,
                 suggestion=None, cost=0.0):
-        self.key = key
+        self.key = key if key is not None else JudgeKey(rubric_sha="k", identity="k", role="k")
         self.raises = raises
         self.value = value
         self.evidence = evidence
@@ -442,6 +443,52 @@ def test_submit_then_resolve_writes_verdicts_and_releases_the_marker(
     got = a.resolve(bid)
     assert got and a.unresolved_batch() is None
     assert a.ask_many("judge", [fit_question("rice", "a" * 64)]).resolved  # now a cache hit
+
+
+def test_resolve_rebuilds_the_typed_key_from_the_recorded_question(
+        assessor_with_batch_transport, fake_batch, db):
+    """assessor.resolve rebuilds JudgeKey.for_question(question) from the
+    marker's recorded fields rather than reading back an encoded key
+    string: the appended verdict row's key_sha matches that typed key.
+    """
+    a = assessor_with_batch_transport
+    q = fit_question("rice", "a" * 64)
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+    fake_batch.complete(bid, {JudgeKey.for_question(q): '{"value": true}'})
+    a.resolve(bid)
+    rows = [r for r in db.assessments_of("rice") if r.backend == "judge"]
+    assert len(rows) == 1
+    expected_sha = hashlib.sha256(JudgeKey.for_question(q).encode().encode()).hexdigest()
+    assert rows[0].key_sha == expected_sha
+
+
+def test_submits_marker_carries_no_keys_entry_and_resolve_writes_the_verdict_from_it(
+        assessor_with_batch_transport, fake_batch, db):
+    """The batch marker's own question dict names every submitted
+    question by its (subject, role, artifact_sha, rubric, kind,
+    subject_kind, params) fields, never by a "keys" list: resolve()
+    rebuilds each JudgeKey.for_question(...) from those fields (see
+    test_resolve_rebuilds_the_typed_key_from_the_recorded_question).
+    """
+    a = assessor_with_batch_transport
+    q = fit_question("rice", "a" * 64)
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+
+    marker = db.latest("assess", "judge", BatchMarkerKey(bid))
+    assert marker.answer["status"] == "submitted"
+    assert "keys" not in marker.question
+
+    fake_batch.complete(bid, {JudgeKey.for_question(q): '{"value": true, "evidence": "ok"}'})
+    a.resolve(bid)
+
+    rows = [r for r in db.assessments_of("rice") if r.backend == "judge"]
+    assert len(rows) == 1
+    row = rows[0]
+    expected_key = JudgeKey.for_question(q)
+    assert row.key == expected_key.encode()
+    assert row.port == "assess" and row.subject == "rice"
+    assert row.question["role"] == "picture-for-word" and row.question["artifact_sha"] == "a" * 64
+    assert row.answer == {"value": True, "evidence": "ok"}
 
 
 def test_expired_batch_releases_and_questions_reask(assessor_with_batch_transport, fake_batch):

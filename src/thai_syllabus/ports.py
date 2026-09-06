@@ -185,13 +185,13 @@ class FrequencyMap(Protocol):
 @runtime_checkable
 class RecordWriter(Protocol):
     """Append-only write side of the `cache` table (spec 2 section 2,
-    spec 3 section 2). `key` is a cachekeys.py CacheKey (or its encoded
-    string); the store writes `key.encode()` to the `key` column and its
-    sha256 to the indexed `key_sha`. One transaction per append; never an
-    update, never a delete. Returns the row's `ts` (nanoseconds since the
-    epoch), the timestamp callers stamp their own Answer/Verdict with.
+    spec 3 section 2). `key` is a cachekeys.py CacheKey; the store writes
+    `key.encode()` to the `key` column and its sha256 to the indexed
+    `key_sha`. One transaction per append; never an update, never a
+    delete. Returns the row's `ts` (nanoseconds since the epoch), the
+    timestamp callers stamp their own Answer/Verdict with.
     """
-    def append(self, port: str, backend: str, key: "str | CacheKey", subject: str,
+    def append(self, port: str, backend: str, key: "CacheKey", subject: str,
                question: Any, answer: Any, cost: float = 0.0) -> int: ...
 
 
@@ -201,7 +201,7 @@ class CacheReader(Protocol):
     Assessor's cache-first ask(), and the derivations' folds over one
     subject's history.
     """
-    def latest(self, port: str, backend: str, key: "str | CacheKey") -> "Answer | None":
+    def latest(self, port: str, backend: str, key: "CacheKey") -> "Answer | None":
         """The newest row exactly matching (port, backend, key) -- the
         cache-first hit lookup every backend's ask() consults before
         executing. None on a cache miss (nothing asked yet).

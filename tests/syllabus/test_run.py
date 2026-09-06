@@ -20,12 +20,15 @@ from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
 from thai_syllabus.assessor import Excluded, JudgeUnreachable
-from thai_syllabus.cachekeys import BatchMarkerKey
+from thai_syllabus.cachekeys import (BatchMarkerKey, DirectionKey, JudgeKey, LlmPromptKey,
+                                    ProvideKey, RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
-from thai_syllabus.entities import Category
+from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
+from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import FetchBackend, RawAnswer
+from thai_syllabus.record import rows_for
 from thai_syllabus.run import (
     FORVO_DEFAULT_DAILY_BUDGET,
     LEARNER_DEFAULT_SESSION_BUDGET,
@@ -36,7 +39,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 from thai_syllabus.wiring import build_sourcing
 
-from .builders import sentence, target, word
+from .builders import sentence, syl, target, word
 from .fakes import FakeTokenizer
 
 # --- a fixture deck and fake backends --------------------------------------
@@ -47,10 +50,10 @@ EAT = word("eat", "กิน", "eat")           # กิน = eat
 EAT_RICE = "กินข้าว"                       # กินข้าว = eat rice
 
 
-def _deck(tmp_path, words, targets, *, transport="batch"):
+def _deck(tmp_path, words, targets, *, transport="batch", pairs=(), confusions=()):
     root = tmp_path / "deck"
     save_curated(root / "curated", CuratedBundle(
-        words=words, targets=targets, graphemes=(), confusions=(), pairs=(),
+        words=words, targets=targets, graphemes=(), confusions=confusions, pairs=pairs,
         profile=Profile(register="male_colloquial"), rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset(w.id for w in words)),)))
     (root / "curated" / "providers.yaml").write_text(
@@ -84,7 +87,7 @@ class _Search:
         self.name, self.asks = name, asks
 
     def cache_key(self, q):
-        return f"{self.name}:{q.params['query']}"
+        return ProvideKey(source=self.name, kind="", query=q.params["query"])
 
     def fetch(self, q):
         self.asks.append((q.subject, self.name))
@@ -113,7 +116,7 @@ class _Silent:
         self.name = name
 
     def cache_key(self, q):
-        return f"{self.name}:{sorted(q.params.items())}"
+        return ProvideKey(source=self.name, kind="", query=str(sorted(q.params.items())))
 
     def fetch(self, q):
         return RawAnswer()
@@ -126,7 +129,7 @@ class _Llm:
         self.drafts = drafts
 
     def cache_key(self, q):
-        return "llm:sentence-drafter:m:x"
+        return LlmPromptKey(producer="sentence-drafter", model="m", prompt_sha="x")
 
     def fetch(self, q):
         return RawAnswer(items=(self.drafts,))
@@ -286,6 +289,49 @@ def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_
     assert ctx_batch_sentences.db.all_sentences()[0].gloss == "eat rice"
 
 
+def test_an_adopted_sentence_reaches_its_recording_and_picture_needs_this_run(
+        ctx_batch_sentences, fake_batch):
+    """C1: an adopted sentence carries a gloss (spec 1); with neither a
+    recording nor a scene picture yet, both needs are queued and
+    attempted in the run that adopts it, and the run's own accounting
+    identity holds."""
+    r1 = run(ctx_batch_sentences, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True)
+    r2 = run(ctx_batch_sentences, budgets={})
+    assert r2.sentences_adopted == 1
+
+    sentence_sha = text_sha(EAT_RICE)
+    recording_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "recording")
+    picture_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "picture")
+    assert any(r.port == "provide" and r.backend == "forvo" for r in recording_rows)
+    assert any(r.port == "provide" and r.backend == "openverse" for r in picture_rows)
+
+    assert (r2.available == r2.attempted + r2.exhausted + r2.pending
+           + r2.unserved + r2.budgeted + r2.deferred)
+
+
+# --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
+
+def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_batch):
+    """derivations.available_needs must key a rendition need by the
+    pair's own id, not its confusion id: attempts._rendition_attempt
+    looks the pair up by PairId (ctx.syllabus.pair(...)).
+    """
+    near = word("near_tone", "ใกล้", "near", syllables=(syl(tone="low"),))  # near
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    pair = MinimalPair.create(id=PairId("p-rice-near"), confusion=confusion,
+                              members=(RICE, near))
+    root = _deck(tmp_path, (RICE, near), (), pairs=(pair,), confusions=(confusion,))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+
+    report = run(ctx, budgets={})  # must not raise KeyError
+
+    # the attempt appended its ask under the pair's own subject.
+    assert rows_for(ctx.db, "p-rice-near", "rendition")
+    assert report.available >= 1
+
+
 # --- the report, one field at a time ---------------------------------------
 
 @pytest.fixture
@@ -298,11 +344,12 @@ class _Gaps:
         self.words_missing_pictures, self.words_missing_recordings = pictures, recordings
         self.unfilled_targets, self.missing_renditions = sentences, ()
         self.graphemes_missing_keyword_data = graphemes
+        self.sentence_recordings, self.scene_pictures = (), ()
 
 
 class _Syl:
     def __init__(self, gaps):
-        self._gaps, self.targets, self.sentences = gaps, [], ()
+        self._gaps, self.targets, self.sentences, self.pairs = gaps, [], (), ()
 
     def gaps(self):
         return self._gaps
@@ -403,7 +450,7 @@ def test_run_reports_unserved_needs_from_the_queue(db, monkeypatch):
     _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps())), {})
     assert report.unserved == 2
-    assert db.latest("run", "runreport", "runreport").answer["unserved"] == 2
+    assert db.latest("run", "runreport", RunReportKey()).answer["unserved"] == 2
 
 
 def test_a_cap_of_one_on_llm_sentence_with_no_prior_spend_lets_the_sentence_attempt_run(
@@ -448,7 +495,8 @@ def test_run_counts_a_need_with_no_source_left_as_exhausted(db, monkeypatch):
 def test_run_counts_a_need_the_queue_dropped_as_exhausted(db, monkeypatch):
     _patch(monkeypatch, {})
     for source in ("openverse", "wikimedia", "pexels"):
-        db.append(port="provide", backend=source, key=f"{source}:a", subject="a",
+        db.append(port="provide", backend=source,
+                  key=ProvideKey(source=source, kind="", query="a"), subject="a",
                   question={"kind": "picture", "subject_kind": "word"},
                   answer={"items": []})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
@@ -461,11 +509,37 @@ def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):
     assert calls == []
 
 
+def test_run_keeps_the_identity_for_a_directed_sentence_need(db, monkeypatch):
+    """I1: a directed subject with an unfilled Target is still served only
+    by the sentence attempt's own accounting -- queued() never doubles it
+    with a "sentence"-kind entry of its own."""
+    calls = _patch(monkeypatch, {})
+    db.append(port="assess", backend="learner",
+             key=DirectionKey(subject="t1", role="sentence-for-target",
+                              text_sha=sha("try again")),
+             subject="t1",
+             question={"kind": "direction"}, answer={"direction": "try again"})
+    report = run(_ctx(db, _Syl(_Gaps(sentences=("t1",)))), {})
+    assert calls == []
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
 def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {"forvo": Budget(max_asks=1)})
     assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
     assert report.budgeted == 1
+
+
+def test_a_spent_learner_budget_never_counts_toward_the_run_s_budgeted_bucket(db, monkeypatch):
+    """spec 3 section 7: "learner" names the question session's own
+    Budget, never a Source -- next_source/sources_for never return it, so
+    a spent budgets["learner"] entry gates no real need's attempt."""
+    calls = _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {"learner": Budget(max_asks=0)})
+    assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
+    assert report.budgeted == 0
 
 
 def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
@@ -479,7 +553,7 @@ def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
             "k4": Excluded(subject="sentence-drafts", artifact_sha=None, reason="gone")}))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
     assert report.excluded == 4
-    assert db.latest("run", "runreport", "runreport").answer["excluded"] == 4
+    assert db.latest("run", "runreport", RunReportKey()).answer["excluded"] == 4
     assert len(report.excluded_items) == 4
     assert {item["subject"] for item in report.excluded_items} == {"a", "b", "sentence-drafts"}
 
@@ -510,11 +584,13 @@ def test_a_run_with_nothing_wrong_reports_zero_excluded_and_reachable(db, monkey
 
 def test_run_counts_a_need_whose_current_best_changed_as_improved(db, monkeypatch):
     def lands_a_picture(ctx, need, source):
-        db.append(port="provide", backend=source, key=f"{source}:{need.subject}",
+        db.append(port="provide", backend=source,
+                  key=ProvideKey(source=source, kind="", query=need.subject),
                   subject=need.subject,
                   question={"kind": "picture", "subject_kind": "word"},
                   answer={"items": [{"sha": "pic-1"}]})
-        db.append(port="assess", backend="judge", key="judge:0:pic-1:picture-for-word",
+        db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(None, "pic-1", need.subject, "picture-for-word"),
                   subject=need.subject,
                   question={"role": "picture-for-word", "artifact_sha": "pic-1",
                             "rubric": None, "kind": "picture", "subject_kind": "word"},
@@ -679,11 +755,13 @@ def test_run_reports_the_drafts_the_sentence_attempt_produced(db, monkeypatch):
     _patch(monkeypatch, {}, sentence_result=AttemptResult(True, drafted=2))
     report = run(_ctx(db, _Syl(_Gaps(sentences=("t1",)))), {})
     assert report.drafted == 2
-    assert db.latest("run", "runreport", "runreport").answer["drafted"] == 2
+    assert db.latest("run", "runreport", RunReportKey()).answer["drafted"] == 2
 
 
 def _row_today(db, backend, subject, *, ts):
-    db.append(port="provide", backend=backend, key=f"{backend}:{subject}:{ts}",
+    key = (ProvideKey(source="forvo", kind="", query=subject) if backend == "forvo"
+          else LlmPromptKey(producer="sentence-drafter", model="m", prompt_sha=sha(subject)))
+    db.append(port="provide", backend=backend, key=key,
               subject=subject, question={"kind": "recording", "subject_kind": "word"},
               answer={"items": []}, cost=0.0, ts=ts)
 
@@ -720,7 +798,7 @@ def test_run_stops_the_loop_at_the_first_unreachable_judge(db, monkeypatch):
     assert report.available == 3 and report.deferred == 2
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
-    assert db.latest("run", "runreport", "runreport").answer["unreachable"] is True
+    assert db.latest("run", "runreport", RunReportKey()).answer["unreachable"] is True
 
 
 def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
@@ -742,7 +820,7 @@ def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
     assert report.unreachable is True and calls == [] and assessor.submitted == []
     assert report.batch_id == "batch-0" and report.pending == 1
-    assert db.latest("run", "runreport", "runreport").answer["unreachable"] is True
+    assert db.latest("run", "runreport", RunReportKey()).answer["unreachable"] is True
     # "a" is pending (in the batch the dead resolve never released); "b"
     # is deferred -- this run never got far enough to even ask about it.
     assert report.deferred == 1
@@ -759,7 +837,7 @@ def test_a_judge_that_cannot_be_reached_to_submit_stops_the_run(db, monkeypatch)
     _patch(monkeypatch, {("a", "openverse"): AttemptResult(True, questions=[_Q("a")])})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",))), assessor), {})
     assert report.unreachable is True and report.batch_id is None and report.pending == 0
-    assert db.latest("run", "runreport", "runreport").answer["unreachable"] is True
+    assert db.latest("run", "runreport", RunReportKey()).answer["unreachable"] is True
 
 
 def test_an_unreachable_sentence_attempt_defers_what_the_resolve_collected(db, monkeypatch):
@@ -802,7 +880,7 @@ def test_a_dead_source_is_counted_and_skipped_for_the_rest_of_the_run(db, monkey
     assert [n.subject for n, _s in calls] == ["a"]   # b's next source is the dead one
     assert report.source_failures == {"openverse": 1}
     assert report.unreachable is False
-    assert db.latest("run", "runreport", "runreport").answer["source_failures"] == {
+    assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
         "openverse": 1}
 
 
@@ -880,7 +958,7 @@ def test_two_runs_each_get_their_own_keyed_row(db, monkeypatch):
 def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     _patch(monkeypatch, {})
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    answer = db.latest("run", "runreport", "runreport").answer
+    answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
                            "sentences_adopted", "drafted", "excluded", "excluded_items",
                            "unreachable", "batch_id", "source_failures", "spend", "unserved",

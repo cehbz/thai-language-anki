@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .cachekeys import RunReportKey
 from .entities import text_sha
 from .ports import Answer, CacheReader
 
@@ -30,10 +31,11 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner
 # proposed for a run's open Targets as a set, not for one subject.
 DRAFT_SUBJECT = "sentence-drafts"
 
-# The bytes-fetching backends write the candidate a Source ask already
-# caused, not an ask of their own (spec 3 section 3: an attempt is one
-# Source ask).
-_BYTES_BACKENDS = ("imgfetch", "audiofetch")
+# provide rows from these backends are not Source asks (spec 3 section 3
+# vocabulary: an attempt is one Source ask): imgfetch/audiofetch write the
+# candidate a Source ask already caused, and a learner row is a supply --
+# an answer, not an ask.
+_NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner")
 
 # The learner rating vocabulary: every value a rating row's answer["value"]
 # is allowed to carry, ranked on the same numeric scale a judge verdict
@@ -70,7 +72,8 @@ def subject_kind_of(rows: Sequence[Answer]) -> str:
 
 def source_asks(rows: Sequence[Answer]) -> list[Answer]:
     """The provide rows among `rows` that are Source asks, oldest first."""
-    return sorted((r for r in rows if r.port == "provide" and r.backend not in _BYTES_BACKENDS),
+    return sorted((r for r in rows
+                  if r.port == "provide" and r.backend not in _NOT_SOURCE_ASK_BACKENDS),
                  key=lambda r: r.ts)
 
 
@@ -157,7 +160,7 @@ def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str 
     {"sha", "reason"}, in the order the run recorded them (spec 5
     section 1 kind 1's "rejected candidates").
     """
-    newest = cache.latest("run", "runreport", "runreport")
+    newest = cache.latest("run", "runreport", RunReportKey())
     if newest is None:
         return []
     items = newest.answer.get("excluded_items") or []

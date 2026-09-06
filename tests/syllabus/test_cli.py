@@ -25,6 +25,7 @@ import yaml
 
 from thai_syllabus import cli
 from thai_syllabus.attempts import Sourcing
+from thai_syllabus.cachekeys import JudgeKey, ProvideKey
 from thai_syllabus.compile import GateRefusal
 from thai_syllabus.rules import Compile, CompileReport, Finding, Report
 from thai_syllabus.run import RunReport, Spend
@@ -43,6 +44,9 @@ def _write_curated_dir(root):
     (curated / "profile.yaml").write_text(yaml.safe_dump(
         {"register": "male_colloquial", "emphasis": {}}))
     (curated / "rulebook.yaml").write_text("{}\n", encoding="utf-8")
+    (curated / "providers.yaml").write_text(yaml.safe_dump(
+        {"imgfetch_path": "/opt/bin/imgfetch", "audiofetch_path": "/opt/bin/audiofetch",
+         "judge": {"transport": "cli", "model": "m"}}))
     return root
 
 
@@ -63,13 +67,15 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
 
-    db.append(port="provide", backend="openverse", key="openverse:rice",
+    db.append(port="provide", backend="openverse",
+             key=ProvideKey(source="openverse", kind="", query="rice"),
              subject="rice", question={"kind": "picture", "params": {}},
              answer={"items": [{"sha": "pic1"}]}, cost=0.0)
     # rubric must match load_syllabus's own rubrics_for(rules) (the default
     # PICTURE_FIT_RUBRIC, no rulebook.yaml overlay here) -- _DbMediaIndex now
     # threads current_rubric through current_best (Task 11).
-    db.append(port="assess", backend="judge", key="judge:x:pic1:picture-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(PICTURE_FIT_RUBRIC, "pic1", "rice", "picture-for-word"),
              subject="rice",
              question={"role": "picture-for-word", "artifact_sha": "pic1",
                       "rubric": PICTURE_FIT_RUBRIC, "kind": "picture"},
@@ -77,14 +83,16 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     db.add_media(sha="pic1", kind="picture", ext="jpg", source="openverse",
                 origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
 
-    db.append(port="provide", backend="forvo", key="forvo:rice",
+    db.append(port="provide", backend="forvo",
+             key=ProvideKey(source="forvo", kind="", query="rice"),
              subject="rice", question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec1"}]}, cost=0.0)
     # derivations.current_best does not yet rank a bare mechanical pass for
     # recordings (Task 5 adds that) -- a judge pass under role
     # "recording-for-word" is what makes a recording candidate current-best
     # today.
-    db.append(port="assess", backend="judge", key="judge:x:rec1:recording-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(None, "rec1", "rice", "recording-for-word"),
              subject="rice",
              question={"role": "recording-for-word", "artifact_sha": "rec1", "rubric": None,
                       "kind": "recording"},
@@ -105,10 +113,12 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # sentence's OWN text_sha (Sentence.text_sha derives from the text, not
     # the sentences-table row's stored key above).
     sentence_sha = text_sha("ข้าว")
-    db.append(port="provide", backend="forvo", key=f"forvo:{sentence_sha}",
+    db.append(port="provide", backend="forvo",
+             key=ProvideKey(source="forvo", kind="", query=sentence_sha),
              subject=sentence_sha, question={"kind": "recording", "params": {}},
              answer={"items": [{"sha": "rec-sentence"}]}, cost=0.0)
-    db.append(port="assess", backend="judge", key=f"judge:x:rec-sentence:recording-for-word",
+    db.append(port="assess", backend="judge",
+             key=JudgeKey.for_rule(None, "rec-sentence", sentence_sha, "recording-for-word"),
              subject=sentence_sha,
              question={"role": "recording-for-word", "artifact_sha": "rec-sentence", "rubric": None,
                       "kind": "recording"},
@@ -155,7 +165,8 @@ def test_compile_refuses_and_reports_the_blocking_count_and_findings(
     report = Report(syllabus_state_id="s", rulebook_id="r",
                     findings=findings, metrics=(), gate=False)
 
-    def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False):
+    def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False,
+                              current_rubric=None, prior=None, provenance_source=None):
         assert force is False
         raise GateRefusal(report, findings[:1])
 
@@ -173,7 +184,8 @@ def test_compile_force_flag_is_threaded_to_compile_syllabus(tmp_path, monkeypatc
     root = _write_curated_dir(tmp_path / "deck")
     calls = []
 
-    def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False):
+    def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False,
+                              current_rubric=None, prior=None, provenance_source=None):
         calls.append(force)
         return Compile(label="deck", syllabus_state_id="s", compile_id="s:1",
                        report=CompileReport(compile_id="s:1", gate=False, forced=True,
@@ -186,6 +198,64 @@ def test_compile_force_flag_is_threaded_to_compile_syllabus(tmp_path, monkeypatc
                   "--force"])
     assert rc == 0
     assert calls == [True]
+
+
+def test_compile_passes_the_loaded_derivations_rubric_prior_and_provenance_source(
+        tmp_path, monkeypatch):
+    """Item 4: cli._cmd_compile obtains current_rubric/prior/provenance_source
+    from wiring.load_derivations(args.deck) rather than a rubric-blind
+    default."""
+    from thai_syllabus.wiring import load_derivations
+
+    root = _write_curated_dir(tmp_path / "deck")
+    expected = load_derivations(root)
+    captured = {}
+
+    def fake_compile_syllabus(syllabus, db, media_store, out_path, *, force=False,
+                              current_rubric=None, prior=None, provenance_source=None):
+        captured["current_rubric"] = current_rubric
+        captured["prior"] = prior
+        captured["provenance_source"] = provenance_source
+        return Compile(label="deck", syllabus_state_id="s", compile_id="s:1",
+                       report=CompileReport(compile_id="s:1", gate=True, forced=False,
+                                            warnings=(), notes_written=0,
+                                            cards_written=0, dropped=(),
+                                            out_path=str(out_path)))
+
+    monkeypatch.setattr(cli, "compile_syllabus", fake_compile_syllabus)
+    rc = cli.main(["compile", "--deck", str(root), "--out", str(tmp_path / "out.apkg")])
+    assert rc == 0
+    assert captured["current_rubric"] == expected.current_rubric
+    assert captured["prior"] == expected.prior
+    assert callable(captured["provenance_source"])
+
+
+def test_import_passes_the_loaded_derivations_rubric_prior_and_provenance_source(
+        tmp_path, monkeypatch):
+    """Item 4: cli.main's import branch obtains current_rubric/prior/
+    provenance_source from wiring.load_derivations(args.deck)."""
+    from thai_syllabus.anki_import import ImportReport
+    from thai_syllabus.wiring import load_derivations
+
+    root = _write_curated_dir(tmp_path / "deck")
+    expected = load_derivations(root)
+    captured = {}
+
+    def fake_import_collection(collection_path, db, *, current_rubric, prior,
+                               provenance_source):
+        captured["current_rubric"] = current_rubric
+        captured["prior"] = prior
+        captured["provenance_source"] = provenance_source
+        return ImportReport()
+
+    monkeypatch.setattr(cli.anki_import, "import_collection", fake_import_collection)
+    collection = tmp_path / "collection.anki2"
+    collection.write_bytes(b"")
+    rc = cli.main(["import", "--deck", str(root), "--collection", str(collection)])
+    assert rc == 0
+    assert captured["current_rubric"] == expected.current_rubric
+    assert captured["prior"] == expected.prior
+    assert callable(captured["provenance_source"])
 
 
 # --- run: wiring plumbing (monkeypatched run_pipeline only) ----------------

@@ -44,7 +44,8 @@ def _cards_of(pkg: dict, note_id) -> list[dict]:
 
 def test_recompiling_a_changed_syllabus_updates_notes_in_place(world):
     syllabus = fully_seeded_syllabus(world)
-    first = compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    first = compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                             provenance_source=lambda sha: None)
     pkg1 = read_apkg(world.out_path)
 
     # rice's meaning changes; its identity (word id) does not -- A2: card
@@ -54,7 +55,8 @@ def test_recompiling_a_changed_syllabus_updates_notes_in_place(world):
         dataclasses.replace(w, meaning="cooked rice (revised)") if w.id == "rice" else w
         for w in syllabus.words)
     changed = dataclasses.replace(syllabus, words=changed_words)
-    second = compile_syllabus(changed, world.db, world.media, world.out_path)
+    second = compile_syllabus(changed, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                              provenance_source=lambda sha: None)
     pkg2 = read_apkg(world.out_path)
 
     assert {n["guid"] for n in pkg1["notes"]} == {n["guid"] for n in pkg2["notes"]}
@@ -69,7 +71,8 @@ def test_two_notes_sharing_a_front_refuse_the_compile_with_a_finding(world):
     world.seed_recording("rice-a", "recording a")
     world.seed_recording("rice-b", "recording b")
     with pytest.raises(GateRefusal) as excinfo:
-        compile_syllabus(syllabus, world.db, world.media, world.out_path)
+        compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                         provenance_source=lambda sha: None)
     assert not world.out_path.exists()
     assert any(f.rule == "card/unique-front" for f in excinfo.value.report.findings)
 
@@ -78,7 +81,8 @@ def test_two_notes_sharing_a_front_refuse_the_compile_with_a_finding(world):
 
 def test_every_media_reference_resolves_to_a_file_in_the_package(world):
     syllabus = fully_seeded_syllabus(world)
-    compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                     provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
 
     referenced = set()
@@ -98,7 +102,8 @@ def test_every_media_reference_resolves_to_a_file_in_the_package(world):
 
 def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
     syllabus = fully_seeded_syllabus(world)
-    compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                     provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
 
     def due_of(model_name: str, thai_field: str, thai_value: str) -> list[int]:
@@ -138,7 +143,8 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
 
 def test_compile_id_is_stamped_on_every_note(world):
     syllabus = fully_seeded_syllabus(world)
-    compiled = compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    compiled = compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={},
+                                prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
     models = pkg["models"]
 
@@ -161,7 +167,8 @@ def test_a_gated_compile_refuses_and_counts_only_unwaived_errors(world):
     gated = dataclasses.replace(syllabus, rules=(*syllabus.rules, rule))
 
     with pytest.raises(GateRefusal) as excinfo:
-        compile_syllabus(gated, world.db, world.media, world.out_path)
+        compile_syllabus(gated, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                         provenance_source=lambda sha: None)
     assert not world.out_path.exists()
     assert excinfo.value.blocking == 1
 
@@ -176,7 +183,8 @@ def test_forcing_past_a_closed_gate_writes_the_package_with_declared_warnings(wo
                shape="check", check=always_fails)
     gated = dataclasses.replace(syllabus, rules=(*syllabus.rules, rule))
 
-    compiled = compile_syllabus(gated, world.db, world.media, world.out_path, force=True)
+    compiled = compile_syllabus(gated, world.db, world.media, world.out_path, force=True, current_rubric={},
+                                prior=(), provenance_source=lambda sha: None)
     assert compiled.report.forced is True
     assert compiled.report.gate is False
     assert any("bad thing" in w for w in compiled.report.warnings)
@@ -191,7 +199,8 @@ def test_forcing_past_a_closed_gate_writes_the_package_with_declared_warnings(wo
 
 def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
     syllabus = fully_seeded_syllabus(world)
-    compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
+                     provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
 
     s_model = _models_by_name(pkg)["sentence"]
@@ -213,7 +222,8 @@ def test_a_pair_with_no_rendition_is_dropped_and_counted(world):
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=world.db, pairs=(pair,)))
     # Deliberately no seed_rendition call.
 
-    compiled = compile_syllabus(syllabus, world.db, world.media, world.out_path)
+    compiled = compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={},
+                                prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
 
     assert "minimal_pair" not in _models_by_name(pkg)

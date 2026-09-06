@@ -15,7 +15,7 @@ lazy api transport on the same anthropic secret, and they are omitted
 when no anthropic secret is configured at all.
 
 load_syllabus reads the deck's media relationships through `_DbMediaIndex`
-(derivations.current_best over the db, since the `media` table carries
+(derivations.current_best over the db; the `media` table carries
 provenance only), its sentences through `SyllabusDb.all_sentences()`, and
 its frequency map from `deck_root/data/frequency_th.txt` (or
 `frequency_path`; absent, an empty map). The tokenizer is pythainlp,
@@ -286,6 +286,11 @@ class Derivations:
     # rulebook.yaml's thresholds overlay (curated.RulebookConfig.thresholds),
     # e.g. "reask/lapses" -- spec 5 section 1 kind 4's own lapse threshold.
     thresholds: Mapping[str, float] = field(default_factory=dict)
+    # Per-backend Budget (spec 3 section 7), the same default_budgets(cfg)
+    # build_sourcing's own run() takes -- reviewserver's question session
+    # reads budgets["learner"].max_asks through here, providers.yaml-
+    # configurable through the same "quotas" path as forvo's day budget.
+    budgets: Mapping[str, Budget] = field(default_factory=dict)
 
 
 def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
@@ -307,7 +312,8 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
                        sources_for=sources_for, attempt_cap=cfg.attempt_cap,
-                       thresholds=dict(bundle.rulebook.thresholds))
+                       thresholds=dict(bundle.rulebook.thresholds),
+                       budgets=default_budgets(cfg))
 
 
 # --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------

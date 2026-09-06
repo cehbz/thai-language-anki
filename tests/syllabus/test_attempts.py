@@ -12,7 +12,8 @@ from thai_syllabus.assessor import (Assessor, FillsBackend, JudgeBackend, JudgeU
                                     RawVerdict, RenditionBackend)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, attempt, current_best_of,
                                     sentence_attempt, sources_for)
-from thai_syllabus.cachekeys import rendition_identity
+from thai_syllabus.cachekeys import (JudgeKey, LlmPromptKey, MechanicalKey, ProvideKey,
+                                    rendition_identity, sha)
 from thai_syllabus.derivations import exhausted
 from thai_syllabus.record import DRAFT_SUBJECT, sentence_drafts
 from thai_syllabus.entities import Category, MinimalPair, Sentence, SoundConfusion, text_sha
@@ -48,7 +49,7 @@ class _Search:
         self.urls, self.queries = list(urls), []
 
     def cache_key(self, q):
-        return f"search:{q.params['query']}"
+        return ProvideKey(source="openverse", kind="", query=q.params["query"])
 
     def fetch(self, q):
         self.queries.append(q.params["query"])
@@ -92,7 +93,7 @@ class _Forvo:
         self.items_by_word = dict(items_by_word)
 
     def cache_key(self, q):
-        return f"forvo:{q.params['word']}"
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
 
     def fetch(self, q):
         return RawAnswer(items=tuple(self.items_by_word.get(q.params["word"], ())), cost=1.0)
@@ -116,8 +117,8 @@ class _Llm:
         self.text, self.prompts = text, []
 
     def cache_key(self, q):
-        return "llm:sentence-drafter:m:" + hashlib.sha256(
-            q.params["prompt"].encode()).hexdigest()[:16]
+        return LlmPromptKey(producer="sentence-drafter", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
 
     def fetch(self, q):
         self.prompts.append(q.params["prompt"])
@@ -133,7 +134,7 @@ class _Mechanical:
         self.ok, self.failing_subject = ok, failing_subject
 
     def cache_key(self, q):
-        return f"mech:duration:0.2-5.0:{q.artifact_sha}"
+        return MechanicalKey(check="duration", params="0.2-5.0", artifact_sha=q.artifact_sha)
 
     def fetch(self, q):
         passes = self.ok and q.subject != self.failing_subject
@@ -260,7 +261,8 @@ def test_picture_attempt_searches_the_gloss_head_term_with_the_category_qualifie
 
 def test_picture_attempt_searches_a_judge_suggestion_once_one_is_on_record(tmp_path):
     ctx, search, _judge = _picture_ctx(tmp_path)
-    ctx.db.append(port="assess", backend="judge", key="k1", subject="rice",
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(None, None, "rice", "picture-for-word"), subject="rice",
                   question={"role": "picture-for-word", "kind": "picture"},
                   answer={"value": False, "suggestion": "a bowl of steamed jasmine rice"})
     attempt(ctx, Need("rice", "picture"), "openverse")
@@ -340,7 +342,8 @@ def test_a_candidate_the_judge_cannot_prepare_is_excluded_and_the_rest_are_judge
     ctx, _search, judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
     ctx.db.add_media(sha="ghost", kind="picture", ext="jpg", source="legacy", origin="",
                      licence="?", acquired=date(2026, 1, 1))
-    ctx.db.append(port="provide", backend="openverse", key="legacy", subject="rice",
+    ctx.db.append(port="provide", backend="openverse",
+                  key=ProvideKey(source="openverse", kind="", query="legacy"), subject="rice",
                   question={"provides": "picture", "kind": "picture", "params": {}},
                   answer={"items": [{"sha": "ghost"}]})
     res = attempt(ctx, Need("rice", "picture"), "openverse")

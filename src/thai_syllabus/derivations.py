@@ -73,6 +73,11 @@ DEFAULT_ATTEMPT_CAP = 8
 # than entering, exhausting, or pending them.
 _UNSERVED_KIND = "grapheme-keyword"
 
+# The kind the run's own per-run sentence attempt serves for every open
+# Target, directed or not: queued() emits no entry, exhausted count, or
+# unserved count for it (run._open_target_count is its own accounting).
+_RUN_SENTENCE_KIND = "sentence"
+
 
 def _judge_rank(value) -> float:
     if isinstance(value, bool):
@@ -484,7 +489,13 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
     candidates += [(w, "picture", "word") for w in gaps.words_missing_pictures]
     candidates += [(w, "recording", "word") for w in gaps.words_missing_recordings]
     candidates += [(target_word.get(t, t), "sentence", "word") for t in gaps.unfilled_targets]
-    candidates += [(c, "rendition", "pair") for c in gaps.missing_renditions]
+    # gaps.missing_renditions names ConfusionIds; attempts._rendition_attempt
+    # looks a pair up by PairId. The need's subject is the pair's own id,
+    # not the confusion it covers.
+    candidates += [(p.id, "rendition", "pair") for p in syllabus.pairs
+                  if p.confusion in gaps.missing_renditions]
+    candidates += [(s, "recording", "sentence") for s in gaps.sentence_recordings]
+    candidates += [(s, "picture", "sentence") for s in gaps.scene_pictures]
     candidates += [(g, "grapheme-keyword", "grapheme")
                   for g in gaps.graphemes_missing_keyword_data]
     seen: set[tuple[str, str, str]] = set()
@@ -575,6 +586,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
             # either: it can never become an entry, exhausted, or pending.
             unserved += 1
             continue
+        if kind == _RUN_SENTENCE_KIND:
+            continue
         if pending(cache, subject, kind) or (subject, kind) in collected_this_run:
             continue  # already has a question outstanding -- reported once, not queued again
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
@@ -592,8 +605,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         if best.artifact_sha is None or rejected:
             status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap)
             if status.exhausted and not is_directed:
-                if sources:
-                    out_of_options += 1  # a Source could have served it and none is left
+                out_of_options += 1
                 continue  # out of machine options and nothing directs it -- excluded
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources):
@@ -713,7 +725,7 @@ class Reask:
     """A learner rating spec 5 section 1 kind 4 re-asks: F9's "the
     evidence contradicts" a rating of "acceptable" or better.
     `subject`/`kind`/`subject_kind` name the need as every derivation
-    does (a rendition's subject is its confusion id); `rating` is the
+    does (a rendition's subject is its pair id); `rating` is the
     contradicted answer, `evidence` the lapse StudyRecords, oldest first.
     """
     subject: str
@@ -746,11 +758,12 @@ def _reask_candidate(cache: CacheReader, study: StudyReader, *, subject: str, ki
 def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
           lapse_threshold: int = DEFAULT_REASK_LAPSES) -> list[Reask]:
     """Every need -- a word's picture or recording, a sentence's
-    recording or scene picture, a pair's rendition under its confusion --
-    rated "acceptable" or better whose card has since accumulated at
-    least `lapse_threshold` lapses (spec 5 section 1 kind 4). Each need's
-    StudyRecords come from (family, anchor, card_kind); a rendition sums
-    lapses over every pair under the confusion.
+    recording or scene picture, a pair's rendition -- rated "acceptable"
+    or better whose card has since accumulated at least `lapse_threshold`
+    lapses (spec 5 section 1 kind 4). Each need's StudyRecords come from
+    (family, anchor, card_kind); a sentence's anchor is its own text_sha,
+    the entity subject anki_import.py writes study rows under, one Reask
+    per sentence.
     """
     out: list[Reask] = []
     for w in syllabus.words:
@@ -772,13 +785,10 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
             if found is not None:
                 out.append(found)
 
-    pairs_by_confusion: dict[str, tuple[str, ...]] = {}
     for p in syllabus.pairs:
-        pairs_by_confusion[p.confusion] = pairs_by_confusion.get(p.confusion, ()) + (p.id,)
-    for confusion in syllabus.confusions:
-        found = _reask_candidate(cache, study, subject=confusion.id, kind="rendition",
+        found = _reask_candidate(cache, study, subject=p.id, kind="rendition",
                                  subject_kind="pair", family="minimal_pair",
-                                 anchors=pairs_by_confusion.get(confusion.id, ()),
+                                 anchors=(p.id,),
                                  card_kind="recognition", lapse_threshold=lapse_threshold)
         if found is not None:
             out.append(found)
@@ -832,10 +842,10 @@ def _role_rank(rows: Sequence[Answer], role: str,
 def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                      model: str = "llm", today: Callable[[], date] = date.today
                      ) -> list[tuple[Sentence, tuple[Target, ...]]]:
-    """Every unadopted sentence draft whose fills() rows confirm at least
-    one Target and whose sentence-for-target assessment passes (authority
-    order deciding), with those Targets. `model` and `today` go on the
-    Sentence's provenance.
+    """Every unadopted sentence draft with a gloss, whose fills() rows
+    confirm at least one Target and whose sentence-for-target assessment
+    passes (authority order deciding), with those Targets. `model` and
+    `today` go on the Sentence's provenance.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
     targets_by_id = {t.id: t for t in syllabus.targets}
@@ -843,6 +853,8 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
     out: list[tuple[Sentence, tuple[Target, ...]]] = []
     for draft in record.sentence_drafts(cache):
         if draft.text_sha in adopted:
+            continue
+        if not draft.gloss:
             continue
         rows = cache.assessments_of(draft.text_sha)
         role = role_for("sentence", record.subject_kind_of(rows))

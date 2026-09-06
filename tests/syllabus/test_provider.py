@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from thai_syllabus.assessor import Price
+from thai_syllabus.cachekeys import ProvideKey, sha
 from thai_syllabus.provider import (
     FetchBackend,
     ForvoBackend,
@@ -36,8 +37,8 @@ def db(tmp_path):
 
 
 class _FakeBackend:
-    def __init__(self, key="k", raises=None, items=("x",), cost=0.0):
-        self.key = key
+    def __init__(self, key=None, raises=None, items=("x",), cost=0.0):
+        self.key = key if key is not None else ProvideKey(source="", kind="", query="k")
         self.raises = raises
         self.items = items
         self.cost = cost
@@ -109,11 +110,12 @@ def test_learner_backend_raises_without_touching_cache_or_record(db):
 
 
 def test_the_stored_cache_row_carries_the_readable_key(db):
-    backend = _FakeBackend(key="openverse:rice bowl")
+    key = ProvideKey(source="openverse", kind="", query="rice bowl")
+    backend = _FakeBackend(key=key)
     provider = Provider(record=db, cache=db, backends={"openverse": backend})
     provider.ask("openverse", Question(subject="rice", provides="picture"))
     answer = db.assessments_of("rice")[0]
-    assert answer.key == "openverse:rice bowl"
+    assert answer.key == key.encode()
     assert answer.port == "provide" and answer.backend == "openverse"
 
 
@@ -133,7 +135,7 @@ def test_openverse_cache_key_is_backend_colon_query():
     backend = openverse_backend()
     key = backend.cache_key(Question(subject="rice", provides="picture",
                                      params={"query": "rice bowl"}))
-    assert key.encode() == "openverse:rice bowl"
+    assert key.encode() == "openverse::rice bowl"
 
 
 def test_openverse_fetch_parses_results_and_sets_descriptive_user_agent():
@@ -175,8 +177,8 @@ def test_wikimedia_and_pexels_backends_key_by_backend_name():
     wm = wikimedia_backend()
     px = pexels_backend(api_key="k")
     q = Question(subject="s", provides="picture", params={"query": "cat"})
-    assert wm.cache_key(q).encode() == "wikimedia:cat"
-    assert px.cache_key(q).encode() == "pexels:cat"
+    assert wm.cache_key(q).encode() == "wikimedia::cat"
+    assert px.cache_key(q).encode() == "pexels::cat"
 
 
 def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
@@ -243,7 +245,7 @@ def test_fetch_backend_key_is_the_url():
     backend = FetchBackend(media=None, fetcher=lambda url: (b"x", "jpg"))
     key = backend.cache_key(Question(subject="s", provides="picture-bytes",
                                      params={"url": "https://x/y.jpg"}))
-    assert key.encode() == "https://x/y.jpg"
+    assert key.encode() == "::https://x/y.jpg"
 
 
 def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
@@ -252,7 +254,7 @@ def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
     q = Question(subject="w", provides="recording-bytes",
                  params={"url": "https://apifree.forvo.com/x.mp3", "speaker": "krisflyer",
                         "speaker_kind": "native"})
-    assert b.cache_key(q).encode() == "https://apifree.forvo.com/x.mp3"
+    assert b.cache_key(q).encode() == "::https://apifree.forvo.com/x.mp3"
     ans = b.fetch(q)
     assert media.written == [(b"mp3bytes", "mp3")] and media.images == []
     item = ans.items[0]
@@ -325,7 +327,7 @@ def test_tool_fetcher_raises_transport_error_when_binary_is_missing():
 def test_forvo_cache_key_is_forvo_colon_word():
     backend = ForvoBackend(api_key="k")
     key = backend.cache_key(Question(subject="ไก่", provides="recording"))  # chicken
-    assert key.encode() == "forvo:ไก่"
+    assert key.encode() == "forvo::ไก่"
 
 
 def test_forvo_fetch_returns_items_and_a_transport_error_on_bad_status():
@@ -348,7 +350,7 @@ def test_forvo_empty_result_is_still_a_valid_answer(db):
     provider = Provider(record=db, cache=db, backends={"forvo": backend})
     calls_before = backend.get
     provider.ask("forvo", Question(subject="หมา", provides="recording"))  # dog
-    hit = db.latest("provide", "forvo", "forvo:หมา")
+    hit = db.latest("provide", "forvo", ProvideKey(source="forvo", kind="", query="หมา"))
     assert hit is not None
     assert hit.answer == {"items": []}
 
@@ -364,6 +366,7 @@ def test_tts_cache_key_includes_the_picked_voice_and_sha_of_text(tmp_path):
                                      params={"text": "ผมกินข้าว"}))  # I eat rice
     assert key.encode().startswith("tts:")
     assert key.kind == pick_voice("subj-1", voices)
+    assert key.query == sha("ผมกินข้าว")  # I eat rice
 
 
 def test_tts_fetch_writes_synthesized_audio_content_addressed(tmp_path):
