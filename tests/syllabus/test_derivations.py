@@ -16,6 +16,7 @@ from thai_syllabus.derivations import (
     CurrentBest,
     JudgeVerdict,
     adoptable_drafts,
+    all_needs,
     available_needs,
     challengers,
     confusion_weights,
@@ -34,7 +35,7 @@ from thai_syllabus.derivations import (
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
 from thai_syllabus.cachekeys import BatchMarkerKey
-from thai_syllabus.entities import MinimalPair, SoundConfusion, text_sha
+from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.ports import Answer, StudyRecord
 from thai_syllabus.store import SyllabusDb
@@ -616,6 +617,46 @@ def test_available_needs_names_each_gap_with_its_subject_kind():
         ("tone:mid-low", "rendition", "pair"),
         ("k", "grapheme-keyword", "grapheme"),
     ]
+
+
+# --- all_needs -----------------------------------------------------------
+
+def test_all_needs_names_every_target_pair_grapheme_and_sentence_need():
+    """Every need the deck has (spec 5 section 3's coverage universe),
+    whether or not it is currently satisfied -- unlike available_needs,
+    which lists only syllabus.gaps()'s missing ones.
+    """
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    rice = word("rice", "ข้าว", "rice", syllables=(syl(tone="mid"),))  # rice
+    near = word("near", "ใกล้", "near", syllables=(syl(tone="low"),))  # near
+    pair = MinimalPair.create(id=PairId("p-rice-near"), confusion=confusion, members=(rice, near))
+    keyword_word = word("chicken", "ไก่", "chicken")  # chicken, the grapheme's keyword
+    grapheme = Grapheme.create(symbol="ไก่"[0], kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=keyword_word)
+    s = sentence("ข้าวอร่อย", gloss="the rice is delicious")  # rice is delicious
+    syllabus = Syllabus(targets=(target("t-rice", "rice"),), pairs=(pair,),
+                        graphemes=(grapheme,), sentences=(s,), confusions=(confusion,),
+                        tokenizer=FakeTokenizer())
+    assert all_needs(syllabus) == [
+        ("rice", "picture", "word"),
+        ("rice", "recording", "word"),
+        ("p-rice-near", "rendition", "pair"),
+        (grapheme.symbol, "grapheme-keyword", "grapheme"),
+        (s.text_sha, "recording", "sentence"),
+        (s.text_sha, "picture", "sentence"),
+    ]
+
+
+def test_all_needs_names_a_multiply_targeted_word_once():
+    """A word with both a receptive and a productive Target names its
+    picture and recording needs once, not twice.
+    """
+    rice = word("rice", "ข้าว", "rice")  # rice
+    syllabus = Syllabus(targets=(target("t-rice-r", "rice", skill="receptive"),
+                                target("t-rice-p", "rice", skill="productive")),
+                        tokenizer=FakeTokenizer())
+    assert all_needs(syllabus) == [("rice", "picture", "word"), ("rice", "recording", "word")]
 
 
 # --- judge_verdict -----------------------------------------------------

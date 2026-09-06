@@ -41,6 +41,7 @@ from .derivations import (
     ExhaustedStatus,
     JudgeVerdict,
     QueueEntry,
+    all_needs,
     available_needs,
     challengers,
     current_best,
@@ -59,6 +60,7 @@ from .record import (
     latest_query,
     ratings_for_role,
     rows_for,
+    run_reports,
     source_asks,
 )
 from .store import MediaStore
@@ -650,27 +652,40 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
                   session: SessionStats | None = None) -> dict[str, Any]:
     """Spec 5 section 3: per-session (answered/queued, per-confusion drill
     accuracy, exhausted-remaining count) and per-deck (current-best
-    coverage per need, learner good/acceptable/unacceptable counts) --
-    every count derived under `d`'s parameters, the run's own.
-    `pending`/`sentences_adopted` come from the newest run.py
-    (port="run", backend="runreport") row when one exists, else 0 -- the
-    same row run._persist_report appends after every run() call.
-    `run_report_history` stays empty: run._persist_report appends one row
-    per run() call, but this module's read side only reads the newest one
-    back -- no aggregation over the full history is implemented here yet.
+    coverage per need, learner good/acceptable/unacceptable counts,
+    RunReport history) -- every count derived under `d`'s parameters, the
+    run's own.
+
+    Coverage and the rating counts are folded over derivations.all_needs
+    -- every need the deck has, not only the outstanding ones
+    available_needs (syllabus.gaps()) lists -- so a need already
+    satisfied still counts toward `total` and, once judged, toward
+    `covered`/`accepted`. `covered` is any need with a current-best
+    artifact at all; `accepted` narrows that to a current-best the
+    learner rated acceptable or better (D1's deferred covered/accepted
+    split). `exhausted_remaining` stays scoped to available_needs: a
+    need with no artifact and no source left, the only sense in which a
+    need still outstanding can be "exhausted" (all_needs includes kinds,
+    e.g. grapheme-keyword, with no Source at all, which would read as
+    permanently exhausted regardless of coverage).
+
+    `pending`/`sentences_adopted` come from the newest run.py (port="run",
+    backend="runreport") row when one exists, else 0 -- the same row
+    run._persist_report appends after every run() call. `run_report_history`
+    is every such row's answer (record.run_reports), oldest first, each
+    carrying every field spec 3 section 7's RunReport does.
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
-    exhausted_count = 0
 
-    for subject, kind, subject_kind in available_needs(d.syllabus):
+    for subject, kind, subject_kind in all_needs(d.syllabus):
         best = _best(d, subject, kind)
-        bucket = coverage.setdefault(kind, {"covered": 0, "total": 0})
+        bucket = coverage.setdefault(kind, {"covered": 0, "accepted": 0, "total": 0})
         bucket["total"] += 1
-        if best.rank >= _ACCEPTABLE_FLOOR:
+        if best.artifact_sha is not None:
             bucket["covered"] += 1
-        if _exhausted(d, subject, kind).exhausted:
-            exhausted_count += 1
+        if best.rank >= _ACCEPTABLE_FLOOR:
+            bucket["accepted"] += 1
 
         rated = ratings_for_role(d.db.assessments_of(subject), role_for(kind, subject_kind))
         if rated:
@@ -681,6 +696,9 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
                 ratings["acceptable"] += 1
             else:
                 ratings["unacceptable"] += 1
+
+    exhausted_count = sum(1 for subject, kind, _ in available_needs(d.syllabus)
+                         if _exhausted(d, subject, kind).exhausted)
 
     runreport = d.db.latest("run", "runreport", "runreport")
     runreport_answer = runreport.answer if runreport else {}
@@ -694,7 +712,7 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
         "drills": _drill_stats(d),
         "pending": runreport_answer.get("pending", 0),
         "sentences_adopted": runreport_answer.get("sentences_adopted", 0),
-        "run_report_history": [],
+        "run_report_history": [r.answer for r in run_reports(d.db)],
     }
 
 
@@ -1420,10 +1438,36 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
         var c = stats.coverage[kind];
         var row = el("tr");
         row.appendChild(el("td", {}, kind));
-        row.appendChild(el("td", {}, c.covered + " / " + c.total));
+        row.appendChild(el("td", {}, c.covered + " / " + c.total + " (accepted " + c.accepted + ")"));
         table.appendChild(row);
       });
       panel.appendChild(table);
+
+      // RunReport history (spec 5 section 3): every run.py row, oldest
+      // first, one table row per run with every field the row carries.
+      panel.appendChild(el("h3", {}, "Run history"));
+      var history = stats.run_report_history;
+      if (history.length) {
+        var fields = Object.keys(history[0]);
+        var histTable = el("table");
+        var head = el("tr");
+        fields.forEach(function (f) { head.appendChild(el("th", {}, f)); });
+        histTable.appendChild(head);
+        history.forEach(function (report) {
+          var row = el("tr");
+          fields.forEach(function (f) {
+            var value = report[f];
+            var text = (value !== null && typeof value === "object")
+              ? JSON.stringify(value) : String(value);
+            row.appendChild(el("td", {}, text));
+          });
+          histTable.appendChild(row);
+        });
+        panel.appendChild(histTable);
+      } else {
+        panel.appendChild(el("div", {}, "no runs yet"));
+      }
+
       panel.appendChild(el("div", { style: "margin-top:10px;color:#9aa4b1;" }, "press s to close"));
       overlay.hidden = false;
     });

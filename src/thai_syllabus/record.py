@@ -21,7 +21,8 @@ from .ports import Answer, CacheReader
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "directions", "judge_verdicts", "latest_query",
-          "asks_since", "spend_since", "unresolved_batch", "subject_kind_of", "DRAFT_SUBJECT", "SentenceDraft",
+          "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
+          "DRAFT_SUBJECT", "SentenceDraft",
           "drafts_in", "sentence_drafts", "excluded_candidates", "card_flags"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
@@ -177,6 +178,16 @@ def card_flags(rows: Sequence[Answer]) -> list[str]:
             seen.add(label)
             out.append(label)
     return out
+
+
+def run_reports(cache: CacheReader) -> list[Answer]:
+    """Every run.py RunReport row (run._persist_report: port="run",
+    backend="runreport", subject="run", question["kind"] == "runreport"),
+    oldest first -- one row per run() call, the history spec 5 section 3's
+    stats read (every field of spec 3 section 7 lives in the row's own
+    `answer`).
+    """
+    return [r for r in cache.assessments_of("run") if r.question.get("kind") == "runreport"]
 
 
 def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:

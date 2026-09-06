@@ -757,6 +757,53 @@ def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runre
     assert stats["sentences_adopted"] == 4
 
 
+@pytest.fixture
+def ctx_two_words_one_pictured(derivations, db, w1):
+    """Two targeted words (the `syllabus` fixture's w1/w2), one of which
+    (w1) has a learner-rated picture; w2's picture need has no artifact
+    at all -- the coverage/total disagreement the old available_needs-based
+    fold produced (spec 5 section 3).
+    """
+    _learner(db, w1.id, "picture", "s1", "good")
+    return derivations
+
+
+def _run_report_answer(**overrides):
+    """Every field run._persist_report's answer carries (spec 3 section
+    7), defaulted so a test only names the fields it cares about.
+    """
+    answer = {"attempted": 0, "improved": 0, "exhausted": 0, "available": 0,
+             "pending": 0, "sentences_adopted": 0, "drafted": 0,
+             "excluded": 0, "excluded_items": [], "unreachable": False,
+             "batch_id": None, "source_failures": {}, "spend": {},
+             "unserved": 0, "budgeted": 0, "deferred": 0, "preferences": 0}
+    answer.update(overrides)
+    return answer
+
+
+@pytest.fixture
+def ctx_with_two_runs(derivations, db):
+    db.append(port="run", backend="runreport", key="runreport", subject="run",
+             question={"kind": "runreport"},
+             answer=_run_report_answer(attempted=1, excluded=1, unreachable=False),
+             cost=0.0)
+    db.append(port="run", backend="runreport", key="runreport", subject="run",
+             question={"kind": "runreport"},
+             answer=_run_report_answer(attempted=2, excluded=0, unreachable=True),
+             cost=0.0)
+    return derivations
+
+
+def test_stats_cover_every_need(ctx_two_words_one_pictured):
+    s = rs.compute_stats(ctx_two_words_one_pictured)
+    assert s["coverage"]["picture"] == {"total": 2, "covered": 1, "accepted": 1}
+
+
+def test_stats_list_every_run_with_excluded_and_unreachable(ctx_with_two_runs):
+    hist = rs.compute_stats(ctx_with_two_runs)["run_report_history"]
+    assert len(hist) == 2 and {"excluded", "unreachable"} <= hist[0].keys()
+
+
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
 
 @pytest.fixture
@@ -995,7 +1042,13 @@ def test_screen_and_run_agree_on_current_best_queue_and_exhaustion(deck_with_his
 
 def test_screen_stats_count_coverage_and_exhaustion_as_the_run_does(deck_with_history):
     from thai_syllabus.attempts import provenance_source_for
-    from thai_syllabus.derivations import LEARNER_RANK, available_needs, current_best, exhausted
+    from thai_syllabus.derivations import (
+        LEARNER_RANK,
+        all_needs,
+        available_needs,
+        current_best,
+        exhausted,
+    )
     from thai_syllabus.wiring import build_sourcing
 
     ctx = rs.load_context(deck_with_history)
@@ -1003,14 +1056,18 @@ def test_screen_stats_count_coverage_and_exhaustion_as_the_run_does(deck_with_hi
     provenance_source = provenance_source_for(src.db)
 
     coverage: dict[str, dict[str, int]] = {}
-    exhausted_remaining = 0
-    for subject, kind, _subject_kind in available_needs(src.syllabus):
+    for subject, kind, _subject_kind in all_needs(src.syllabus):
         best = current_best(src.db, subject, kind, current_rubric=src.rubrics,
                             prior=src.provenance_prior, provenance_source=provenance_source)
-        bucket = coverage.setdefault(kind, {"covered": 0, "total": 0})
+        bucket = coverage.setdefault(kind, {"covered": 0, "accepted": 0, "total": 0})
         bucket["total"] += 1
-        if best.rank >= LEARNER_RANK["acceptable"]:
+        if best.artifact_sha is not None:
             bucket["covered"] += 1
+        if best.rank >= LEARNER_RANK["acceptable"]:
+            bucket["accepted"] += 1
+
+    exhausted_remaining = 0
+    for subject, kind, _subject_kind in available_needs(src.syllabus):
         if exhausted(src.db, subject, kind, sources=src.sources_for(kind),
                      attempt_cap=src.attempt_cap).exhausted:
             exhausted_remaining += 1

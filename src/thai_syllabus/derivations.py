@@ -44,7 +44,7 @@ __all__ = [
     "improved",
     "directed",
     "QueueEntry", "queue", "QueuedNeeds", "queued",
-    "available_needs", "available_subjects",
+    "all_needs", "available_needs", "available_subjects",
     "passing_pictures", "pictures_awaiting_preference",
     "Challenger", "challengers",
     "Reask", "reasks", "DEFAULT_REASK_LAPSES",
@@ -510,6 +510,35 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
         if c not in seen:
             seen.add(c)
             out.append(c)
+    return out
+
+
+def all_needs(syllabus) -> list[tuple[str, str, str]]:
+    """(subject, artifact kind, subject kind) for every need the deck
+    has, whether or not it is currently satisfied -- unlike
+    `available_needs`, which lists only what `syllabus.gaps()` reports
+    missing. Each targeted word names one picture need and one recording
+    need, each pair one rendition need, each grapheme one keyword-picture
+    need, each sentence one recording need and one scene-picture need
+    (spec 5 section 3's coverage universe). A word targeted by more than
+    one Target (receptive and productive both) names its picture and
+    recording needs once.
+    """
+    seen_words: set[str] = set()
+    out: list[tuple[str, str, str]] = []
+    for t in syllabus.targets:
+        if t.word in seen_words:
+            continue
+        seen_words.add(t.word)
+        out.append((t.word, "picture", "word"))
+        out.append((t.word, "recording", "word"))
+    for p in syllabus.pairs:
+        out.append((p.id, "rendition", "pair"))
+    for g in syllabus.graphemes:
+        out.append((g.symbol, "grapheme-keyword", "grapheme"))
+    for s in syllabus.sentences:
+        out.append((s.text_sha, "recording", "sentence"))
+        out.append((s.text_sha, "picture", "sentence"))
     return out
 
 
