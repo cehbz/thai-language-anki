@@ -438,7 +438,7 @@ def test_submit_then_resolve_writes_verdicts_and_releases_the_marker(
     a = assessor_with_batch_transport
     res = a.ask_many("judge", [fit_question("rice", "a" * 64)])
     bid = a.submit(res.collected)
-    assert a.unresolved_batch() == (bid, frozenset({"rice"}))
+    assert a.unresolved_batch() == (bid, frozenset({("rice", "picture")}))
     fake_batch.complete(bid, {res.collected[0].key: '{"value": true}'})
     got = a.resolve(bid)
     assert got and a.unresolved_batch() is None

@@ -279,10 +279,10 @@ def test_improved_is_false_when_the_new_pick_is_also_none():
 
 # --- pending -----------------------------------------------------------
 
-def _batch_marker_submitted(db, batch_id, subjects, roles):
+def _batch_marker_submitted(db, batch_id, subjects, roles, kinds=("picture",)):
     db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
               question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
-                       "roles": list(roles)},
+                       "roles": list(roles), "kinds": list(kinds)},
               answer={"status": "submitted"})
 
 
@@ -296,6 +296,16 @@ def test_pending_true_while_submitted_false_once_resolved(db):
     assert pending(db, "w", "picture") is True
     _batch_marker_resolved(db, "b1")
     assert pending(db, "w", "picture") is False
+
+
+def test_pending_is_keyed_by_need_not_by_subject(db):
+    """The marker names each question's own kind alongside its subject, so
+    a word whose picture is in the batch still has its recording need
+    queued -- the same (subject, kind) key queued() uses for the
+    questions this run itself collected."""
+    _batch_marker_submitted(db, "b1", ["w"], ["picture-for-word"], kinds=["picture"])
+    assert pending(db, "w", "picture") is True
+    assert pending(db, "w", "recording") is False
 
 
 def test_pending_via_assessor_submit_and_resolve(db):

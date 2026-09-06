@@ -345,7 +345,7 @@ class Assessor:
         n = len(marker.question["subjects"])
         artifact_shas = marker.question.get("artifact_shas") or [None] * n
         rubrics = marker.question.get("rubrics") or [None] * n
-        kinds = marker.question.get("kinds") or [""] * n
+        kinds = marker.question["kinds"]
         subject_kinds = marker.question.get("subject_kinds") or ["word"] * n
         params = marker.question.get("params") or [{}] * n
         resolved: dict[CacheKey, Verdict] = {}
@@ -371,18 +371,19 @@ class Assessor:
             question={"kind": "batch", "batch_id": batch_id}, answer={"status": final_status})
         return resolved
 
-    def unresolved_batch(self) -> tuple[str, frozenset[str]] | None:
-        """The (batch_id, subjects) of the newest marker whose latest
-        status is "submitted" -- the batch a run must resolve before it
-        submits its own (spec 3 section 7). None while no batch is out.
-        Reads through record.unresolved_batch, the same fold
+    def unresolved_batch(self) -> tuple[str, frozenset[tuple[str, str]]] | None:
+        """The (batch_id, needs) of the newest marker whose latest status
+        is "submitted" -- the batch a run must resolve before it submits
+        its own (spec 3 section 7), and the (subject, kind) need each of
+        its questions was asked for. None while no batch is out. Reads
+        through record.unresolved_batch, the same fold
         derivations.pending() reads through.
         """
         found = record.unresolved_batch(self._cache)
         if found is None:
             return None
-        batch_id, subjects, _roles = found
-        return batch_id, frozenset(subjects)
+        batch_id, subjects, _roles, kinds = found
+        return batch_id, frozenset(zip(subjects, kinds, strict=True))
 
 
 def _verdict_from_cached(cached) -> Verdict:

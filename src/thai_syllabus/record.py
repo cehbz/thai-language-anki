@@ -196,11 +196,14 @@ def run_reports(cache: CacheReader) -> list[Answer]:
     return [r for r in cache.assessments_of("run") if r.question.get("kind") == "runreport"]
 
 
-def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
-    """The (batch_id, subjects, roles) of the newest judge-batch marker
-    row whose latest status is "submitted"; subjects and roles are
-    parallel lists naming every question that batch asked. None while no
-    batch is out.
+def unresolved_batch(
+        cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...],
+                                     tuple[str, ...]] | None:
+    """The (batch_id, subjects, roles, kinds) of the newest judge-batch
+    marker row whose latest status is "submitted"; the three lists are
+    parallel, one entry per question that batch asked -- a question's own
+    (subject, kind) need is read off them by index. None while no batch
+    is out.
     """
     rows = [r for r in cache.assessments_of("batch") if r.question.get("kind") == "batch"]
     latest_by_key: dict[str, Answer] = {}
@@ -213,7 +216,7 @@ def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[st
         return None
     newest = max(submitted, key=lambda r: r.ts)
     return (newest.question["batch_id"], tuple(newest.question.get("subjects", [])),
-           tuple(newest.question.get("roles", [])))
+           tuple(newest.question.get("roles", [])), tuple(newest.question["kinds"]))
 
 
 # --- sentence drafts --------------------------------------------------------

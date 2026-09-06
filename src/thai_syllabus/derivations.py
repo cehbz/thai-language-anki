@@ -42,7 +42,7 @@ __all__ = [
     "improved",
     "directed",
     "QueueEntry", "queue", "QueuedNeeds", "queued",
-    "all_needs", "available_needs", "available_subjects",
+    "all_needs", "available_needs", "available_need_keys", "open_words",
     "passing_pictures", "pictures_awaiting_preference",
     "Challenger", "challengers",
     "Reask", "reasks", "DEFAULT_REASK_LAPSES",
@@ -75,7 +75,7 @@ _UNSERVED_KIND = "grapheme-keyword"
 
 # The kind the run's own per-run sentence attempt serves for every open
 # Target, directed or not: queued() emits no entry, exhausted count, or
-# unserved count for it (run._open_target_count is its own accounting).
+# unserved count for it (open_words is its own accounting).
 _RUN_SENTENCE_KIND = "sentence"
 
 
@@ -319,15 +319,18 @@ def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str
 # --- pending -----------------------------------------------------------
 
 def pending(cache: CacheReader, subject: str, kind: str) -> bool:
-    """True while the newest submitted judge batch marker names `subject`
-    (record.unresolved_batch). Resolving the batch releases the whole
-    marker, so every subject it named stops being pending together.
+    """True while the newest submitted judge batch marker names a
+    question asked for the (subject, kind) need itself
+    (record.unresolved_batch) -- the key queued() reads the questions
+    this run collected under. A word whose picture is in the batch still
+    has its recording need queued. Resolving the batch releases the whole
+    marker, so every need it named stops being pending together.
     """
     found = record.unresolved_batch(cache)
     if found is None:
         return False
-    _batch_id, subjects, _roles = found
-    return subject in subjects
+    _batch_id, subjects, _roles, kinds = found
+    return (subject, kind) in zip(subjects, kinds, strict=True)
 
 
 # --- next_source / attempts_since_change --------------------------------
@@ -507,6 +510,16 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
     return out
 
 
+def open_words(syllabus) -> frozenset[str]:
+    """The words with a Target still unfilled -- the subject of every
+    "sentence" need `available_needs` lists, one per word however many
+    Targets that word has, which is the unit the run's own sentence
+    attempt is accounted for in (run.RunReport).
+    """
+    return frozenset(subject for subject, kind, _subject_kind in available_needs(syllabus)
+                    if kind == _RUN_SENTENCE_KIND)
+
+
 def all_needs(syllabus) -> list[tuple[str, str, str]]:
     """(subject, artifact kind, subject kind) for every need the deck has,
     satisfied or not (spec 5 section 3's coverage universe): one picture
@@ -548,12 +561,13 @@ class QueuedNeeds:
     unserved: int = 0
 
 
-def available_subjects(syllabus) -> frozenset[str]:
-    """Every subject `available_needs` names -- the need list `available`
-    counts (run.RunReport). A subject whose need is satisfied has left
-    this set, and so is no longer pending on run.py's account.
+def available_need_keys(syllabus) -> frozenset[tuple[str, str]]:
+    """Every (subject, artifact kind) `available_needs` names -- one
+    member per need `available` counts (run.RunReport). A batch's own
+    (subject, kind) questions intersect it need for need.
     """
-    return frozenset(subject for subject, _kind, _subject_kind in available_needs(syllabus))
+    return frozenset((subject, kind) for subject, kind, _subject_kind
+                     in available_needs(syllabus))
 
 
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],

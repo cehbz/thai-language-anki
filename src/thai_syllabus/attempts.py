@@ -137,6 +137,9 @@ class AttemptResult:
     drafted: int = 0                   # drafts filling an open Target (sentence attempt only)
     # open Targets the sentence attempt handed the drafter, min(open, max_targets)
     targets_handed: int = 0
+    # the words those Targets belong to -- one (word, "sentence") need
+    # each, which is how the run accounts for them
+    subjects_handed: frozenset[str] = frozenset()
 
 
 # --- reading the record -----------------------------------------------------
@@ -586,9 +589,10 @@ def _fills(ctx: Sourcing, draft: SentenceDraft, targets_by_id: Mapping[str, Targ
 def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
-    many), each draft verified with fills() against the Targets it claims
-    and, where it fills one, put to the judge with its gloss. Adoption is
-    the run's, after the verdicts land."""
+    many, and subjects_handed which words they belong to), each draft
+    verified with fills() against the Targets it claims and, where it
+    fills one, put to the judge with its gloss. Adoption is the run's,
+    after the verdicts land."""
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
     open_ids = set(syllabus.gaps().unfilled_targets[:max_targets])
@@ -620,7 +624,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend,
-                         drafted=len(questions), targets_handed=len(targets))
+                         drafted=len(questions), targets_handed=len(targets),
+                         subjects_handed=frozenset(t.word for t in targets))
 
 
 _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {

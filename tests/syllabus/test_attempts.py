@@ -543,8 +543,8 @@ def test_rendition_attempt_falls_to_one_tts_voice_across_the_members(tmp_path):
 
 # --- the sentence attempt: draft, verify with fills(), collect questions ----
 
-def _sentence_ctx(tmp_path, llm_text, *, judge_value="true", batch=False):
-    syllabus = Syllabus(
+def _sentence_ctx(tmp_path, llm_text, *, judge_value="true", batch=False, syllabus=None):
+    syllabus = syllabus if syllabus is not None else Syllabus(
         words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),   # ข้าว: rice, กิน: eat
         targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
         frequency={"eat": 1, "rice": 2},
@@ -587,8 +587,9 @@ def test_sentence_attempt_reports_the_drafts_it_produced(tmp_path):
 
 
 def test_sentence_attempt_reports_how_many_open_targets_it_was_handed(tmp_path):
-    """`targets_handed` is min(open Targets, max_targets) -- the per-run
-    cap run.py needs to tell "handed" apart from "left for another run".
+    """`targets_handed` is min(open Targets, max_targets): the per-run
+    Target cap's own count. The run accounts in needs and reads
+    `subjects_handed` instead.
     """
     text = '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'\
            ' "targets": ["rice/receptive", "eat/receptive"]}]}'   # กินข้าว: eat rice
@@ -596,6 +597,20 @@ def test_sentence_attempt_reports_how_many_open_targets_it_was_handed(tmp_path):
     assert sentence_attempt(ctx).targets_handed == 2   # both open Targets, well under the cap
     ctx = _sentence_ctx(tmp_path / "capped", text)
     assert sentence_attempt(ctx, max_targets=1).targets_handed == 1
+
+
+def test_sentence_attempt_reports_the_words_it_was_handed_targets_for(tmp_path):
+    """`subjects_handed` names those Targets' words, one entry per word:
+    a word with a receptive and a productive Target open is one
+    (word, "sentence") need, which is the unit run.py accounts for."""
+    one_word = Syllabus(
+        words=(word("rice", "ข้าว", "rice"),),                          # ข้าว: rice
+        targets=(target("rice/receptive", "rice"),
+                 target("rice/productive", "rice", skill="productive")),
+        frequency={"rice": 1},
+        tokenizer=FakeTokenizer({"ข้าวอร่อย": ["ข้าว", "อร่อย"]}))       # ข้าวอร่อย: tasty rice
+    result = sentence_attempt(_sentence_ctx(tmp_path, '{"sentences": []}', syllabus=one_word))
+    assert result.targets_handed == 2 and result.subjects_handed == frozenset({"rice"})
 
 
 def test_sentence_attempt_adopts_nothing_itself(tmp_path):

@@ -24,6 +24,7 @@ from thai_syllabus.cachekeys import (BatchMarkerKey, DirectionKey, JudgeKey, Llm
                                     ProvideKey, RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+from thai_syllabus.derivations import available_need_keys, open_words
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
@@ -308,6 +309,45 @@ def test_an_adopted_sentence_reaches_its_recording_and_picture_needs_this_run(
 
     assert (r2.available == r2.attempted + r2.exhausted + r2.pending
            + r2.unserved + r2.budgeted + r2.deferred)
+
+
+@pytest.fixture
+def ctx_inline_sentences(tmp_path, fake_search):
+    """Two targeted words, one drafted sentence claiming both their
+    Targets, and an inline judge that passes: the draft is verified and
+    adopted inside the same run that drafts it."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+                 transport="api")
+    ctx = _wire(build_sourcing(root), fake_search,
+                llm=_Llm(json.dumps({"sentences": [
+                    {"text": EAT_RICE, "gloss": "eat rice",
+                     "targets": ["rice/receptive", "eat/receptive"]}]})),
+                complete=lambda prompt, attachments=(): Completion(
+                    text=json.dumps({"value": True, "evidence": "ok"})))
+    ctx.provider._backends["openverse"] = _Silent("openverse")
+    ctx.provider._backends["wikimedia"] = _Silent("wikimedia")
+    ctx.provider._backends["pexels"] = _Silent("pexels")
+    # กิน = eat, ข้าว = rice
+    ctx.syllabus = dataclasses.replace(
+        ctx.syllabus, tokenizer=FakeTokenizer({EAT_RICE: ["กิน", "ข้าว"]}))
+    return ctx
+
+
+def test_a_word_whose_targets_this_run_adopted_leaves_available_and_every_bucket(
+        ctx_inline_sentences):
+    """The draft the sentence attempt verified inline closed both words'
+    Targets in the run that produced it: neither word's "sentence" need
+    is available afterwards, and neither reaches attempted, budgeted or
+    deferred -- over a real queued(), the identity still holds."""
+    report = run(ctx_inline_sentences, budgets={})
+
+    assert report.sentences_adopted == 1
+    assert open_words(ctx_inline_sentences.syllabus) == frozenset()
+    assert not [need for need in available_need_keys(ctx_inline_sentences.syllabus)
+                if need[1] == "sentence"]
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 # --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
@@ -639,13 +679,34 @@ def test_a_run_that_collected_nothing_submits_no_batch(db, monkeypatch):
     assert assessor.submitted == [] and report.batch_id is None and report.pending == 0
 
 
-def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db, monkeypatch):
-    class _Stuck(_Assessor):
-        def resolve(self, batch_id):
-            self.resolved.append(batch_id)   # still in progress: nothing released
-            return {}
+class _Stuck(_Assessor):
+    """A batch still in progress: resolve() releases nothing and the same
+    batch is still out afterwards."""
 
-    assessor = _Stuck(outstanding=("batch-0", frozenset({"a", "b"})))
+    def resolve(self, batch_id):
+        self.resolved.append(batch_id)
+        return {}
+
+
+class _DeadResolve(_Assessor):
+    """The judge's wire is down at the resolve: the batch stays out."""
+
+    def resolve(self, batch_id):
+        raise JudgeUnreachable("batch status failed")
+
+
+def _exhaust(db, subject):
+    """Every picture Source asked for `subject` and none of them offering
+    anything: queued() counts the need out of options."""
+    for source in ("openverse", "wikimedia", "pexels"):
+        db.append(port="provide", backend=source,
+                  key=ProvideKey(source=source, kind="", query=subject), subject=subject,
+                  question={"kind": "picture", "subject_kind": "word"},
+                  answer={"items": []})
+
+
+def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db, monkeypatch):
+    assessor = _Stuck(outstanding=("batch-0", frozenset({("a", "picture"), ("b", "picture")})))
     calls = _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"))), assessor), {})
     assert assessor.resolved == ["batch-0"] and report.pending == 2
@@ -658,16 +719,117 @@ def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db,
            + report.unserved + report.budgeted + report.deferred)
 
 
+def test_a_dead_resolve_counts_the_exhausted_and_unserved_needs_once(db, monkeypatch):
+    """The judge died at the resolve, with an exhausted picture need and
+    an unserved grapheme need in the same syllabus: `pending` is the
+    outstanding batch's own needs, and the leftover is deferred once --
+    never the exhausted and unserved needs a second time.
+    """
+    assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
+    _patch(monkeypatch, {})
+    _exhaust(db, "b")
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), graphemes=("g",))), assessor), {})
+    assert report.available == 4 and report.pending == 1
+    assert report.exhausted == 1 and report.unserved == 1 and report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_batch_still_out_after_the_resolve_counts_each_need_once(db, monkeypatch):
+    """The same accounting where the resolve reached a batch that has not
+    ended: the run looked at no need, and the exhausted and unserved ones
+    are not deferred on top of their own buckets."""
+    assessor = _Stuck(outstanding=("batch-0", frozenset({("a", "picture")})))
+    _patch(monkeypatch, {})
+    _exhaust(db, "b")
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), graphemes=("g",))), assessor), {})
+    assert report.batch_id == "batch-0" and report.available == 4 and report.pending == 1
+    assert report.exhausted == 1 and report.unserved == 1 and report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_pending_at_a_dead_resolve_counts_a_words_two_kinds_as_two_needs(db, monkeypatch):
+    """The outstanding batch names one word's picture and its recording:
+    two pending needs on this path too, the measure the submitted path
+    uses."""
+    assessor = _DeadResolve(
+        outstanding=("batch-0", frozenset({("a", "picture"), ("a", "recording")})))
+    _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",), recordings=("a",))), assessor), {})
+    assert report.available == 2 and report.pending == 2 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_run_ending_before_any_attempt_refuses_buckets_over_available():
+    """A `deferred` below zero is a defect in the counts, never something
+    to clamp: the fold names every count it was given and refuses."""
+    needs = run_mod.QueuedNeeds(entries=[], available=2, exhausted=1, unserved=1)
+    with pytest.raises(ValueError) as raised:
+        run_mod._unconsidered(needs, pending=1)
+    message = str(raised.value)
+    assert "available=2" in message and "pending=1" in message
+    assert "exhausted=1" in message and "unserved=1" in message
+
+
 def test_run_collects_the_preference_questions_of_a_resolved_batch(db, monkeypatch):
     """A resolved batch's preference question is submitted and counted
     under `preferences`, not `pending`: the picture it ranks already has
     its need satisfied (`_Gaps()` here names no gap at all), so it never
     was a member of `available`."""
-    assessor = _Assessor(outstanding=("batch-0", frozenset({"a"})))
+    assessor = _Assessor(outstanding=("batch-0", frozenset({("a", "picture")})))
     _patch(monkeypatch, {}, preference=AttemptResult(True, questions=[_Q("a")]))
     report = run(_ctx(db, _Syl(_Gaps()), assessor), {})
     assert len(assessor.submitted[0]) == 1
     assert report.pending == 0 and report.preferences == 1
+
+
+class _TargetedSyl(_Syl):
+    """A syllabus whose open Targets name the word they belong to: two
+    Targets on one word are one (word, "sentence") need."""
+
+    def __init__(self, targets):
+        super().__init__(_Gaps(sentences=tuple(t.id for t in targets)))
+        self.targets = list(targets)
+
+
+def _one_word_two_targets():
+    return (target("w/receptive", "w"), target("w/productive", "w", skill="productive"))
+
+
+def test_one_words_two_open_targets_are_one_attempted_sentence_need(db, monkeypatch):
+    """available_needs counts one (word, "sentence") need per word: a word
+    with a receptive and a productive Target still open is available once,
+    and the attempt handed both its Targets attempts that one need once --
+    never once per Target."""
+    _patch(monkeypatch, {}, sentence_result=AttemptResult(
+        True, drafted=1, targets_handed=2, subjects_handed=frozenset({"w"})))
+    report = run(_ctx(db, _TargetedSyl(_one_word_two_targets())), {})
+    assert report.available == 1 and report.attempted == 1 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_one_words_two_open_targets_are_one_budgeted_sentence_need(db, monkeypatch):
+    """The same word under a spent llm-sentence budget: one need
+    budgeted, not one per Target."""
+    calls = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        calls.append(1)
+        return AttemptResult(True)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    midnight = run_mod.day_start_ns(date.today())
+    _row_today(db, "llm-sentence", "x", ts=midnight + 1)
+    report = run(_ctx(db, _TargetedSyl(_one_word_two_targets())),
+                {"llm-sentence": Budget(max_asks=1)})
+    assert calls == []
+    assert report.available == 1 and report.budgeted == 1 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_unfilled_targets_are_available_work_and_never_exhausted(db, monkeypatch):
@@ -680,7 +842,8 @@ def test_unfilled_targets_are_available_work_and_never_exhausted(db, monkeypatch
     still holds.
     """
     _patch(monkeypatch, {},
-          sentence_result=AttemptResult(True, drafted=2, targets_handed=3))
+          sentence_result=AttemptResult(True, drafted=2, targets_handed=3,
+                                        subjects_handed=frozenset({"t1", "t2", "t3"})))
     report = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2", "t3")))), {})
     assert report.available == 3 and report.exhausted == 0 and report.attempted == 3
     assert report.deferred == 0
@@ -719,19 +882,20 @@ def test_the_sentence_attempts_per_run_cap_defers_the_excess_when_it_runs(db, mo
     run (`deferred`), and the identity still holds."""
     sentences = tuple(f"t{i}" for i in range(45))
     _patch(monkeypatch, {},
-          sentence_result=AttemptResult(True, drafted=40, targets_handed=40))
+          sentence_result=AttemptResult(True, drafted=40, targets_handed=40,
+                                        subjects_handed=frozenset(sentences[:40])))
     report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))), {})
     assert report.attempted == 40 and report.deferred == 5
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 
 
-def test_the_sentence_attempts_per_run_cap_defers_the_excess_when_the_gate_skips_it(
+def test_the_llm_sentence_gate_counts_every_open_word_budgeted_when_it_skips(
         db, monkeypatch):
-    """45 open Targets, the llm-sentence budget already spent: the gate
-    keeps the attempt from running at all, but only the first 40 (the
-    per-run cap) are budget-constrained -- the other 5 were never even
-    considered this run either way."""
+    """45 open Targets, the llm-sentence budget already spent: the per-run
+    Target cap bounds what one attempt is handed, so with no attempt to
+    run it bounds nothing -- all 45 needs are budget-constrained and none
+    of them deferred."""
     calls = []
 
     def fake_sentence_attempt(ctx, max_targets=40):
@@ -746,7 +910,7 @@ def test_the_sentence_attempts_per_run_cap_defers_the_excess_when_the_gate_skips
     report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))),
                 {"llm-sentence": Budget(max_asks=1)})
     assert calls == []
-    assert report.budgeted == 40 and report.deferred == 5
+    assert report.budgeted == 45 and report.deferred == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 
@@ -811,11 +975,7 @@ def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
 
 
 def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch):
-    class _DeadResolve(_Assessor):
-        def resolve(self, batch_id):
-            raise JudgeUnreachable("batch status failed")
-
-    assessor = _DeadResolve(outstanding=("batch-0", frozenset({"a"})))
+    assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
     assert report.unreachable is True and calls == [] and assessor.submitted == []
@@ -828,11 +988,15 @@ def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch
            + report.unserved + report.budgeted + report.deferred)
 
 
-def test_a_judge_that_cannot_be_reached_to_submit_stops_the_run(db, monkeypatch):
-    class _DeadSubmit(_Assessor):
-        def submit(self, prepared):
-            raise JudgeUnreachable("batch submit failed")
+class _DeadSubmit(_Assessor):
+    """The judge's wire is down at the submit: nothing this run collected
+    goes out."""
 
+    def submit(self, prepared):
+        raise JudgeUnreachable("batch submit failed")
+
+
+def test_a_judge_that_cannot_be_reached_to_submit_stops_the_run(db, monkeypatch):
     assessor = _DeadSubmit()
     _patch(monkeypatch, {("a", "openverse"): AttemptResult(True, questions=[_Q("a")])})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",))), assessor), {})
@@ -840,12 +1004,45 @@ def test_a_judge_that_cannot_be_reached_to_submit_stops_the_run(db, monkeypatch)
     assert db.latest("run", "runreport", RunReportKey()).answer["unreachable"] is True
 
 
+def test_an_unsubmitted_preference_question_is_a_preference_not_a_deferred_need(
+        db, monkeypatch):
+    """The resolve raised a preference question ranking "a"'s picture,
+    whose need is already satisfied, and the judge then died at the
+    submit: that question is measured against the same `available`
+    snapshot the submitted path uses, so it counts under `preferences`,
+    outside the identity, rather than deferring a need that is not
+    available at all."""
+    assessor = _DeadSubmit(outstanding=("batch-0", frozenset({("a", "picture")})))
+    _patch(monkeypatch, {}, preference=AttemptResult(True, questions=[_Q("a", "picture")]))
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("b",))), assessor), {})
+    assert report.unreachable is True and report.preferences == 1
+    assert report.available == 1 and report.attempted == 1 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_submitted_question_on_a_satisfied_need_is_a_preference_not_pending(db, monkeypatch):
+    """`pending` is the batch's needs that `available` still counts, need
+    key for need key: a resolve-time question on "a"'s satisfied picture
+    counts under `preferences` even while "a"'s recording need is open
+    and pending in the same batch."""
+    assessor = _Assessor(outstanding=("batch-0", frozenset({("a", "picture")})))
+    _patch(monkeypatch, {("a", "forvo"): AttemptResult(True, questions=[_Q("a", "recording")])},
+           preference=AttemptResult(True, questions=[_Q("a", "picture")]))
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",))), assessor), {})
+    assert len(assessor.submitted[0]) == 2
+    assert report.pending == 1 and report.preferences == 1
+    assert report.available == 1 and report.attempted == 0 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
 def test_an_unreachable_sentence_attempt_defers_what_the_resolve_collected(db, monkeypatch):
     """The resolve raised a preference question for "a"'s still-open
     picture need, then the sentence attempt met a dead judge: nothing was
     submitted, so "a" is neither pending nor attempted -- its question is
     collected again next run, which is `deferred`."""
-    assessor = _Assessor(outstanding=("batch-0", frozenset({"a"})))
+    assessor = _Assessor(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {}, sentence_result=JudgeUnreachable,
                    preference=AttemptResult(True, questions=[_Q("a", "picture")]))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",))), assessor), {})
@@ -861,7 +1058,7 @@ def test_an_unreachable_judge_in_the_loop_defers_what_the_resolve_collected(db, 
     never went out (`deferred`), while "b" (whose own attempt raised a
     question that never went out either) and "c" (whose attempt met the
     dead judge) were both asked (`attempted`)."""
-    assessor = _Assessor(outstanding=("batch-0", frozenset({"a"})))
+    assessor = _Assessor(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {("b", "openverse"): AttemptResult(True,
                                                                   questions=[_Q("b")]),
                                  ("c", "openverse"): JudgeUnreachable},
@@ -870,6 +1067,45 @@ def test_an_unreachable_judge_in_the_loop_defers_what_the_resolve_collected(db, 
     assert [n.subject for n, _s in calls] == ["b", "c"]   # "a" is never re-attempted
     assert report.unreachable is True and report.available == 3
     assert report.pending == 0 and report.attempted == 2 and report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_an_unreachable_sentence_attempt_defers_the_queued_needs_it_never_reached(
+        db, monkeypatch):
+    """The judge died inside the sentence attempt, before the loop ever
+    ran: the two queued needs behind it were never looked at, so they are
+    deferred rather than missing from the account."""
+    calls = _patch(monkeypatch, {}, sentence_result=JudgeUnreachable)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"), sentences=("t1",)))), {})
+    assert calls == [] and report.unreachable is True
+    assert report.available == 3 and report.attempted == 1 and report.deferred == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_an_unreachable_sentence_attempt_attempts_every_open_word_uncapped(db, monkeypatch):
+    """45 open words against the default 40-per-run Target cap: the cap
+    bounds the Targets one attempt is handed, never the needs, and the
+    drafts for all 45 were asked for before the judge died."""
+    sentences = tuple(f"t{i}" for i in range(45))
+    _patch(monkeypatch, {}, sentence_result=JudgeUnreachable)
+    report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))), {})
+    assert report.available == 45 and report.attempted == 45 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_dead_source_defers_the_needs_it_left_untouched(db, monkeypatch):
+    """The first of three needs on one Source failed on the wire and the
+    Source is skipped for the rest of the run: none of the three wrote a
+    row, so all three are deferred and retried next run, while the need
+    on a live Source is attempted."""
+    calls = _patch(monkeypatch, {("a", "openverse"): TransportError})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), recordings=("r",)))), {})
+    assert [n.subject for n, _s in calls] == ["a", "r"]
+    assert report.source_failures == {"openverse": 1}
+    assert report.available == 4 and report.attempted == 1 and report.deferred == 3
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 
@@ -892,7 +1128,7 @@ class _AdoptingSyl:
     closes those Targets."""
 
     def __init__(self, unfilled_targets):
-        self.targets, self.sentences = [], ()
+        self.targets, self.sentences, self.pairs = [], (), ()
         self._unfilled = tuple(unfilled_targets)
         self._covered: tuple[str, ...] = ()
 
