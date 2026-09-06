@@ -2,30 +2,21 @@
 MediaStore, the content-addressed writer for media/objects/ (spec 2
 section 1).
 
-Five tables and nothing else; WAL mode; one transaction per append;
-caches are never evicted -- a re-ask appends, it never updates or
-deletes. `ts` is stored as an integer count of nanoseconds since the
-epoch (not the ISO string spec 2's prose examples might suggest) because
-the `cache` table's primary key is (key_sha, ts): nanosecond resolution
-combined with a per-connection monotonic bump (see `_next_ts`) makes
-same-microsecond collisions impossible without needing a synthetic
-surrogate key.
+Five tables and nothing else; WAL mode; one transaction per append; a
+cache row is never evicted -- a re-ask appends. `ts` is an integer count
+of nanoseconds since the epoch, bumped monotonically per connection
+(`_next_ts`), so the `cache` table's (key_sha, ts) primary key never
+collides.
 
-Every key is a cachekeys.py CacheKey, or a plain string (the Provide
-port's backends key that way); `append`/`latest`/`verdict` accept either
-and store `key.encode()` under the `key` column -- readable, for
-inspection only -- and `sha256(key.encode())` under `key_sha`, the
-indexed column every lookup matches on (`cachekeys.sha` is a different,
-16-hex primitive: the one key dataclasses use to fold a large component,
-e.g. a rubric, into their own encode()).
+`append`/`latest`/`verdict` take a cachekeys.py CacheKey or a plain
+string, and store `key.encode()` under the `key` column (readable, for
+inspection) and its sha256 under `key_sha`, the indexed column every
+lookup matches on.
 
-AssessmentReader.verdict / .is_waived / RecordWriter.append /
-StudyReader.records / StudyReader.study_rows are all implemented here
-exactly as ports.py declares them; SyllabusDb also exposes some extra,
-non-Protocol methods (assessments_of, append_judge_verdict, append_waiver,
-append_study, add_sentence, add_media) that spec 2 section 3 or the
-migration/testing surface needs but spec 1's frozen Protocols do not
-declare.
+AssessmentReader, RecordWriter, CacheReader and StudyReader are
+implemented here as ports.py declares them; assessments_of, append_waiver,
+append_study, add_sentence and add_media are further methods spec 2
+section 3 and the migration surface need.
 """
 from __future__ import annotations
 
@@ -33,7 +24,6 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -219,15 +209,6 @@ class SyllabusDb:
 
     # --- convenience writers ------------------------------------------------
 
-    def append_judge_verdict(self, *, key: "str | CacheKey", subject: str,
-                             question: Mapping[str, Any], answer: Mapping[str, Any],
-                             cost: float = 0.0) -> None:
-        """port="assess", backend="judge"; `key` is built by the caller
-        through cachekeys.JudgeKey -- this does not construct one.
-        """
-        self.append(port="assess", backend="judge", key=key, subject=subject,
-                    question=dict(question), answer=dict(answer), cost=cost)
-
     def append_waiver(self, *, rule_id: str, note_id: str,
                       artifact_sha: str | None, waived: bool,
                       reason: str = "") -> None:
@@ -268,9 +249,8 @@ class SyllabusDb:
         return [_row_to_study_record(r) for r in rows]
 
     def study_rows(self) -> list[StudyRecord]:
-        """Every `study` row, ordered by ts, for callers (the Syllabus
-        aggregate) that group study history themselves rather than
-        querying one (family, anchor, card_kind) at a time.
+        """Every `study` row, ordered by ts, for a caller that groups
+        study history itself (the Syllabus aggregate does).
         """
         rows = self._con.execute(
             "select family, anchor, card_kind, compile_id, ts, grade, time_ms, "
@@ -358,15 +338,9 @@ class SyllabusDb:
         return row is not None
 
     def media_provenance(self, sha: str) -> dict[str, Any] | None:
-        """One `media` row, decoded (spec 2 section 2) -- compile.py's
-        source for the file extension a resolved artifact sha was stored
-        under, plus source/speaker for src-provenance tags and minimal_pair
-        MemberKey's speaker component. `speaker` is the resolved Speaker
-        for `speaker_id`, or None when `speaker_id` is absent. Not part of
-        any Protocol (spec 1's MediaIndex is a narrower has/speakers-only
-        read); this is compile()'s own dependency on SyllabusDb directly,
-        same footing as the module docstring's other non-Protocol
-        convenience methods.
+        """One `media` row, decoded (spec 2 section 2): the extension a
+        sha was stored under, its source, and `speaker`, the resolved
+        Speaker for `speaker_id` or None when there is none.
         """
         row = self._con.execute(
             "select sha, kind, ext, source, origin, licence, acquired, "
@@ -397,10 +371,9 @@ class ImageIngestResult:
 
 def _normalize_image(data: bytes, ext: str) -> tuple[bytes, str]:
     """Bounded long edge (IMAGE_MAX_LONG_EDGE, aspect preserved), metadata
-    stripped, re-encoded (spec 4 section 3). Building a brand-new Image
-    from just the pixel data (`putdata`) is what strips metadata: EXIF/ICC/
-    text chunks live on the source Image object and are never copied over,
-    rather than being enumerated and deleted one by one.
+    stripped, re-encoded (spec 4 section 3). The saved image is built from
+    the source's pixel data alone, so EXIF/ICC/text chunks never carry
+    over.
     """
     import io
 
@@ -432,8 +405,7 @@ def _normalize_image(data: bytes, ext: str) -> tuple[bytes, str]:
 @dataclass
 class MediaStore:
     """Content-addressed writer for media/objects/<sha>.<ext> (spec 2
-    section 1). Dumb bytes-in, sha-out; provenance is SyllabusDb.add_media's
-    job, kept separate so tests can exercise the CAS write without a db.
+    section 1): bytes in, sha out. Provenance is SyllabusDb.add_media's.
     """
     root: Path
 

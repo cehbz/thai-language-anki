@@ -1,72 +1,26 @@
-"""Wiring: build the Provide/Assess backend rosters and Budget defaults
-from curated/providers.yaml (spec 3 section 5), and assemble a Syllabus
-from a deck directory's curated files + db-backed ports (spec 1/2).
-cli.py's module docstring names this gap: compile/run stayed library-level
-"until their configs settle" -- this module is that settling.
+"""Wiring: the Provide/Assess backend rosters and Budget defaults from
+curated/providers.yaml (spec 3 section 5), and a Syllabus assembled from
+a deck directory's curated files plus db-backed ports (spec 1/2).
 
-Secrets are resolved lazily (secrets.SecretStore's own contract, spec 3
-section 5): a backend whose secret is never touched must never cause a
-file/1Password read merely by being constructed into the roster.
-Secret-backed backends (pexels, forvo, tts, the judge/llm api transport)
-are wrapped in `_Lazy`, which defers building the real backend/transport
-object -- and therefore calling `SecretStore.get()` -- until their first
-`cache_key`/`fetch`/`complete` call. `Provider.__init__`/`Assessor.__init__`
-both do `dict(backends)`
-over the mapping they're given, which forces every VALUE already in that
-dict to exist as an object -- but never calls any METHOD on those
-objects -- so wrapping only the secret-needing backends in a thin
-lazy-dispatch object (itself trivially constructible with no secret
-access) keeps the free backends eager and the paid ones lazy without
-fighting that `dict()` call.
+Secrets resolve lazily (spec 3 section 5): each secret-backed backend
+(pexels, forvo, tts, the judge/llm api transport) is wrapped in `_Lazy`,
+which builds the real backend -- and so calls `SecretStore.get()` -- at
+its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
+asks costs no file or 1Password read.
 
-Scope decisions this module had to make that providers.yaml's terse shape
-(spec 3 section 5) and the two read specs leave implicit -- not spec
-violations, just latitude the terse text left to fill in:
+The llm Provide backends (llm-sentence/llm-phrase/llm-entry) reuse the
+judge's account, model and price, one registered name per producer; under
+a batch judge, which has no single-question `.complete()`, they ride a
+lazy api transport on the same anthropic secret, and they are omitted
+when no anthropic secret is configured at all.
 
-- The llm Provider backend (sentence/phrase/entry drafting) has no
-  section of its own in providers.yaml -- section 5 lists only "judge
-  transport + model" as this project's one configured way to reach an
-  LLM. Read as: the llm backend reuses that SAME account, model and
-  price, registered under three backend names (llm-sentence/llm-phrase/
-  llm-entry) rather than one "llm" name -- LlmBackend.producer is fixed
-  per instance (provider.py) and Provider looks a backend up by name,
-  not by a per-call producer argument. A "batch" transport has no
-  single-question `.complete()` (assessor.JudgeBackend.fetch's own
-  docstring: "configured for batch only -- use Assessor.ask_many"), and
-  drafting is inherently single-question, so under a batch judge the llm
-  backends ride a lazy api transport on the same anthropic secret
-  (_llm_transport); they are omitted only when no anthropic secret is
-  configured to reach at all.
-- build_assessor(cfg, db, media_store) registers "judge" (transport +
-  model, resolve_path/price/quota_cost_per_call wired from cfg and the
-  db+media_store's _resolver) and "mechanical" (duration check, same
-  resolve_path -- MechanicalBackend's key_fn/evaluate are injectable
-  CODE, not config, so providers.yaml carries no section for it);
-  "listener" is unimplemented and "learner" is read-side-only --
-  Assessor.ask() already special-cases both of those itself
-  (assessor.py), so neither needs a roster entry.
-- load_syllabus's MediaIndex: store.py's `media` table is provenance-only
-  (spec 2) -- the word/confusion -> media RELATIONSHIP lives in `cache`
-  rows (spec 3's own territory), so `_DbMediaIndex` below derives
-  has_picture/recording_speakers/rendition_speakers from
-  derivations.current_best over the db, the same source compile.py
-  already trusts for "what media does this subject have".
-- load_syllabus's sentences: SyllabusDb had a writer (add_sentence) but
-  no reader for the `sentences` table at all. Added
-  `SyllabusDb.all_sentences()` (store.py) as the minimal read side this
-  needed.
-- Frequency map: data/frequency_th.txt is project input data living
-  outside any one deck's curated/ directory (curated.py's own
-  docstring), and load_syllabus(deck_root) has no separate project-root
-  parameter. Defaults to `deck_root/data/frequency_th.txt` (absent ->
-  empty map, which Syllabus.order() already degrades gracefully to its
-  documented float('inf') fallback), with an optional `frequency_path`
-  override for a caller keeping the shared corpus elsewhere.
-- Tokenizer: pythainlp is imported lazily (a plain `try/except ImportError`
-  at call time, guarding the only pythainlp import in this module).
-  Syllabus.tokenizer has no default, so load_syllabus refuses with a
-  RuntimeError naming pythainlp when it is not installed, rather than
-  silently falling back to a tokenizer that mis-splits Thai.
+load_syllabus reads the deck's media relationships through `_DbMediaIndex`
+(derivations.current_best over the db, since the `media` table carries
+provenance only), its sentences through `SyllabusDb.all_sentences()`, and
+its frequency map from `deck_root/data/frequency_th.txt` (or
+`frequency_path`; absent, an empty map). The tokenizer is pythainlp,
+imported lazily; load_syllabus refuses with a RuntimeError naming it when
+it is not installed.
 """
 from __future__ import annotations
 
@@ -76,9 +30,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from .assessor import (AssessBackend, Assessor, JudgeBackend, Price,
-                       duration_mechanical_backend, fills_mechanical_backend,
-                       rendition_mechanical_backend)
+from .assessor import (AssessBackend, Assessor, DurationBackend, FillsBackend,
+                       JudgeBackend, Price, RenditionBackend)
 from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
@@ -119,11 +72,9 @@ __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budget
 # --- laziness helpers -------------------------------------------------------
 
 class _Lazy:
-    """Defers building the real object -- and therefore any
-    SecretStore.get() it needs -- until first use. Stands in for a
-    Backend (cache_key + fetch), a `.complete(prompt)`-shaped transport, a
-    batch transport (submit/status/results), or `tts.Tts` (synthesize):
-    whatever a caller does with the resolved object, this forwards.
+    """Builds the real object -- and so calls any SecretStore.get() it
+    needs -- at its first attribute access, then forwards everything to
+    it: a Backend, a transport, or a `tts.Tts`.
     """
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
@@ -139,11 +90,9 @@ class _Lazy:
 
 
 def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
-    """A lazy `.complete(prompt)` transport for the ONE Claude account
-    providers.yaml configures (judge.transport/model) -- shared by the
-    judge Assessor backend's cli/api transport and the llm Provider
-    backend (see module docstring). None for "batch" (no single-question
-    transport exists there).
+    """A lazy `.complete(prompt)` transport for the one Claude account
+    providers.yaml configures (judge.transport/model), shared by the judge
+    and the llm backends. None under a "batch" judge.
     """
     kind = cfg.judge.transport
     if kind == "cli":
@@ -155,13 +104,10 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
 
 
 def _llm_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
-    """The single-question transport llm-sentence/phrase/entry draft on.
-    The judge's own cli/api transport where one exists; under a BATCH
-    judge -- which has no single-question transport at all -- a lazy api
-    transport on the same anthropic secret, so a deck whose verdicts ride
-    batches can still draft sentences (an omitted llm backend silently
-    left every target unfilled). None only when there is no transport to
-    reach at all: a batch judge with no anthropic secret configured.
+    """The single-question transport llm-sentence/phrase/entry draft on:
+    the judge's own cli/api transport, or under a batch judge a lazy api
+    transport on the same anthropic secret. None when a batch judge has
+    no anthropic secret configured at all.
     """
     transport = _claude_transport(cfg, secrets)
     if transport is not None:
@@ -187,11 +133,9 @@ def _judge_quota_cost(cfg: ProvidersConfig) -> float:
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None) -> Provider:
     """The Provide port's backend roster (spec 3 section 2), wired from
-    providers.yaml (spec 3 section 5): search_proxy for the image-search
-    backends, imgfetch_path/audiofetch_path for the mediafetch tool
-    fetchers (both always registered -- load_providers_config refuses a
-    config missing either path), the tts voice pools, and the shared
-    judge/llm transport+model for llm-*.
+    providers.yaml: search_proxy for image search, imgfetch_path/
+    audiofetch_path for the mediafetch fetchers, the tts voice pools, and
+    the shared judge/llm transport+model for llm-*.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
@@ -207,10 +151,8 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
             media=media_store, pick_voice=pick_voice,
             cost_per_char=cfg.tts_cost_per_char)),
     }
-    # Unconditional: load_providers_config refuses a providers.yaml without
-    # both paths (pictures and recordings are always in scope), so there is
-    # no "this deck has no imgfetch" case left to skip -- a run that could
-    # not fetch what it found must fail at load, not silently source nothing.
+    # Always registered: load_providers_config refuses a providers.yaml
+    # without both paths.
     backends["imgfetch"] = FetchBackend(media=media_store,
                                         fetcher=tool_fetcher(cfg.imgfetch_path))
     backends["audiofetch"] = FetchBackend(media=media_store,
@@ -230,10 +172,8 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
 
 
 def _lazy_google_tts(secrets) -> _Lazy:
-    """tts.Tts is a Protocol (`.synthesize(text, voice) -> bytes`);
-    TtsBackend.fetch calls `self.tts.synthesize(...)` directly, so this
-    lazy wrapper -- not GoogleTts itself -- is what actually goes into the
-    TtsBackend, deferring the google_tts secret until synthesis happens.
+    """A GoogleTts standing in for tts.Tts, built at the first
+    `synthesize` call, so the google_tts secret resolves only then.
     """
     from .tts import GoogleTts
 
@@ -243,9 +183,8 @@ def _lazy_google_tts(secrets) -> _Lazy:
 # --- build_assessor ----------------------------------------------------
 
 def _resolver(db: SyllabusDb, media_store: MediaStore):
-    """artifact_sha -> the file it resolves to, or None (no provenance row,
-    or the object is missing from disk) -- shared by the judge's
-    attachments and the mechanical backend's duration check.
+    """artifact_sha -> its file, or None when there is no provenance row
+    or the object is missing from disk.
     """
     def resolve(sha: str) -> Path | None:
         prov = db.media_provenance(sha)
@@ -267,17 +206,10 @@ def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None
                    ) -> Assessor:
-    """The Assess port's backend roster (spec 3 section 2): "judge"
-    (transport+model, resolve_path/price/quota_cost_per_call wired from
-    cfg and the db+media_store), "mechanical" (duration check, same
-    resolve_path), "rendition" (one speaker across a pair's members) and,
-    where `syllabus_of` names one, "fills" (does a drafted sentence fill
-    the Target it claims). "listener"/"learner" need no roster entry --
-    Assessor.ask() already special-cases both.
-
-    `syllabus_of` is a callable rather than a Syllabus: a run adopts
-    sentences into its Syllabus as it goes, and the fills check must see
-    the one the attempt is asking about.
+    """The Assess port's backend roster (spec 3 section 2): "judge",
+    "mechanical" (the duration check), "rendition", and where
+    `syllabus_of` names one, "fills". `syllabus_of` is a callable: a run
+    adopts sentences into its Syllabus between attempts.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -287,12 +219,11 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
-        "mechanical": duration_mechanical_backend(
-            resolve_path=lambda sha: str(resolve(sha) or "")),
-        "rendition": rendition_mechanical_backend(speaker_of=_speaker_of(db)),
+        "mechanical": DurationBackend(resolve_path=lambda sha: str(resolve(sha) or "")),
+        "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     if syllabus_of is not None:
-        backends["fills"] = fills_mechanical_backend(syllabus_of)
+        backends["fills"] = FillsBackend(syllabus_of=syllabus_of)
     return Assessor(record=db, cache=db, backends=backends)
 
 
@@ -359,9 +290,7 @@ class Derivations:
 
 def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
     """One deck's Derivations from its own curated/*.yaml + syllabus.db +
-    media/ (spec 2 section 1 layout). Opens `db`/`bundle` once and hands
-    them to load_syllabus, so the Syllabus's AssessmentReader/MediaIndex
-    and `db` are the same connection.
+    media/ (spec 2 section 1 layout), over one db connection.
     """
     root = Path(deck_root)
     if cfg is None:
@@ -384,17 +313,10 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
 # --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------
 
 def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Sourcing:
-    """Assembles a Sourcing ctx (attempts.py) for one deck: the deck's
-    Derivations (load_derivations -- the Syllabus, the record, and every
-    parameter a fold takes) plus the db-backed provider/assessor rosters
-    and the remaining values that reach a cache key -- image_candidates,
-    voices, query_hints, judge_model -- drawn from the deck's own
-    curated/providers.yaml + rulebook.yaml, never a bare Sourcing
-    dataclass default.
-
-    The "fills" Assess backend reads `ctx.syllabus` through a closure over
-    the ctx this function is about to return, since a run adopts sentences
-    into it between attempts.
+    """One deck's Sourcing ctx (attempts.py): its Derivations, the
+    db-backed provider/assessor rosters, and the values that reach a
+    cache key (image_candidates, voices, query_hints, judge_model), all
+    from the deck's own curated/providers.yaml and rulebook.yaml.
     """
     root = Path(deck_root)
     if cfg is None:
@@ -433,25 +355,19 @@ def _pythainlp_tokenizer():
 
 @dataclass
 class _DbMediaIndex:
-    """MediaIndex (ports.py) over SyllabusDb: "has media" is answered from
-    derivations.current_best, the same fold compile.py and the review
-    server already use to decide what artifact a subject currently has --
-    not a separate index store.py doesn't otherwise keep (see module
-    docstring).
+    """MediaIndex (ports.py) over SyllabusDb: what media a subject has is
+    derivations.current_best, the fold compile.py and the review server
+    read too.
 
-    rendition_provenance/rendition_speakers are a two-level read, not a
-    single current_best lookup: a pair's rendition is current-best under
-    its OWN subject (the pair id, role "rendition-for-pair" -- the
-    "rendition" mechanical backend's row), and that row's
-    `params["members"]` (word id -> sha) names which per-member recording
-    actually backs it -- not necessarily each member's own current-best
-    recording. Only when NO pair-level rendition row is current-best yet
-    does rendition_provenance fall back to each member's own current-best
-    recording, so a half-recorded or mixed-speaker pair still surfaces
-    provenance for pair/rendition-required and rendition/mixed-speakers to
-    warn on; rendition_speakers deliberately skips that fallback so such a
-    pair stays in Syllabus.gaps().missing_renditions for the run to source
-    a real rendition, even though the deck still compiles (with a warning).
+    rendition_provenance/rendition_speakers are a two-level read: a pair's
+    rendition is current-best under the pair id (role
+    "rendition-for-pair"), and that row's `params["members"]` (word id ->
+    sha) names the per-member recordings backing it. With no pair-level
+    rendition row current-best, rendition_provenance falls back to each
+    member's own current-best recording, so pair/rendition-required and
+    rendition/mixed-speakers still see provenance to warn on;
+    rendition_speakers takes no such fallback, so the pair stays in
+    Syllabus.gaps().missing_renditions for the run to source.
     """
     db: SyllabusDb
     pairs: tuple[MinimalPair, ...] = ()
@@ -461,21 +377,19 @@ class _DbMediaIndex:
     provenance_prior: Sequence[str] = ()
 
     def _best(self, subject: str, kind: str):
-        """current_best, but with the SAME current_rubric/prior run.py's
-        queue/attempt loop uses -- so this index and a live run never
-        disagree about what's current-best.
+        """current_best under the same current_rubric/prior run.py's
+        queue and attempt loop use.
         """
         return current_best(self.db, subject, kind, current_rubric=dict(self.rubrics),
                             prior=self.provenance_prior,
                             provenance_source=provenance_source_for(self.db))
 
     def _deciding_row(self, subject: str, artifact_sha: str):
-        """The newest "rendition" assess row for `subject` whose
-        artifact_sha matches current-best's pick -- the row _best()'s rank
-        actually came from, so its own `params["members"]` can be read
-        back. Filtered to that backend (the only one
-        AUTHORITY_ORDER["rendition-for-pair"] names) so a learner row under
-        the same pair subject/artifact_sha can never shadow it.
+        """The newest "rendition" assess row for `subject` at
+        current-best's artifact_sha -- the row _best()'s rank came from,
+        whose `params["members"]` names the member recordings. Scoped to
+        that one backend, the only one
+        AUTHORITY_ORDER["rendition-for-pair"] names.
         """
         rows = [r for r in self.db.assessments_of(subject) if r.port == "assess"
                and r.backend == "rendition" and r.question.get("artifact_sha") == artifact_sha]
@@ -493,8 +407,7 @@ class _DbMediaIndex:
             if pair.confusion != pair_confusion:
                 continue
             if self._best(pair.id, "rendition").artifact_sha is None:
-                continue  # no pair-level rendition row yet -- skip the
-                          # member-recording fallback (see class docstring)
+                continue  # no pair-level rendition row yet: no fallback here
             for prov in self.rendition_provenance(pair.id):
                 speaker = prov.get("speaker_id") if prov else None
                 if speaker:
@@ -575,11 +488,8 @@ class _DbMediaIndex:
         return frozenset({speaker}) if speaker else frozenset()
 
     def speakers_of(self, corpus: Literal["recording", "rendition", "sentence"]) -> tuple[Speaker, ...]:
-        """Distinct speakers behind that corpus's current-best artifacts
-        (ports.py's MediaIndex.speakers_of): every word's current-best
-        recording for "recording", every pair's current-best rendition
-        rows for "rendition", every sentence's current-best recording for
-        "sentence".
+        """Distinct speakers behind that corpus's current-best artifacts:
+        word recordings, pair renditions, or sentence recordings.
         """
         if corpus == "recording":
             provenances = (self.recording_provenance(w.id) for w in self.words)
@@ -601,19 +511,12 @@ def load_syllabus(deck_root: str | Path, *,
                   frequency_path: str | Path | None = None,
                   db: SyllabusDb | None = None,
                   bundle: CuratedBundle | None = None) -> Syllabus:
-    """Assembles a Syllabus (spec 1 section 3) from a deck directory's
-    curated/*.yaml (spec 2 section 1 layout: curated/*.yaml + syllabus.db
-    + media/, same layout reviewserver.load_context and migrate.py's
-    new_root already use) plus the db-backed ports spec 2 section 3 adds:
+    """A Syllabus (spec 1 section 3) from a deck directory: its
+    curated/*.yaml, plus the db-backed ports spec 2 section 3 adds --
     AssessmentReader/RecordWriter (the db itself), a MediaIndex over the
-    db, a FrequencyMap, and sentences (spec 2's `sentences` table, absent
-    from curated/*.yaml).
-
-    `db`/`bundle` are optional injected handles -- opened here (the
-    original single-caller shape) when omitted, but build_sourcing passes
-    its own so the Syllabus's AssessmentReader/MediaIndex and the
-    Sourcing ctx's `db` are the SAME SyllabusDb connection, not two
-    separate connections whose writes and reads could disagree.
+    db, a FrequencyMap, and the `sentences` table. `db`/`bundle` are
+    opened here when not passed; a caller passes its own so the Syllabus
+    and it share one connection.
     """
     root = Path(deck_root)
     if bundle is None:

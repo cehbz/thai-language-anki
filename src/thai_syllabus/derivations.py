@@ -15,10 +15,8 @@ produces; it is a required keyword argument everywhere it appears (no
 None form) -- a role absent from the mapping is never stale on that
 account (`stale`).
 
-`cache`/`syllabus` are always the first parameters (the spec's prose
-`current_best(subject, kind)` elides the obvious reader dependency; this
-implementation makes it explicit so every function is a pure fold over an
-injected CacheReader, testable with synthetic rows and no real store).
+`cache`/`syllabus` are always the first parameters: every function here
+is a pure fold over an injected CacheReader.
 """
 from __future__ import annotations
 
@@ -123,12 +121,11 @@ stale = _stale
 
 def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
                    current_rubric: Mapping[str, str]) -> tuple[dict[str, float], dict[str, str]]:
-    """Authority-driven machine rank per artifact (spec 3 section 6): walk
-    AUTHORITY_ORDER[role] skipping "learner" (the learner is folded in
-    separately by current_best); the first backend in that order with a
-    verdict row for an artifact decides its rank. Returns (ranks, sources)
-    -- sources names the deciding backend per sha, for CurrentBest.source.
-    Pictures additionally fold in preference-row bonuses.
+    """Machine rank per artifact (spec 3 section 6): the first backend in
+    AUTHORITY_ORDER[role] (bar "learner", which current_best folds in
+    itself) with a verdict row decides that artifact's rank. Returns
+    (ranks, deciding backend per sha); pictures also fold in
+    preference-row bonuses.
     """
     order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
     by_backend: dict[str, dict[str, float]] = {}
@@ -179,17 +176,11 @@ def _apply_preference(rows: Sequence[Answer], ranks: dict[str, float],
 
 def _apply_prior(ranks: dict[str, float], prior: Sequence[str],
                  provenance_source: Callable[[str], str | None]) -> None:
-    """Provenance-prior tie-break (spec 3 section 6): for artifacts still
-    passing, rank += (len(prior) - index) / (len(prior) + 1), where index
-    is `provenance_source(sha)`'s position in `prior` (a source absent
-    from `prior`, or a sha `provenance_source` names none for, gets no
-    bonus). `provenance_source` reads the media table (SyllabusDb.
-    media_provenance(sha)["source"]), not a cache row: a candidate's real
-    Source (e.g. "forvo") is recorded there, not on the bytes-fetch row
-    that actually wrote its sha (that row's own backend is "audiofetch"/
-    "imgfetch", never a Source name). Only applied to already-passing
-    ranks, and always < 1.0 so it can only break ties, never outrank a
-    genuinely better machine verdict.
+    """Provenance-prior tie-break (spec 3 section 6): a passing
+    artifact's rank += (len(prior) - index) / (len(prior) + 1), index
+    being `provenance_source(sha)`'s position in `prior`; a source absent
+    from `prior` gets no bonus. The bonus is under 1.0, so it breaks ties
+    only, and `provenance_source` reads the `media` table's own `source`.
     """
     if not prior:
         return
@@ -305,10 +296,8 @@ class JudgeVerdict:
 def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str, *,
                   current_rubric: Mapping[str, str]) -> JudgeVerdict | None:
     """The newest judge verdict on `artifact_sha` under (subject, kind)'s
-    own role that is not stale under `current_rubric`. None when the judge
-    has not spoken on that artifact, or every verdict it gave was asked
-    under a superseded rubric -- the same freshness current_best ranks by,
-    so a surface never shows a verdict current_best refuses to count.
+    role that is fresh under `current_rubric` -- the same freshness
+    current_best ranks by. None when there is none.
     """
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
@@ -326,11 +315,8 @@ def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str
 
 def pending(cache: CacheReader, subject: str, kind: str) -> bool:
     """True while the newest submitted judge batch marker names `subject`
-    (record.unresolved_batch): membership in the run's unresolved batch --
-    nothing else is pending. Resolving the batch (Assessor.resolve)
-    releases the whole marker at once, so every subject it named stops
-    being pending together, whether or not each of its questions actually
-    got a verdict.
+    (record.unresolved_batch). Resolving the batch releases the whole
+    marker, so every subject it named stops being pending together.
     """
     found = record.unresolved_batch(cache)
     if found is None:
@@ -342,20 +328,17 @@ def pending(cache: CacheReader, subject: str, kind: str) -> bool:
 # --- next_source / attempts_since_change --------------------------------
 
 def _no_provenance_source(artifact_sha: str) -> str | None:
-    """provenance_source for a current_best() call made with an empty
-    `prior` -- _apply_prior returns before ever calling it, so this exists
-    only to satisfy the required keyword.
+    """provenance_source for a current_best() call with an empty `prior`,
+    which never calls it.
     """
     return None
 
 
 def _anchor_ts(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer]) -> int:
-    """The ts of the earliest provide row whose items include current-
-    best's artifact -- current-best computed rubric-agnostically here
-    (empty rubric mapping: never stale), since source escalation tracks
-    when a candidate was last PRODUCED, not whether its verdict is still
-    fresh under the current judge rubric (that is queue()'s own concern).
-    -1 (every ask counts) while no artifact exists yet.
+    """The ts of the earliest provide row whose items include
+    current-best's artifact, current-best taken rubric-agnostically here:
+    escalation tracks when a candidate was produced. -1 (every ask
+    counts) while no artifact exists yet.
     """
     best = current_best(cache, subject, kind, current_rubric={}, prior=(),
                         provenance_source=_no_provenance_source)
@@ -491,9 +474,9 @@ class QueueEntry:
 
 
 def available_needs(syllabus) -> list[tuple[str, str, str]]:
-    """(subject, artifact kind, subject kind) per gap. A sentence's own
-    recording and scene picture carry the same artifact kinds a word's do
-    -- "recording", "picture" -- and are told apart by their subject kind.
+    """(subject, artifact kind, subject kind) per gap. A sentence's
+    recording and scene picture carry a word's artifact kinds, and are
+    told apart by their subject kind.
     """
     gaps = syllabus.gaps()
     target_word = {t.id: t.word for t in syllabus.targets}
@@ -514,15 +497,11 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
 
 
 def all_needs(syllabus) -> list[tuple[str, str, str]]:
-    """(subject, artifact kind, subject kind) for every need the deck
-    has, whether or not it is currently satisfied -- unlike
-    `available_needs`, which lists only what `syllabus.gaps()` reports
-    missing. Each targeted word names one picture need and one recording
-    need, each pair one rendition need, each grapheme one keyword-picture
-    need, each sentence one recording need and one scene-picture need
-    (spec 5 section 3's coverage universe). A word targeted by more than
-    one Target (receptive and productive both) names its picture and
-    recording needs once.
+    """(subject, artifact kind, subject kind) for every need the deck has,
+    satisfied or not (spec 5 section 3's coverage universe): one picture
+    and one recording need per targeted word (once, however many Targets
+    name it), one rendition per pair, one keyword picture per grapheme,
+    one recording and one scene picture per sentence.
     """
     seen_words: set[str] = set()
     out: list[tuple[str, str, str]] = []
@@ -545,18 +524,12 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
 @dataclass(frozen=True)
 class QueuedNeeds:
     """queue()'s entries and what the same pass left out: `available` is
-    every need gaps() lists, `exhausted` the needs among them dropped for
-    being out of sources with nothing directing them, `unserved` the needs
-    whose kind has no Source at all (attempts.SOURCES) and no per-run pass
-    covering it either -- so `available` equals `exhausted` + `unserved` +
-    the needs left in `entries`, for every kind except "sentence": an
-    unfilled Target has no Source either, but IS served by the run's own
-    per-run sentence attempt (up to its own per-run cap on how many it
-    hands the drafter at once), so this fold excludes it from `entries`,
-    `exhausted` and `unserved` alike and leaves it to the run itself
-    (run.RunReport.attempted/budgeted/deferred) to account for. One pass,
-    so a caller reporting against every gap folds the record once (spec 3
-    section 7's RunReport).
+    every need gaps() lists, `exhausted` those among them out of sources
+    with nothing directing them, `unserved` those whose kind has no
+    Source and no per-run pass either. `available` equals `exhausted` +
+    `unserved` + `entries`, "sentence" needs aside: those are the run's
+    own sentence attempt to serve and account for
+    (run.RunReport.attempted/budgeted/deferred).
     """
     entries: list[QueueEntry]
     available: int
@@ -566,10 +539,8 @@ class QueuedNeeds:
 
 def available_subjects(syllabus) -> frozenset[str]:
     """Every subject `available_needs` names -- the need list `available`
-    counts (run.RunReport). A subject a batch question names but that has
-    left this set (its need already satisfied, e.g. a picture whose fit
-    passed) is not pending on run.py's own account: only its former need
-    made it one, and that need is gone.
+    counts (run.RunReport). A subject whose need is satisfied has left
+    this set, and so is no longer pending on run.py's account.
     """
     return frozenset(subject for subject, _kind, _subject_kind in available_needs(syllabus))
 
@@ -588,16 +559,10 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
           attempt_cap: int, provenance_source: Callable[[str], str | None],
           collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
-    """`collected_this_run` -- (subject, kind) needs a resolve-time
-    preference question (or anything else this same run already
-    collected before the queue was built) named: skipped exactly like an
-    already-pending need, so it is never both re-attempted by the loop
-    and accounted for by that earlier question in the same run
-    (run.RunReport's one-bucket-per-need rule). Keyed by kind, not just
-    subject -- unlike `pending` (whose stored marker names subjects
-    only), so a word's other still-open needs (e.g. its recording) are
-    never skipped merely because its picture also got a resolve-time
-    question this run.
+    """queue()'s entries plus the counts the same pass left out.
+    `collected_this_run` names the (subject, kind) needs this run already
+    collected a question for; each is skipped like an already-pending
+    need. It is keyed by kind, so a word's other open needs stay queued.
     """
     entries: list[QueueEntry] = []
     candidates = available_needs(syllabus)
@@ -665,11 +630,9 @@ def passing_pictures(cache: CacheReader, subject: str, *,
 
 def pictures_awaiting_preference(cache: CacheReader, subject: str, *,
                                  current_rubric: Mapping[str, str]) -> tuple[str, ...]:
-    """`subject`'s picture candidates passing fit under the current rubric,
-    when more than one passes and no picture-preference verdict under that
-    rubric ranks exactly that set. Empty otherwise -- the set to put to the
-    judge, once its fit verdicts are in (spec 3 section 6: preference
-    orders passing pictures).
+    """`subject`'s pictures passing fit under the current rubric, when
+    more than one passes and no preference verdict ranks exactly that
+    set: the set to put to the judge. Empty otherwise.
     """
     passing = passing_pictures(cache, subject, current_rubric=current_rubric)
     if len(passing) < 2:
@@ -685,9 +648,8 @@ def pictures_awaiting_preference(cache: CacheReader, subject: str, *,
 
 @dataclass(frozen=True)
 class Challenger:
-    """The need the challenge is about (a word's picture and its recording
-    are two separate challenges), the artifact the learner accepted, and
-    the candidate now out-ranking it.
+    """One challenge: the need it is about, the artifact the learner
+    accepted, and the candidate now outranking it.
     """
     subject: str
     kind: str
@@ -699,9 +661,8 @@ class Challenger:
 def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                 prior: Sequence[str],
                 provenance_source: Callable[[str], str | None]) -> list[Challenger]:
-    """Every need in syllabus.gaps()'s universe where a machine-ranked
-    candidate under `current_rubric` outranks a learner-accepted artifact
-    -- never auto-switched, only ever presented.
+    """Every need where a machine-ranked candidate under `current_rubric`
+    outranks a learner-accepted artifact; presented, never auto-switched.
     """
     out: list[Challenger] = []
     for subject, kind, subject_kind in available_needs(syllabus):
@@ -736,11 +697,9 @@ def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, st
 # contradiction F9 re-asks over ("the evidence contradicts (shown)").
 DEFAULT_REASK_LAPSES = 1
 
-# The one study card_kind that exercises a given (subject_kind, need kind)
-# need's artifact -- the same (family, card_kind) pairing anki_import.py's
-# flag import reads a role from (word Production -> picture-for-word,
-# word/sentence Listening -> recording-for-*), read here in the other
-# direction: which card's StudyRecords would show the contradiction.
+# The study card_kind whose StudyRecords exercise a given (subject_kind,
+# need kind) need's artifact -- the same (family, card_kind) pairing
+# anki_import.py's flag import reads a role from, read the other way.
 _REASK_CARD_KIND: dict[tuple[str, str], str] = {
     ("word", "picture"): "production",
     ("word", "recording"): "listening",
@@ -751,14 +710,11 @@ _REASK_CARD_KIND: dict[tuple[str, str], str] = {
 
 @dataclass(frozen=True)
 class Reask:
-    """A learner rating spec 5 section 1 kind 4 re-asks: F9's "the evidence
-    contradicts" a rating of "acceptable" or better (LEARNER_RANK), not
-    only "good" -- the evidence may reopen any learner answer. `subject`/
-    `kind`/`subject_kind` name the need exactly as every other derivation
-    does (a rendition's subject is the confusion id, matching
-    available_needs/current_best); `rating` is the contradicted answer;
-    `evidence` is the lapse StudyRecords themselves (grade <= 1), oldest
-    first.
+    """A learner rating spec 5 section 1 kind 4 re-asks: F9's "the
+    evidence contradicts" a rating of "acceptable" or better.
+    `subject`/`kind`/`subject_kind` name the need as every derivation
+    does (a rendition's subject is its confusion id); `rating` is the
+    contradicted answer, `evidence` the lapse StudyRecords, oldest first.
     """
     subject: str
     kind: str
@@ -789,15 +745,12 @@ def _reask_candidate(cache: CacheReader, study: StudyReader, *, subject: str, ki
 
 def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
           lapse_threshold: int = DEFAULT_REASK_LAPSES) -> list[Reask]:
-    """Every need -- a word's picture or recording, a sentence's recording
-    or scene picture, or a pair's rendition (subjected under its
-    confusion, as available_needs/current_best already do) -- whose
-    learner rating is "acceptable" or better and whose card has
-    accumulated at least `lapse_threshold` lapses since (spec 5 section 1
-    kind 4). Resolves each need's own StudyRecords by (family, anchor,
-    card_kind), no card-key callable: a word's anchor is its id, a
-    sentence's its text_sha; a rendition sums lapses over every member
-    pair's own study anchor under the confusion.
+    """Every need -- a word's picture or recording, a sentence's
+    recording or scene picture, a pair's rendition under its confusion --
+    rated "acceptable" or better whose card has since accumulated at
+    least `lapse_threshold` lapses (spec 5 section 1 kind 4). Each need's
+    StudyRecords come from (family, anchor, card_kind); a rendition sums
+    lapses over every pair under the confusion.
     """
     out: list[Reask] = []
     for w in syllabus.words:
@@ -838,10 +791,8 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
 def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
                       study: StudyReader) -> dict[str, float]:
     """curated seed x the aggregate's own study grouping (spec 3 section
-    6). A StudyRecord grade <= 1 (Anki's "again") counts as a lapse; a
-    confusion with no study history yet just keeps its seed weight. Every
-    confusion iterated is one the Syllabus itself carries
-    (`syllabus.confusions`), not an arbitrary caller-supplied id list.
+    6), over `syllabus.confusions`. A grade <= 1 (Anki's "again") is a
+    lapse; a confusion with no study history keeps its seed weight.
     """
     grouped = syllabus.study_by_confusion(study)
     weights: dict[str, float] = {}
@@ -862,10 +813,9 @@ def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
 
 def _role_rank(rows: Sequence[Answer], role: str,
                current_rubric: Mapping[str, str]) -> tuple[str, float] | None:
-    """(deciding backend, rank) for a text-only verdict on `role`: walk
-    AUTHORITY_ORDER[role] and let the first backend with a non-stale row
-    decide, so a learner rating outranks a judge pass on the same draft.
-    None when no backend has spoken.
+    """(deciding backend, rank) for a text-only verdict on `role`: the
+    first backend in AUTHORITY_ORDER[role] with a fresh row decides.
+    None when none has spoken.
     """
     for backend in AUTHORITY_ORDER.get(role, ("judge",)):
         spoken = [r for r in rows if r.port == "assess" and r.backend == backend
@@ -882,13 +832,10 @@ def _role_rank(rows: Sequence[Answer], role: str,
 def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                      model: str = "llm", today: Callable[[], date] = date.today
                      ) -> list[tuple[Sentence, tuple[Target, ...]]]:
-    """Every sentence draft on record that is not adopted yet, whose
-    fills() rows confirm at least one Target and whose assessment on
-    sentence-for-target passes -- with those Targets. The run adopts a
-    cover of these (Syllabus.cover). Authority order decides: a learner
-    rating on the draft outranks the judge's verdict on it. `model` is the
-    LLM that drafted them and `today` the run's own clock; both go on the
-    adopted Sentence's provenance.
+    """Every unadopted sentence draft whose fills() rows confirm at least
+    one Target and whose sentence-for-target assessment passes (authority
+    order deciding), with those Targets. `model` and `today` go on the
+    Sentence's provenance.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
     targets_by_id = {t.id: t for t in syllabus.targets}

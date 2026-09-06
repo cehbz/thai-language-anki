@@ -1,15 +1,11 @@
-"""Language model and teaching-material entities (spec 1, section 1).
+"""Language model and teaching-material entities (spec 1 section 1):
+frozen dataclasses, identity noted per entity.
 
-Frozen dataclasses; identity fields are noted per entity. Thai strings are
-always accompanied by an English gloss in comments/docstrings (project rule).
-
-Construction invariants that need a resolved Word (Grapheme's keyword
-containment, MinimalPair's exact-confusion check) are enforced by
-classmethod factories -- `Grapheme.create` / `MinimalPair.create` -- rather
-than by the plain constructor, since the plain dataclass only holds ids.
-Loaded data is re-checked the same way by the `grapheme/keyword-contains-
-symbol` and `pair/exact-confusion` rules (see rulebook.py), which reuse the
-same pure diff functions.
+An invariant needing a resolved Word (Grapheme's keyword containment,
+MinimalPair's exact confusion) is enforced by that entity's `create`
+classmethod; rulebook.py's `grapheme/keyword-contains-symbol` and
+`pair/exact-confusion` rules re-check loaded data through the same pure
+diff functions.
 """
 import hashlib
 from dataclasses import dataclass
@@ -25,10 +21,8 @@ Voice = Literal["learner_voice", "other_voice"]
 Tone = Literal["mid", "low", "falling", "high", "rising"]
 VowelLength = Literal["short", "long"]
 
-# A word's pronunciation is a lexical fact, adjudicated by knowledge (engines
-# as cheap oracles, an LLM as a better-read oracle on disagreement). Only
-# "disputed" blocks card emission (rule word/pronunciation-corroborated);
-# the other two values both count as corroborated.
+# How a word's pronunciation was adjudicated. Only "disputed" blocks card
+# emission (rule word/pronunciation-corroborated).
 Corroboration = Literal["engines_agree", "curated_exception", "disputed"]
 
 
@@ -38,12 +32,9 @@ def is_corroborated(c: Corroboration) -> bool:
 
 @dataclass(frozen=True)
 class Syllable:
-    """One syllable's segments, vowel length, and tone.
-
-    `segments` is a fixed (onset, vowel, coda) triple of phonemic segment
-    strings; coda is "" for an open syllable. The spec names only "segments,
-    vowel length, Chao tone" as what a Syllable holds -- this 3-tuple shape
-    is a design choice made here (see the implementation report).
+    """One syllable's segments, vowel length, and Chao tone. `segments` is
+    an (onset, vowel, coda) triple of phonemic segment strings; coda is ""
+    for an open syllable.
     """
     segments: tuple[str, str, str]
     vowel_length: VowelLength
@@ -153,22 +144,15 @@ def exact_confusion_violation(confusion: SoundConfusion,
 
 @dataclass(frozen=True)
 class Grapheme:
-    """A spelling unit with its sound facts and an exemplar (keyword) Word.
+    """A spelling unit with its sound facts and an exemplar (keyword)
+    Word. Identity: symbol. Invariant: the keyword's thai contains the
+    symbol, enforced by `create`.
 
-    Identity: symbol. Invariant: keyword's thai contains symbol -- enforced
-    by `create`, which needs the resolved keyword Word (not just its id).
-
-    `name_word` (spec 4, section 1) is the recited letter name as its own
-    Word -- e.g. for ก the name-word is "กอ ไก่" ("gɔɔ gài"), distinct from
-    the keyword "ไก่" ("gài", chicken): the grapheme/Reading card's
-    NameThai field is the name word's own `thai`, unmodified. No
-    containment invariant applies to it (unlike keyword, a name-word need
-    not spell out the symbol itself -- consonant names substitute a
-    vowel, e.g. ก -> กอ, not ก-something containing ก verbatim in every
-    class). Defaults to None: curated data may not carry it yet. compile()
-    drops a grapheme's Reading card, counted, when it has no name_word or
-    the name_word has no current-best recording (spec 4 section 1) -- no
-    substitute name or audio is ever rendered.
+    `name_word` (spec 4 section 1) is the recited letter name as its own
+    Word -- for ก (the letter k), "กอ ไก่" ("gɔɔ gài"), distinct from the
+    keyword "ไก่" ("gài", chicken) -- and carries no containment
+    invariant. It is None where curated data names none, and compile()
+    then drops that grapheme's Reading card, counted.
     """
     symbol: str
     kind: Literal["consonant", "vowel_sign", "tone_mark"]
@@ -237,9 +221,7 @@ def text_sha(text: str) -> str:
 
 @dataclass(frozen=True)
 class Sentence:
-    """An artifact, not a fact of the language. Identity: text_sha, the sha256
-    of text; provenance is a fact of the row, not identity.
-
+    """One sentence artifact. Identity: text_sha, the sha256 of `text`.
     Which Targets it fills is derived (Syllabus.fills), never stored.
     """
     text: str

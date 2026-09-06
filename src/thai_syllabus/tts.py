@@ -1,15 +1,9 @@
-"""Voice pools and Google TTS synthesis, ported out of
-thai_deck_gen/media/tts.py (spec 3 deliverable 2) -- decoupled from that
-module's Deck/Manifest/ProducerResult machinery, since this package
-imports nothing out of thai_deck_gen or thai_deck_eval by design (see
-__init__.py). Consumed by provider.py's TtsBackend.
+"""Voice pools and Google TTS synthesis (spec 3 deliverable 2), consumed
+by provider.py's TtsBackend.
 
-The male/production rule ("a text filling any productive slot gets native
-audio ... receptive-only texts may stay TTS", and among TTS voices,
-"production draws male only") is a CALLER decision, not enforced here:
-curated.py's providers.yaml loader supplies the male/female pools
-(defaulting to MALE_VOICES/FEMALE_VOICES below) and wiring.py/run.py pick
-which pool a given ask draws from.
+Which pool an ask draws from is the caller's: curated.py's providers.yaml
+loader supplies the male/female pools (defaulting to MALE_VOICES/
+FEMALE_VOICES below) and wiring.py/run.py pick between them.
 """
 import hashlib
 from dataclasses import dataclass, field
@@ -17,9 +11,8 @@ from typing import Callable, Protocol
 
 from .transport import TransportError
 
-# Google's Thai voices. A deck whose every listening card speaks in one
-# synthetic voice teaches that voice, so sentences are spread across them.
-# Roster from the live voices API 2026-09-02 (ported verbatim).
+# Google's Thai voices, from the live voices API 2026-09-02. Sentences
+# spread across the pool, so no one synthetic voice is what gets taught.
 _CHIRP = "th-TH-Chirp3-HD-"
 MALE_VOICES = [_CHIRP + n for n in [
     "Achird", "Algenib", "Algieba", "Alnilam", "Charon", "Enceladus",

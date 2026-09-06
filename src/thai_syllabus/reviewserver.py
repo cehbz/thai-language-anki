@@ -1,13 +1,11 @@
 """Spec 5: the feedback screen -- the local surface where the learner
 answers the system's questions and reviews the deck.
 
-Presents the run's own derivations and records the learner's acts. The
-parameters every fold is measured under -- the wired Syllabus and its
-media index, the deck's rubric, provenance prior, Source roster and
-attempt cap -- arrive as one wiring.Derivations bundle, the same one
-wiring.build_sourcing hands the run, so current-best, exhausted, the
-queue and coverage read here exactly as they read there; this module
-computes none of them itself.
+Presents the run's own derivations and records the learner's acts. Every
+parameter a fold is measured under -- the wired Syllabus and its media
+index, the deck's rubric, provenance prior, Source roster and attempt cap
+-- arrives as one wiring.Derivations bundle, the same one
+wiring.build_sourcing hands the run; this module derives nothing itself.
 
 Writes are RecordWriter appends only: no curated data is edited (spec 5
 section 4) and no judge or provider backend is called except the media
@@ -58,7 +56,7 @@ from .record import (
     card_flags,
     excluded_candidates,
     latest_query,
-    ratings_for_role,
+    latest_rating,
     rows_for,
     run_reports,
     source_asks,
@@ -152,10 +150,9 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
 
 
 def _tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
-    """What spec 5 section 1 kind 2 shows an exhausted subject as "what was
-    tried": every Source ask under the need (record.source_asks, never a
-    bytes-fetch row and never the url it carried), each as the backend
-    that made it and the phrase or text it carried.
+    """What spec 5 section 1 kind 2 shows an exhausted subject as "what
+    was tried": every Source ask under the need, as the backend that made
+    it and the phrase or text it carried.
     """
     tried: list[dict[str, Any]] = []
     for ask in source_asks(rows):
@@ -166,12 +163,9 @@ def _tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
 
 def _tried_candidates(d: "Derivations", subject: str, kind: str,
                       rows: Sequence[Answer]) -> list[dict[str, Any]]:
-    """The best candidates those asks produced (record.candidate_shas, up
-    to 5), each with the judge's own verdict on it under the need's fit
-    role (derivations.judge_verdict) -- pass/fail and the evidence field
-    (the judge's reason), never a picture-preference rank (judge_verdict
-    reads the fit role only, so a preference rank is never printed as a
-    pass here).
+    """The first 5 candidates those asks produced, each with the judge's
+    verdict on it under the need's fit role (pass/fail and the judge's
+    evidence), or None where the judge has not spoken.
     """
     candidates: list[dict[str, Any]] = []
     for artifact_sha in candidate_shas(rows)[:5]:
@@ -208,12 +202,9 @@ def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, 
 
 
 def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any]]:
-    """Spec 5 section 1 kind 4: every derivations.reasks contradiction (a
-    learner rating of "acceptable" or better whose card has since lapsed
-    enough to contradict it -- F9) rendered as a question. The lapse
-    threshold is rulebook.yaml's own "reask/lapses" (curated.
-    RulebookConfig.thresholds, carried on d.thresholds) when the deck sets
-    one, else derivations.DEFAULT_REASK_LAPSES.
+    """Spec 5 section 1 kind 4: every derivations.reasks contradiction as
+    a question. The lapse threshold is rulebook.yaml's own
+    "reask/lapses" where the deck sets one, else DEFAULT_REASK_LAPSES.
     """
     threshold = int(d.thresholds.get("reask/lapses", DEFAULT_REASK_LAPSES))
     out: list[dict[str, Any]] = []
@@ -234,13 +225,11 @@ def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any
 
 def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                 budget: int = DEFAULT_LEARNER_BUDGET) -> list[dict[str, Any]]:
-    """The question session (spec 5 section 1): four kinds, data-driven
-    from derivations.py under `d`'s parameters, capped by the session-wide
-    learner-attention budget. Highest expected gain first: the F10-ordered
-    rate questions (derivations.queue's own order) fill the budget first;
-    direction requests, challenger comparisons and re-asks fill whatever
-    the queue left. A kind with no matching derivation input yields no
-    questions (no StudyRecords -> kind 4 is empty) rather than erroring.
+    """The question session (spec 5 section 1): four kinds from
+    derivations.py under `d`'s parameters, capped by the learner-attention
+    budget. The F10-ordered rate questions fill it first; direction
+    requests, challenger comparisons and re-asks fill what is left. A
+    kind with no derivation input yields no questions.
     """
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
@@ -299,10 +288,8 @@ _MEDIA_SOUND_RE = re.compile(r'\[sound:([^.\]]+)\.[A-Za-z0-9]+\]')
 
 
 def _resolve_media_for_web(html: str) -> str:
-    """Rewrites compile.py's apkg-relative media references (basename
-    "sha.ext", genanki.Package's own media_files convention) into the
-    review server's own /media/SHA route -- the same bytes the compile
-    resolved, servable to a browser instead of Anki's media folder.
+    """Rewrites compile.py's apkg-relative media references ("sha.ext")
+    into this server's own /media/SHA route, over the same bytes.
     """
     html = _MEDIA_IMG_RE.sub(lambda m: f'<img src="/media/{m.group(1)}">', html)
     html = _MEDIA_SOUND_RE.sub(
@@ -310,27 +297,22 @@ def _resolve_media_for_web(html: str) -> str:
     return html
 
 
-# Each family's own entity-identity tag prefix (spec 4 section 2): the
-# card dict's "subject" is this value, distinct from Built.subject (a
-# minimal_pair note's own MemberKey, kept for card/unique-front) -- the
-# pair id itself, not one member's key.
+# Each family's entity-identity tag prefix (spec 4 section 2): the card
+# dict's "subject" reads from this, so a minimal_pair card's subject is
+# the pair id, where Built.subject is one member's MemberKey.
 _ENTITY_TAG_PREFIX: dict[str, str] = {
     "word": "word", "minimal_pair": "pair", "grapheme": "grapheme", "sentence": "sentence",
 }
 
 
 def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
-    """Every card compile.build_deck would compile, in the due order it
-    assigns from Syllabus.order() -- sequential introduction order (spec
-    5 section 1). One entry per note.cards() card: its kind (the
-    template name), front/back HTML rendered through the note's own
-    model template, and the model's CSS, so the gallery shows what Anki
-    shows -- plus metadata read straight from the note's own fields/tags
-    (never a card shape composed here): `family`, `subject` (the note's
-    entity id), `gloss` (the note's Meaning or Gloss field, or None), and
-    for a minimal_pair note, `confusion` and `stimulus_member` (the
-    member index this note's Stimulus is), which drive the gallery's
-    pair-drill accuracy logging (spec 5 section 1).
+    """Every card compile.build_deck would compile, in its due order
+    (spec 5 section 1). One entry per card: its kind (the template name),
+    front/back HTML rendered through the note's own model template, the
+    model's CSS, and metadata read from the note's fields and tags --
+    `family`, `subject` (the entity id), `gloss`, and for a minimal_pair
+    note `confusion` and `stimulus_member`, which the gallery's pair
+    drill logs against.
     """
     built_deck = build_deck(d.syllabus, d.db, d.media_store)
     ordered = sorted(built_deck.built, key=lambda item: item.base_due)
@@ -362,10 +344,8 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
 # --- writes: notes, drills, answers, supply ---------------------------------
 
 def append_gallery_note(record: RecordWriter, *, card_id: str, kind: str, text: str) -> int:
-    """Gallery one-line notes append as learner assessment rows (spec 5
-    section 1: "notes append as learner assessment rows via RecordWriter
-    (not proof_notes.jsonl)"). role="card-flag" per spec 3's AUTHORITY_ORDER
-    (the learner-only "cards (flags)" role).
+    """One gallery note as a learner assessment row (spec 5 section 1),
+    under role "card-flag" (AUTHORITY_ORDER's learner-only role).
     """
     role = "card-flag"
     key = LearnerKey(artifact_sha=str(card_id), role=role)
@@ -376,12 +356,9 @@ def append_gallery_note(record: RecordWriter, *, card_id: str, kind: str, text: 
 
 def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
                         correct: bool) -> int:
-    """Pair-drill results append as study-adjacent learner evidence rows
-    (spec 5 section 1) -- NOT the `study` table (that's real Anki revlog
-    only, spec 2 section 2); this is live gallery-drill evidence, kept in
-    `cache` under the learner backend like the rest of the learner's acts.
-    Subject = confusion id, so /stats can fold every drill for a confusion
-    with one assessments_of(confusion) read.
+    """One pair-drill result as a learner evidence row in `cache` (spec 5
+    section 1; the `study` table is imported Anki revlog only). Subject is
+    the confusion id, so /stats folds a confusion's drills in one read.
     """
     key = DrillKey(pair_id=pair_id, confusion=confusion)
     return record.append(port="assess", backend="learner", key=key, subject=confusion,
@@ -390,14 +367,11 @@ def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
 
 
 def _rating_of(payload: Mapping[str, Any]) -> str | None:
-    """The rating value append_answer resolves this payload's answer to,
-    without appending anything -- shared with `_refuses_stale_rejection`
-    so the staleness check sees exactly the rating append_answer is about
-    to write. A challenger "keep" carries no rating (nothing is appended);
-    "switch" defaults to "acceptable"; every other payload takes an
-    explicit `rating`, else its `action` (1-4) through ACTION_RATINGS.
-    None when neither is present (a direction payload, a waiver payload,
-    or an action append_answer would itself reject as unknown).
+    """The rating value append_answer would write for this payload,
+    appending nothing. A challenger "keep" carries none; "switch"
+    defaults to "acceptable"; anything else takes an explicit `rating`,
+    else its `action` (1-4) through ACTION_RATINGS. None when neither is
+    present.
     """
     action = payload.get("action")
     if action == "keep":
@@ -418,19 +392,12 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
       challenger:  {subject, kind, action: "keep"|"switch", artifact_sha?}
       direction:   {subject, kind, direction: TEXT, subject_kind?}
       waiver:      {finding: {rule, note_id, artifact_sha?}, waived?, reason?}
-    The role a rating or direction is filed under comes back from the
-    question that asked it (`role`), or from the need's own kinds (`kind`
-    plus `subject_kind`, which is "word" for a payload naming neither).
-    A rejection (action 1 / rating "unacceptable-none") names the artifact
-    it rejects: `payload["artifact_sha"]`, the current-best artifact the
-    question displayed -- whether that artifact is STILL current-best is
-    the caller's own check (build_app's /api/answer handler), not this
-    append.
-    Never mutates or deletes a row (append-only, spec 2): calling this
-    twice with an identical payload appends two rows, but every derivation
-    over the cache folds newest-wins, so the DERIVED state (current_best,
-    exhausted, ...) after the second call is identical to after the first
-    -- idempotent in effect, not in row count.
+    The role a rating or direction is filed under is the question's own
+    (`role`), else the need's kinds (`kind` plus `subject_kind`, "word"
+    by default). A rejection names the artifact it rejects in
+    `payload["artifact_sha"]`; whether that is still current-best is the
+    caller's check (build_app's /api/answer handler). Append-only: two
+    identical payloads append two rows, and every fold is newest-wins.
     """
     if "finding" in payload:
         finding = payload["finding"]
@@ -481,13 +448,9 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
 
 
 def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -> str | None:
-    """A rejection (action 1, or an explicit rating of "unacceptable-none")
-    naming an artifact_sha that is no longer `subject`'s current-best is
-    refused: the refusal message, or None when the answer is fine to
-    append (no artifact_sha named -- nothing to check -- or it still
-    matches). The screen's rate question shows the artifact it rejects
-    (spec 5 section 1 kind 1); a stale rejection means the screen's own
-    question has moved on since it was displayed.
+    """The refusal message for a rejection naming an artifact_sha that is
+    no longer `subject`'s current-best, else None (nothing named, or it
+    still matches).
     """
     if _rating_of(payload) != "unacceptable-none":
         return None
@@ -505,9 +468,8 @@ def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -
 _LEARNER_SPEAKER = Speaker(id="learner", kind="native")
 
 # Fallback extension when neither payload["ext"] nor the value's own
-# filename suffix names one (spec 4 section 3 -- pictures re-encode
-# through add_image regardless, so a wrong guess here never lands in
-# media/objects/; recordings keep whatever guess names their real bytes).
+# filename suffix names one. A picture re-encodes through add_image
+# regardless; a recording keeps the guess.
 _DEFAULT_EXT = {"picture": "jpg", "recording": "mp3"}
 
 
@@ -570,21 +532,15 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
 
 
 def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str, Any]:
-    """spec 5 section 1 kind 2's supply action (also usable stand-alone for
-    any subject): {subject, kind: "picture"|"recording", source: "path"|
-    "url", value, note?, ext?}. The bytes go through the media ingest path
-    by kind (imgfetch/add_image for a picture, audiofetch/MediaStore.write
-    for a recording, spec 4 section 3), then a provenance row (spec 2
-    section 2's media table, source=learner) and, for a recording, the
-    "learner" native Speaker row a supplied recording's speaker_id names.
-    A URL goes through the matching Provider path -- cache-first, appends
-    its own `provide` row via Provider.ask, exactly as any other backend
-    would. A local file path is a direct learner act with no Provider
-    backend behind it (there is no cache key to ask against: it is read
-    once and written to MediaStore), so it appends no provide row -- only
-    the learner supply act below. Either way the artifact lands with
-    learner provenance and an implicit use-this rating (spec 5 section 1),
-    so derivations.current_best picks it.
+    """Spec 5 section 1 kind 2's supply action: {subject, kind:
+    "picture"|"recording", source: "path"|"url", value, note?, ext?}. The
+    bytes go through the ingest path for their kind (imgfetch/add_image
+    for a picture, audiofetch/MediaStore.write for a recording), then a
+    provenance row with source=learner and, for a recording, the
+    "learner" Speaker row. A URL goes through Provider.ask, appending its
+    own cache-first `provide` row; a local path appends none. Either way
+    the artifact lands with an implicit use-this rating, so
+    derivations.current_best picks it.
     """
     subject, kind = payload["subject"], payload["kind"]
     source, value = payload["source"], payload["value"]
@@ -622,20 +578,17 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
 
 @dataclass
 class SessionStats:
-    """Per-process, per-session counters -- "per-session" (spec 5 section
-    3) is exactly the review server's process lifetime; nothing here is
-    persisted (there is no store for it, and it is not the record of
-    truth: every answer is already durable via RecordWriter before this
-    counter is touched).
+    """Per-session counters (spec 5 section 3), a session being this
+    process's lifetime. Nothing here is persisted; every answer is
+    already durable through RecordWriter.
     """
     answered: int = 0
     queued: int = 0
 
 
 def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
-    """Per-confusion correct/total over the gallery drill rows this module
-    itself appends (append_drill_result) -- live drill evidence, not a
-    policy derivation.
+    """Per-confusion correct/total over the gallery drill rows
+    append_drill_result appends.
     """
     drills: dict[str, dict[str, int]] = {}
     for confusion in d.syllabus.confusions:
@@ -650,30 +603,20 @@ def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
 
 def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
                   session: SessionStats | None = None) -> dict[str, Any]:
-    """Spec 5 section 3: per-session (answered/queued, per-confusion drill
-    accuracy, exhausted-remaining count) and per-deck (current-best
-    coverage per need, learner good/acceptable/unacceptable counts,
-    RunReport history) -- every count derived under `d`'s parameters, the
-    run's own.
+    """Spec 5 section 3's stats, every count derived under `d`'s
+    parameters: per-session (answered/queued, per-confusion drill
+    accuracy, exhausted-remaining) and per-deck (coverage per need,
+    learner rating counts, RunReport history).
 
-    Coverage and the rating counts are folded over derivations.all_needs
-    -- every need the deck has, not only the outstanding ones
-    available_needs (syllabus.gaps()) lists -- so a need already
-    satisfied still counts toward `total` and, once judged, toward
-    `covered`/`accepted`. `covered` is any need with a current-best
-    artifact at all; `accepted` narrows that to a current-best the
-    learner rated acceptable or better (D1's deferred covered/accepted
-    split). `exhausted_remaining` stays scoped to available_needs: a
-    need with no artifact and no source left, the only sense in which a
-    need still outstanding can be "exhausted" (all_needs includes kinds,
-    e.g. grapheme-keyword, with no Source at all, which would read as
-    permanently exhausted regardless of coverage).
+    Coverage and the rating counts fold over derivations.all_needs, every
+    need the deck has: `covered` is a need with a current-best artifact,
+    `accepted` one whose current-best the learner rated acceptable or
+    better. `exhausted_remaining` is scoped to available_needs instead --
+    an outstanding need with no artifact and no source left.
 
-    `pending`/`sentences_adopted` come from the newest run.py (port="run",
-    backend="runreport") row when one exists, else 0 -- the same row
-    run._persist_report appends after every run() call. `run_report_history`
-    is every such row's answer (record.run_reports), oldest first, each
-    carrying every field spec 3 section 7's RunReport does.
+    `pending`/`sentences_adopted` come from the newest run.py runreport
+    row, else 0; `run_report_history` is every such row's answer, oldest
+    first.
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -687,15 +630,13 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
         if best.rank >= _ACCEPTABLE_FLOOR:
             bucket["accepted"] += 1
 
-        rated = ratings_for_role(d.db.assessments_of(subject), role_for(kind, subject_kind))
-        if rated:
-            value = max(rated, key=lambda r: r.ts).answer["value"]
-            if value == "good":
-                ratings["good"] += 1
-            elif value == "acceptable":
-                ratings["acceptable"] += 1
-            else:
-                ratings["unacceptable"] += 1
+        value = latest_rating(d.db.assessments_of(subject), role_for(kind, subject_kind))
+        if value == "good":
+            ratings["good"] += 1
+        elif value == "acceptable":
+            ratings["acceptable"] += 1
+        elif value is not None:
+            ratings["unacceptable"] += 1
 
     exhausted_count = sum(1 for subject, kind, _ in available_needs(d.syllabus)
                          if _exhausted(d, subject, kind).exhausted)
@@ -719,10 +660,9 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 # --- HTTP layer --------------------------------------------------------------
 
 def _find_media_file(media_store: MediaStore, ext: str | None, sha: str) -> Path | None:
-    """The media/objects file for `sha`, at the extension its `media` table
-    provenance row recorded (spec 2 section 2) -- never a directory
-    listing: an object with no provenance row is not served, even when its
-    bytes happen to sit in objects/.
+    """The media/objects file for `sha` at the extension its `media` row
+    recorded (spec 2 section 2). An object with no provenance row is not
+    served.
     """
     if ext is None:
         return None
@@ -732,12 +672,10 @@ def _find_media_file(media_store: MediaStore, ext: str | None, sha: str) -> Path
 
 @dataclass
 class ReviewContext:
-    """One review session over one deck: the deck's Derivations (the run's
-    own parameters), the StudyReader the re-ask questions read, the
-    learner-attention budget one session serves, and the counters that
-    session keeps. Every derivation the surface shows goes through the
-    methods below, so no endpoint can measure a fold under anything but
-    `derivations`.
+    """One review session over one deck: its Derivations (the run's own
+    parameters), the StudyReader the re-ask questions read, the
+    learner-attention budget, and the session's counters. Every
+    derivation the surface shows goes through the methods below.
     """
     derivations: "Derivations"
     study: StudyReader | None = None
@@ -906,24 +844,14 @@ def serve(ctx: ReviewContext, port: int) -> None:
 
 def load_context(deck_dir: str | Path, *, learner_budget: int = DEFAULT_LEARNER_BUDGET
                  ) -> ReviewContext:
-    """Wire a ReviewContext from a real deck directory (spec 2 section 1
-    layout: curated/*.yaml + syllabus.db + media/).
-
-    wiring.load_derivations is the assembly build_sourcing hands the run:
-    the Syllabus with its media index, one db connection serving as
-    CacheReader, RecordWriter and StudyReader, and the deck's own rubric,
-    provenance prior, Source roster and attempt cap. The screen adds no
-    parameter of its own, so what it shows and what the run derives cannot
-    drift apart.
-
-    wiring is imported inside the function: reviewserver is on cli.py's
-    import path and wiring reaches for provider/assessor/transport, which
-    a module-level import would pull in to serve a page.
-
-    A supplied artifact's URL fetchers (spec 5 section 1 kind 2) come from
-    the same curated/providers.yaml imgfetch_path/audiofetch_path
-    build_provider wires the run's Provide backends from, so a URL a
-    learner supplies is fetched by the same tool the run would have used.
+    """A ReviewContext over a deck directory (spec 2 section 1 layout).
+    wiring.load_derivations supplies the same assembly build_sourcing
+    hands the run: the Syllabus, one db connection as CacheReader/
+    RecordWriter/StudyReader, and the deck's rubric, provenance prior,
+    Source roster and attempt cap; the screen adds no parameter of its
+    own. The supplied-URL fetchers are providers.yaml's own
+    imgfetch_path/audiofetch_path. wiring is imported inside the function,
+    off cli.py's import path.
     """
     from .curated import load_providers_config
     from .wiring import load_derivations

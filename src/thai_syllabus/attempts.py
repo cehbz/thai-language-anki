@@ -1,25 +1,21 @@
-"""What an attempt IS for each need (spec 3 section 5): one Source asked
-under the need's own subject, whatever it returns ingested, the speaker it
-came from recorded, and the judge questions the run will ask collected.
+"""What an attempt is for each need (spec 3 section 5): one Source asked
+under the need's own subject, whatever it returns ingested, the speaker
+it came from recorded, and the judge questions the run will ask
+collected.
 
-A Need is an artifact kind and the kind of thing its subject is. The
-artifact kinds are the ones the media store and compile already know --
-"picture", "recording", "rendition" -- and a sentence's own scene picture
-and reading are those same kinds under a sentence subject; the subject
-kind is what puts them in their own Assess roles (authority.role_for).
+A Need is an artifact kind ("picture", "recording", "rendition") and the
+kind of thing its subject is; a sentence's scene picture and reading are
+those same kinds under a sentence subject, which is what puts them in
+their own Assess roles (authority.role_for).
 
-An attempt appends and nothing else. It never adopts a sentence, never
-ranks a candidate and never decides what to try next: current-best,
-improved, pending, exhausted and what there is to adopt are
-derivations.py's folds over the rows these asks append, and the run
-(run.py) drives the loop.
+An attempt appends and nothing else: current-best, improved, pending,
+exhausted and what there is to adopt are derivations.py's folds over the
+rows these asks append, and run.py drives the loop.
 
 Under an inline judge transport every collected question resolves inside
-this call, so `questions` comes back empty and the attempt converges in
-one pass -- the picture preference question included. Under a batch
-transport the misses come back in `questions` for the run to submit as
-one batch; a question that could not be prepared is in `excluded` and its
-candidate is unusable. A judge that cannot be reached at all raises
+the call and `questions` comes back empty; under a batch transport the
+misses come back in `questions` for the run to submit, and a question
+that could not be prepared is in `excluded`. An unreachable judge raises
 JudgeUnreachable out of ask_many and stops the run.
 """
 from __future__ import annotations
@@ -80,9 +76,9 @@ SubjectKind = Literal["word", "pair", "grapheme", "sentence"]
 
 @dataclass(frozen=True)
 class Need:
-    """(subject, artifact kind) plus what the subject IS: a word's picture
-    and a sentence's scene picture are both kind "picture" and differ only
-    in their subject, which is what decides the role and the attempt.
+    """(subject, artifact kind) plus what the subject is: a word's picture
+    and a sentence's scene picture are both kind "picture", and the
+    subject kind is what decides the role and the attempt.
     """
     subject: str
     kind: str                          # picture | recording | rendition | grapheme-keyword
@@ -131,23 +127,15 @@ class Sourcing:
 
 @dataclass(frozen=True)
 class AttemptResult:
-    """`attempted`: a Source ask was made, hit or miss. `questions`: the
-    judge questions this attempt collected for the run's batch, empty
-    under an inline transport. `excluded`: assessor.ManyResult's own dict
-    (the excluded question's typed CacheKey.encode() -> Excluded, unique
-    per question so two no-artifact questions under one subject never
-    collide). `spend`: per backend. `drafted`: the sentence
-    drafts this attempt produced that fill an open Target (0 for every
-    attempt that is not the sentence attempt). `targets_handed`: how many
-    open Targets the sentence attempt actually handed to the drafter --
-    `min(open Targets, max_targets)`, the per-run cap -- 0 for every other
-    attempt.
-    """
-    attempted: bool
+    """What one attempt did."""
+    attempted: bool                    # a Source ask was made, hit or miss
+    # the judge questions collected for the run's batch, empty inline
     questions: list[PreparedQuestion] = field(default_factory=list)
+    # assessor.ManyResult's own dict: question key -> Excluded
     excluded: dict[str, Excluded] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
-    drafted: int = 0
+    drafted: int = 0                   # drafts filling an open Target (sentence attempt only)
+    # open Targets the sentence attempt handed the drafter, min(open, max_targets)
     targets_handed: int = 0
 
 
@@ -155,7 +143,7 @@ class AttemptResult:
 
 def _word_of(ctx: Sourcing, subject: str) -> Word:
     """The Word a need's subject names, refusing by name when there is
-    none -- a bare KeyError on a word id says nothing about the need."""
+    none."""
     word = ctx.syllabus.find_word(WordId(subject))
     if word is None:
         raise ValueError(f"need {subject!r} names no word in the syllabus")
@@ -163,9 +151,8 @@ def _word_of(ctx: Sourcing, subject: str) -> Word:
 
 
 def provenance_source_for(db: SyllabusDb) -> Callable[[str], str | None]:
-    """current_best's provenance_source over `db`: the media table's own
-    `source` for a sha, not a cache row's backend -- a bytes-fetch row
-    (imgfetch/audiofetch) carries no Source name at all."""
+    """current_best's provenance_source over `db`: the `media` table's
+    own `source` for a sha."""
     def get(sha: str) -> str | None:
         prov = db.media_provenance(sha)
         return prov.get("source") if prov else None
@@ -257,8 +244,8 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
 def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
                     spend: dict[str, Spend]) -> None:
     """One search hit's bytes through imgfetch, with a media row naming
-    where it came from. A url the fetcher refuses is named and skipped: a
-    download that failed is not the Source's answer."""
+    where it came from. A url the fetcher refuses is logged and skipped.
+    """
     url = item["url"]
     try:
         got = ctx.provider.ask("imgfetch", Question(
@@ -280,14 +267,11 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
 
 def _judge_pictures(ctx: Sourcing, need: Need, query: str,
                     spend: dict[str, Spend]) -> AttemptResult:
-    """One fit question per candidate on record, cache-first; and, under an
-    inline transport, where more than one picture passes, one preference
-    question over the passing set. Under a batch transport that preference
-    question is the run's, once the fits are in -- so the ask is gated on
-    the transport, not on whether this attempt happened to collect
-    anything (a batch attempt of pure cache hits collects nothing).
-    Preference orders a word's pictures only: derivations folds a
-    preference ranking for that subject alone."""
+    """One fit question per candidate on record, cache-first; and, under
+    an inline transport with more than one passing picture, one
+    preference question over the passing set (a word's pictures only).
+    Under a batch transport that preference question is the run's, once
+    the fits are in."""
     role = need.role
     params = _picture_params(ctx, need, query)
     shas = _candidate_shas(ctx, need)
@@ -312,10 +296,9 @@ def _judge_pictures(ctx: Sourcing, need: Need, query: str,
 
 def _preference_question(ctx: Sourcing, need: Need, candidates: Sequence[str],
                          thing: str, gloss: str) -> AssessQuestion:
-    """One ordering question over a need's passing pictures, carrying the
-    need's own kind and subject kind. The candidate set is its identity
-    (cachekeys.preference_identity), so a set that grows is a new
-    question."""
+    """One ordering question over a need's passing pictures. The
+    candidate set is its identity (cachekeys.preference_identity), so a
+    set that grows is a new question."""
     return AssessQuestion(subject=need.subject, role="picture-preference",
                           rubric=ctx.rubrics["picture-preference"],
                           params={"candidates": list(candidates), "word": thing,
@@ -325,9 +308,8 @@ def _preference_question(ctx: Sourcing, need: Need, candidates: Sequence[str],
 
 def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
     """The ordering question for each of `subjects` that is a word whose
-    passing pictures have none (derivations.pictures_awaiting_preference)
-    -- what a batch transport leaves open until its fit verdicts land, and
-    the run asks once they have.
+    passing pictures have none yet
+    (derivations.pictures_awaiting_preference).
     """
     spend: dict[str, Spend] = {}
     questions: list[AssessQuestion] = []
@@ -381,8 +363,8 @@ def _tts_speaker(ctx: Sourcing, voice: str) -> Speaker:
 
 
 def _forvo_speaker(item: Mapping) -> Speaker:
-    """The item's own sex and country (spec 2); anything Forvo left out
-    stays "unknown" and never counts as coverage."""
+    """The item's own sex and country (spec 2); what Forvo left out stays
+    "unknown"."""
     return Speaker(id=f"forvo:{item['username']}", kind="native",
                    sex=_FORVO_SEX.get(str(item.get("sex") or "").lower(), "unknown"),
                    region=str(item.get("country") or "unknown"))
@@ -391,11 +373,9 @@ def _forvo_speaker(item: Mapping) -> Speaker:
 def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend],
                   *, subject_kind: SubjectKind = "word",
                   constraint: str = "any") -> list[Mapping]:
-    """One lookup, cached forever, appended under `subject` -- a pair
-    member's lookup is the row its own recording need reads. Under a "male"
-    constraint only speakers Forvo says are male are admitted: a recording
-    that plays on a productive back has to be in the learner's register
-    (E2), and an unstated sex is not a claim that it is."""
+    """One lookup, cached forever, appended under `subject`. Under a
+    "male" constraint only speakers Forvo states are male are admitted
+    (E2: a productive back plays in the learner's register)."""
     answer = ctx.provider.ask("forvo", Question(subject=subject, provides="recording",
                                                 params={"word": thai}, kind="recording",
                                                 subject_kind=subject_kind))
@@ -482,10 +462,10 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
 # --- renditions (MinimalPair) -----------------------------------------------
 
 def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
-    """One recording per member by one speaker (spec 3 section 2's compound
-    question), appended under the pair -- the need's own subject -- even
-    though Forvo's per-member lookups are cached under the members. A
-    Source that cannot guarantee one speaker answers empty."""
+    """One recording per member by one speaker (spec 3 section 2's
+    compound question), appended under the pair; Forvo's per-member
+    lookups stay cached under the members. A Source that cannot guarantee
+    one speaker answers empty."""
     spend: dict[str, Spend] = {}
     pair = ctx.syllabus.pair(PairId(need.subject))
     words = {member: _word_of(ctx, member) for member in pair.members}
@@ -520,11 +500,9 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
 
 def _check_members(ctx: Sourcing, members: Mapping[str, tuple[str, Speaker]],
                    spend: dict[str, Spend]) -> dict[str, bool]:
-    """Each member's own recording, checked under the MEMBER's subject, so
-    the member word's recording need reads the same verdict -- and handed
-    on to the rendition check, which is the one decider on whether these
-    recordings are a rendition. A question that never resolved counts as
-    failing: nothing was verified."""
+    """Each member's own recording, checked under the member's own
+    subject, and handed to the rendition check. A question that never
+    resolved counts as failing."""
     questions = {member: AssessQuestion(subject=member, role=role_for("recording"),
                                         artifact_sha=sha, kind="recording", subject_kind="word")
                  for member, (sha, _speaker) in members.items()}

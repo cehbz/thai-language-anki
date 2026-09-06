@@ -100,8 +100,11 @@ def test_store_unconfigured_is_none_and_never_runs():
     assert runner.calls == []
 
 
-def test_store_fixed_values_report_configured():
-    store = SecretStore.fixed(forvo="KEY")
+def test_store_with_an_already_resolved_value_reports_configured():
+    runner = _Runner(stdout="s3cret")
+    store = SecretStore(specs={"forvo": "op://Shared/Forvo/API Key"}, runner=runner)
+    store._resolved["forvo"] = "KEY"
     assert store.configured("forvo")
     assert store.get("forvo") == "KEY"
     assert not store.configured("google_tts")
+    assert runner.calls == []

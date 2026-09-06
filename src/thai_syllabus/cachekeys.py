@@ -1,10 +1,9 @@
-"""Every Assess-backend cache key (spec 3 section 1 "Key": one key
-function per backend, defined here, used by every writer and reader; no
-other module builds a key). Each key is a frozen dataclass; `encode()`
-renders the canonical readable string a `cache` row's `key` column stores
-(spec 2 section 2); `sha()` truncates a large or binary component (a
-rubric, a text) to 16 hex chars before it goes into a key -- everything
-else (a word, a backend name, a role) goes in verbatim.
+"""Every cache key (spec 3 section 1 "Key"): one frozen dataclass per
+backend key shape, defined here and used by every writer and reader; no
+other module builds a key. `encode()` renders the canonical readable
+string a `cache` row's `key` column stores (spec 2 section 2); `sha()`
+truncates a large component (a rubric, a text) to 16 hex chars before it
+goes into a key -- a word, a backend name, a role go in verbatim.
 """
 import hashlib
 from dataclasses import dataclass
@@ -29,14 +28,10 @@ def rendition_identity(members) -> str:
 
 
 class CacheKey:
-    """Base for the key dataclasses below. `kind` names the concrete key
-    (its class name); `encode()` is the canonical string a `cache` row's
-    `key` column stores -- computed, never parsed back.
+    """Base for the key dataclasses below. `encode()` is the canonical
+    string a `cache` row's `key` column stores -- computed, never parsed
+    back.
     """
-    @property
-    def kind(self) -> str:
-        return type(self).__name__
-
     def encode(self) -> str:
         raise NotImplementedError
 
@@ -124,9 +119,9 @@ class DrillKey(CacheKey):
 
 @dataclass(frozen=True)
 class ReverifyKey(CacheKey):
-    """learner:reverify:IDENTITY:ROLE -- a flag on a tone-correctness role,
-    queuing machine re-verification rather than ranking as a rating.
-    IDENTITY is artifact_sha, falling back to anchor when absent.
+    """learner:reverify:IDENTITY:ROLE -- a flag on a tone-correctness
+    role, which queues machine re-verification. IDENTITY is artifact_sha,
+    falling back to anchor when absent.
     """
     artifact_sha: str | None
     anchor: str
@@ -168,9 +163,9 @@ class WaiverKey(CacheKey):
 
 @dataclass(frozen=True)
 class MechanicalKey(CacheKey):
-    """mech:CHECK:PARAMS:ARTIFACT_SHA -- parameter-explicit (the checked
-    thresholds/version go in PARAMS) rather than a code-version sha, so a
-    parameter change is visibly a new key.
+    """mech:CHECK:PARAMS:ARTIFACT_SHA, parameter-explicit: the checked
+    thresholds (or the code version, where no parameter expresses the
+    check) go in PARAMS, so a parameter change is a new key.
     """
     check: str
     params: str
@@ -178,6 +173,47 @@ class MechanicalKey(CacheKey):
 
     def encode(self) -> str:
         return f"mech:{self.check}:{self.params}:{self.artifact_sha}"
+
+
+@dataclass(frozen=True)
+class ProvideKey(CacheKey):
+    """SOURCE:KIND:QUERY, with empty components left out -- one Source
+    ask. `source` is the backend's own name (empty when the query alone
+    identifies the ask, as a fetch by url does), `kind` what varies the
+    ask within that source (a tts voice; empty where the source has one
+    ask shape), `query` what was asked for.
+    """
+    source: str
+    kind: str
+    query: str
+
+    def encode(self) -> str:
+        return ":".join(part for part in (self.source, self.kind, self.query) if part)
+
+
+@dataclass(frozen=True)
+class LlmPromptKey(CacheKey):
+    """llm:PRODUCER:MODEL:PROMPT_SHA -- one drafting ask. The prompt text
+    is the whole contract, so it goes in as sha() of itself.
+    """
+    producer: str
+    model: str
+    prompt_sha: str
+
+    def encode(self) -> str:
+        return f"llm:{self.producer}:{self.model}:{self.prompt_sha}"
+
+
+@dataclass(frozen=True)
+class PairSearchKey(CacheKey):
+    """pairs:CONFUSION:DICTIONARY_VERSION -- one minimal-pair search over
+    one dictionary+G2P corpus; a dictionary bump is a new key.
+    """
+    confusion_id: str
+    dictionary_version: str
+
+    def encode(self) -> str:
+        return f"pairs:{self.confusion_id}:{self.dictionary_version}"
 
 
 @dataclass(frozen=True)

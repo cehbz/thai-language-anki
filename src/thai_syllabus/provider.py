@@ -3,16 +3,13 @@
 
 Cache-first semantics (spec 3 section 1): every ask() consults the cache
 first; a hit costs nothing and appends nothing; a miss executes the
-backend, then appends exactly one row -- hit-or-miss, success-or-empty (an
-empty answer IS cached). A transport error is NOT an answer: it propagates
-as an exception and nothing is appended, so the subject stays queued and
-the next run retries (spec 3 section 7: "no retry frameworks").
+backend, then appends exactly one row, success or empty (an empty answer
+is cached). A transport error is not an answer: it propagates and nothing
+is appended, so the subject stays queued for the next run.
 
-Backends are injectable callables/classes satisfying the `Backend`
-Protocol below (`cache_key` + `fetch`); this module supplies the
-per-backend key functions and cost/transport wiring spec 3's roster table
-(section 2) specifies, and stays stdlib + requests (no pythainlp, no
-anthropic at module scope -- transport.py guards that import).
+Backends satisfy the `Backend` Protocol below (`cache_key` + `fetch`);
+this module holds the roster spec 3 section 2 specifies, each with its
+cachekeys.py key and its cost/transport wiring, on stdlib + requests.
 """
 from __future__ import annotations
 
@@ -27,7 +24,7 @@ from typing import Any, Protocol, runtime_checkable
 import requests
 
 from .assessor import LearnerAskNotSupported, Price
-from .cachekeys import sha
+from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError
 
@@ -60,12 +57,8 @@ class Question:
 
 @dataclass(frozen=True)
 class ProviderAnswer:
-    """items may be empty -- a miss is an answer and is cached. `hit` is
-    the port's own answer to "was this served from the cache?" -- the only
-    authority on it, since only ask() knows which branch it took (a
-    caller comparing `ts` against its own start time counts a row this
-    same caller wrote a moment ago as a fresh ask every time it re-reads
-    it).
+    """One ask's answer. `items` may be empty (a miss is an answer, and is
+    cached); `hit` says whether ask() served it from the cache.
     """
     items: tuple[Any, ...]
     cost: float
@@ -82,7 +75,7 @@ class RawAnswer:
 
 @runtime_checkable
 class Backend(Protocol):
-    def cache_key(self, question: Question) -> str: ...
+    def cache_key(self, question: Question) -> CacheKey: ...
     def fetch(self, question: Question) -> RawAnswer: ...  # may raise -- not cached
 
 
@@ -127,8 +120,8 @@ class Provider:
 
 
 # --- image search: openverse, wikimedia, pexels -----------------------------
-# key = "backend:query" (spec 3 roster); a new query is a new key, the same
-# query is re-asked only manually (nothing here re-asks automatically).
+# key = ProvideKey(source=backend name, query=the phrase): a new query is a
+# new key, and nothing here re-asks an old one.
 
 IMAGE_SEARCH_USER_AGENT = (
     "thai-syllabus-deck-builder/1.0 "
@@ -149,8 +142,8 @@ class HttpImageSearchBackend:
     get: Callable[..., Any] = field(default=requests.get)
     search_proxy: str | None = None
 
-    def cache_key(self, question: Question) -> str:
-        return f"{self.name}:{question.params['query']}"
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source=self.name, kind="", query=question.params["query"])
 
     def fetch(self, question: Question) -> RawAnswer:
         query = question.params["query"]
@@ -224,7 +217,7 @@ def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
 
 
 # --- imgfetch/audiofetch: fetch a candidate's bytes by url ------------------
-# key = url (content-addressed); a fetch failure is NOT cached (raises).
+# key = the url alone; a fetch failure raises and is not cached.
 
 _FORMAT_EXT = {"jpeg": "jpg", "png": "png", "gif": "gif", "webp": "webp", "mp3": "mp3"}
 
@@ -233,9 +226,8 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
                  ) -> Callable[[str], tuple[bytes, str]]:
     """Fetch through one of the Go tools (tools/mediafetch: imgfetch,
     audiofetch): `<binary> <url> <out-path>`, a JSON line {format,...} on
-    stdout, non-zero exit on refusal. `runner` defaults to `subprocess.run`
-    looked up at call time (not bound eagerly) so tests can monkeypatch
-    `subprocess.run` on this module without passing `runner` explicitly.
+    stdout, non-zero exit on refusal. `runner` defaults to this module's
+    `subprocess.run`, looked up at call time.
     """
     def fetch(url: str) -> tuple[bytes, str]:
         run = runner if runner is not None else subprocess.run
@@ -259,17 +251,16 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
 
 @dataclass
 class FetchBackend:
-    """url -> bytes -> media store -> sha, for pictures (normalized through
-    add_image) and recordings (stored raw). key = the url; a fetch failure
-    is not cached (cost 0 -- a download is not a lookup). Every question
-    param except url is echoed into the item (speaker, speaker_kind,
-    source, origin), so the attempt records provenance from the item.
+    """url -> bytes -> media store -> sha, for pictures (normalized
+    through add_image) and recordings (stored raw), at cost 0. Every
+    question param but url is echoed into the item (speaker,
+    speaker_kind, source, origin), the attempt's provenance.
     """
     media: MediaWriter
     fetcher: Callable[[str], tuple[bytes, str]]
 
-    def cache_key(self, question: Question) -> str:
-        return question.params["url"]
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source="", kind="", query=question.params["url"])
 
     def fetch(self, question: Question) -> RawAnswer:
         url = question.params["url"]
@@ -286,7 +277,6 @@ class FetchBackend:
 
 
 # --- forvo: recording lookups (500/day quota; never re-asked) --------------
-# key = "forvo:WORD".
 
 @dataclass
 class ForvoBackend:
@@ -294,9 +284,9 @@ class ForvoBackend:
     get: Callable[..., Any] = field(default=requests.get)
     base_url: str = "https://apifree.forvo.com"
 
-    def cache_key(self, question: Question) -> str:
-        word = question.params.get("word", question.subject)
-        return f"forvo:{word}"
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source="forvo", kind="",
+                          query=question.params.get("word", question.subject))
 
     def fetch(self, question: Question) -> RawAnswer:
         word = question.params.get("word", question.subject)
@@ -314,14 +304,12 @@ class ForvoBackend:
 
 
 # --- tts: Google TTS (deterministic; never re-asked) ------------------------
-# key = "tts:VOICE:sha(TEXT)".
 
 @dataclass
 class TtsBackend:
-    """`cost_per_char` is the configured rate (providers.yaml `tts`), not a
-    per-question parameter: the rate belongs to the backend that incurs it
-    (spec 3 section 2's "measured by the backend"), and reading it off the
-    question let any caller that forgot to pass it record a free synthesis.
+    """Synthesizes one text into the media store. `cost_per_char` is the
+    configured rate (providers.yaml `tts`), carried by the backend that
+    incurs it (spec 3 section 2's "measured by the backend").
     """
     tts: Any  # thai_syllabus.tts.Tts -- synthesize(text, voice) -> bytes
     voices: Sequence[str]
@@ -332,9 +320,9 @@ class TtsBackend:
     def _voice(self, question: Question) -> str:
         return question.params.get("voice") or self.pick_voice(question.subject, self.voices)
 
-    def cache_key(self, question: Question) -> str:
-        text = question.params["text"]
-        return f"tts:{self._voice(question)}:{sha(text)}"
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source="tts", kind=self._voice(question),
+                          query=sha(question.params["text"]))
 
     def fetch(self, question: Question) -> RawAnswer:
         text = question.params["text"]
@@ -348,17 +336,15 @@ class TtsBackend:
 
 
 # --- llm: sentence/phrase/entry drafting -------------------------------------
-# key = "llm:PRODUCER:MODEL:sha(PROMPT)"; the prompt text is the entire
-# contract -- any semantic change edits the text (spec 3 roster).
+# The prompt text is the whole contract: any semantic change edits the
+# text, and so keys a new ask (spec 3 roster).
 
 @dataclass
 class LlmBackend:
-    """Costed exactly like assessor.JudgeBackend, on the same currencies
-    (spec 3 section 2's cost contract): a `price` prices the completion's
-    actual token usage (api/batch, cash), and `quota_cost_per_call` is the
-    flat subscription-quota cost of the cli transport, which reports no
-    usage on the wire. A transport that receives usage and drops it
-    violates the contract, so `fetch` keeps the whole Completion.
+    """Costed on the same currencies as assessor.JudgeBackend (spec 3
+    section 2): `price` prices the completion's actual token usage
+    (api/batch, cash); `quota_cost_per_call` is the cli transport's flat
+    subscription-quota cost, which reports no usage on the wire.
     """
     producer: str
     model: str
@@ -366,9 +352,9 @@ class LlmBackend:
     price: Price | None = None
     quota_cost_per_call: float = 0.0
 
-    def cache_key(self, question: Question) -> str:
-        prompt = question.params["prompt"]
-        return f"llm:{self.producer}:{self.model}:{sha(prompt)}"
+    def cache_key(self, question: Question) -> LlmPromptKey:
+        return LlmPromptKey(producer=self.producer, model=self.model,
+                            prompt_sha=sha(question.params["prompt"]))
 
     def _cost(self, completion: Completion) -> float:
         if self.price is not None:
@@ -383,15 +369,11 @@ class LlmBackend:
 
 
 # --- pair-search: minimal pairs over a dictionary + G2P ---------------------
-# key = "pairs:CONFUSION:DICT_VERSION"; dictionary bump = new key.
 
 @runtime_checkable
 class DictionaryG2P(Protocol):
-    """A dictionary+G2P corpus searchable for minimal-pair candidates
-    (domain-language doc: "corpus = Thai at large (dictionary+G2P search,
-    curated seeds, LLM proposal + mechanical verification)"). No default
-    implementation ships here -- pythainlp/tltk stay out of the default
-    test suite; production wiring is a fake-satisfying adapter elsewhere.
+    """A dictionary+G2P corpus searchable for minimal-pair candidates.
+    The implementation is the caller's: this module ships none.
     """
     def version(self) -> str: ...
     def search(self, confusion_id: str) -> Sequence[Mapping[str, Any]]: ...
@@ -401,9 +383,9 @@ class DictionaryG2P(Protocol):
 class PairSearchBackend:
     dictionary: DictionaryG2P
 
-    def cache_key(self, question: Question) -> str:
-        confusion_id = question.params["confusion_id"]
-        return f"pairs:{confusion_id}:{self.dictionary.version()}"
+    def cache_key(self, question: Question) -> PairSearchKey:
+        return PairSearchKey(confusion_id=question.params["confusion_id"],
+                             dictionary_version=self.dictionary.version())
 
     def fetch(self, question: Question) -> RawAnswer:
         confusion_id = question.params["confusion_id"]

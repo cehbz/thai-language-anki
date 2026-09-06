@@ -1,4 +1,4 @@
-"""thai-syllabus: one entry point over the redesigned pipeline.
+"""thai-syllabus: one entry point over the pipeline.
 
     thai-syllabus migrate  --old-deck DIR --old-data DIR --new-root DIR
     thai-syllabus review   --deck DIR [--port 8877]
@@ -6,12 +6,9 @@
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
 
-compile and run were library-level only until their configs settled
-(compile_syllabus needed a wired Syllabus loader; run() needed
-providers.yaml-driven backend construction) -- wiring.py is that
-settling: load_syllabus() wires the Syllabus loader; build_sourcing()
-wires run()'s Sourcing ctx (provider/assessor rosters, rubrics,
-provenance_prior) from curated/providers.yaml + rulebook.yaml.
+Each command wires itself through wiring.py: load_syllabus() for the
+Syllabus, build_sourcing() for run()'s Sourcing ctx, both from the deck's
+own curated/providers.yaml and rulebook.yaml.
 
 Exit codes: 0 done, 1 refused/incomplete (`compile` hit a closed gate;
 `run` could not reach the judge), 2 no subcommand matched.
@@ -77,12 +74,8 @@ def _parse_backend_cap(raw: str) -> tuple[str, int]:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """Wires a Sourcing ctx via wiring.build_sourcing (provider/assessor
-    rosters, rubrics, provenance_prior, image_candidates, voice pools,
-    attempt_cap, judge_model -- all drawn from the deck's own
-    curated/providers.yaml + rulebook.yaml, never a bare Sourcing
-    dataclass default), then layers --backend-cap overrides onto
-    default_budgets before running.
+    """Wires a Sourcing ctx through wiring.build_sourcing, then layers
+    --backend-cap overrides onto default_budgets before running.
     """
     cfg = load_providers_config(_providers_config_path(args.deck))
     ctx = build_sourcing(args.deck, cfg)
@@ -104,9 +97,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
     for name, count in sorted(report.source_failures.items()):
         print(f"  source_failures: {name}={count}")
-    # A run that could not reach the judge did not do its job: exit
-    # non-zero so a script or a cron job notices instead of reading a
-    # zero-attempt run as "nothing left to do".
+    # A run that could not reach the judge exits non-zero, so a script or
+    # a cron job sees the difference from "nothing left to do".
     if report.unreachable:
         print("run: the judge is unreachable; stopped early", file=sys.stderr)
         return 1

@@ -18,16 +18,15 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 def _append_judge_verdict(db, *, rule_id, note_id, verdict, artifact_sha=None,
                           rubric=None, evidence=None, cost=0.0):
     """Test helper: builds the JudgeKey the way Syllabus.report() does
-    (JudgeKey.for_rule) and calls the new key-taking append_judge_verdict.
+    (JudgeKey.for_rule) and appends the judge row under it.
     """
     key = JudgeKey.for_rule(rubric, artifact_sha, note_id, rule_id)
     answer = {"value": verdict}
     if evidence is not None:
         answer["evidence"] = evidence
-    db.append_judge_verdict(key=key, subject=note_id,
-                            question={"role": rule_id, "artifact_sha": artifact_sha,
-                                     "rubric": rubric},
-                            answer=answer, cost=cost)
+    db.append(port="assess", backend="judge", key=key, subject=note_id,
+              question={"role": rule_id, "artifact_sha": artifact_sha, "rubric": rubric},
+              answer=answer, cost=cost)
 
 
 def _judge_key(rule_id, note_id, artifact_sha=None, rubric=None):

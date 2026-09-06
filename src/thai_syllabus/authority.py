@@ -7,14 +7,11 @@ from __future__ import annotations
 __all__ = ["AUTHORITY_ORDER", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "role_for"]
 
 
-# Per role, backends ordered most- to least-authoritative. Not a single
-# global ranking -- authority is per (backend, role): the learner is final
-# on fit/quality/waivers but unqualified on tone correctness, where
-# mechanical is ground truth and listener ranks only once calibrated
-# (absent from this table until a deployment's providers.yaml supplies a
-# measured rank, which is why "listener" does not appear in the
-# recording-for-word row below: an uncalibrated listener contributes
-# nothing to current_best).
+# Per role, backends ordered most- to least-authoritative: authority is
+# per (backend, role), so the learner is final on fit/quality/waivers and
+# absent from tone correctness, where mechanical is ground truth. A
+# listener enters a row only once a deployment's providers.yaml supplies
+# a measured rank.
 AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
     "picture-for-word": ("learner", "judge"),
     "scene-for-sentence": ("learner", "judge"),

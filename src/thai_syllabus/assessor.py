@@ -31,9 +31,8 @@ __all__ = [
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "parse_preference",
-    "MechanicalBackend", "duration_mechanical_backend", "fills_mechanical_backend",
-    "rendition_mechanical_backend",
-    "format_mechanical_backend", "ffprobe_duration_seconds",
+    "DurationBackend", "FormatBackend", "FillsBackend", "RenditionBackend",
+    "ffprobe_duration_seconds",
 ]
 
 _log = logging.getLogger(__name__)
@@ -58,11 +57,8 @@ class AssessQuestion:
 
 @dataclass(frozen=True)
 class Verdict:
-    """`hit` is the port's own answer to "was this served from the cache?"
-    -- the only authority on it, since only ask()/ask_many() know which
-    branch they took (a caller comparing `ts` against its own
-    start time counts a row this same caller wrote a moment ago as a fresh
-    ask every time it re-reads it).
+    """One verdict. `hit` says whether ask()/ask_many() served it from
+    the cache.
     """
     value: Any
     cost: float = 0.0
@@ -91,8 +87,7 @@ class LearnerAskNotSupported(RuntimeError):
 class PreparationError(Exception):
     """Raised by a backend's prompt builder or attachment resolver: the
     question cannot be asked (a missing or unreadable artifact). Never
-    cached -- it says the candidate is unusable, not that the backend is
-    unreachable.
+    cached: the candidate is unusable, the backend is not unreachable.
     """
 
 
@@ -124,9 +119,8 @@ class PreparedQuestion:
 @dataclass(frozen=True)
 class Excluded:
     """One question `ask_many` could not prepare: `subject` and
-    `artifact_sha` (None when the question named none) identify what was
-    excluded, for a caller to attribute it back to its own need; `reason`
-    is the PreparationError text.
+    `artifact_sha` (None when the question named none) say what was
+    excluded, `reason` is the PreparationError text.
     """
     subject: str
     artifact_sha: str | None
@@ -137,16 +131,11 @@ class Excluded:
 class ManyResult:
     """Assessor.ask_many's answer: `resolved` (cache key -> Verdict, cache
     hits and inline answers), `collected` (PreparedQuestions with no
-    verdict yet -- populated only under a batch transport; nothing is
-    submitted here), `excluded` (the excluded question's own typed
-    CacheKey.encode() -- unique per question even when several share a
-    subject and carry no artifact_sha, e.g. one `fills` question per
-    Target under one sentence draft; never parsed back, only used as a
-    stable per-question dict key -- mapped to an Excluded naming what
-    could not be prepared and why). An excluded question was never put on
-    the wire and is not cached; it says the candidate is unusable, NOT
-    that the backend is unreachable, and callers must tell those apart
-    (attempts._judge_many does).
+    verdict yet, under a batch transport), `excluded` (the question's own
+    CacheKey.encode() -- one per question, never parsed back -- mapped to
+    an Excluded naming what could not be prepared and why). An excluded
+    question never reached the wire and is not cached: the candidate is
+    unusable, the backend is not unreachable.
     """
     resolved: dict[CacheKey, Verdict]
     collected: list[PreparedQuestion] = field(default_factory=list)
@@ -163,30 +152,27 @@ class Assessor:
         self._backends = dict(backends)
 
     def key_of(self, backend: str, question: AssessQuestion) -> CacheKey:
-        """The cache key `backend` would use for `question` -- lets a
-        caller holding a ManyResult (keyed by cache key) map its entries
-        back to the question that produced them.
+        """The cache key `backend` would use for `question`: how a caller
+        maps a ManyResult's entries back to the questions that produced
+        them.
         """
         return self._backends[backend].cache_key(question)
 
     @property
     def inline(self) -> bool:
-        """Whether the judge answers inside ask_many. False under a batch
-        transport, whose misses come back in `collected` instead -- so a
-        caller that only makes sense once every verdict is in (the picture
-        preference question) asks the transport, not the shape of one
-        result, which a run of pure cache hits cannot tell apart.
+        """Whether the judge answers inside ask_many: True for a cli/api
+        transport, False for a batch one, whose misses come back in
+        `collected` instead.
         """
         judge = self._backends.get("judge")
         return judge is not None and getattr(judge, "complete", None) is not None
 
     def _build(self, impl: AssessBackend, question: AssessQuestion) -> tuple[str, list[Path]]:
-        """Runs a backend's own preparation steps (prompt_builder,
-        attachments) exactly once, for a batch-transport miss ask_many is
-        about to collect -- submit() consumes the result directly and
-        never calls either again. A backend with no preparation step at
-        all (e.g. mechanical) builds an empty prompt and no attachments.
-        Raises PreparationError (uncaught here) for the caller to turn
+        """Runs a backend's preparation steps (prompt_builder,
+        attachments) once, for a batch-transport miss ask_many collects;
+        submit() consumes the result and calls neither again. A backend
+        with no preparation step builds an empty prompt and no
+        attachments. PreparationError propagates, for the caller to turn
         into an exclusion.
         """
         builder = getattr(impl, "prompt_builder", None)
@@ -408,23 +394,18 @@ def _verdict_from_cached(cached) -> Verdict:
 
 
 def _custom_id(key: CacheKey) -> str:
-    """A batch custom_id, restricted to [a-zA-Z0-9_-] (anthropic's batch
-    API constraint) -- cache keys carry ':' and other readable punctuation,
-    so this hashes the key rather than using it verbatim.
+    """A batch custom_id: sha of the key, since anthropic's batch API
+    restricts a custom_id to [a-zA-Z0-9_-] and a cache key carries ':'.
     """
     return "q" + sha(key.encode())
 
 
 # --- judge: one implementation, three transports ----------------------------
-# cache_key() returns a cachekeys.JudgeKey: identity is the artifact sha
-# (already a content hash, spec 1 section 1 -- not re-hashed), the
-# candidate-set identity for picture-preference (cachekeys.
-# preference_identity), or the question's subject when there is no
-# artifact at all -- a text-only judgment (e.g. a judged Rule's
-# per-sentence "is this natural?" verdict) must still distinguish two
-# subjects judged under the same rubric+role, not collide onto one cache
-# row. A judged Rule's verdict (Syllabus._judged_findings) builds the same
-# JudgeKey shape, role=rule.role, so the two paths share one cache row.
+# cache_key() returns a cachekeys.JudgeKey, whose identity is the artifact
+# sha, the candidate-set identity for picture-preference, or the question's
+# subject for a text-only judgment. A judged Rule's verdict
+# (Syllabus._judged_findings) builds the same key, role=rule.role, so both
+# paths share one cache row.
 
 @dataclass(frozen=True)
 class Price:
@@ -533,11 +514,9 @@ def _fallback_judge_prompt(question: AssessQuestion) -> str:
     return "\n".join(lines)
 
 
-# Every role this module has a dedicated prompt for, and the parser that
-# matches its response shape -- one table so a JudgeBackend's default
-# prompt_builder/parse_response can never drift apart per role (an earlier
-# version dispatched the two separately and a preference completion's
-# {"ranking": [...]} silently parsed to value=None).
+# Every role this module has a dedicated prompt for, paired with the
+# parser for that prompt's response shape: one table, so a JudgeBackend's
+# default prompt_builder and parse_response stay in step per role.
 _DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
                                         Callable[..., RawVerdict]]] = {
     "picture-for-word": (picture_fit_prompt, _generic_value_parser),
@@ -578,11 +557,9 @@ class JudgeBackend:
         return [question.artifact_sha] if question.artifact_sha else []
 
     def attachments(self, question: AssessQuestion) -> list[Path]:
-        """Resolves every required sha to a path; raises PreparationError
-        (uncached, never put on the wire) for any sha resolve_path can't
-        resolve, rather than silently dropping it -- a dropped candidate
-        shifts a preference prompt's positions, and a dropped fit artifact
-        judges no image.
+        """Every required sha as a path. A sha resolve_path cannot
+        resolve raises PreparationError (uncached, never put on the
+        wire); none is ever dropped from the list.
         """
         if self.resolve_path is None:
             return []
@@ -616,28 +593,9 @@ class JudgeBackend:
 
 # --- mechanical: ground truth for what it checks ----------------------------
 
-@dataclass
-class MechanicalBackend:
-    """Generic mechanical Assessor backend. key_fn/evaluate are both
-    injectable so each concrete check supplies its own parameter-explicit
-    key (spec 3 roster: "parameter-explicit where expressible ...
-    mech:CHECK:CODE_VERSION:sha(ARTIFACT) only where no parameters express
-    the question").
-    """
-    key_fn: Callable[[AssessQuestion], MechanicalKey]
-    evaluate: Callable[[AssessQuestion], RawVerdict]
-
-    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        return self.key_fn(question)
-
-    def fetch(self, question: AssessQuestion) -> RawVerdict:
-        return self.evaluate(question)
-
-
 def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.run) -> float:
-    """Ported out of thai_deck_gen's media/ffmpeg.py duration_ok, split into
-    a pure duration lookup so the mechanical backend owns the pass/fail
-    range check (injectable `runner`, no thai_deck_gen import).
+    """The audio file's duration in seconds, read through ffprobe.
+    Raises TransportError when ffprobe fails or answers unparseably.
     """
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
           "-of", "json", str(path)]
@@ -651,42 +609,67 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
         raise TransportError(f"ffprobe returned unparseable output for {path!r}: {e}") from e
 
 
-def duration_mechanical_backend(
-        *, lo: float = 0.2, hi: float = 5.0,
-        resolve_path: Callable[[str | None], str],
-        duration_of: Callable[[str], float] | None = None,
-        runner: Callable[..., Any] = subprocess.run) -> MechanicalBackend:
-    duration_of = duration_of or (lambda path: ffprobe_duration_seconds(path, runner=runner))
+@dataclass
+class DurationBackend:
+    """A recording's duration lies within [lo, hi] seconds. Keyed
+    mech:duration:LO-HI:ARTIFACT_SHA. `duration_of`, when given, replaces
+    the ffprobe lookup.
+    """
+    resolve_path: Callable[[str | None], str]
+    lo: float = 0.2
+    hi: float = 5.0
+    duration_of: Callable[[str], float] | None = None
+    runner: Callable[..., Any] = subprocess.run
 
-    def key_fn(question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="duration", params=f"{lo}-{hi}",
+    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="duration", params=f"{self.lo}-{self.hi}",
                              artifact_sha=question.artifact_sha or "-")
 
-    def evaluate(question: AssessQuestion) -> RawVerdict:
-        path = resolve_path(question.artifact_sha)
-        duration = duration_of(path)
-        ok = lo <= duration <= hi
-        return RawVerdict(value=ok, evidence=f"duration={duration:.3f}s")
+    def fetch(self, question: AssessQuestion) -> RawVerdict:
+        path = self.resolve_path(question.artifact_sha)
+        duration = (self.duration_of(path) if self.duration_of is not None
+                    else ffprobe_duration_seconds(path, runner=self.runner))
+        return RawVerdict(value=self.lo <= duration <= self.hi,
+                          evidence=f"duration={duration:.3f}s")
 
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
 
-
-def fills_mechanical_backend(syllabus_of: Callable[[], Any]) -> MechanicalBackend:
-    """`fills()` as an Assess backend (spec 3 section 4's mechanical roles):
-    does the drafted text in `params["text"]` fill the Target named by
-    `params["target"]`? Keyed on the target and the text's sha, so a draft
-    verified once is never re-verified. `syllabus_of` reads the Syllabus at
-    ask time, since a run adopts sentences into it as it goes.
+@dataclass
+class FormatBackend:
+    """An artifact's stored extension equals `expected_ext`. Keyed
+    mech:format:CODE_VERSION:ARTIFACT_SHA.
     """
-    def key_fn(question: AssessQuestion) -> MechanicalKey:
+    expected_ext: str
+    resolve_ext: Callable[[str | None], str]
+    code_version: str = "v1"
+
+    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="format", params=self.code_version,
+                             artifact_sha=question.artifact_sha or "-")
+
+    def fetch(self, question: AssessQuestion) -> RawVerdict:
+        ext = self.resolve_ext(question.artifact_sha)
+        return RawVerdict(value=ext == self.expected_ext,
+                          evidence=f"ext={ext!r}, expected={self.expected_ext!r}")
+
+
+@dataclass
+class FillsBackend:
+    """`Syllabus.fills()` as an Assess backend (spec 3 section 4): does the
+    drafted text in `params["text"]` fill the Target named by
+    `params["target"]`? Keyed mech:fills:TARGET:SUBJECT. `syllabus_of`
+    reads the Syllabus at ask time, as a run adopts sentences into it.
+    """
+    syllabus_of: Callable[[], Any]
+
+    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         return MechanicalKey(check="fills", params=question.params["target"],
                              artifact_sha=question.subject)
 
-    def evaluate(question: AssessQuestion) -> RawVerdict:
+    def fetch(self, question: AssessQuestion) -> RawVerdict:
         from .entities import Sentence
         from .media import Provenance
 
-        syllabus = syllabus_of()
+        syllabus = self.syllabus_of()
         target_id = question.params["target"]
         target = next((t for t in syllabus.targets if t.id == target_id), None)
         if target is None:
@@ -699,25 +682,24 @@ def fills_mechanical_backend(syllabus_of: Callable[[], Any]) -> MechanicalBacken
         return RawVerdict(value=ok,
                           evidence=f"fills {target_id}" if ok else f"does not fill {target_id}")
 
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
 
-
-def rendition_mechanical_backend(
-        speaker_of: Callable[[str], str | None]) -> MechanicalBackend:
+@dataclass
+class RenditionBackend:
     """The rendition check (spec 3 section 5), the one decider on whether
     a set of member recordings IS a rendition: one speaker across the
     members named in `params["members"]` (member -> artifact sha), and
-    every one of them passing its own mechanical checks, whose verdicts
-    the asker hands over in `params["member_checks"]` (member -> bool).
-    The artifact they form is the member set, identified by
+    every one of those members passing its own mechanical checks, whose
+    verdicts the asker hands over in `params["member_checks"]` (member ->
+    bool). The artifact they form is the member set, identified by
     cachekeys.rendition_identity.
     """
-    def key_fn(question: AssessQuestion) -> MechanicalKey:
-        members = question.params["members"]
-        return MechanicalKey(check="rendition", params=question.subject,
-                             artifact_sha=rendition_identity(members))
+    speaker_of: Callable[[str], str | None]
 
-    def evaluate(question: AssessQuestion) -> RawVerdict:
+    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
+        return MechanicalKey(check="rendition", params=question.subject,
+                             artifact_sha=rendition_identity(question.params["members"]))
+
+    def fetch(self, question: AssessQuestion) -> RawVerdict:
         members = question.params["members"]
         if not members:
             raise PreparationError(
@@ -728,32 +710,16 @@ def rendition_mechanical_backend(
             raise PreparationError(
                 f"rendition: no mechanical verdict for member(s) "
                 f"{', '.join(unchecked)} of pair {question.subject!r}")
-        speakers = {member: speaker_of(artifact_sha) for member, artifact_sha in members.items()}
+        speakers = {member: self.speaker_of(artifact_sha)
+                    for member, artifact_sha in members.items()}
         unattributed = sorted(m for m, s in speakers.items() if not s)
         if unattributed:
             return RawVerdict(value=False,
                               evidence=f"no speaker recorded for: {', '.join(unattributed)}")
         distinct = sorted(set(speakers.values()))
-        failing = sorted(m for m, ok in checks.items() if not ok)
+        failing = sorted(m for m in members if not checks[m])
         evidence = (f"speaker {distinct[0]}" if len(distinct) == 1
                     else f"speakers {distinct}")
         if failing:
             evidence = f"{evidence}; failing: {', '.join(failing)}"
         return RawVerdict(value=len(distinct) == 1 and not failing, evidence=evidence)
-
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
-
-
-def format_mechanical_backend(
-        *, expected_ext: str, code_version: str = "v1",
-        resolve_ext: Callable[[str | None], str]) -> MechanicalBackend:
-    def key_fn(question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="format", params=code_version,
-                             artifact_sha=question.artifact_sha or "-")
-
-    def evaluate(question: AssessQuestion) -> RawVerdict:
-        ext = resolve_ext(question.artifact_sha)
-        ok = ext == expected_ext
-        return RawVerdict(value=ok, evidence=f"ext={ext!r}, expected={expected_ext!r}")
-
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)

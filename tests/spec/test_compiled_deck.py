@@ -107,7 +107,7 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
         return [c["due"] for c in _cards_of(pkg, note["id"])]
 
     # order/sounds-first (F8): graphemes and pairs precede every word target.
-    grapheme_due = due_of("grapheme", "Symbol", "ก")
+    grapheme_due = due_of("grapheme", "Symbol", "ก")  # ก: the letter k, "gɔɔ gài"
     rice_due = due_of("word", "Thai", "ข้าว")  # rice
     assert max(grapheme_due) < min(rice_due)
 

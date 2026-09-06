@@ -1,26 +1,19 @@
-"""Ports the Syllabus reads through (spec 1 defines them; spec 3 owns the
-real backends). All three are read-only from the aggregate's point of view:
-report() never calls a judge, fills() never calls a live tokenizer service.
+"""The ports the Syllabus reads through: Tokenizer, AssessmentReader and
+MediaIndex (spec 1), plus FrequencyMap, RecordWriter, CacheReader and
+StudyReader (spec 2 section 3). All are read-only from the aggregate's
+point of view: report() never calls a judge, fills() never calls a live
+tokenizer service.
 
-Spec 2 (durable state) section 3 adds three more interfaces -- FrequencyMap,
-RecordWriter, StudyReader -- not present when spec 1 was implemented.
-AssessmentReader/Tokenizer are spec 1's contract, unchanged since; MediaIndex
-gained recording_provenance/rendition_provenance/picture_sha here (spec 4)
-for rulebook.py's completeness, synthetic/mixed-speaker, and picture/fit
-rules, and speakers_of (spec 1 section 1, E7) for coverage/speakers.
-store.py's SyllabusDb satisfies AssessmentReader directly (isinstance
-checks against that Protocol pass) and additionally offers `assessments_of`
-(spec 2's fuller read surface over the same cache table -- not part of the
-Protocol spec 1 already shipped, so it is not declared here, only
-implemented); MediaIndex is satisfied by wiring.py's `_DbMediaIndex`, a
-separate adapter over SyllabusDb and the loaded pairs, not by SyllabusDb
-itself.
+store.py's SyllabusDb satisfies AssessmentReader, RecordWriter,
+CacheReader and StudyReader; MediaIndex is satisfied by wiring.py's
+`_DbMediaIndex`, an adapter over SyllabusDb and the loaded pairs.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from .cachekeys import CacheKey
     from .ids import ConfusionId, PairId, WordId
     from .media import Recording, Speaker
     from .rules import Finding
@@ -56,15 +49,12 @@ class AssessmentReader(Protocol):
 
 @runtime_checkable
 class MediaIndex(Protocol):
-    """Read access to spec 2's media relationships. Not named by spec 1's
-    text; added here because gap/coverage measures (coverage/speakers,
-    coverage/confusions) need to know what media exists, and architecture.md
-    lists that as record-owned, spec-2 territory the Syllabus reads through.
-    has_picture/recording_speakers/rendition_speakers are spec 1's original
-    three; recording_provenance/rendition_provenance/picture_sha (spec 4)
-    add provenance-row and artifact-sha access for the rulebook's
-    completeness, synthetic/mixed-speaker, and picture/fit rules;
-    speakers_of (E7) backs coverage/speakers.
+    """Read access to spec 2's media relationships: what media a subject
+    has (has_picture/recording_speakers/rendition_speakers), the
+    provenance rows and artifact shas the rulebook's completeness,
+    synthetic/mixed-speaker and picture/fit rules read
+    (recording_provenance/rendition_provenance/picture_sha), and the
+    speakers behind one audio corpus (speakers_of, for coverage/speakers).
     """
     def has_picture(self, word: "WordId") -> bool: ...
     def recording_speakers(self, word: "WordId") -> frozenset[str]: ...
@@ -144,19 +134,14 @@ class NullMediaIndex:
 
 @dataclass(frozen=True)
 class Answer:
-    """One `cache` table row, read back and decoded. Not named by spec 1;
-    spec 2 section 3 names it as AssessmentReader.assessments_of's element
-    type. `question`/`answer` are already-decoded JSON (whatever shape the
-    writing backend used); `ts` is nanoseconds since the epoch (store.py's
-    sortable, collision-resistant substitute for the cache table's `ts`
-    column -- see store.py's docstring for why).
+    """One `cache` table row, read back and decoded (spec 2 section 3).
+    `question`/`answer` are already-decoded JSON in whatever shape the
+    writing backend used; `ts` is nanoseconds since the epoch.
 
     `key` is the readable string a cachekeys.py CacheKey's encode()
-    produced (or a plain string, for ports this task does not cover) --
-    what the backend actually asked. `key_sha` is its indexed digest
-    (spec 2's `cache.key_sha` column); the two always correspond
-    (key_sha = sha256(key)); `key` is kept alongside it for inspection
-    only -- no module reads it back to rebuild a key.
+    produced, kept for inspection only -- no module reads it back to
+    rebuild a key. `key_sha` is its indexed digest (sha256 of `key`), the
+    column every lookup matches on.
     """
     port: str
     backend: str
@@ -191,10 +176,8 @@ class StudyRecord:
 
 @runtime_checkable
 class FrequencyMap(Protocol):
-    """Word-frequency corpus lookup (spec 2 section 3). Not one of the five
-    durable stores (spec 2 section 2 lists exactly five sqlite tables and no
-    frequency table) -- this reads a static, unchanging project resource
-    (data/frequency_th.txt), not deck state the Syllabus writes.
+    """Word-frequency corpus lookup (spec 2 section 3) over a static
+    project resource (data/frequency_th.txt), not deck state.
     """
     def rank(self, word_thai: str) -> int | None: ...
 
@@ -202,28 +185,23 @@ class FrequencyMap(Protocol):
 @runtime_checkable
 class RecordWriter(Protocol):
     """Append-only write side of the `cache` table (spec 2 section 2,
-    spec 3 section 2). `key` is the backend's own canonical, readable
-    cache-key string (spec 3's per-backend key functions, e.g.
-    "forvo:WORD"); the store keeps it verbatim in the `key` column AND
-    hashes it into `key_sha`, the column the table indexes on. Every
-    append is one transaction (the checkpoint rule); never an update,
-    never a delete. Returns the row's `ts` (nanoseconds since the epoch)
-    so callers can stamp the Answer/Verdict they hand back to their
-    caller with the same timestamp the row was actually written under.
+    spec 3 section 2). `key` is a cachekeys.py CacheKey (or its encoded
+    string); the store writes `key.encode()` to the `key` column and its
+    sha256 to the indexed `key_sha`. One transaction per append; never an
+    update, never a delete. Returns the row's `ts` (nanoseconds since the
+    epoch), the timestamp callers stamp their own Answer/Verdict with.
     """
-    def append(self, port: str, backend: str, key: str, subject: str,
+    def append(self, port: str, backend: str, key: "str | CacheKey", subject: str,
                question: Any, answer: Any, cost: float = 0.0) -> int: ...
 
 
 @runtime_checkable
 class CacheReader(Protocol):
-    """Read side of the `cache` table that spec 3's ports consume (Provider/
+    """The general read side of the `cache` table (spec 3): Provider/
     Assessor's cache-first ask(), and the derivations' folds over one
-    subject's history). Not spec 1's AssessmentReader (that one is scoped
-    to judged-rule verdicts and waivers) -- this is the general port+backend
-    cache surface spec 2 section 3 alludes to but leaves to spec 3 to name.
+    subject's history.
     """
-    def latest(self, port: str, backend: str, key: str) -> "Answer | None":
+    def latest(self, port: str, backend: str, key: "str | CacheKey") -> "Answer | None":
         """The newest row exactly matching (port, backend, key) -- the
         cache-first hit lookup every backend's ask() consults before
         executing. None on a cache miss (nothing asked yet).

@@ -3,13 +3,11 @@ resolved and what it passed adopted, one sentence attempt over the open
 Targets, one Source per queued need, and every question collected on the
 way submitted as one batch.
 
-Iteration only -- every policy (queue/current_best/exhausted/next_source,
-what a picture still owes a preference question, and what an attempt IS
-for a kind) lives in derivations.py/attempts.py. Escalation to the next
-source happens on the NEXT run, for every transport alike, so a run is
-cheap and repeatable; nothing here holds state that would be lost
-part-way, since every ask() appended its own checkpoint before this loop
-ever saw it (spec 2).
+Iteration only: every policy (queue/current_best/exhausted/next_source,
+what a picture still owes a preference question, what an attempt is for a
+kind) lives in derivations.py and attempts.py. Escalation to the next
+source happens on the next run, for every transport alike; every ask()
+appended its own checkpoint before this loop saw it (spec 2).
 """
 from __future__ import annotations
 
@@ -52,19 +50,15 @@ _log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Budget:
     """One backend's spend cap for a day, in that backend's own currency
-    (spec 3 section 7): asks (forvo: 450/day), dollars (judge api/batch),
-    subscription quota (judge cli). A run measures a cap against what the
-    record says that backend already spent since midnight plus what the
-    run itself has spent. Either field may be set; a backend with neither
-    is unbounded. The learner cap is the review screen's, over the
-    questions it hands the learner, not a Source budget this loop spends.
+    (spec 3 section 7), measured against what the record says it spent
+    since midnight plus what this run has spent. Either field may be set;
+    a backend with neither is unbounded.
     """
     max_asks: int | None = None
     max_cost: float | None = None
 
     def exceeded_by(self, spend: Spend) -> bool:
-        """Whether `spend` has reached this cap -- budget policy, so it
-        lives with the Budget and not with the Spend it measures."""
+        """Whether `spend` has reached this cap."""
         if self.max_asks is not None and spend.asks >= self.max_asks:
             return True
         if self.max_cost is not None and spend.cost >= self.max_cost:
@@ -78,83 +72,38 @@ LEARNER_DEFAULT_SESSION_BUDGET = Budget(max_asks=20)
 
 @dataclass(frozen=True)
 class RunReport:
-    """"a run that did almost nothing must look like one" (F10): every
-    count is a need count -- one (subject, kind) -- not an ask count, and
-    `available` is every need Syllabus.gaps() listed -- so `available`
-    always equals `attempted` + `exhausted` + `pending` + `unserved` +
-    `budgeted` + `deferred`, every need in exactly one bucket.
-
-    `attempted`: needs whose Source was asked (the one that met a dead
-    judge included -- its ask was made and appended), plus, when the
-    sentence attempt ran this run, every open Target need it was handed
-    -- at most `max_targets` (the per-run cap) of them, whatever the
-    attempt's own AttemptResult.targets_handed says (no Source is asked
-    per Target; the attempt itself is what serves them -- `drafted`
-    separately counts the drafts it produced, whether or not they covered
-    a Target). `improved`: needs whose current-best artifact changed.
-    `exhausted`: needs with no source left, whether the queue dropped
-    them or the loop found none. `pending`: needs -- (subject, kind), read
-    off each question's own fields, one per need however many questions
-    it carries -- with a question in an unresolved batch, this run's own
-    submission included, narrowed to needs whose subject `available` still
-    counts (a need dropped from `pending` this way is not lost from the
-    identity: it already left `available` too, satisfied by the very
-    verdict that raised the question). A batch an earlier run left
-    outstanding is reported from its marker, which records subjects and
-    no kinds, so that run counts subjects. The loop below never re-attempts the
-    specific (subject, kind) need a resolve-time question already named,
-    whichever bucket it lands in -- one bucket per need, always (a word's
-    other still-open needs, e.g. its recording, are untouched by its
-    picture's own resolve-time question).
-    `preferences`: questions asked to rank a word's passing pictures once
-    their fits resolved (derivations.pictures_awaiting_preference) whose
-    need has therefore left `available` -- outside the identity below.
-    One that has not (a learner rejection with no acceptable floor keeps
-    the need open even as a new candidate joins its passing set) is a
-    `pending` need instead, never both.
-    `sentences_adopted`: drafts this run covered open Targets with.
-    `unserved`: needs whose kind has no Source and no per-run pass either
-    (derivations.QueuedNeeds.unserved). `budgeted`: needs skipped this run
-    because their Source's day budget was already spent -- a per-need skip
-    in the loop, or, when the llm-sentence budget gated the sentence
-    attempt out entirely, every open Target need within the per-run cap
-    it would have been handed. `deferred`: available needs this run never
-    even considered -- the open Targets beyond the per-run cap (handed or
-    not, the excess was never looked at), plus the needs a resolve-time
-    question named on a run whose batch never went out at all (a judge
-    dead at the sentence attempt, inside the loop, or at the submit: the
-    loop skipped them and their question is collected again next run),
-    plus the queued needs past the one a dead judge stopped the loop at
-    (every one of them would have met the same dead wire, so none was
-    tried), plus, when the run ended before looking at any need at all (a batch
-    still out from the previous run, or the judge unreachable while
-    resolving one), `available` minus `pending`; zero in every other
-    case.
-
-    The "what went wrong" fields: `excluded` counts questions the judge
-    could not prepare (candidates dropped, not candidates rejected);
-    `excluded_items` names each one -- {subject, artifact_sha, reason} --
-    for a screen to read back per subject (record.excluded_candidates);
-    `source_failures` counts each Source that failed on the wire (skipped
-    for the rest of the run, never fatal), and `unreachable` says the
-    judge could not be reached at all, which stops the run.
+    """One run's account, in needs -- one (subject, kind) each, never
+    asks. `available` is every need Syllabus.gaps() listed, and equals
+    `attempted` + `exhausted` + `pending` + `unserved` + `budgeted` +
+    `deferred`: every need lands in exactly one bucket. `preferences`
+    sits outside that identity (its need has already left `available`).
     """
+    # needs whose Source was asked, plus the open Targets the sentence
+    # attempt was handed this run (at most the per-run cap)
     attempted: int = 0
-    improved: int = 0
-    exhausted: int = 0
-    available: int = 0
+    improved: int = 0          # needs whose current-best artifact changed
+    exhausted: int = 0         # needs with no source left
+    available: int = 0         # every need Syllabus.gaps() listed
+    # needs with a question in an unresolved batch, this run's submission
+    # included, narrowed to needs `available` still counts. A batch an
+    # earlier run left out records subjects and no kinds, so that run
+    # counts subjects.
     pending: int = 0
-    sentences_adopted: int = 0
-    drafted: int = 0
-    excluded: int = 0
+    sentences_adopted: int = 0  # drafts this run covered open Targets with
+    drafted: int = 0            # drafts the sentence attempt produced
+    excluded: int = 0           # questions the judge could not prepare
+    # one {subject, artifact_sha, reason} per exclusion, for a screen to
+    # read back per subject (record.excluded_candidates)
     excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
-    unreachable: bool = False
+    unreachable: bool = False   # the judge could not be reached, which stops the run
     batch_id: str | None = None
+    # per Source that failed on the wire (skipped for the rest of the run)
     source_failures: dict[str, int] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
-    unserved: int = 0
-    budgeted: int = 0
-    deferred: int = 0
+    unserved: int = 0          # needs whose kind has no Source and no per-run pass
+    budgeted: int = 0          # needs whose Source's day budget was already spent
+    deferred: int = 0          # available needs this run never considered
+    # questions ranking a word's passing pictures once their fits resolved
     preferences: int = 0
 
 
@@ -177,19 +126,15 @@ class _Tally:
     spend: dict[str, Spend] = field(default_factory=dict)
     preferences: int = 0
     # Needs whose own attempt this run collected judge questions for --
-    # not yet counted as `attempted`, because whether they land in
-    # `pending` or fall back to `attempted` is only known once submit()
-    # (below, in run()) resolves the whole batch's fate. Internal only:
-    # never a RunReport field.
+    # not yet counted as `attempted`: whether they land in `pending` or
+    # fall back to `attempted` is known once submit() settles the batch's
+    # fate. Internal only, never a RunReport field.
     pending_candidates: int = 0
 
     def collect(self, result: AttemptResult) -> None:
-        """What an attempt produced, whatever the need was: its questions,
-        its exclusions (each already naming its own question's subject and
-        artifact_sha -- assessor.Excluded, keyed by the question's own
-        typed CacheKey so two no-artifact questions under one subject
-        never collide -- for record.excluded_candidates to read back), and
-        its spend per backend.
+        """What an attempt produced, whatever the need was: its
+        questions, its exclusions (each naming its own subject and
+        artifact_sha), its drafts, and its spend per backend.
         """
         self.questions += result.questions
         self.excluded += len(result.excluded)
@@ -251,9 +196,8 @@ def day_start_ns(today: date) -> int:
 
 
 def _spent_today(ctx: Sourcing, budgets: Mapping[str, Budget]) -> dict[str, Spend]:
-    """What the record says each budgeted backend has already spent since
-    midnight, read once: this run's own asks are counted from the tally,
-    not read back as they land.
+    """What the record says each budgeted backend spent since midnight,
+    read once; this run's own asks are counted from the tally.
     """
     since = day_start_ns(ctx.today())
     return {name: Spend(asks=asks_since(ctx.db, name, since),
@@ -278,25 +222,20 @@ def _needs(ctx: Sourcing,
 
 
 def _open_target_count(ctx: Sourcing) -> int:
-    """How many Targets are still unfilled right now -- `queued()` excludes
-    "sentence" kind needs from `entries`/`exhausted`/`unserved` entirely
-    (the run's own sentence attempt serves them, not a Source), so this is
-    the only place their count reaches `attempted`/`budgeted`/`deferred`.
+    """How many Targets are still unfilled. queued() leaves "sentence"
+    needs out of entries/exhausted/unserved, so this count is the only
+    one reaching attempted/budgeted/deferred for them.
     """
     return len(ctx.syllabus.gaps().unfilled_targets)
 
 
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally) -> int:
-    """One Source per need -- the cheapest not yet tried since current-best
+    """One Source per need: the cheapest not yet tried since current-best
     last changed. A Source that fails on the wire is skipped for the rest
-    of the run; an unreachable judge stops it there and then, rather than
-    grinding the queue against a dead wire.
-
-    Returns how many entries the loop never reached -- zero unless a dead
-    judge stopped it -- so `run()` can defer them; "sentence" entries are
-    left out of that count, the per-run sentence attempt having already
-    accounted for every open Target.
+    of the run; an unreachable judge stops the loop. Returns how many
+    entries it never reached (zero unless a dead judge stopped it),
+    "sentence" entries aside, for run() to defer.
     """
     dead_sources: set[str] = set()
     for index, entry in enumerate(entries):
@@ -346,12 +285,9 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         sentence_targets_per_run: int = 40) -> RunReport:
     """One pass: resolve, adopt, draft sentences once, try each queued
     need at its next source, submit everything collected as one batch.
-
-    Two things end the pass early. A judge that cannot be reached -- at
-    the resolve, inside an attempt, or at the submit -- stops it there,
-    reported and persisted (the cli exits non-zero). A batch still
-    unanswered keeps it from attempting or submitting anything: at most
-    one batch is ever outstanding.
+    An unreachable judge -- at the resolve, in an attempt, or at the
+    submit -- ends the pass there, reported and persisted; a batch still
+    unanswered ends it before any attempt, so at most one batch is out.
     """
     tally = _Tally(spend={name: Spend() for name in budgets})
     # Read before any ask this run makes lands on the record -- the
@@ -471,12 +407,10 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
 
 
 def _fold_unsubmitted(tally: _Tally, collected_at_resolve: frozenset[tuple[str, str]]) -> None:
-    """The bucket every question this run collected but never sent falls
-    back to. A need whose own attempt raised one was asked -- its ask is
-    on the record -- so it is `attempted` after all; a need a resolve-time
-    question named was never attempted by the loop at all (it skipped
-    every `collected_at_resolve` need) and its question is collected
-    again next run, so it is `deferred`.
+    """Where a question this run collected but never sent lands: a need
+    whose own attempt raised one was asked, so it is `attempted`; a need
+    a resolve-time question named was never attempted at all, so it is
+    `deferred` and its question is collected again next run.
     """
     tally.attempted += tally.pending_candidates
     tally.pending_candidates = 0
@@ -485,12 +419,9 @@ def _fold_unsubmitted(tally: _Tally, collected_at_resolve: frozenset[tuple[str, 
 
 def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str | None,
             pending: int, extra_deferred: int = 0) -> RunReport:
-    """The run's own outcome, as one durable row and one return value.
-    `deferred` is `tally.deferred` (the sentence attempt's per-run-cap
-    excess, accumulated as the run went) plus `extra_deferred`, which is
-    nonzero only when the run ended before it ever looked at a need at
-    all (a batch still out, or the judge unreachable while resolving
-    one): every available need it never considered, pending or not.
+    """The run's outcome, as one durable row and one return value.
+    `deferred` is `tally.deferred` plus `extra_deferred`, the latter
+    nonzero only when the run ended before looking at any need.
     """
     report = RunReport(
         attempted=tally.attempted, improved=tally.improved,

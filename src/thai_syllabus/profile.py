@@ -1,8 +1,6 @@
-"""The learner profile (spec 1, section 2).
-
-Confusion training weights are NOT stored here: derived as seed (curated
-data) x StudyRecord evidence, which is spec 2/3's territory. L1 is implicit
-in curated inputs.
+"""The learner profile (spec 1 section 2): register, and per-category
+emphasis. Confusion training weights are derived state (curated seed x
+StudyRecord evidence), spec 2/3's territory.
 """
 from dataclasses import dataclass, field
 from typing import Literal

@@ -28,8 +28,8 @@ _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 # Where one alternative of a learner definition ends and the next begins.
 _ALTERNATIVES = (",", ";", "/", " or ")
 
-# A leading parenthetical is a prefix note -- "(for) a long time" -- not a
-# sense note, so it is dropped rather than cut at.
+# A leading parenthetical is a prefix note -- "(for) a long time" -- and
+# is dropped whole, not cut at.
 _LEADING_NOTE = re.compile(r"^\s*\([^)]*\)\s*")
 
 

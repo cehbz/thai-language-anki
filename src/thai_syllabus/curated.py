@@ -1,13 +1,11 @@
 """Loaders/savers for curated/*.yaml (spec 2 section 1): human-owned,
 hand-editable data that loads into spec 1's entities.
 
-Saves are temp-file + os.replace (atomic, per the spec's "YAML writes are
-temp-file + os.replace" ground rule). Loads validate references (a
-grapheme's keyword resolves and contains its symbol, a pair's confusion
-and members resolve and satisfy the exact-confusion invariant, a target's
-word resolves, a word's classifier resolves) and collect every error
-instead of failing on the first one -- `load_curated` on a whole directory
-does the same across files, e.g. a target pointing at a nonexistent word.
+Saves are temp-file + os.replace (spec 2's ground rule). Loads validate
+references -- a grapheme's keyword resolves and contains its symbol, a
+pair's confusion and members satisfy the exact-confusion invariant, a
+target's word and a word's classifier resolve -- and collect every error
+before raising; `load_curated` does the same across a whole directory.
 """
 from __future__ import annotations
 
@@ -42,8 +40,8 @@ def load_category_names(path: str | Path) -> frozenset[str]:
     return frozenset(yaml.safe_load(path.read_text(encoding="utf-8")) or [])
 
 
-# Loaded once at import: the fixed set of valid words.yaml `category`
-# values (data/categories.yaml is the repo's source of these 27 names).
+# Loaded once at import: the valid words.yaml `category` values, from
+# data/categories.yaml.
 CATEGORY_NAMES: frozenset[str] = load_category_names(_DATA_DIR / "categories.yaml")
 
 
@@ -126,9 +124,8 @@ def save_words(path: str | Path, rows: list[tuple[Word, CategoryName | None]]) -
 
 
 def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
-    """Row order kept. `category` is optional (spec 1: closure words are in
-    no category); a row that names one must use one of CATEGORY_NAMES, or
-    the row is refused naming the row's id and the name.
+    """Row order kept. `category` is optional (a closure word is in
+    none); a row naming one outside CATEGORY_NAMES is refused, named.
     """
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
@@ -155,9 +152,8 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
 
 
 def build_categories(rows: Sequence[tuple[Word, CategoryName | None]]) -> tuple[Category, ...]:
-    """Groups word ids by category name, preserving first-seen name order.
-    A row with no category contributes no membership (spec 1: closure
-    words are in no category).
+    """Word ids grouped by category name, first-seen order; a row with no
+    category contributes no membership.
     """
     members_by_name: dict[CategoryName, set[WordId]] = {}
     for w, category in rows:
@@ -349,11 +345,9 @@ def load_profile(path: str | Path) -> Profile:
 
 @dataclass(frozen=True)
 class RulebookConfig:
-    """Human-tunable overlay on the code-defined rulebook (spec 1 section
-    4's Rule objects): severities, thresholds, judged-rule rubric text, and
-    provenance's source-preference order. Not itself the rule registry --
-    rulebook.py's RULES list is the code; this is curated data a caller
-    applies over it via rulebook.apply_overlay(RULES, config).
+    """Curated overlay on the code-defined rulebook: severities,
+    thresholds, judged-rule rubric text and provenance's source-preference
+    order, applied over rulebook.py's RULES by rulebook.apply_overlay.
     """
     severities: dict[str, str] = field(default_factory=dict)
     thresholds: dict[str, float] = field(default_factory=dict)
@@ -416,9 +410,8 @@ class CuratedBundle:
 
 
 def load_curated(root: str | Path) -> CuratedBundle:
-    """Load every curated/*.yaml file under `root`, collecting every
-    validation error across all of them (not just the first file that
-    fails) before raising.
+    """Every curated/*.yaml file under `root`, collecting the validation
+    errors across all of them before raising.
     """
     root = Path(root)
     errors: list[str] = []
@@ -468,12 +461,9 @@ def load_curated(root: str | Path) -> CuratedBundle:
 
 # --- frequency corpus (spec 2 section 3's FrequencyMap) --------------------
 #
-# Not one of curated/*.yaml (spec 2 section 1 doesn't list a frequency
-# file) and not a syllabus.db table either (spec 2 section 2 lists exactly
-# five tables). It is project input data that predates and outlives this
-# migration -- data/frequency_th.txt, one Thai word per line in rank order,
-# a `#`-prefixed header comment block up top. Read-only; nothing ever
-# writes it.
+# Project input data, outside curated/ and outside syllabus.db:
+# data/frequency_th.txt, one Thai word per line in rank order under a
+# `#`-prefixed header block. Read-only.
 
 @dataclass(frozen=True)
 class TextFrequencyMap:
@@ -503,11 +493,8 @@ def load_frequency_map(path: str | Path) -> TextFrequencyMap:
 
 # --- rulebook.yaml raw text (spec 3 section 6: Report.rulebook_id) --------
 #
-# load_rulebook_config above returns the PARSED RulebookConfig; rulebook_id
-# (spec 3 section 6) hashes the FILE CONTENTS + the registry's rule ids, so
-# it needs the raw text, not the parsed value -- kept as a tiny separate
-# reader rather than folded into load_rulebook_config, which has its own
-# job (validated config) and no reason to also expose raw bytes.
+# rulebook_id hashes the file's contents plus the registry's rule ids, so
+# it reads the raw text; load_rulebook_config returns the parsed config.
 
 def rulebook_file_text(path: str | Path) -> str:
     path = Path(path)
@@ -518,22 +505,16 @@ def rulebook_file_text(path: str | Path) -> str:
 
 # --- providers.yaml (spec 3 section 5) --------------------------------------
 #
-# Per-backend settings: secret references (resolved by SecretStore, ported
-# in secrets.py), search_proxy, imgfetch/audiofetch paths, tts voice pools
-# (defaulting to tts.py's shipped male/female lists) + cost_per_char, judge
-# transport + model + price_per_mtok, image_candidates, batch limits, quotas
-# and attempt caps. One file; no env vars; no settings in two places (judged-
-# rule rubric TEXT stays in rulebook.yaml -- WHAT to ask; this file is HOW
-# to reach things).
+# Per-backend settings: secret references (resolved by SecretStore),
+# search_proxy, imgfetch/audiofetch paths, tts voice pools (defaulting to
+# tts.py's lists) + cost_per_char, judge transport + model +
+# price_per_mtok, image_candidates, batch limits, quotas and attempt caps.
+# One file, no env vars; judged-rule rubric text stays in rulebook.yaml.
 #
-# load_providers_config refuses a file that describes a run the code cannot
-# perform: no imgfetch_path/audiofetch_path (pictures and recordings are
-# always in scope), an api/batch judge with no price_per_mtok (its spend
-# would be silently costed at zero), an api/batch judge with no anthropic
-# secret (nothing left to draft sentences through), and an empty
-# male_voices or female_voices pool (pick_voice divides by its length).
-# providers.yaml is a store (spec 2 section 1): an absent file refuses,
-# naming the path -- it never yields the dataclass's permissive defaults.
+# load_providers_config refuses a file describing a run the code cannot
+# perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
+# price_per_mtok or no anthropic secret, an empty male_voices or
+# female_voices pool. An absent file refuses, naming the path.
 
 @dataclass(frozen=True)
 class JudgeConfig:
@@ -605,21 +586,17 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
             else:
                 price_per_mtok = (float(input_price), float(output_price))
     if transport in ("api", "batch") and price_per_mtok is None:
-        # Spec 3 section 2's cost contract: the api and batch judges spend
-        # cash, measured as tokens times this price. Without it every
-        # verdict is silently costed at zero and no budget can bind.
+        # Spec 3 section 2's cost contract: an api or batch judge spends
+        # cash, measured as tokens times this price, which a budget binds.
         errors.append("providers.judge.price_per_mtok: required for the "
                       f"{transport!r} transport, which spends cash per token")
     judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
                         price_per_mtok=price_per_mtok)
 
-    # A loaded config must describe a run that can actually happen (fail
-    # fast and noisy): both mediafetch paths are required -- pictures and
-    # recordings are always in scope, so a run without imgfetch could never
-    # fetch a found image and one without audiofetch could never download a
-    # Forvo recording; each would look like a run that simply "found
-    # nothing". The ProvidersConfig DATACLASS stays permissive (a bare
-    # ProvidersConfig() is still constructible); only this loader refuses.
+    # A loaded config describes a run that can happen: both mediafetch
+    # paths are required, pictures and recordings always being in scope.
+    # The ProvidersConfig dataclass itself stays constructible bare; this
+    # loader is what refuses.
     imgfetch_path = data.get("imgfetch_path")
     audiofetch_path = data.get("audiofetch_path")
     if not imgfetch_path:
@@ -630,9 +607,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                       "in scope and nothing else can download one")
 
     # Sentence drafting is a single-question ask (wiring._llm_transport):
-    # the cli transport IS one; api/batch need the anthropic secret to
-    # build one. With neither, wiring registers no llm-* backend at all and
-    # every unfilled target stays silently unfilled.
+    # the cli transport is one; api/batch build one from the anthropic
+    # secret, and wiring registers no llm-* backend without it.
     if transport in ("api", "batch") and "anthropic" not in secrets_cfg:
         errors.append(f"providers.secrets.anthropic: required for the {transport!r} "
                       "judge transport -- sentence drafting needs a single-question "

@@ -27,7 +27,7 @@ from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 def token_is_known(token: str, known: Collection[str]) -> bool:
     """Whether `token` is a known word, or a known word is its prefix or
     suffix with a remainder that is itself known, recursively. A known
-    word occurring mid-token, matching neither end, is not a boundary.
+    word matching neither end of the token is not a boundary.
     """
     if token in known:
         return True
@@ -51,8 +51,8 @@ class Syllabus:
     confusions: tuple[SoundConfusion, ...] = ()
     profile: Profile = field(default_factory=lambda: Profile(register="male_colloquial"))
     tokenizer: Tokenizer = field(kw_only=True)
-    # Storage-owned by spec 2; taken as constructor input for now (spec 1
-    # note): rank per word (lower = more frequent).
+    # Rank per word, lower = more frequent; loaded from spec 2's storage
+    # and handed in here.
     frequency: Mapping[WordId, int] = field(default_factory=dict)
     # The Syllabus's curated Category collections; category_of derives the
     # reverse lookup from word id to category name.
@@ -122,9 +122,9 @@ class Syllabus:
         return any(self.fills(sentence, t) for t in self.targets if t.skill == "productive")
 
     def pair_voice_constraint(self, pair_id: PairId) -> str:
-        """A rendition speaks for every member at once, so the pair takes
-        the strictest of its members' constraints: "male" if any member
-        serves a productive Target, "any" otherwise.
+        """The strictest of the members' voice constraints, a rendition
+        speaking for every member at once: "male" if any member serves a
+        productive Target, else "any".
         """
         return ("male" if any(self.serves_productive(m) for m in self.pair(pair_id).members)
                 else "any")
@@ -192,19 +192,15 @@ class Syllabus:
 
     @staticmethod
     def _has_lexical_content(tok: str) -> bool:
-        """Whitespace-only or punctuation/digit-only tokens carry no
-        vocabulary of their own (a real tokenizer keeps whitespace
-        tokens) -- never novel, never budget-consuming."""
+        """Whether a token carries vocabulary at all: whitespace-only and
+        punctuation/digit-only tokens do not."""
         return any(ch.isalpha() for ch in tok)
 
     def _unknown_tokens(self, tokens: list[str]) -> list[str]:
         """Content tokens that do not decompose into registered Words at
-        a boundary (token_is_known). Such a token has no Target by
-        construction, so it always counts against the novelty budget
-        (spec 1 §3: "every word it uses has an earlier Target") -- no
-        exemption list for function/glue words; those must be registered
-        with an early receptive Target instead. A known prefix does not
-        excuse an unregistered remainder.
+        a boundary (token_is_known). Each counts against the novelty
+        budget (spec 1 section 3); a known prefix does not excuse an
+        unregistered remainder.
         """
         known = {w.thai for w in self.words}
         return [tok for tok in tokens
@@ -229,11 +225,10 @@ class Syllabus:
             return False
 
         # clause 3: strict i+1 with a novelty budget. The sentence enters
-        # the order after its LAST used word's target, so any used word
-        # with a target anywhere is met by entry; a known word with no
-        # target at all, or any content token matching no registered word
-        # at all, is new (spec 1 §3; no exemption for unregistered
-        # function/glue words -- they must carry an early Target).
+        # the order after its last used word's target, so a used word with
+        # a target anywhere is met by entry; a word with no target at all,
+        # and any content token matching no registered word, is new
+        # (spec 1 section 3).
         if target.id not in self._target_positions:
             return False
         used_other_words = self._words_used(tokens) - {target.word}
@@ -264,10 +259,9 @@ class Syllabus:
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
               ) -> list[tuple[Sentence, tuple[Target, ...]]]:
         """The drafts worth adopting, greedily: the one filling the most
-        still-unfilled Targets (gaps().unfilled_targets), then the next,
-        until no draft fills one. Each is returned with the Targets it is
-        adopted for. Ties go to the shorter text, then the lower text_sha,
-        so the same draft set always yields the same choice.
+        still-unfilled Targets, then the next, until none fills one, each
+        with the Targets it is adopted for. Ties go to the shorter text,
+        then the lower text_sha.
         """
         uncovered = set(self.gaps().unfilled_targets)
         remaining = sorted(drafts, key=lambda d: (len(d[0].text), d[0].text_sha))
@@ -287,9 +281,8 @@ class Syllabus:
     def _judged_findings(self, rule: Rule) -> list[Finding]:
         findings = []
         for note_id, artifact_sha in rule.judged_subjects(self):
-            # for_rule() builds the same key assessor.JudgeBackend.cache_key
-            # builds for a direct Assessor.ask("judge", ...) call under the
-            # same rubric/artifact/role -- one convention, one row.
+            # for_rule() builds the key assessor.JudgeBackend.cache_key
+            # builds for the same rubric/artifact/role: one cache row.
             key = JudgeKey.for_rule(rule.rubric, artifact_sha, note_id, rule.role)
             answer = self.assessments.verdict("judge", key)
             if answer is not None and answer.answer.get("value") is False:
@@ -326,9 +319,9 @@ class Syllabus:
     # --- gaps() ----------------------------------------------------------
 
     def gaps(self) -> Gaps:
-        """Folds report()'s completeness findings and measures (spec 1,
-        section 3) by rule id. Scene pictures are optional and carry no
-        rule finding; that one field reads the media index directly.
+        """report()'s completeness findings and measures (spec 1 section
+        3), folded by rule id. Scene pictures carry no rule finding, so
+        that one field reads the media index directly.
         """
         report = self.report()
 
@@ -356,10 +349,9 @@ class Syllabus:
     # --- study_by_confusion -------------------------------------------------
 
     def study_by_confusion(self, study: StudyReader) -> dict[ConfusionId, list[StudyRecord]]:
-        """Every minimal_pair-family StudyRecord, grouped by the confusion
-        of the pair its anchor names exactly (spec 2 section 2: a pair
-        row's anchor is the pair id). An anchor matching no pair is
-        skipped.
+        """Every minimal_pair-family StudyRecord grouped by the confusion
+        of the pair its anchor names (spec 2 section 2). An anchor
+        matching no pair is skipped.
         """
         confusion_by_pair = {p.id: p.confusion for p in self.pairs}
         grouped: dict[ConfusionId, list[StudyRecord]] = {}
@@ -403,10 +395,8 @@ class Syllabus:
         return hashlib.sha256(blob).hexdigest()
 
     def rulebook_id(self) -> str:
-        """sha(rulebook.yaml text + registry rule ids) -- spec 3 section 6.
-        Differs from state_id(): a rulebook edit (severity/threshold/rubric
-        change, or the registry itself gaining/losing a rule) changes this
-        without necessarily changing the aggregate's own content.
+        """sha(rulebook.yaml text + registry rule ids), spec 3 section 6:
+        a rulebook edit changes this where state_id() stays put.
         """
         payload = {"rulebook_text": self.rulebook_text,
                   "rule_ids": sorted(r.id for r in self.rules)}

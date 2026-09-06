@@ -133,7 +133,7 @@ def test_openverse_cache_key_is_backend_colon_query():
     backend = openverse_backend()
     key = backend.cache_key(Question(subject="rice", provides="picture",
                                      params={"query": "rice bowl"}))
-    assert key == "openverse:rice bowl"
+    assert key.encode() == "openverse:rice bowl"
 
 
 def test_openverse_fetch_parses_results_and_sets_descriptive_user_agent():
@@ -175,8 +175,8 @@ def test_wikimedia_and_pexels_backends_key_by_backend_name():
     wm = wikimedia_backend()
     px = pexels_backend(api_key="k")
     q = Question(subject="s", provides="picture", params={"query": "cat"})
-    assert wm.cache_key(q) == "wikimedia:cat"
-    assert px.cache_key(q) == "pexels:cat"
+    assert wm.cache_key(q).encode() == "wikimedia:cat"
+    assert px.cache_key(q).encode() == "pexels:cat"
 
 
 def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
@@ -243,7 +243,7 @@ def test_fetch_backend_key_is_the_url():
     backend = FetchBackend(media=None, fetcher=lambda url: (b"x", "jpg"))
     key = backend.cache_key(Question(subject="s", provides="picture-bytes",
                                      params={"url": "https://x/y.jpg"}))
-    assert key == "https://x/y.jpg"
+    assert key.encode() == "https://x/y.jpg"
 
 
 def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
@@ -252,7 +252,7 @@ def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
     q = Question(subject="w", provides="recording-bytes",
                  params={"url": "https://apifree.forvo.com/x.mp3", "speaker": "krisflyer",
                         "speaker_kind": "native"})
-    assert b.cache_key(q) == "https://apifree.forvo.com/x.mp3"
+    assert b.cache_key(q).encode() == "https://apifree.forvo.com/x.mp3"
     ans = b.fetch(q)
     assert media.written == [(b"mp3bytes", "mp3")] and media.images == []
     item = ans.items[0]
@@ -325,7 +325,7 @@ def test_tool_fetcher_raises_transport_error_when_binary_is_missing():
 def test_forvo_cache_key_is_forvo_colon_word():
     backend = ForvoBackend(api_key="k")
     key = backend.cache_key(Question(subject="ไก่", provides="recording"))  # chicken
-    assert key == "forvo:ไก่"
+    assert key.encode() == "forvo:ไก่"
 
 
 def test_forvo_fetch_returns_items_and_a_transport_error_on_bad_status():
@@ -362,9 +362,8 @@ def test_tts_cache_key_includes_the_picked_voice_and_sha_of_text(tmp_path):
     backend = TtsBackend(tts=None, voices=voices, media=media, pick_voice=pick_voice)
     key = backend.cache_key(Question(subject="subj-1", provides="recording",
                                      params={"text": "ผมกินข้าว"}))  # I eat rice
-    assert key.startswith("tts:")
-    voice = pick_voice("subj-1", voices)
-    assert key.split(":")[1] == voice
+    assert key.encode().startswith("tts:")
+    assert key.kind == pick_voice("subj-1", voices)
 
 
 def test_tts_fetch_writes_synthesized_audio_content_addressed(tmp_path):
@@ -429,7 +428,7 @@ def test_llm_cache_key_is_stable_for_the_same_prompt():
                          transport=_FakeTransport())
     q = Question(subject="s", provides="sentence", params={"prompt": "write a sentence"})
     assert backend.cache_key(q) == backend.cache_key(q)
-    assert backend.cache_key(q).startswith("llm:sentence-drafter:claude-opus-5:")
+    assert backend.cache_key(q).encode().startswith("llm:sentence-drafter:claude-opus-5:")
 
 
 def test_llm_cache_key_changes_when_the_prompt_text_changes():
@@ -496,7 +495,7 @@ def test_pair_search_cache_key_includes_confusion_and_dictionary_version():
     backend = PairSearchBackend(dictionary=g2p)
     key = backend.cache_key(Question(subject="tone:mid-low", provides="pair",
                                      params={"confusion_id": "tone:mid-low"}))
-    assert key == "pairs:tone:mid-low:2026-09-01"
+    assert key.encode() == "pairs:tone:mid-low:2026-09-01"
 
 
 def test_pair_search_key_changes_when_the_dictionary_version_bumps():

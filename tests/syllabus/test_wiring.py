@@ -143,7 +143,7 @@ def test_resolving_the_pexels_backend_reads_only_the_pexels_secret(
     resolved = provider._backends["pexels"]._resolve()
     assert calls == ["pexels"]
     assert resolved.cache_key(Question(subject="s", provides="picture",
-                                       params={"query": "cat"})) == "pexels:cat"
+                                       params={"query": "cat"})).encode() == "pexels:cat"
 
 
 def test_an_openverse_ask_never_touches_any_secret(cfg, db, media_store, monkeypatch):
@@ -406,9 +406,9 @@ def test_load_syllabus_wires_a_real_assessment_reader(tmp_path):
     syllabus = load_syllabus(root)
     db = SyllabusDb(root / "syllabus.db")
     key = JudgeKey(rubric_sha=sha(""), identity="n1", role="r1")
-    db.append_judge_verdict(key=key, subject="n1",
-                            question={"role": "r1", "artifact_sha": None, "rubric": None},
-                            answer={"value": True})
+    db.append(port="assess", backend="judge", key=key, subject="n1",
+              question={"role": "r1", "artifact_sha": None, "rubric": None},
+              answer={"value": True})
     # a fresh load_syllabus call re-opens the same db file -- the verdict
     # written above must be visible through Syllabus.assessments.
     syllabus2 = load_syllabus(root)

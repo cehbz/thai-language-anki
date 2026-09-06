@@ -1,9 +1,7 @@
-"""Content-addressed media values (spec 1, section 1).
-
-Picture and Recording are dumb files: bytes (identified by hash) plus
-provenance. All learning semantics live in the relationships that consume
-them (word -> picture, sentence -> scene picture, pair -> renditions, ...),
-which are spec 2's record, not fields here.
+"""Content-addressed media values (spec 1 section 1): a Picture and a
+Recording are bytes (identified by their sha) plus provenance. The
+relationships that consume them (word -> picture, sentence -> scene
+picture, pair -> renditions) live in spec 2's record.
 """
 from dataclasses import dataclass
 from datetime import date

@@ -575,6 +575,7 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
     assert provenance["kind"] == "recording"
     assert provenance["speaker_id"] == "learner"
     assert db.speaker("learner").kind == "native"
+    assert ctx.current_best(w1.id, "recording").artifact_sha == sha
 
 
 def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
@@ -592,6 +593,7 @@ def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
     assert media_store.has(sha, "wav")
     assert media_store.path_for(sha, "wav").read_bytes() == b"fake-wav-bytes"
     assert db.media_provenance(sha)["speaker_id"] == "learner"
+    assert ctx.current_best(w1.id, "recording").artifact_sha == sha
 
 
 # --- gallery / notes / drills ------------------------------------------------

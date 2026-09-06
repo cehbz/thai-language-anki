@@ -1,6 +1,6 @@
-"""The rule registry (spec 1, section 4): an explicit module-level list, no
-import side effects. Every rule spec 1 r2 section 4's table names against
-docs/principles.md r2 is registered here; `RULES` is the enumeration.
+"""The rule registry (spec 1 section 4): an explicit module-level list,
+no import side effects. `RULES` enumerates every rule spec 1's table
+names against docs/principles.md.
 """
 import dataclasses
 from collections.abc import Mapping, Sequence
@@ -33,8 +33,8 @@ def sentence_note_id(sentence: "Sentence") -> str:
 
 
 # --- pair/exact-confusion ---------------------------------------------------
-# Re-checks MinimalPair.create's invariant against loaded data (pairs built
-# directly, bypassing the factory -- e.g. read from a store in spec 2).
+# Re-checks MinimalPair.create's invariant against loaded data, which is
+# built through the plain constructor.
 
 def _check_pair_exact_confusion(syllabus: "Syllabus") -> list[Finding]:
     confusions = {c.id: c for c in syllabus.confusions}
@@ -221,9 +221,8 @@ SENTENCE_REGISTER_NATURAL = Rule(id="sentence/register-natural", principle="E3",
 
 
 # --- rubric constants (judged rules) ----------------------------------------
-# PICTURE_FIT_RUBRIC is the three old picture/fit judge rubric texts,
-# concatenated verbatim (not paraphrased) so a migrated verdict, cached under
-# the old text's hash, still hits the cache under this rule.
+# PICTURE_FIT_RUBRIC carries the migrated picture/fit rubric texts
+# verbatim, so a migrated verdict keyed on that text still hits the cache.
 
 PICTURE_FIT_RUBRIC = (
     "Does the image show what the intended phrase describes? This asks "
@@ -592,10 +591,9 @@ ORDER_RECEPTIVE_FIRST = Rule(id="order/receptive-before-productive", principle="
 
 
 def _check_order_sentence_after_words(syllabus: "Syllabus") -> list[Finding]:
-    """Every sentence entry must sit after every word_target entry of a
-    word it uses: a used word with no Target at all is flagged directly;
-    a used word's Target that is not before the sentence's own position
-    is flagged too (should not arise from order()'s own construction).
+    """Every sentence entry sits after the word_target entry of every
+    word it uses: a used word with no Target, or one whose Target is not
+    before the sentence's own position, is a finding.
     """
     positions = {(e.kind, e.id): i for i, e in enumerate(syllabus.order())}
     findings = []

@@ -1,17 +1,13 @@
 """LLM transports shared by provider.py's llm backend and assessor.py's
 judge backend (spec 3 section 2: "one Assessor implementation, three
 transports (cli/api/batch) selected by config"; the llm Provider backend
-uses the same cli/api pair). `anthropic` is an optional dependency (see
-pyproject.toml's `llm` extra) -- every class here imports it lazily,
-inside the method that needs it, so importing this module never requires
-it and the default test suite (no live network, no anthropic import)
-stays clean.
+uses the same cli/api pair). `anthropic` is an optional dependency
+(pyproject.toml's `llm` extra), imported lazily inside the method that
+needs it.
 
 Costs are in different currencies (spec 3 section 2): cli spends
-subscription token quota (sunk monthly, ~35K harness tokens/call, no
-dollar cost recorded here), api/batch spend cash. Transports return a
-`Completion` (text + token usage); backends price it in their own
-currency.
+subscription token quota, api/batch spend cash. A transport returns a
+`Completion` (text + token usage); the backend prices it.
 """
 from __future__ import annotations
 
@@ -167,10 +163,8 @@ class ClaudeBatchTransport:
     so callers can persist the batch id between them (spec 3: "Batch
     resume state is a cache row ... not a sidecar file").
 
-    `api_key` authenticates the same way ClaudeApiTransport's does: set, it
-    is passed to the SDK client; empty, the SDK falls back to its own
-    default resolution. Without it a wired batch judge reached the SDK
-    unauthenticated and every submission failed.
+    `api_key`, when set, is passed to the SDK client; empty, the SDK
+    falls back to its own default resolution.
     """
     model: str
     api_key: str = ""

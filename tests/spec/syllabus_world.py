@@ -215,7 +215,7 @@ def full_syllabus(tokenizer) -> Syllabus:
     pair = MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=confusion,
                               members=(near, far))
 
-    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",  # ก: the letter k
                                consonant_class="mid", keyword_word=chicken,
                                name_word=ko_name)
 

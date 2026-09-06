@@ -23,10 +23,9 @@ from thai_syllabus.assessor import (
     Price,
     RawVerdict,
     Verdict,
-    MechanicalBackend,
-    duration_mechanical_backend,
-    format_mechanical_backend,
-    rendition_mechanical_backend,
+    DurationBackend,
+    FormatBackend,
+    RenditionBackend,
     parse_preference,
     picture_fit_prompt,
     picture_preference_prompt,
@@ -184,14 +183,14 @@ def test_judge_backend_without_a_transport_refuses_single_question_fetch():
 # --- mechanical: duration/format checks ---------------------------------
 
 def test_duration_mechanical_key_is_parameter_explicit():
-    backend = duration_mechanical_backend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
+    backend = DurationBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
     assert key.encode() == "mech:duration:0.2-5.0:deadbeef"
 
 
 def test_duration_mechanical_passes_within_range():
-    backend = duration_mechanical_backend(
+    backend = DurationBackend(
         lo=0.2, hi=5.0, resolve_path=lambda sha: f"/media/{sha}.mp3",
         duration_of=lambda path: 1.5)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
@@ -200,7 +199,7 @@ def test_duration_mechanical_passes_within_range():
 
 
 def test_duration_mechanical_fails_outside_range():
-    backend = duration_mechanical_backend(
+    backend = DurationBackend(
         lo=0.2, hi=5.0, resolve_path=lambda sha: f"/media/{sha}.mp3",
         duration_of=lambda path: 9.9)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
@@ -209,15 +208,15 @@ def test_duration_mechanical_fails_outside_range():
 
 
 def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
-    backend = format_mechanical_backend(expected_ext="mp3", code_version="v2",
-                                        resolve_ext=lambda sha: "mp3")
+    backend = FormatBackend(expected_ext="mp3", code_version="v2",
+                            resolve_ext=lambda sha: "mp3")
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
     assert key.encode() == "mech:format:v2:deadbeef"
 
 
 def test_format_mechanical_evaluates_extension_match():
-    backend = format_mechanical_backend(expected_ext="mp3", resolve_ext=lambda sha: "wav")
+    backend = FormatBackend(expected_ext="mp3", resolve_ext=lambda sha: "wav")
     raw = backend.fetch(AssessQuestion(subject="s", role="r", artifact_sha="x"))
     assert raw.value is False
 
@@ -228,8 +227,7 @@ def test_ffprobe_backend_failure_is_a_transport_error_and_uncached(db):
     def failing_runner(cmd, **kwargs):
         return sp.CompletedProcess(cmd, 1, "", "no such file")
 
-    backend = duration_mechanical_backend(resolve_path=lambda sha: "/nope.mp3",
-                                          runner=failing_runner)
+    backend = DurationBackend(resolve_path=lambda sha: "/nope.mp3", runner=failing_runner)
     assessor = Assessor(record=db, cache=db, backends={"mechanical": backend})
     with pytest.raises(TransportError):
         assessor.ask("mechanical", AssessQuestion(subject="s", role="recording-for-word",
@@ -705,7 +703,7 @@ def test_ask_many_never_re_prepares_a_cached_verdict(db):
 # --- the rendition backend: one speaker across a pair's members -------------
 
 def _rendition(speakers):
-    return rendition_mechanical_backend(speaker_of=lambda sha: speakers.get(sha))
+    return RenditionBackend(speaker_of=lambda sha: speakers.get(sha))
 
 
 def _rendition_question(members, checks=None):
@@ -743,6 +741,17 @@ def test_a_rendition_whose_member_recording_failed_its_own_checks_fails():
     verdict = backend.fetch(_rendition_question({"near": "a", "far": "b"},
                                                 checks={"near": True, "far": False}))
     assert verdict.value is False and "far" in verdict.evidence
+
+
+def test_a_failing_check_outside_this_pairs_members_does_not_fail_the_rendition():
+    """The verdict is about this pair's members: a member_checks entry for
+    anything else is not one of them.
+    """
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:somchai"})
+    verdict = backend.fetch(_rendition_question(
+        {"near": "a", "far": "b"},
+        checks={"near": True, "far": True, "some-other-member": False}))
+    assert verdict.value is True and "failing" not in verdict.evidence
 
 
 def test_a_rendition_cannot_be_judged_without_its_members_own_verdicts():
@@ -800,11 +809,19 @@ def test_an_assessor_with_no_judge_at_all_is_not_inline(tmp_path):
 
 # --- a verdict row carries the params its question was asked with ----------
 
+class _StubMechanical:
+    """A mechanical backend that passes everything, under one fixed key."""
+
+    def cache_key(self, question):
+        return MechanicalKey(check="c", params="v1", artifact_sha="a")
+
+    def fetch(self, question):
+        return RawVerdict(value=True)
+
+
 def test_a_verdict_row_keeps_the_params_the_question_carried(tmp_path):
     db = SyllabusDb(tmp_path / "s.db")
-    backend = MechanicalBackend(
-        key_fn=lambda q: MechanicalKey(check="c", params="v1", artifact_sha="a"),
-        evaluate=lambda q: RawVerdict(value=True))
+    backend = _StubMechanical()
     assessor = Assessor(record=db, cache=db, backends={"mech": backend})
     assessor.ask("mech", AssessQuestion(subject="s", role="r", kind="picture",
                                         subject_kind="sentence", params={"target": "t1"}))

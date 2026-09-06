@@ -10,7 +10,10 @@ from thai_syllabus.cachekeys import (
     JudgeKey,
     LearnerKey,
     LearnerNoteKey,
+    LlmPromptKey,
     MechanicalKey,
+    PairSearchKey,
+    ProvideKey,
     RenditionAskKey,
     ReverifyKey,
     WaiverKey,
@@ -39,7 +42,6 @@ def test_preference_identity_is_order_independent():
 def test_judge_key_encodes_rubric_identity_role():
     key = JudgeKey(rubric_sha="abc123", identity="deadbeef", role="picture-for-word")
     assert key.encode() == "judge:abc123:deadbeef:picture-for-word"
-    assert key.kind == "JudgeKey"
     assert isinstance(key, CacheKey)
 
 
@@ -67,7 +69,6 @@ def test_reverify_key_falls_back_to_anchor_with_no_artifact():
 def test_flag_key_encodes_family_anchor_card_kind_and_flags():
     key = FlagKey(family="word", anchor="rice", card_kind="reading", flags=1)
     assert key.encode() == "flag:word:rice:reading:1"
-    assert key.kind == "FlagKey"
     assert isinstance(key, CacheKey)
 
 
@@ -92,6 +93,31 @@ def test_keys_are_hashable_and_equal_by_value():
     b = JudgeKey(rubric_sha="x", identity="y", role="z")
     assert a == b and hash(a) == hash(b)
     assert {a, b} == {a}
+
+
+def test_a_provide_key_joins_its_source_kind_and_query():
+    key = ProvideKey(source="tts", kind="th-TH-Standard-A", query=sha("ข้าว"))  # rice
+    assert key.encode() == f"tts:th-TH-Standard-A:{sha('ข้าว')}"
+    assert isinstance(key, CacheKey)
+
+
+def test_a_provide_key_leaves_out_the_components_it_has_none_of():
+    assert ProvideKey(source="openverse", kind="", query="rice bowl").encode() == (
+        "openverse:rice bowl")
+    assert ProvideKey(source="", kind="", query="https://x/y.jpg").encode() == (
+        "https://x/y.jpg")
+
+
+def test_an_llm_prompt_key_names_producer_model_and_prompt_sha():
+    assert LlmPromptKey(producer="sentence-drafter", model="claude-opus-5",
+                        prompt_sha=sha("write a sentence")).encode() == (
+        f"llm:sentence-drafter:claude-opus-5:{sha('write a sentence')}")
+
+
+def test_a_pair_search_key_names_its_confusion_and_dictionary_version():
+    assert PairSearchKey(confusion_id="tone:mid-low",
+                         dictionary_version="2026-09-01").encode() == (
+        "pairs:tone:mid-low:2026-09-01")
 
 
 def test_a_rendition_ask_key_names_its_source_and_pair():

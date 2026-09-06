@@ -256,6 +256,62 @@ def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
     assert rows and rows[-1].question["role"] == "recording-for-sentence"
 
 
+def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(fx):
+    # Cloze's front carries the sentence's scene picture, the way
+    # Production's front carries the word's picture: a flag there rates
+    # that picture.
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    fx.seed_picture(text_sha, "a man eating rice")
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flag_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, "rice/productive", "Cloze")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    from thai_syllabus.derivations import current_best
+    scene = current_best(fx.db, text_sha, "picture", current_rubric={}, prior=(),
+                         provenance_source=lambda s: None)
+    assert scene.artifact_sha is not None
+
+    report = import_collection(collection_path, fx.db)
+    assert report.flags_imported == 1
+
+    rating_rows = [r for r in fx.db.assessments_of(text_sha)
+                  if r.backend == "learner" and r.question.get("kind") == "rating"
+                  and r.question.get("role") == "scene-for-sentence"]
+    assert len(rating_rows) == 1
+    assert rating_rows[0].question["artifact_sha"] == scene.artifact_sha
+    assert rating_rows[0].answer["value"] == "unacceptable-none"
+
+
+def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_noscene_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, "rice/productive", "Cloze")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db)
+
+    rows = fx.db.assessments_of(text_sha)
+    assert any(r.question.get("kind") == "card-flag" and r.question.get("card_kind") == "cloze"
+              for r in rows)
+    assert not any(r.question.get("role") == "scene-for-sentence" for r in rows)
+
+
 def test_flag_import_is_idempotent(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)

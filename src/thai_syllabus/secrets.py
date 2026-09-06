@@ -1,15 +1,10 @@
 """API-key resolution for curated/providers.yaml's secret references
-(spec 3 section 5), ported out of thai_deck_eval/secrets.py -- the one
-carry-over module the spec names explicitly. No cross-package import
-(this package imports nothing out of thai_deck_eval/thai_deck_gen by
-design, see __init__.py); this is a straight copy, kept in its own
-module here rather than shared, so thai_syllabus stays self-contained.
+(spec 3 section 5).
 
-A config file (curated/providers.yaml) holds a *reference* to each
-secret, never the secret itself: either a 1Password secret reference
-(`op://<vault>/<item>/<field>`) or a path to an owner-only (0600) file.
-An inline literal is refused, so a deck directory never becomes a place
-secrets accumulate.
+providers.yaml holds a *reference* to each secret, never the secret
+itself: either a 1Password secret reference (`op://<vault>/<item>/
+<field>`) or a path to an owner-only (0600) file. An inline literal is
+refused.
 """
 
 import subprocess
@@ -66,11 +61,8 @@ def _read_file(spec: str, *, name: str) -> str:
 
 @dataclass
 class SecretStore:
-    """Lazily resolves configured secrets, once each per process.
-
-    Resolution is deferred so commands that touch no paid channel never
-    reach for 1Password, and so a misconfigured reference fails at the
-    start of the run that needs it rather than hours in.
+    """Resolves each configured secret at its first use, once per
+    process; an unconfigured name resolves to None and reaches nothing.
     """
     specs: Mapping[str, str | None] = field(default_factory=dict)
     runner: Callable = subprocess.run
@@ -79,13 +71,6 @@ class SecretStore:
     @classmethod
     def from_config(cls, secrets_config, runner: Callable = subprocess.run) -> "SecretStore":
         return cls(specs=dict(secrets_config), runner=runner)
-
-    @classmethod
-    def fixed(cls, **values: str) -> "SecretStore":
-        """Store of already-resolved values (tests, injected credentials)."""
-        store = cls(specs={k: v for k, v in values.items()})
-        store._resolved.update(values)
-        return store
 
     def configured(self, name: str) -> bool:
         return bool(self.specs.get(name))

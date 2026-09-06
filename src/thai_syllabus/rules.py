@@ -5,8 +5,8 @@ compile() produce.
 Rule shapes and what they return:
   check(syllabus)   -> list[Finding]   -- iterates its own notes internally
   measure(syllabus) -> Metric
-  judged rules carry rubric text; report() reads cached verdicts through
-  the AssessmentReader port instead of calling the judge.
+  judged rules carry rubric text; report() reads their cached verdicts
+  through the AssessmentReader port.
 """
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -50,13 +50,11 @@ class Metric:
 
 @dataclass(frozen=True)
 class Report:
-    """syllabus_state_id identifies the aggregate's CONTENT; rulebook_id
+    """syllabus_state_id identifies the aggregate's content; rulebook_id
     (spec 3 section 6) identifies what judged it -- sha of rulebook.yaml's
-    text plus the registry's rule ids. Staleness is either differing from
-    the live values (Syllabus.state_id() / Syllabus.rulebook_id()), not
-    just the first (closes the spec-1 review note: a report run under an
-    old rulebook must not silently look current just because the deck
-    content hasn't changed).
+    text plus the registry's rule ids. The report is stale when either
+    differs from the live value (Syllabus.state_id() /
+    Syllabus.rulebook_id()).
     """
     syllabus_state_id: str
     rulebook_id: str
@@ -79,14 +77,12 @@ class Gaps:
 
 @dataclass(frozen=True)
 class DroppedCard:
-    """One (subject, template) compile.py left out of the package,
-    counted rather than silently swallowed, for one of two reasons:
-    a gate field left the card with no content (e.g. no productive
-    Target, spelling not tested -- reason starts "gated: ..."), or a
-    current-best artifact its FRONT depends on is missing -- "never an
-    empty front" (spec 4 section 3; reason starts "no current-best "
-    or is "no name word"/"no name recording" for a grapheme, "no
-    rendition" for a minimal pair).
+    """One (subject, template) compile.py left out of the package, and
+    why: a gate field left the card with no content (reason starts
+    "gated: ..."), or a current-best artifact its front depends on is
+    missing (spec 4 section 3's "never an empty front" -- reason starts
+    "no current-best ", or is "no name word"/"no name recording" for a
+    grapheme, "no rendition" for a minimal pair).
     """
     family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
     kind: str      # the template name, e.g. "Listening", "Production"
@@ -116,10 +112,8 @@ class CompileReport:
 class Compile:
     """Spec 4's result value. `compile_id` = syllabus_state_id + a
     timestamp, the value stamped into every note's CompileId field (spec 4
-    section 2); `report` is the compile-time detail spec 4 sections 1/3
-    ask compile() to produce (dropped cards, gate/force status, counts).
-    The actual translation logic lives in compile.py, spec 4's own module
-    (this stays a value type, spec 1's rules.py, per the existing split).
+    section 2); `report` carries the compile-time detail (dropped cards,
+    gate/force status, counts). The translation itself is compile.py's.
     """
     label: str
     syllabus_state_id: str

@@ -20,7 +20,8 @@ from .entities import text_sha
 from .ports import Answer, CacheReader
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
-          "ratings_for_role", "directions", "judge_verdicts", "latest_query",
+          "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
+          "latest_query",
           "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
           "drafts_in", "sentence_drafts", "excluded_candidates", "card_flags"]
@@ -110,13 +111,20 @@ def judge_verdicts(rows: Sequence[Answer], role: str) -> list[Answer]:
 
 
 def ratings_for_role(rows: Sequence[Answer], role: str) -> list[Answer]:
-    """Every learner rating row in `rows` under `role` and recognized by
-    LEARNER_RANK, oldest first (newest last) -- the one need a subject's
-    rating rows for multiple needs are told apart by (a rating row's own
-    kind is always "rating", never the need kind).
+    """Every learner rating row in `rows` under `role` whose value
+    LEARNER_RANK recognizes, oldest first: how one subject's ratings for
+    several needs are told apart.
     """
     return sorted((r for r in learner_ratings(rows) if r.question.get("role") == role
                   and r.answer.get("value") in LEARNER_RANK), key=lambda r: r.ts)
+
+
+def latest_rating(rows: Sequence[Answer], role: str) -> str | None:
+    """The value of the newest learner rating in `rows` under `role`
+    (LEARNER_RANK's vocabulary), or None when `rows` holds none.
+    """
+    rated = ratings_for_role(rows, role)
+    return rated[-1].answer["value"] if rated else None
 
 
 def latest_query(rows: Sequence[Answer]) -> str | None:
@@ -145,11 +153,9 @@ def spend_since(cache: CacheReader, backend: str, since_ts: int) -> float:
 
 
 def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str | None]]:
-    """`subject`'s excluded candidates from the newest run.RunReport row
-    (port="run", backend="runreport"): {"sha": artifact_sha, "reason": why
-    the judge could not prepare it}, in the order the run recorded them.
-    Read back only -- the screen never invokes the judge to learn this
-    (spec 5 section 1 kind 1's "rejected candidates").
+    """`subject`'s excluded candidates from the newest RunReport row:
+    {"sha", "reason"}, in the order the run recorded them (spec 5
+    section 1 kind 1's "rejected candidates").
     """
     newest = cache.latest("run", "runreport", "runreport")
     if newest is None:
@@ -160,10 +166,9 @@ def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str 
 
 
 def card_flags(rows: Sequence[Answer]) -> list[str]:
-    """Every card-level flag on record among `rows` (anki_import.py's own
-    row shape: question["kind"] == "card-flag", carrying `anchor` and
-    `card_kind`), as "ANCHOR::CARD_KIND", first-seen order -- the
-    subject's card-level flags (spec 4 section 4).
+    """Every card-level flag among `rows` (question["kind"] ==
+    "card-flag", carrying `anchor` and `card_kind`) as
+    "ANCHOR::CARD_KIND", first-seen order (spec 4 section 4).
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -181,22 +186,18 @@ def card_flags(rows: Sequence[Answer]) -> list[str]:
 
 
 def run_reports(cache: CacheReader) -> list[Answer]:
-    """Every run.py RunReport row (run._persist_report: port="run",
-    backend="runreport", subject="run", question["kind"] == "runreport"),
-    oldest first -- one row per run() call, the history spec 5 section 3's
-    stats read (every field of spec 3 section 7 lives in the row's own
-    `answer`).
+    """Every run.py RunReport row (port="run", backend="runreport",
+    subject="run"), oldest first: one per run() call, each carrying every
+    RunReport field in its own `answer`.
     """
     return [r for r in cache.assessments_of("run") if r.question.get("kind") == "runreport"]
 
 
 def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
     """The (batch_id, subjects, roles) of the newest judge-batch marker
-    row (subject "batch") whose latest status is "submitted" -- subjects
-    and roles are parallel lists aligned by index, naming every question
-    that batch asked. None while no batch is out. Shared by
-    Assessor.unresolved_batch and derivations.pending, so both read the
-    marker rows exactly the same way.
+    row whose latest status is "submitted"; subjects and roles are
+    parallel lists naming every question that batch asked. None while no
+    batch is out.
     """
     rows = [r for r in cache.assessments_of("batch") if r.question.get("kind") == "batch"]
     latest_by_key: dict[str, Answer] = {}

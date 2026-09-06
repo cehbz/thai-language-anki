@@ -5,32 +5,24 @@ backend, key) first, so a second run appends no new cache row and counts
 the skip in MigrationReport.already_present; media writes are already
 idempotent (content-addressed, insert-or-ignore provenance).
 
-Implements items 1-4 and 6 of spec 2 section 4:
+Items 1-4 and 6 of spec 2 section 4:
   1. word list -> curated/words.yaml + curated/targets.yaml, refusing any
      row with no category
-  2. judged images -> media CAS + provenance (through ingest_picture,
-     which normalizes at ingest per spec 4 section 3) + judge-backend
-     cache rows under LEGACY_PICTURE_RUBRIC (a candidates.yaml verdict
-     never says which rubric version judged, so it is carried as
-     evidence that never ranks under the current rubric); no marker of
-     the old deck's chosen picture is written
+  2. judged images -> media CAS + provenance (ingest_picture normalizes
+     at ingest, spec 4 section 3) + judge cache rows under
+     LEGACY_PICTURE_RUBRIC, which never ranks under the current rubric
   3. Forvo answers -> provide/forvo cache rows, hit and miss alike
   4. proof-gallery notes + waivers.yaml -> learner assessment rows
   6. StudyRecords: nothing is written to the `study` table
-Item 5 (judge_cache.sqlite) is retired: this module never opens
-work/judge_cache.sqlite.
+Item 5 (judge_cache.sqlite) is retired.
 
-Old word ids are gloss slugs (e.g. "slow"); old picture-word note ids are
-pw-NNN and never coincide with a word id. An old picture note joins a
-word-list row by (thai, category) (join_key): a key matching more than
-one row is reported in MigrationReport.ambiguous and left unjoined; a
-note whose key matches no row is reported unmatched. Everything the old
-deck keyed by note id (candidates.yaml verdicts, proof-note learner rows)
-is re-keyed here under the word id the join finds. Spelling-sound notes
-never migrate (no graphemes migrate this cutover) and always drop.
-
-Every row this migration cannot place is reported, never silently
-dropped -- see MigrationReport.unmigratable.
+An old picture note joins a word-list row by (thai, category)
+(join_key); a key matching several rows is reported in
+MigrationReport.ambiguous and left unjoined, one matching none is
+reported unmatched. Everything the old deck keyed by note id is re-keyed
+under the word id the join finds. Spelling-sound notes always drop.
+Every row this migration cannot place is reported in
+MigrationReport.unmigratable.
 """
 from __future__ import annotations
 
@@ -43,7 +35,7 @@ from typing import Any
 import genanki
 import yaml
 
-from .cachekeys import JudgeKey, LearnerNoteKey, WaiverKey
+from .cachekeys import JudgeKey, LearnerNoteKey, ProvideKey, WaiverKey
 from .cachekeys import sha as _key_component_sha
 from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
@@ -165,9 +157,8 @@ def _load_yaml(path: Path) -> Any:
 
 
 def _load_jsonl(path: Path) -> list[tuple[int, dict | None, str | None]]:
-    """Returns (line_no, parsed_dict_or_None, error_or_None) for every
-    line, so callers can report malformed lines instead of silently
-    skipping them.
+    """(line_no, parsed dict or None, error or None) per line, so a
+    caller can report the malformed ones.
     """
     out: list[tuple[int, dict | None, str | None]] = []
     if not path.exists():
@@ -203,13 +194,11 @@ def join_key(thai: str, category: str) -> tuple[str, str]:
 
 def ingest_picture(media_store: MediaStore, db: SyllabusDb, data: bytes, ext: str,
                    provenance: Provenance) -> tuple[str, bool]:
-    """Normalizes `data` through MediaStore.add_image (spec 4 section 3;
-    `ext` is only add_image's fallback hint for an undetectable format)
-    and records `provenance` as a media row if the resulting sha is new.
-    Returns (sha, is_new) -- is_new is db.add_media's own insert-or-ignore
-    result, so a caller can count a re-run's skips. Idempotent: a repeat
-    call with the same bytes writes the object and the provenance row at
-    most once. Raises ValueError if `data` cannot be decoded as an image.
+    """Normalizes `data` through MediaStore.add_image (spec 4 section 3)
+    and records `provenance` when the resulting sha is new. Returns
+    (sha, is_new) from add_media's insert-or-ignore, so a repeat call
+    with the same bytes writes at most once. Raises ValueError when
+    `data` is not a decodable image.
     """
     result = media_store.add_image(data, ext=ext)
     is_new = db.add_media(sha=result.sha, kind="picture", ext=result.ext,
@@ -413,11 +402,10 @@ def _migrate_media_manifest(old_deck: Path, media_store: MediaStore, db: Syllabu
 
 def _migrate_current_deck_images(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
                                  report: MigrationReport) -> None:
-    # Picture words only -- spelling-sound notes never migrate (see
-    # _note_subjects) so their images are left to _migrate_media_manifest.
-    # No cache row is written for the deck's current picture (no marker of
-    # the old deck's choice); a legacy verdict on the same sha still lands
-    # through _migrate_candidates when a candidates.yaml entry names it.
+    # Picture words only: spelling-sound notes never migrate (see
+    # _note_subjects), so _migrate_media_manifest takes their images. The
+    # deck's current picture gets no cache row of its own; a legacy
+    # verdict on the same sha lands through _migrate_candidates.
     notes = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     for note in notes:
         image = note.get("image")
@@ -487,15 +475,15 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
             if cand.get("passed"):
                 _record_once(
                     db, report, "judge_pass", port="assess", backend="judge", key=judge_key,
-                    write=lambda k=judge_key, s=word_id, q=question: db.append_judge_verdict(
-                        key=k, subject=s, question=q,
+                    write=lambda k=judge_key, s=word_id, q=question: db.append(
+                        port="assess", backend="judge", key=k, subject=s, question=q,
                         answer={"value": True, "evidence": "migrated: passed every picture rule"}))
             elif failed_rules:
                 _record_once(
                     db, report, "judge_fail", port="assess", backend="judge", key=judge_key,
                     write=lambda k=judge_key, s=word_id, q=question, fr=failed_rules:
-                        db.append_judge_verdict(
-                            key=k, subject=s, question=q,
+                        db.append(
+                            port="assess", backend="judge", key=k, subject=s, question=q,
                             answer={"value": False,
                                    "evidence": "migrated: failed " + ", ".join(fr)}))
             else:
@@ -516,11 +504,10 @@ def _migrate_forvo(old_deck: Path, db: SyllabusDb, report: MigrationReport) -> N
             report.drop("work/forvo_lookups.jsonl", f"line {line_no}",
                         "missing 'word'")
             continue
-        # spec 3 roster: forvo's key is "forvo:WORD" (never re-asked). No
-        # explicit ts: an idempotence check keyed on (port, backend, key)
-        # alone must not race a deterministic ts into the cache table's
-        # (key_sha, ts) primary key on a second run.
-        key = f"forvo:{word}"
+        # No explicit ts: an idempotence check keyed on (port, backend,
+        # key) alone must not race a deterministic ts into the cache
+        # table's (key_sha, ts) primary key on a second run.
+        key = ProvideKey(source="forvo", kind="", query=word)
         items = entry.get("items", [])
         _record_once(db, report, "forvo", port="provide", backend="forvo", key=key,
                     write=lambda k=key, w=word, it=items: db.append(

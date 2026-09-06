@@ -8,9 +8,8 @@ from datetime import date
 import pytest
 from PIL import Image as PILImage
 
-from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable, MechanicalBackend,
-                                    RawVerdict, fills_mechanical_backend,
-                                    rendition_mechanical_backend)
+from thai_syllabus.assessor import (Assessor, FillsBackend, JudgeBackend, JudgeUnreachable,
+                                    RawVerdict, RenditionBackend)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, attempt, current_best_of,
                                     sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import rendition_identity
@@ -125,21 +124,31 @@ class _Llm:
         return RawAnswer(items=(self.text,))
 
 
-def _mechanical(ok=True, failing_subject=None):
-    def key_fn(q):
+class _Mechanical:
+    """A duration-shaped mechanical backend passing every artifact but
+    `failing_subject`'s.
+    """
+
+    def __init__(self, ok=True, failing_subject=None):
+        self.ok, self.failing_subject = ok, failing_subject
+
+    def cache_key(self, q):
         return f"mech:duration:0.2-5.0:{q.artifact_sha}"
 
-    def evaluate(q):
-        passes = ok and q.subject != failing_subject
+    def fetch(self, q):
+        passes = self.ok and q.subject != self.failing_subject
         return RawVerdict(value=passes, evidence="duration=1.0s" if passes else "too short")
-    return MechanicalBackend(key_fn=key_fn, evaluate=evaluate)
+
+
+def _mechanical(ok=True, failing_subject=None):
+    return _Mechanical(ok=ok, failing_subject=failing_subject)
 
 
 def _rendition_backend(db):
     def speaker_of(sha):
         prov = db.media_provenance(sha)
         return prov.get("speaker_id") if prov else None
-    return rendition_mechanical_backend(speaker_of=speaker_of)
+    return RenditionBackend(speaker_of=speaker_of)
 
 
 def _batch_judge():
@@ -545,7 +554,7 @@ def _sentence_ctx(tmp_path, llm_text, *, judge_value="true", batch=False):
     holder = []
     ctx = _sourcing(tmp_path, syllabus, backends={"llm-sentence": _Llm(llm_text)},
                     assess={"judge": judge,
-                            "fills": fills_mechanical_backend(lambda: holder[0].syllabus)})
+                            "fills": FillsBackend(syllabus_of=lambda: holder[0].syllabus)})
     holder.append(ctx)
     return ctx
 

@@ -1,46 +1,31 @@
-"""The return path (spec 4 section 4): revlog import, flag import, and
-ReviewNote harvest -- one command, one report, all reading a real
-collection.anki2 directly and read-only. `import_collection`'s
-`collection_path` parameter is the caller's to supply -- never hardcoded.
+"""The return path (spec 4 section 4): revlog import, flag import and
+ReviewNote harvest over one caller-supplied collection.anki2, read-only
+-- one command, one report.
 
-Card identity -> (family, anchor, card kind, compile_id) is read from
-compile.py's own tags/CompileId convention: family::, word::/pair::/
-grapheme::/target::/sentence::/member::/speaker:: tags, CompileId as a
-note field. Every tag is atomic; an anchor spanning several tags (a pair
-member's MemberKey, a sentence's target+sha) is built by composing those
-tags' values, never by parsing one tag's value into parts, and never by
-reading a note field back. The card kind (Listening/Production/.../
-Cloze, lowered) is read from the card's own template name via
-`col.models` and the card's `ord` -- a `kind::` tag is a note-level
-property shared by every sibling card, so it cannot disambiguate which
-sibling a given review or flag belongs to; the template name can.
+Card identity -> (family, anchor, card kind, compile_id) comes from
+compile.py's tag/CompileId convention: family::, word::/pair::/grapheme::/
+target::/sentence::/member::/speaker:: tags, CompileId as a note field.
+Every tag is atomic; an anchor spanning several tags (a pair member's
+MemberKey, a sentence's target+sha) composes those tags' values. The card
+kind (Listening/Production/.../Cloze, lowered) is the card's own template
+name, via `col.models` and the card's `ord`, which names one sibling
+where a note-level `kind::` tag names them all.
 
-Revlog import appends a `study` row per revlog entry, keyed (spec 2
+Revlog import appends one `study` row per revlog entry, keyed (spec 2
 section 2) by (family, anchor, card_kind, ts); `anchor` is the family's
 entity id (word id, grapheme symbol, sentence text_sha), or a pair id for
-family "minimal_pair" (the reviewed member's speaker/index go in the
-row's own columns). `ts` is the revlog row's own id, stored verbatim;
+family "minimal_pair" (the member's speaker/index go in the row's own
+columns). `ts` is the revlog row's own id, stored verbatim, and
 `append_study` is insert-or-ignore on that primary key.
 
-Flag import: (family, card kind) resolves to a role. `_TONE_ROLE` names
-the (family, kind) combinations whose front is a tone-correctness
-artifact (word/sentence Listening, both recording roles): these write a
-`{"kind": "reverify", ...}` row under a ReverifyKey, queuing machine
-re-verification instead of overriding current_best. `_RATED_ROLE` names
-combinations whose front is a rateable artifact when the word/sentence
-currently has one (word Production, the picture role): with a current
-artifact, the flag is a learner rating on it, `{"value":
-"unacceptable-none"}`; with none, there is nothing to rate and the flag
-falls back to a card-level flag. Every other combination is a card-level
-flag outright. A rating or card-flag row's idempotence key is a FlagKey
-over (family, anchor, card_kind, flags) -- the card-and-flags fact
-itself, so no marker row is written.
+Flag import: (family, card kind) resolves to a role through the two
+tables below. A rating or card-flag row's idempotence key is a FlagKey
+over (family, anchor, card_kind, flags), the card-and-flags fact itself.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
-learner-note row on the note's own entity subject (from its family/
-anchor tags), keyed by LearnerNoteKey(anchor, sha(text)) -- re-harvesting
-unchanged text is an exact-key hit, edited text is a new key, a cleared
-field appends nothing.
+learner-note row on the note's own entity subject, keyed by
+LearnerNoteKey(anchor, sha(text)) -- re-harvesting unchanged text is a
+key hit, edited text is a new key, a cleared field appends nothing.
 """
 from __future__ import annotations
 
@@ -58,19 +43,20 @@ from .store import SyllabusDb
 __all__ = ["ImportReport", "card_identities", "import_collection"]
 
 # (family, card kind slug) -> the tone-correctness role its flag queues
-# re-verification for (spec 4 section 4: "a flag on a tone-correctness
-# role"). Absent from AUTHORITY_ORDER's learner-first roles.
+# machine re-verification for (spec 4 section 4), as a {"kind":
+# "reverify"} row under a ReverifyKey; current_best is left alone.
 _TONE_ROLE: dict[tuple[str, str], str] = {
     ("word", "listening"): role_for("recording", "word"),
     ("sentence", "listening"): role_for("recording", "sentence"),
 }
 
 # (family, card kind slug) -> (role, provide kind) for a card whose front
-# is a specific artifact the learner IS authoritative over: with a
-# current-best artifact of that kind, the flag rates it under `role`;
-# with none, there is no artifact to rate and the flag is a card-flag.
+# carries an artifact the learner is authoritative over: with a
+# current-best artifact of that kind, the flag rates it under `role`
+# ({"value": "unacceptable-none"}); with none, the flag is a card-flag.
 _RATED_ROLE: dict[tuple[str, str], tuple[str, str]] = {
     ("word", "production"): (role_for("picture", "word"), "picture"),
+    ("sentence", "cloze"): (role_for("picture", "sentence"), "picture"),
 }
 
 

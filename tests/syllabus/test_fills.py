@@ -76,6 +76,8 @@ def test_compound_with_unregistered_remainder_is_new():
     ("กินข้าว", {"กิน"}, False),               # eat-rice: the "rice" remainder is unknown
     ("โรงพยาบาล", {"ยา"}, False),              # hospital contains medicine mid-token; not a boundary match
     ("ตัวอย่าง", {"ตัวอย่าง"}, True),           # example: the compound itself is a registered Word
+    ("", {"กิน"}, False),                      # no token at all: nothing to know
+    ("กิน", set(), False),                     # eat, with no known words at all
 ])
 def test_token_known_table(token, known, expected):
     assert token_is_known(token, known) is expected

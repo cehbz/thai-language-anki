@@ -10,6 +10,7 @@ from thai_syllabus.record import (
     directions,
     judge_verdicts,
     latest_query,
+    latest_rating,
     learner_ratings,
     ratings_for_role,
     rows_for,
@@ -101,6 +102,28 @@ def test_ratings_for_role_scopes_one_subjects_ratings_to_one_need(cache):
     picture_ratings = ratings_for_role(rows, "picture-for-word")
     assert [r.question["artifact_sha"] for r in picture_ratings] == ["s1"]
     assert [r.question["artifact_sha"] for r in ratings_for_role(rows, "recording-for-word")] == ["s2"]
+
+
+def test_latest_rating_is_the_newest_value_under_that_role(cache):
+    cache.append("assess", "learner", "learner:w:s1", "w",
+                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+                {"value": "acceptable"}, 0)
+    cache.append("assess", "learner", "learner:w:s2", "w",
+                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s2"},
+                {"value": "good"}, 0)
+    cache.append("assess", "learner", "learner:w:s3", "w",
+                {"kind": "rating", "role": "recording-for-word", "artifact_sha": "s3"},
+                {"value": "unacceptable-none"}, 0)
+    rows = cache.assessments_of("w")
+    assert latest_rating(rows, "picture-for-word") == "good"
+    assert latest_rating(rows, "recording-for-word") == "unacceptable-none"
+
+
+def test_latest_rating_is_none_when_the_role_has_no_rating(cache):
+    cache.append("assess", "learner", "learner:w:s1", "w",
+                {"kind": "rating", "role": "picture-for-word", "artifact_sha": "s1"},
+                {"value": "good"}, 0)
+    assert latest_rating(cache.assessments_of("w"), "recording-for-word") is None
 
 
 def test_judge_verdicts_selects_by_role(cache):
