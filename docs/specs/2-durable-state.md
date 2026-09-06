@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 5, proposed 2026-09-06 against principles r2 and architecture
+Revision 6, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -22,6 +22,8 @@ Revision log:
 - r5 2026-09-06: study rows carry the entity id as anchor and a pair
   card's member_index and speaker_id as columns. Evidence: Tasks A10,
   C2, C4.
+- r6 2026-09-06: the cache table's port gains `attempt` for the attempt
+  outcome rows spec 3 section 6 defines. Evidence: spec 3 r7.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -75,8 +77,11 @@ speakers(id PK, kind, sex, age_band, region)
   -- correction is a learner row in cache.
 cache(port, backend, key_sha, subject, question, answer, cost, ts)
       -- PK (key_sha, ts); key_sha indexed. 
-  -- store 3. port ∈ provide|assess; backend names the concrete one
-  -- (openverse, forvo, llm, judge, learner, ...). key_sha = the backend's
+  -- store 3. port ∈ provide|assess|attempt; backend names the concrete
+  -- one (openverse, forvo, llm, judge, learner, ...). An attempt row's
+  -- question names source, kind and subject_kind; its answer carries
+  -- the outcome (candidates | nothing | transient-failure) and the
+  -- candidate shas; key = AttemptOutcomeKey(subject, kind, source). key_sha = the backend's
   -- cache key (spec 3 defines each key function; the learner's contains
   -- no rubric). question/answer are JSON. NEVER deleted or updated:
   -- a re-ask appends a new row (newest-wins on read for the learner
