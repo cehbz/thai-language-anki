@@ -19,7 +19,7 @@ import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
-from thai_syllabus.assessor import JudgeUnreachable
+from thai_syllabus.assessor import Excluded, JudgeUnreachable
 from thai_syllabus.cachekeys import BatchMarkerKey
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
@@ -470,12 +470,35 @@ def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):
 
 def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
     _patch(monkeypatch, {
-        ("a", "openverse"): AttemptResult(True, excluded={"k1": "gone"}),
-        ("b", "openverse"): AttemptResult(True, excluded={"k2": "gone", "k3": "gone"})},
-        sentence_result=AttemptResult(False, excluded={"k4": "gone"}))
+        ("a", "openverse"): AttemptResult(True, excluded={
+            "k1": Excluded(subject="a", artifact_sha="s1", reason="gone")}),
+        ("b", "openverse"): AttemptResult(True, excluded={
+            "k2": Excluded(subject="b", artifact_sha="s2", reason="gone"),
+            "k3": Excluded(subject="b", artifact_sha="s3", reason="gone")})},
+        sentence_result=AttemptResult(False, excluded={
+            "k4": Excluded(subject="sentence-drafts", artifact_sha=None, reason="gone")}))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
     assert report.excluded == 4
     assert db.latest("run", "runreport", "runreport").answer["excluded"] == 4
+    assert len(report.excluded_items) == 4
+    assert {item["subject"] for item in report.excluded_items} == {"a", "b", "sentence-drafts"}
+
+
+def test_run_keeps_two_no_artifact_exclusions_on_one_subject_distinct(db, monkeypatch):
+    """Two questions under the same subject that both name no artifact_sha
+    (e.g. one `fills` question per Target under one sentence draft) must
+    not collide under the same excluded key: each keeps its own
+    excluded_items entry (assessor.ManyResult.excluded is keyed by the
+    question's own typed CacheKey, not by subject/artifact_sha).
+    """
+    _patch(monkeypatch, {
+        ("a", "openverse"): AttemptResult(True, excluded={
+            "key-1": Excluded(subject="a", artifact_sha=None, reason="no target t1"),
+            "key-2": Excluded(subject="a", artifact_sha=None, reason="no target t2")})})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert report.excluded == 2
+    assert [(item["subject"], item["reason"]) for item in report.excluded_items] == [
+        ("a", "no target t1"), ("a", "no target t2")]
 
 
 def test_a_run_with_nothing_wrong_reports_zero_excluded_and_reachable(db, monkeypatch):
@@ -859,9 +882,9 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     answer = db.latest("run", "runreport", "runreport").answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
-                           "sentences_adopted", "drafted", "excluded", "unreachable",
-                           "batch_id", "source_failures", "spend", "unserved", "budgeted",
-                           "deferred", "preferences"}
+                           "sentences_adopted", "drafted", "excluded", "excluded_items",
+                           "unreachable", "batch_id", "source_failures", "spend", "unserved",
+                           "budgeted", "deferred", "preferences"}
 
 
 # --- Spend ------------------------------------------------------------

@@ -335,7 +335,7 @@ def test_a_candidate_the_judge_cannot_prepare_is_excluded_and_the_rest_are_judge
                   question={"provides": "picture", "kind": "picture", "params": {}},
                   answer={"items": [{"sha": "ghost"}]})
     res = attempt(ctx, Need("rice", "picture"), "openverse")
-    assert list(res.excluded.values()) == ["artifact not found: ghost"]
+    assert [x.reason for x in res.excluded.values()] == ["artifact not found: ghost"]
     assert current_best_of(ctx, "rice", "picture").artifact_sha != "ghost"
 
 

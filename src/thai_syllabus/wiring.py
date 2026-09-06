@@ -352,6 +352,9 @@ class Derivations:
     provenance_source: Callable[[str], str | None]
     sources_for: Callable[[str], Sequence[str]]
     attempt_cap: int
+    # rulebook.yaml's thresholds overlay (curated.RulebookConfig.thresholds),
+    # e.g. "reask/lapses" -- spec 5 section 1 kind 4's own lapse threshold.
+    thresholds: Mapping[str, float] = field(default_factory=dict)
 
 
 def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
@@ -374,7 +377,8 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        current_rubric=rubrics,
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
-                       sources_for=sources_for, attempt_cap=cfg.attempt_cap)
+                       sources_for=sources_for, attempt_cap=cfg.attempt_cap,
+                       thresholds=dict(bundle.rulebook.thresholds))
 
 
 # --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------

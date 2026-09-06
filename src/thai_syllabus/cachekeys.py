@@ -138,6 +138,22 @@ class ReverifyKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class DirectionKey(CacheKey):
+    """direction:SUBJECT:ROLE:TEXT_SHA -- one typed learner direction (spec
+    5 section 1 kind 2: "a typed direction is recorded as a direction, not
+    a rating"). TEXT_SHA is sha() of the direction text, so two different
+    directions on the same (subject, role) are two rows, not one
+    overwritten key.
+    """
+    subject: str
+    role: str
+    text_sha: str
+
+    def encode(self) -> str:
+        return f"direction:{self.subject}:{self.role}:{self.text_sha}"
+
+
+@dataclass(frozen=True)
 class WaiverKey(CacheKey):
     """waiver:RULE_ID:NOTE_ID:ARTIFACT_SHA -- a learner waiver over one
     Finding's identity. artifact_sha is "-" in the string when absent.

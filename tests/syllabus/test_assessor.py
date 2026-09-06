@@ -14,6 +14,7 @@ import thai_syllabus
 from thai_syllabus.assessor import (
     AssessQuestion,
     Assessor,
+    Excluded,
     JudgeBackend,
     JudgeUnreachable,
     LearnerAskNotSupported,
@@ -484,7 +485,7 @@ def test_ask_many_and_submit_build_each_question_exactly_once(db, fake_batch):
 
 def test_unpreparable_question_is_excluded_not_asked(assessor_inline):
     res = assessor_inline.ask_many("judge", [fit_question("rice", "missing" * 8)])
-    assert list(res.excluded.values()) == ["artifact not found: " + "missing" * 8]
+    assert [x.reason for x in res.excluded.values()] == ["artifact not found: " + "missing" * 8]
 
 
 def test_all_questions_failing_on_the_wire_raises(assessor_inline_with_dead_transport):
@@ -663,7 +664,8 @@ def test_ask_many_inline_excludes_a_question_whose_sha_cannot_be_resolved(db, tm
     res = a.ask_many("judge", [q_ok, q_bad])
 
     assert set(res.resolved) == {jb.cache_key(q_ok)}
-    assert res.excluded == {jb.cache_key(q_bad).encode(): "artifact not found: gone"}
+    assert res.excluded == {jb.cache_key(q_bad).encode(): Excluded(
+        subject="w2", artifact_sha="gone", reason="artifact not found: gone")}
     assert len(calls) == 1        # the unpreparable question never reached the wire
 
 

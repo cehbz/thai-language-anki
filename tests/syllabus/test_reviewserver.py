@@ -178,6 +178,35 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(deriva
     assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB"}]
 
 
+def test_build_queue_rate_item_lists_excluded_candidates_and_card_flags(derivations, db, w1):
+    """spec 5 section 1 kind 1 / section 3: the rate question carries the
+    candidates the judge could never even prepare (this run's own
+    RunReport row) and the subject's card-level flags (anki_import.py's
+    own card-flag row shape) -- never a live judge call, both read back.
+    """
+    _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
+    _judge(db, w1.id, "picture", "sA", True)
+    missing_sha = "c" * 64
+    db.append(port="run", backend="runreport", key="runreport", subject="run",
+             question={"kind": "runreport"},
+             answer={"excluded_items": [
+                 {"subject": w1.id, "artifact_sha": missing_sha,
+                  "reason": "artifact not found: " + missing_sha},
+                 {"subject": "some-other-word", "artifact_sha": "x", "reason": "irrelevant"},
+             ]})
+    db.append(port="assess", backend="learner", key=f"flag:word:{w1.id}:reading:1",
+             subject=w1.id,
+             question={"kind": "card-flag", "role": "card-flag", "family": "word",
+                      "anchor": w1.id, "card_kind": "reading", "flags": 1},
+             answer={"flagged": True, "flag": 1})
+
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                and i["kind"] == "picture")
+    assert rated["excluded"] == [{"sha": missing_sha, "reason": "artifact not found: " + missing_sha}]
+    assert rated["flags"] == [f"{w1.id}::reading"]
+
+
 def test_build_queue_direction_kind_for_exhausted_subject(derivations, db, w1):
     # No candidate ever passes and every source in the roster (spec 3's
     # openverse/wikimedia/pexels) has been asked -- next_source has
@@ -190,7 +219,39 @@ def test_build_queue_direction_kind_for_exhausted_subject(derivations, db, w1):
                 and i["kind"] == "picture"]
     assert len(direction) == 1
     assert direction[0]["attempts"] == 3
-    assert "openverse" in direction[0]["tried"]["sources"]
+    assert "openverse" in {t["source"] for t in direction[0]["tried"]}
+
+
+def test_build_queue_direction_tried_lists_source_asks_only_never_fetch_rows(derivations, db, w1):
+    """spec 5 section 1 kind 2: "what was tried" is the phrases and Sources
+    a need's Source asks carried -- never a bytes-fetch row (imgfetch) or
+    the url it carried.
+    """
+    _provide(db, w1.id, "picture", backend="openverse", query="a bowl of rice",
+            items=[{"sha": "sA"}])
+    _provide(db, w1.id, "picture", backend="wikimedia", items=[])
+    _provide(db, w1.id, "picture", backend="pexels", items=[])
+    items = rs.build_queue(derivations, budget=50)
+    direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
+    assert all(t["source"] in ("openverse", "wikimedia", "pexels") for t in direction["tried"])
+    assert {"source": "openverse", "query": "a bowl of rice"} in direction["tried"]
+    assert not any("url" in t for t in direction["tried"])
+
+
+def test_build_queue_direction_candidates_carry_judge_verdicts(derivations, db, w1):
+    """spec 5 section 1 kind 2: the best candidates a Source produced, each
+    with the judge's own verdict (derivations.judge_verdict) -- pass and
+    its evidence (the judge's reason), or None when the judge never spoke.
+    """
+    _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": "sA"}, {"sha": "sB"}])
+    _judge(db, w1.id, "picture", "sA", False, evidence="no rice visible")
+    _provide(db, w1.id, "picture", backend="wikimedia", items=[])
+    _provide(db, w1.id, "picture", backend="pexels", items=[])
+    items = rs.build_queue(derivations, budget=50)
+    direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
+    by_sha = {c["sha"]: c for c in direction["candidates"]}
+    assert by_sha["sA"]["verdict"] == {"passed": False, "evidence": "no rice visible"}
+    assert by_sha["sB"]["verdict"] is None
 
 
 def test_build_queue_challenger_kind_when_rubric_change_outranks_learner_pick(derivations, db,
@@ -227,6 +288,21 @@ def test_rate_question_drops_the_verdict_line_once_the_rubric_moved_on(derivatio
     assert rated["current"] is None
 
 
+def test_verdict_line_never_shows_a_preference_rank_as_pass(db, w1):
+    """spec 5 section 1: the verdict line is filtered by role -- a
+    picture-preference row is never read as the fit verdict a screen
+    prints "judge: pass" from (derivations.judge_verdict reads the fit
+    role only).
+    """
+    from thai_syllabus.derivations import judge_verdict
+    db.append(port="assess", backend="judge", key="judge:pref:sA,sB", subject=w1.id,
+             question={"role": "picture-preference", "artifact_sha": None, "rubric": "r",
+                      "kind": "picture", "params": {"candidates": ["sA", "sB"]}},
+             answer={"value": ["sA", "sB"]})
+    assert judge_verdict(db, w1.id, "picture", "sA", current_rubric={}) is None
+    assert rs._verdict_line(judge_verdict(db, w1.id, "picture", "sA", current_rubric={})) is None
+
+
 def _pair_study_row(pair, **overrides) -> StudyRecord:
     fields = {"family": "minimal_pair", "anchor": pair.id, "card_kind": "recognition",
              "compile_id": "c1", "ts": 1, "grade": 1, "time_ms": 900}
@@ -244,6 +320,31 @@ def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(
     assert reasks[0]["original_answer"] == "acceptable"
     assert reasks[0]["evidence"][0]["anchor"] == pair.id
     assert reasks[0]["evidence"][0]["card_kind"] == "recognition"
+
+
+def _word_study_row(word_id: str, **overrides) -> StudyRecord:
+    fields = {"family": "word", "anchor": word_id, "card_kind": "production",
+             "compile_id": "c1", "ts": 1, "grade": 1, "time_ms": 900}
+    fields.update(overrides)
+    return StudyRecord(**fields)
+
+
+def test_build_queue_reask_kind_on_a_word_card_lapse(derivations, db, w1):
+    """derivations.reasks over a word: a "good" picture rating whose
+    Production card has lapsed is a contradiction worth re-asking, same
+    as a pair's rendition (spec 5 section 1 kind 4).
+    """
+    db.append_study(_word_study_row(w1.id))
+    _learner(db, w1.id, "picture", "sA", "good")
+    items = rs.build_queue(derivations, study=db, budget=50)
+    reasks = [i for i in items if i["type"] == "reask" and i["subject"] == w1.id]
+    assert len(reasks) == 1
+    assert reasks[0]["kind"] == "picture"
+    assert reasks[0]["subject_kind"] == "word"
+    assert reasks[0]["original_answer"] == "good"
+    assert reasks[0]["current"]["sha"] == "sA"
+    assert reasks[0]["evidence"][0]["anchor"] == w1.id
+    assert reasks[0]["evidence"][0]["card_kind"] == "production"
 
 
 def test_build_queue_yields_no_reask_without_studyreader(derivations, db, pair, confusion):
@@ -269,9 +370,22 @@ def test_append_answer_action_maps_to_rating_and_learner_key(db, w1):
     assert row.question["kind"] == "rating"  # record.learner_ratings reads this back
 
 
-def test_append_answer_action_1_has_no_artifact_sha(db, w1):
+def test_append_answer_unacceptable_none_records_the_rejected_artifact(db, w1):
+    # spec 5 section 1 kind 1: a rejection names the artifact it rejects --
+    # the screen's own question passes the current-best artifact_sha it
+    # displayed.
     rs.append_answer(db, {"subject": w1.id, "kind": "picture", "action": 1,
-                          "artifact_sha": "irrelevant"})
+                          "artifact_sha": "sA"})
+    row = db.assessments_of(w1.id)[0]
+    assert row.question["artifact_sha"] == "sA"
+    assert row.answer["value"] == "unacceptable-none"
+    assert row.key == "learner:sA:picture-for-word"
+
+
+def test_append_answer_unacceptable_none_with_no_artifact_named_records_none(db, w1):
+    # A rejection over a subject with no current artifact at all (nothing
+    # to name) still appends -- LearnerKey's own "-" placeholder.
+    rs.append_answer(db, {"subject": w1.id, "kind": "picture", "action": 1})
     row = db.assessments_of(w1.id)[0]
     assert row.question["artifact_sha"] is None
     assert row.key == "learner:-:picture-for-word"
@@ -282,6 +396,34 @@ def test_append_answer_carries_optional_note(db, w1):
                           "artifact_sha": "sA", "note": "too blurry"})
     row = db.assessments_of(w1.id)[0]
     assert row.answer["note"] == "too blurry"
+
+
+def test_typed_direction_is_a_direction_row_not_a_rating(db, w1):
+    """spec 5 section 1 kind 2: "a typed direction is recorded as a
+    direction, not a rating" -- record.directions reads it back, and it
+    makes the subject directed (derivations.directed), never a
+    LEARNER_RANK-carrying rating row.
+    """
+    from thai_syllabus.derivations import directed
+    from thai_syllabus.record import directions, learner_ratings
+
+    result = rs.append_answer(db, {"subject": w1.id, "kind": "picture",
+                                   "direction": "a woman pointing at herself"})
+    assert result == {"ok": True, "ts": result["ts"], "kind": "direction"}
+    rows = db.assessments_of(w1.id)
+    assert directions(rows)[-1].answer["direction"] == "a woman pointing at herself"
+    assert not learner_ratings(rows)          # a direction is never a rating row
+    assert directed(db, w1.id)
+
+
+def test_typed_direction_key_is_typed_not_a_rating_key(db, w1):
+    rs.append_answer(db, {"subject": w1.id, "kind": "picture",
+                          "direction": "a woman pointing at herself"})
+    row = db.assessments_of(w1.id)[0]
+    from thai_syllabus.cachekeys import DirectionKey, sha
+    expected = DirectionKey(subject=w1.id, role="picture-for-word",
+                            text_sha=sha("a woman pointing at herself"))
+    assert row.key == expected.encode()
 
 
 def test_append_answer_challenger_switch_rates_the_challenger(db, w1):
@@ -657,6 +799,34 @@ def test_http_answer_post_appends_row(live_server, w1):
     # test/main thread (sqlite3's check_same_thread rule).
     verify_db = SyllabusDb(db_path)
     assert len(verify_db.assessments_of(w1.id)) == 1
+
+
+def test_http_answer_accepts_a_rejection_naming_current_best(live_server, w1):
+    port, db_path = live_server
+    _post(port, "/api/answer", {"subject": w1.id, "kind": "picture", "action": 4,
+                                "artifact_sha": "sA"})
+    status, body = _post(port, "/api/answer", {"subject": w1.id, "kind": "picture",
+                                                "action": 1, "artifact_sha": "sA"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    verify_db = SyllabusDb(db_path)
+    assert len(verify_db.assessments_of(w1.id)) == 2
+
+
+def test_http_answer_refuses_a_rejection_naming_a_stale_artifact(live_server, w1):
+    """spec 5 section 1 kind 1: the server verifies a rejection's own
+    artifact_sha is still current-best and refuses (never appends) when
+    the screen's question has moved on since it was displayed.
+    """
+    port, db_path = live_server
+    _post(port, "/api/answer", {"subject": w1.id, "kind": "picture", "action": 4,
+                                "artifact_sha": "sA"})
+    status, body = _post(port, "/api/answer", {"subject": w1.id, "kind": "picture",
+                                                "action": 1, "artifact_sha": "sB"})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    verify_db = SyllabusDb(db_path)
+    assert len(verify_db.assessments_of(w1.id)) == 1   # the refused rejection never appended
 
 
 def test_http_media_serves_bytes_by_sha(live_server, media_store):

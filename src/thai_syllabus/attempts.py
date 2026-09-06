@@ -31,7 +31,7 @@ from datetime import date
 from typing import Any, Literal
 
 from . import record
-from .assessor import AssessQuestion, Assessor, PreparedQuestion
+from .assessor import AssessQuestion, Assessor, Excluded, PreparedQuestion
 from .authority import role_for
 from .cachekeys import RenditionAskKey, rendition_identity
 from .derivations import (
@@ -133,8 +133,10 @@ class Sourcing:
 class AttemptResult:
     """`attempted`: a Source ask was made, hit or miss. `questions`: the
     judge questions this attempt collected for the run's batch, empty
-    under an inline transport. `excluded`: encoded key -> why a question
-    could not be prepared. `spend`: per backend. `drafted`: the sentence
+    under an inline transport. `excluded`: assessor.ManyResult's own dict
+    (the excluded question's typed CacheKey.encode() -> Excluded, unique
+    per question so two no-artifact questions under one subject never
+    collide). `spend`: per backend. `drafted`: the sentence
     drafts this attempt produced that fill an open Target (0 for every
     attempt that is not the sentence attempt). `targets_handed`: how many
     open Targets the sentence attempt actually handed to the drafter --
@@ -143,7 +145,7 @@ class AttemptResult:
     """
     attempted: bool
     questions: list[PreparedQuestion] = field(default_factory=list)
-    excluded: dict[str, str] = field(default_factory=dict)
+    excluded: dict[str, Excluded] = field(default_factory=dict)
     spend: dict[str, Spend] = field(default_factory=dict)
     drafted: int = 0
     targets_handed: int = 0

@@ -30,9 +30,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
-from .cachekeys import DrillKey, LearnerKey, WaiverKey
+from .cachekeys import DirectionKey, DrillKey, LearnerKey, WaiverKey, sha
 from .compile import CARD_CSS, build_deck, field_values, render_card, tag_value
 from .derivations import (
+    DEFAULT_REASK_LAPSES,
     LEARNER_RANK,
     Challenger,
     CurrentBest,
@@ -45,12 +46,14 @@ from .derivations import (
     exhausted,
     judge_verdict,
     queue,
+    reasks,
 )
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
 from .record import (
     candidate_shas,
-    judge_verdicts,
+    card_flags,
+    excluded_candidates,
     latest_query,
     ratings_for_role,
     rows_for,
@@ -134,35 +137,58 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
         "gloss": _gloss_for(d.syllabus, subject), "query": latest_query(rows),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
+        # spec 5 section 1 kind 1 / section 3: candidates the judge could
+        # never even prepare (record.excluded_candidates, this run's own
+        # RunReport row) and the subject's card-level flags (spec 4
+        # section 4, record.card_flags) -- shown beside the rejected
+        # thumbnails, never fetched or recomputed here.
+        "excluded": excluded_candidates(d.db, subject),
+        "flags": card_flags(d.db.assessments_of(subject)),
     }
 
 
-def _tried_summary(rows: Sequence[Answer], role: str) -> dict[str, Any]:
-    """What spec 5 section 1 kind 2 shows an exhausted subject: the phrases
-    its Source asks carried, the Sources asked, the judge's reasons, and the
-    candidates those asks produced.
+def _tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
+    """What spec 5 section 1 kind 2 shows an exhausted subject as "what was
+    tried": every Source ask under the need (record.source_asks, never a
+    bytes-fetch row and never the url it carried), each as the backend
+    that made it and the phrase or text it carried.
     """
-    asks = source_asks(rows)
-    phrases: list[str] = []
-    for ask in asks:
+    tried: list[dict[str, Any]] = []
+    for ask in source_asks(rows):
         params = ask.question.get("params", {}) or {}
-        phrase = params.get("query") or params.get("text")
-        if phrase:
-            phrases.append(phrase)
-    judge_reasons = [evidence for r in judge_verdicts(rows, role)
-                    if (evidence := r.answer.get("evidence"))]
-    return {"phrases": phrases, "sources": sorted({r.backend for r in asks}),
-           "judge_reasons": judge_reasons, "best_candidates": candidate_shas(rows)[:5]}
+        tried.append({"source": ask.backend, "query": params.get("query") or params.get("text")})
+    return tried
+
+
+def _tried_candidates(d: "Derivations", subject: str, kind: str,
+                      rows: Sequence[Answer]) -> list[dict[str, Any]]:
+    """The best candidates those asks produced (record.candidate_shas, up
+    to 5), each with the judge's own verdict on it under the need's fit
+    role (derivations.judge_verdict) -- pass/fail and the evidence field
+    (the judge's reason), never a picture-preference rank (judge_verdict
+    reads the fit role only, so a preference rank is never printed as a
+    pass here).
+    """
+    candidates: list[dict[str, Any]] = []
+    for artifact_sha in candidate_shas(rows)[:5]:
+        verdict = judge_verdict(d.db, subject, kind, artifact_sha,
+                                current_rubric=d.current_rubric)
+        candidates.append({
+            "sha": artifact_sha,
+            "verdict": {"passed": verdict.passed, "evidence": verdict.evidence}
+                       if verdict is not None else None,
+        })
+    return candidates
 
 
 def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                         attempts: int) -> dict[str, Any]:
-    role = role_for(kind, subject_kind)
     rows = rows_for(d.db, subject, kind)
     return {
         "type": "direction", "subject": subject, "kind": kind, "subject_kind": subject_kind,
-        "role": role, "gloss": _gloss_for(d.syllabus, subject),
-        "tried": _tried_summary(rows, role), "attempts": attempts,
+        "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject),
+        "tried": _tried_summary(rows), "candidates": _tried_candidates(d, subject, kind, rows),
+        "attempts": attempts,
     }
 
 
@@ -178,30 +204,26 @@ def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, 
 
 
 def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any]]:
-    """Spec 5 section 1 kind 4 over confusions: a confusion whose
-    StudyRecords hold lapses (grade <= 1) and whose rendition the learner
-    has already rated is a contradiction worth re-asking. A kind with no
-    matching derivation input yields no questions.
+    """Spec 5 section 1 kind 4: every derivations.reasks contradiction (a
+    learner rating of "acceptable" or better whose card has since lapsed
+    enough to contradict it -- F9) rendered as a question. The lapse
+    threshold is rulebook.yaml's own "reask/lapses" (curated.
+    RulebookConfig.thresholds, carried on d.thresholds) when the deck sets
+    one, else derivations.DEFAULT_REASK_LAPSES.
     """
+    threshold = int(d.thresholds.get("reask/lapses", DEFAULT_REASK_LAPSES))
     out: list[dict[str, Any]] = []
-    grouped = d.syllabus.study_by_confusion(study)
-    for confusion in d.syllabus.confusions:
-        lapses = [r for r in grouped.get(confusion.id, []) if r.grade <= 1]
-        if not lapses:
-            continue
-        subject, kind, subject_kind = confusion.id, "rendition", "pair"
-        role = role_for(kind, subject_kind)
-        rated = ratings_for_role(d.db.assessments_of(subject), role)
-        if not rated:
-            continue  # no prior answer to contradict -- nothing to re-ask
-        latest = max(rated, key=lambda r: r.ts)
-        best = _best(d, subject, kind)
+    for found in reasks(d.db, study, d.syllabus, lapse_threshold=threshold):
+        best = _best(d, found.subject, found.kind)
         out.append({
-            "type": "reask", "subject": subject, "kind": kind, "subject_kind": subject_kind,
-            "role": role, "gloss": None, "original_answer": latest.answer.get("value"),
+            "type": "reask", "subject": found.subject, "kind": found.kind,
+            "subject_kind": found.subject_kind,
+            "role": role_for(found.kind, found.subject_kind),
+            "gloss": _gloss_for(d.syllabus, found.subject),
+            "original_answer": found.rating,
             "current": _artifact(best.artifact_sha),
             "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
-                         "ts": r.ts} for r in lapses[-5:]],
+                         "ts": r.ts} for r in found.evidence[-5:]],
         })
     return out
 
@@ -363,16 +385,43 @@ def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
                          answer={"correct": bool(correct)})
 
 
+def _rating_of(payload: Mapping[str, Any]) -> str | None:
+    """The rating value append_answer resolves this payload's answer to,
+    without appending anything -- shared with `_refuses_stale_rejection`
+    so the staleness check sees exactly the rating append_answer is about
+    to write. A challenger "keep" carries no rating (nothing is appended);
+    "switch" defaults to "acceptable"; every other payload takes an
+    explicit `rating`, else its `action` (1-4) through ACTION_RATINGS.
+    None when neither is present (a direction payload, a waiver payload,
+    or an action append_answer would itself reject as unknown).
+    """
+    action = payload.get("action")
+    if action == "keep":
+        return None
+    if action == "switch":
+        return payload.get("rating", "acceptable")
+    if payload.get("rating"):
+        return payload["rating"]
+    return ACTION_RATINGS.get(int(action)) if action is not None else None
+
+
 def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The one write path for question-session answers (spec 5 section 1):
-    every answer appends one learner cache row keyed by cachekeys.LearnerKey,
-    or cachekeys.WaiverKey for a waiver. `payload` shapes:
+    every answer appends one learner cache row keyed by cachekeys.LearnerKey
+    (cachekeys.DirectionKey for a typed direction, cachekeys.WaiverKey for
+    a waiver). `payload` shapes:
       rate/reask:  {subject, kind, action: 1-4, artifact_sha?, note?}
       challenger:  {subject, kind, action: "keep"|"switch", artifact_sha?}
+      direction:   {subject, kind, direction: TEXT, subject_kind?}
       waiver:      {finding: {rule, note_id, artifact_sha?}, waived?, reason?}
-    The role a rating is filed under comes back from the question that
-    asked it (`role`), or from the need's own kinds (`kind` plus
-    `subject_kind`, which is "word" for a payload naming neither).
+    The role a rating or direction is filed under comes back from the
+    question that asked it (`role`), or from the need's own kinds (`kind`
+    plus `subject_kind`, which is "word" for a payload naming neither).
+    A rejection (action 1 / rating "unacceptable-none") names the artifact
+    it rejects: `payload["artifact_sha"]`, the current-best artifact the
+    question displayed -- whether that artifact is STILL current-best is
+    the caller's own check (build_app's /api/answer handler), not this
+    append.
     Never mutates or deletes a row (append-only, spec 2): calling this
     twice with an identical payload appends two rows, but every derivation
     over the cache folds newest-wins, so the DERIVED state (current_best,
@@ -393,17 +442,25 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
 
     subject = payload["subject"]
     kind = payload["kind"]
-    role = payload.get("role") or role_for(kind, payload.get("subject_kind", "word"))
+    subject_kind = payload.get("subject_kind", "word")
+    role = payload.get("role") or role_for(kind, subject_kind)
+
+    if "direction" in payload:
+        text = payload["direction"]
+        key = DirectionKey(subject=subject, role=role, text_sha=sha(text))
+        ts = record.append(port="assess", backend="learner", key=key, subject=subject,
+                           question={"kind": "direction", "role": role,
+                                    "subject_kind": subject_kind},
+                           answer={"direction": text})
+        return {"ok": True, "ts": ts, "kind": "direction"}
+
     action = payload.get("action")
 
-    if action in ("keep", "switch"):
-        if action == "keep":
-            return {"ok": True, "kind": "challenger", "action": "keep"}
-        artifact_sha = payload.get("artifact_sha") or payload.get("challenger_sha")
-        rating = payload.get("rating", "acceptable")
-    else:
-        rating = payload.get("rating") or ACTION_RATINGS.get(int(action))
-        artifact_sha = None if rating == "unacceptable-none" else payload.get("artifact_sha")
+    if action == "keep":
+        return {"ok": True, "kind": "challenger", "action": "keep"}
+    artifact_sha = (payload.get("artifact_sha") or payload.get("challenger_sha")
+                    if action == "switch" else payload.get("artifact_sha"))
+    rating = _rating_of(payload)
 
     if rating not in LEARNER_RANK:
         raise ValueError(f"unknown rating {rating!r}")
@@ -417,6 +474,28 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
                                 "kind": "rating"},
                        answer=answer)
     return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": artifact_sha}
+
+
+def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -> str | None:
+    """A rejection (action 1, or an explicit rating of "unacceptable-none")
+    naming an artifact_sha that is no longer `subject`'s current-best is
+    refused: the refusal message, or None when the answer is fine to
+    append (no artifact_sha named -- nothing to check -- or it still
+    matches). The screen's rate question shows the artifact it rejects
+    (spec 5 section 1 kind 1); a stale rejection means the screen's own
+    question has moved on since it was displayed.
+    """
+    if _rating_of(payload) != "unacceptable-none":
+        return None
+    artifact_sha = payload.get("artifact_sha")
+    if artifact_sha is None:
+        return None
+    subject, kind = payload.get("subject"), payload.get("kind")
+    current_sha = ctx.current_best(subject, kind).artifact_sha
+    if artifact_sha != current_sha:
+        return (f"artifact {artifact_sha} is no longer current-best for {subject} ({kind}); "
+               f"current-best is {current_sha!r}")
+    return None
 
 
 def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -673,6 +752,9 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 return
             try:
                 if parsed.path == "/api/answer":
+                    refusal = _refuses_stale_rejection(ctx, payload)
+                    if refusal is not None:
+                        raise ValueError(refusal)
                     result = append_answer(ctx.record, payload)
                     ctx.session.answered += 1
                     self._send_json(result)
@@ -986,12 +1068,25 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   function renderDirection(q, box) {
     box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- exhausted, attempts=" + q.attempts));
     var tried = el("div", { "class": "tried" });
-    tried.appendChild(el("h4", {}, "phrases tried"));
-    tried.appendChild(el("div", {}, (q.tried.phrases || []).join(", ") || "none"));
-    tried.appendChild(el("h4", {}, "sources"));
-    tried.appendChild(el("div", {}, (q.tried.sources || []).join(", ") || "none"));
-    tried.appendChild(el("h4", {}, "judge reasons"));
-    tried.appendChild(el("div", {}, (q.tried.judge_reasons || []).join("; ") || "none"));
+    tried.appendChild(el("h4", {}, "tried"));
+    if (q.tried && q.tried.length) {
+      q.tried.forEach(function (t) {
+        tried.appendChild(el("div", {}, t.source + (t.query ? ": " + t.query : "")));
+      });
+    } else {
+      tried.appendChild(el("div", {}, "none"));
+    }
+    tried.appendChild(el("h4", {}, "best candidates"));
+    if (q.candidates && q.candidates.length) {
+      q.candidates.forEach(function (c) {
+        var verdictText = c.verdict
+          ? (c.verdict.passed ? "pass" : "fail") + (c.verdict.evidence ? " -- " + c.verdict.evidence : "")
+          : "no verdict";
+        tried.appendChild(el("div", {}, c.sha + ": " + verdictText));
+      });
+    } else {
+      tried.appendChild(el("div", {}, "none"));
+    }
     box.appendChild(tried);
     var actions = el("div", { "class": "actions" });
     var dirBtn = el("button", {}, "type a direction");
@@ -1172,10 +1267,13 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function openDirectionBox(q) {
+    // A typed direction is recorded as a direction, not a rating (spec 5
+    // section 1 kind 2): no action, no rating -- append_answer's own
+    // "direction" branch.
     openBox("directionInput", "directionText", function (text) {
       postJson("/api/answer", { subject: q.subject, kind: q.kind,
-                                subject_kind: q.subject_kind, role: q.role, action: 3,
-                                rating: "unacceptable-use-this", note: text })
+                                subject_kind: q.subject_kind, role: q.role,
+                                direction: text })
         .then(function () { advanceQueue(); });
     });
   }

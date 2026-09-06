@@ -26,7 +26,7 @@ from .transport import Completion, TransportError
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
-    "Assessor", "ManyResult", "PreparedQuestion", "LearnerAskNotSupported",
+    "Assessor", "ManyResult", "Excluded", "PreparedQuestion", "LearnerAskNotSupported",
     "PreparationError", "JudgeUnreachable",
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
@@ -122,19 +122,35 @@ class PreparedQuestion:
 
 
 @dataclass(frozen=True)
+class Excluded:
+    """One question `ask_many` could not prepare: `subject` and
+    `artifact_sha` (None when the question named none) identify what was
+    excluded, for a caller to attribute it back to its own need; `reason`
+    is the PreparationError text.
+    """
+    subject: str
+    artifact_sha: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class ManyResult:
     """Assessor.ask_many's answer: `resolved` (cache key -> Verdict, cache
     hits and inline answers), `collected` (PreparedQuestions with no
     verdict yet -- populated only under a batch transport; nothing is
-    submitted here), `excluded` (encoded key -> the PreparationError
-    reason a question could not be prepared). An excluded question was
-    never put on the wire and is not cached; it says the candidate is
-    unusable, NOT that the backend is unreachable, and callers must tell
-    those apart (attempts._judge_many does).
+    submitted here), `excluded` (the excluded question's own typed
+    CacheKey.encode() -- unique per question even when several share a
+    subject and carry no artifact_sha, e.g. one `fills` question per
+    Target under one sentence draft; never parsed back, only used as a
+    stable per-question dict key -- mapped to an Excluded naming what
+    could not be prepared and why). An excluded question was never put on
+    the wire and is not cached; it says the candidate is unusable, NOT
+    that the backend is unreachable, and callers must tell those apart
+    (attempts._judge_many does).
     """
     resolved: dict[CacheKey, Verdict]
     collected: list[PreparedQuestion] = field(default_factory=list)
-    excluded: dict[str, str] = field(default_factory=dict)
+    excluded: dict[str, Excluded] = field(default_factory=dict)
 
 
 class Assessor:
@@ -195,7 +211,7 @@ class Assessor:
         is_batch = (getattr(impl, "complete", None) is None
                    and getattr(impl, "batch_transport", None) is not None)
         resolved: dict[CacheKey, Verdict] = {}
-        excluded: dict[str, str] = {}
+        excluded: dict[str, Excluded] = {}
         collected: list[PreparedQuestion] = []
         wire_attempts = 0
         wire_failures = 0
@@ -213,7 +229,8 @@ class Assessor:
                 except PreparationError as e:
                     _log.warning("%s backend cannot prepare a question (key=%s): %s",
                                  backend, key.encode(), e)
-                    excluded[key.encode()] = str(e)
+                    excluded[key.encode()] = Excluded(subject=q.subject,
+                                                      artifact_sha=q.artifact_sha, reason=str(e))
                     continue
                 collected.append(PreparedQuestion(question=q, key=key, prompt=prompt,
                                                   attachments=paths))
@@ -223,7 +240,8 @@ class Assessor:
             except PreparationError as e:
                 _log.warning("%s backend cannot prepare a question (key=%s): %s",
                              backend, key.encode(), e)
-                excluded[key.encode()] = str(e)
+                excluded[key.encode()] = Excluded(subject=q.subject, artifact_sha=q.artifact_sha,
+                                                  reason=str(e))
                 continue
             except TransportError as e:
                 _log.warning("%s backend dropped a question (key=%s): %s",

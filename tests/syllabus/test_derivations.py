@@ -671,25 +671,67 @@ def test_no_challenger_when_no_machine_candidate_outranks_the_accepted_pick(cach
 
 # --- reasks ----------------------------------------------------------------
 
-def test_reasks_flags_a_good_rated_card_with_enough_lapses(cache):
-    syllabus = SimpleNamespace(words=[SimpleNamespace(id="rice")], pairs=[])
+def _word_syllabus(word_id: str = "rice") -> SimpleNamespace:
+    """A bare syllabus reasks() can walk: one word, nothing else -- the
+    sentence/confusion loops see empty tuples and contribute nothing.
+    """
+    return SimpleNamespace(words=[SimpleNamespace(id=word_id)], pairs=[], sentences=[],
+                           confusions=[])
+
+
+def test_reasks_flags_a_word_card_with_enough_lapses(cache):
+    syllabus = _word_syllabus()
     seed_rating(cache, "rice", "a" * 64, "good")
 
     class _Study:
         def records(self, family, anchor, card_kind):
-            if (family, anchor, card_kind) == ("word", "rice", "picture"):
+            # word/picture's own card is Production (spec 4 section 4;
+            # anki_import.py's _RATED_ROLE reads the same correspondence
+            # the other way).
+            if (family, anchor, card_kind) == ("word", "rice", "production"):
                 return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
                                     compile_id="c1", ts=i, grade=1, time_ms=100)
                        for i in range(3)]
             return []
 
-    found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
-                   cards_for=lambda s: [("word", s, "picture")])
-    assert found == [("rice", "rice")]
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
+    assert [(r.subject, r.kind, r.subject_kind, r.rating) for r in found] == \
+           [("rice", "picture", "word", "good")]
+    assert len(found[0].evidence) == 3
+
+
+def test_reasks_reopens_an_acceptable_rating_not_only_good(cache):
+    """F9: the evidence may reopen any learner answer at or above
+    "acceptable" (LEARNER_RANK), not only "good"."""
+    syllabus = _word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "acceptable")
+
+    class _Study:
+        def records(self, family, anchor, card_kind):
+            if (family, anchor, card_kind) == ("word", "rice", "production"):
+                return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                    compile_id="c1", ts=1, grade=1, time_ms=100)]
+            return []
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=1)
+    assert [(r.subject, r.rating) for r in found] == [("rice", "acceptable")]
+
+
+def test_reasks_ignores_an_unacceptable_rating(cache):
+    syllabus = _word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "unacceptable-use-this")
+
+    class _Study:
+        def records(self, family, anchor, card_kind):
+            return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                compile_id="c1", ts=1, grade=1, time_ms=100)]
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=1)
+    assert found == []
 
 
 def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
-    syllabus = SimpleNamespace(words=[SimpleNamespace(id="rice")], pairs=[])
+    syllabus = _word_syllabus()
     seed_rating(cache, "rice", "a" * 64, "good")
 
     class _Study:
@@ -697,8 +739,7 @@ def test_reasks_yields_nothing_below_the_lapse_threshold(cache):
             return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
                                 compile_id="c1", ts=1, grade=4, time_ms=100)]
 
-    found = reasks(cache, _Study(), syllabus, lapse_threshold=2,
-                   cards_for=lambda s: [("word", s, "picture")])
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
     assert found == []
 
 

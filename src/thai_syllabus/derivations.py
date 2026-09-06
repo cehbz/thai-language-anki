@@ -30,7 +30,7 @@ from . import record
 from .authority import AUTHORITY_ORDER, role_for
 from .entities import Sentence, Target
 from .media import Provenance, Speaker
-from .ports import Answer, CacheReader, StudyReader
+from .ports import Answer, CacheReader, StudyReader, StudyRecord
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
 
@@ -47,7 +47,7 @@ __all__ = [
     "available_needs", "available_subjects",
     "passing_pictures", "pictures_awaiting_preference",
     "Challenger", "challengers",
-    "reasks",
+    "Reask", "reasks", "DEFAULT_REASK_LAPSES",
     "confusion_weights",
     "LEARNER_RANK",
     "stale",
@@ -702,29 +702,105 @@ def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, st
 
 # --- reasks ----------------------------------------------------------------
 
-def reasks(cache: CacheReader, study: StudyReader, syllabus, *, lapse_threshold: int,
-          cards_for: Callable[[str], Sequence[tuple[str, str, str]]]) -> list[tuple[str, str]]:
-    """(subject, anchor) for every word/pair whose learner-rated "good"
-    artifact's card has accumulated at least `lapse_threshold` lapses
-    (StudyRecord grade <= 1). `cards_for` names the (family, anchor,
-    card_kind) triples a subject's compiled cards use.
+# The re-ask lapse threshold (spec 5 section 1 kind 4) when rulebook.yaml's
+# thresholds carries no "reask/lapses" entry -- one lapse is already the
+# contradiction F9 re-asks over ("the evidence contradicts (shown)").
+DEFAULT_REASK_LAPSES = 1
+
+# The one study card_kind that exercises a given (subject_kind, need kind)
+# need's artifact -- the same (family, card_kind) pairing anki_import.py's
+# flag import reads a role from (word Production -> picture-for-word,
+# word/sentence Listening -> recording-for-*), read here in the other
+# direction: which card's StudyRecords would show the contradiction.
+_REASK_CARD_KIND: dict[tuple[str, str], str] = {
+    ("word", "picture"): "production",
+    ("word", "recording"): "listening",
+    ("sentence", "recording"): "listening",
+    ("sentence", "picture"): "cloze",
+}
+
+
+@dataclass(frozen=True)
+class Reask:
+    """A learner rating spec 5 section 1 kind 4 re-asks: F9's "the evidence
+    contradicts" a rating of "acceptable" or better (LEARNER_RANK), not
+    only "good" -- the evidence may reopen any learner answer. `subject`/
+    `kind`/`subject_kind` name the need exactly as every other derivation
+    does (a rendition's subject is the confusion id, matching
+    available_needs/current_best); `rating` is the contradicted answer;
+    `evidence` is the lapse StudyRecords themselves (grade <= 1), oldest
+    first.
     """
-    out: list[tuple[str, str]] = []
-    subjects = ([(w.id, "picture") for w in syllabus.words]
-               + [(w.id, "recording") for w in syllabus.words]
-               + [(p.id, "rendition") for p in syllabus.pairs])
-    for subject, kind in subjects:
-        role = role_of(cache, subject, kind)
-        ratings = record.ratings_for_role(cache.assessments_of(subject), role)
-        if not ratings:
-            continue
-        latest = max(ratings, key=lambda r: r.ts)
-        if latest.answer.get("value") != "good":
-            continue
-        for family, anchor, card_kind in cards_for(subject):
-            lapses = sum(1 for r in study.records(family, anchor, card_kind) if r.grade <= 1)
-            if lapses >= lapse_threshold:
-                out.append((subject, anchor))
+    subject: str
+    kind: str
+    subject_kind: str
+    rating: str
+    evidence: tuple[StudyRecord, ...]
+
+
+def _reask_candidate(cache: CacheReader, study: StudyReader, *, subject: str, kind: str,
+                     subject_kind: str, family: str, anchors: Sequence[str], card_kind: str,
+                     lapse_threshold: int) -> Reask | None:
+    role = role_for(kind, subject_kind)
+    ratings = record.ratings_for_role(cache.assessments_of(subject), role)
+    if not ratings:
+        return None
+    latest = max(ratings, key=lambda r: r.ts)
+    rating = latest.answer.get("value")
+    if LEARNER_RANK.get(rating, -1.0) < LEARNER_RANK["acceptable"]:
+        return None
+    lapses = tuple(sorted((r for anchor in anchors
+                          for r in study.records(family, anchor, card_kind) if r.grade <= 1),
+                         key=lambda r: r.ts))
+    if len(lapses) < lapse_threshold:
+        return None
+    return Reask(subject=subject, kind=kind, subject_kind=subject_kind, rating=rating,
+                evidence=lapses)
+
+
+def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
+          lapse_threshold: int = DEFAULT_REASK_LAPSES) -> list[Reask]:
+    """Every need -- a word's picture or recording, a sentence's recording
+    or scene picture, or a pair's rendition (subjected under its
+    confusion, as available_needs/current_best already do) -- whose
+    learner rating is "acceptable" or better and whose card has
+    accumulated at least `lapse_threshold` lapses since (spec 5 section 1
+    kind 4). Resolves each need's own StudyRecords by (family, anchor,
+    card_kind), no card-key callable: a word's anchor is its id, a
+    sentence's its text_sha; a rendition sums lapses over every member
+    pair's own study anchor under the confusion.
+    """
+    out: list[Reask] = []
+    for w in syllabus.words:
+        for kind in ("picture", "recording"):
+            found = _reask_candidate(cache, study, subject=w.id, kind=kind, subject_kind="word",
+                                     family="word", anchors=(w.id,),
+                                     card_kind=_REASK_CARD_KIND[("word", kind)],
+                                     lapse_threshold=lapse_threshold)
+            if found is not None:
+                out.append(found)
+
+    for s in syllabus.sentences:
+        for kind in ("recording", "picture"):
+            found = _reask_candidate(cache, study, subject=s.text_sha, kind=kind,
+                                     subject_kind="sentence", family="sentence",
+                                     anchors=(s.text_sha,),
+                                     card_kind=_REASK_CARD_KIND[("sentence", kind)],
+                                     lapse_threshold=lapse_threshold)
+            if found is not None:
+                out.append(found)
+
+    pairs_by_confusion: dict[str, tuple[str, ...]] = {}
+    for p in syllabus.pairs:
+        pairs_by_confusion[p.confusion] = pairs_by_confusion.get(p.confusion, ()) + (p.id,)
+    for confusion in syllabus.confusions:
+        found = _reask_candidate(cache, study, subject=confusion.id, kind="rendition",
+                                 subject_kind="pair", family="minimal_pair",
+                                 anchors=pairs_by_confusion.get(confusion.id, ()),
+                                 card_kind="recognition", lapse_threshold=lapse_threshold)
+        if found is not None:
+            out.append(found)
+
     return out
 
 

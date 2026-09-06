@@ -132,7 +132,9 @@ class RunReport:
     case.
 
     The "what went wrong" fields: `excluded` counts questions the judge
-    could not prepare (candidates dropped, not candidates rejected),
+    could not prepare (candidates dropped, not candidates rejected);
+    `excluded_items` names each one -- {subject, artifact_sha, reason} --
+    for a screen to read back per subject (record.excluded_candidates);
     `source_failures` counts each Source that failed on the wire (skipped
     for the rest of the run, never fatal), and `unreachable` says the
     judge could not be reached at all, which stops the run.
@@ -145,6 +147,7 @@ class RunReport:
     sentences_adopted: int = 0
     drafted: int = 0
     excluded: int = 0
+    excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     unreachable: bool = False
     batch_id: str | None = None
     source_failures: dict[str, int] = field(default_factory=dict)
@@ -163,6 +166,7 @@ class _Tally:
     improved: int = 0
     exhausted: int = 0
     excluded: int = 0
+    excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     sentences_adopted: int = 0
     drafted: int = 0
     budgeted: int = 0
@@ -181,9 +185,17 @@ class _Tally:
 
     def collect(self, result: AttemptResult) -> None:
         """What an attempt produced, whatever the need was: its questions,
-        its exclusions, and its spend per backend."""
+        its exclusions (each already naming its own question's subject and
+        artifact_sha -- assessor.Excluded, keyed by the question's own
+        typed CacheKey so two no-artifact questions under one subject
+        never collide -- for record.excluded_candidates to read back), and
+        its spend per backend.
+        """
         self.questions += result.questions
         self.excluded += len(result.excluded)
+        self.excluded_items += tuple(
+            {"subject": item.subject, "artifact_sha": item.artifact_sha, "reason": item.reason}
+            for item in result.excluded.values())
         self.drafted += result.drafted
         for backend, incurred in result.spend.items():
             self.spend.setdefault(backend, Spend()).add(incurred.asks, incurred.cost)
@@ -484,7 +496,8 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
-        drafted=tally.drafted, excluded=tally.excluded, unreachable=tally.unreachable,
+        drafted=tally.drafted, excluded=tally.excluded, excluded_items=tally.excluded_items,
+        unreachable=tally.unreachable,
         batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend,
         unserved=needs.unserved, budgeted=tally.budgeted,
         deferred=tally.deferred + extra_deferred, preferences=tally.preferences)
@@ -505,7 +518,9 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
                 "drafted": report.drafted,
-                "excluded": report.excluded, "unreachable": report.unreachable,
+                "excluded": report.excluded,
+                "excluded_items": [dict(item) for item in report.excluded_items],
+                "unreachable": report.unreachable,
                 "batch_id": report.batch_id, "source_failures": dict(report.source_failures),
                 "spend": {name: {"asks": s.asks, "cost": s.cost}
                           for name, s in report.spend.items()},

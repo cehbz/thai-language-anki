@@ -22,7 +22,7 @@ from .ports import Answer, CacheReader
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "directions", "judge_verdicts", "latest_query",
           "asks_since", "spend_since", "unresolved_batch", "subject_kind_of", "DRAFT_SUBJECT", "SentenceDraft",
-          "drafts_in", "sentence_drafts"]
+          "drafts_in", "sentence_drafts", "excluded_candidates", "card_flags"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
 # proposed for a run's open Targets as a set, not for one subject.
@@ -141,6 +141,42 @@ def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
 def spend_since(cache: CacheReader, backend: str, since_ts: int) -> float:
     """What those asks cost, in `backend`'s own currency."""
     return sum(r.cost for r in source_asks(cache.rows_since("provide", backend, since_ts)))
+
+
+def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str | None]]:
+    """`subject`'s excluded candidates from the newest run.RunReport row
+    (port="run", backend="runreport"): {"sha": artifact_sha, "reason": why
+    the judge could not prepare it}, in the order the run recorded them.
+    Read back only -- the screen never invokes the judge to learn this
+    (spec 5 section 1 kind 1's "rejected candidates").
+    """
+    newest = cache.latest("run", "runreport", "runreport")
+    if newest is None:
+        return []
+    items = newest.answer.get("excluded_items") or []
+    return [{"sha": item.get("artifact_sha"), "reason": item.get("reason")}
+           for item in items if item.get("subject") == subject]
+
+
+def card_flags(rows: Sequence[Answer]) -> list[str]:
+    """Every card-level flag on record among `rows` (anki_import.py's own
+    row shape: question["kind"] == "card-flag", carrying `anchor` and
+    `card_kind`), as "ANCHOR::CARD_KIND", first-seen order -- the
+    subject's card-level flags (spec 4 section 4).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        if r.question.get("kind") != "card-flag":
+            continue
+        anchor, card_kind = r.question.get("anchor"), r.question.get("card_kind")
+        if not anchor or not card_kind:
+            continue
+        label = f"{anchor}::{card_kind}"
+        if label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
 
 
 def unresolved_batch(cache: CacheReader) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
