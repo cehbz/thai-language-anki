@@ -111,12 +111,19 @@ def judge_row(subject, kind, artifact_sha, value, rubric="rubric-v1", ts=None,
                  answer=answer, cost=0.001, ts=ts)
 
 
-def learner_row(subject, kind, artifact_sha, rating, ts=None):
+def learner_row(subject, kind, artifact_sha, rating, ts=None, role=None, subject_kind="word"):
+    """`role` defaults to f"{kind}-for-word", the shape every word-subject
+    test in this module relies on; a pair's rendition row (subject_kind
+    "pair") must pass role="rendition-for-pair" explicitly -- the same
+    role role_of()/role_for() compute for it -- so ratings_for_role's own
+    role match finds the row.
+    """
     ts = ts if ts is not None else _next_ts()
+    role = role if role is not None else f"{kind}-for-word"
     return Answer(port="assess", backend="learner", key=f"learner:{subject}:{artifact_sha}:{ts}",
                  key_sha="x", subject=subject,
-                 question={"role": f"{kind}-for-word", "artifact_sha": artifact_sha,
-                          "rubric": None, "kind": "rating"},
+                 question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
+                          "kind": "rating", "subject_kind": subject_kind},
                  answer={"value": rating}, cost=0.0, ts=ts)
 
 
@@ -236,6 +243,156 @@ def test_current_best_learner_choice_wins_outright_over_judge(cache):
     assert best.source == "learner"
 
 
+# --- r8: the learner vetoes on recording and rendition roles, never ranks --
+
+def test_learner_good_on_a_rendition_with_no_backend_verdict_is_not_current_best(cache):
+    """B8's fixture: pair p-rice-near over tone:mid-low. "learner" is not
+    named in AUTHORITY_ORDER["rendition-for-pair"], so a "good" rating with
+    no rendition-backend row of its own leaves current_best with no
+    artifact -- the need stays open, in available_needs and in queued().
+    """
+    pair = _FakePair(id="p-rice-near", confusion="tone:mid-low")
+    syllabus = _FakeSyllabus(_FakeGaps(missing_renditions=("tone:mid-low",)), pairs=[pair])
+    cache.rows.append(learner_row("p-rice-near", "rendition", "a" * 64, "good",
+                                  role="rendition-for-pair", subject_kind="pair"))
+
+    best = current_best(cache, "p-rice-near", "rendition", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha is None
+    assert best.rank == -1.0
+
+    assert ("p-rice-near", "rendition", "pair") in available_needs(syllabus)
+    found = _queued(syllabus, cache)
+    assert any(e.subject == "p-rice-near" and e.kind == "rendition" for e in found.entries)
+
+
+def test_learner_veto_reopens_a_mechanically_passing_word_recording(cache):
+    """"unacceptable-none" is the veto rating on a veto-only role: it
+    rejects the sha it names outright, unlike "unacceptable-use-this"
+    (a nomination the machine still has to rank, see
+    test_unacceptable_use_this_nominates_but_unacceptable_none_vetoes).
+    """
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_recordings=("rice",)))
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
+                                  ts=_next_ts()))
+
+    best = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha is None
+
+    entries = _queue(syllabus, cache)
+    assert any(e.subject == "rice" and e.kind == "recording" for e in entries)
+
+
+def test_a_later_acceptable_rating_lifts_a_veto_but_does_not_outrank_mechanical(cache):
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
+                                  ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "acceptable", ts=_next_ts()))
+
+    best = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha == "a" * 64
+    assert best.rank == 50.0
+    assert best.source == "mechanical"
+
+
+def test_unacceptable_use_this_nominates_but_unacceptable_none_vetoes(cache):
+    """r8 fix round 1: "unacceptable-use-this" names the sha the learner
+    wants used -- a candidate nomination that still needs the machine
+    verdict to rank, exactly like a supplied artifact, so it never
+    excludes the sha from machine ranking. "unacceptable-none" rejects
+    the sha it names outright and does exclude it.
+    """
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-use-this",
+                                  ts=_next_ts()))
+
+    nominated = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                             provenance_source=_no_provenance)
+    assert nominated.artifact_sha == "a" * 64
+    assert nominated.source == "mechanical"
+
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
+                                  ts=_next_ts()))
+    vetoed = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                          provenance_source=_no_provenance)
+    assert vetoed.artifact_sha is None
+
+
+# --- r8 fix round 2: any learner input reopens a need (architecture §4) ----
+
+def test_a_learner_supply_reopens_an_exhausted_recording_need(cache):
+    """recording-for-word is veto-only: the supply's implicit
+    "unacceptable-use-this" rating (append_supply) never ranks the sha on
+    its own -- with no mechanical verdict yet, current_best stays None
+    (pre-r8 code ranked the supply at 40 with source "learner" instead).
+    Either way the supply is learner input and resets escalation
+    (architecture section 4): next_source is not None and the need is
+    queued again.
+    """
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_recordings=("rice",)))
+    for source in sources_for("recording"):
+        seed_ask(cache, "rice", "recording", source=source, ts=_next_ts())
+    status = exhausted(cache, "rice", "recording", sources=sources_for("recording"),
+                       attempt_cap=8)
+    assert status.exhausted
+
+    cache.rows.append(provide_row("rice", "recording", backend="learner",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-use-this",
+                                  ts=_next_ts()))
+
+    best = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha is None
+
+    assert next_source(cache, "rice", "recording", sources_for("recording")) is not None
+    entries = _queue(syllabus, cache)
+    assert any(e.subject == "rice" and e.kind == "recording" for e in entries)
+
+
+def test_a_learner_veto_reopens_a_recording_need_the_same_way(cache):
+    """(c): "unacceptable-none" on a mechanically passing sha both vetoes
+    the sha (ruling 1) and, as learner input, resets escalation
+    (architecture section 4) -- the roster is asked again.
+    """
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    for source in sources_for("recording"):
+        seed_ask(cache, "rice", "recording", source=source, ts=_next_ts())
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
+                                  ts=_next_ts()))
+
+    assert next_source(cache, "rice", "recording", sources_for("recording")) is not None
+
+
+def test_picture_role_learner_choice_is_unaffected_by_the_veto_rule(cache):
+    """A picture role still names "learner" in AUTHORITY_ORDER: the r8
+    veto/no-rank carve-out applies to recording and rendition roles only.
+    """
+    cache.rows += [
+        judge_row("rice", "picture", "sha-a", True),
+        learner_row("rice", "picture", "sha-b", "unacceptable-use-this"),
+    ]
+    best = current_best(cache, "rice", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha == "sha-b"
+    assert best.source == "learner"
+
+
 # --- regression guard ------------------------------------------------------
 
 def test_regression_guard_never_ranks_below_a_learner_acceptable_rating(cache):
@@ -261,6 +418,30 @@ def test_regression_guard_survives_a_worse_rubric_rerun(cache):
                         provenance_source=_no_provenance)
     assert best.artifact_sha == "sha-a"
     assert best.rank >= 100.0
+
+
+def test_no_regression_floor_from_acceptable_on_a_veto_only_role(cache):
+    """r8: "acceptable"/"good" never rank on a veto-only role -- unlike the
+    learner-ranking regression guard above, an "acceptable" rating on one
+    sha sets no floor a mechanically failing candidate is measured
+    against. Two mechanically-failing shas, one "acceptable" and one
+    "unacceptable-none": the machine ranking decides (nothing passes), not
+    a floor from the "acceptable" rating.
+    """
+    cache.rows += [
+        provide_row("rice", "recording", backend="forvo", items=[{"sha": "a" * 64}],
+                   ts=_next_ts()),
+        mechanical_row("rice", "recording-for-word", "a" * 64, False, ts=_next_ts()),
+        learner_row("rice", "recording", "a" * 64, "acceptable", ts=_next_ts()),
+        provide_row("rice", "recording", backend="tts", items=[{"sha": "b" * 64}],
+                   ts=_next_ts()),
+        mechanical_row("rice", "recording-for-word", "b" * 64, False, ts=_next_ts()),
+        learner_row("rice", "recording", "b" * 64, "unacceptable-none", ts=_next_ts()),
+    ]
+    best = current_best(cache, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha is None
+    assert best.rank == -1.0
 
 
 # --- improved --------------------------------------------------------------
@@ -541,10 +722,50 @@ def test_bucket_1_when_no_artifact_exists(cache):
     assert [e.bucket for e in entries] == [1]
 
 
-def test_bucket_1_when_the_learner_rejected_the_current_artifact(cache):
+def test_a_learner_nominated_picture_buckets_by_rank_not_bucket_1(cache):
+    """r8 fix round 3, ruling 5: "unacceptable-use-this" naming the
+    current artifact is a nomination, not a rejection -- on every role
+    (a picture's learner-ranking role included) it buckets by rank like
+    an unrated artifact (bucket 3), never bucket 1.
+    """
     syllabus = _one_word_syllabus()
     seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
     seed_rating(cache, "rice", "a" * 64, "unacceptable-use-this")
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources)
+                if e.subject == "rice")
+    assert entry.bucket == 3
+
+
+def test_a_mechanically_passing_nominated_recording_buckets_in_3_not_1(cache):
+    """r8 fix round 3, ruling 5: a veto-only role's own "unacceptable-
+    use-this" nomination on its mechanically-passing current artifact is
+    not a rejection either -- bucket 3, not bucket 1.
+    """
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_recordings=("rice",)))
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-use-this",
+                                  ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources)
+                if e.subject == "rice")
+    assert entry.bucket == 3
+
+
+def test_bucket_1_still_when_the_current_artifact_is_vetoed(cache):
+    """r8 fix round 3, ruling 5: unlike a nomination, "unacceptable-none"
+    on a veto-only role's own mechanically-passing sha excludes it from
+    current_best (round 1) -- the need still buckets 1, unaffected by the
+    nomination fix above.
+    """
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_recordings=("rice",)))
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True,
+                                     ts=_next_ts()))
+    cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
+                                  ts=_next_ts()))
     entry = next(e for e in _queue(syllabus, cache) if e.subject == "rice")
     assert entry.bucket == 1
 
@@ -764,6 +985,28 @@ def test_no_challenger_when_no_machine_candidate_outranks_the_accepted_pick(cach
     assert found == []  # "b" fails judge fit -- no passing unrated candidate exists
 
 
+def test_challengers_never_fires_on_a_veto_only_role(cache):
+    """r8: current_best.source is never "learner" on recording-for-word, so
+    challengers()'s "best.source != 'learner'" guard skips the need
+    outright. "a" carries an "unacceptable-use-this" nomination and no
+    mechanical verdict of its own (exactly a learner supply awaiting one,
+    round 2's ruling 1); "b" mechanically passes and out-ranks it on the
+    machine scale alone. Pre-r8 code (the learner's rating ranking
+    unconditionally) reads "a" as current-best by that rating and "b" as a
+    real challenger to it; r8 forbids both.
+    """
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_recordings=("rice",)))
+    cache.rows += [
+        learner_row("rice", "recording", "a" * 64, "unacceptable-use-this", ts=_next_ts()),
+        provide_row("rice", "recording", backend="tts", items=[{"sha": "b" * 64}],
+                   ts=_next_ts()),
+        mechanical_row("rice", "recording-for-word", "b" * 64, True, ts=_next_ts()),
+    ]
+    found = challengers(cache, syllabus, current_rubric={}, prior=(),
+                        provenance_source=_no_provenance)
+    assert found == []
+
+
 # --- reasks ----------------------------------------------------------------
 
 def _word_syllabus(word_id: str = "rice") -> SimpleNamespace:
@@ -860,6 +1103,35 @@ def test_reasks_produces_a_rendition_reask_keyed_by_pair_id(cache):
                        for i in range(2)]
             return []
 
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
+    assert [(r.subject, r.kind, r.subject_kind) for r in found] == [("p1", "rendition", "pair")]
+
+
+def test_reasks_veto_yields_nothing_a_lifted_veto_does(cache):
+    """r8 ruling 4: a veto-only role's latest rating gates
+    _reask_candidate exactly like any other role -- the latest role
+    rating, never current_best's own artifact. "unacceptable-none" (a
+    veto) yields no Reask; a later "acceptable" rating on the same need
+    lifts it.
+    """
+    pair = MinimalPair(id=PairId("p1"), confusion=ConfusionId("tone:mid-low"),
+                       members=(WordId("a"), WordId("b")))
+    syllabus = SimpleNamespace(words=[], sentences=[], confusions=[], pairs=[pair], targets=[])
+    cache.rows.append(learner_row("p1", "rendition", "sha1", "unacceptable-none",
+                                  role="rendition-for-pair", subject_kind="pair"))
+
+    class _Study:
+        def records(self, family, anchor, card_kind):
+            if (family, anchor, card_kind) == ("minimal_pair", "p1", "recognition"):
+                return [StudyRecord(family=family, anchor=anchor, card_kind=card_kind,
+                                    compile_id="c1", ts=i, grade=1, time_ms=100)
+                       for i in range(2)]
+            return []
+
+    assert reasks(cache, _Study(), syllabus, lapse_threshold=2) == []
+
+    cache.rows.append(learner_row("p1", "rendition", "sha1", "acceptable",
+                                  role="rendition-for-pair", subject_kind="pair"))
     found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
     assert [(r.subject, r.kind, r.subject_kind) for r in found] == [("p1", "rendition", "pair")]
 

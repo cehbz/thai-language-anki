@@ -45,8 +45,10 @@ from .derivations import (
     current_best,
     exhausted,
     judge_verdict,
+    learner_ranks,
     queue,
     reasks,
+    vetoed,
 )
 from .ids import PairId
 from .media import Speaker
@@ -142,6 +144,7 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                    *, directed: bool = False, rank: float = 0.0,
                    attempts: int = 0) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
+    role = role_for(kind, subject_kind)
     best = _best(d, subject, kind)
     current = _artifact(best.artifact_sha)
     if current is not None:
@@ -152,7 +155,12 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
     rejected = [_artifact(s) for s in candidate_shas(rows) if s != best.artifact_sha]
     return {
         "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
-        "role": role_for(kind, subject_kind),
+        "role": role,
+        # spec 5 section 1 kind 1 (r8): whether this role's rating orders
+        # current_best (picture/scene/sentence roles) or only vetoes
+        # (recording and rendition roles) -- the client labels "acceptable"/
+        # "good" a note and "unacceptable" a veto when this is False.
+        "learner_ranks": learner_ranks(role),
         "gloss": _gloss_for(d.syllabus, subject, subject_kind), "query": latest_query(rows),
         "current": current, "rejected": rejected, "directed": directed,
         "rank": best.rank, "attempts": attempts,
@@ -227,10 +235,12 @@ def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any
     out: list[dict[str, Any]] = []
     for found in reasks(d.db, study, d.syllabus, lapse_threshold=threshold):
         best = _best(d, found.subject, found.kind)
+        role = role_for(found.kind, found.subject_kind)
         out.append({
             "type": "reask", "subject": found.subject, "kind": found.kind,
             "subject_kind": found.subject_kind,
-            "role": role_for(found.kind, found.subject_kind),
+            "role": role,
+            "learner_ranks": learner_ranks(role),
             "gloss": _gloss_for(d.syllabus, found.subject, found.subject_kind),
             "original_answer": found.rating,
             "current": _artifact(best.artifact_sha),
@@ -617,6 +627,21 @@ class SessionStats:
     queued: int = 0
 
 
+def _accepted(d: "Derivations", subject: str, role: str, best: CurrentBest) -> bool:
+    """spec 5 section 3's "accepted": on a role the learner ranks, a
+    current-best artifact ranked "acceptable" or better -- unchanged. On a
+    veto-only role (spec 3 section 4 r8) current_best's own rank is a
+    machine scale a rank-80 floor has no meaning on: accepted is a
+    current-best artifact derivations.vetoed says is not vetoed -- the
+    screen folds no row of its own here.
+    """
+    if best.artifact_sha is None:
+        return False
+    if learner_ranks(role):
+        return best.rank >= _ACCEPTABLE_FLOOR
+    return not vetoed(d.db, subject, role, best.artifact_sha)
+
+
 def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
     """Per-confusion correct/total over the gallery drill rows
     append_drill_result appends.
@@ -640,10 +665,12 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     learner rating counts, RunReport history).
 
     Coverage and the rating counts fold over derivations.all_needs, every
-    need the deck has: `covered` is a need with a current-best artifact,
+    need the deck has: `covered` is a need with a current-best artifact;
     `accepted` one whose current-best the learner rated acceptable or
-    better. `exhausted_remaining` is scoped to available_needs instead --
-    an outstanding need with no artifact and no source left.
+    better on a role the learner ranks, else (spec 3 section 4 r8, a
+    veto-only role) one with a current-best artifact not vetoed
+    (see _accepted). `exhausted_remaining` is scoped to available_needs
+    instead -- an outstanding need with no artifact and no source left.
 
     `pending`/`sentences_adopted` come from the newest run.py runreport
     row, else 0; `run_report_history` is every such row's answer, oldest
@@ -654,14 +681,15 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 
     for subject, kind, subject_kind in all_needs(d.syllabus):
         best = _best(d, subject, kind)
+        role = role_for(kind, subject_kind)
         bucket = coverage.setdefault(kind, {"covered": 0, "accepted": 0, "total": 0})
         bucket["total"] += 1
         if best.artifact_sha is not None:
             bucket["covered"] += 1
-        if best.rank >= _ACCEPTABLE_FLOOR:
+        if _accepted(d, subject, role, best):
             bucket["accepted"] += 1
 
-        value = latest_rating(d.db.assessments_of(subject), role_for(kind, subject_kind))
+        value = latest_rating(d.db.assessments_of(subject), role)
         if value == "good":
             ratings["good"] += 1
         elif value == "acceptable":
@@ -1107,6 +1135,20 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     saveProgress();
   }
 
+  function rateLabels(learnerRanks) {
+    // r8: action 2 nominates the picked candidate as the artifact to use
+    // instead, on both a "rate" and a "reask" question, on every role --
+    // it keeps the need directed, it never ranks the sha on its own. On a
+    // veto-only role (learner_ranks false) 1 is the veto and 3/4 are a
+    // note only, never a rank; a learner-ranking role keeps 1/3/4's
+    // original vocabulary.
+    return learnerRanks
+      ? { 1: "1 unacceptable-none", 2: "2 unacceptable, use this one instead",
+         3: "3 acceptable", 4: "4 good" }
+      : { 1: "1 unacceptable (veto)", 2: "2 unacceptable, use this one instead",
+         3: "3 acceptable (note)", 4: "4 good (note)" };
+  }
+
   function thumb(art, cls) {
     var img = el("img", { src: art.url, "data-sha": art.sha });
     img.addEventListener("click", function () { openOverlay(art.url); });
@@ -1132,8 +1174,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       box.appendChild(thumbs);
     }
     var actions = el("div", { "class": "actions" });
-    var labels = { 1: "1 unacceptable-none", 2: "2 unacceptable-use-this",
-                  3: "3 acceptable", 4: "4 good" };
+    var labels = rateLabels(q.learner_ranks);
     [1, 2, 3, 4].forEach(function (n) {
       var btn = el("button", { "class": n >= 3 ? "good" : "bad" }, labels[n]);
       btn.addEventListener("click", function () { answerRate(q, n); });
@@ -1247,8 +1288,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     });
     box.appendChild(ev);
     var actions = el("div", { "class": "actions" });
-    var labels = { 1: "1 unacceptable-none", 2: "2 unacceptable-use-this",
-                  3: "3 acceptable", 4: "4 good" };
+    var labels = rateLabels(q.learner_ranks);
     [1, 2, 3, 4].forEach(function (n) {
       var btn = el("button", { "class": n >= 3 ? "good" : "bad" }, labels[n]);
       btn.addEventListener("click", function () { answerRate(q, n); });

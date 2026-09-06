@@ -19,12 +19,12 @@ import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
-from thai_syllabus.assessor import Excluded, JudgeUnreachable
-from thai_syllabus.cachekeys import (BatchMarkerKey, DirectionKey, JudgeKey, LlmPromptKey,
-                                    ProvideKey, RunReportKey, sha)
+from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict
+from thai_syllabus.cachekeys import (BatchMarkerKey, DirectionKey, JudgeKey, LearnerKey,
+                                    LlmPromptKey, MechanicalKey, ProvideKey, RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
-from thai_syllabus.derivations import available_need_keys, open_words
+from thai_syllabus.derivations import available_need_keys, current_best, open_words
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
@@ -370,6 +370,91 @@ def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_
     # the attempt appended its ask under the pair's own subject.
     assert rows_for(ctx.db, "p-rice-near", "rendition")
     assert report.available >= 1
+
+
+# --- r8 fix round 2: a learner supply reopens an exhausted need over a
+# real run() (architecture section 4) ---------------------------------------
+
+class _EmptyForvo:
+    """A forvo lookup answered once with nothing; a repeat ask on the same
+    key is Provider's own cache hit (spec 3 section 2), zero cost and no
+    second call to fetch().
+    """
+    def __init__(self):
+        self.calls = 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params.get("word", ""))
+
+    def fetch(self, q):
+        self.calls += 1
+        return RawAnswer()
+
+
+class _EmptyTts:
+    def cache_key(self, q):
+        return ProvideKey(source="tts", kind="", query=str(sorted(q.params.items())))
+
+    def fetch(self, q):
+        return RawAnswer()
+
+
+class _PassingMechanical:
+    """Passes every recording it is asked about -- stands in for ffprobe
+    over the real recording attempt pipeline."""
+    def cache_key(self, q):
+        return MechanicalKey(check="duration", params="0.2-5.0",
+                             artifact_sha=q.artifact_sha or "-")
+
+    def fetch(self, q):
+        return RawVerdict(value=True, evidence="ok")
+
+
+def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tmp_path):
+    """r8 fix round 2, ruling 1(b): two runs exhaust "rice"'s recording
+    sources (forvo, tts, both empty). A learner supply nominates a sha
+    (an "unacceptable-use-this" rating, which never vetoes). A third run's
+    re-ask of forvo is Provider's own cache hit -- no new fetch -- but the
+    attempt's mechanical check still covers every candidate sha under the
+    need, the supplied one included: current_best lands on it, source
+    "mechanical", and the run's own accounting identity holds.
+    """
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = build_sourcing(root)
+    forvo = _EmptyForvo()
+    ctx.provider._backends.update({
+        "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
+        "pexels": _Silent("pexels"), "forvo": forvo, "tts": _EmptyTts(),
+        "llm-sentence": _Llm(),
+    })
+    ctx.assessor._backends["mechanical"] = _PassingMechanical()
+
+    run(ctx, budgets={})   # forvo tried, nothing
+    run(ctx, budgets={})   # tts tried, nothing -- the recording need is now exhausted
+
+    supplied_sha = "s" * 64
+    ctx.db.append(port="provide", backend="learner",
+                 key=ProvideKey(source="learner", kind="", query="supplied.mp3"),
+                 subject="rice",
+                 question={"provides": "recording-bytes", "kind": "recording",
+                          "subject_kind": "word", "params": {"path": "supplied.mp3"}},
+                 answer={"items": [{"sha": supplied_sha, "ext": "mp3"}]})
+    ctx.db.append(port="assess", backend="learner",
+                 key=LearnerKey(artifact_sha=supplied_sha, role="recording-for-word"),
+                 subject="rice",
+                 question={"role": "recording-for-word", "artifact_sha": supplied_sha,
+                          "rubric": None, "kind": "rating", "subject_kind": "word"},
+                 answer={"value": "unacceptable-use-this"})
+
+    report = run(ctx, budgets={})
+    assert forvo.calls == 1   # the re-ask was Provider's cache hit, not a new fetch
+
+    best = current_best(ctx.db, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=lambda artifact_sha: None)
+    assert best.artifact_sha == supplied_sha
+    assert best.source == "mechanical"
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 # --- the report, one field at a time ---------------------------------------

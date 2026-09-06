@@ -33,7 +33,7 @@ from .record import LEARNER_RANK
 from .syllabus import Syllabus
 
 __all__ = [
-    "CurrentBest", "current_best",
+    "CurrentBest", "current_best", "learner_ranks", "vetoed",
     "role_of", "adoptable_drafts",
     "JudgeVerdict", "judge_verdict",
     "pending",
@@ -53,13 +53,14 @@ __all__ = [
 ]
 
 # LEARNER_RANK (record.py): a numeric rank on the same scale judge
-# verdicts use, so current_best's regression guard ("never below an
+# verdicts use, so on a role where the learner ranks (AUTHORITY_ORDER
+# names "learner") current_best's regression guard ("never below an
 # artifact the learner rated acceptable") is a plain numeric comparison.
 # Judge pass (True/1.0) ranks below learner "acceptable" so a judge run
-# alone can never outrank a learner's endorsement (spec 3 section 6).
+# alone can never outrank a learner's endorsement there (spec 3 section
+# 6); on a veto-only role (spec 3 section 4 r8) no rating ranks at all.
 _JUDGE_PASS_RANK = 50.0
 _JUDGE_FAIL_RANK = 0.0
-_ACCEPTABLE_FLOOR = LEARNER_RANK["acceptable"]
 _GOOD_RANK = LEARNER_RANK["good"]
 
 # The attempt cap exhausted() enforces, read from this one place: run.py
@@ -127,9 +128,11 @@ stale = _stale
 def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
                    current_rubric: Mapping[str, str]) -> tuple[dict[str, float], dict[str, str]]:
     """Machine rank per artifact (spec 3 section 6): the first backend in
-    AUTHORITY_ORDER[role] (bar "learner", which current_best folds in
-    itself) with a verdict row decides that artifact's rank. Returns
-    (ranks, deciding backend per sha); pictures also fold in
+    AUTHORITY_ORDER[role] (bar "learner") with a verdict row decides that
+    artifact's rank -- on a role the learner ranks, current_best folds the
+    learner's own rating in on top of this; on a veto-only role (spec 3
+    section 4 r8) this is the whole ranking, the learner only vetoes.
+    Returns (ranks, deciding backend per sha); pictures also fold in
     preference-row bonuses.
     """
     order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
@@ -245,14 +248,92 @@ def role_of(cache: CacheReader, subject: str, kind: str,
     return role_for(kind, record.subject_kind_of(rows))
 
 
+def learner_ranks(role: str) -> bool:
+    """True when AUTHORITY_ORDER names "learner" for `role`: the learner's
+    rating orders current_best's candidates there (picture-for-word,
+    scene-for-sentence, sentence-for-target). False on a role where the
+    learner only vetoes -- recording-for-word, recording-for-sentence,
+    rendition-for-pair (spec 3 section 4 r8). A role absent from
+    AUTHORITY_ORDER defaults to True, the pre-r8 behavior.
+    """
+    return "learner" in AUTHORITY_ORDER.get(role, ("learner",))
+
+
+def _vetoed_shas(learner_ratings_by_artifact: Mapping[str, tuple[int, str]]) -> set[str]:
+    """artifact shas whose latest learner rating is "unacceptable-none"
+    (spec 3 section 4 r8): on a role the learner never ranks, that rating
+    rejects the artifact_sha it names outright, excluding it from the
+    machine candidate set until a newer learner rating on the same sha
+    lifts it. "unacceptable-use-this" names the sha the learner wants
+    used instead -- a candidate nomination, not a rejection, so it never
+    vetoes; it still needs a machine verdict to rank, exactly like a
+    supplied artifact. "acceptable"/"good" never veto either (they never
+    rank on this role -- current_best's caller ignores them for ranking).
+    """
+    return {sha_ for sha_, (_ts, rating) in learner_ratings_by_artifact.items()
+           if rating == "unacceptable-none"}
+
+
+def vetoed(cache: CacheReader, subject: str, role: str, artifact_sha: str | None) -> bool:
+    """True only when the latest learner rating naming `artifact_sha`
+    under `role` is "unacceptable-none" (spec 3 section 4 r8) -- a
+    rejection of that specific sha. "unacceptable-use-this" (a candidate
+    nomination) and "acceptable"/"good" (never ranking on a veto-only
+    role) are not a veto; neither is having no rating on `artifact_sha`
+    at all. None for `artifact_sha` is never vetoed (no sha to reject).
+    The one row fold every veto check reads (current_best's own
+    _vetoed_shas folds the same rule over several shas at once).
+    """
+    if artifact_sha is None:
+        return False
+    on_sha = [r for r in record.ratings_for_role(cache.assessments_of(subject), role)
+             if (r.question.get("artifact_sha") or r.answer.get("artifact_sha"))
+             == artifact_sha]
+    if not on_sha:
+        return False
+    return max(on_sha, key=lambda r: r.ts).answer.get("value") == "unacceptable-none"
+
+
 def current_best(cache: CacheReader, subject: str, kind: str, *,
                  current_rubric: Mapping[str, str], prior: Sequence[str] = (),
                  provenance_source: Callable[[str], str | None]) -> CurrentBest:
+    """The fold spec 3 section 6 defines, per (subject, kind)'s own role
+    (AUTHORITY_ORDER[role]): where "learner" is named (picture-for-word,
+    scene-for-sentence, sentence-for-target) the learner's rating wins
+    outright, subject to the regression floor -- else the candidate the
+    most authoritative backend that has spoken ranks highest, provenance
+    prior among equals. Where "learner" is not named (recording-for-word,
+    recording-for-sentence, rendition-for-pair, spec 3 section 4 r8) the
+    learner only vetoes: an "unacceptable-none" rating excludes its sha
+    until a newer rating on the same sha lifts it; "unacceptable-use-this"
+    names a candidate the machine still has to rank, and "acceptable"/
+    "good" never rank either -- the returned source is always the
+    machine backend, never "learner".
+    """
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
     rating_rows = record.ratings_for_role(cache.assessments_of(subject), role)
     learner_ratings = _ratings_by_artifact(rating_rows)
     machine_ranks, machine_sources = _machine_ranks(rows, kind, role, current_rubric)
+
+    if not learner_ranks(role):
+        # r8: the learner vetoes on this role and never ranks -- an
+        # "unacceptable-none" rating excludes its sha from the machine
+        # candidate set (and so from the provenance-prior tie-break
+        # below); "unacceptable-use-this" nominates a sha the machine
+        # still has to rank, and "acceptable"/"good" are recorded but
+        # ignored here -- the source returned is always the machine
+        # backend, never "learner".
+        for sha_ in _vetoed_shas(learner_ratings):
+            machine_ranks.pop(sha_, None)
+        _apply_prior(machine_ranks, prior, provenance_source)
+        passing = {s: r for s, r in machine_ranks.items() if r > _JUDGE_FAIL_RANK}
+        if passing:
+            best_sha = max(passing, key=passing.get)
+            return CurrentBest(artifact_sha=best_sha, source=machine_sources.get(best_sha),
+                               rank=passing[best_sha], speaker=_speaker_for(rows, best_sha))
+        return CurrentBest(artifact_sha=None, source=None, rank=-1.0)
+
     _apply_prior(machine_ranks, prior, provenance_source)
 
     latest_learner_row = max(rating_rows, key=lambda r: r.ts, default=None)
@@ -343,19 +424,30 @@ def _no_provenance_source(artifact_sha: str) -> str | None:
 
 
 def _anchor_ts(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer]) -> int:
-    """The ts of the earliest provide row whose items include
-    current-best's artifact, current-best taken rubric-agnostically here:
-    escalation tracks when a candidate was produced. -1 (every ask
-    counts) while no artifact exists yet.
+    """The newer of two tss (architecture section 4: any learner input
+    reopens a need): the ts of the earliest provide row whose items
+    include current-best's artifact (current-best taken rubric-agnostically
+    here -- escalation tracks when a candidate was produced, -1 while no
+    artifact exists yet), and the newest learner rating row under the
+    need's own role. A supply always carries its own implicit rating
+    (append_supply): that rating row alone covers a supply's own reset,
+    every kind of learner input resetting escalation the same way -- the
+    source roster is asked again from the cheapest.
     """
     best = current_best(cache, subject, kind, current_rubric={}, prior=(),
                         provenance_source=_no_provenance_source)
     if best.artifact_sha is None:
-        return -1
-    producing = [r.ts for r in rows if r.port == "provide"
-                and any(isinstance(i, Mapping) and i.get("sha") == best.artifact_sha
-                        for i in r.answer.get("items", []))]
-    return min(producing) if producing else -1
+        change_ts = -1
+    else:
+        producing = [r.ts for r in rows if r.port == "provide"
+                    and any(isinstance(i, Mapping) and i.get("sha") == best.artifact_sha
+                            for i in r.answer.get("items", []))]
+        change_ts = min(producing) if producing else -1
+
+    role = role_of(cache, subject, kind, rows)
+    rating_ts = max((r.ts for r in record.ratings_for_role(cache.assessments_of(subject), role)),
+                    default=-1)
+    return max(change_ts, rating_ts)
 
 
 def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
@@ -432,23 +524,6 @@ def directed(cache: CacheReader, subject: str) -> bool:
         if not answered:
             return True
     return False
-
-
-def _current_artifact_unacceptable(cache: CacheReader, subject: str, role: str,
-                                   artifact_sha: str | None) -> bool:
-    """True when the latest learner rating specifically naming
-    `artifact_sha` (current-best's own pick) is one of the
-    "unacceptable-*" values -- distinct from having no artifact at all.
-    """
-    if artifact_sha is None:
-        return False
-    ratings = record.ratings_for_role(cache.assessments_of(subject), role)
-    on_artifact = [r for r in ratings
-                  if (r.question.get("artifact_sha") or r.answer.get("artifact_sha")) == artifact_sha]
-    if not on_artifact:
-        return False
-    latest = max(on_artifact, key=lambda r: r.ts)
-    return latest.answer.get("value") in ("unacceptable-none", "unacceptable-use-this")
 
 
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
@@ -611,12 +686,12 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
 
         rows = record.rows_for(cache, subject, kind)
         role = role_of(cache, subject, kind, rows)
-        rejected = _current_artifact_unacceptable(cache, subject, role, best.artifact_sha)
+        is_vetoed = vetoed(cache, subject, role, best.artifact_sha)
         is_directed = directed(cache, subject)
         sources = sources_for(kind)
         attempts = len(record.source_asks(rows))
 
-        if best.artifact_sha is None or rejected:
+        if best.artifact_sha is None or is_vetoed:
             status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap)
             if status.exhausted and not is_directed:
                 out_of_options += 1
@@ -752,6 +827,15 @@ class Reask:
 def _reask_candidate(cache: CacheReader, study: StudyReader, *, subject: str, kind: str,
                      subject_kind: str, family: str, anchors: Sequence[str], card_kind: str,
                      lapse_threshold: int) -> Reask | None:
+    """None unless the need's own role has a newest rating that ranks
+    "acceptable" or better (LEARNER_RANK) AND at least `lapse_threshold`
+    lapse StudyRecords after it. The gate reads the newest role rating
+    directly (record.ratings_for_role), never current_best: on a veto-only
+    role (spec 3 section 4 r8) a rating below "acceptable"
+    ("unacceptable-none" or "unacceptable-use-this") is that newest rating
+    and fails the gate on its own, with no need to consult what
+    current_best resolved to.
+    """
     role = role_for(kind, subject_kind)
     ratings = record.ratings_for_role(cache.assessments_of(subject), role)
     if not ratings:

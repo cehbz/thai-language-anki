@@ -186,6 +186,52 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(deriva
     assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB"}]
 
 
+def test_rate_question_marks_learner_ranks_false_for_a_recording(derivations, db, w1):
+    """r8: recording-for-word names no "learner" in AUTHORITY_ORDER -- the
+    rate question tells the client so it can label the buttons a veto,
+    not a rank.
+    """
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                and i["kind"] == "recording")
+    assert rated["learner_ranks"] is False
+
+
+def test_rate_question_marks_learner_ranks_true_for_a_picture(derivations, db, w1):
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                and i["kind"] == "picture")
+    assert rated["learner_ranks"] is True
+
+
+def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations, db, w1):
+    """r8 fix round 2, ruling 3: action 2 is a nomination on every role
+    kind ("...use this one instead"); on a veto-only role (a recording's
+    rate question, learner_ranks False) 1/3/4 read as a veto and a note;
+    on a learner-ranking role (a picture's, learner_ranks True) they keep
+    their original vocabulary.
+    """
+    items = rs.build_queue(derivations, budget=50)
+    recording = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                     and i["kind"] == "recording")
+    picture = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                  and i["kind"] == "picture")
+    assert recording["learner_ranks"] is False
+    assert picture["learner_ranks"] is True
+
+    assert '"2 unacceptable, use this one instead"' in rs.INDEX_HTML
+    assert '"1 unacceptable (veto)"' in rs.INDEX_HTML
+    assert '"3 acceptable (note)"' in rs.INDEX_HTML
+    assert '"4 good (note)"' in rs.INDEX_HTML
+    assert '"1 unacceptable-none"' in rs.INDEX_HTML
+    assert '"3 acceptable"' in rs.INDEX_HTML
+    assert '"4 good"' in rs.INDEX_HTML
+
+    # both renderers (renderRate and renderReask) share the one label
+    # mapping -- the label text above is never duplicated per renderer.
+    assert rs.INDEX_HTML.count("rateLabels(q.learner_ranks)") == 2
+
+
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
 
 def test_gloss_for_a_sentence_subject_is_the_sentences_own_gloss(syllabus):
@@ -610,9 +656,23 @@ def test_append_supply_url_fetch_is_cache_first(derivations, db, media_store, w1
     assert len(calls) == 1  # 2nd ask hits the cache, no 2nd fetch
 
 
+def _mechanical_pass(db, subject, sha):
+    db.append(port="assess", backend="mechanical",
+             key=MechanicalKey(check="recording-for-word", params="", artifact_sha=sha),
+             subject=subject,
+             question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None,
+                      "kind": "recording"},
+             answer={"value": True})
+
+
 def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1):
     """spec 5 section 1 kind 2: a recording URL is fetched by kind, through
-    audiofetch, never imgfetch (which refuses non-images)."""
+    audiofetch, never imgfetch (which refuses non-images). recording-for-word
+    names no "learner" in AUTHORITY_ORDER (r8): the implicit "unacceptable-
+    use-this" rating a supply writes is a candidate nomination, not a veto
+    (only "unacceptable-none" vetoes) -- the sha is not excluded from
+    machine ranking, but a mechanical verdict still decides current-best.
+    """
     calls = []
 
     def fake_audio_fetcher(url):
@@ -631,7 +691,15 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
     assert provenance["kind"] == "recording"
     assert provenance["speaker_id"] == "learner"
     assert db.speaker("learner").kind == "native"
-    assert ctx.current_best(w1.id, "recording").artifact_sha == sha
+
+    # not vetoed: still a candidate, awaiting a mechanical verdict.
+    assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "recording"))
+    assert ctx.current_best(w1.id, "recording").artifact_sha is None
+
+    _mechanical_pass(db, w1.id, sha)
+    best = ctx.current_best(w1.id, "recording")
+    assert best.artifact_sha == sha
+    assert best.source == "mechanical"
 
 
 def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
@@ -641,7 +709,12 @@ def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
     normalizes pictures only). It still appends its own `provide` row
     (backend="learner"), matching what a URL supply gets through
     Provider.ask; record.candidate_shas and derivations._anchor_ts read
-    the artifact through that row (F1 defect 8).
+    the artifact through that row (F1 defect 8). recording-for-word names
+    no "learner" in AUTHORITY_ORDER (r8): the supply's implicit
+    "unacceptable-use-this" rating nominates the sha rather than vetoing
+    it -- it is a candidate (visible via candidate_shas) awaiting a
+    mechanical verdict, same as any other Source-provided artifact, and
+    becomes current-best once one passes it.
     """
     src = tmp_path / "candidate.wav"
     src.write_bytes(b"fake-wav-bytes")
@@ -653,8 +726,14 @@ def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
     assert media_store.has(sha, "wav")
     assert media_store.path_for(sha, "wav").read_bytes() == b"fake-wav-bytes"
     assert db.media_provenance(sha)["speaker_id"] == "learner"
-    assert ctx.current_best(w1.id, "recording").artifact_sha == sha
+
     assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "recording"))
+    assert ctx.current_best(w1.id, "recording").artifact_sha is None
+
+    _mechanical_pass(db, w1.id, sha)
+    best = ctx.current_best(w1.id, "recording")
+    assert best.artifact_sha == sha
+    assert best.source == "mechanical"
 
 
 def test_a_supplied_picture_from_local_path_also_appends_a_provide_row(
@@ -858,6 +937,48 @@ def test_compute_stats_counts_ratings_coverage_exhausted_and_drills(
     assert stats["run_report_history"] == []
     assert stats["pending"] == 0
     assert stats["sentences_adopted"] == 0
+
+
+def test_compute_stats_accepted_counts_a_mechanically_passing_veto_only_need(
+        derivations, db, w1):
+    """r8 fix round 2, ruling 4: a mechanically-passing recording (rank
+    50, source "mechanical") is accepted -- the learner-ranking
+    "acceptable" (rank 80) floor has no meaning on a veto-only role's
+    machine scale.
+    """
+    _provide(db, w1.id, "recording", backend="forvo", items=[{"sha": "s1"}])
+    _mechanical_pass(db, w1.id, "s1")
+    stats = rs.compute_stats(derivations)
+    assert stats["coverage"]["recording"]["covered"] == 1
+    assert stats["coverage"]["recording"]["accepted"] == 1
+
+
+def test_compute_stats_accepted_counts_a_learner_nominated_passing_recording(
+        derivations, db, w1):
+    """r8 fix round 3, ruling 5: an "unacceptable-use-this" nomination on
+    the mechanically-passing current sha is not a rejection -- accepted.
+    """
+    _provide(db, w1.id, "recording", backend="forvo", items=[{"sha": "s1"}])
+    _mechanical_pass(db, w1.id, "s1")
+    _learner(db, w1.id, "recording", "s1", "unacceptable-use-this")
+    stats = rs.compute_stats(derivations)
+    assert stats["coverage"]["recording"]["accepted"] == 1
+
+
+def test_compute_stats_accepted_still_gates_a_learner_ranking_role_at_80(derivations, db, w1):
+    """Unchanged: on a learner-ranking role (AUTHORITY_ORDER names
+    "learner") a passing-only machine verdict does not reach "accepted"
+    without a learner rating of "acceptable" or better.
+    """
+    _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
+    _judge(db, w1.id, "picture", "sA", True)
+    stats = rs.compute_stats(derivations)
+    assert stats["coverage"]["picture"]["covered"] == 1
+    assert stats["coverage"]["picture"]["accepted"] == 0
+
+    _learner(db, w1.id, "picture", "sA", "acceptable")
+    stats = rs.compute_stats(derivations)
+    assert stats["coverage"]["picture"]["accepted"] == 1
 
 
 def test_compute_stats_reads_pending_and_sentences_adopted_from_the_newest_runreport(
