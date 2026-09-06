@@ -359,3 +359,44 @@ def test_batch_transport_client_construction_failure_is_a_transport_error(call):
 def test_batch_transport_carries_an_api_key():
     assert ClaudeBatchTransport(model="m", api_key="sk-test").api_key == "sk-test"
     assert ClaudeBatchTransport(model="m").api_key == ""
+
+
+# --- thinking ----------------------------------------------------------
+
+def test_api_transport_sends_thinking_disabled_by_default():
+    client = _FakeClient("hello")
+    ClaudeApiTransport(api_key="k", model="m", client_factory=lambda: client).complete("q")
+    assert client.messages.calls[0]["thinking"] == {"type": "disabled"}
+
+
+def test_api_transport_sends_the_configured_thinking():
+    client = _FakeClient("hello")
+    ClaudeApiTransport(api_key="k", model="m", thinking="adaptive",
+                       client_factory=lambda: client).complete("q")
+    assert client.messages.calls[0]["thinking"] == {"type": "adaptive"}
+
+
+def test_batch_transport_sends_thinking_on_every_request():
+    client = _FakeBatchClient()
+    t = ClaudeBatchTransport(model="m", thinking="adaptive", client_factory=lambda: client)
+    t.submit({"c1": ("p1", ()), "c2": ("p2", ())})
+    assert [r["params"]["thinking"] for r in client.messages.batches.created_with] == [
+        {"type": "adaptive"}, {"type": "adaptive"}]
+
+
+class _ThinkingOnlyResponse:
+    """A response whose whole output budget went to thinking: one thinking
+    block, no text block, stop_reason max_tokens."""
+    stop_reason = "max_tokens"
+
+    def __init__(self):
+        block = type("_Thinking", (), {"type": "thinking", "thinking": ""})()
+        self.content = [block]
+        self.usage = _Usage(97271, 4096)
+
+
+def test_api_transport_names_the_stop_reason_when_no_text_block_came_back():
+    client = _FakeApiClient(response=_ThinkingOnlyResponse())
+    t = ClaudeApiTransport(api_key="k", model="m", client_factory=lambda: client)
+    with pytest.raises(TransportError, match="stop_reason=max_tokens.*output_tokens=4096"):
+        t.complete("q")

@@ -3,7 +3,8 @@ judge backend (spec 3 section 2: "one Assessor implementation, three
 transports (cli/api/batch) selected by config"; the llm Provider backend
 uses the same cli/api pair). `anthropic` is an optional dependency
 (pyproject.toml's `llm` extra), imported lazily inside the method that
-needs it.
+needs it. The api and batch transports send `thinking` on every request
+(spec 3 §4).
 
 Costs are in different currencies (spec 3 section 2): cli spends
 subscription token quota, api/batch spend cash. A transport returns a
@@ -12,6 +13,7 @@ subscription token quota, api/batch spend cash. A transport returns a
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import shutil
 import subprocess
@@ -20,6 +22,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+_log = logging.getLogger(__name__)
 
 
 class TransportError(RuntimeError):
@@ -134,6 +138,7 @@ class ClaudeApiTransport:
     api_key: str
     model: str
     max_tokens: int = 4096
+    thinking: str = "disabled"
     client_factory: Callable[[], Any] | None = None
 
     def _client(self) -> Any:
@@ -147,12 +152,16 @@ class ClaudeApiTransport:
             client = self._client()
             response = client.messages.create(
                 model=self.model, max_tokens=self.max_tokens,
+                thinking={"type": self.thinking},
                 messages=[{"role": "user", "content": _content(prompt, attachments)}])
         except Exception as e:  # noqa: BLE001 -- any SDK exception is a transport error
             raise TransportError(f"api transport failed: {e}") from e
         completion = _completion_of(response)
         if not completion.text:
-            raise TransportError("api transport returned an empty completion")
+            raise TransportError(
+                "api transport returned no text block "
+                f"(stop_reason={getattr(response, 'stop_reason', None)}, "
+                f"output_tokens={completion.output_tokens})")
         return completion
 
 
@@ -169,6 +178,7 @@ class ClaudeBatchTransport:
     model: str
     api_key: str = ""
     max_tokens: int = 4096
+    thinking: str = "disabled"
     client_factory: Callable[[], Any] | None = None
 
     def _client(self) -> Any:
@@ -186,6 +196,7 @@ class ClaudeBatchTransport:
             batch = client.messages.batches.create(requests=[
                 {"custom_id": custom_id,
                  "params": {"model": self.model, "max_tokens": self.max_tokens,
+                           "thinking": {"type": self.thinking},
                            "messages": [{"role": "user",
                                          "content": _content(prompt, attachments)}]}}
                 for custom_id, (prompt, attachments) in requests.items()])
@@ -215,6 +226,10 @@ class ClaudeBatchTransport:
                 if result.result.type == "succeeded":
                     candidate = _completion_of(result.result.message)
                     completion = candidate if candidate.text else None
+                    if completion is None:
+                        _log.warning("batch %s: %s succeeded with no text block (stop_reason=%s)",
+                                     batch_id, result.custom_id,
+                                     getattr(result.result.message, "stop_reason", None))
                 out[result.custom_id] = completion
             return out
         except Exception as e:  # noqa: BLE001
