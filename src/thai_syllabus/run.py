@@ -305,6 +305,8 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     An unreachable judge -- at the resolve, in an attempt, or at the
     submit -- ends the pass there, reported and persisted; a batch still
     unanswered ends it before any attempt, so at most one batch is out.
+    A drafter transport failure counts under source_failures["llm-sentence"]
+    and defers every word with an open Target; the loop runs.
     """
     tally = _Tally(spend={name: Spend() for name in budgets})
     # Read before any ask this run makes lands on the record -- the
@@ -365,18 +367,25 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             # behind it was never looked at this run.
             tally.deferred += len(needs.entries)
             return _finish(ctx, tally, needs, batch_id=None, pending=0)
-        # An inline transport answers inside that attempt: what it
-        # verified there is adoptable in this same run.
-        tally.sentences_adopted += _adopt_sentences(ctx)
-        # No Source is asked per open Target -- the sentence attempt is
-        # what serves them. A word whose Targets it was handed is
-        # `attempted`; one it never reached (the per-run Target cap) is
-        # `deferred`; one the adopted drafts closed has already left
-        # gaps() and takes no bucket at all.
-        open_words_after = open_words(ctx.syllabus)
-        tally.attempted += len(result.subjects_handed & open_words_after)
-        tally.deferred += len(
-            (open_words_before - result.subjects_handed) & open_words_after)
+        except TransportError as e:
+            tally.source_failures["llm-sentence"] = (
+                tally.source_failures.get("llm-sentence", 0) + 1)
+            tally.deferred += len(open_words_before)
+            _log.warning("drafter llm-sentence failed: %s", e)
+            result = None
+        if result is not None:
+            # An inline transport answers inside that attempt: what it
+            # verified there is adoptable in this same run.
+            tally.sentences_adopted += _adopt_sentences(ctx)
+            # No Source is asked per open Target -- the sentence attempt is
+            # what serves them. A word whose Targets it was handed is
+            # `attempted`; one it never reached (the per-run Target cap) is
+            # `deferred`; one the adopted drafts closed has already left
+            # gaps() and takes no bucket at all.
+            open_words_after = open_words(ctx.syllabus)
+            tally.attempted += len(result.subjects_handed & open_words_after)
+            tally.deferred += len(
+                (open_words_before - result.subjects_handed) & open_words_after)
     else:
         # The llm-sentence budget kept the attempt from running at all:
         # every word with an open Target is budget-constrained, same as a

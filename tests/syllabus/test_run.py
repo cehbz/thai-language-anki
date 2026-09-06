@@ -1282,6 +1282,31 @@ def test_a_dead_source_is_counted_and_skipped_for_the_rest_of_the_run(db, monkey
         "openverse": 1}
 
 
+def test_a_drafter_transport_failure_is_a_source_failure_and_the_loop_runs(db, monkeypatch):
+    """The drafter died on the wire: its failure is counted, every word
+    with an open Target is deferred, and the queued picture need is
+    still attempted."""
+    calls = _patch(monkeypatch, {}, sentence_result=TransportError)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",), sentences=("t1", "t2")))), {})
+    assert [n.subject for n, _s in calls] == ["a"]
+    assert report.source_failures == {"llm-sentence": 1}
+    assert report.unreachable is False
+    assert report.available == 3 and report.attempted == 1 and report.deferred == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+    assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
+        "llm-sentence": 1}
+
+
+def test_a_drafter_transport_failure_defers_every_open_word_beyond_the_cap_too(db, monkeypatch):
+    sentences = tuple(f"t{i}" for i in range(45))
+    _patch(monkeypatch, {}, sentence_result=TransportError)
+    report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))), {})
+    assert report.available == 45 and report.attempted == 0 and report.deferred == 45
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
 # --- adoption: the cover over what the judge passed ------------------------
 
 class _AdoptingSyl:
