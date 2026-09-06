@@ -161,17 +161,39 @@ def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording"
 
 # --- fixture helpers matching the task brief's representative scenarios ----
 
-def seed_ask(cache, subject, kind, *, source, ts):
+def outcome_row(subject, kind, *, source, outcome, candidates=(), subject_kind="word", ts=None):
+    """One attempt-outcome row (port "attempt", spec 3 section 6): what
+    `source` produced for (subject, kind) -- the row next_source,
+    attempts_since_change and exhausted fold over.
+    """
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="attempt", backend=source, key=f"attempt:{subject}:{kind}:{source}:{ts}",
+                 key_sha="x", subject=subject,
+                 question={"kind": kind, "subject_kind": subject_kind, "source": source},
+                 answer={"outcome": outcome, "candidates": list(candidates)}, cost=0.0, ts=ts)
+
+
+def seed_ask(cache, subject, kind, *, source, ts, subject_kind="word"):
+    """One provide row and one "nothing" outcome row for `source` under
+    (subject, kind, subject_kind) -- the two rows one real attempt
+    appends when it asks a source and nothing usable comes of it.
+    """
     cache.rows.append(provide_row(subject, kind, backend=source, ts=ts))
+    cache.rows.append(outcome_row(subject, kind, source=source, outcome="nothing",
+                                  subject_kind=subject_kind, ts=ts))
 
 
-def seed_artifact(cache, subject, artifact_sha, *, ts, judge_pass, rubric="rubric-v1"):
+def seed_artifact(cache, subject, artifact_sha, *, ts, judge_pass, rubric="rubric-v1",
+                  source="openverse"):
     """One provide row producing `artifact_sha` (a bytes-fetch row, not a
-    Source ask of its own) and, when `judge_pass`, a passing judge verdict
-    on it at the same ts.
+    Source ask of its own), the "candidates" outcome row the attempt that
+    stored it appends, and, when `judge_pass`, a passing judge verdict on
+    it -- all at the same ts.
     """
     cache.rows.append(provide_row(subject, "picture", backend="imgfetch",
                                   items=[{"sha": artifact_sha}], ts=ts))
+    cache.rows.append(outcome_row(subject, "picture", source=source, outcome="candidates",
+                                  candidates=[artifact_sha], ts=ts))
     if judge_pass:
         cache.rows.append(judge_row(subject, "picture", artifact_sha, True, rubric=rubric, ts=ts))
 
@@ -543,6 +565,39 @@ def test_next_source_is_none_once_every_source_asked_since_the_change(cache):
     assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) is None
 
 
+def test_next_source_never_counts_a_transient_failure_as_tried(cache):
+    """r7: a transient-failure outcome never advances the need -- unlike
+    seed_ask's "nothing", a source whose ask or fetch died on the wire is
+    asked again next time, not skipped.
+    """
+    cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                  outcome="transient-failure", ts=1))
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "openverse"
+
+
+def test_exhausted_does_not_count_transient_failures_against_the_cap(cache):
+    cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                  outcome="transient-failure", ts=1))
+    cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                  outcome="transient-failure", ts=2))
+    status = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=1)
+    assert status.exhausted is False and status.attempts == 0
+
+
+# --- ruling 5: migration writes no outcome rows -----------------------------
+
+def test_a_migrated_forvo_answer_with_items_but_no_outcome_row_is_untried(cache):
+    """Migration (migrate.py) writes provide rows only, never an outcome
+    row (spec 2 section 4 item 3): a legacy Forvo answer with items on
+    record but no attempt outcome row leaves the need untried, so the
+    first run re-asks forvo -- which the Provider answers from that very
+    same cached provide row, at zero cost.
+    """
+    cache.rows.append(provide_row("rice", "recording", backend="forvo",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
+    assert next_source(cache, "rice", "recording", ("forvo", "tts")) == "forvo"
+
+
 # --- exhausted ---------------------------------------------------------
 
 def test_not_exhausted_while_a_source_remains_untried(cache):
@@ -552,12 +607,15 @@ def test_not_exhausted_while_a_source_remains_untried(cache):
 
 
 def test_exhausted_once_every_source_is_asked_since_the_change(cache):
+    """A stored candidate that failed judging counts as one of the
+    attempts, alongside the two later source asks.
+    """
     seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=False)
     seed_ask(cache, "rice", "picture", source="openverse", ts=2)
     seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)
     status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8)
     assert status.exhausted is True
-    assert status.attempts == 2
+    assert status.attempts == 3
 
 
 def test_exhausted_once_the_attempt_cap_is_reached_even_with_sources_left(cache):
@@ -678,6 +736,21 @@ def test_a_need_out_of_sources_is_counted_exhausted(cache):
     assert found.entries == [] and found.exhausted == 1 and found.available == 1
 
 
+def test_queue_entry_attempts_counts_tried_outcomes_not_transient_failures(cache):
+    syllabus = _one_word_syllabus()
+    cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                  outcome="transient-failure", ts=_next_ts()))
+    cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                  outcome="transient-failure", ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache) if e.subject == "rice")
+    assert entry.attempts == 0
+
+    cache.rows.append(outcome_row("rice", "picture", source="wikimedia",
+                                  outcome="nothing", ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache) if e.subject == "rice")
+    assert entry.attempts == 1
+
+
 def test_grapheme_keyword_needs_with_no_source_count_as_unserved(cache):
     """No Source serves "grapheme-keyword" (attempts.SOURCES) and no
     per-run pass covers it either -- unlike an unfilled sentence Target,
@@ -698,11 +771,17 @@ def test_a_need_no_source_serves_reports_zero_unserved(cache):
 
 
 def test_exhausted_attempt_count_does_not_grow_from_a_learner_supply(cache):
-    """I2: a learner supply is an answer, not a Source ask, and does not
-    count toward exhausted()'s attempt count."""
+    """A learner supply row alone does not count toward exhausted()'s
+    attempt count; an outcome row does.
+    """
     cache.rows.append(provide_row("rice", "picture", backend="learner", ts=_next_ts()))
     status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8)
     assert status.attempts == 0
+
+    cache.rows.append(outcome_row("rice", "picture", source="openverse", outcome="nothing",
+                                  ts=_next_ts()))
+    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8)
+    assert status.attempts == 1
 
 
 def test_queued_never_emits_a_sentence_entry_for_a_directed_subject(cache):

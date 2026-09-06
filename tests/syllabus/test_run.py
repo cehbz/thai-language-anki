@@ -20,11 +20,12 @@ from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
 from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict
-from thai_syllabus.cachekeys import (BatchMarkerKey, DirectionKey, JudgeKey, LearnerKey,
-                                    LlmPromptKey, MechanicalKey, ProvideKey, RunReportKey, sha)
-from thai_syllabus.attempts import AttemptResult, Sourcing, Spend
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, DirectionKey, JudgeKey,
+                                    LearnerKey, LlmPromptKey, MechanicalKey, ProvideKey,
+                                    RunReportKey, sha)
+from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
-from thai_syllabus.derivations import available_need_keys, current_best, open_words
+from thai_syllabus.derivations import available_need_keys, current_best, next_source, open_words
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.profile import Profile
@@ -372,6 +373,77 @@ def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_
     assert report.available >= 1
 
 
+# --- ruling 4: a transient failure never advances the need (r7, B8) --------
+
+class _LookupOnceForvo:
+    """Forvo answers once with one item; the per-item download always
+    fails on the wire, never the lookup itself."""
+    def __init__(self, item):
+        self.item, self.calls = item, 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params.get("word", q.subject))
+
+    def fetch(self, q):
+        self.calls += 1
+        return RawAnswer(items=(self.item,), cost=1.0)
+
+
+class _DeadAudiofetch:
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise TransportError("audiofetch is down")
+
+
+def _silence_pictures(ctx):
+    """Every picture search backend answers with no candidates."""
+    ctx.provider._backends["openverse"] = _Silent("openverse")
+    ctx.provider._backends["wikimedia"] = _Silent("wikimedia")
+    ctx.provider._backends["pexels"] = _Silent("pexels")
+
+
+def test_a_transient_download_failure_retries_the_same_source_next_run(
+        tmp_path, fake_search, fake_batch):
+    """The forvo lookup succeeds but its only download fails on the wire
+    (caught inside the attempt, spec 3 section 3 -- the ask itself never
+    raises): the attempt writes a transient-failure outcome (ruling 2),
+    which next_source never counts as tried (ruling 3), so a second run's
+    _try_each_need asks forvo again rather than escalating to tts --
+    through the real record, run.py itself unchanged.
+    """
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    _silence_pictures(ctx)
+    forvo = _LookupOnceForvo({"username": "somchai", "pathmp3": "https://f/u.mp3"})
+    ctx.provider._backends["forvo"] = forvo
+    ctx.provider._backends["audiofetch"] = _DeadAudiofetch()
+
+    r1 = run(ctx, budgets={})
+    assert r1.source_failures == {}          # the download's own catch never propagates
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "forvo"
+
+    r2 = run(ctx, budgets={})
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "forvo"
+    assert forvo.calls == 1   # forvo's own lookup is cached forever, never re-fetched
+
+
+def test_a_nothing_outcome_advances_to_the_next_source(tmp_path, fake_search, fake_batch):
+    """A source that answers with nothing usable writes a "nothing"
+    outcome, which next_source does count as tried -- the next run's
+    attempt escalates to the next-cheapest source.
+    """
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    _silence_pictures(ctx)
+    # forvo and tts are already _Silent by _wire's own default, answering
+    # with nothing.
+
+    run(ctx, budgets={})
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "tts"
+
+
 # --- r8 fix round 2: a learner supply reopens an exhausted need over a
 # real run() (architecture section 4) ---------------------------------------
 
@@ -619,11 +691,7 @@ def test_run_counts_a_need_with_no_source_left_as_exhausted(db, monkeypatch):
 
 def test_run_counts_a_need_the_queue_dropped_as_exhausted(db, monkeypatch):
     _patch(monkeypatch, {})
-    for source in ("openverse", "wikimedia", "pexels"):
-        db.append(port="provide", backend=source,
-                  key=ProvideKey(source=source, kind="", query="a"), subject="a",
-                  question={"kind": "picture", "subject_kind": "word"},
-                  answer={"items": []})
+    _exhaust(db, "a")
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     assert report.exhausted == 1 and report.available == 1 and report.attempted == 0
 
@@ -782,12 +850,21 @@ class _DeadResolve(_Assessor):
 
 def _exhaust(db, subject):
     """Every picture Source asked for `subject` and none of them offering
-    anything: queued() counts the need out of options."""
+    anything: queued() counts the need out of options. The "nothing"
+    outcome row is what next_source/exhausted fold over (spec 3 section
+    6); the provide row alongside it is the ask itself, on the record
+    like any real attempt's.
+    """
     for source in ("openverse", "wikimedia", "pexels"):
         db.append(port="provide", backend=source,
                   key=ProvideKey(source=source, kind="", query=subject), subject=subject,
                   question={"kind": "picture", "subject_kind": "word"},
                   answer={"items": []})
+        db.append(port="attempt", backend=source,
+                  key=AttemptOutcomeKey(subject=subject, kind="picture", source=source),
+                  subject=subject,
+                  question={"kind": "picture", "subject_kind": "word", "source": source},
+                  answer={"outcome": "nothing", "candidates": []})
 
 
 def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db, monkeypatch):

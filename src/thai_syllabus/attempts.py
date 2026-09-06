@@ -29,7 +29,7 @@ from typing import Any, Literal
 from . import record
 from .assessor import AssessQuestion, Assessor, Excluded, PreparedQuestion
 from .authority import role_for
-from .cachekeys import RenditionAskKey, rendition_identity
+from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
     CurrentBest,
@@ -72,6 +72,9 @@ def sources_for(kind: str) -> tuple[str, ...]:
 
 
 SubjectKind = Literal["word", "pair", "grapheme", "sentence"]
+
+# The three outcome values an attempt-outcome row's answer["outcome"] carries.
+Outcome = Literal["candidates", "nothing", "transient-failure"]
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,60 @@ class AttemptResult:
     # the words those Targets belong to -- one (word, "sentence") need
     # each, which is how the run accounts for them
     subjects_handed: frozenset[str] = frozenset()
+
+
+# --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
+
+@dataclass
+class _Fetches:
+    """One source's own asks and fetches within one attempt, tracked to
+    decide the outcome row spec 3 section 6 defines: `candidates` (at
+    least one artifact stored and reached the check), `nothing` (this
+    source answered and nothing usable came of it, for a non-transport
+    reason), or `transient-failure` (the source's own ask, or every fetch
+    it needed, failed on the wire). A partial fetch success with at least
+    one candidate is always `candidates`, whatever else failed alongside
+    it.
+    """
+    candidates: list[str] = field(default_factory=list)
+    attempts: int = 0
+    transient_failures: int = 0
+
+    def stored(self, sha: str) -> None:
+        self.attempts += 1
+        self.candidates.append(sha)
+
+    def missed(self) -> None:
+        """A fetch attempted and answered, producing no candidate for a
+        non-transport reason."""
+        self.attempts += 1
+
+    def failed(self) -> None:
+        """A fetch, or the source's own ask, failed on the wire."""
+        self.attempts += 1
+        self.transient_failures += 1
+
+    @property
+    def outcome(self) -> Outcome:
+        if self.candidates:
+            return "candidates"
+        if self.attempts and self.transient_failures == self.attempts:
+            return "transient-failure"
+        return "nothing"
+
+
+def _append_outcome(ctx: Sourcing, need: Need, source: str, outcome: Outcome,
+                    candidates: Sequence[str]) -> None:
+    """One outcome row per (need, source) an attempt asks, after the ask
+    and its fetches (spec 3 section 6): the row every derivation over
+    next_source/exhausted folds over.
+    """
+    ctx.db.append(port="attempt", backend=source,
+                  key=AttemptOutcomeKey(subject=need.subject, kind=need.kind, source=source),
+                  subject=need.subject,
+                  question={"kind": need.kind, "subject_kind": need.subject_kind,
+                            "source": source},
+                  answer={"outcome": outcome, "candidates": list(candidates)})
 
 
 # --- reading the record -----------------------------------------------------
@@ -234,20 +291,28 @@ def _picture_params(ctx: Sourcing, need: Need, query: str) -> dict[str, Any]:
 def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     spend: dict[str, Spend] = {}
     query = _picture_query_for(ctx, need)
-    hits = ctx.provider.ask(source, Question(subject=need.subject, provides="picture",
-                                             params={"query": query}, kind=need.kind,
-                                             subject_kind=need.subject_kind))
+    fetches = _Fetches()
+    try:
+        hits = ctx.provider.ask(source, Question(subject=need.subject, provides="picture",
+                                                 params={"query": query}, kind=need.kind,
+                                                 subject_kind=need.subject_kind))
+    except TransportError:
+        fetches.failed()
+        _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+        raise
     _count(spend, source, hits)
     hit_items = [i for i in hits.items if isinstance(i, Mapping) and i.get("url")]
     for item in hit_items[:ctx.image_candidates]:
-        _ingest_picture(ctx, need, item, source, spend)
+        _ingest_picture(ctx, need, item, source, spend, fetches)
+    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
     return _judge_pictures(ctx, need, query, spend)
 
 
 def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
-                    spend: dict[str, Spend]) -> None:
+                    spend: dict[str, Spend], fetches: _Fetches) -> None:
     """One search hit's bytes through imgfetch, with a media row naming
-    where it came from. A url the fetcher refuses is logged and skipped.
+    where it came from. A url the fetcher refuses is logged and skipped,
+    counted as a transient failure for this source's outcome.
     """
     url = item["url"]
     try:
@@ -256,8 +321,10 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
             kind=need.kind, subject_kind=need.subject_kind))
     except TransportError as e:
         _log.warning("imgfetch refused %s for %s/%s: %s", url, need.subject, need.kind, e)
+        fetches.failed()
         return
     _count(spend, "imgfetch", got)
+    stored = None
     for fetched in got.items:
         sha = fetched.get("sha")
         if not sha:
@@ -266,6 +333,11 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
                          source=str(item.get("source", source)),
                          origin=str(item.get("origin") or url),
                          licence=str(item.get("licence") or "unknown"), acquired=ctx.today())
+        stored = sha
+    if stored:
+        fetches.stored(stored)
+    else:
+        fetches.missed()
 
 
 def _judge_pictures(ctx: Sourcing, need: Need, query: str,
@@ -406,8 +478,8 @@ def _store(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin: str, lice
     return None
 
 
-def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
-                    spend: dict[str, Spend], *, subject_kind: SubjectKind = "word") -> str | None:
+def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str, Spend],
+                    fetches: _Fetches, *, subject_kind: SubjectKind = "word") -> str | None:
     url = item["pathmp3"]
     try:
         got = ctx.provider.ask("audiofetch", Question(
@@ -416,20 +488,33 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping,
                     "source": "forvo"}, kind="recording", subject_kind=subject_kind))
     except TransportError as e:
         _log.warning("audiofetch refused %s for %s: %s", url, subject, e)
+        fetches.failed()
         return None
     _count(spend, "audiofetch", got)
-    return _store(ctx, got, source="forvo", origin=url, licence="forvo",
-                  speaker=_forvo_speaker(item))
+    sha = _store(ctx, got, source="forvo", origin=url, licence="forvo",
+                 speaker=_forvo_speaker(item))
+    if sha:
+        fetches.stored(sha)
+    else:
+        fetches.missed()
+    return sha
 
 
-def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str,
-                spend: dict[str, Spend], *, subject_kind: SubjectKind = "word") -> str | None:
+def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str, spend: dict[str, Spend],
+                *, subject_kind: SubjectKind = "word",
+                fetches: _Fetches | None = None) -> str | None:
     got = ctx.provider.ask("tts", Question(subject=subject, provides="recording",
                                            params={"text": text, "voice": voice},
                                            kind="recording", subject_kind=subject_kind))
     _count(spend, "tts", got)
-    return _store(ctx, got, source="tts", origin=voice, licence="google-tts",
-                  speaker=_tts_speaker(ctx, voice))
+    sha = _store(ctx, got, source="tts", origin=voice, licence="google-tts",
+                 speaker=_tts_speaker(ctx, voice))
+    if fetches is not None:
+        if sha:
+            fetches.stored(sha)
+        else:
+            fetches.missed()
+    return sha
 
 
 def _check(ctx: Sourcing, questions: Sequence[AssessQuestion], spend: dict[str, Spend]):
@@ -445,15 +530,30 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     text = (ctx.syllabus.sentence(need.subject).text if need.subject_kind == "sentence"
             else _word_of(ctx, need.subject).thai)
     constraint = _voice_constraint(ctx, need)
+    fetches = _Fetches()
     if source == "forvo":
-        for item in _forvo_lookup(ctx, need.subject, text, spend,
-                                  subject_kind=need.subject_kind, constraint=constraint):
-            _download_forvo(ctx, need.subject, item, spend, subject_kind=need.subject_kind)
+        try:
+            items = _forvo_lookup(ctx, need.subject, text, spend,
+                                  subject_kind=need.subject_kind, constraint=constraint)
+        except TransportError:
+            fetches.failed()
+            _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+            raise
+        for item in items:
+            _download_forvo(ctx, need.subject, item, spend, fetches,
+                            subject_kind=need.subject_kind)
     elif source == "tts":
         voice = pick_voice(need.subject, _pool(ctx, constraint))
-        _synthesize(ctx, need.subject, text, voice, spend, subject_kind=need.subject_kind)
+        try:
+            _synthesize(ctx, need.subject, text, voice, spend,
+                        subject_kind=need.subject_kind, fetches=fetches)
+        except TransportError:
+            fetches.failed()
+            _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+            raise
     else:
         raise ValueError(f"no recording source named {source!r}")
+    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
     result = _check(ctx, [AssessQuestion(subject=need.subject, role=need.role,
                                          artifact_sha=sha, kind=need.kind,
                                          subject_kind=need.subject_kind)
@@ -473,13 +573,19 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     pair = ctx.syllabus.pair(PairId(need.subject))
     words = {member: _word_of(ctx, member) for member in pair.members}
     constraint = ctx.syllabus.pair_voice_constraint(pair.id)
+    fetches = _Fetches()
 
-    if source == "forvo":
-        members = _forvo_rendition(ctx, pair, words, constraint, spend)
-    elif source == "tts":
-        members = _tts_rendition(ctx, pair, words, constraint, spend)
-    else:
-        raise ValueError(f"no rendition source named {source!r}")
+    try:
+        if source == "forvo":
+            members = _forvo_rendition(ctx, pair, words, constraint, spend, fetches)
+        elif source == "tts":
+            members = _tts_rendition(ctx, pair, words, constraint, spend, fetches)
+        else:
+            raise ValueError(f"no rendition source named {source!r}")
+    except TransportError:
+        fetches.failed()
+        _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+        raise
 
     ctx.db.append(port="provide", backend=source,
                   key=RenditionAskKey(source=source, pair_id=pair.id), subject=pair.id,
@@ -489,6 +595,7 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                   answer={"items": [{"member": member, "sha": sha,
                                      "speaker": asdict(speaker)}
                                     for member, (sha, speaker) in members.items()]})
+    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
     if not members:
         return AttemptResult(attempted=True, spend=spend)
     shas = {member: sha for member, (sha, _speaker) in members.items()}
@@ -516,10 +623,12 @@ def _check_members(ctx: Sourcing, members: Mapping[str, tuple[str, Speaker]],
             for member, q in questions.items()}
 
 
-def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str,
-                     spend: dict[str, Spend]) -> dict[str, tuple[str, Speaker]]:
+def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
+                     fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
     """The intersection of the members' lookups by username: the first
-    speaker who said every member."""
+    speaker who said every member. Every member's lookup runs before any
+    download is attempted.
+    """
     by_member = {m: _forvo_lookup(ctx, m, words[m].thai, spend, constraint=constraint)
                  for m in pair.members}
     shared = set.intersection(*[{i["username"] for i in items} for items in by_member.values()])
@@ -527,7 +636,7 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str,
         members: dict[str, tuple[str, Speaker]] = {}
         for member in pair.members:
             item = next(i for i in by_member[member] if i["username"] == username)
-            sha = _download_forvo(ctx, member, item, spend)
+            sha = _download_forvo(ctx, member, item, spend, fetches)
             if sha is not None:
                 members[member] = (sha, _forvo_speaker(item))
         if len(members) == len(pair.members):
@@ -535,14 +644,17 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str,
     return {}
 
 
-def _tts_rendition(ctx: Sourcing, pair, words, constraint: str,
-                   spend: dict[str, Spend]) -> dict[str, tuple[str, Speaker]]:
-    """One voice across the members."""
+def _tts_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
+                   fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
+    """One voice across the members. A member's synthesis that fails on
+    the wire raises out of the loop; an earlier member's own success
+    stays recorded on `fetches`.
+    """
     voice = pick_voice(pair.id, _pool(ctx, constraint))
     speaker = _tts_speaker(ctx, voice)
     members: dict[str, tuple[str, Speaker]] = {}
     for member in pair.members:
-        sha = _synthesize(ctx, member, words[member].thai, voice, spend)
+        sha = _synthesize(ctx, member, words[member].thai, voice, spend, fetches=fetches)
         if sha is not None:
             members[member] = (sha, speaker)
     return members if len(members) == len(pair.members) else {}

@@ -2,7 +2,10 @@
 Assess backend, encode()'s canonical string, sha()'s 16-hex truncation,
 and preference_identity()'s order-independence.
 """
+import pytest
+
 from thai_syllabus.cachekeys import (
+    AttemptOutcomeKey,
     BatchMarkerKey,
     CacheKey,
     DrillKey,
@@ -142,6 +145,37 @@ def test_a_pair_search_key_names_its_confusion_and_dictionary_version():
 def test_a_rendition_ask_key_names_its_source_and_pair():
     assert RenditionAskKey(source="forvo", pair_id="tone:mid-low/kai").encode() == (
         "provide:forvo:rendition:tone:mid-low/kai")
+
+
+def test_an_attempt_outcome_key_encodes_subject_kind_and_source():
+    key = AttemptOutcomeKey(subject="rice", kind="recording", source="forvo")
+    assert key.encode() == "attempt:rice:recording:forvo"
+    assert isinstance(key, CacheKey)
+
+
+def test_an_attempt_outcome_key_encode_is_injective_over_its_three_fields():
+    """No field is ever empty; distinct (subject, kind, source) triples
+    encode to distinct strings.
+    """
+    variants = [
+        AttemptOutcomeKey(subject="rice", kind="recording", source="forvo"),
+        AttemptOutcomeKey(subject="rice", kind="recording", source="tts"),
+        AttemptOutcomeKey(subject="rice", kind="picture", source="forvo"),
+        AttemptOutcomeKey(subject="fish", kind="recording", source="forvo"),
+    ]
+    for key in variants:
+        assert key.subject and key.kind and key.source
+    encoded = [v.encode() for v in variants]
+    assert len(encoded) == len(set(encoded))
+
+
+def test_an_attempt_outcome_key_refuses_an_empty_field():
+    with pytest.raises(ValueError):
+        AttemptOutcomeKey(subject="", kind="recording", source="forvo")
+    with pytest.raises(ValueError):
+        AttemptOutcomeKey(subject="rice", kind="", source="forvo")
+    with pytest.raises(ValueError):
+        AttemptOutcomeKey(subject="rice", kind="recording", source="")
 
 
 def test_a_rendition_identity_is_its_member_set_whatever_the_order():

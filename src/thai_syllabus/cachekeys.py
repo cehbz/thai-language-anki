@@ -232,6 +232,24 @@ class RenditionAskKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class AttemptOutcomeKey(CacheKey):
+    """attempt:SUBJECT:KIND:SOURCE -- one attempt outcome row (spec 3
+    section 6): what one Source produced for one need. Every field is
+    required and never empty, so encode() is injective over the three.
+    """
+    subject: str
+    kind: str
+    source: str
+
+    def __post_init__(self) -> None:
+        if not self.subject or not self.kind or not self.source:
+            raise ValueError("AttemptOutcomeKey requires a non-empty subject, kind and source")
+
+    def encode(self) -> str:
+        return f"attempt:{self.subject}:{self.kind}:{self.source}"
+
+
+@dataclass(frozen=True)
 class BatchMarkerKey(CacheKey):
     """batch-marker:BATCH_ID -- one marker row per run's judge batch
     (spec 3 section 4), released when the batch resolves, expires, or

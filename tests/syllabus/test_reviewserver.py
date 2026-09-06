@@ -25,8 +25,9 @@ from thai_syllabus import record as record_mod
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
-from thai_syllabus.cachekeys import (DirectionKey, FlagKey, JudgeKey, LearnerKey, MechanicalKey,
-                                    ProvideKey, RunReportKey, preference_identity, sha)
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, FlagKey, JudgeKey,
+                                    LearnerKey, MechanicalKey, ProvideKey, RunReportKey,
+                                    preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
 from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, directed
 from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
@@ -109,18 +110,21 @@ def derivations(syllabus, db, media_store):
 # --- cache-row helpers (mirrors test_derivations.py's) ----------------------
 
 def _provide(db, subject, kind, backend="openverse", items=(), query=None):
-    """One whole attempt, in the two row shapes a real one writes: the
-    Source ask (carrying the query and the search hits) and then one
-    bytes row per fetched candidate (backend imgfetch, one sha each --
-    the only row shape that ever carries a sha; same `kind` as the ask,
-    distinguished from it by backend, not by a suffixed kind). The Source
-    ask is the attempt; the bytes rows are the candidates it produced.
+    """One whole attempt, in the row shapes a real one writes: the Source
+    ask (carrying the query and the search hits), one bytes row per
+    fetched candidate (backend imgfetch, one sha each -- the only row
+    shape that ever carries a sha; same `kind` as the ask, distinguished
+    from it by backend, not by a suffixed kind), and the attempt's own
+    outcome row (port "attempt", spec 3 section 6) -- `candidates` when a
+    sha was stored, `nothing` otherwise, the fold next_source/exhausted
+    read.
     """
     params = {"query": query} if query else {}
     ts = db.append(port="provide", backend=backend,
                    key=ProvideKey(source=backend, kind="", query=str(query)),
                    subject=subject, question={"kind": kind, "params": params},
                    answer={"items": [i for i in items if not i.get("sha")]})
+    stored: list[str] = []
     for item in items:
         if not item.get("sha"):
             continue
@@ -129,6 +133,13 @@ def _provide(db, subject, kind, backend="openverse", items=(), query=None):
                        key=ProvideKey(source="", kind="", query=url), subject=subject,
                        question={"kind": kind, "params": {"url": url}},
                        answer={"items": [dict(item)]})
+        stored.append(item["sha"])
+    ts = db.append(port="attempt", backend=backend,
+                   key=AttemptOutcomeKey(subject=subject, kind=kind, source=backend),
+                   subject=subject,
+                   question={"kind": kind, "subject_kind": "word", "source": backend},
+                   answer={"outcome": "candidates" if stored else "nothing",
+                           "candidates": stored})
     return ts
 
 

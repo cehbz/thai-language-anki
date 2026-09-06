@@ -425,23 +425,23 @@ def _no_provenance_source(artifact_sha: str) -> str | None:
 
 def _anchor_ts(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer]) -> int:
     """The newer of two tss (architecture section 4: any learner input
-    reopens a need): the ts of the earliest provide row whose items
-    include current-best's artifact (current-best taken rubric-agnostically
-    here -- escalation tracks when a candidate was produced, -1 while no
-    artifact exists yet), and the newest learner rating row under the
-    need's own role. A supply always carries its own implicit rating
-    (append_supply): that rating row alone covers a supply's own reset,
-    every kind of learner input resetting escalation the same way -- the
-    source roster is asked again from the cheapest.
+    reopens a need): the ts of the earliest attempt-outcome row (port
+    `attempt`) whose candidates include current-best's artifact
+    (current-best taken rubric-agnostically here -- escalation tracks
+    when a candidate was produced, -1 while no artifact exists yet), and
+    the newest learner rating row under the need's own role. A supply
+    always carries its own implicit rating (append_supply): that rating
+    row alone covers a supply's own reset, every kind of learner input
+    resetting escalation the same way -- the source roster is asked
+    again from the cheapest.
     """
     best = current_best(cache, subject, kind, current_rubric={}, prior=(),
                         provenance_source=_no_provenance_source)
     if best.artifact_sha is None:
         change_ts = -1
     else:
-        producing = [r.ts for r in rows if r.port == "provide"
-                    and any(isinstance(i, Mapping) and i.get("sha") == best.artifact_sha
-                            for i in r.answer.get("items", []))]
+        producing = [r.ts for r in rows if r.port == "attempt"
+                     and best.artifact_sha in (r.answer.get("candidates") or ())]
         change_ts = min(producing) if producing else -1
 
     role = role_of(cache, subject, kind, rows)
@@ -451,13 +451,16 @@ def _anchor_ts(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answe
 
 
 def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
-    """Source asks under (subject, kind) with ts greater than the ts of
-    the row that produced current-best's artifact -- every ask counts
-    when no artifact exists yet.
+    """Attempt-outcome rows (port `attempt`) under (subject, kind) with ts
+    greater than the ts of the row that produced current-best's artifact
+    -- every such row counts when no artifact exists yet. Only
+    `candidates` and `nothing` outcomes count as tried; a
+    `transient-failure` outcome never advances the need (spec 3 section 6).
     """
     rows = record.rows_for(cache, subject, kind)
     since_ts = _anchor_ts(cache, subject, kind, rows)
-    return [r for r in record.source_asks(rows) if r.ts > since_ts]
+    return [r for r in rows if r.port == "attempt" and r.ts > since_ts
+            and r.answer.get("outcome") in ("candidates", "nothing")]
 
 
 def next_source(cache: CacheReader, subject: str, kind: str,
@@ -689,7 +692,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         is_vetoed = vetoed(cache, subject, role, best.artifact_sha)
         is_directed = directed(cache, subject)
         sources = sources_for(kind)
-        attempts = len(record.source_asks(rows))
+        attempts = len(attempts_since_change(cache, subject, kind))
 
         if best.artifact_sha is None or is_vetoed:
             status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap)

@@ -658,6 +658,241 @@ def test_the_drafting_prompt_carries_the_vocabulary_met_and_asks_for_a_gloss(tmp
     assert "male_colloquial" in prompt and '"gloss"' in prompt
 
 
+# --- the outcome row (ruling 2, spec 3 section 6) ---------------------------
+
+def _outcome(db, subject, kind, source):
+    """The newest attempt-outcome row (port "attempt") for (subject, kind,
+    source)."""
+    rows = [r for r in rows_for(db, subject, kind)
+           if r.port == "attempt" and r.backend == source]
+    return max(rows, key=lambda r: r.ts)
+
+
+class _DeadSearch:
+    """A source whose own search ask fails on the wire."""
+    def cache_key(self, q):
+        return ProvideKey(source="openverse", kind="", query=q.params["query"])
+
+    def fetch(self, q):
+        raise TransportError("openverse down")
+
+
+class _DeadImgfetch:
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise TransportError("imgfetch refused")
+
+
+def test_a_picture_attempt_writes_a_candidates_outcome_when_a_hit_is_stored(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.question == {"kind": "picture", "subject_kind": "word", "source": "openverse"}
+    assert row.answer["outcome"] == "candidates"
+    assert len(row.answer["candidates"]) == 1
+
+
+def test_a_picture_attempt_writes_a_nothing_outcome_when_the_search_finds_nothing(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=())
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer == {"outcome": "nothing", "candidates": []}
+
+
+def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_search_fails(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    ctx.provider._backends["openverse"] = _DeadSearch()
+    with pytest.raises(TransportError):
+        attempt(ctx, Need("rice", "picture"), "openverse")
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+def test_a_picture_attempt_writes_transient_failure_when_every_fetch_it_needed_fails(tmp_path):
+    """The attempt completes without raising and its outcome row reads
+    `transient-failure`.
+    """
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",
+                                                        "https://x/good2.jpg"))
+    ctx.provider._backends["imgfetch"] = _DeadImgfetch()
+    result = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert result.attempted
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+class _DeadForvo:
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        raise TransportError("forvo down")
+
+
+class _DeadAudiofetch:
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise TransportError("audiofetch refused")
+
+
+class _DeadTts:
+    def synthesize(self, text, voice):
+        raise TransportError("tts down")
+
+
+class _PartialTts:
+    """Synthesizes the first ask; every later ask fails on the wire --
+    the rendition attempt's partial-success case."""
+    def __init__(self):
+        self.calls = 0
+
+    def synthesize(self, text, voice):
+        self.calls += 1
+        if self.calls > 1:
+            raise TransportError("tts down after the first member")
+        return f"{text}-{voice}".encode()
+
+
+def test_a_forvo_recording_attempt_writes_a_candidates_outcome(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+
+
+def test_a_forvo_recording_attempt_writes_a_nothing_outcome_when_forvo_has_nothing(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer == {"outcome": "nothing", "candidates": []}
+
+
+def test_a_forvo_recording_attempt_writes_transient_failure_when_the_lookup_raises(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx.provider._backends["forvo"] = _DeadForvo()
+    with pytest.raises(TransportError):
+        attempt(ctx, Need("rice", "recording"), "forvo")
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+def test_a_forvo_recording_attempt_writes_transient_failure_when_every_download_fails(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    ctx.provider._backends["audiofetch"] = _DeadAudiofetch()
+    result = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert result.attempted
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+def test_a_tts_recording_attempt_writes_a_candidates_outcome(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    attempt(ctx, Need("rice", "recording"), "tts")
+    row = _outcome(ctx.db, "rice", "recording", "tts")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+
+
+def test_a_tts_recording_attempt_writes_transient_failure_when_synthesis_raises(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=_DeadTts(), voices=list(_MALE) + list(_FEMALE), media=ctx.media_store,
+        pick_voice=pick_voice)
+    with pytest.raises(TransportError):
+        attempt(ctx, Need("rice", "recording"), "tts")
+    row = _outcome(ctx.db, "rice", "recording", "tts")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+def test_a_rendition_attempt_writes_a_candidates_outcome(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = _outcome(ctx.db, "p1", "rendition", "forvo")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 2
+
+
+def test_a_rendition_attempt_writes_a_nothing_outcome_with_no_shared_speaker(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "malee", "pathmp3": "https://f/b.mp3"}]})    # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = _outcome(ctx.db, "p1", "rendition", "forvo")
+    assert row.answer == {"outcome": "nothing", "candidates": []}
+
+
+def test_a_rendition_attempt_writes_transient_failure_when_a_members_lookup_raises(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus())
+    ctx.provider._backends["forvo"] = _DeadForvo()
+    with pytest.raises(TransportError):
+        attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = _outcome(ctx.db, "p1", "rendition", "forvo")
+    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+def test_a_rendition_tts_attempt_reports_candidates_from_a_partial_success_then_reraises(tmp_path):
+    """The first member's synthesis stores a candidate; the second's
+    fails on the wire. The outcome row reads `candidates` and the call
+    raises.
+    """
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus())
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=_PartialTts(), voices=list(_MALE) + list(_FEMALE), media=ctx.media_store,
+        pick_voice=pick_voice)
+    with pytest.raises(TransportError):
+        attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+    row = _outcome(ctx.db, "p1", "rendition", "tts")
+    assert row.answer["outcome"] == "candidates"
+    assert len(row.answer["candidates"]) == 1
+
+
+# --- ruling 1: the outcome row is written before the check call ------------
+
+class _DeadMechanical:
+    def cache_key(self, q):
+        return MechanicalKey(check="duration", params="0.2-5.0", artifact_sha=q.artifact_sha or "-")
+
+    def fetch(self, q):
+        raise TransportError("mechanical check unreachable")
+
+
+def test_a_picture_attempt_writes_its_outcome_row_when_the_judge_is_unreachable(tmp_path):
+    def boom(prompt, attachments=()):
+        raise TransportError("api transport failed")
+    ctx, _search, _judge = _picture_ctx(tmp_path, judge=boom, urls=("https://x/good.jpg",))
+    with pytest.raises(JudgeUnreachable):
+        attempt(ctx, Need("rice", "picture"), "openverse")
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer["outcome"] == "candidates"
+
+
+def test_a_forvo_recording_attempt_writes_its_outcome_row_when_the_check_is_unreachable(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]},   # ข้าว: rice
+        mechanical=_DeadMechanical())
+    with pytest.raises(JudgeUnreachable):
+        attempt(ctx, Need("rice", "recording"), "forvo")
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "candidates"
+
+
+def test_a_rendition_attempt_writes_its_outcome_row_when_the_check_is_unreachable(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]},  # ข่าว: news
+        mechanical=_DeadMechanical())
+    with pytest.raises(JudgeUnreachable):
+        attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = _outcome(ctx.db, "p1", "rendition", "forvo")
+    assert row.answer["outcome"] == "candidates"
+
+
 def test_sentence_drafts_reads_back_every_draft_the_run_asked_for(tmp_path):
     ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
                                   ' "targets": ["rice/receptive"]}]}')
