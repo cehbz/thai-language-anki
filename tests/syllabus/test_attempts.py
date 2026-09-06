@@ -10,8 +10,8 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (Assessor, FillsBackend, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend)
-from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, attempt, current_best_of,
-                                    sentence_attempt, sources_for)
+from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, attempt,
+                                    current_best_of, sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import (JudgeKey, LlmPromptKey, MechanicalKey, ProvideKey,
                                     rendition_identity, sha)
 from thai_syllabus.derivations import exhausted
@@ -22,6 +22,7 @@ from thai_syllabus.provider import FetchBackend, Provider, RawAnswer, TtsBackend
 from thai_syllabus.record import rows_for
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
+from thai_syllabus.rules import OrderEntry
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, TransportError
@@ -901,3 +902,65 @@ def test_sentence_drafts_reads_back_every_draft_the_run_asked_for(tmp_path):
     assert [(d.text, d.gloss, d.claimed) for d in drafts] == [
         ("กินข้าว", "eat rice", ("rice/receptive",))]   # กินข้าว: eat rice
     assert rows_for(ctx.db, DRAFT_SUBJECT, "sentence")
+
+
+# --- _sentence_prompt: the vocabulary listed once, a cutoff per target -----
+
+def _three_word_syllabus():
+    # กิน: eat, ข้าว: rice, อร่อย: tasty; entry order by frequency: eat, rice, tasty
+    return Syllabus(
+        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice"),
+               word("tasty", "อร่อย", "tasty")),
+        targets=(target("tasty/receptive", "tasty"), target("rice/receptive", "rice"),
+                 target("eat/receptive", "eat")),      # list order differs from entry order
+        frequency={"eat": 1, "rice": 2, "tasty": 3},
+        tokenizer=FakeTokenizer({}))
+
+
+def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
+    assert vocabulary.splitlines() == ["1. กิน", "2. ข้าว", "3. อร่อย"]
+    assert prompt.count("อร่อย") == 2          # once in the list, once on its own target line
+
+
+def test_sentence_prompt_gives_each_target_its_cutoff():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    assert "- target eat/receptive: word กิน (eat); may use items 1..1" in prompt
+    assert "- target rice/receptive: word ข้าว (rice); may use items 1..2" in prompt
+    assert "- target tasty/receptive: word อร่อย (tasty); may use items 1..3" in prompt
+
+
+def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
+    syllabus = _three_word_syllabus()
+    first_only = [t for t in syllabus.targets if t.id == "eat/receptive"]
+    vocabulary = _sentence_prompt(syllabus, first_only).split(
+        "Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
+    assert vocabulary.splitlines() == ["1. กิน"]
+
+
+def test_sentence_prompt_refuses_a_target_whose_met_vocabulary_disagrees_with_order():
+    class _Syl:
+        """order() meets eat then tasty; vocabulary_met_by claims tasty met rice."""
+        profile = type("P", (), {"register": "male_colloquial"})()
+        sentences = ()
+        tokenizer = FakeTokenizer({})
+        _by_id = {"eat": word("eat", "กิน", "eat"), "rice": word("rice", "ข้าว", "rice"),
+                  "tasty": word("tasty", "อร่อย", "tasty")}
+        targets = (target("eat/receptive", "eat"), target("tasty/receptive", "tasty"))
+
+        def word(self, id):
+            return self._by_id[id]
+
+        def order(self):
+            return [OrderEntry("word_target", "eat/receptive"),
+                    OrderEntry("word_target", "tasty/receptive")]
+
+        def vocabulary_met_by(self, t):
+            return {"eat/receptive": (self._by_id["eat"],),
+                    "tasty/receptive": (self._by_id["eat"], self._by_id["rice"])}[t.id]
+
+    with pytest.raises(ValueError, match="tasty/receptive"):
+        _sentence_prompt(_Syl(), list(_Syl.targets))

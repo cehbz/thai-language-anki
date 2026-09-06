@@ -38,7 +38,7 @@ from .derivations import (
     pictures_awaiting_preference,
 )
 from .entities import Target, Word
-from .ids import PairId, WordId
+from .ids import PairId, TargetId, WordId
 from .media import Speaker
 from .provider import Provider, ProviderAnswer, Question
 from .query import QUERY_HINTS, picture_query
@@ -662,21 +662,54 @@ def _tts_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str,
 
 # --- the sentence attempt (per run, over the open Targets) ------------------
 
+def _entry_vocabulary(syllabus: Syllabus,
+                      targets: Sequence[Target]) -> tuple[list[Word], dict[TargetId, int]]:
+    """The words met in entry order (Syllabus.order) up to the furthest
+    handed target, and per handed target how many of them were met at or
+    before it. Refuses a target whose vocabulary_met_by is not that
+    prefix."""
+    wanted = {t.id: t for t in targets}
+    by_id = {t.id: t for t in syllabus.targets}
+    vocabulary: list[Word] = []
+    seen: set[WordId] = set()
+    cutoffs: dict[TargetId, int] = {}
+    for entry in syllabus.order():
+        if entry.kind != "word_target":
+            continue
+        word_id = by_id[entry.id].word
+        if word_id not in seen:
+            seen.add(word_id)
+            vocabulary.append(syllabus.word(word_id))
+        if entry.id in wanted:
+            cutoffs[entry.id] = len(vocabulary)
+            if len(cutoffs) == len(wanted):
+                break
+    for target in targets:
+        met = {w.id for w in syllabus.vocabulary_met_by(target)}
+        if met != {w.id for w in vocabulary[:cutoffs[target.id]]}:
+            raise ValueError(f"target {target.id}: vocabulary_met_by differs from the "
+                             "words order() meets at or before it")
+    return vocabulary, cutoffs
+
+
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
+    vocabulary, cutoffs = _entry_vocabulary(syllabus, targets)
     lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        met = ", ".join(w.thai for w in syllabus.vocabulary_met_by(target))
-        lines.append(f"- target {target.id}: word {word.thai} ({word.meaning}); may use: {met}")
+        lines.append(f"- target {target.id}: word {word.thai} ({word.meaning}); "
+                     f"may use items 1..{cutoffs[target.id]}")
     openings = sorted({syllabus.tokenizer.tokens(s.text)[0] for s in syllabus.sentences
                        if syllabus.tokenizer.tokens(s.text)})
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
             "Write one short sentence per target, or one sentence covering several targets when "
-            "their permitted vocabularies allow it. Use only the listed words for each target; "
-            "every other word in a sentence must appear in that target's 'may use' list.\n"
+            "their permitted vocabularies allow it. A target's sentence may use only vocabulary "
+            "items 1..N for the N given on its line.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
+            + "Vocabulary, in the order met:\n"
+            + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n"
             + "Targets:\n" + "\n".join(lines) + "\n"
             'Output JSON only: {"sentences": [{"text": "...", "gloss": "...", '
             '"targets": ["<target id>", ...]}]}')
