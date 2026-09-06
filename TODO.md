@@ -8,23 +8,11 @@ still run against them.
 
 ## Review closure, remaining
 
-- B8: make the run's accounting identity hold on every return path
-  (four holes parked at Task B7's cap, 2026-09-06): the resolve-
-  unreachable and outstanding-batch branches count exhausted/unserved
-  twice; the sentence-attempt-unreachable branch defers none of the
-  loop's needs; needs skipped for a Source transport failure land in no
-  bucket; available dedups (word, sentence) while the drafted-target
-  count is per Target.
-- Attempt outcomes (spec 3 section 6 revision, needs approval): a source
-  counts as tried for a need only when the record holds its outcome (it
-  answered nothing, or a candidate from it was stored and checked). Today
-  next_source folds over asks, so a lookup or search that succeeds and
-  then loses every download to a transport error advances the need to the
-  next, costlier source on the next run. The attempt appends one outcome
-  row per source ask; next_source and exhausted fold over outcomes; the
-  transport-failure bucket hole above closes with it.
-- KB project node: full rewrite (its architecture/CLI/stores sections
-  describe the old pipeline; keep the NLP, judge and media measurements).
+- Rendition escalation anchor: a rendition's outcome row records member
+  recording shas while current_best.artifact_sha is the rendition
+  identity, so _anchor_ts never anchors a rendition and every rendition
+  attempt counts since the beginning. Record the rendition identity in
+  the outcome row's candidates (or anchor on the rendition verdict row).
 
 ## Cutover
 
