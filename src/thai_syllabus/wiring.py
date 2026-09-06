@@ -8,11 +8,10 @@ which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
 
-The llm Provide backends (llm-sentence/llm-phrase/llm-entry) reuse the
-judge's account, model and price, one registered name per producer; under
-a batch judge, which has no single-question `.complete()`, they ride a
-lazy api transport on the same anthropic secret, and they are omitted
-when no anthropic secret is configured at all.
+The llm Provide backends (llm-sentence/llm-phrase/llm-entry) ride
+the drafter's transport from drafter.transport (cli by default; api rides
+the judge's account, model, price and thinking), one registered name per
+producer.
 
 load_syllabus reads the deck's media relationships through `_DbMediaIndex`
 (derivations.current_best over the db; the `media` table carries
@@ -90,32 +89,29 @@ class _Lazy:
 
 
 def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
-    """A lazy `.complete(prompt)` transport for the one Claude account
-    providers.yaml configures (judge.transport/model), shared by the judge
-    and the llm backends. None under a "batch" judge.
+    """A lazy `.complete(prompt)` transport for the judge (judge.transport,
+    judge.model, judge.thinking). None under a "batch" judge.
     """
     kind = cfg.judge.transport
     if kind == "cli":
         return _Lazy(lambda: ClaudeCliTransport())
     if kind == "api":
         return _Lazy(lambda: ClaudeApiTransport(
-            api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
+            api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
+            thinking=cfg.judge.thinking))
     return None
 
 
-def _llm_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
-    """The single-question transport llm-sentence/phrase/entry draft on:
-    the judge's own cli/api transport, or under a batch judge a lazy api
-    transport on the same anthropic secret. None when a batch judge has
-    no anthropic secret configured at all.
+def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
+    """The single-question transport llm-sentence/phrase/entry draft on
+    (spec 3 section 4): drafter.transport, cli or api; api rides the
+    judge's account, model and thinking.
     """
-    transport = _claude_transport(cfg, secrets)
-    if transport is not None:
-        return transport
-    if "anthropic" not in cfg.secrets:
-        return None
-    return _Lazy(lambda: ClaudeApiTransport(
-        api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
+    if cfg.drafter.transport == "api":
+        return _Lazy(lambda: ClaudeApiTransport(
+            api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
+            thinking=cfg.judge.thinking))
+    return _Lazy(lambda: ClaudeCliTransport())
 
 
 def _judge_price(cfg: ProvidersConfig) -> Price | None:
@@ -128,6 +124,14 @@ def _judge_quota_cost(cfg: ProvidersConfig) -> float:
     return 1.0 if cfg.judge.transport == "cli" else 0.0
 
 
+def _drafter_price(cfg: ProvidersConfig) -> Price | None:
+    return _judge_price(cfg) if cfg.drafter.transport == "api" else None
+
+
+def _drafter_quota_cost(cfg: ProvidersConfig) -> float:
+    return 1.0 if cfg.drafter.transport == "cli" else 0.0
+
+
 # --- build_provider ----------------------------------------------------
 
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
@@ -135,7 +139,7 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     """The Provide port's backend roster (spec 3 section 2), wired from
     providers.yaml: search_proxy for image search, imgfetch_path/
     audiofetch_path for the mediafetch fetchers, the tts voice pools, and
-    the shared judge/llm transport+model for llm-*.
+    the drafter transport for llm-*.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
@@ -158,15 +162,14 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     backends["audiofetch"] = FetchBackend(media=media_store,
                                           fetcher=tool_fetcher(cfg.audiofetch_path))
 
-    llm_transport = _llm_transport(cfg, secrets)
-    if llm_transport is not None:
-        for producer, name in (("sentence-drafter", "llm-sentence"),
-                               ("phrase-drafter", "llm-phrase"),
-                               ("entry-drafter", "llm-entry")):
-            backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
-                                        transport=llm_transport,
-                                        price=_judge_price(cfg),
-                                        quota_cost_per_call=_judge_quota_cost(cfg))
+    drafter_transport = _drafter_transport(cfg, secrets)
+    for producer, name in (("sentence-drafter", "llm-sentence"),
+                           ("phrase-drafter", "llm-phrase"),
+                           ("entry-drafter", "llm-entry")):
+        backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
+                                    transport=drafter_transport,
+                                    price=_drafter_price(cfg),
+                                    quota_cost_per_call=_drafter_quota_cost(cfg))
 
     return Provider(record=db, cache=db, backends=backends)
 
@@ -233,7 +236,8 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
     batch_transport = None
     if kind == "batch":
         batch_transport = _Lazy(lambda: ClaudeBatchTransport(
-            api_key=secrets.get("anthropic") or "", model=cfg.judge.model))
+            api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
+            thinking=cfg.judge.thinking))
     else:
         transport = _claude_transport(cfg, secrets)
         if transport is not None:

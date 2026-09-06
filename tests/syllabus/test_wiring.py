@@ -219,54 +219,60 @@ def test_tts_backend_voice_pool_combines_male_and_female(cfg, db, media_store):
     assert set(backend.voices) == {"m1", "m2", "f1"}
 
 
-# --- build_provider: llm backend follows judge.transport -----------------
+# --- build_provider: llm backends follow drafter.transport ----------------
 
-def test_llm_backends_registered_for_cli_transport(cfg, db, media_store):
+def test_llm_backends_are_always_registered(cfg, db, media_store):
     from thai_syllabus.curated import JudgeConfig
-    cfg = ProvidersConfig(secrets=cfg.secrets, judge=JudgeConfig(transport="cli", model="m"))
-    provider = build_provider(cfg, db, media_store)
-    assert "llm-sentence" in provider._backends
+    for judge in (JudgeConfig(transport="cli"),
+                  JudgeConfig(transport="batch", model="m", price_per_mtok=(2.0, 10.0))):
+        backends = build_provider(ProvidersConfig(secrets=cfg.secrets, judge=judge),
+                                  db, media_store)._backends
+        assert {"llm-sentence", "llm-phrase", "llm-entry"} <= set(backends)
 
 
-def test_llm_backends_registered_for_a_batch_judge_with_an_anthropic_secret(
+def test_the_default_drafter_is_the_cli_transport_whatever_the_judge_is(
         cfg, db, media_store, monkeypatch):
-    """A batch judge has no single-question transport, but sentence/phrase/
-    entry drafting still needs one -- it rides a lazy api transport on the
-    same anthropic secret, so a deck whose verdicts go through batches can
-    still draft sentences."""
+    from thai_syllabus.curated import JudgeConfig
+    from thai_syllabus.transport import ClaudeCliTransport
     cfg2 = ProvidersConfig(secrets=cfg.secrets,
                            judge=JudgeConfig(transport="batch", model="m",
                                              price_per_mtok=(2.0, 10.0)))
     calls = _track_reads(monkeypatch)
-    backends = build_provider(cfg2, db, media_store)._backends
-    assert {"llm-sentence", "llm-phrase", "llm-entry"} <= set(backends)
-    assert calls == []                       # still lazy: no secret read to build the roster
-    transport = backends["llm-sentence"].transport
-    transport.complete  # a .complete-shaped lazy transport, not a batch one
-    assert not hasattr(transport, "submit")
+    backend = build_provider(cfg2, db, media_store)._backends["llm-sentence"]
+    assert isinstance(backend.transport._resolve(), ClaudeCliTransport)
+    assert calls == []                       # a cli drafter reads no secret
+    assert backend.price is None and backend.quota_cost_per_call == 1.0
 
 
-def test_no_llm_backends_registered_for_a_batch_judge_without_an_anthropic_secret(db, media_store):
-    cfg = ProvidersConfig(secrets={}, judge=JudgeConfig(transport="batch", model="m"))
-    assert "llm-sentence" not in build_provider(cfg, db, media_store)._backends
+def test_an_api_drafter_rides_the_judges_account_model_price_and_thinking(
+        cfg, db, media_store):
+    from thai_syllabus.curated import DrafterConfig, JudgeConfig
+    from thai_syllabus.transport import ClaudeApiTransport
+    cfg2 = ProvidersConfig(secrets=cfg.secrets,
+                           judge=JudgeConfig(transport="batch", model="m", thinking="adaptive",
+                                             price_per_mtok=(2.0, 10.0)),
+                           drafter=DrafterConfig(transport="api"))
+    backend = build_provider(cfg2, db, media_store)._backends["llm-sentence"]
+    transport = backend.transport._resolve()
+    assert isinstance(transport, ClaudeApiTransport)
+    assert transport.model == "m" and transport.thinking == "adaptive"
+    assert transport.api_key == "anthropic-key"
+    assert backend.price == Price(2.0, 10.0) and backend.quota_cost_per_call == 0.0
 
 
-def test_llm_backends_carry_the_judge_price_and_quota_cost(cfg, db, media_store):
-    """Spec 3 section 2's cost contract: llm drafting spends on the same
-    account and the same currency the judge does, so it is priced from the
-    same providers.yaml judge section."""
-    api = build_provider(ProvidersConfig(
+def test_the_judge_transports_carry_the_configured_thinking(cfg, db, media_store):
+    from thai_syllabus.curated import JudgeConfig
+    from thai_syllabus.wiring import _claude_transport
+    batch = build_assessor(ProvidersConfig(
         secrets=cfg.secrets,
-        judge=JudgeConfig(transport="api", model="m", price_per_mtok=(2.0, 10.0))),
-        db, media_store)._backends
-    cli = build_provider(ProvidersConfig(
-        secrets=cfg.secrets, judge=JudgeConfig(transport="cli", model="m")),
-        db, media_store)._backends
-    for name in ("llm-sentence", "llm-phrase", "llm-entry"):
-        assert api[name].price == Price(2.0, 10.0)
-        assert api[name].quota_cost_per_call == 0.0
-        assert cli[name].price is None
-        assert cli[name].quota_cost_per_call == 1.0
+        judge=JudgeConfig(transport="batch", model="m", price_per_mtok=(2.0, 10.0))),
+        db, media_store)
+    assert batch._backends["judge"].batch_transport._resolve().thinking == "disabled"
+    api = _claude_transport(ProvidersConfig(
+        secrets=cfg.secrets,
+        judge=JudgeConfig(transport="api", model="m", thinking="adaptive",
+                          price_per_mtok=(2.0, 10.0))), cfg.secret_store())._resolve()
+    assert api.thinking == "adaptive"
 
 
 # --- build_assessor -------------------------------------------------------
