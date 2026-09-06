@@ -15,8 +15,14 @@ still run against them.
   loop's needs; needs skipped for a Source transport failure land in no
   bucket; available dedups (word, sentence) while the drafted-target
   count is per Target.
-- Final whole-branch review of the 2026-09-04 plan, then delete
-  .superpowers/sdd/2026-09-04-review-closure.
+- Attempt outcomes (spec 3 section 6 revision, needs approval): a source
+  counts as tried for a need only when the record holds its outcome (it
+  answered nothing, or a candidate from it was stored and checked). Today
+  next_source folds over asks, so a lookup or search that succeeds and
+  then loses every download to a transport error advances the need to the
+  next, costlier source on the next run. The attempt appends one outcome
+  row per source ask; next_source and exhausted fold over outcomes; the
+  transport-failure bucket hole above closes with it.
 - KB project node: full rewrite (its architecture/CLI/stores sections
   describe the old pipeline; keep the NLP, judge and media measurements).
 
