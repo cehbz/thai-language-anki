@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 8, proposed 2026-09-06 against principles r2 and architecture
+Revision 9, proposed 2026-09-06 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -35,6 +35,15 @@ Revision log:
   measure; user ruling 2026-09-06 (the learner may be hearing two
   speakers, not the contrast, but can tell an unintelligible
   recording).
+- r9 2026-09-06: the drafter's transport is configured on its own
+  (`drafter.transport`, cli by default); a drafter transport failure is
+  a source failure; the drafting prompt lists the vocabulary once with a
+  cutoff per target; the api and batch transports send a thinking
+  setting (`judge.thinking`). Evidence: the first cutover run 2026-09-06
+  (the api drafter's 4096 output tokens all spent on adaptive thinking,
+  no text; 97K input tokens for 40 targets; the run died with no
+  report); user ruling 2026-09-06 (subscription quota over cash where
+  the CLI can do the job).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -86,9 +95,9 @@ appends one row. Consumers see ask() only.
 
 **Cost contract.** Every Answer and Verdict carries the cost the backend
 incurred, in that backend's currency, measured by the backend: Forvo one
-lookup, TTS characters times rate, the api and batch judge tokens times the
-model price in providers.yaml, the cli judge one call of quota, the learner
-seconds. A transport that receives usage and drops it violates this
+lookup, TTS characters times rate, the api and batch judge and the api
+drafter tokens times the model price in providers.yaml, the cli judge and
+the cli drafter one call of quota, the learner seconds. A transport that receives usage and drops it violates this
 contract. Consumers: budget enforcement (section 7), cross-run accounting
 from the record, queue order, the run report.
 
@@ -149,6 +158,11 @@ run does not know which (section 7). Batch state is one marker row per
 run, keyed on the batch id, released when the batch resolves, expires,
 or fails. report() never calls Assess.
 
+**Drafter transport**: cli / api, selected in providers.yaml
+`drafter.transport` (cli by default); api rides the judge's account,
+model and price. `judge.thinking` (disabled by default, or adaptive) is
+sent by the api and batch transports on every request.
+
 ## 5. Attempts per need kind
 
 **Picture (Word).** Query = the word's image phrase if a human or judge
@@ -186,9 +200,10 @@ when the members' current-best recordings differ in speaker and no
 rendition exists.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target: the prompt carries the open targets and, per target, the vocabulary
-met at its entry position (Syllabus.order), the profile register, and the
-existing sentence openings to avoid. Each drafted text is a candidate:
+target: the prompt carries the vocabulary met by the furthest open target
+once, in entry-position order (Syllabus.order), and per target the count of
+that list it may use (the per-target vocabularies nest by position), the
+profile register, and the existing sentence openings to avoid. Each drafted text is a candidate:
 mechanical `fills()` against the targets it claims, judge
 sentence-for-target (naturalness; register), then adopt:
 `Syllabus.add_sentence` with provenance. Each draft carries its L1
@@ -318,8 +333,10 @@ cannot be reached does not stop the run: the source is skipped for the
 rest of the run, needs whose next source it is stay untouched and
 count under deferred, the need whose attempt failed records a
 `transient-failure` outcome and counts under deferred too, and the
-report counts the failure under source_failures[source]. Every ask appends;
-kill-safe anywhere. The run is transport-agnostic.
+report counts the failure under source_failures[source]. A drafter
+transport failure is a source failure under source_failures["llm-sentence"]:
+every open Target's need counts under deferred and the loop runs. Every ask
+appends; kill-safe anywhere. The run is transport-agnostic.
 
 ## 8. Rules added
 
@@ -338,7 +355,8 @@ path besides compile --force.
 
 ## 9. Configuration
 
-providers.yaml adds `judge.price_per_mtok: {input, output}` and
+providers.yaml adds `judge.price_per_mtok: {input, output}`,
+`judge.thinking` (disabled | adaptive), `drafter.transport` (cli | api) and
 `image_candidates` (5). The provenance prior lives in rulebook.yaml (it is
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,
 picture/preference, and sentence texts verbatim.
