@@ -22,6 +22,7 @@ import argparse
 import http.server
 import json
 import mimetypes
+import re
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, WaiverKey
+from .compile import CARD_CSS, build_deck, render_card
 from .derivations import (
     LEARNER_RANK,
     Challenger,
@@ -62,7 +64,7 @@ if TYPE_CHECKING:                       # wiring reaches for provider/assessor; 
 
 __all__ = [
     "ReviewContext", "SessionStats", "build_app", "serve", "load_context", "main",
-    "build_queue", "simplified_cards", "compute_stats",
+    "build_queue", "compiled_cards", "compute_stats",
     "append_answer", "append_supply", "append_gallery_note", "append_drill_result",
 ]
 
@@ -245,69 +247,66 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     return items[:budget]
 
 
-# --- gallery data provider (spec 5 section 1/4) -----------------------------
+# --- gallery data provider (spec 5 section 1) -------------------------------
 #
-# Built from Syllabus state, not an apkg: compile() (spec 4) raises
-# NotImplementedError today. Kept as a narrow, swappable provider function
-# (ReviewContext.cards_provider) so a caller can hand build_app() an
-# apkg-faithful renderer once compile() lands, without touching anything
-# else here.
+# Renders exactly the notes compile.build_deck would write, through each
+# note's own model template -- the gallery composes no card shape of its
+# own (principles F4: the learner judges the artifact the card will show).
 
-def simplified_cards(d: "Derivations") -> list[dict[str, Any]]:
-    syllabus = d.syllabus
-    words_by_id = {w.id: w for w in syllabus.words}
-    targets_by_id = {t.id: t for t in syllabus.targets}
-    pairs_by_id = {p.id: p for p in syllabus.pairs}
-    graphemes_by_symbol = {g.symbol: g for g in syllabus.graphemes}
-    confusions_by_id = {c.id: c for c in syllabus.confusions}
+# Card kind = (model name, template name), lowercase, family-prefixed only
+# where two families' template names collide (word/grapheme both have
+# "Reading"; word/sentence both have "Listening") -- otherwise the bare
+# template name (spec 4 section 1's own card names).
+_CARD_KIND_NAMES: dict[tuple[str, str], str] = {
+    ("word", "Listening"): "listening",
+    ("word", "Production"): "production",
+    ("word", "Reading"): "reading",
+    ("word", "Spelling"): "spelling",
+    ("minimal_pair", "Recognition"): "recognition",
+    ("grapheme", "Reading"): "grapheme-reading",
+    ("sentence", "Cloze"): "cloze",
+    ("sentence", "Listening"): "sentence-listening",
+}
+
+_MEDIA_IMG_RE = re.compile(r'<img src="([^".]+)\.[A-Za-z0-9]+">')
+_MEDIA_SOUND_RE = re.compile(r'\[sound:([^.\]]+)\.[A-Za-z0-9]+\]')
+
+
+def _resolve_media_for_web(html: str) -> str:
+    """Rewrites compile.py's apkg-relative media references (basename
+    "sha.ext", genanki.Package's own media_files convention) into the
+    review server's own /media/SHA route -- the same bytes the compile
+    resolved, servable to a browser instead of Anki's media folder.
+    """
+    html = _MEDIA_IMG_RE.sub(lambda m: f'<img src="/media/{m.group(1)}">', html)
+    html = _MEDIA_SOUND_RE.sub(
+        lambda m: f'<audio controls src="/media/{m.group(1)}"></audio>', html)
+    return html
+
+
+def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
+    """Every card compile.build_deck would compile, in the due order it
+    assigns from Syllabus.order() -- sequential introduction order (spec
+    5 section 1). One entry per note.cards() card: its kind (the
+    template name), front/back HTML rendered through the note's own
+    model template, and the model's CSS, so the gallery shows what Anki
+    shows.
+    """
+    built_deck = build_deck(d.syllabus, d.db, d.media_store)
+    ordered = sorted(built_deck.built, key=lambda item: item.base_due)
 
     cards: list[dict[str, Any]] = []
-    for index, entry in enumerate(syllabus.order()):
-        if entry.kind == "word_target":
-            target = targets_by_id.get(entry.id)
-            word = words_by_id.get(target.word) if target else None
-            if target is None or word is None:
-                continue
-            best = _best(d, target.word, "picture")
+    for item in ordered:
+        for card in item.note.cards:
+            template_name = item.model.templates[card.ord]["name"]
+            kind = _CARD_KIND_NAMES[(item.model.name, template_name)]
+            front, back = render_card(item.model, item.note, card.ord)
             cards.append({
-                "index": index, "id": target.id, "kind": "target",
-                "front": {"thai": word.thai, "picture": (_artifact(best.artifact_sha) or {}).get("url")},
-                "back": {"meaning": word.meaning},
-                "gloss": word.meaning, "voice": None, "drill": None,
+                "index": len(cards), "id": item.subject, "kind": kind,
+                "front_html": _resolve_media_for_web(front),
+                "back_html": _resolve_media_for_web(back),
+                "css": item.model.css,
             })
-        elif entry.kind == "pair":
-            pair = pairs_by_id.get(entry.id)
-            if pair is None:
-                continue
-            members = [words_by_id.get(m) for m in pair.members]
-            if any(m is None for m in members):
-                continue
-            confusion = confusions_by_id.get(pair.confusion)
-            best = _best(d, members[0].id, "recording")
-            other = members[1].thai if len(members) > 1 else None
-            cards.append({
-                "index": index, "id": pair.id, "kind": "pair",
-                "front": {"thai": members[0].thai},
-                "back": {"other_thai": other},
-                "gloss": " / ".join(f"{m.thai}: {m.meaning}" for m in members),
-                "voice": None,
-                "drill": {"audio": (_artifact(best.artifact_sha) or {}).get("url"),
-                         "thai": members[0].thai, "other_thai": other,
-                         "contrast": confusion.id if confusion else pair.confusion},
-            })
-        elif entry.kind == "grapheme":
-            grapheme = graphemes_by_symbol.get(entry.id)
-            if grapheme is None:
-                continue
-            keyword = words_by_id.get(grapheme.keyword)
-            cards.append({
-                "index": index, "id": entry.id, "kind": "grapheme",
-                "front": {"symbol": grapheme.symbol},
-                "back": {"sound": grapheme.sound, "keyword": keyword.thai if keyword else None},
-                "gloss": keyword.meaning if keyword else None, "voice": None, "drill": None,
-            })
-        # else: entry.kind == "sentence" -- this provider renders no
-        # sentence card yet, skipped rather than raising.
     return cards
 
 
@@ -544,7 +543,7 @@ class ReviewContext:
     learner_budget: int = DEFAULT_LEARNER_BUDGET
     url_fetcher: Callable[[str], tuple[bytes, str]] | None = None
     cards_provider: Callable[["Derivations"], list[dict[str, Any]]] = field(
-        default=simplified_cards)
+        default=compiled_cards)
     session: SessionStats = field(default_factory=SessionStats)
 
     def __post_init__(self) -> None:
@@ -730,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
 # (spec 5 section 2: "1-4 rate, n note, arrows navigate, g gloss, s stats")
 # ---------------------------------------------------------------------------
 
-INDEX_HTML = """<!doctype html>
+_INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -767,10 +766,7 @@ INDEX_HTML = """<!doctype html>
     display: inline-block; border: 2px dashed #4fb3bf; color: #7fe0ea;
     padding: 4px 12px; border-radius: 8px; font-size: 18px; background: #10262a;
   }
-  .current-artifact img {
-    max-width: min(90vw, 640px); max-height: 55vh; width: auto; height: auto;
-    border-radius: 6px;
-  }
+  .current-artifact { max-width: min(90vw, 640px); }
   .verdict { color: #9aa4b1; font-size: 14px; }
   .query { color: #6b7480; font-size: 13px; font-family: monospace; }
   .thumbs { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
@@ -814,6 +810,7 @@ INDEX_HTML = """<!doctype html>
   .empty { color: #6b7480; padding: 40px; }
   [hidden] { display: none !important; }
 </style>
+<style>__CARD_CSS__</style>
 </head>
 <body>
   <div id="bar">
@@ -913,7 +910,9 @@ INDEX_HTML = """<!doctype html>
     box.appendChild(el("div", {}, q.subject + " (" + q.kind + ")"));
     if (q.query) { box.appendChild(el("div", { "class": "query" }, "query: " + q.query)); }
     if (q.current) {
-      var cur = el("div", { "class": "current-artifact" });
+      // "card" carries compile.CARD_CSS's own sizing (F4: judge the
+      // artifact at the size the card will actually show it).
+      var cur = el("div", { "class": "current-artifact card" });
       cur.appendChild(thumb(q.current));
       box.appendChild(cur);
       if (q.current.verdict) { box.appendChild(el("div", { "class": "verdict" }, q.current.verdict)); }
@@ -1064,17 +1063,14 @@ INDEX_HTML = """<!doctype html>
     }
     var card = galleryCards[gIdx];
     var box = el("div", { "class": "card-box" });
-    if (card.drill) { renderDrillCard(card, box); main.appendChild(box); saveProgress(); return; }
-
-    if (card.front.thai) { box.appendChild(el("div", { "class": "thai" }, card.front.thai)); }
-    if (card.front.symbol) { box.appendChild(el("div", { "class": "thai" }, card.front.symbol)); }
-    if (card.front.picture) {
-      var img = el("img", { src: card.front.picture });
-      img.style.maxWidth = "min(90vw, 480px)";
-      img.style.maxHeight = "50vh";
-      box.appendChild(img);
-    }
-    if (glossOn && card.gloss) { box.appendChild(el("div", { "class": "gloss-chip" }, card.gloss)); }
+    // the served front/back HTML and its model's own CSS -- what Anki
+    // shows (spec 5 section 1, principles F4), nothing recomposed here.
+    var style = document.createElement("style");
+    style.textContent = card.css;
+    box.appendChild(style);
+    var face = el("div", { "class": "card" });
+    face.innerHTML = card.front_html;
+    box.appendChild(face);
     box.appendChild(el("div", { "class": "verdict" }, "space to reveal"));
     main.appendChild(box);
     saveProgress();
@@ -1082,34 +1078,10 @@ INDEX_HTML = """<!doctype html>
 
   function revealGallery() {
     if (revealed || !galleryCards.length) { return; }
-    var card = galleryCards[gIdx];
-    if (card.drill) { return; }
     revealed = true;
-    var box = document.querySelector("#main .card-box");
-    var back = el("div", { "class": "thai" },
-      card.back.meaning || card.back.other_thai || card.back.sound || card.back.keyword || "");
-    box.appendChild(back);
-  }
-
-  function renderDrillCard(card, box) {
-    box.appendChild(el("div", { "class": "thai" }, "which one did you hear?"));
-    var choices = el("div", { "class": "actions" });
-    var options = [card.drill.thai, card.drill.other_thai];
-    if (Math.random() < 0.5) { options.reverse(); }
-    options.forEach(function (text) {
-      var btn = el("button", {}, text);
-      btn.addEventListener("click", function () {
-        var correct = text === card.drill.thai;
-        postJson("/api/drill", { confusion: card.drill.contrast, pair: card.id, correct: correct })
-          .then(function () { setTimeout(next, 400); });
-      });
-      choices.appendChild(btn);
-    });
-    box.appendChild(choices);
-    if (card.drill.audio) {
-      var audio = new Audio(card.drill.audio);
-      audio.play().catch(function () {});
-    }
+    var card = galleryCards[gIdx];
+    var face = document.querySelector("#main .card-box .card");
+    face.innerHTML = card.back_html;
   }
 
   function next() {
@@ -1256,6 +1228,12 @@ INDEX_HTML = """<!doctype html>
 </body>
 </html>
 """
+
+# The compiled card's own CSS (compile.CARD_CSS, spec 4 section 1), so a
+# ".card" element on the page -- the gallery face and the rate screen's
+# current-artifact wrapper -- renders at the size and style Anki renders
+# it at (principles F4), not a page-composed one.
+INDEX_HTML = _INDEX_HTML_TEMPLATE.replace("__CARD_CSS__", CARD_CSS)
 
 
 if __name__ == "__main__":

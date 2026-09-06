@@ -43,7 +43,8 @@ if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
     from .syllabus import Syllabus
 
-__all__ = ["compile_syllabus", "GateRefusal", "thai_cloze"]
+__all__ = ["BuiltDeck", "build_deck", "compile_syllabus", "GateRefusal", "render_card",
+          "thai_cloze"]
 
 
 class GateRefusal(Exception):
@@ -530,6 +531,22 @@ def _record_fronts(entries: list[tuple[str, str, str]], model: genanki.Model,
         entries.append((f"{model.name}:{card.ord}", subject, front))
 
 
+def render_card(model: genanki.Model, note: genanki.Note, ord_: int) -> tuple[str, str]:
+    """Front and back HTML for one card (`ord_` into `model.templates`) of
+    `note`, substituted through the same mustache subset that computes
+    card/unique-front's fronts -- extended to afmt and the Anki
+    {{FrontSide}} convention (the rendered front, injected into the
+    back). This is what the review screen renders (spec 5 section 1):
+    the model's own qfmt/afmt, nothing recomposed, so the learner judges
+    the card Anki will actually show (principles F4).
+    """
+    values = dict(zip((f["name"] for f in model.fields), note.fields))
+    template = model.templates[ord_]
+    front = _render_qfmt(template["qfmt"], values)
+    back = _render_qfmt(template["afmt"], {**values, "FrontSide": front})
+    return front, back
+
+
 def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Finding]:
     by_front: dict[tuple[str, str], list[str]] = {}
     for group, subject, front in entries:
@@ -715,6 +732,62 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
         yield from _gated_items(built, SENTENCE_MODEL, "sentence", subject)
 
 
+@dataclass(frozen=True)
+class BuiltDeck:
+    """compile_syllabus's pre-write stage: every Built note (family/pair/
+    grapheme/sentence, chained), the drop list, the media files their
+    fronts/backs reference (basename -> on-disk path, genanki.Package's
+    media_files shape), and the card/unique-front findings computed over
+    the compiled notes themselves. compile_syllabus writes this to an
+    .apkg; the review screen (spec 5 section 1) renders it directly, one
+    front/back per note.cards entry, so the gallery shows exactly the
+    notes a real compile would write.
+    """
+    built: tuple[Built, ...]
+    dropped: tuple[DroppedCard, ...]
+    front_findings: tuple[Finding, ...]
+    media_files: Mapping[str, Path]
+    warnings: tuple[str, ...]
+
+
+def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore", *,
+               compile_id: str | None = None) -> BuiltDeck:
+    """Resolves media, positions due blocks, and builds one Built record
+    per note that produced at least one card, in the family order
+    compile_syllabus writes them (word, pair, grapheme, sentence).
+    `compile_id` stamps every note's CompileId field (spec 4 section 2);
+    omitted (the review screen's use, spec 5 section 1, which never
+    writes an .apkg), it is the syllabus state id alone -- CompileId is
+    a service field rendered by no template, so its exact value never
+    reaches a rendered card.
+    """
+    compile_id = compile_id if compile_id is not None else syllabus.state_id()
+    resolver = _Resolver(db=db, media_store=media_store)
+    positions = _positions(syllabus)
+
+    dropped: list[DroppedCard] = []
+    built: list[Built] = []
+    front_entries: list[tuple[str, str, str]] = []
+
+    family_items = chain(
+        _word_items(syllabus, resolver, compile_id, positions),
+        _pair_items(syllabus, resolver, compile_id, positions),
+        _grapheme_items(syllabus, resolver, compile_id, positions),
+        _sentence_items(syllabus, resolver, compile_id, positions))
+    for item in family_items:
+        if isinstance(item, DroppedCard):
+            dropped.append(item)
+            continue
+        _record_fronts(front_entries, item.model, item.subject, item.note)
+        built.append(item)
+
+    unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)
+    front_findings = tuple(_duplicate_front_findings(front_entries)) if unique_front_rule else ()
+
+    return BuiltDeck(built=tuple(built), dropped=tuple(dropped), front_findings=front_findings,
+                     media_files=dict(resolver.used), warnings=tuple(resolver.warnings))
+
+
 def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore",
                      out_path: str | Path, *, force: bool = False,
                      now: Callable[[], float] = time.time) -> Compile:
@@ -732,49 +805,34 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     ts = int(now() * 1000)
     compile_id = f"{state_id}:{ts}"
 
-    resolver = _Resolver(db=db, media_store=media_store)
-    positions = _positions(syllabus)
-    deck_name = out_path.stem
-    deck = genanki.Deck(_deck_id(deck_name), deck_name)
+    built_deck = build_deck(syllabus, db, media_store, compile_id=compile_id)
 
-    dropped: list[DroppedCard] = []
-    notes_written = 0
-    cards_written = 0
-    due_by_guid_ord: dict[tuple[str, int], int] = {}
-    front_entries: list[tuple[str, str, str]] = []
-
-    family_items = chain(
-        _word_items(syllabus, resolver, compile_id, positions),
-        _pair_items(syllabus, resolver, compile_id, positions),
-        _grapheme_items(syllabus, resolver, compile_id, positions),
-        _sentence_items(syllabus, resolver, compile_id, positions))
-    for item in family_items:
-        if isinstance(item, DroppedCard):
-            dropped.append(item)
-            continue
-        deck.add_note(item.note)
-        _record_fronts(front_entries, item.model, item.subject, item.note)
-        for c in item.note.cards:
-            due_by_guid_ord[(item.note.guid, c.ord)] = item.base_due + c.ord
-        notes_written += 1
-        cards_written += len(item.note.cards)
-
-    unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)
-    front_findings = _duplicate_front_findings(front_entries) if unique_front_rule else []
-    blocking_front_findings = _blocking_findings(tuple(front_findings), syllabus)
+    blocking_front_findings = _blocking_findings(built_deck.front_findings, syllabus)
     if blocking_front_findings and not force:
         raise GateRefusal(replace(report, gate=False,
-                                  findings=report.findings + tuple(front_findings)),
+                                  findings=report.findings + built_deck.front_findings),
                           blocking_front_findings)
     for f in blocking_front_findings:
         warnings.append(f"{f.rule}: {f.evidence} (note {f.note_id})")
     gate = report.gate and not blocking_front_findings
 
-    warnings.extend(resolver.warnings)
+    warnings.extend(built_deck.warnings)
+
+    deck_name = out_path.stem
+    deck = genanki.Deck(_deck_id(deck_name), deck_name)
+    due_by_guid_ord: dict[tuple[str, int], int] = {}
+    notes_written = 0
+    cards_written = 0
+    for item in built_deck.built:
+        deck.add_note(item.note)
+        for c in item.note.cards:
+            due_by_guid_ord[(item.note.guid, c.ord)] = item.base_due + c.ord
+        notes_written += 1
+        cards_written += len(item.note.cards)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_out = out_path.with_suffix(out_path.suffix + ".tmp")
-    media_paths = [str(p) for p in resolver.used.values()]
+    media_paths = [str(p) for p in built_deck.media_files.values()]
     genanki.Package(deck, media_files=media_paths).write_to_file(
         str(tmp_out), timestamp=now())
     _stamp_due(tmp_out, due_by_guid_ord)
@@ -783,7 +841,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     compile_report = CompileReport(
         compile_id=compile_id, gate=gate, forced=force,
         warnings=tuple(warnings), notes_written=notes_written,
-        cards_written=cards_written, dropped=tuple(dropped),
-        out_path=str(out_path), findings=tuple(front_findings))
+        cards_written=cards_written, dropped=built_deck.dropped,
+        out_path=str(out_path), findings=built_deck.front_findings)
     return Compile(label=deck_name, syllabus_state_id=state_id,
                    compile_id=compile_id, report=compile_report)

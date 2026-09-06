@@ -23,6 +23,7 @@ from PIL import Image as PILImage
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
+from thai_syllabus.compile import CARD_CSS
 from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId, WordId
@@ -404,29 +405,49 @@ def test_append_supply_url_fetch_is_cache_first(derivations, db, media_store, w1
 
 # --- gallery / notes / drills ------------------------------------------------
 
-def test_simplified_cards_orders_and_renders_target_pair_grapheme(
-        derivations, db, w1, w2, pair, grapheme, keyword_word):
+def test_gallery_cards_come_from_the_compile(deck_with_history):
+    """spec 5 section 1: the proof gallery renders every card the Compile
+    would write. Card kinds are compile.py's own template names (family-
+    prefixed only where two families share a name); every card carries
+    its model's CSS, so the gallery shows what Anki shows (F4).
+    """
+    ctx = rs.load_context(deck_with_history)
+    kinds = {c["kind"] for c in ctx.cards()}
+    assert kinds <= {"listening", "production", "reading", "spelling", "recognition",
+                     "grapheme-reading", "cloze", "sentence-listening"}
+    assert all(c["css"] == CARD_CSS for c in ctx.cards())
+
+
+def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivations, db, w1):
+    # pair has no seeded rendition and grapheme has no name_word (this
+    # module's fixtures), so build_deck drops both (spec 4 section 1) --
+    # this test measures the word family's own Reading card, which needs
+    # neither.
+    from thai_syllabus.compile import build_deck
+
     _judge(db, w1.id, "picture", "sha-w1", True)
-    cards = rs.simplified_cards(derivations)
-    kinds = [c["kind"] for c in cards]
-    assert "pair" in kinds and "grapheme" in kinds and "target" in kinds
-    # order() puts sounds (pairs, then graphemes) before words (spec 1 order()).
-    assert kinds.index("pair") < kinds.index("target")
-    assert kinds.index("grapheme") < kinds.index("target")
+    cards = rs.compiled_cards(derivations)
+    built_deck = build_deck(derivations.syllabus, derivations.db, derivations.media_store)
 
-    target_card = next(c for c in cards if c["kind"] == "target" and c["id"] == "t-rice")
-    assert target_card["front"]["thai"] == w1.thai
-    assert target_card["front"]["picture"] == "/media/sha-w1"
-    assert target_card["gloss"] == "rice"
+    # sequential, in the due order build_deck assigns from Syllabus.order()
+    # (spec 5 section 1: "every card rendered ... in introduction order") --
+    # build_deck.built itself chains family by family (word, pair,
+    # grapheme, sentence), so it's compiled_cards's own sort that recovers
+    # introduction order, checked here against each card's base_due.
+    assert [c["index"] for c in cards] == list(range(len(cards)))
+    base_due_by_subject = {built.subject: built.base_due for built in built_deck.built}
+    dues = [base_due_by_subject[c["id"]] for c in cards]
+    assert dues == sorted(dues)
 
-    pair_card = next(c for c in cards if c["kind"] == "pair")
-    assert pair_card["drill"]["thai"] == w1.thai
-    assert pair_card["drill"]["other_thai"] == w2.thai
-    assert pair_card["drill"]["contrast"] == pair.confusion
+    reading_card = next(c for c in cards if c["kind"] == "reading" and c["id"] == w1.id)
+    assert w1.thai in reading_card["front_html"]
+    assert w1.meaning in reading_card["back_html"]
 
-    grapheme_card = next(c for c in cards if c["kind"] == "grapheme")
-    assert grapheme_card["front"]["symbol"] == grapheme.symbol
-    assert grapheme_card["back"]["keyword"] == keyword_word.thai
+    # no bespoke card shape: only the four keys the compile's own
+    # front/back/css carry, never structured fields like "thai"/"picture"
+    # composed by the gallery itself.
+    for card in cards:
+        assert set(card) == {"index", "id", "kind", "front_html", "back_html", "css"}
 
 
 def test_append_gallery_note_appends_learner_row_not_a_file(db):
