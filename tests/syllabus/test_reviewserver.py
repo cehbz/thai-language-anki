@@ -442,12 +442,72 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
     reading_card = next(c for c in cards if c["kind"] == "reading" and c["id"] == w1.id)
     assert w1.thai in reading_card["front_html"]
     assert w1.meaning in reading_card["back_html"]
+    assert reading_card["family"] == "word"
+    assert reading_card["subject"] == w1.id
+    assert reading_card["gloss"] == w1.meaning
 
-    # no bespoke card shape: only the four keys the compile's own
-    # front/back/css carry, never structured fields like "thai"/"picture"
-    # composed by the gallery itself.
+    # no bespoke card shape: only the compile's own front/back/css plus
+    # the note's own field/tag metadata, never structured fields like
+    # "thai"/"picture" composed by the gallery itself.
     for card in cards:
-        assert set(card) == {"index", "id", "kind", "front_html", "back_html", "css"}
+        assert set(card) == {"index", "id", "family", "kind", "subject",
+                             "front_html", "back_html", "css", "gloss"}
+
+
+def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
+        db, media_store, w1, w2, pair, confusion):
+    """spec 5 section 1: the pair drill's per-confusion accuracy logging
+    reads `confusion`/`stimulus_member` straight off each minimal_pair
+    note's own tags (compile.py's tag_value) -- the pair id (`subject`)
+    is shared by both member notes; `stimulus_member` (the member index
+    this note's own Stimulus is) tells the two notes' recognition cards
+    apart.
+    """
+    from datetime import date
+
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+    from thai_syllabus.wiring import _DbMediaIndex
+
+    speaker = "somchai"
+    db.add_speaker(Speaker(id=speaker, kind="native"))
+    shas = {}
+    for member in pair.members:
+        sha = media_store.write(f"rendition:{pair.id}:{member}".encode(), ext="mp3")
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id=speaker)
+        shas[member] = sha
+    db.append(port="assess", backend="rendition", key=f"rendition:{pair.id}", subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),
+                      "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                      "params": {"members": shas}},
+             answer={"value": True})
+
+    syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
+                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db,
+                        tokenizer=FakeTokenizer())
+    derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                              current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                              sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP)
+
+    pair_cards = [c for c in rs.compiled_cards(derivations) if c["family"] == "minimal_pair"]
+    assert len(pair_cards) == 2
+    for card in pair_cards:
+        assert card["kind"] == "recognition"
+        assert card["subject"] == pair.id
+        assert card["confusion"] == confusion.id
+    assert {c["stimulus_member"] for c in pair_cards} == {0, 1}
+
+
+def test_resolve_media_for_web_rewrites_img_and_sound_to_the_media_route():
+    html = ('<img src="deadbeef.jpg">'
+           '<div>[sound:cafef00d.mp3]</div>')
+    resolved = rs._resolve_media_for_web(html)
+    assert '<img src="/media/deadbeef">' in resolved
+    assert '<audio controls src="/media/cafef00d"></audio>' in resolved
+    assert ".jpg" not in resolved
+    assert ".mp3" not in resolved
 
 
 def test_append_gallery_note_appends_learner_row_not_a_file(db):

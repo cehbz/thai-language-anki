@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, WaiverKey
-from .compile import CARD_CSS, build_deck, render_card
+from .compile import CARD_CSS, build_deck, field_values, render_card, tag_value
 from .derivations import (
     LEARNER_RANK,
     Challenger,
@@ -284,29 +284,52 @@ def _resolve_media_for_web(html: str) -> str:
     return html
 
 
+# Each family's own entity-identity tag prefix (spec 4 section 2): the
+# card dict's "subject" is this value, distinct from Built.subject (a
+# minimal_pair note's own MemberKey, kept for card/unique-front) -- the
+# pair id itself, not one member's key.
+_ENTITY_TAG_PREFIX: dict[str, str] = {
+    "word": "word", "minimal_pair": "pair", "grapheme": "grapheme", "sentence": "sentence",
+}
+
+
 def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
     """Every card compile.build_deck would compile, in the due order it
     assigns from Syllabus.order() -- sequential introduction order (spec
     5 section 1). One entry per note.cards() card: its kind (the
     template name), front/back HTML rendered through the note's own
     model template, and the model's CSS, so the gallery shows what Anki
-    shows.
+    shows -- plus metadata read straight from the note's own fields/tags
+    (never a card shape composed here): `family`, `subject` (the note's
+    entity id), `gloss` (the note's Meaning or Gloss field, or None), and
+    for a minimal_pair note, `confusion` and `stimulus_member` (the
+    member index this note's Stimulus is), which drive the gallery's
+    pair-drill accuracy logging (spec 5 section 1).
     """
     built_deck = build_deck(d.syllabus, d.db, d.media_store)
     ordered = sorted(built_deck.built, key=lambda item: item.base_due)
 
     cards: list[dict[str, Any]] = []
     for item in ordered:
+        values = field_values(item.model, item.note)
+        gloss = values.get("Meaning") or values.get("Gloss") or None
+        entity_subject = tag_value(item.note, _ENTITY_TAG_PREFIX[item.family])
         for card in item.note.cards:
             template_name = item.model.templates[card.ord]["name"]
             kind = _CARD_KIND_NAMES[(item.model.name, template_name)]
             front, back = render_card(item.model, item.note, card.ord)
-            cards.append({
-                "index": len(cards), "id": item.subject, "kind": kind,
+            entry: dict[str, Any] = {
+                "index": len(cards), "id": item.subject, "family": item.family,
+                "kind": kind, "subject": entity_subject,
                 "front_html": _resolve_media_for_web(front),
                 "back_html": _resolve_media_for_web(back),
-                "css": item.model.css,
-            })
+                "css": item.model.css, "gloss": gloss,
+            }
+            if item.family == "minimal_pair":
+                member = tag_value(item.note, "member")
+                entry["confusion"] = tag_value(item.note, "confusion")
+                entry["stimulus_member"] = int(member) if member is not None else None
+            cards.append(entry)
     return cards
 
 
@@ -1068,12 +1091,38 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     var style = document.createElement("style");
     style.textContent = card.css;
     box.appendChild(style);
+    // "g" overlays the note's own gloss on the front (spec 5 section 2);
+    // metadata beside the rendered HTML, not a recomposed card shape.
+    if (glossOn && card.gloss) { box.appendChild(el("div", { "class": "gloss-chip" }, card.gloss)); }
     var face = el("div", { "class": "card" });
     face.innerHTML = card.front_html;
     box.appendChild(face);
+    if (card.family === "minimal_pair") { renderPairDrill(card, box); }
     box.appendChild(el("div", { "class": "verdict" }, "space to reveal"));
     main.appendChild(box);
     saveProgress();
+    var audio = face.querySelector("audio");
+    if (audio) { audio.play().catch(function () {}); }
+  }
+
+  // Per-confusion accuracy logging (spec 5 section 1): a forced two-way
+  // guess against `stimulus_member` (the member index this note's own
+  // Stimulus is, read straight off the note's tags -- compiled_cards
+  // carries it as metadata, never a recomposed card shape) before the
+  // card's own reveal shows the answer.
+  function renderPairDrill(card, box) {
+    box.appendChild(el("div", { "class": "verdict" }, "which one did you hear?"));
+    var choices = el("div", { "class": "actions" });
+    [0, 1].forEach(function (idx) {
+      var btn = el("button", {}, idx === 0 ? "1st" : "2nd");
+      btn.addEventListener("click", function () {
+        postJson("/api/drill", { confusion: card.confusion, pair: card.subject,
+                                 correct: idx === card.stimulus_member });
+        btn.parentNode.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+      });
+      choices.appendChild(btn);
+    });
+    box.appendChild(choices);
   }
 
   function revealGallery() {

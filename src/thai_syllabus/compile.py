@@ -43,8 +43,8 @@ if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
     from .syllabus import Syllabus
 
-__all__ = ["BuiltDeck", "build_deck", "compile_syllabus", "GateRefusal", "render_card",
-          "thai_cloze"]
+__all__ = ["BuiltDeck", "build_deck", "CARD_CSS", "compile_syllabus", "field_values",
+          "GateRefusal", "render_card", "tag_value", "thai_cloze"]
 
 
 class GateRefusal(Exception):
@@ -519,13 +519,35 @@ def _render_qfmt(qfmt: str, values: Mapping[str, str]) -> str:
     return _FIELD_RE.sub(lambda m: values.get(m.group(1), ""), text)
 
 
+def field_values(model: genanki.Model, note: genanki.Note) -> dict[str, str]:
+    """note.fields as a name -> value mapping, in `model`'s own field
+    order -- the lookup render_card, card/unique-front's front recording,
+    and dropped-card reasoning all key their template substitution on.
+    """
+    return dict(zip((f["name"] for f in model.fields), note.fields))
+
+
+def tag_value(note: genanki.Note, prefix: str) -> str | None:
+    """The value of the one atomic tag on `note` reading "prefix::value"
+    (spec 4 section 2's own tag convention), or None if `note` carries no
+    such tag. Reads an existing tag by its documented prefix -- not
+    parsing, the same convention anki_import.py's return path reads tags
+    by.
+    """
+    needle = f"{prefix}::"
+    for t in note.tags:
+        if t.startswith(needle):
+            return t[len(needle):]
+    return None
+
+
 def _record_fronts(entries: list[tuple[str, str, str]], model: genanki.Model,
                    subject: str, note: genanki.Note) -> None:
     """Appends (model:ord, subject, rendered front) for every card the note
     actually generated -- card/unique-front compares these within a
     (model, ord) group.
     """
-    values = dict(zip((f["name"] for f in model.fields), note.fields))
+    values = field_values(model, note)
     for card in note.cards:
         front = _render_qfmt(model.templates[card.ord]["qfmt"], values)
         entries.append((f"{model.name}:{card.ord}", subject, front))
@@ -540,7 +562,7 @@ def render_card(model: genanki.Model, note: genanki.Note, ord_: int) -> tuple[st
     the model's own qfmt/afmt, nothing recomposed, so the learner judges
     the card Anki will actually show (principles F4).
     """
-    values = dict(zip((f["name"] for f in model.fields), note.fields))
+    values = field_values(model, note)
     template = model.templates[ord_]
     front = _render_qfmt(template["qfmt"], values)
     back = _render_qfmt(template["afmt"], {**values, "FrontSide": front})
@@ -610,7 +632,7 @@ def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
     reason from _template_drop_reason.
     """
     present_ords = {c.ord for c in note.cards}
-    fields_by_name = dict(zip((f["name"] for f in model.fields), note.fields))
+    fields_by_name = field_values(model, note)
     return [DroppedCard(family=family, kind=tpl["name"], subject=subject,
                         reason=_template_drop_reason(model.name, tpl["name"], fields_by_name))
            for ord_, tpl in enumerate(model.templates) if ord_ not in present_ords]
