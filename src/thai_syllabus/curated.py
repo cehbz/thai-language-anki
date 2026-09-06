@@ -521,6 +521,12 @@ class JudgeConfig:
     transport: str = "cli"   # "cli" | "api" | "batch"
     model: str = ""
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
+    thinking: str = "disabled"  # "disabled" | "adaptive"; sent by the api and batch transports
+
+
+@dataclass(frozen=True)
+class DrafterConfig:
+    transport: str = "cli"   # "cli" | "api"; api rides the judge's account, model and price
 
 
 @dataclass(frozen=True)
@@ -533,6 +539,7 @@ class ProvidersConfig:
     tts_female_voices: tuple[str, ...] = field(default_factory=lambda: tuple(FEMALE_VOICES))
     tts_cost_per_char: float = 0.0   # $ per synthesized character (spec 3's cost contract)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
+    drafter: DrafterConfig = field(default_factory=DrafterConfig)
     image_candidates: int = 5  # candidate images fetched per target word
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -590,8 +597,12 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         # cash, measured as tokens times this price, which a budget binds.
         errors.append("providers.judge.price_per_mtok: required for the "
                       f"{transport!r} transport, which spends cash per token")
+    thinking = judge_cfg.get("thinking", "disabled")
+    if thinking not in ("disabled", "adaptive"):
+        errors.append(f"providers.judge.thinking: {thinking!r} is not one of "
+                      "'disabled', 'adaptive'")
     judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
-                        price_per_mtok=price_per_mtok)
+                        price_per_mtok=price_per_mtok, thinking=thinking)
 
     # A loaded config describes a run that can happen: both mediafetch
     # paths are required, pictures and recordings always being in scope.
@@ -606,13 +617,24 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append("providers.audiofetch_path: required -- recordings are always "
                       "in scope and nothing else can download one")
 
-    # Sentence drafting is a single-question ask (wiring._llm_transport):
-    # the cli transport is one; api/batch build one from the anthropic
-    # secret, and wiring registers no llm-* backend without it.
+    # The api/batch judge and the api drafter spend on the anthropic account.
     if transport in ("api", "batch") and "anthropic" not in secrets_cfg:
         errors.append(f"providers.secrets.anthropic: required for the {transport!r} "
-                      "judge transport -- sentence drafting needs a single-question "
-                      "transport on that account")
+                      "judge transport")
+
+    drafter_cfg = data.get("drafter") or {}
+    drafter_transport = drafter_cfg.get("transport", "cli")
+    if drafter_transport not in ("cli", "api"):
+        errors.append(f"providers.drafter.transport: {drafter_transport!r} is not one of "
+                      "'cli', 'api'")
+    if drafter_transport == "api":
+        if "anthropic" not in secrets_cfg:
+            errors.append("providers.secrets.anthropic: required for the 'api' drafter "
+                          "transport")
+        if price_per_mtok is None:
+            errors.append("providers.judge.price_per_mtok: required for the 'api' drafter "
+                          "transport, which spends cash per token on the judge's account")
+    drafter = DrafterConfig(transport=drafter_transport)
 
     image_candidates = data.get("image_candidates", 5)
     if not isinstance(image_candidates, int) or image_candidates < 1:
@@ -631,13 +653,14 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         imgfetch_path=imgfetch_path,
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
-        judge=judge, image_candidates=image_candidates,
+        judge=judge, drafter=drafter, image_candidates=image_candidates,
         batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
         attempt_cap=attempt_cap)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
-    judge: dict[str, Any] = {"transport": config.judge.transport, "model": config.judge.model}
+    judge: dict[str, Any] = {"transport": config.judge.transport, "model": config.judge.model,
+                             "thinking": config.judge.thinking}
     if config.judge.price_per_mtok is not None:
         input_price, output_price = config.judge.price_per_mtok
         judge["price_per_mtok"] = {"input": input_price, "output": output_price}
@@ -650,6 +673,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
                "female_voices": list(config.tts_female_voices),
                "cost_per_char": config.tts_cost_per_char},
         "judge": judge,
+        "drafter": {"transport": config.drafter.transport},
         "image_candidates": config.image_candidates,
         "batch": dict(config.batch),
         "quotas": dict(config.quotas),

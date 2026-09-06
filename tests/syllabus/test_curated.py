@@ -618,6 +618,51 @@ def test_providers_judge_cli_transport_needs_no_price(tmp_path):
     assert curated.load_providers_config(path).judge.price_per_mtok is None
 
 
+def test_providers_drafter_defaults_to_cli_and_judge_thinking_to_disabled():
+    cfg = curated.ProvidersConfig()
+    assert cfg.drafter.transport == "cli" and cfg.judge.thinking == "disabled"
+
+
+def test_providers_drafter_and_thinking_round_trip(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(textwrap.dedent("""
+        imgfetch_path: /opt/bin/imgfetch
+        audiofetch_path: /opt/bin/audiofetch
+        secrets: {anthropic: op://Shared/Anthropic/API Key}
+        judge: {transport: batch, model: claude-sonnet-5, thinking: adaptive,
+                price_per_mtok: {input: 2.0, output: 10.0}}
+        drafter: {transport: api}
+    """), encoding="utf-8")
+    cfg = curated.load_providers_config(path)
+    assert cfg.judge.thinking == "adaptive" and cfg.drafter.transport == "api"
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_rejects_an_unknown_judge_thinking(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "deep"})))
+    with pytest.raises(curated.CuratedValidationError, match="judge.thinking"):
+        curated.load_providers_config(path)
+
+
+def test_providers_rejects_an_unknown_drafter_transport(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(drafter={"transport": "batch"})))
+    with pytest.raises(curated.CuratedValidationError, match="drafter.transport"):
+        curated.load_providers_config(path)
+
+
+def test_providers_api_drafter_requires_the_anthropic_secret_and_a_price(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        judge={"transport": "cli"}, drafter={"transport": "api"})))
+    with pytest.raises(curated.CuratedValidationError) as err:
+        curated.load_providers_config(path)
+    assert "providers.secrets.anthropic" in str(err.value)
+    assert "providers.judge.price_per_mtok" in str(err.value)
+
+
 def test_providers_tts_cost_per_char_round_trips(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(textwrap.dedent("""
