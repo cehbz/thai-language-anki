@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 9, proposed 2026-09-06 against principles r2 and architecture
+Revision 10, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -44,6 +44,17 @@ Revision log:
   no text; 97K input tokens for 40 targets; the run died with no
   report); user ruling 2026-09-06 (subscription quota over cash where
   the CLI can do the job).
+- r10 2026-09-07: failure taxonomy (§6a): three states, the retryable
+  one bounded by `transient_cap`; a backend appends only an answer it
+  recognized; a served refusal of a url from a cached answer re-asks that
+  answer once (Forvo urls are time-limited); a missing artifact is
+  excluded, never fatal; a batch is outstanding until ended;
+  `judge.thinking: adaptive` needs `judge.max_tokens`; `search_proxy` is
+  the forward proxy for Openverse search; the fills key names its
+  curated and tokenizer version. Evidence: smoke run 2 (every migrated
+  Forvo url expired; the proxy answered 400 to a base-url request) and
+  the curable-failure audit, both 2026-09-07; user rulings 2026-09-07
+  (three states with a retry limit; a served non-audio body is curable).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -91,7 +102,12 @@ Assess.ask(backend, question) -> Verdict
 ```
 
 Cache-first; a hit costs nothing and appends nothing; a miss executes and
-appends one row. Consumers see ask() only.
+appends one row. Consumers see ask() only. reask(backend, question)
+executes and appends a row over a hit; the newest row is the answer. Only
+the attempt calls it, and only under §6a's re-ask rule. A backend appends
+a row only for an answer it positively recognized as the answer to the
+question asked: a body of the wrong shape, an unparseable verdict, a
+completion with no drafts raise and append nothing.
 
 **Cost contract.** Every Answer and Verdict carries the cost the backend
 incurred, in that backend's currency, measured by the backend: Forvo one
@@ -118,10 +134,10 @@ one speaker answers empty.
 
 | source | provides | key | cost | re-ask |
 |---|---|---|---|---|
-| openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key |
+| openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key; re-asked once per attempt when every hit is refused by its server (§6a) |
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo, iiprop=url) | wikimedia:query | free HTTP | same |
-| imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a fetch failure is a transient-failure outcome on the need, never cached against the url |
-| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day | never re-asked |
+| imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
+| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
 | llm | sentence (per run over open targets), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
@@ -156,19 +172,23 @@ assessor has spoken. It never fails a candidate and any verdict outranks it.
 **Judge transports**: cli / api / batch, selected in providers.yaml; the
 run does not know which (section 7). Batch state is one marker row per
 run, keyed on the batch id, released when the batch resolves, expires,
-or fails. report() never calls Assess.
+or fails. report() never calls Assess. A batch is outstanding until its
+status is ended; a result of type expired or errored carries no verdict
+and its question re-asks.
 
 **Drafter transport**: cli / api, selected in providers.yaml
 `drafter.transport` (cli by default); api rides the judge's account,
 model and price. `judge.thinking` (disabled by default, or adaptive) is
-sent by the api and batch transports on every request.
+sent by the api and batch transports on every request; `adaptive`
+requires `judge.max_tokens` (at least 16000), which both transports send.
 
 ## 5. Attempts per need kind
 
 **Picture (Word).** Query = the word's image phrase if a human or judge
 drafted one, else gloss head term + category qualifier. Source order:
 openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
-(providers.yaml `image_candidates`, default 5), judge *fit* on each
+(providers.yaml `image_candidates`, default 5; a served refusal of every
+hit re-asks the search once and ingests what is new), judge *fit* on each
 (pass/fail, the old rubric texts verbatim), and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
@@ -176,8 +196,11 @@ judge *preference* once over the passing set; then current-best. A judge
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7): male if the word has a productive Target (the
 recording plays on the productive back), any sex otherwise; within the
-constraint the pick spreads over the pool. Forvo attempt: lookup (cached
-forever), download each item's mp3, mechanical duration/format on each;
+constraint the pick spreads over the pool. Forvo attempt: lookup (cached;
+re-asked once within the attempt when a download of one of its urls is
+refused by the server, Forvo urls being time-limited, and the item retried
+by its Forvo id), download each item's mp3, mechanical duration/format on
+each;
 the item's sex and country are recorded on the speaker (spec 2);
 current-best by authority then provenance prior. TTS attempt: synthesize
 with a pool voice (pools per sex in providers.yaml; the roster's sex is
@@ -188,7 +211,8 @@ TODO).
 
 **Rendition (MinimalPair).** Source order: forvo (intersection of members'
 lookups by username; one lookup per member, shared with the recording
-need), tts (one voice), commission. The attempt appends its ask under
+need and re-asked per member under the same rule), tts (one voice),
+commission. The attempt appends its ask under
 the pair, the need's own subject, even though the lookups are cached per
 member: exhausted() counts attempts per need. The answer row carries the
 per-member shas and the speaker; a rendition is that artifact set, and
@@ -200,7 +224,7 @@ when the members' current-best recordings differ in speaker and no
 rendition exists.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target: the prompt carries the vocabulary met by the furthest open target
+target: the prompt carries the vocabulary met by the furthest handed target
 once, in entry-position order (Syllabus.order), and per target the count of
 that list it may use (the per-target vocabularies nest by position), the
 profile register, and the existing sentence openings to avoid. Each drafted text is a candidate:
@@ -241,12 +265,12 @@ Implemented after cutover.
   usable came of it), or `transient-failure` (the ask or any fetch it
   needed failed on the wire; retry). The attempt appends one outcome
   row per source it asks (port `attempt`, backend = the source, key
-  AttemptOutcomeKey(subject, kind, source)); only `candidates` and
-  `nothing` count as tried.
+  AttemptOutcomeKey(subject, kind, source)); `candidates` and `nothing`
+  count as tried, and so does a source with `transient_cap`
+  transient outcomes since the anchor (§6a).
 - **next_source(subject, kind)**: the first of the kind's sources,
-  cheapest first, with no `candidates` or `nothing` outcome since
-  current-best last changed. A `transient-failure` outcome never
-  advances the need.
+  cheapest first, not tried since current-best last changed. A
+  `transient-failure` outcome advances the need only at the cap (§6a).
 - **exhausted(subject, kind)**: over outcomes, not asks: the last k
   attempts produced no candidate out-ranking current-best and the
   attempt cap is reached;
@@ -259,6 +283,51 @@ Implemented after cutover.
   (3) acceptable/unrated by rank then attempts; excluded: good, exhausted,
   pending (pending is reported, not queued).
 - **confusion_weights()**: unchanged.
+
+## 6a. Failure taxonomy
+
+Every ask and fetch ends in one of three states:
+
+- **Got it.** An artifact stored, or an answer the backend recognized.
+  Appended; outcome `candidates`.
+- **Failed definitively for the subject.** The source answered and
+  what it answered cannot serve this need: an empty lookup, a search with
+  no hits, a synthesis the service refuses for this text or voice (a
+  4xx other than 429), a downloaded artifact that fails its mechanical
+  check. Outcome `nothing`; the need advances to the next source; the
+  attempt counts toward the cap.
+- **Failed; a retry may succeed.** A wire failure (timeout, connection,
+  DNS, a fetcher that cannot run), a 5xx or 429, a served refusal of a
+  url (a non-200, a body of the wrong type, undecodable bytes), a batch
+  not yet ended. Nothing is appended for the ask; the attempt's outcome
+  is `transient-failure`. Bounded: once a source has `transient_cap`
+  (providers.yaml, default 3) transient outcomes since the escalation
+  anchor, it counts as tried: next_source advances past it and exhausted
+  counts it as one attempt. Learner input resets the anchor as for every
+  other outcome.
+
+A backend appends a row only for an answer it positively recognized
+(§2). A refusal carries a typed reason, never matched as text: the
+fetchers report `{"refused": kind, "detail": ...}` on stdout, kind one
+of wire | http | content-type | too-large | format | io; wire is not
+served, every other kind is.
+
+**Re-ask rule.** A served refusal of a url taken from a cached answer
+(a Forvo lookup, an image search) re-asks that answer once within the
+attempt (`reask`) and retries the fetch once: a Forvo item by its id, a
+search by the hits not yet tried. A second served refusal, or any wire
+failure, is transient. Nothing infers durability from a response; the
+cap decides it.
+
+**Unreachable versus excluded.** A question the backend cannot prepare
+(a missing or unreadable artifact, a member with no verdict) is excluded
+for the run and never cached; only a backend that answered none of the
+questions it was given on the wire is unreachable. An unrun check is
+never a failed check.
+
+**Keys over mutable state name its version.** A verdict computed from
+the curated files or a tokenizer (fills) carries a version of that
+state in its key, as pair-search carries the dictionary version.
 
 ## 7. Budget and the run
 
@@ -356,8 +425,11 @@ path besides compile --force.
 ## 9. Configuration
 
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
-`judge.thinking` (disabled | adaptive), `drafter.transport` (cli | api) and
-`image_candidates` (5). The provenance prior lives in rulebook.yaml (it is
+`judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
+16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
+`image_candidates` (5) and `transient_cap` (3). `search_proxy` is the HTTP
+forward proxy Openverse searches go through (media sourcing: Openverse
+refuses a Thai egress); no other request uses it. The provenance prior lives in rulebook.yaml (it is
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,
 picture/preference, and sentence texts verbatim.
 
