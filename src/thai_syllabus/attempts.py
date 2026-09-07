@@ -892,7 +892,8 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     candidates with no verdict under the current rubric; no source is
     asked and no outcome row is written. None when no candidate awaits a
     verdict, or when every awaiting question was excluded: the caller
-    asks the source in the same attempt.
+    asks the source in the same attempt. Logs the excluded candidates
+    when it falls through.
     """
     awaiting = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
     if not awaiting:
@@ -904,6 +905,8 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     result = assess(ctx, need)
     excluded_shas = {e.artifact_sha for e in result.excluded.values()}
     if all(sha in excluded_shas for sha in awaiting):
+        _log.warning("assess-first for %s/%s: every awaiting candidate was excluded (%s); "
+                     "asking a source", need.subject, need.kind, ", ".join(sorted(awaiting)))
         return None
     return result
 

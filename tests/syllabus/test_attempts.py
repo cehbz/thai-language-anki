@@ -3,6 +3,7 @@ returns ingested, the speaker recorded, and the judge questions collected.
 Real SyllabusDb + MediaStore; fake Provide/Assess backends; no network."""
 import hashlib
 import io
+import logging
 from datetime import date
 
 import pytest
@@ -402,6 +403,19 @@ def test_assess_first_is_none_when_every_waiting_candidate_is_excluded(tmp_path)
                   answer={"items": [{"sha": "0" * 64, "ext": "jpg"}]})  # bytes never stored
     assert assess_first(ctx, Need("rice", "picture")) is None
     assert judge.calls == []
+
+
+def test_assess_first_logs_the_candidates_it_excluded_before_falling_through(tmp_path, caplog):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    ctx.db.append(port="provide", backend="legacy-current",
+                  key=ProvideKey(source="legacy-current", kind="picture", query="rice"),
+                  subject="rice",
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"image": "images/pw-1.jpg"}},
+                  answer={"items": [{"sha": "0" * 64, "ext": "jpg"}]})
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        assert assess_first(ctx, Need("rice", "picture")) is None
+    assert "every awaiting candidate was excluded" in caplog.text and "0" * 64 in caplog.text
 
 
 def test_assess_first_under_batch_collects_the_fit_question(tmp_path):
