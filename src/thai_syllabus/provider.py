@@ -147,12 +147,12 @@ IMAGE_SEARCH_USER_AGENT = (
 @dataclass
 class HttpImageSearchBackend:
     """Generic HTTP image-corpus search: one GET, JSON response, a
-    corpus-specific request-builder and item-parser. `search_proxy`
-    (spec 3 section 5) replaces the corpus's own base URL, e.g. to route
-    through a caching/rate-limiting proxy.
+    corpus-specific request-builder and item-parser. `search_proxy`, when
+    set, is the HTTP forward proxy every search request of this corpus is
+    sent through (media sourcing: Openverse refuses a Thai egress).
     """
     name: str
-    build_request: Callable[[str, str | None], tuple[str, dict, dict, str]]
+    build_request: Callable[[str], tuple[str, dict, dict, str]]
     parse_items: Callable[[Any], list[dict]]
     get: Callable[..., Any] = field(default=requests.get)
     search_proxy: str | None = None
@@ -162,9 +162,12 @@ class HttpImageSearchBackend:
 
     def fetch(self, question: Question) -> RawAnswer:
         query = question.params["query"]
-        url, params, headers, expect = self.build_request(query, self.search_proxy)
+        url, params, headers, expect = self.build_request(query)
+        proxies = ({"http": self.search_proxy, "https": self.search_proxy}
+                  if self.search_proxy else None)
         try:
-            resp = self.get(url, params=params, headers=headers, timeout=30)
+            resp = self.get(url, params=params, headers=headers, timeout=30,
+                            proxies=proxies)
         except requests.RequestException as e:
             raise TransportError(f"{self.name} search failed: {e}") from e
         if resp.status_code != 200:
@@ -184,9 +187,8 @@ class HttpImageSearchBackend:
 
 def openverse_backend(get: Callable[..., Any] = requests.get,
                       search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
-        base = proxy or "https://api.openverse.org"
-        return (f"{base}/v1/images/",
+    def build(query: str) -> tuple[str, dict, dict, str]:
+        return ("https://api.openverse.org/v1/images/",
                {"q": query, "license_type": "commercial,modification"},
                {"User-Agent": IMAGE_SEARCH_USER_AGENT}, "results")
 
@@ -200,14 +202,12 @@ def openverse_backend(get: Callable[..., Any] = requests.get,
                                   parse_items=parse, get=get, search_proxy=search_proxy)
 
 
-def wikimedia_backend(get: Callable[..., Any] = requests.get,
-                      search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
+def wikimedia_backend(get: Callable[..., Any] = requests.get) -> HttpImageSearchBackend:
+    def build(query: str) -> tuple[str, dict, dict, str]:
         # "batchcomplete" is on every MediaWiki action-API search reply,
         # zero hits included (zero hits omits "query" entirely); an
         # {"error": {...}} body carries neither.
-        base = proxy or "https://commons.wikimedia.org"
-        return (f"{base}/w/api.php",
+        return ("https://commons.wikimedia.org/w/api.php",
                {"action": "query", "generator": "search", "gsrsearch": query,
                 "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url",
                 "format": "json"},
@@ -223,14 +223,13 @@ def wikimedia_backend(get: Callable[..., Any] = requests.get,
         return out
 
     return HttpImageSearchBackend(name="wikimedia", build_request=build,
-                                  parse_items=parse, get=get, search_proxy=search_proxy)
+                                  parse_items=parse, get=get)
 
 
-def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
-                   search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
-        base = proxy or "https://api.pexels.com"
-        return (f"{base}/v1/search", {"query": query},
+def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get
+                   ) -> HttpImageSearchBackend:
+    def build(query: str) -> tuple[str, dict, dict, str]:
+        return ("https://api.pexels.com/v1/search", {"query": query},
                {"User-Agent": IMAGE_SEARCH_USER_AGENT, "Authorization": api_key}, "photos")
 
     def parse(data: Any) -> list[dict]:
@@ -239,7 +238,7 @@ def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
                for p in data.get("photos", [])]
 
     return HttpImageSearchBackend(name="pexels", build_request=build,
-                                  parse_items=parse, get=get, search_proxy=search_proxy)
+                                  parse_items=parse, get=get)
 
 
 # --- imgfetch/audiofetch: fetch a candidate's bytes by url ------------------

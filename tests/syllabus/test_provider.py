@@ -164,7 +164,7 @@ def test_openverse_cache_key_is_backend_colon_query():
 def test_openverse_fetch_parses_results_and_sets_descriptive_user_agent():
     calls = []
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, proxies=None):
         calls.append((url, params, headers))
         return _FakeResponse(json_data={"results": [
             {"url": "https://x/img.jpg", "license": "cc0",
@@ -179,15 +179,28 @@ def test_openverse_fetch_parses_results_and_sets_descriptive_user_agent():
     assert "thai-syllabus" in calls[0][2]["User-Agent"]
 
 
-def test_openverse_search_proxy_replaces_the_base_url():
-    backend = openverse_backend(search_proxy="https://proxy.example")
+def test_openverse_search_proxy_is_sent_as_a_forward_proxy_with_the_real_url():
+    calls = []
 
-    def fake_get(url, **kwargs):
-        assert url.startswith("https://proxy.example")
+    def get(url, params=None, headers=None, timeout=None, proxies=None):
+        calls.append((url, proxies))
         return _FakeResponse(json_data={"results": []})
 
-    backend.get = fake_get
-    backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    backend = openverse_backend(get=get, search_proxy="http://10.112.227.2:8888")
+    backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+    assert calls == [("https://api.openverse.org/v1/images/",
+                      {"http": "http://10.112.227.2:8888", "https": "http://10.112.227.2:8888"})]
+
+
+def test_a_search_without_a_proxy_sends_none():
+    calls = []
+
+    def get(url, params=None, headers=None, timeout=None, proxies=None):
+        calls.append(proxies)
+        return _FakeResponse(json_data={"results": []})
+
+    openverse_backend(get=get).fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+    assert calls == [None]
 
 
 def test_a_non_200_response_is_a_transport_error_not_cached_by_the_backend():
@@ -268,7 +281,7 @@ def test_wikimedia_and_pexels_backends_key_by_backend_name():
 def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
     seen = {}
 
-    def get(url, params, headers, timeout):
+    def get(url, params, headers, timeout, proxies=None):
         seen.update(params)
         return _FakeResponse(json_data={"batchcomplete": "", "query": {"pages": {"1": {
             "title": "File:A.jpg",
@@ -298,7 +311,7 @@ def test_wikimedia_parse_skips_pages_without_a_url():
 def test_pexels_fetch_sends_the_api_key_as_authorization_header():
     calls = []
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, proxies=None):
         calls.append(headers)
         return _FakeResponse(json_data={"photos": [
             {"src": {"original": "https://x/p.jpg"}, "url": "https://x/page"}]})

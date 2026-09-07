@@ -149,7 +149,7 @@ def test_resolving_the_pexels_backend_reads_only_the_pexels_secret(
 def test_an_openverse_ask_never_touches_any_secret(cfg, db, media_store, monkeypatch):
     calls = _track_reads(monkeypatch)
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, proxies=None):
         class _Resp:
             status_code = 200
             def json(self):
@@ -165,11 +165,11 @@ def test_an_openverse_ask_never_touches_any_secret(cfg, db, media_store, monkeyp
 
 # --- build_provider: search_proxy / imgfetch_path threading -------------
 
-def test_search_proxy_reaches_openverse_and_wikimedia(cfg, db, media_store):
+def test_search_proxy_reaches_only_openverse(cfg, db, media_store):
     provider = build_provider(cfg, db, media_store)
-    q = Question(subject="s", provides="picture", params={"query": "cat"})
     assert provider._backends["openverse"].search_proxy == "https://proxy.example"
-    assert provider._backends["wikimedia"].search_proxy == "https://proxy.example"
+    assert provider._backends["wikimedia"].search_proxy is None
+    assert provider._backends["pexels"]._resolve().search_proxy is None
 
 
 def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths, monkeypatch):
