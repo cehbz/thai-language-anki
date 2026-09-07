@@ -359,7 +359,11 @@ class Assessor:
             completion = results.get(_custom_id(key))
             if completion is None:
                 continue
-            parsed = impl._parse(completion.text, question)
+            try:
+                parsed = impl._parse(completion.text, question)
+            except TransportError as e:
+                _log.warning("batch %s: %s: %s", batch_id, key.encode(), e)
+                continue
             raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
                              suggestion=parsed.suggestion, cost=impl._cost(completion))
             ts = self._append_verdict("judge", key, question, raw)
@@ -463,40 +467,47 @@ def sentence_prompt(q: AssessQuestion) -> str:
            '"suggestion": <string or null>}.')
 
 
+def _not_a_verdict(text: str) -> TransportError:
+    return TransportError(f"judge answered without a verdict: {text.strip()[:80]!r}")
+
+
 def parse_preference(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """Parses a picture_preference_prompt response: `value` is the ranked
-    list of candidate shas, best first (empty on any parse failure --
-    never raises, same as _default_parse_judge_response's failure mode).
-    `question` is unused -- accepted so this can serve as a JudgeBackend
-    parse_response directly, which is always called with (text, question).
+    list of candidate shas, best first. Raises TransportError for any
+    other shape, which caches nothing (spec 3 section 6a). `question` is
+    unused -- accepted so this can serve as a JudgeBackend parse_response
+    directly, which is always called with (text, question).
     """
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        return RawVerdict(value=[])
+        raise _not_a_verdict(text) from None
     ranking = data.get("ranking") if isinstance(data, dict) else None
-    return RawVerdict(value=list(ranking or []), evidence=(data or {}).get("evidence"))
+    if not isinstance(ranking, list) or not all(isinstance(s, str) for s in ranking):
+        raise _not_a_verdict(text)
+    return RawVerdict(value=list(ranking), evidence=data.get("evidence"))
 
 
 def _generic_value_parser(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
-    """The {"value", "evidence", "suggestion"} shape both picture_fit_prompt
-    and sentence_prompt ask for -- also the fallback for any role with no
-    entry in _DEFAULT_JUDGE_BUILDERS. `question` is unused -- see
-    parse_preference's docstring.
+    """The {"value": bool, "evidence", "suggestion"} shape picture_fit_prompt
+    and sentence_prompt ask for, or a bare true/false -- also the fallback
+    for any role with no entry in _DEFAULT_JUDGE_BUILDERS. Raises
+    TransportError for any other shape, which caches nothing (spec 3
+    section 6a). `question` is unused -- see parse_preference's docstring.
     """
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         data = None
-    if isinstance(data, dict):
-        return RawVerdict(value=data.get("value"), evidence=data.get("evidence"),
+    if isinstance(data, dict) and isinstance(data.get("value"), bool):
+        return RawVerdict(value=data["value"], evidence=data.get("evidence"),
                           suggestion=data.get("suggestion"))
     if isinstance(data, bool):  # json.loads("true"/"false") -- a bare bool, not an object
         return RawVerdict(value=data)
     stripped = text.strip().lower()
     if stripped in ("true", "false"):
         return RawVerdict(value=stripped == "true")
-    return RawVerdict(value=text.strip())
+    raise _not_a_verdict(text)
 
 
 def _fallback_judge_prompt(question: AssessQuestion) -> str:

@@ -181,6 +181,39 @@ def test_judge_backend_without_a_transport_refuses_single_question_fetch():
         backend.fetch(AssessQuestion(subject="s", role="r"))
 
 
+# --- review fix: a judge parser raises on an answer that is not a verdict
+# (spec 3 r10 section 2, section 6a) -- appends nothing, never a default ---
+
+@pytest.mark.parametrize("text", ["I cannot evaluate this image.", '{"evidence": "e"}',
+                                  '{"value": "yes"}', "", '{"value": null}'])
+def test_generic_parser_raises_on_an_answer_that_is_not_a_verdict(text):
+    from thai_syllabus.assessor import _generic_value_parser
+    with pytest.raises(TransportError, match="without a verdict"):
+        _generic_value_parser(text)
+
+
+@pytest.mark.parametrize("text,value", [('{"value": true, "evidence": "e"}', True), ("false", False)])
+def test_generic_parser_accepts_a_bool_verdict(text, value):
+    from thai_syllabus.assessor import _generic_value_parser
+    assert _generic_value_parser(text).value is value
+
+
+@pytest.mark.parametrize("text", ["ranking: a, b", '{"ranking": "a"}', '{"ranking": [1, 2]}', "{}"])
+def test_preference_parser_raises_on_an_answer_that_is_not_a_ranking(text):
+    with pytest.raises(TransportError, match="without a verdict"):
+        parse_preference(text)
+
+
+def test_an_unparseable_inline_answer_caches_no_verdict(db):
+    jb = JudgeBackend(model="m", transport="api",
+                      complete=lambda prompt, attachments=(): Completion(text="I decline."))
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    with pytest.raises(JudgeUnreachable):
+        a.ask_many("judge", [q])
+    assert db.latest("assess", "judge", jb.cache_key(q)) is None
+
+
 # --- mechanical: duration/format checks ---------------------------------
 
 def test_duration_mechanical_key_is_parameter_explicit():
@@ -497,6 +530,15 @@ def test_expired_batch_releases_and_questions_reask(assessor_with_batch_transpor
     fake_batch.expire(bid)
     assert a.resolve(bid) == {} and a.unresolved_batch() is None
     assert a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected  # asked again
+
+
+def test_an_unparseable_batch_answer_is_skipped_and_re_asks(assessor_with_batch_transport, fake_batch):
+    a = assessor_with_batch_transport
+    q = fit_question("rice", "a" * 64)
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+    fake_batch.complete(bid, {a._backends["judge"].cache_key(q): "I decline."})
+    assert a.resolve(bid) == {}
+    assert a.ask_many("judge", [q]).collected  # asked again
 
 
 def test_ask_many_and_submit_build_each_question_exactly_once(db, fake_batch):
