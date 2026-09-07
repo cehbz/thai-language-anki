@@ -44,6 +44,7 @@ __all__ = [
     "QueueEntry", "queue", "QueuedNeeds", "queued",
     "all_needs", "available_needs", "available_need_keys", "open_words",
     "passing_pictures", "pictures_awaiting_preference",
+    "unjudged_candidates",
     "Challenger", "challengers",
     "Reask", "reasks", "DEFAULT_REASK_LAPSES",
     "confusion_weights",
@@ -559,12 +560,12 @@ def directed(cache: CacheReader, subject: str) -> bool:
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
                        current_rubric: Mapping[str, str], sources: Sequence[str], *,
                        transient_cap: int) -> bool:
-    """A rubric change left a judge verdict stale, a judge suggestion has
-    not been followed by a new attempt, or an unasked source remains
-    (spec 3 section 6 bucket 2).
+    """A candidate has no verdict under the current rubric, a judge
+    suggestion has not been followed by a new attempt, or an unasked
+    source remains (spec 3 section 6 bucket 2).
     """
     judge_rows = [r for r in rows if r.port == "assess" and r.backend == "judge"]
-    if any(_stale(r, current_rubric) for r in judge_rows):
+    if unjudged_candidates(cache, subject, kind, current_rubric=current_rubric):
         return True
     provide_ts = max((r.ts for r in rows if r.port == "provide"), default=-1)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
@@ -726,9 +727,11 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         if best.artifact_sha is None or is_vetoed:
             status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
                               transient_cap=transient_cap)
-            if status.exhausted and not is_directed:
+            awaiting = unjudged_candidates(cache, subject, kind, current_rubric=current_rubric)
+            if status.exhausted and not is_directed and not awaiting:
                 out_of_options += 1
-                continue  # out of machine options and nothing directs it -- excluded
+                continue  # out of machine options, nothing directs it, no
+                          # candidate awaits a verdict -- excluded
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources,
                                 transient_cap=transient_cap):
@@ -743,6 +746,24 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     entries.sort(key=lambda e: (e.bucket, not e.directed, e.rank, e.attempts, e.subject, e.kind))
     return QueuedNeeds(entries=entries, available=len(candidates), exhausted=out_of_options,
                        unserved=unserved)
+
+
+# --- assess-first: the candidates a verdict is owed to ---------------------
+
+def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
+                        current_rubric: Mapping[str, str]) -> tuple[str, ...]:
+    """`subject`'s candidates of `kind` with no judge verdict under
+    `current_rubric` for the need's own role, in record.candidate_shas
+    order (spec 3 section 5 assess-first). Empty for a role absent from
+    `current_rubric`: the judge ranks nothing there.
+    """
+    rows = record.rows_for(cache, subject, kind)
+    role = role_of(cache, subject, kind, rows)
+    if role not in current_rubric:
+        return ()
+    judged = {r.question.get("artifact_sha") for r in record.judge_verdicts(rows, role)
+              if not _stale(r, current_rubric)}
+    return tuple(s for s in record.candidate_shas(rows) if s not in judged)
 
 
 # --- the preference question a resolved batch leaves open ------------------

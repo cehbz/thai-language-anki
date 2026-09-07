@@ -32,6 +32,7 @@ from thai_syllabus.derivations import (
     queue,
     queued,
     reasks,
+    unjudged_candidates,
 )
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
 from thai_syllabus.cachekeys import (BatchMarkerKey, JudgeKey, MechanicalKey, ProvideKey,
@@ -914,13 +915,14 @@ def test_bucket_1_exhausted_but_directed_stays_queued(cache):
     assert entries[0].directed is True
 
 
-def test_bucket_2_when_the_rubric_changed_since_the_verdict(cache):
-    # The artifact is anchored by a LEARNER rating (unaffected by rubric
-    # staleness -- learner choice wins outright), so it stays current-best
-    # while its own judge verdict, under the old rubric, is stale under
-    # the new one -- exactly "a rubric change left the current artifact
-    # without a verdict under current_rubric".
+def test_bucket_2_when_a_candidate_has_no_verdict_under_the_current_rubric(cache):
+    # The artifact is anchored by a LEARNER rating (learner choice wins
+    # outright), so it stays current-best while its only judge verdict,
+    # under the old rubric, is stale under the new one: a candidate a
+    # verdict is owed to (spec 3 section 5 assess-first).
     syllabus = _one_word_syllabus()
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "a" * 64}], ts=_next_ts()))
     seed_rating(cache, "rice", "a" * 64, "acceptable")
     cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="rubric-v1",
                                 ts=_next_ts()))
@@ -931,6 +933,31 @@ def test_bucket_2_when_the_rubric_changed_since_the_verdict(cache):
     assert entry.bucket == 2
 
 
+def test_a_stale_verdict_on_a_sha_that_is_not_a_candidate_is_no_lever(cache):
+    syllabus = _one_word_syllabus()
+    seed_rating(cache, "rice", "a" * 64, "acceptable")
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="rubric-v1",
+                                ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache,
+                                   current_rubric={"picture-for-word": "rubric-v2"},
+                                   sources_for=no_sources)
+                if e.subject == "rice")
+    assert entry.bucket == 3
+
+
+def test_bucket_1_exhausted_stays_queued_while_a_candidate_awaits_judgement(cache):
+    syllabus = _one_word_syllabus()
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=2)
+    seed_ask(cache, "rice", "picture", source="pexels", ts=3)
+    cache.rows.append(provide_row("rice", "picture", backend="legacy-current",
+                                  items=[{"sha": "a" * 64, "ext": "jpg"}], ts=4))
+    entries = _queue(syllabus, cache)
+    assert len(entries) == 1
+    assert entries[0].bucket == 1
+    assert entries[0].directed is False
+
+
 def test_bucket_2_when_a_judge_suggestion_is_unasked(cache):
     syllabus = _one_word_syllabus()
     cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
@@ -938,6 +965,45 @@ def test_bucket_2_when_a_judge_suggestion_is_unasked(cache):
     cache.rows.append(judge_row("rice", "picture", "a" * 64, True, ts=2, suggestion="a redder one"))
     entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources) if e.subject == "rice")
     assert entry.bucket == 2
+
+
+# --- unjudged_candidates: spec 3 section 5 assess-first ----------------------
+
+def test_unjudged_candidates_names_a_candidate_with_no_verdict_under_the_current_rubric(cache):
+    cache.rows.append(provide_row("rice", "picture", backend="legacy-current",
+                                  items=[{"sha": "a" * 64, "ext": "jpg"}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="legacy", ts=2))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == ("a" * 64,)
+
+
+def test_unjudged_candidates_is_empty_once_every_candidate_has_a_current_verdict(cache):
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "a" * 64}, {"sha": "b" * 64}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric=R, ts=2))
+    cache.rows.append(judge_row("rice", "picture", "b" * 64, False, rubric=R, ts=3))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == ()
+
+
+def test_unjudged_candidates_keeps_first_seen_order(cache):
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "b" * 64}, {"sha": "a" * 64}], ts=1))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == ("b" * 64, "a" * 64)
+
+
+def test_a_verdict_on_a_sha_that_is_not_a_candidate_leaves_nothing_unjudged(cache):
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="legacy", ts=1))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == ()
+
+
+def test_unjudged_candidates_is_empty_for_a_role_the_judge_does_not_rank(cache):
+    cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    assert unjudged_candidates(cache, "rice", "recording",
+                               current_rubric={"picture-for-word": R}) == ()
 
 
 def test_judge_passed_unrated_picture_queues_in_bucket_3(cache):
