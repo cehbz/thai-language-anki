@@ -67,6 +67,30 @@ def test_source_asks_excludes_a_learner_supply_row_too(cache):
     assert [r.backend for r in source_asks(rows)] == ["openverse"]
 
 
+def test_source_asks_excludes_a_legacy_current_row(cache):
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "w", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0)
+    cache.append("provide", "legacy-current",
+                ProvideKey(source="legacy-current", kind="picture", query="w"),
+                "w", {"provides": "picture", "kind": "picture", "subject_kind": "word",
+                      "params": {"image": "images/pw-1.jpg"}},
+                {"items": [{"sha": "c" * 64, "ext": "jpg"}]}, 0)
+    rows = rows_for(cache, "w", "picture")
+    assert [r.backend for r in source_asks(rows)] == ["openverse"]
+    assert candidate_shas(rows) == ["c" * 64]
+
+
+def test_latest_query_ignores_a_newer_legacy_current_row(cache):
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "w", {"kind": "picture", "params": {"query": "rice bowl"}}, {"items": []}, 0)
+    cache.append("provide", "legacy-current",
+                ProvideKey(source="legacy-current", kind="picture", query="w"),
+                "w", {"provides": "picture", "kind": "picture", "subject_kind": "word",
+                      "params": {"image": "images/pw-1.jpg"}},
+                {"items": [{"sha": "c" * 64, "ext": "jpg"}]}, 0)
+    assert latest_query(rows_for(cache, "w", "picture")) == "rice bowl"
+
+
 def test_candidate_shas_is_first_seen_order_across_rows(cache):
     cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
                 "w", {"kind": "picture"}, {"items": []}, 0)

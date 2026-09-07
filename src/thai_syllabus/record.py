@@ -34,8 +34,9 @@ DRAFT_SUBJECT = "sentence-drafts"
 # provide rows from these backends are not Source asks (spec 3 section 3
 # vocabulary: an attempt is one Source ask): imgfetch/audiofetch write the
 # candidate a Source ask already caused, and a learner row is a supply --
-# an answer, not an ask.
-_NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner")
+# an answer, not an ask. a legacy-current row is a migrated candidate's
+# provenance (spec 2 section 4), an answer with no ask.
+_NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner", "legacy-current")
 
 # The learner rating vocabulary: every value a rating row's answer["value"]
 # is allowed to carry, ranked on the same numeric scale a judge verdict
