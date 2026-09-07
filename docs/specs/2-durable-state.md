@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 7, proposed 2026-09-07 against principles r2 and architecture
+Revision 8, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -27,6 +27,9 @@ Revision log:
 - r7 2026-09-07: the current picture migrates as a candidate (a provide
   row, no outcome row). Evidence: smoke run 3, every picture word
   re-sourced five candidates while its picture sat unjudged.
+- r8 2026-09-07: a legacy verdict row keeps the old key shape
+  (LegacyVerdictKey). Evidence: spec 3 r12 (a judge key names its
+  subject; migrate's idempotency reads the legacy rows' own key).
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -143,7 +146,8 @@ Carry-over per the handoff's table; everything else regenerates.
    (measured 2026-09-04: unambiguous for 38 of 39 homograph forms); an
    ambiguous form is reported, never guessed. Each candidates.yaml
    verdict → a judge-backend cache row under a legacy rubric id
-   ("legacy-picture-rules"), the verdict and failed rule ids as-is: the
+   ("legacy-picture-rules"), keyed LegacyVerdictKey(sha(rubric),
+   artifact sha, role), the verdict and failed rule ids as-is: the
    old record does not say which rubric version judged, so under F9 the
    row is evidence of what was seen and rejected, and it never ranks
    (spec 3 §6). The deck's current picture is a candidate: one provide

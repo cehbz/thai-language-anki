@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 11, proposed 2026-09-07 against principles r2 and architecture
+Revision 12, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -61,6 +61,14 @@ Revision log:
   picture words re-sourced, ~3,500 questions projected against ~650); a
   stale legacy verdict on a non-candidate sha read as an untried lever.
   User ruling 2026-09-07 (incremental over re-migration).
+- r12 2026-09-07: a judge key names its subject (§4); `legacy-current`
+  is a candidate's provenance, never a Source ask (§3); a current-best
+  tie among equals breaks by artifact sha (§6). Evidence: final review
+  of the assess-first arc 2026-09-07 (a fit verdict cached for one word
+  answered another word's question, an assess-first no-op; three
+  migrated word pairs share one picture; the feedback screen lost the
+  search phrase behind the migrated row; a tie broke by set order,
+  differing per process). User ruling 2026-09-07 (root cause over guard).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -85,7 +93,7 @@ whose picture attempts stopped at search.
   verdict rows it caused; nothing else is stored.
 - **Candidate**: an artifact (content-addressed, spec 2) in a role, with
   verdicts and no adoption. Adoption is derived (current-best), never stored.
-- **Verdict**: an Assess answer on (artifact, role) under a rubric; carries
+- **Verdict**: an Assess answer on (subject, artifact, role) under a rubric; carries
   its cost.
 - **Key**: a typed value per backend (a frozen dataclass of its parts),
   defined in this spec's key module and used by every writer and reader.
@@ -149,6 +157,7 @@ one speaker answers empty.
 | llm | sentence (per run over open targets), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
+| legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
 
 Measured 2026-09-03: of 562 word lookups 333 returned nothing; of 40
 minimal-pair members 39 are on Forvo and 11 of 22 pairs have a same-speaker
@@ -159,7 +168,7 @@ speaker-directed search does not exist.
 
 | backend | roles | key | authority |
 |---|---|---|---|
-| judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):ARTIFACT_SHA:ROLE | evidence; below learner where learner is qualified |
+| judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
 | mechanical | recording duration/format; media resolvable; fills(); provenance rules | parameter-explicit, e.g. mech:duration:0.2-5.0:sha | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
@@ -265,7 +274,8 @@ Implemented after cutover.
 - **current_best(subject, kind)**: learner choice wins; else the candidate
   ranked highest by the most authoritative backend that has spoken on it
   for the role, under the current rubric (a stale-rubric verdict does not
-  rank); among equals, the provenance prior; never below an artifact the
+  rank); among equals, the provenance prior, then the lower artifact
+  sha; never below an artifact the
   learner rated acceptable. A passing mechanical verdict ranks a recording;
   a passing judge fit ranks a picture; preference orders passing pictures.
 - **pending(subject, kind)**: a question about one of its candidates
@@ -455,8 +465,9 @@ picture/preference, and sentence texts verbatim.
 
 ## 10. Carry-over
 
-Spec 2 §4 as revised (r7) is the contract: old candidate verdicts carry
-under a legacy rubric id and never rank; the current picture carries as a
+Spec 2 §4 as revised (r8) is the contract: old candidate verdicts carry
+under a legacy rubric id, on the old key shape (LegacyVerdictKey, §4),
+and never rank; the current picture carries as a
 candidate (spec 2 §4 r7) and is judged under the current rubric by
 assess-first (§5) on the first run that queues its need; the old
 judge_cache.sqlite is retired (its keys are opaque hashes of prompts,
