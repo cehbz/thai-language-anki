@@ -520,12 +520,18 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str,
     came from (the retried item on a re-ask, `item` otherwise). A served
     refusal of its url re-asks the lookup through `relookup` once and
     retries the item found under the same Forvo id (spec 3 section 6a);
-    an item with no id is not retried. A second refusal, or a wire
-    failure, counts as transient."""
+    an item with no id is not retried. A second refusal, a wire failure,
+    or a failed re-lookup, counts as transient."""
     got = _fetch_forvo_item(ctx, subject, item, fetches, subject_kind=subject_kind)
     if got is None and fetches.last_refusal_served and relookup is not None:
         key = item.get("id")
-        fresh = next((i for i in relookup() if key is not None and i.get("id") == key), None)
+        try:
+            candidates = relookup()
+        except TransportError as e:
+            _log.warning("forvo re-lookup failed for %s: %s", subject, e)
+            fetches.failed()
+            return None
+        fresh = next((i for i in candidates if key is not None and i.get("id") == key), None)
         if fresh is not None:
             got = _fetch_forvo_item(ctx, subject, fresh, fetches, subject_kind=subject_kind)
             item = fresh

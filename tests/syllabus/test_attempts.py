@@ -18,8 +18,8 @@ from thai_syllabus.derivations import exhausted
 from thai_syllabus.record import DRAFT_SUBJECT, sentence_drafts
 from thai_syllabus.entities import Category, MinimalPair, Sentence, SoundConfusion, text_sha
 from thai_syllabus.media import Provenance, Speaker
-from thai_syllabus.provider import FetchBackend, Provider, RawAnswer, TtsBackend
-from thai_syllabus.record import rows_for
+from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
+from thai_syllabus.record import drafts_in, rows_for
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
 from thai_syllabus.rules import OrderEntry
@@ -1104,6 +1104,61 @@ def test_a_served_refusal_of_an_item_with_no_id_is_not_retried(tmp_path):
     assert row.answer["outcome"] == "transient-failure" and row.answer["candidates"] == []
 
 
+class _TwoItemForvoThenDead:
+    """One lookup returns two items; a re-lookup (the second item's served
+    refusal triggers one) fails on the wire."""
+    def __init__(self):
+        self.lookups = 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        self.lookups += 1
+        if self.lookups > 1:
+            raise TransportError("forvo lookup failed")
+        return RawAnswer(items=(
+            {"id": 1, "username": "a", "sex": "m", "country": "Thailand",
+             "pathmp3": "https://forvo/audio/1.mp3"},
+            {"id": 2, "username": "b", "sex": "m", "country": "Thailand",
+             "pathmp3": "https://forvo/audio/2.mp3"}), cost=1.0)
+
+
+class _FirstOkSecondRefusedAudiofetch:
+    """The first item's url downloads; the second is refused by the
+    server (content-type)."""
+    def __init__(self, media):
+        self.media = media
+
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        if q.params["url"].endswith("/2.mp3"):
+            raise FetchRefused(reason="content-type",
+                               detail='content-type "application/json" is not allowed')
+        sha = self.media.write(b"ID3ok", "mp3")
+        return RawAnswer(items=({"sha": sha, "ext": "mp3", "speaker": q.params["speaker"],
+                                 "speaker_kind": "native", "source": "forvo"},), cost=0.0)
+
+
+def test_a_failed_relookup_after_a_stored_item_is_a_transient_fetch(tmp_path):
+    """A served refusal on the second item re-asks the lookup (spec 3
+    section 6a); when that re-lookup itself fails on the wire, the first
+    item's stored candidate still stands and the attempt does not raise."""
+    forvo = _TwoItemForvoThenDead()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _FirstOkSecondRefusedAudiofetch(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    result = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert result.attempted
+    assert forvo.lookups == 2
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+
+
 def test_a_tts_recording_attempt_writes_a_candidates_outcome(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     attempt(ctx, Need("rice", "recording"), "tts")
@@ -1241,6 +1296,33 @@ def test_sentence_drafts_reads_back_every_draft_the_run_asked_for(tmp_path):
     assert [(d.text, d.gloss, d.claimed) for d in drafts] == [
         ("กินข้าว", "eat rice", ("rice/receptive",))]   # กินข้าว: eat rice
     assert rows_for(ctx.db, DRAFT_SUBJECT, "sentence")
+
+
+class _ProseTransport:
+    """A drafter transport that answers with prose, never the drafting
+    prompt's JSON -- what LlmBackend.recognize (wired to drafts_in) rejects
+    (spec 3 r10 section 2)."""
+
+    def complete(self, prompt):
+        return Completion(text="I can't think of a sentence right now.")
+
+
+def test_sentence_attempt_raises_on_a_drafter_answer_that_carries_no_draft(tmp_path):
+    syllabus = Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),   # ข้าว: rice, กิน: eat
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+        frequency={"eat": 1, "rice": 2},
+        tokenizer=FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]}))              # กินข้าว: eat rice
+    llm = LlmBackend(producer="sentence-drafter", model="m", transport=_ProseTransport(),
+                     recognize=lambda text: bool(drafts_in(text)))
+    ctx = _sourcing(tmp_path, syllabus, backends={"llm-sentence": llm},
+                    assess={"judge": JudgeBackend(model="m", transport="api",
+                                                  complete=lambda p, a=(): Completion(
+                                                      text='{"value": true, "evidence": "e"}')),
+                            "fills": FillsBackend(syllabus_of=lambda: syllabus)})
+    with pytest.raises(TransportError, match="recognizable answer"):
+        sentence_attempt(ctx)
+    assert not rows_for(ctx.db, DRAFT_SUBJECT, "sentence")
 
 
 # --- _sentence_prompt: the vocabulary listed once, a cutoff per target -----

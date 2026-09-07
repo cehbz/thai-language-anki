@@ -199,10 +199,21 @@ def test_generic_parser_accepts_a_bool_verdict(text, value):
     assert _generic_value_parser(text).value is value
 
 
+def test_generic_parser_accepts_a_verdict_wrapped_in_a_code_fence():
+    from thai_syllabus.assessor import _generic_value_parser
+    fenced = '```json\n{"value": true, "evidence": "e"}\n```'
+    assert _generic_value_parser(fenced).value is True
+
+
 @pytest.mark.parametrize("text", ["ranking: a, b", '{"ranking": "a"}', '{"ranking": [1, 2]}', "{}"])
 def test_preference_parser_raises_on_an_answer_that_is_not_a_ranking(text):
     with pytest.raises(TransportError, match="without a verdict"):
         parse_preference(text)
+
+
+def test_preference_parser_accepts_a_ranking_wrapped_in_a_code_fence():
+    fenced = '```\n{"ranking": ["a", "b"]}\n```'
+    assert parse_preference(fenced).value == ["a", "b"]
 
 
 def test_an_unparseable_inline_answer_caches_no_verdict(db):

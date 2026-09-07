@@ -46,6 +46,7 @@ from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
 from .query import QUERY_HINTS
+from . import record
 from .provider import (
     Backend,
     FetchBackend,
@@ -164,13 +165,21 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
                                           fetcher=tool_fetcher(cfg.audiofetch_path))
 
     drafter_transport = _drafter_transport(cfg, secrets)
+    # llm-sentence recognizes only a completion drafts_in can read (spec 3
+    # r10 section 2); llm-phrase and llm-entry keep LlmBackend's default,
+    # which recognizes any text.
+    recognizers: dict[str, Callable[[str], bool]] = {
+        "llm-sentence": lambda text: bool(record.drafts_in(text)),
+    }
     for producer, name in (("sentence-drafter", "llm-sentence"),
                            ("phrase-drafter", "llm-phrase"),
                            ("entry-drafter", "llm-entry")):
+        kwargs = {"recognize": recognizers[name]} if name in recognizers else {}
         backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
                                     transport=drafter_transport,
                                     price=_drafter_price(cfg),
-                                    quota_cost_per_call=_drafter_quota_cost(cfg))
+                                    quota_cost_per_call=_drafter_quota_cost(cfg),
+                                    **kwargs)
 
     return Provider(record=db, cache=db, backends=backends)
 

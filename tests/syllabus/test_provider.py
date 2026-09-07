@@ -637,6 +637,19 @@ def test_llm_transport_error_propagates_uncached(db):
     with pytest.raises(TransportError):
         provider.ask("llm", Question(subject="s", provides="sentence",
                                      params={"prompt": "x"}))
+
+
+def test_llm_fetch_raises_when_recognize_rejects_the_completion_and_caches_nothing(db):
+    """Spec 3 r10 section 2: an LlmBackend appends only a completion the
+    producer recognizes. `fetch` raises TransportError for the rest, so
+    the provider's ask() caches no row."""
+    transport = _FakeTransport(text="I cannot draft this.")
+    backend = LlmBackend(producer="p", model="m", transport=transport, recognize=lambda t: False)
+    provider = Provider(record=db, cache=db, backends={"llm": backend})
+    q = Question(subject="s", provides="sentence", params={"prompt": "x"})
+    with pytest.raises(TransportError, match="recognizable answer"):
+        provider.ask("llm", q)
+    assert db.latest("provide", "llm", backend.cache_key(q)) is None
     assert db.assessments_of("s") == []
 
 

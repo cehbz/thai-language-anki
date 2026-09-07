@@ -12,13 +12,13 @@ row's kind is "batch". A fold here reads those fields, `backend`, `port`,
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .cachekeys import RunReportKey
 from .entities import text_sha
 from .ports import Answer, CacheReader
+from .transport import strip_fences
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
@@ -234,15 +234,11 @@ class SentenceDraft:
         return text_sha(self.text)
 
 
-def _strip_fences(text: str) -> str:
-    return re.sub(r"^```[a-z]*\n|\n```$", "", text.strip())
-
-
 def drafts_in(text: str) -> list[SentenceDraft]:
     """The drafts one llm answer item carries; empty when it is not the
     JSON the drafting prompt asked for."""
     try:
-        data = json.loads(_strip_fences(text))
+        data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
         return []
     drafted = (data.get("sentences") if isinstance(data, Mapping) else None) or []

@@ -682,6 +682,14 @@ def test_providers_judge_max_tokens_defaults_and_round_trips(tmp_path):
     assert curated.load_providers_config(path) == cfg
 
 
+@pytest.mark.parametrize("value", [0, -1, "big"])
+def test_providers_judge_max_tokens_refuses_a_non_positive_or_non_integer_value(tmp_path, value):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "max_tokens": value})))
+    with pytest.raises(curated.CuratedValidationError, match="judge.max_tokens"):
+        curated.load_providers_config(path)
+
+
 def test_providers_adaptive_thinking_requires_max_tokens_of_at_least_16000(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "adaptive"})))

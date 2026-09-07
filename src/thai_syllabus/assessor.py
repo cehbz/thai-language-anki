@@ -22,7 +22,7 @@ from . import record
 from .cachekeys import (BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey,
                         rendition_identity, sha)
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, TransportError
+from .transport import Completion, TransportError, strip_fences
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
@@ -85,9 +85,11 @@ class LearnerAskNotSupported(RuntimeError):
 
 
 class PreparationError(Exception):
-    """Raised by a backend's prompt builder or attachment resolver: the
-    question cannot be asked (a missing or unreadable artifact). Never
-    cached: the candidate is unusable, the backend is not unreachable.
+    """Raised by a backend's prompt builder or attachment resolver, and by
+    DurationBackend.fetch, ffprobe_duration_seconds, RenditionBackend.fetch
+    and FillsBackend.fetch: the question cannot be asked (a missing or
+    unreadable artifact). Never cached: the candidate is unusable, the
+    backend is not unreachable.
     """
 
 
@@ -473,13 +475,14 @@ def _not_a_verdict(text: str) -> TransportError:
 
 def parse_preference(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """Parses a picture_preference_prompt response: `value` is the ranked
-    list of candidate shas, best first. Raises TransportError for any
+    list of candidate shas, best first. A ```` ``` ```` or ```` ```json ````
+    fence around the body is accepted. Raises TransportError for any
     other shape, which caches nothing (spec 3 section 6a). `question` is
     unused -- accepted so this can serve as a JudgeBackend parse_response
     directly, which is always called with (text, question).
     """
     try:
-        data = json.loads(text)
+        data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
         raise _not_a_verdict(text) from None
     ranking = data.get("ranking") if isinstance(data, dict) else None
@@ -491,12 +494,13 @@ def parse_preference(text: str, question: "AssessQuestion | None" = None) -> Raw
 def _generic_value_parser(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """The {"value": bool, "evidence", "suggestion"} shape picture_fit_prompt
     and sentence_prompt ask for, or a bare true/false -- also the fallback
-    for any role with no entry in _DEFAULT_JUDGE_BUILDERS. Raises
+    for any role with no entry in _DEFAULT_JUDGE_BUILDERS. A ```` ``` ````
+    or ```` ```json ```` fence around the body is accepted. Raises
     TransportError for any other shape, which caches nothing (spec 3
     section 6a). `question` is unused -- see parse_preference's docstring.
     """
     try:
-        data = json.loads(text)
+        data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
         data = None
     if isinstance(data, dict) and isinstance(data.get("value"), bool):
@@ -628,9 +632,11 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 class DurationBackend:
     """A recording's duration lies within [lo, hi] seconds. Keyed
     mech:duration:LO-HI:ARTIFACT_SHA. `duration_of`, when given, replaces
-    the ffprobe lookup.
+    the ffprobe lookup. `fetch` requires a readable artifact file (a
+    missing or unreadable one is a PreparationError) before `duration_of`
+    or ffprobe runs.
     """
-    resolve_path: Callable[[str | None], str | None]
+    resolve_path: Callable[[str | None], str | Path | None]
     lo: float = 0.2
     hi: float = 5.0
     duration_of: Callable[[str], float] | None = None

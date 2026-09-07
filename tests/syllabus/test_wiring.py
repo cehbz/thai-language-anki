@@ -230,6 +230,15 @@ def test_llm_backends_are_always_registered(cfg, db, media_store):
         assert {"llm-sentence", "llm-phrase", "llm-entry"} <= set(backends)
 
 
+def test_llm_sentence_recognizes_only_a_completion_drafts_in_reads(cfg, db, media_store):
+    """Spec 3 r10 section 2: llm-sentence's LlmBackend.recognize rejects a
+    completion drafts_in cannot read as a draft; llm-phrase keeps
+    LlmBackend's own default, which recognizes any text."""
+    backends = build_provider(cfg, db, media_store)._backends
+    assert backends["llm-sentence"].recognize("no json here") is False
+    assert backends["llm-phrase"].recognize("no json here") is True
+
+
 def test_the_default_drafter_is_the_cli_transport_whatever_the_judge_is(
         cfg, db, media_store, monkeypatch):
     from thai_syllabus.curated import JudgeConfig

@@ -396,12 +396,16 @@ class LlmBackend:
     section 2): `price` prices the completion's actual token usage
     (api/batch, cash); `quota_cost_per_call` is the cli transport's flat
     subscription-quota cost, which reports no usage on the wire.
+    `recognize` is the producer's own check on a completion's text (spec
+    3 r10 section 2); the default recognizes any text. `fetch` appends
+    nothing for a completion `recognize` rejects.
     """
     producer: str
     model: str
     transport: Any  # .complete(prompt: str) -> Completion; may raise TransportError
     price: Price | None = None
     quota_cost_per_call: float = 0.0
+    recognize: Callable[[str], bool] = lambda text: True
 
     def cache_key(self, question: Question) -> LlmPromptKey:
         return LlmPromptKey(producer=self.producer, model=self.model,
@@ -415,6 +419,10 @@ class LlmBackend:
     def fetch(self, question: Question) -> RawAnswer:
         prompt = question.params["prompt"]
         completion = self.transport.complete(prompt)
+        if not self.recognize(completion.text):
+            raise TransportError(
+                f"{self.producer} answered without a recognizable answer: "
+                f"{completion.text[:80]!r}")
         items = (completion.text,) if completion.text else ()
         return RawAnswer(items=items, cost=self._cost(completion))
 

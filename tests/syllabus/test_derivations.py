@@ -570,10 +570,10 @@ def test_next_source_is_none_once_every_source_asked_since_the_change(cache):
                        transient_cap=3) is None
 
 
-def test_next_source_never_counts_a_transient_failure_as_tried(cache):
-    """r7: a transient-failure outcome never advances the need -- unlike
-    seed_ask's "nothing", a source whose ask or fetch died on the wire is
-    asked again next time, not skipped.
+def test_next_source_counts_a_transient_failure_as_tried_only_at_the_cap(cache):
+    """r10 section 6a: a transient-failure outcome counts as tried only at
+    the transient cap; one row under the cap leaves the source to be
+    asked again.
     """
     cache.rows.append(outcome_row("rice", "picture", source="openverse",
                                   outcome="transient-failure", ts=1))
@@ -581,7 +581,7 @@ def test_next_source_never_counts_a_transient_failure_as_tried(cache):
                        transient_cap=3) == "openverse"
 
 
-def test_exhausted_does_not_count_transient_failures_against_the_cap(cache):
+def test_exhausted_counts_transient_failures_only_at_the_cap(cache):
     cache.rows.append(outcome_row("rice", "picture", source="openverse",
                                   outcome="transient-failure", ts=1))
     cache.rows.append(outcome_row("rice", "picture", source="openverse",

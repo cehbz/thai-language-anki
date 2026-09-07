@@ -373,7 +373,8 @@ def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_
     assert report.available >= 1
 
 
-# --- ruling 4: a transient failure never advances the need (r7, B8) --------
+# --- a transient failure counts as tried only at the transient cap (spec 3
+# section 6a, r7, B8) -------------------------------------------------------
 
 class _LookupOnceForvo:
     """Forvo answers once with one item; the per-item download always
@@ -409,9 +410,10 @@ def test_a_transient_download_failure_retries_the_same_source_next_run(
     """The forvo lookup succeeds but its only download fails on the wire
     (caught inside the attempt, spec 3 section 3 -- the ask itself never
     raises): the attempt writes a transient-failure outcome (ruling 2),
-    which next_source never counts as tried (ruling 3), so a second run's
-    _try_each_need asks forvo again rather than escalating to tts --
-    through the real record, run.py itself unchanged.
+    which next_source counts as tried only at the transient cap (spec 3
+    section 6a); a second run's _try_each_need asks forvo again rather
+    than escalating to tts -- through the real record, run.py itself
+    unchanged.
     """
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)

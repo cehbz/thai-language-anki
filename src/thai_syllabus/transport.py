@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 _log = logging.getLogger(__name__)
+
+
+def strip_fences(text: str) -> str:
+    """A markdown code fence around `text`, ```` ``` ```` or ```` ```json ````,
+    removed -- the drafter's and the judge's parsers both accept an answer
+    a model wraps this way before they call json.loads.
+    """
+    return re.sub(r"^```[a-z]*\n|\n```$", "", text.strip())
 
 
 class TransportError(RuntimeError):
@@ -225,7 +234,8 @@ class ClaudeBatchTransport:
         return batch.id
 
     def status(self, batch_id: str) -> str:
-        """"in_progress" | "ended" (anthropic's processing_status values)."""
+        """"in_progress" | "canceling" | "ended" (anthropic's
+        processing_status values)."""
         try:
             client = self._client()
             batch = client.messages.batches.retrieve(batch_id)
