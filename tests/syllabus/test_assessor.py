@@ -25,6 +25,7 @@ from thai_syllabus.assessor import (
     RawVerdict,
     Verdict,
     DurationBackend,
+    FillsBackend,
     FormatBackend,
     RenditionBackend,
     parse_preference,
@@ -257,6 +258,13 @@ def test_format_mechanical_evaluates_extension_match():
     backend = FormatBackend(expected_ext="mp3", resolve_ext=lambda sha: "wav")
     raw = backend.fetch(AssessQuestion(subject="s", role="r", artifact_sha="x"))
     assert raw.value is False
+
+
+def test_fills_key_names_the_version_it_was_computed_under():
+    backend = FillsBackend(syllabus_of=lambda: None, version="abc123:pythainlp-5.3.7-newmm")
+    q = AssessQuestion(subject="s" * 64, role="sentence-for-target",
+                       params={"target": "eat/receptive", "text": "กิน"}, kind="sentence")   # กิน: eat
+    assert backend.cache_key(q).encode() == "mech:fills:eat/receptive:abc123:pythainlp-5.3.7-newmm:" + "s" * 64
 
 
 def test_duration_check_on_a_nonexistent_path_is_a_preparation_error_and_uncached(db):

@@ -48,6 +48,32 @@ def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="en
                meaning=meaning, classifier=WordId(classifier) if classifier else None)
 
 
+# --- curated_version ----------------------------------------------------
+
+def test_curated_version_changes_when_a_word_is_added(tmp_path):
+    from thai_syllabus.curated import curated_version, save_targets, save_words
+    save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), "Adjectives")])   # ใกล้: near
+    save_targets(tmp_path / "targets.yaml", [])
+    before = curated_version(tmp_path)
+    save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), "Adjectives"),
+                                         (_word("far", "ไกล", "far"), "Adjectives")])   # ไกล: far
+    assert curated_version(tmp_path) != before and len(before) == 12
+
+
+def test_curated_version_tolerates_a_missing_targets_yaml(tmp_path):
+    """A curated/ with words.yaml and no targets.yaml is what
+    load_curated accepts (_load_yaml_list returns [] for a missing
+    path); curated_version reads the same directory without raising, and
+    changes once targets.yaml is written.
+    """
+    from thai_syllabus.curated import curated_version, save_targets, save_words
+    save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), "Adjectives")])   # ใกล้: near
+    before = curated_version(tmp_path)
+    assert len(before) == 12
+    save_targets(tmp_path / "targets.yaml", [])
+    assert curated_version(tmp_path) != before
+
+
 def test_words_save_is_atomic_temp_then_replace(tmp_path, monkeypatch):
     path = tmp_path / "words.yaml"
     curated.save_words(path, [(_word("rice", "ข้าว", "cooked rice"), "Food")])

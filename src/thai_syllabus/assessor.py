@@ -674,13 +674,21 @@ class FormatBackend:
 class FillsBackend:
     """`Syllabus.fills()` as an Assess backend (spec 3 section 4): does the
     drafted text in `params["text"]` fill the Target named by
-    `params["target"]`? Keyed mech:fills:TARGET:SUBJECT. `syllabus_of`
-    reads the Syllabus at ask time, as a run adopts sentences into it.
+    `params["target"]`? Keyed mech:fills:TARGET:VERSION:SUBJECT. A fills
+    verdict is computed from words.yaml (the registered word list),
+    targets.yaml (a target's membership, skill and introduction --
+    `fills()` tests membership in `_target_positions`, not a position
+    value) and the tokenizer -- `version` names that state (spec 3
+    section 6a), built from curated.py's `curated_version(root)` and
+    wiring's `tokenizer_version()`. `syllabus_of` reads the Syllabus at
+    ask time, as a run adopts sentences into it.
     """
     syllabus_of: Callable[[], Any]
+    version: str = ""
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="fills", params=question.params["target"],
+        return MechanicalKey(check="fills",
+                             params=f"{question.params['target']}:{self.version}",
                              artifact_sha=question.subject)
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:

@@ -35,6 +35,7 @@ from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
     ProvidersConfig,
+    curated_version,
     load_curated,
     load_frequency_map,
     load_providers_config,
@@ -65,7 +66,7 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "Derivations", "load_derivations", "load_syllabus"]
+          "Derivations", "load_derivations", "load_syllabus", "tokenizer_version"]
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -205,13 +206,26 @@ def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
     return speaker_of
 
 
+def tokenizer_version() -> str:
+    """The tokenizer load_syllabus wires, named and versioned: pythainlp's
+    own version, the engine `_pythainlp_tokenizer` runs (the default
+    newmm). Imported lazily, as `_pythainlp_tokenizer` imports pythainlp.
+    """
+    import pythainlp
+
+    return f"pythainlp-{pythainlp.__version__}-newmm"
+
+
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
-                   *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None
-                   ) -> Assessor:
+                   *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None,
+                   deck_root: str | Path | None = None) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge",
     "mechanical" (the duration check), "rendition", and where
     `syllabus_of` names one, "fills". `syllabus_of` is a callable: a run
-    adopts sentences into its Syllabus between attempts.
+    adopts sentences into its Syllabus between attempts. `deck_root`
+    names the curated/ directory a fills verdict is computed from (spec 3
+    section 6a); its version, and the tokenizer's, become the fills
+    backend's key part. Empty when `deck_root` is not given.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -225,7 +239,9 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     if syllabus_of is not None:
-        backends["fills"] = FillsBackend(syllabus_of=syllabus_of)
+        version = (f"{curated_version(Path(deck_root) / 'curated')}:{tokenizer_version()}"
+                  if deck_root is not None else "")
+        backends["fills"] = FillsBackend(syllabus_of=syllabus_of, version=version)
     return Assessor(record=db, cache=db, backends=backends)
 
 
@@ -337,7 +353,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     db, media_store = derivations.db, derivations.media_store
     ctx = Sourcing(
         syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
-        assessor=build_assessor(cfg, db, media_store, syllabus_of=lambda: ctx.syllabus),
+        assessor=build_assessor(cfg, db, media_store, syllabus_of=lambda: ctx.syllabus,
+                               deck_root=root),
         db=db, media_store=media_store, rubrics=derivations.current_rubric,
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,

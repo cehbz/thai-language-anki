@@ -283,6 +283,25 @@ def test_build_assessor_registers_judge_and_mechanical(cfg, db, media_store):
     assert isinstance(a, Assessor)
 
 
+def test_build_assessor_fills_key_names_curated_and_tokenizer_version(cfg, db, media_store, tmp_path):
+    """build_assessor's fills backend carries a version naming both the
+    curated files a fills verdict reads and the tokenizer it runs (spec 3
+    section 6a): curated_version(deck_root/curated) + tokenizer_version().
+    """
+    from thai_syllabus.curated import curated_version
+    from thai_syllabus.wiring import tokenizer_version
+
+    root = _write_curated_dir(tmp_path / "deck")
+    a = build_assessor(cfg, db, media_store, syllabus_of=lambda: None, deck_root=root)
+    expected = f"{curated_version(root / 'curated')}:{tokenizer_version()}"
+    assert a._backends["fills"].version == expected
+
+
+def test_build_assessor_fills_version_is_empty_with_no_deck_root(cfg, db, media_store):
+    a = build_assessor(cfg, db, media_store, syllabus_of=lambda: None)
+    assert a._backends["fills"].version == ""
+
+
 def test_build_assessor_building_the_roster_reads_no_secret_files(cfg, db, media_store, monkeypatch):
     calls = _track_reads(monkeypatch)
     build_assessor(cfg, db, media_store)

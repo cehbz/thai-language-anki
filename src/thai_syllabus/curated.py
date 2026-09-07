@@ -9,6 +9,7 @@ before raising; `load_curated` does the same across a whole directory.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -457,6 +458,25 @@ def load_curated(root: str | Path) -> CuratedBundle:
                          graphemes=tuple(graphemes), confusions=tuple(confusions),
                          pairs=tuple(pairs), profile=profile, rulebook=rulebook,
                          categories=categories)
+
+
+def curated_version(root: str | Path) -> str:
+    """words.yaml and targets.yaml under `root`, as one version: a sha256
+    of their bytes, concatenated in that order, truncated to 12 hex
+    chars. A verdict computed over both files carries this in its key
+    (spec 3 section 6a), a new version on any edit to either file. A
+    missing file hashes as empty bytes, matching `_load_yaml_list`'s own
+    treatment of a missing words.yaml/targets.yaml as `load_curated`
+    reads them.
+    """
+    root = Path(root)
+    words_bytes = _file_bytes(root / "words.yaml")
+    targets_bytes = _file_bytes(root / "targets.yaml")
+    return hashlib.sha256(words_bytes + targets_bytes).hexdigest()[:12]
+
+
+def _file_bytes(path: Path) -> bytes:
+    return path.read_bytes() if path.exists() else b""
 
 
 # --- frequency corpus (spec 2 section 3's FrequencyMap) --------------------
