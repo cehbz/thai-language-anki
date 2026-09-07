@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 12, proposed 2026-09-07 against principles r2 and architecture
+Revision 13, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -69,6 +69,9 @@ Revision log:
   migrated word pairs share one picture; the feedback screen lost the
   search phrase behind the migrated row; a tie broke by set order,
   differing per process). User ruling 2026-09-07 (root cause over guard).
+- r13 2026-09-07: the newest verdict per backend and artifact ranks
+  (§6). Evidence: the judge-key arc's final review (a re-keyed verdict
+  re-asked once leaves two rows per artifact; the fold took the higher).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -274,7 +277,8 @@ Implemented after cutover.
 - **current_best(subject, kind)**: learner choice wins; else the candidate
   ranked highest by the most authoritative backend that has spoken on it
   for the role, under the current rubric (a stale-rubric verdict does not
-  rank); among equals, the provenance prior, then the lower artifact
+  rank); of several verdicts by one backend on one artifact, the newest
+  ranks; among equals, the provenance prior, then the lower artifact
   sha; never below an artifact the
   learner rated acceptable. A passing mechanical verdict ranks a recording;
   a passing judge fit ranks a picture; preference orders passing pictures.
