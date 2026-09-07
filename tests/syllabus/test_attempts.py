@@ -512,6 +512,27 @@ def test_rendition_attempt_fails_the_check_when_a_member_recording_does_not(tmp_
     assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
 
 
+def test_a_member_check_that_never_resolved_excludes_the_rendition_instead_of_failing_it(tmp_path):
+    """One member's mechanical check failed on the wire: the rendition
+    question is excluded for the run and no verdict is cached against the
+    member set."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    mech = ctx.assessor._backends["mechanical"]
+    original = mech.fetch
+
+    def flaky(q):
+        if q.subject == "news":
+            raise TransportError("ffprobe failed")
+        return original(q)
+
+    mech.fetch = flaky
+    result = attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    assert result.excluded and not result.questions
+    assert not [r for r in rows_for(ctx.db, "p1", "rendition") if r.backend == "rendition"]
+
+
 def test_the_rendition_verdict_identifies_the_member_set_it_judged(tmp_path):
     """The rendition backend, not the attempt, computes the artifact the
     member set forms -- the identity current_best then ranks."""

@@ -685,15 +685,16 @@ def _check_members(ctx: Sourcing, members: Mapping[str, tuple[str, Speaker]],
                    spend: dict[str, Spend]) -> dict[str, bool]:
     """Each member's own recording, checked under the member's own
     subject, and handed to the rendition check. A question that never
-    resolved counts as failing."""
+    resolved is left out; RenditionBackend refuses to judge a member set
+    with an unchecked member (PreparationError), which excludes the
+    question for the run."""
     questions = {member: AssessQuestion(subject=member, role=role_for("recording"),
                                         artifact_sha=sha, kind="recording", subject_kind="word")
                  for member, (sha, _speaker) in members.items()}
     result = _check(ctx, list(questions.values()), spend)
     return {member: bool(v.value)
-            if (v := result.resolved.get(ctx.assessor.key_of("mechanical", q))) is not None
-            else False
-            for member, q in questions.items()}
+            for member, q in questions.items()
+            if (v := result.resolved.get(ctx.assessor.key_of("mechanical", q))) is not None}
 
 
 def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
