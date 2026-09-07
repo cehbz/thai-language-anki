@@ -171,8 +171,8 @@ assessor has spoken. It never fails a candidate and any verdict outranks it.
 
 **Judge transports**: cli / api / batch, selected in providers.yaml; the
 run does not know which (section 7). Batch state is one marker row per
-run, keyed on the batch id, released when the batch resolves, expires,
-or fails. report() never calls Assess. A batch is outstanding until its
+run, keyed on the batch id, released when the batch ends. report() never
+calls Assess. A batch is outstanding until its
 status is ended; a result of type expired or errored carries no verdict
 and its question re-asks.
 
@@ -346,8 +346,8 @@ this run's spend.
 ```
 run(syllabus, budgets):
   resolve the previous run's batch, if any: append its verdicts, release
-      its marker (an expired or failed batch releases too; its questions
-      re-ask). Pending clears here.
+      its marker (a batch ends with expired or errored results too; those
+      questions re-ask). Pending clears here.
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
   questions = []

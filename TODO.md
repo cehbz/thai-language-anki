@@ -14,6 +14,22 @@ still run against them.
   attempt counts since the beginning. Record the rendition identity in
   the outcome row's candidates (or anchor on the rendition verdict row).
 
+## Spec 3 r11 candidates (user decisions)
+
+- Picture re-ask after a live search: s5 Picture re-asks unconditionally,
+  s6a says "from a cached answer"; one wasted search per attempt today.
+- A cap on judge re-asks of unparseable answers (a typed `unparseable`
+  verdict that never ranks after N), and a cost-only row for the tokens
+  such an answer spent (s2 cost contract vs s6a "append nothing").
+- s6 `candidates` reads "stored and checked"; the outcome row is written
+  before the check on every attempt path, and an excluded check leaves
+  `candidates` standing. Reword to "stored", or move the row.
+- QueueEntry.attempts excludes sources at the transient cap while
+  ExhaustedStatus.attempts includes them (screen order only).
+- A drafter answer with zero drafts (`{"sentences": []}`) is refused
+  under s2's no-drafts rule and re-asked every run; an honest "no
+  sentence fits" answer needs a recognized shape that caches.
+
 ## Cutover
 
 - Write `~/decks/thai-ff/curated/providers.yaml`: judge transport batch,
