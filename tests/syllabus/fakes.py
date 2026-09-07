@@ -20,7 +20,8 @@ class FakeAssessmentReader:
     artifact_sha) -> bool, not by the cachekeys.JudgeKey report() actually
     passes to verdict() -- this fake tests report()'s logic in isolation
     from store.py's actual key mechanics, matching a JudgeKey by its role
-    (rule_id) and identity (artifact_sha, falling back to note_id).
+    (rule_id), subject (note_id), and identity (artifact_sha, empty when
+    absent).
     """
     def __init__(self, verdicts: dict[tuple[str, str, str | None], bool] | None = None,
                 waived: set[tuple[str, str, str | None]] | None = None):
@@ -29,9 +30,10 @@ class FakeAssessmentReader:
 
     def verdict(self, backend: str, key) -> Answer | None:
         role = getattr(key, "role", None)
+        subject = getattr(key, "subject", None)
         identity = getattr(key, "identity", None)
         for (rule_id, note_id, artifact_sha), value in self._verdicts.items():
-            if rule_id == role and identity == (artifact_sha or note_id):
+            if rule_id == role and subject == note_id and identity == (artifact_sha or ""):
                 return Answer(port="assess", backend=backend, key_sha="", key="",
                              subject=note_id, question={}, answer={"value": value},
                              cost=0.0, ts=0)

@@ -382,7 +382,7 @@ def test_verdict_line_never_shows_a_preference_rank_as_pass(db, w1):
     role only).
     """
     from thai_syllabus.derivations import judge_verdict
-    key = JudgeKey(rubric_sha=sha("r"), identity=preference_identity(["sA", "sB"]),
+    key = JudgeKey(rubric_sha=sha("r"), subject=w1.id, identity=preference_identity(["sA", "sB"]),
                    role="picture-preference")
     db.append(port="assess", backend="judge", key=key, subject=w1.id,
              question={"role": "picture-preference", "artifact_sha": None, "rubric": "r",

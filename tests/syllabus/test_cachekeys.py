@@ -2,6 +2,8 @@
 Assess backend, encode()'s canonical string, sha()'s 16-hex truncation,
 and preference_identity()'s order-independence.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from thai_syllabus.cachekeys import (
@@ -13,6 +15,7 @@ from thai_syllabus.cachekeys import (
     JudgeKey,
     LearnerKey,
     LearnerNoteKey,
+    LegacyVerdictKey,
     LlmPromptKey,
     MechanicalKey,
     PairSearchKey,
@@ -42,8 +45,36 @@ def test_preference_identity_is_order_independent():
     assert preference_identity(["a", "b"]) != preference_identity(["a", "c"])
 
 
-def test_judge_key_encodes_rubric_identity_role():
-    key = JudgeKey(rubric_sha="abc123", identity="deadbeef", role="picture-for-word")
+def test_judge_key_encodes_rubric_subject_identity_role():
+    key = JudgeKey(rubric_sha="abc123", subject="rice", identity="deadbeef",
+                   role="picture-for-word")
+    assert key.encode() == "judge:abc123:rice:deadbeef:picture-for-word"
+    assert isinstance(key, CacheKey)
+
+
+def test_one_artifact_judged_for_two_subjects_has_two_keys():
+    a = JudgeKey.for_question(SimpleNamespace(subject="rice", role="picture-for-word",
+                                              artifact_sha="d" * 64, rubric="r", params={}))
+    b = JudgeKey.for_question(SimpleNamespace(subject="noodles", role="picture-for-word",
+                                              artifact_sha="d" * 64, rubric="r", params={}))
+    assert a != b and a.encode() != b.encode()
+
+
+def test_for_rule_and_for_question_meet_on_one_key():
+    q = SimpleNamespace(subject="rice", role="picture-for-word", artifact_sha="d" * 64,
+                        rubric="r", params={})
+    assert JudgeKey.for_rule("r", "d" * 64, "rice", "picture-for-word") == JudgeKey.for_question(q)
+
+
+def test_a_text_only_question_has_an_empty_identity():
+    q = SimpleNamespace(subject="s1", role="sentence-for-target", artifact_sha=None,
+                        rubric="r", params={})
+    assert JudgeKey.for_question(q).identity == ""
+    assert JudgeKey.for_question(q).encode() == f"judge:{sha('r')}:s1::sentence-for-target"
+
+
+def test_legacy_verdict_key_keeps_the_old_shape():
+    key = LegacyVerdictKey(rubric_sha="abc123", artifact_sha="deadbeef", role="picture-for-word")
     assert key.encode() == "judge:abc123:deadbeef:picture-for-word"
     assert isinstance(key, CacheKey)
 
@@ -92,8 +123,8 @@ def test_batch_marker_key_encodes_the_batch_id():
 
 
 def test_keys_are_hashable_and_equal_by_value():
-    a = JudgeKey(rubric_sha="x", identity="y", role="z")
-    b = JudgeKey(rubric_sha="x", identity="y", role="z")
+    a = JudgeKey(rubric_sha="x", subject="w", identity="y", role="z")
+    b = JudgeKey(rubric_sha="x", subject="w", identity="y", role="z")
     assert a == b and hash(a) == hash(b)
     assert {a, b} == {a}
 

@@ -59,7 +59,8 @@ def db(tmp_path):
 class _FakeBackend:
     def __init__(self, key=None, raises=None, value=True, evidence=None,
                 suggestion=None, cost=0.0):
-        self.key = key if key is not None else JudgeKey(rubric_sha="k", identity="k", role="k")
+        self.key = key if key is not None else JudgeKey(rubric_sha="k", subject="k", identity="k",
+                                                        role="k")
         self.raises = raises
         self.value = value
         self.evidence = evidence
@@ -512,6 +513,34 @@ def test_ask_many_collects_misses_under_a_batch_transport(assessor_with_batch_tr
     res = a.ask_many("judge", [fit_question("rice", "a" * 64), fit_question("rice", "b" * 64)])
     assert res.resolved == {} and len(res.collected) == 2
     assert a.unresolved_batch() is None  # nothing submitted until submit()
+
+
+def test_ask_many_collects_one_duplicated_question_once(assessor_with_batch_transport):
+    """Two AssessQuestions that resolve to the same JudgeKey (e.g. one
+    drafter answer with a duplicated draft) collect once: submit() sees no
+    shared key, so a duplicated draft never aborts the whole run.
+    """
+    a = assessor_with_batch_transport
+    res = a.ask_many("judge", [fit_question("rice", "a" * 64), fit_question("rice", "a" * 64)])
+    assert len(res.collected) == 1
+    a.submit(res.collected)  # does not raise
+
+
+def test_submit_refuses_two_questions_sharing_one_key(assessor_with_batch_transport):
+    a = assessor_with_batch_transport
+    res = a.ask_many("judge", [fit_question("rice", "a" * 64)])
+    with pytest.raises(ValueError, match="share one key"):
+        a.submit(res.collected + res.collected)
+
+
+def test_one_artifact_asked_for_two_subjects_is_two_batch_requests(
+        assessor_with_batch_transport, fake_batch):
+    a = assessor_with_batch_transport
+    res = a.ask_many("judge", [fit_question("rice", "a" * 64), fit_question("noodles", "a" * 64)])
+    assert len(res.collected) == 2
+    bid = a.submit(res.collected)
+    assert a.unresolved_batch() == (bid, frozenset({("rice", "picture"), ("noodles", "picture")}))
+    assert len(fake_batch._requests[bid]) == 2
 
 
 def test_submit_then_resolve_writes_verdicts_and_releases_the_marker(

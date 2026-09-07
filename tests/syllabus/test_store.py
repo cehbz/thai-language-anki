@@ -55,8 +55,8 @@ def test_judge_backend_key_equals_cachekeys(db):
     from thai_syllabus.assessor import AssessQuestion, JudgeBackend
     q = AssessQuestion(subject="rice", role="picture-for-word", artifact_sha="a" * 64, rubric="R")
     backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
-    assert backend.cache_key(q) == JudgeKey(rubric_sha=sha("R"), identity="a" * 64,
-                                            role="picture-for-word")
+    assert backend.cache_key(q) == JudgeKey(rubric_sha=sha("R"), subject="rice",
+                                            identity="a" * 64, role="picture-for-word")
 
 
 # --- schema / WAL -----------------------------------------------------
@@ -78,7 +78,7 @@ def test_reopening_an_existing_db_does_not_lose_data(tmp_path):
     path = tmp_path / "syllabus.db"
     db1 = SyllabusDb(path)
     db1.append(port="assess", backend="judge",
-               key=JudgeKey(rubric_sha="k1", identity="k1", role="k1"), subject="s1",
+               key=JudgeKey(rubric_sha="k1", subject="s1", identity="k1", role="k1"), subject="s1",
                question={"q": 1}, answer={"a": 1})
     db2 = SyllabusDb(path)
     assert len(db2.assessments_of("s1")) == 1
@@ -88,7 +88,8 @@ def test_reopening_an_existing_db_does_not_lose_data(tmp_path):
 
 def test_append_is_readable_via_assessments_of(db):
     db.append(port="assess", backend="judge",
-              key=JudgeKey(rubric_sha="k1", identity="k1", role="k1"), subject="subj-1",
+              key=JudgeKey(rubric_sha="k1", subject="subj-1", identity="k1", role="k1"),
+              subject="subj-1",
               question={"rule": "r"}, answer={"verdict": True}, cost=0.5)
     answers = db.assessments_of("subj-1")
     assert len(answers) == 1

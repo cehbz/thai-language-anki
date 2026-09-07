@@ -38,37 +38,52 @@ class CacheKey:
 
 @dataclass(frozen=True)
 class JudgeKey(CacheKey):
-    """judge:RUBRIC_SHA:IDENTITY:ROLE. `identity` is an artifact sha, a
-    note id (no artifact), or preference_identity()'s candidate-set sha.
+    """judge:RUBRIC_SHA:SUBJECT:IDENTITY:ROLE. `subject` is the question's
+    own subject; `identity` is an artifact sha, preference_identity()'s
+    candidate-set sha, or empty for a text-only question.
     """
     rubric_sha: str
+    subject: str
     identity: str
     role: str
 
     def encode(self) -> str:
-        return f"judge:{self.rubric_sha}:{self.identity}:{self.role}"
+        return f"judge:{self.rubric_sha}:{self.subject}:{self.identity}:{self.role}"
 
     @classmethod
     def for_question(cls, question) -> "JudgeKey":
         """The key an AssessQuestion resolves to: identity is
-        preference_identity() for picture-preference, else artifact_sha
-        falling back to subject.
+        preference_identity() for picture-preference, else the artifact
+        sha, else empty.
         """
         if question.role == "picture-preference":
             identity = preference_identity(question.params.get("candidates", []))
         else:
-            identity = question.artifact_sha or question.subject
-        return cls(rubric_sha=sha(question.rubric or ""), identity=identity,
-                   role=question.role)
+            identity = question.artifact_sha or ""
+        return cls(rubric_sha=sha(question.rubric or ""), subject=question.subject,
+                   identity=identity, role=question.role)
 
     @classmethod
     def for_rule(cls, rubric: str | None, artifact_sha: str | None, note_id: str,
                 role: str) -> "JudgeKey":
-        """A judged Rule's verdict key: identity is artifact_sha, falling
-        back to note_id.
+        """A judged Rule's verdict key: subject is the note id, identity
+        the artifact sha or empty.
         """
-        return cls(rubric_sha=sha(rubric or ""), identity=artifact_sha or note_id,
-                   role=role)
+        return cls(rubric_sha=sha(rubric or ""), subject=note_id,
+                   identity=artifact_sha or "", role=role)
+
+
+@dataclass(frozen=True)
+class LegacyVerdictKey(CacheKey):
+    """judge:RUBRIC_SHA:ARTIFACT_SHA:ROLE -- the shape a migrated legacy
+    verdict row keeps (spec 2 section 4). Built by migrate alone.
+    """
+    rubric_sha: str
+    artifact_sha: str
+    role: str
+
+    def encode(self) -> str:
+        return f"judge:{self.rubric_sha}:{self.artifact_sha}:{self.role}"
 
 
 @dataclass(frozen=True)

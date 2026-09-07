@@ -192,8 +192,12 @@ class Assessor:
         (nothing can be judged at all). A batch-only backend (`complete`
         is None, `batch_transport` set) never touches the wire here: an
         unpreparable miss goes to `excluded`, every other miss is returned
-        in `collected` for a caller to hand to submit(). Any other
-        exception -- unknown backend, learner/listener -- propagates.
+        in `collected` for a caller to hand to submit(). A key is
+        collected once per call: two questions that resolve to the same
+        key (e.g. one drafter answer with a duplicated draft) put one
+        PreparedQuestion in `collected`, not two -- submit() sees no
+        shared key. Any other exception -- unknown backend,
+        learner/listener -- propagates.
         """
         impl = self._backends[backend]
         is_batch = (getattr(impl, "complete", None) is None
@@ -201,6 +205,7 @@ class Assessor:
         resolved: dict[CacheKey, Verdict] = {}
         excluded: dict[str, Excluded] = {}
         collected: list[PreparedQuestion] = []
+        collected_keys: set[CacheKey] = set()
         wire_attempts = 0
         wire_failures = 0
         for q in questions:
@@ -212,6 +217,8 @@ class Assessor:
                 resolved[key] = _verdict_from_cached(cached)
                 continue
             if is_batch:
+                if key in collected_keys:
+                    continue
                 try:
                     prompt, paths = self._build(impl, q)
                 except PreparationError as e:
@@ -222,6 +229,7 @@ class Assessor:
                     continue
                 collected.append(PreparedQuestion(question=q, key=key, prompt=prompt,
                                                   attachments=paths))
+                collected_keys.add(key)
                 continue
             try:
                 resolved[key] = self.ask(backend, q)
@@ -293,6 +301,7 @@ class Assessor:
             return None
         impl = self._backends["judge"]
         requests: dict[str, tuple[str, list[Path]]] = {}
+        requesters: dict[str, tuple[str, str]] = {}  # custom_id -> (subject, role)
         subjects: list[str] = []
         roles: list[str] = []
         artifact_shas: list[str | None] = []
@@ -301,7 +310,15 @@ class Assessor:
         subject_kinds: list[str] = []
         params: list[dict] = []
         for p in prepared:
-            requests[_custom_id(p.key)] = (p.prompt, p.attachments)
+            custom_id = _custom_id(p.key)
+            if custom_id in requests:
+                earlier_subject, earlier_role = requesters[custom_id]
+                raise ValueError(
+                    f"two prepared questions share one key {p.key.encode()!r}: "
+                    f"(subject {earlier_subject!r}, role {earlier_role!r}) and "
+                    f"(subject {p.question.subject!r}, role {p.question.role!r})")
+            requests[custom_id] = (p.prompt, p.attachments)
+            requesters[custom_id] = (p.question.subject, p.question.role)
             subjects.append(p.question.subject)
             roles.append(p.question.role)
             artifact_shas.append(p.question.artifact_sha)
@@ -407,11 +424,11 @@ def _custom_id(key: CacheKey) -> str:
 
 
 # --- judge: one implementation, three transports ----------------------------
-# cache_key() returns a cachekeys.JudgeKey, whose identity is the artifact
-# sha, the candidate-set identity for picture-preference, or the question's
-# subject for a text-only judgment. A judged Rule's verdict
-# (Syllabus._judged_findings) builds the same key, role=rule.role, so both
-# paths share one cache row.
+# cache_key() returns a cachekeys.JudgeKey: the question's subject, plus
+# the artifact sha, the candidate-set identity for picture-preference, or
+# nothing for a text-only judgment. A judged Rule's verdict
+# (Syllabus._judged_findings) builds the same key with the note id as
+# subject, so both paths share one cache row.
 
 @dataclass(frozen=True)
 class Price:

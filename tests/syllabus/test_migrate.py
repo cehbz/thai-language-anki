@@ -12,6 +12,7 @@ import yaml
 from PIL import Image
 
 from thai_syllabus import curated
+from thai_syllabus.cachekeys import LegacyVerdictKey, sha
 from thai_syllabus.derivations import current_best, unjudged_candidates
 from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate
 from thai_syllabus.record import candidate_shas, rows_for
@@ -422,6 +423,20 @@ def test_carried_verdicts_do_not_rank(old_deck, old_data, tmp_path):
                         current_rubric={"picture-for-word": PICTURE_FIT_RUBRIC}, prior=(),
                         provenance_source=lambda s: None)
     assert best.artifact_sha is None
+
+
+def test_a_legacy_verdict_row_is_found_under_its_legacy_key(old_deck, old_data, tmp_path):
+    migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    rows = [a for a in db.assessments_of("slow")
+            if a.question.get("rubric") == LEGACY_PICTURE_RUBRIC]
+    assert rows
+    for row in rows:
+        key = LegacyVerdictKey(rubric_sha=sha(LEGACY_PICTURE_RUBRIC),
+                               artifact_sha=row.question["artifact_sha"],
+                               role="picture-for-word")
+        assert db.latest("assess", "judge", key) is not None
+        assert row.key == key.encode()
 
 
 def test_unmapped_note_thai_is_reported(old_deck, old_data, tmp_path):

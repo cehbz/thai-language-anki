@@ -1484,7 +1484,8 @@ def test_preference_orders_passing_pictures(db):
     for s in "abc":
         _verdict(db, "w", "judge", "picture-for-word", s, True, rubric="fit")
     db.append(port="assess", backend="judge",
-              key=JudgeKey(rubric_sha="x", identity="abc", role="picture-preference"),
+              key=JudgeKey(rubric_sha="x", subject="w", identity="abc",
+                           role="picture-preference"),
               subject="w",
               question={"role": "picture-preference", "artifact_sha": None, "rubric": "pref",
                         "kind": "picture", "params": {"candidates": ["a", "b", "c"]}},
@@ -1501,7 +1502,7 @@ _FIT = {"picture-for-word": "fit", "picture-preference": "pref"}
 
 
 def _preference_row(db, subject, candidates, rubric="pref"):
-    key = JudgeKey(rubric_sha="x", identity=preference_identity(candidates),
+    key = JudgeKey(rubric_sha="x", subject=subject, identity=preference_identity(candidates),
                    role="picture-preference")
     db.append(port="assess", backend="judge", key=key, subject=subject,
               question={"role": "picture-preference", "artifact_sha": None, "rubric": rubric,

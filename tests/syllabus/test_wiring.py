@@ -460,7 +460,7 @@ def test_load_syllabus_wires_a_real_assessment_reader(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     syllabus = load_syllabus(root)
     db = SyllabusDb(root / "syllabus.db")
-    key = JudgeKey(rubric_sha=sha(""), identity="n1", role="r1")
+    key = JudgeKey(rubric_sha=sha(""), subject="n1", identity="", role="r1")
     db.append(port="assess", backend="judge", key=key, subject="n1",
               question={"role": "r1", "artifact_sha": None, "rubric": None},
               answer={"value": True})

@@ -39,7 +39,7 @@ import genanki
 import yaml
 
 from .authority import role_for
-from .cachekeys import DirectionKey, JudgeKey, LearnerNoteKey, ProvideKey, WaiverKey
+from .cachekeys import DirectionKey, LearnerNoteKey, LegacyVerdictKey, ProvideKey, WaiverKey
 from .cachekeys import sha as _key_component_sha
 from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
 from .entities import Pronunciation, Syllable, Target, Word
@@ -489,8 +489,8 @@ def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
                 continue
 
             failed_rules = cand.get("failed_rules") or []
-            judge_key = JudgeKey.for_rule(LEGACY_PICTURE_RUBRIC, sha, word_id,
-                                          "picture-for-word")
+            judge_key = LegacyVerdictKey(rubric_sha=_key_component_sha(LEGACY_PICTURE_RUBRIC),
+                                         artifact_sha=sha, role="picture-for-word")
             question = {"role": "picture-for-word", "artifact_sha": sha,
                        "rubric": LEGACY_PICTURE_RUBRIC, "kind": "picture"}
             if cand.get("passed"):
