@@ -422,10 +422,12 @@ def test_a_transient_download_failure_retries_the_same_source_next_run(
 
     r1 = run(ctx, budgets={})
     assert r1.source_failures == {}          # the download's own catch never propagates
-    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "forvo"
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording"),
+                       transient_cap=ctx.transient_cap) == "forvo"
 
     r2 = run(ctx, budgets={})
-    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "forvo"
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording"),
+                       transient_cap=ctx.transient_cap) == "forvo"
     assert forvo.calls == 1   # forvo's own lookup is cached forever, never re-fetched
 
 
@@ -441,7 +443,8 @@ def test_a_nothing_outcome_advances_to_the_next_source(tmp_path, fake_search, fa
     # with nothing.
 
     run(ctx, budgets={})
-    assert next_source(ctx.db, "rice", "recording", sources_for("recording")) == "tts"
+    assert next_source(ctx.db, "rice", "recording", sources_for("recording"),
+                       transient_cap=ctx.transient_cap) == "tts"
 
 
 # --- r8 fix round 2: a learner supply reopens an exhausted need over a

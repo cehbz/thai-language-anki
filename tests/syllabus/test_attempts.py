@@ -440,7 +440,7 @@ def test_a_forvo_attempt_that_found_nothing_is_still_on_the_record(tmp_path):
     res = attempt(ctx, Need("rice", "recording"), "forvo")
     assert res.attempted
     assert exhausted(ctx.db, "rice", "recording", sources=("forvo", "tts"),
-                     attempt_cap=8).attempts == 1
+                     attempt_cap=8, transient_cap=ctx.transient_cap).attempts == 1
 
 
 def test_a_sentence_recording_keeps_the_recording_artifact_kind(tmp_path):
@@ -479,7 +479,8 @@ def test_rendition_attempt_appends_under_the_pair(tmp_path):
     provided = [r for r in rows if r.port == "provide"]
     assert provided and set(provided[-1].answer["items"][0]) >= {"member", "sha", "speaker"}
     assert {i["speaker"]["id"] for i in provided[-1].answer["items"]} == {"forvo:somchai"}
-    assert exhausted(ctx.db, "p1", "rendition", sources=("forvo",), attempt_cap=8).attempts == 1
+    assert exhausted(ctx.db, "p1", "rendition", sources=("forvo",), attempt_cap=8,
+                     transient_cap=ctx.transient_cap).attempts == 1
 
 
 def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):

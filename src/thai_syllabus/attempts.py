@@ -32,6 +32,7 @@ from .authority import role_for
 from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
+    DEFAULT_TRANSIENT_CAP,
     CurrentBest,
     current_best,
     passing_pictures,
@@ -126,6 +127,7 @@ class Sourcing:
     # the attempt count exhausted() stops at.
     sources_for: Callable[[str], Sequence[str]] = field(default=sources_for)
     attempt_cap: int = DEFAULT_ATTEMPT_CAP
+    transient_cap: int = DEFAULT_TRANSIENT_CAP
 
 
 @dataclass(frozen=True)

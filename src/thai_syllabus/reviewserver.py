@@ -100,7 +100,7 @@ def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
 
 def _exhausted(d: "Derivations", subject: str, kind: str) -> ExhaustedStatus:
     return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
-                     attempt_cap=d.attempt_cap)
+                     attempt_cap=d.attempt_cap, transient_cap=d.transient_cap)
 
 
 def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
@@ -261,6 +261,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     """
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                    transient_cap=d.transient_cap,
                     provenance_source=d.provenance_source)
     items = [
         _rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
@@ -803,6 +804,7 @@ class ReviewContext:
         d = self.derivations
         return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                      sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                     transient_cap=d.transient_cap,
                      provenance_source=d.provenance_source)
 
     def questions(self, budget: int | None = None) -> list[dict[str, Any]]:

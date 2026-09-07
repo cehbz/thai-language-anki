@@ -737,25 +737,27 @@ def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
 def test_build_sourcing_threads_caps_and_pools(tmp_path):
     root = _minimal_deck(tmp_path)
     (root / "curated" / "providers.yaml").write_text(
-        "attempt_cap: 3\nimgfetch_path: /opt/bin/imgfetch\n"
+        "attempt_cap: 3\ntransient_cap: 2\nimgfetch_path: /opt/bin/imgfetch\n"
         "audiofetch_path: /opt/bin/audiofetch\n"
         "tts: {male_voices: [th-TH-Chirp3-HD-Puck], "
         "female_voices: [th-TH-Chirp3-HD-Aoede]}\n", encoding="utf-8")
     ctx = build_sourcing(root)
     assert ctx.attempt_cap == 3    # value written by the fixture
+    assert ctx.transient_cap == 2
     assert ctx.voices["male"] and ctx.voices["female"]
 
 
 def test_load_derivations_carries_the_parameters_build_sourcing_runs_under(tmp_path):
     root = _minimal_deck(tmp_path)
     (root / "curated" / "providers.yaml").write_text(
-        "attempt_cap: 3\nimgfetch_path: /opt/bin/imgfetch\n"
+        "attempt_cap: 3\ntransient_cap: 2\nimgfetch_path: /opt/bin/imgfetch\n"
         "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
     derivations = load_derivations(root)
     ctx = build_sourcing(root)
     assert derivations.current_rubric == ctx.rubrics
     assert derivations.prior == ctx.provenance_prior
     assert derivations.attempt_cap == ctx.attempt_cap == 3
+    assert derivations.transient_cap == ctx.transient_cap == 2
     assert derivations.sources_for is ctx.sources_for
     assert derivations.db is derivations.syllabus.assessments
 

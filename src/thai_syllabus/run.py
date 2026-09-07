@@ -216,7 +216,7 @@ def _needs(ctx: Sourcing,
           collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
                   prior=ctx.provenance_prior, sources_for=ctx.sources_for,
-                  attempt_cap=ctx.attempt_cap,
+                  attempt_cap=ctx.attempt_cap, transient_cap=ctx.transient_cap,
                   provenance_source=provenance_source_for(ctx.db),
                   collected_this_run=collected_this_run)
 
@@ -258,7 +258,8 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     for index, entry in enumerate(entries):
         need = Need(entry.subject, entry.kind, entry.subject_kind)
         sources = ctx.sources_for(need.kind)
-        source = next_source(ctx.db, need.subject, need.kind, sources)
+        source = next_source(ctx.db, need.subject, need.kind, sources,
+                            transient_cap=ctx.transient_cap)
         if source is None:
             tally.exhausted += 1
             continue

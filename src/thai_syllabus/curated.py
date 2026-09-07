@@ -508,8 +508,9 @@ def rulebook_file_text(path: str | Path) -> str:
 # Per-backend settings: secret references (resolved by SecretStore),
 # search_proxy, imgfetch/audiofetch paths, tts voice pools (defaulting to
 # tts.py's lists) + cost_per_char, judge transport + model +
-# price_per_mtok, image_candidates, batch limits, quotas and attempt caps.
-# One file, no env vars; judged-rule rubric text stays in rulebook.yaml.
+# price_per_mtok, image_candidates, batch limits, quotas, attempt_cap and
+# transient_cap. One file, no env vars; judged-rule rubric text stays in
+# rulebook.yaml.
 #
 # load_providers_config refuses a file describing a run the code cannot
 # perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
@@ -546,6 +547,7 @@ class ProvidersConfig:
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
+    transient_cap: int = 3     # tried_sources()'s transient-outcome cap default
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -647,6 +649,10 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if not isinstance(attempt_cap, int) or attempt_cap < 1:
         errors.append(f"providers.attempt_cap: {attempt_cap!r} must be a positive integer")
 
+    transient_cap = data.get("transient_cap", 3)
+    if not isinstance(transient_cap, int) or transient_cap < 1:
+        errors.append(f"providers.transient_cap: {transient_cap!r} must be a positive integer")
+
     if errors:
         raise CuratedValidationError(errors)
 
@@ -657,7 +663,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, image_candidates=image_candidates,
         batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
-        attempt_cap=attempt_cap)
+        attempt_cap=attempt_cap, transient_cap=transient_cap)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -680,6 +686,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "batch": dict(config.batch),
         "quotas": dict(config.quotas),
         "attempt_cap": config.attempt_cap,
+        "transient_cap": config.transient_cap,
     })
 
 

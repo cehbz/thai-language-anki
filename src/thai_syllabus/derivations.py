@@ -37,7 +37,7 @@ __all__ = [
     "role_of", "adoptable_drafts",
     "JudgeVerdict", "judge_verdict",
     "pending",
-    "attempts_since_change", "next_source",
+    "attempts_since_change", "tried_sources", "next_source",
     "ExhaustedStatus", "exhausted",
     "improved",
     "directed",
@@ -50,6 +50,7 @@ __all__ = [
     "LEARNER_RANK",
     "stale",
     "DEFAULT_ATTEMPT_CAP",
+    "DEFAULT_TRANSIENT_CAP",
 ]
 
 # LEARNER_RANK (record.py): a numeric rank on the same scale judge
@@ -67,6 +68,11 @@ _GOOD_RANK = LEARNER_RANK["good"]
 # and reviewserver.py pass it explicitly until providers.yaml wires a
 # configured value.
 DEFAULT_ATTEMPT_CAP = 8
+
+# The transient-outcome cap tried_sources() enforces (spec 3 section 6a):
+# a source at this many transient-failure outcomes since the anchor
+# counts as tried.
+DEFAULT_TRANSIENT_CAP = 3
 
 # The one artifact kind with no Source (attempts.SOURCES has no entry for
 # it) and no per-run pass either -- unlike "sentence", which the run's own
@@ -455,7 +461,8 @@ def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[A
     greater than the ts of the row that produced current-best's artifact
     -- every such row counts when no artifact exists yet. Only
     `candidates` and `nothing` outcomes count as tried; a
-    `transient-failure` outcome never advances the need (spec 3 section 6).
+    `transient-failure` outcome counts only at the transient cap (spec 3
+    section 6a, tried_sources).
     """
     rows = record.rows_for(cache, subject, kind)
     since_ts = _anchor_ts(cache, subject, kind, rows)
@@ -463,15 +470,31 @@ def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[A
             and r.answer.get("outcome") in ("candidates", "nothing")]
 
 
+def tried_sources(cache: CacheReader, subject: str, kind: str, *,
+                  transient_cap: int) -> frozenset[str]:
+    """The sources tried since current-best last changed: those with a
+    `candidates` or `nothing` outcome, and those with `transient_cap`
+    `transient-failure` outcomes (spec 3 section 6a)."""
+    rows = record.rows_for(cache, subject, kind)
+    since_ts = _anchor_ts(cache, subject, kind, rows)
+    outcomes = [r for r in rows if r.port == "attempt" and r.ts > since_ts]
+    tried = {r.backend for r in outcomes if r.answer.get("outcome") in ("candidates", "nothing")}
+    transient: dict[str, int] = {}
+    for r in outcomes:
+        if r.answer.get("outcome") == "transient-failure":
+            transient[r.backend] = transient.get(r.backend, 0) + 1
+    tried.update(s for s, n in transient.items() if n >= transient_cap)
+    return frozenset(tried)
+
+
 def next_source(cache: CacheReader, subject: str, kind: str,
-                sources: Sequence[str]) -> str | None:
-    """The first of `sources` (cheapest first) with no ask in
-    attempts_since_change; None once every source has been asked since
-    current-best last changed.
+                sources: Sequence[str], *, transient_cap: int) -> str | None:
+    """The first of `sources` (cheapest first) not in tried_sources; None
+    once every source is tried since current-best last changed.
     """
-    tried_since = {r.backend for r in attempts_since_change(cache, subject, kind)}
+    tried = tried_sources(cache, subject, kind, transient_cap=transient_cap)
     for source in sources:
-        if source not in tried_since:
+        if source not in tried:
             return source
     return None
 
@@ -485,15 +508,19 @@ class ExhaustedStatus:
 
 
 def exhausted(cache: CacheReader, subject: str, kind: str, *,
-              sources: Sequence[str], attempt_cap: int) -> ExhaustedStatus:
-    """Every source in `sources` has been asked since current-best last
-    changed, or the attempt count since then reached `attempt_cap` --
-    reopened by a learner row or a new source that changes what
-    next_source/attempts_since_change see next time.
+              sources: Sequence[str], attempt_cap: int, transient_cap: int) -> ExhaustedStatus:
+    """Every source in `sources` is tried since current-best last changed,
+    or the attempt count since then reached `attempt_cap`; a source at
+    the transient cap counts as one attempt. Reopened by a learner row or
+    a new source.
     """
     since = attempts_since_change(cache, subject, kind)
-    is_exhausted = next_source(cache, subject, kind, sources) is None or len(since) >= attempt_cap
-    return ExhaustedStatus(exhausted=is_exhausted, attempts=len(since))
+    capped = tried_sources(cache, subject, kind, transient_cap=transient_cap) - {
+        r.backend for r in since}
+    attempts = len(since) + len(capped)
+    is_exhausted = (next_source(cache, subject, kind, sources, transient_cap=transient_cap) is None
+                    or attempts >= attempt_cap)
+    return ExhaustedStatus(exhausted=is_exhausted, attempts=attempts)
 
 
 # --- improved ------------------------------------------------------------
@@ -530,7 +557,8 @@ def directed(cache: CacheReader, subject: str) -> bool:
 
 
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
-                       current_rubric: Mapping[str, str], sources: Sequence[str]) -> bool:
+                       current_rubric: Mapping[str, str], sources: Sequence[str], *,
+                       transient_cap: int) -> bool:
     """A rubric change left a judge verdict stale, a judge suggestion has
     not been followed by a new attempt, or an unasked source remains
     (spec 3 section 6 bucket 2).
@@ -541,7 +569,7 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
     provide_ts = max((r.ts for r in rows if r.port == "provide"), default=-1)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
         return True
-    return next_source(cache, subject, kind, sources) is not None
+    return next_source(cache, subject, kind, sources, transient_cap=transient_cap) is not None
 
 
 # --- queue: F10 order ----------------------------------------------------
@@ -650,17 +678,18 @@ def available_need_keys(syllabus) -> frozenset[tuple[str, str]]:
 
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
-         attempt_cap: int, provenance_source: Callable[[str], str | None],
+         attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
          collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
+                  transient_cap=transient_cap,
                   provenance_source=provenance_source,
                   collected_this_run=collected_this_run).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
-          attempt_cap: int, provenance_source: Callable[[str], str | None],
+          attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
           collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
     """queue()'s entries plus the counts the same pass left out.
     `collected_this_run` names the (subject, kind) needs this run already
@@ -695,12 +724,14 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         attempts = len(attempts_since_change(cache, subject, kind))
 
         if best.artifact_sha is None or is_vetoed:
-            status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap)
+            status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
+                              transient_cap=transient_cap)
             if status.exhausted and not is_directed:
                 out_of_options += 1
                 continue  # out of machine options and nothing directs it -- excluded
             bucket = 1
-        elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources):
+        elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources,
+                                transient_cap=transient_cap):
             bucket = 2
         else:
             bucket = 3

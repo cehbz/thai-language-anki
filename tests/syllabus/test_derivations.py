@@ -367,7 +367,7 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need(cache):
     for source in sources_for("recording"):
         seed_ask(cache, "rice", "recording", source=source, ts=_next_ts())
     status = exhausted(cache, "rice", "recording", sources=sources_for("recording"),
-                       attempt_cap=8)
+                       attempt_cap=8, transient_cap=3)
     assert status.exhausted
 
     cache.rows.append(provide_row("rice", "recording", backend="learner",
@@ -379,7 +379,8 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need(cache):
                         provenance_source=_no_provenance)
     assert best.artifact_sha is None
 
-    assert next_source(cache, "rice", "recording", sources_for("recording")) is not None
+    assert next_source(cache, "rice", "recording", sources_for("recording"),
+                       transient_cap=3) is not None
     entries = _queue(syllabus, cache)
     assert any(e.subject == "rice" and e.kind == "recording" for e in entries)
 
@@ -398,7 +399,8 @@ def test_a_learner_veto_reopens_a_recording_need_the_same_way(cache):
     cache.rows.append(learner_row("rice", "recording", "a" * 64, "unacceptable-none",
                                   ts=_next_ts()))
 
-    assert next_source(cache, "rice", "recording", sources_for("recording")) is not None
+    assert next_source(cache, "rice", "recording", sources_for("recording"),
+                       transient_cap=3) is not None
 
 
 def test_picture_role_learner_choice_is_unaffected_by_the_veto_rule(cache):
@@ -549,12 +551,14 @@ def test_next_source_skips_a_source_asked_since_current_best_last_changed(cache)
     seed_ask(cache, "rice", "picture", source="wikimedia", ts=1)  # before any artifact existed
     seed_artifact(cache, "rice", "a" * 64, ts=2, judge_pass=True)  # current-best changes here
     seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)  # asked again, since the change
-    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "openverse"
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels"),
+                       transient_cap=3) == "openverse"
 
 
 def test_next_source_with_no_artifact_counts_every_ask(cache):
     seed_ask(cache, "rice", "picture", source="openverse", ts=1)
-    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "wikimedia"
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels"),
+                       transient_cap=3) == "wikimedia"
 
 
 def test_next_source_is_none_once_every_source_asked_since_the_change(cache):
@@ -562,7 +566,8 @@ def test_next_source_is_none_once_every_source_asked_since_the_change(cache):
     seed_ask(cache, "rice", "picture", source="openverse", ts=2)
     seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)
     seed_ask(cache, "rice", "picture", source="pexels", ts=4)
-    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) is None
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels"),
+                       transient_cap=3) is None
 
 
 def test_next_source_never_counts_a_transient_failure_as_tried(cache):
@@ -572,7 +577,8 @@ def test_next_source_never_counts_a_transient_failure_as_tried(cache):
     """
     cache.rows.append(outcome_row("rice", "picture", source="openverse",
                                   outcome="transient-failure", ts=1))
-    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels")) == "openverse"
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia", "pexels"),
+                       transient_cap=3) == "openverse"
 
 
 def test_exhausted_does_not_count_transient_failures_against_the_cap(cache):
@@ -580,8 +586,39 @@ def test_exhausted_does_not_count_transient_failures_against_the_cap(cache):
                                   outcome="transient-failure", ts=1))
     cache.rows.append(outcome_row("rice", "picture", source="openverse",
                                   outcome="transient-failure", ts=2))
-    status = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=1)
+    status = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=1,
+                       transient_cap=3)
     assert status.exhausted is False and status.attempts == 0
+
+
+def test_a_source_at_the_transient_cap_counts_as_tried(cache):
+    """r10 section 6a: three transient outcomes on openverse since the
+    anchor and next_source advances past it."""
+    for ts in (1, 2, 3):
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="transient-failure", ts=ts))
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia"),
+                       transient_cap=3) == "wikimedia"
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia"),
+                       transient_cap=4) == "openverse"
+
+
+def test_a_capped_source_counts_as_one_attempt_toward_exhaustion(cache):
+    for ts in (1, 2, 3):
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="transient-failure", ts=ts))
+    status = exhausted(cache, "rice", "picture", sources=("openverse",),
+                       attempt_cap=8, transient_cap=3)
+    assert status.exhausted is True and status.attempts == 1
+
+
+def test_transient_outcomes_before_the_anchor_do_not_count_toward_the_cap(cache):
+    for ts in (1, 2, 3):
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="transient-failure", ts=ts))
+    seed_artifact(cache, "rice", "a" * 64, ts=4, judge_pass=True)
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia"),
+                       transient_cap=3) == "openverse"
 
 
 # --- ruling 5: migration writes no outcome rows -----------------------------
@@ -595,14 +632,15 @@ def test_a_migrated_forvo_answer_with_items_but_no_outcome_row_is_untried(cache)
     """
     cache.rows.append(provide_row("rice", "recording", backend="forvo",
                                   items=[{"sha": "a" * 64}], ts=_next_ts()))
-    assert next_source(cache, "rice", "recording", ("forvo", "tts")) == "forvo"
+    assert next_source(cache, "rice", "recording", ("forvo", "tts"), transient_cap=3) == "forvo"
 
 
 # --- exhausted ---------------------------------------------------------
 
 def test_not_exhausted_while_a_source_remains_untried(cache):
     seed_ask(cache, "rice", "picture", source="openverse", ts=1)
-    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8)
+    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8,
+                       transient_cap=3)
     assert status.exhausted is False
 
 
@@ -613,7 +651,8 @@ def test_exhausted_once_every_source_is_asked_since_the_change(cache):
     seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=False)
     seed_ask(cache, "rice", "picture", source="openverse", ts=2)
     seed_ask(cache, "rice", "picture", source="wikimedia", ts=3)
-    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8)
+    status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"), attempt_cap=8,
+                       transient_cap=3)
     assert status.exhausted is True
     assert status.attempts == 3
 
@@ -621,16 +660,17 @@ def test_exhausted_once_every_source_is_asked_since_the_change(cache):
 def test_exhausted_once_the_attempt_cap_is_reached_even_with_sources_left(cache):
     seed_ask(cache, "rice", "picture", source="openverse", ts=1)
     status = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia", "pexels"),
-                       attempt_cap=1)
+                       attempt_cap=1, transient_cap=3)
     assert status.exhausted is True
 
 
 def test_reopened_by_a_new_source_in_the_roster(cache):
     seed_artifact(cache, "rice", "a" * 64, ts=1, judge_pass=False)
     seed_ask(cache, "rice", "picture", source="openverse", ts=2)
-    status_before = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=8)
+    status_before = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=8,
+                              transient_cap=3)
     status_after = exhausted(cache, "rice", "picture", sources=("openverse", "wikimedia"),
-                             attempt_cap=8)
+                             attempt_cap=8, transient_cap=3)
     assert status_before.exhausted is True
     assert status_after.exhausted is False
 
@@ -705,6 +745,7 @@ def _queue(syllabus, cache, **kwargs):
     kwargs.setdefault("prior", ())
     kwargs.setdefault("sources_for", sources_for)
     kwargs.setdefault("attempt_cap", 8)
+    kwargs.setdefault("transient_cap", 3)
     kwargs.setdefault("provenance_source", _no_provenance)
     return queue(syllabus, cache, **kwargs)
 
@@ -714,6 +755,7 @@ def _queued(syllabus, cache, **kwargs):
     kwargs.setdefault("prior", ())
     kwargs.setdefault("sources_for", sources_for)
     kwargs.setdefault("attempt_cap", 8)
+    kwargs.setdefault("transient_cap", 3)
     kwargs.setdefault("provenance_source", _no_provenance)
     return queued(syllabus, cache, **kwargs)
 
@@ -775,12 +817,14 @@ def test_exhausted_attempt_count_does_not_grow_from_a_learner_supply(cache):
     attempt count; an outcome row does.
     """
     cache.rows.append(provide_row("rice", "picture", backend="learner", ts=_next_ts()))
-    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8)
+    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8,
+                       transient_cap=3)
     assert status.attempts == 0
 
     cache.rows.append(outcome_row("rice", "picture", source="openverse", outcome="nothing",
                                   ts=_next_ts()))
-    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8)
+    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"), attempt_cap=8,
+                       transient_cap=3)
     assert status.attempts == 1
 
 

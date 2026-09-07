@@ -275,9 +275,10 @@ class Derivations:
     """One deck's record and every parameter derivations.py asks for: the
     Syllabus (media index included), the db the record lives in, the media
     store its artifacts resolve to, and the current_rubric / prior /
-    provenance_source / sources_for / attempt_cap a fold is measured
-    under. build_sourcing wires the run's Sourcing from this same bundle,
-    so a surface holding one derives exactly what the run derives.
+    provenance_source / sources_for / attempt_cap / transient_cap a fold
+    is measured under. build_sourcing wires the run's Sourcing from this
+    same bundle, so a surface holding one derives exactly what the run
+    derives.
     """
     syllabus: Syllabus
     db: SyllabusDb                     # CacheReader + RecordWriter
@@ -287,6 +288,7 @@ class Derivations:
     provenance_source: Callable[[str], str | None]
     sources_for: Callable[[str], Sequence[str]]
     attempt_cap: int
+    transient_cap: int
     # rulebook.yaml's thresholds overlay (curated.RulebookConfig.thresholds),
     # e.g. "reask/lapses" -- spec 5 section 1 kind 4's own lapse threshold.
     thresholds: Mapping[str, float] = field(default_factory=dict)
@@ -316,6 +318,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
                        sources_for=sources_for, attempt_cap=cfg.attempt_cap,
+                       transient_cap=cfg.transient_cap,
                        thresholds=dict(bundle.rulebook.thresholds),
                        budgets=default_budgets(cfg))
 
@@ -341,7 +344,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         image_candidates=cfg.image_candidates,
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
         query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
-        sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap)
+        sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
+        transient_cap=derivations.transient_cap)
     return ctx
 
 

@@ -29,7 +29,7 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, FlagKey, J
                                     LearnerKey, MechanicalKey, ProvideKey, RunReportKey,
                                     preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
-from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, directed
+from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP, directed
 from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import ConfusionId, PairId, WordId
@@ -104,7 +104,8 @@ def derivations(syllabus, db, media_store):
     """
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric={}, prior=(), provenance_source=lambda sha: None,
-                       sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP)
+                       sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                       transient_cap=DEFAULT_TRANSIENT_CAP)
 
 
 # --- cache-row helpers (mirrors test_derivations.py's) ----------------------
@@ -174,10 +175,11 @@ def test_build_queue_respects_budget(derivations, db):
 
 def test_build_queue_rate_order_matches_derivations_queue(derivations, syllabus, db):
     from thai_syllabus.attempts import sources_for
-    from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP
+    from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP
     from thai_syllabus.derivations import queue as derive_queue
     entries = derive_queue(syllabus, db, current_rubric={}, prior=(), sources_for=sources_for,
-                           attempt_cap=DEFAULT_ATTEMPT_CAP, provenance_source=lambda s: None)
+                           attempt_cap=DEFAULT_ATTEMPT_CAP, transient_cap=DEFAULT_TRANSIENT_CAP,
+                           provenance_source=lambda s: None)
     items = rs.build_queue(derivations, budget=len(entries))
     rate_items = [i for i in items if i["type"] == "rate"]
     assert [(i["subject"], i["kind"]) for i in rate_items] == \
@@ -869,7 +871,8 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
                         tokenizer=FakeTokenizer())
     derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
                               current_rubric={}, prior=(), provenance_source=lambda sha: None,
-                              sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP)
+                              sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                              transient_cap=DEFAULT_TRANSIENT_CAP)
 
     pair_cards = [c for c in rs.compiled_cards(derivations) if c["family"] == "minimal_pair"]
     assert len(pair_cards) == 2
@@ -1284,11 +1287,12 @@ def test_screen_and_run_agree_on_current_best_queue_and_exhaustion(deck_with_his
         (e.subject, e.kind) for e in queue(
             src.syllabus, src.db, current_rubric=src.rubrics, prior=src.provenance_prior,
             sources_for=src.sources_for, attempt_cap=src.attempt_cap,
+            transient_cap=src.transient_cap,
             provenance_source=provenance_source)]
 
     assert ctx.exhausted("rice", "picture") == exhausted(
         src.db, "rice", "picture", sources=src.sources_for("picture"),
-        attempt_cap=src.attempt_cap)
+        attempt_cap=src.attempt_cap, transient_cap=src.transient_cap)
 
 
 def test_screen_stats_count_coverage_and_exhaustion_as_the_run_does(deck_with_history):
@@ -1320,7 +1324,7 @@ def test_screen_stats_count_coverage_and_exhaustion_as_the_run_does(deck_with_hi
     exhausted_remaining = 0
     for subject, kind, _subject_kind in available_needs(src.syllabus):
         if exhausted(src.db, subject, kind, sources=src.sources_for(kind),
-                     attempt_cap=src.attempt_cap).exhausted:
+                     attempt_cap=src.attempt_cap, transient_cap=src.transient_cap).exhausted:
             exhausted_remaining += 1
 
     stats = ctx.stats()

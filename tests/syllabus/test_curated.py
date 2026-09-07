@@ -735,3 +735,20 @@ def test_providers_cli_judge_needs_no_anthropic_secret(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers()))
     assert curated.load_providers_config(path).judge.transport == "cli"
+
+
+def test_providers_transient_cap_defaults_to_three_and_round_trips(tmp_path):
+    assert curated.ProvidersConfig().transient_cap == 3
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(transient_cap=5)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.transient_cap == 5
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_transient_cap_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(transient_cap=0)))
+    with pytest.raises(curated.CuratedValidationError, match="transient_cap"):
+        curated.load_providers_config(path)
