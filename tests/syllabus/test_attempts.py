@@ -10,8 +10,8 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (Assessor, FillsBackend, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend)
-from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, attempt,
-                                    current_best_of, sentence_attempt, sources_for)
+from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, assess_first,
+                                    attempt, current_best_of, sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import (JudgeKey, LlmPromptKey, MechanicalKey, ProvideKey,
                                     rendition_identity, sha)
 from thai_syllabus.derivations import exhausted
@@ -350,6 +350,73 @@ def test_a_candidate_the_judge_cannot_prepare_is_excluded_and_the_rest_are_judge
     res = attempt(ctx, Need("rice", "picture"), "openverse")
     assert [x.reason for x in res.excluded.values()] == ["artifact not found: ghost"]
     assert current_best_of(ctx, "rice", "picture").artifact_sha != "ghost"
+
+
+# --- assess-first (spec 3 section 5) ----------------------------------------
+
+def _seed_current_picture(ctx, subject, url="https://x/good-legacy.jpg"):
+    """A candidate on record with no verdict: the row spec 2 section 4
+    r7 writes for the old deck's current picture, and its media row."""
+    ingest = ctx.media_store.add_image(_jpeg_bytes(url), ext="jpg")
+    ctx.db.add_media(sha=ingest.sha, kind="picture", ext=ingest.ext, source="openverse",
+                     origin=url, licence="unknown", acquired=date(2026, 9, 3))
+    ctx.db.append(port="provide", backend="legacy-current",
+                  key=ProvideKey(source="legacy-current", kind="picture", query=subject),
+                  subject=subject,
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"image": "images/pw-1.jpg"}},
+                  answer={"items": [{"sha": ingest.sha, "ext": ingest.ext}]})
+    return ingest.sha
+
+
+def test_assess_first_judges_the_waiting_candidate_and_asks_no_source(tmp_path):
+    ctx, search, judge = _picture_ctx(tmp_path)
+    legacy_sha = _seed_current_picture(ctx, "rice")
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and res.attempted and res.questions == []
+    assert len(judge.calls) == 1 and search.queries == []
+    assert all(r.port != "attempt" for r in rows_for(ctx.db, "rice", "picture"))
+    assert current_best_of(ctx, "rice", "picture").artifact_sha == legacy_sha
+
+
+def test_assess_first_is_none_once_every_candidate_is_judged(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    _seed_current_picture(ctx, "rice")
+    assert assess_first(ctx, Need("rice", "picture")) is not None
+    assert assess_first(ctx, Need("rice", "picture")) is None
+
+
+def test_assess_first_is_none_with_no_candidate_on_record(tmp_path):
+    ctx, _search, judge = _picture_ctx(tmp_path)
+    assert assess_first(ctx, Need("rice", "picture")) is None
+    assert judge.calls == []
+
+
+def test_assess_first_is_none_when_every_waiting_candidate_is_excluded(tmp_path):
+    ctx, _search, judge = _picture_ctx(tmp_path)
+    ctx.db.append(port="provide", backend="legacy-current",
+                  key=ProvideKey(source="legacy-current", kind="picture", query="rice"),
+                  subject="rice",
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"image": "images/pw-1.jpg"}},
+                  answer={"items": [{"sha": "0" * 64, "ext": "jpg"}]})  # bytes never stored
+    assert assess_first(ctx, Need("rice", "picture")) is None
+    assert judge.calls == []
+
+
+def test_assess_first_under_batch_collects_the_fit_question(tmp_path):
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": _batch_judge()})
+    legacy_sha = _seed_current_picture(ctx, "rice")
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None
+    assert [q.question.artifact_sha for q in res.questions] == [legacy_sha]
+    assert {q.question.role for q in res.questions} == {"picture-for-word"}
+
+
+def test_assess_first_asks_nothing_for_a_kind_the_judge_does_not_rank(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    assert assess_first(ctx, Need("rice", "recording")) is None
 
 
 # --- scene picture: the same attempt, subject = text_sha --------------------

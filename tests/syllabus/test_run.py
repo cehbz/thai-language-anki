@@ -602,10 +602,11 @@ class _Q:
 
 
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
-           preference=AttemptResult(attempted=False)):
-    """Replaces attempt/sentence_attempt/preference_attempt/adoptable_drafts.
-    A `results` entry that is an exception class is raised instead of
-    returned."""
+           preference=AttemptResult(attempted=False), assess=None):
+    """Replaces attempt/assess_first/sentence_attempt/preference_attempt/
+    adoptable_drafts. A `results` entry that is an exception class is
+    raised instead of returned. `assess` is assess_first's fixed return
+    for every need -- None keeps the fall-through to the source."""
     calls = []
 
     def fake_attempt(ctx, need, source):
@@ -622,6 +623,7 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
         return sentence_result
 
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
+    monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: assess)
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "preference_attempt", lambda ctx, subjects: preference)
     monkeypatch.setattr(run_mod, "adoptable_drafts",
@@ -699,6 +701,48 @@ def test_run_counts_a_need_the_queue_dropped_as_exhausted(db, monkeypatch):
     _exhaust(db, "a")
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     assert report.exhausted == 1 and report.available == 1 and report.attempted == 0
+
+
+def test_a_need_whose_candidate_awaits_a_verdict_is_assessed_and_no_source_asked(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, assess=AttemptResult(True, questions=[_Q("a")]))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert calls == []
+    assert report.pending == 1 and report.attempted == 0 and report.available == 1
+
+
+def test_an_assess_first_need_answered_inline_counts_as_attempted(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, assess=AttemptResult(True))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert calls == [] and report.attempted == 1
+
+
+def test_assess_first_returning_none_falls_through_to_the_source(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, assess=None)
+    run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+
+
+def test_assess_first_runs_before_the_source_budget_check(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, assess=AttemptResult(True, questions=[_Q("a")]))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {"openverse": Budget(max_asks=0)})
+    assert calls == [] and report.budgeted == 0 and report.pending == 1
+
+
+def test_assess_first_runs_for_a_need_with_no_source_left(db, monkeypatch):
+    calls = _patch(monkeypatch, {}, assess=AttemptResult(True, questions=[_Q("a")]))
+    monkeypatch.setattr(run_mod, "next_source", lambda *a, **k: None)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert calls == [] and report.exhausted == 0 and report.pending == 1
+
+
+def test_an_unreachable_judge_in_assess_first_stops_the_run(db, monkeypatch):
+    def dead(ctx, need):
+        raise JudgeUnreachable("judge down")
+    calls = _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "assess_first", dead)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert calls == []
+    assert report.unreachable is True and report.attempted == 1 and report.deferred == 1
 
 
 def test_run_never_attempts_sentence_needs_per_subject(db, monkeypatch):

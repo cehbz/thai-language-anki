@@ -23,6 +23,7 @@ from .attempts import (
     Need,
     Sourcing,
     Spend,
+    assess_first,
     attempt,
     current_best_of,
     preference_attempt,
@@ -248,43 +249,52 @@ def _unconsidered(needs: QueuedNeeds, pending: int) -> int:
 
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally) -> int:
-    """One Source per need: the cheapest not yet tried since current-best
-    last changed. A Source that fails on the wire is skipped for the rest
-    of the run and every need waiting on it is deferred; an unreachable
-    judge stops the loop. Returns how many entries it never reached (zero
-    unless a dead judge stopped it), for run() to defer.
+    """Assess-first, then one Source per need: the fit questions a
+    candidate on record is owed (spec 3 section 5), else the cheapest
+    source not yet tried since current-best last changed. A Source that
+    fails on the wire is skipped for the rest of the run and every need
+    waiting on it is deferred; an unreachable judge stops the loop.
+    Returns how many entries it never reached (zero unless a dead judge
+    stopped it), for run() to defer.
     """
     dead_sources: set[str] = set()
     for index, entry in enumerate(entries):
         need = Need(entry.subject, entry.kind, entry.subject_kind)
-        sources = ctx.sources_for(need.kind)
-        source = next_source(ctx.db, need.subject, need.kind, sources,
-                            transient_cap=ctx.transient_cap)
-        if source is None:
-            tally.exhausted += 1
-            continue
-        if source in dead_sources:
-            # No row was written for this need: the next run asks the same
-            # source again.
-            tally.deferred += 1
-            continue
-        budget = budgets.get(source)
-        if budget is not None and budget.exceeded_by(_spent_on(source, carried, tally)):
-            tally.budgeted += 1
-            continue
         before = current_best_of(ctx, need.subject, need.kind)
         try:
-            result = attempt(ctx, need, source)
+            result = assess_first(ctx, need)
         except JudgeUnreachable:
             tally.unreachable = True
             tally.attempted += 1
             return len(entries) - index - 1
-        except TransportError as e:
-            dead_sources.add(source)
-            tally.deferred += 1
-            tally.source_failures[source] = tally.source_failures.get(source, 0) + 1
-            _log.warning("source %s failed for %s/%s: %s", source, need.subject, need.kind, e)
-            continue
+        if result is None:
+            sources = ctx.sources_for(need.kind)
+            source = next_source(ctx.db, need.subject, need.kind, sources,
+                                transient_cap=ctx.transient_cap)
+            if source is None:
+                tally.exhausted += 1
+                continue
+            if source in dead_sources:
+                # No row was written for this need: the next run asks the
+                # same source again.
+                tally.deferred += 1
+                continue
+            budget = budgets.get(source)
+            if budget is not None and budget.exceeded_by(_spent_on(source, carried, tally)):
+                tally.budgeted += 1
+                continue
+            try:
+                result = attempt(ctx, need, source)
+            except JudgeUnreachable:
+                tally.unreachable = True
+                tally.attempted += 1
+                return len(entries) - index - 1
+            except TransportError as e:
+                dead_sources.add(source)
+                tally.deferred += 1
+                tally.source_failures[source] = tally.source_failures.get(source, 0) + 1
+                _log.warning("source %s failed for %s/%s: %s", source, need.subject, need.kind, e)
+                continue
         tally.collect(result)
         if result.questions:
             # Its verdict is now this run's own submission to make --

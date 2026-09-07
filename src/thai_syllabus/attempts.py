@@ -38,6 +38,7 @@ from .derivations import (
     current_best,
     passing_pictures,
     pictures_awaiting_preference,
+    unjudged_candidates,
 )
 from .entities import Target, Word
 from .ids import PairId, TargetId, WordId
@@ -52,7 +53,7 @@ from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
            "sources_for", "provenance_source_for", "current_best_of",
-           "attempt", "sentence_attempt", "preference_attempt"]
+           "attempt", "assess_first", "sentence_attempt", "preference_attempt"]
 
 _log = logging.getLogger(__name__)
 
@@ -134,7 +135,8 @@ class Sourcing:
 @dataclass(frozen=True)
 class AttemptResult:
     """What one attempt did."""
-    attempted: bool                    # a Source ask was made, hit or miss
+    # a Source ask was made, hit or miss, or assess-first asked the judge
+    attempted: bool
     # the judge questions collected for the run's batch, empty inline
     questions: list[PreparedQuestion] = field(default_factory=list)
     # assessor.ManyResult's own dict: question key -> Excluded
@@ -871,6 +873,39 @@ _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {
     "recording": _recording_attempt,
     "rendition": _rendition_attempt,
 }
+
+
+def _assess_pictures(ctx: Sourcing, need: Need) -> AttemptResult:
+    return _judge_pictures(ctx, need, _picture_query_for(ctx, need), {})
+
+
+# The assessment a kind's assess-first step runs: the fit questions on
+# every candidate on record, cache-first (_judge_pictures asks nothing
+# for a candidate already judged under the current rubric).
+_ASSESS_FIRST: dict[str, Callable[[Sourcing, Need], AttemptResult]] = {
+    "picture": _assess_pictures,
+}
+
+
+def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
+    """Spec 3 section 5 assess-first: the fit questions on the need's
+    candidates with no verdict under the current rubric; no source is
+    asked and no outcome row is written. None when no candidate awaits a
+    verdict, or when every awaiting question was excluded: the caller
+    asks the source in the same attempt.
+    """
+    awaiting = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
+    if not awaiting:
+        return None
+    assess = _ASSESS_FIRST.get(need.kind)
+    if assess is None:
+        raise ValueError(f"no assess-first step is defined for artifact kind {need.kind!r} "
+                         f"(subject {need.subject!r}, a {need.subject_kind})")
+    result = assess(ctx, need)
+    excluded_shas = {e.artifact_sha for e in result.excluded.values()}
+    if all(sha in excluded_shas for sha in awaiting):
+        return None
+    return result
 
 
 def attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
