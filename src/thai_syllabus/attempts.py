@@ -306,18 +306,32 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     spend: dict[str, Spend] = {}
     query = _picture_query_for(ctx, need)
     fetches = _Fetches()
+    question = Question(subject=need.subject, provides="picture",
+                        params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
     try:
-        hits = ctx.provider.ask(source, Question(subject=need.subject, provides="picture",
-                                                 params={"query": query}, kind=need.kind,
-                                                 subject_kind=need.subject_kind))
+        hits = ctx.provider.ask(source, question)
     except TransportError:
         fetches.failed()
         _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
         raise
     _count(spend, source, hits)
     hit_items = [i for i in hits.items if isinstance(i, Mapping) and i.get("url")]
-    for item in hit_items[:ctx.image_candidates]:
+    tried_items = hit_items[:ctx.image_candidates]
+    for item in tried_items:
         _ingest_picture(ctx, need, item, source, spend, fetches)
+    if not fetches.candidates and fetches.served_refusals:
+        try:
+            hits = ctx.provider.reask(source, question)
+        except TransportError:
+            fetches.failed()
+            _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+            raise
+        _count(spend, source, hits)
+        tried = {i["url"] for i in tried_items}
+        fresh_items = [i for i in hits.items
+                       if isinstance(i, Mapping) and i.get("url") and i["url"] not in tried]
+        for item in fresh_items[:ctx.image_candidates]:
+            _ingest_picture(ctx, need, item, source, spend, fetches)
     _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
     return _judge_pictures(ctx, need, query, spend)
 
@@ -325,16 +339,20 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
 def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
                     spend: dict[str, Spend], fetches: _Fetches) -> None:
     """One search hit's bytes through imgfetch, with a media row naming
-    where it came from. A url the fetcher refuses is logged and skipped,
-    counted as a transient failure for this source's outcome.
+    where it came from. A url the fetcher refuses is logged and counted on
+    `fetches`: served or wire.
     """
     url = item["url"]
     try:
         got = ctx.provider.ask("imgfetch", Question(
             subject=need.subject, provides="picture-bytes", params={"url": url},
             kind=need.kind, subject_kind=need.subject_kind))
-    except TransportError as e:
+    except FetchRefused as e:
         _log.warning("imgfetch refused %s for %s/%s: %s", url, need.subject, need.kind, e)
+        fetches.failed(served=e.served)
+        return
+    except TransportError as e:
+        _log.warning("imgfetch failed on %s for %s/%s: %s", url, need.subject, need.kind, e)
         fetches.failed()
         return
     _count(spend, "imgfetch", got)
