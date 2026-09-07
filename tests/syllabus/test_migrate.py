@@ -12,8 +12,9 @@ import yaml
 from PIL import Image
 
 from thai_syllabus import curated
-from thai_syllabus.derivations import current_best
+from thai_syllabus.derivations import current_best, unjudged_candidates
 from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate
+from thai_syllabus.record import candidate_shas, rows_for
 from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
 from thai_syllabus.store import IMAGE_MAX_LONG_EDGE, SyllabusDb
 
@@ -464,3 +465,51 @@ def test_word_list_row_without_a_category_is_reported_and_refused(old_deck, old_
 
     bundle = curated.load_curated(tmp_path / "new" / "curated")
     assert "cat-less" not in {w.id for w in bundle.words}
+
+
+def test_the_current_picture_migrates_as_a_candidate(old_deck, old_data, tmp_path):
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    rows = rows_for(db, "chicken", "picture")
+    legacy = [r for r in rows if r.port == "provide" and r.backend == "legacy-current"]
+    assert len(legacy) == 1
+    (sha,) = candidate_shas(legacy)
+    assert db.media_provenance(sha) is not None
+    assert legacy[0].answer["items"][0]["ext"] == db.media_provenance(sha)["ext"]
+    assert legacy[0].question["params"]["image"] == "images/pw-1.jpg"
+    assert report.cache["current_picture"] == 2   # pw-1 -> chicken, pw-2 -> slow
+
+
+def test_the_current_picture_writes_no_outcome_row(old_deck, old_data, tmp_path):
+    migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    assert all(r.port != "attempt" for r in db.assessments_of("chicken"))
+
+
+def test_the_current_picture_awaits_a_verdict_and_does_not_rank(old_deck, old_data, tmp_path):
+    migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    rubric = {"picture-for-word": PICTURE_FIT_RUBRIC}
+    (sha,) = candidate_shas(rows_for(db, "chicken", "picture"))
+    assert unjudged_candidates(db, "chicken", "picture", current_rubric=rubric) == (sha,)
+    best = current_best(db, "chicken", "picture", current_rubric=rubric, prior=(),
+                        provenance_source=lambda s: None)
+    assert best.artifact_sha is None
+
+
+def test_a_second_migration_appends_no_second_current_picture_row(old_deck, old_data, tmp_path):
+    migrate(old_deck, old_data, tmp_path / "new")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    db = SyllabusDb(tmp_path / "new" / "syllabus.db")
+    legacy = [r for r in rows_for(db, "chicken", "picture") if r.backend == "legacy-current"]
+    assert len(legacy) == 1
+    assert report.already_present["current_picture"] == 2
+
+
+def test_an_unjoined_picture_note_gets_no_candidate_row(old_deck, old_data, tmp_path):
+    notes = old_deck / "notes" / "picture_words.yaml"
+    notes.write_text(notes.read_text(encoding="utf-8")
+                     + "- id: pw-9\n  thai: ไม่มี\n  category: Animals\n"  # ไม่มี = "none"
+                       "  image: images/pw-2.jpg\n", encoding="utf-8")
+    report = migrate(old_deck, old_data, tmp_path / "new")
+    assert report.cache["current_picture"] == 2

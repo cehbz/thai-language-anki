@@ -10,7 +10,10 @@ Items 1-4 and 6 of spec 2 section 4:
      row with no category
   2. judged images -> media CAS + provenance (ingest_picture normalizes
      at ingest, spec 4 section 3) + judge cache rows under
-     LEGACY_PICTURE_RUBRIC, which never ranks under the current rubric
+     LEGACY_PICTURE_RUBRIC, which never ranks under the current rubric;
+     the deck's current picture -> one provide row per joined word
+     (backend legacy-current, no attempt-outcome row): a candidate the
+     first run to queue its need judges under the current rubric
   3. Forvo answers -> provide/forvo cache rows, hit and miss alike
   4. proof-gallery notes + waivers.yaml -> learner assessment rows
   6. StudyRecords: nothing is written to the `study` table
@@ -403,11 +406,14 @@ def _migrate_media_manifest(old_deck: Path, media_store: MediaStore, db: Syllabu
 
 
 def _migrate_current_deck_images(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
+                                 note_subjects: dict[str, str],
                                  report: MigrationReport) -> None:
     # Picture words only: spelling-sound notes never migrate (see
     # _note_subjects), so _migrate_media_manifest takes their images. The
-    # deck's current picture gets no cache row of its own; a legacy
-    # verdict on the same sha lands through _migrate_candidates.
+    # deck's current picture is a candidate of its joined word (spec 2
+    # section 4 r7): one provide row, backend legacy-current, no
+    # attempt-outcome row; a legacy verdict on the same sha lands through
+    # _migrate_candidates. An unjoined note is reported by _note_subjects.
     notes = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
     for note in notes:
         image = note.get("image")
@@ -421,11 +427,24 @@ def _migrate_current_deck_images(old_deck: Path, media_store: MediaStore, db: Sy
             continue
         ext = path.suffix.lstrip(".") or "bin"
         try:
-            _ingest_and_count(media_store, db, report, path.read_bytes(), ext,
-                              Provenance(source="legacy-current", origin=image,
-                                        licence="unknown", acquired=date(1970, 1, 1)))
+            sha = _ingest_and_count(media_store, db, report, path.read_bytes(), ext,
+                                    Provenance(source="legacy-current", origin=image,
+                                               licence="unknown", acquired=date(1970, 1, 1)))
         except ValueError as exc:
             report.drop("notes/picture_words.yaml", note_id, str(exc))
+            continue
+        word_id = note_subjects.get(note_id)
+        if word_id is None:
+            continue
+        stored_ext = db.media_provenance(sha)["ext"]
+        key = ProvideKey(source="legacy-current", kind="picture", query=word_id)
+        _record_once(
+            db, report, "current_picture", port="provide", backend="legacy-current", key=key,
+            write=lambda k=key, s=word_id, i=image, sha=sha, e=stored_ext: db.append(
+                port="provide", backend="legacy-current", key=k, subject=s,
+                question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                          "params": {"image": i}},
+                answer={"items": [{"sha": sha, "ext": e}]}))
 
 
 def _migrate_candidates(old_deck: Path, media_store: MediaStore, db: SyllabusDb,
@@ -608,7 +627,7 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     note_subjects = _note_subjects(old_deck, word_id_by_key, ambiguous_keys, report)
 
     _migrate_media_manifest(old_deck, media_store, db, report)
-    _migrate_current_deck_images(old_deck, media_store, db, report)
+    _migrate_current_deck_images(old_deck, media_store, db, note_subjects, report)
     _migrate_candidates(old_deck, media_store, db, note_subjects, report)
     _migrate_forvo(old_deck, db, report)
     _migrate_proof_notes(old_deck, note_subjects, db, report)

@@ -29,12 +29,6 @@ still run against them.
 - A drafter answer with zero drafts (`{"sentences": []}`) is refused
   under s2's no-drafts rule and re-asked every run; an honest "no
   sentence fits" answer needs a recognized shape that caches.
-- s10's "assess-first step" does not exist: migrated pictures (media
-  rows, no provide row) are never candidates, so every word re-sources
-  five new pictures (~3,500 questions) instead of one re-judgement each
-  (~700). Fix: migrate appends a provide row per current picture; a need
-  with a candidate unjudged under the current rubric is judged before a
-  source is asked; s10 reworded.
 
 ## Cutover
 
@@ -50,8 +44,9 @@ still run against them.
   --old-data data --new-root ~/decks/thai-ff`. Joins pictures by (thai,
   category) and reports ambiguous forms; carries candidates.yaml
   verdicts under a legacy rubric id that never ranks; idempotent (run it
-  twice, read already_present). A migrated picture has a media row and
-  no provide row: no fold sees it and no run judges it (r11 item below).
+  twice, read already_present). The current picture migrates as a
+  candidate (a legacy-current provide row); a re-run into the live deck
+  appends only those rows.
   Provider cache rows are keyed by the current ProvideKey
   encoding (source:kind:query): a syllabus.db written before 2026-09-06
   would miss every provider cache row and a re-run of migrate into it
