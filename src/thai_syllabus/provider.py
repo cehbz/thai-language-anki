@@ -152,7 +152,7 @@ class HttpImageSearchBackend:
     through a caching/rate-limiting proxy.
     """
     name: str
-    build_request: Callable[[str, str | None], tuple[str, dict, dict]]
+    build_request: Callable[[str, str | None], tuple[str, dict, dict, str]]
     parse_items: Callable[[Any], list[dict]]
     get: Callable[..., Any] = field(default=requests.get)
     search_proxy: str | None = None
@@ -162,7 +162,7 @@ class HttpImageSearchBackend:
 
     def fetch(self, question: Question) -> RawAnswer:
         query = question.params["query"]
-        url, params, headers = self.build_request(query, self.search_proxy)
+        url, params, headers, expect = self.build_request(query, self.search_proxy)
         try:
             resp = self.get(url, params=params, headers=headers, timeout=30)
         except requests.RequestException as e:
@@ -170,17 +170,25 @@ class HttpImageSearchBackend:
         if resp.status_code != 200:
             raise TransportError(
                 f"{self.name} search returned {resp.status_code}: {resp.text[:200]}")
-        items = self.parse_items(resp.json())
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise TransportError(
+                f"{self.name} search answered a body that is not json: {e}") from e
+        if not isinstance(data, Mapping) or expect not in data:
+            raise TransportError(
+                f"{self.name} search answered a body without {expect!r}: {str(data)[:120]}")
+        items = self.parse_items(data)
         return RawAnswer(items=tuple(items), cost=0.0)
 
 
 def openverse_backend(get: Callable[..., Any] = requests.get,
                       search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict]:
+    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
         base = proxy or "https://api.openverse.org"
         return (f"{base}/v1/images/",
                {"q": query, "license_type": "commercial,modification"},
-               {"User-Agent": IMAGE_SEARCH_USER_AGENT})
+               {"User-Agent": IMAGE_SEARCH_USER_AGENT}, "results")
 
     def parse(data: Any) -> list[dict]:
         return [{"url": r.get("url"), "licence": r.get("license"),
@@ -194,13 +202,16 @@ def openverse_backend(get: Callable[..., Any] = requests.get,
 
 def wikimedia_backend(get: Callable[..., Any] = requests.get,
                       search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict]:
+    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
+        # "batchcomplete" is on every MediaWiki action-API search reply,
+        # zero hits included (zero hits omits "query" entirely); an
+        # {"error": {...}} body carries neither.
         base = proxy or "https://commons.wikimedia.org"
         return (f"{base}/w/api.php",
                {"action": "query", "generator": "search", "gsrsearch": query,
                 "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url",
                 "format": "json"},
-               {"User-Agent": IMAGE_SEARCH_USER_AGENT})
+               {"User-Agent": IMAGE_SEARCH_USER_AGENT}, "batchcomplete")
 
     def parse(data: Any) -> list[dict]:
         out = []
@@ -217,10 +228,10 @@ def wikimedia_backend(get: Callable[..., Any] = requests.get,
 
 def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
                    search_proxy: str | None = None) -> HttpImageSearchBackend:
-    def build(query: str, proxy: str | None) -> tuple[str, dict, dict]:
+    def build(query: str, proxy: str | None) -> tuple[str, dict, dict, str]:
         base = proxy or "https://api.pexels.com"
         return (f"{base}/v1/search", {"query": query},
-               {"User-Agent": IMAGE_SEARCH_USER_AGENT, "Authorization": api_key})
+               {"User-Agent": IMAGE_SEARCH_USER_AGENT, "Authorization": api_key}, "photos")
 
     def parse(data: Any) -> list[dict]:
         return [{"url": p.get("src", {}).get("original"), "licence": "pexels",
@@ -332,13 +343,16 @@ class ForvoBackend:
               f"action/word-pronunciations/word/{word}")
         try:
             resp = self.get(url, timeout=30)
+            if resp.status_code != 200:
+                raise TransportError(f"forvo returned {resp.status_code}")
+            data = resp.json()
         except requests.RequestException as e:
             raise TransportError(f"forvo lookup of {word!r} failed: {e}") from e
-        if resp.status_code != 200:
-            raise TransportError(f"forvo returned {resp.status_code}")
-        data = resp.json()
-        items = data.get("items", [])
-        return RawAnswer(items=tuple(items), cost=1.0)  # 1 lookup against the daily quota
+        except ValueError as e:
+            raise TransportError(f"forvo answered {word!r} with a body that is not json: {e}") from e
+        if not isinstance(data, Mapping) or not isinstance(data.get("items"), list):
+            raise TransportError(f"forvo answered {word!r} with a body without items: {str(data)[:120]}")
+        return RawAnswer(items=tuple(data["items"]), cost=1.0)  # 1 lookup against the daily quota
 
 
 # --- tts: Google TTS (deterministic; never re-asked) ------------------------

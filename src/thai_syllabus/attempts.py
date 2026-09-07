@@ -47,7 +47,7 @@ from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT, SentenceDraft
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import FetchRefused, TransportError
+from .transport import FetchRefused, SynthesisRefused, TransportError
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
@@ -572,9 +572,15 @@ def _relookup_once(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spen
 def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str, spend: dict[str, Spend],
                 *, subject_kind: SubjectKind = "word",
                 fetches: _Fetches | None = None) -> str | None:
-    got = ctx.provider.ask("tts", Question(subject=subject, provides="recording",
-                                           params={"text": text, "voice": voice},
-                                           kind="recording", subject_kind=subject_kind))
+    try:
+        got = ctx.provider.ask("tts", Question(subject=subject, provides="recording",
+                                               params={"text": text, "voice": voice},
+                                               kind="recording", subject_kind=subject_kind))
+    except SynthesisRefused as e:
+        _log.warning("tts refused %s for %s: %s", voice, subject, e)
+        if fetches is not None:
+            fetches.missed()
+        return None
     _count(spend, "tts", got)
     sha = _store(ctx, got, source="tts", origin=voice, licence="google-tts",
                  speaker=_tts_speaker(ctx, voice))
@@ -725,16 +731,19 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[st
 def _tts_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
                    fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
     """One voice across the members. A member's synthesis that fails on
-    the wire raises out of the loop; an earlier member's own success
-    stays recorded on `fetches`.
+    the wire raises out of the loop; a member's synthesis the service
+    refuses ends the loop with no member set for the rest, without
+    asking them. An earlier member's own success stays recorded on
+    `fetches` either way.
     """
     voice = pick_voice(pair.id, _pool(ctx, constraint))
     speaker = _tts_speaker(ctx, voice)
     members: dict[str, tuple[str, Speaker]] = {}
     for member in pair.members:
         sha = _synthesize(ctx, member, words[member].thai, voice, spend, fetches=fetches)
-        if sha is not None:
-            members[member] = (sha, speaker)
+        if sha is None:
+            break
+        members[member] = (sha, speaker)
     return members if len(members) == len(pair.members) else {}
 
 

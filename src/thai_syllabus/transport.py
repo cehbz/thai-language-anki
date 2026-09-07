@@ -48,6 +48,11 @@ class FetchRefused(TransportError):
         return self.reason != "wire"
 
 
+class SynthesisRefused(TransportError):
+    """A synthesis service refused this text or voice (a 4xx other than
+    429)."""
+
+
 def _import_anthropic():
     try:
         import anthropic

@@ -25,7 +25,7 @@ from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRI
 from thai_syllabus.rules import OrderEntry
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
-from thai_syllabus.transport import Completion, FetchRefused, TransportError
+from thai_syllabus.transport import Completion, FetchRefused, SynthesisRefused, TransportError
 from thai_syllabus.tts import pick_voice
 
 from .builders import target, word
@@ -933,6 +933,15 @@ class _DeadTts:
         raise TransportError("tts down")
 
 
+class _RefusingTts:
+    def __init__(self):
+        self.calls = 0
+
+    def synthesize(self, text, voice):
+        self.calls += 1
+        raise SynthesisRefused(f"google tts refused {voice}: 400")
+
+
 class _PartialTts:
     """Synthesizes the first ask; every later ask fails on the wire --
     the rendition attempt's partial-success case."""
@@ -1113,6 +1122,17 @@ def test_a_tts_recording_attempt_writes_transient_failure_when_synthesis_raises(
     assert row.answer == {"outcome": "transient-failure", "candidates": []}
 
 
+def test_a_tts_refusal_is_a_nothing_outcome_not_a_transient_one(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=_RefusingTts(), voices=list(_MALE) + list(_FEMALE), media=ctx.media_store,
+        pick_voice=pick_voice)
+    result = attempt(ctx, Need("rice", "recording"), "tts")
+    assert result.attempted
+    row = _outcome(ctx.db, "rice", "recording", "tts")
+    assert row.answer == {"outcome": "nothing", "candidates": []}
+
+
 def test_a_rendition_attempt_writes_a_candidates_outcome(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
         "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
@@ -1154,6 +1174,22 @@ def test_a_rendition_tts_attempt_reports_candidates_from_a_partial_success_then_
     row = _outcome(ctx.db, "p1", "rendition", "tts")
     assert row.answer["outcome"] == "candidates"
     assert len(row.answer["candidates"]) == 1
+
+
+def test_a_rendition_tts_attempt_stops_at_the_first_member_the_service_refuses(tmp_path):
+    """The first member's synthesis is refused. The second member is
+    never asked, and the outcome row reads `nothing`.
+    """
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus())
+    refusing = _RefusingTts()
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=refusing, voices=list(_MALE) + list(_FEMALE), media=ctx.media_store,
+        pick_voice=pick_voice)
+    result = attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+    assert result.attempted
+    assert refusing.calls == 1
+    row = _outcome(ctx.db, "p1", "rendition", "tts")
+    assert row.answer == {"outcome": "nothing", "candidates": []}
 
 
 # --- ruling 1: the outcome row is written before the check call ------------

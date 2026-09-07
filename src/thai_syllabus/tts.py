@@ -9,7 +9,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-from .transport import TransportError
+from .transport import SynthesisRefused, TransportError
 
 # Google's Thai voices, from the live voices API 2026-09-02. Sentences
 # spread across the pool, so no one synthetic voice is what gets taught.
@@ -58,5 +58,12 @@ class GoogleTts:
         }
         resp = self.http_post(url, json=body, timeout=30)
         if resp.status_code != 200:
-            raise TransportError(f"google tts failed with {resp.status_code}: {resp.text}")
-        return base64.b64decode(resp.json()["audioContent"])
+            if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                raise SynthesisRefused(
+                    f"google tts refused {voice!r}: {resp.status_code} {resp.text[:200]}")
+            raise TransportError(f"google tts failed with {resp.status_code}: {resp.text[:200]}")
+        try:
+            content = resp.json()["audioContent"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise TransportError(f"google tts answered without audioContent: {e}") from e
+        return base64.b64decode(content)

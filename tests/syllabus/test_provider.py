@@ -196,6 +196,67 @@ def test_a_non_200_response_is_a_transport_error_not_cached_by_the_backend():
         backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
 
 
+def test_openverse_a_200_body_without_results_is_a_transport_error():
+    backend = openverse_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"detail": "throttled"}))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+
+
+def test_wikimedia_a_200_body_without_batchcomplete_is_a_transport_error():
+    backend = wikimedia_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"detail": "throttled"}))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+
+
+def test_pexels_a_200_body_without_photos_is_a_transport_error():
+    backend = pexels_backend(api_key="k",
+                             get=lambda url, **kwargs: _FakeResponse(json_data={"error": "x"}))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+
+
+def test_a_200_body_that_is_not_json_is_a_transport_error():
+    class _Bad(_FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    backend = openverse_backend(get=lambda *a, **k: _Bad(status_code=200))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+
+
+def test_openverse_empty_result_is_still_a_valid_answer(db):
+    # a zero-hit search caches too (spec 3 section 6a: no hits is `nothing`,
+    # not a transport error), via the generic Provider empty-answer rule.
+    backend = openverse_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"results": []}))
+    provider = Provider(record=db, cache=db, backends={"openverse": backend})
+    provider.ask("openverse", Question(subject="rice", provides="picture", params={"query": "q"}))
+    hit = db.latest("provide", "openverse", ProvideKey(source="openverse", kind="", query="q"))
+    assert hit is not None
+    assert hit.answer == {"items": []}
+
+
+def test_wikimedia_empty_result_is_still_a_valid_answer(db):
+    # a zero-hit MediaWiki search body carries "batchcomplete" and no
+    # "query" key at all -- expect="batchcomplete" admits it.
+    backend = wikimedia_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"batchcomplete": ""}))
+    provider = Provider(record=db, cache=db, backends={"wikimedia": backend})
+    provider.ask("wikimedia", Question(subject="rice", provides="picture", params={"query": "q"}))
+    hit = db.latest("provide", "wikimedia", ProvideKey(source="wikimedia", kind="", query="q"))
+    assert hit is not None
+    assert hit.answer == {"items": []}
+
+
+def test_pexels_empty_result_is_still_a_valid_answer(db):
+    backend = pexels_backend(api_key="k",
+                             get=lambda url, **kwargs: _FakeResponse(json_data={"photos": []}))
+    provider = Provider(record=db, cache=db, backends={"pexels": backend})
+    provider.ask("pexels", Question(subject="rice", provides="picture", params={"query": "q"}))
+    hit = db.latest("provide", "pexels", ProvideKey(source="pexels", kind="", query="q"))
+    assert hit is not None
+    assert hit.answer == {"items": []}
+
+
 def test_wikimedia_and_pexels_backends_key_by_backend_name():
     wm = wikimedia_backend()
     px = pexels_backend(api_key="k")
@@ -209,7 +270,7 @@ def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
 
     def get(url, params, headers, timeout):
         seen.update(params)
-        return _FakeResponse(json_data={"query": {"pages": {"1": {
+        return _FakeResponse(json_data={"batchcomplete": "", "query": {"pages": {"1": {
             "title": "File:A.jpg",
             "imageinfo": [{"url": "https://u/A.jpg"}]}}}})
 
@@ -412,6 +473,23 @@ def test_forvo_fetch_returns_items_and_a_transport_error_on_bad_status():
                        _FakeResponse(status_code=500))
     with pytest.raises(TransportError):
         bad.fetch(Question(subject="ไก่", provides="recording"))
+
+
+@pytest.mark.parametrize("payload", [["Limit/day reached."], {"error": "x"}, "text", {"items": None}])
+def test_forvo_a_200_body_without_items_is_a_transport_error(payload):
+    backend = ForvoBackend(api_key="k", get=lambda url, timeout=None: _FakeResponse(json_data=payload))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+
+
+def test_forvo_a_200_body_that_is_not_json_is_a_transport_error():
+    class _Bad(_FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    backend = ForvoBackend(api_key="k", get=lambda url, timeout=None: _Bad(status_code=200))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
 
 
 def test_forvo_empty_result_is_still_a_valid_answer(db):
