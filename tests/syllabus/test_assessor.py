@@ -223,18 +223,22 @@ def test_duration_mechanical_key_is_parameter_explicit():
     assert key.encode() == "mech:duration:0.2-5.0:deadbeef"
 
 
-def test_duration_mechanical_passes_within_range():
+def test_duration_mechanical_passes_within_range(tmp_path):
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
     backend = DurationBackend(
-        lo=0.2, hi=5.0, resolve_path=lambda sha: f"/media/{sha}.mp3",
+        lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
         duration_of=lambda path: 1.5)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
                                        artifact_sha="deadbeef"))
     assert raw.value is True
 
 
-def test_duration_mechanical_fails_outside_range():
+def test_duration_mechanical_fails_outside_range(tmp_path):
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
     backend = DurationBackend(
-        lo=0.2, hi=5.0, resolve_path=lambda sha: f"/media/{sha}.mp3",
+        lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
         duration_of=lambda path: 9.9)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
                                        artifact_sha="deadbeef"))
@@ -255,18 +259,42 @@ def test_format_mechanical_evaluates_extension_match():
     assert raw.value is False
 
 
-def test_ffprobe_backend_failure_is_a_transport_error_and_uncached(db):
-    import subprocess as sp
-
-    def failing_runner(cmd, **kwargs):
-        return sp.CompletedProcess(cmd, 1, "", "no such file")
-
-    backend = DurationBackend(resolve_path=lambda sha: "/nope.mp3", runner=failing_runner)
+def test_duration_check_on_a_nonexistent_path_is_a_preparation_error_and_uncached(db):
+    backend = DurationBackend(resolve_path=lambda sha: "/nope.mp3")
     assessor = Assessor(record=db, cache=db, backends={"mechanical": backend})
-    with pytest.raises(TransportError):
+    with pytest.raises(PreparationError):
         assessor.ask("mechanical", AssessQuestion(subject="s", role="recording-for-word",
                                                   artifact_sha="x"))
     assert db.assessments_of("s") == []
+
+
+def test_duration_check_excludes_a_missing_artifact_instead_of_failing_the_run(db):
+    backend = DurationBackend(resolve_path=lambda sha: None)
+    a = Assessor(record=db, cache=db, backends={"mechanical": backend})
+    q = AssessQuestion(subject="w", role="recording-for-word", artifact_sha="s1", kind="recording")
+    res = a.ask_many("mechanical", [q])
+    assert res.excluded and res.resolved == {}
+
+
+def test_ffprobe_failing_on_an_existing_file_is_a_preparation_error(tmp_path):
+    from thai_syllabus.assessor import PreparationError, ffprobe_duration_seconds
+    import subprocess as sp
+    corrupt = tmp_path / "a.mp3"
+    corrupt.write_bytes(b"junk")
+    with pytest.raises(PreparationError):
+        ffprobe_duration_seconds(str(corrupt), runner=lambda cmd, **k: sp.CompletedProcess(cmd, 1, "", "Invalid data"))
+
+
+def test_ffprobe_that_cannot_run_is_a_transport_error(tmp_path):
+    from thai_syllabus.assessor import ffprobe_duration_seconds
+    f = tmp_path / "a.mp3"
+    f.write_bytes(b"x")
+
+    def runner(cmd, **k):
+        raise OSError("no ffprobe")
+
+    with pytest.raises(TransportError):
+        ffprobe_duration_seconds(str(f), runner=runner)
 
 
 # --- authority table ------------------------------------------------------

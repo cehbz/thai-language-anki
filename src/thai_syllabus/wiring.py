@@ -222,7 +222,7 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
-        "mechanical": DurationBackend(resolve_path=lambda sha: str(resolve(sha) or "")),
+        "mechanical": DurationBackend(resolve_path=resolve),
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     if syllabus_of is not None:

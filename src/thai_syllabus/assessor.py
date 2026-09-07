@@ -606,13 +606,17 @@ class JudgeBackend:
 
 def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.run) -> float:
     """The audio file's duration in seconds, read through ffprobe.
-    Raises TransportError when ffprobe fails or answers unparseably.
+    PreparationError when ffprobe rejects the file; TransportError when
+    ffprobe cannot run or answers unparseably.
     """
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
           "-of", "json", str(path)]
-    result = runner(cmd, capture_output=True, text=True)
+    try:
+        result = runner(cmd, capture_output=True, text=True)
+    except OSError as e:
+        raise TransportError(f"cannot run ffprobe: {e}") from e
     if result.returncode != 0:
-        raise TransportError(f"ffprobe failed on {path!r}: {result.stderr}")
+        raise PreparationError(f"ffprobe rejected {path!r}: {result.stderr.strip()[:200]}")
     try:
         data = json.loads(result.stdout)
         return float(data.get("format", {}).get("duration", 0))
@@ -626,7 +630,7 @@ class DurationBackend:
     mech:duration:LO-HI:ARTIFACT_SHA. `duration_of`, when given, replaces
     the ffprobe lookup.
     """
-    resolve_path: Callable[[str | None], str]
+    resolve_path: Callable[[str | None], str | None]
     lo: float = 0.2
     hi: float = 5.0
     duration_of: Callable[[str], float] | None = None
@@ -638,8 +642,11 @@ class DurationBackend:
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         path = self.resolve_path(question.artifact_sha)
-        duration = (self.duration_of(path) if self.duration_of is not None
-                    else ffprobe_duration_seconds(path, runner=self.runner))
+        if not path or not Path(path).is_file():
+            raise PreparationError(
+                f"duration: no readable artifact for {question.artifact_sha!r}")
+        duration = (self.duration_of(str(path)) if self.duration_of is not None
+                    else ffprobe_duration_seconds(str(path), runner=self.runner))
         return RawVerdict(value=self.lo <= duration <= self.hi,
                           evidence=f"duration={duration:.3f}s")
 
