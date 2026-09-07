@@ -91,7 +91,8 @@ class _Lazy:
 
 def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     """A lazy `.complete(prompt)` transport for the judge (judge.transport,
-    judge.model, judge.thinking). None under a "batch" judge.
+    judge.model, judge.thinking, judge.max_tokens). None under a "batch"
+    judge.
     """
     kind = cfg.judge.transport
     if kind == "cli":
@@ -99,19 +100,19 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     if kind == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking))
+            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
     return None
 
 
 def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
     """The single-question transport llm-sentence/phrase/entry draft on
     (spec 3 section 4): drafter.transport, cli or api; api rides the
-    judge's account, model and thinking.
+    judge's account, model, thinking and max_tokens.
     """
     if cfg.drafter.transport == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking))
+            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
     return _Lazy(lambda: ClaudeCliTransport())
 
 
@@ -252,7 +253,7 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
     if kind == "batch":
         batch_transport = _Lazy(lambda: ClaudeBatchTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking))
+            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
     else:
         transport = _claude_transport(cfg, secrets)
         if transport is not None:

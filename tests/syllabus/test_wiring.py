@@ -275,6 +275,27 @@ def test_the_judge_transports_carry_the_configured_thinking(cfg, db, media_store
     assert api.thinking == "adaptive"
 
 
+def test_the_judge_and_drafter_transports_carry_the_configured_max_tokens(cfg, db, media_store):
+    from thai_syllabus.curated import DrafterConfig, JudgeConfig
+    from thai_syllabus.wiring import _claude_transport, _drafter_transport
+    batch = build_assessor(ProvidersConfig(
+        secrets=cfg.secrets,
+        judge=JudgeConfig(transport="batch", model="m", max_tokens=20000,
+                          price_per_mtok=(2.0, 10.0))),
+        db, media_store)
+    assert batch._backends["judge"].batch_transport._resolve().max_tokens == 20000
+    api = _claude_transport(ProvidersConfig(
+        secrets=cfg.secrets,
+        judge=JudgeConfig(transport="api", model="m", max_tokens=20000,
+                          price_per_mtok=(2.0, 10.0))), cfg.secret_store())._resolve()
+    assert api.max_tokens == 20000
+    drafter_api = _drafter_transport(ProvidersConfig(
+        secrets=cfg.secrets,
+        judge=JudgeConfig(model="m", max_tokens=20000),
+        drafter=DrafterConfig(transport="api")), cfg.secret_store())._resolve()
+    assert drafter_api.max_tokens == 20000
+
+
 # --- build_assessor -------------------------------------------------------
 
 def test_build_assessor_registers_judge_and_mechanical(cfg, db, media_store):

@@ -534,10 +534,11 @@ def rulebook_file_text(path: str | Path) -> str:
 #
 # load_providers_config refuses a file describing a run the code cannot
 # perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
-# price_per_mtok or no anthropic secret, an unknown judge.thinking, an
-# unknown drafter.transport, an api drafter with no anthropic secret or
-# no price_per_mtok, an empty male_voices or female_voices pool. An
-# absent file refuses, naming the path.
+# price_per_mtok or no anthropic secret, an unknown judge.thinking, a
+# judge.max_tokens under 16000 with thinking: adaptive, an unknown
+# drafter.transport, an api drafter with no anthropic secret or no
+# price_per_mtok, an empty male_voices or female_voices pool. An absent
+# file refuses, naming the path.
 
 @dataclass(frozen=True)
 class JudgeConfig:
@@ -545,6 +546,7 @@ class JudgeConfig:
     model: str = ""
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
     thinking: str = "disabled"  # "disabled" | "adaptive"; sent by the api and batch transports
+    max_tokens: int = 4096      # output token cap; sent by the api and batch transports
 
 
 @dataclass(frozen=True)
@@ -625,8 +627,15 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if thinking not in ("disabled", "adaptive"):
         errors.append(f"providers.judge.thinking: {thinking!r} is not one of "
                       "'disabled', 'adaptive'")
+    max_tokens = judge_cfg.get("max_tokens", 4096)
+    if not isinstance(max_tokens, int) or max_tokens < 1:
+        errors.append(f"providers.judge.max_tokens: {max_tokens!r} must be a positive integer")
+    elif thinking == "adaptive" and max_tokens < 16000:
+        errors.append(f"providers.judge.max_tokens: {max_tokens} is below 16000, the least "
+                      "an adaptive-thinking answer needs to carry text")
     judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
-                        price_per_mtok=price_per_mtok, thinking=thinking)
+                        price_per_mtok=price_per_mtok, thinking=thinking,
+                        max_tokens=max_tokens)
 
     # A loaded config describes a run that can happen: both mediafetch
     # paths are required, pictures and recordings always being in scope.
@@ -688,7 +697,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
     judge: dict[str, Any] = {"transport": config.judge.transport, "model": config.judge.model,
-                             "thinking": config.judge.thinking}
+                             "thinking": config.judge.thinking,
+                             "max_tokens": config.judge.max_tokens}
     if config.judge.price_per_mtok is not None:
         input_price, output_price = config.judge.price_per_mtok
         judge["price_per_mtok"] = {"input": input_price, "output": output_price}

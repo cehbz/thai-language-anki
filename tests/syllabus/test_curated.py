@@ -656,7 +656,7 @@ def test_providers_drafter_and_thinking_round_trip(tmp_path):
         audiofetch_path: /opt/bin/audiofetch
         secrets: {anthropic: op://Shared/Anthropic/API Key}
         judge: {transport: batch, model: claude-sonnet-5, thinking: adaptive,
-                price_per_mtok: {input: 2.0, output: 10.0}}
+                max_tokens: 16000, price_per_mtok: {input: 2.0, output: 10.0}}
         drafter: {transport: api}
     """), encoding="utf-8")
     cfg = curated.load_providers_config(path)
@@ -670,6 +670,26 @@ def test_providers_rejects_an_unknown_judge_thinking(tmp_path):
     path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "deep"})))
     with pytest.raises(curated.CuratedValidationError, match="judge.thinking"):
         curated.load_providers_config(path)
+
+
+def test_providers_judge_max_tokens_defaults_and_round_trips(tmp_path):
+    assert curated.JudgeConfig().max_tokens == 4096
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "max_tokens": 20000})))
+    cfg = curated.load_providers_config(path)
+    assert cfg.judge.max_tokens == 20000
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_adaptive_thinking_requires_max_tokens_of_at_least_16000(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "adaptive"})))
+    with pytest.raises(curated.CuratedValidationError, match="judge.max_tokens"):
+        curated.load_providers_config(path)
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "adaptive",
+                                                     "max_tokens": 16000})))
+    assert curated.load_providers_config(path).judge.max_tokens == 16000
 
 
 def test_providers_rejects_an_unknown_drafter_transport(tmp_path):
