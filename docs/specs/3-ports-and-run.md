@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 10, proposed 2026-09-07 against principles r2 and architecture
+Revision 11, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -55,6 +55,12 @@ Revision log:
   Forvo url expired; the proxy answered 400 to a base-url request) and
   the curable-failure audit, both 2026-09-07; user rulings 2026-09-07
   (three states with a retry limit; a served non-audio body is curable).
+- r11 2026-09-07: assess-first (§5): a need with a candidate unjudged
+  under the current rubric is judged before any source is asked; the
+  queue's rubric lever is that same fold (§6). Evidence: smoke run 3 (65
+  picture words re-sourced, ~3,500 questions projected against ~650); a
+  stale legacy verdict on a non-candidate sha read as an untried lever.
+  User ruling 2026-09-07 (incremental over re-migration).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -193,6 +199,14 @@ hit re-asks the search once and ingests what is new), judge *fit* on each
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
 
+Assess-first: when a candidate on record has no fit verdict under the
+current rubric, the attempt is the fit questions on those candidates; no
+source is asked and no outcome row is written. A source is asked only
+once every candidate is judged. If every such question is excluded
+(unpreparable), the source is asked in the same attempt. Scene pictures
+follow the same rule. Kinds ranked by a mechanical check re-check inside
+their own attempt at no cost and are unchanged.
+
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7): male if the word has a productive Target (the
 recording plays on the productive back), any sex otherwise; within the
@@ -279,9 +293,10 @@ Implemented after cutover.
   (1) no artifact or learner-unacceptable, directed first (a learner
   direction, an unconsumed re-verification request from a flag on a tone
   role, or a card-level flag all make a subject directed); (2) an untried
-  option remains (unasked suggestion, rubric changed, unsearched source);
-  (3) acceptable/unrated by rank then attempts; excluded: good, exhausted,
-  pending (pending is reported, not queued).
+  option remains (unasked suggestion, a candidate unjudged under the
+  current rubric, unsearched source); (3) acceptable/unrated by rank then
+  attempts; excluded: good, exhausted with no candidate awaiting
+  judgement, pending (pending is reported, not queued).
 - **confusion_weights()**: unchanged.
 
 ## 6a. Failure taxonomy
@@ -352,6 +367,9 @@ run(syllabus, budgets):
       the queue as sentence needs)
   questions = []
   for need in queue(syllabus, budgets):        # pending excluded
+      if unjudged(need):                       # §5 assess-first: free of
+          questions += assess(need); continue  # any source budget, no
+                                               # outcome row
       source = next_source(need)               # cheapest source not yet
                                                # tried since current-best
                                                # last changed; none ->
@@ -387,6 +405,8 @@ run(syllabus, budgets):
   #   attempted  counts needs whose attempt finished this run (inline
   #              verdicts, or no questions raised); a need whose questions
   #              await this run's batch counts as pending, not attempted;
+  #              an assess-first need lands in the same two buckets and
+  #              its attempt count is unchanged;
   #              plus the open Targets handed to the drafter (within the
   #              cap) when the sentence attempt runs; drafted = the drafts
   #              it produced
@@ -435,9 +455,10 @@ picture/preference, and sentence texts verbatim.
 
 ## 10. Carry-over
 
-Spec 2 §4 as revised (r2) is the contract: old candidate verdicts carry
-under a legacy rubric id and never rank; every current picture is judged
-under the current rubric by the first run's assess-first step; the old
+Spec 2 §4 as revised (r7) is the contract: old candidate verdicts carry
+under a legacy rubric id and never rank; the current picture carries as a
+candidate (spec 2 §4 r7) and is judged under the current rubric by
+assess-first (§5) on the first run that queues its need; the old
 judge_cache.sqlite is retired (its keys are opaque hashes of prompts,
 recoverable only by replaying the old package); learner rows are keyed
 by word id; no marker of the old deck's choice exists. Audio and

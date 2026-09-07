@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 6, proposed 2026-09-06 against principles r2 and architecture
+Revision 7, proposed 2026-09-07 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -24,6 +24,9 @@ Revision log:
   C2, C4.
 - r6 2026-09-06: the cache table's port gains `attempt` for the attempt
   outcome rows spec 3 section 6 defines. Evidence: spec 3 r7.
+- r7 2026-09-07: the current picture migrates as a candidate (a provide
+  row, no outcome row). Evidence: smoke run 3, every picture word
+  re-sourced five candidates while its picture sat unjudged.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -143,9 +146,14 @@ Carry-over per the handoff's table; everything else regenerates.
    ("legacy-picture-rules"), the verdict and failed rule ids as-is: the
    old record does not say which rubric version judged, so under F9 the
    row is evidence of what was seen and rejected, and it never ranks
-   (spec 3 §6). Every current picture is judged under the current rubric
-   by the first run's assess-first step (one batch, ~654 questions). No
-   marker of the old deck's choice is written.
+   (spec 3 §6). The deck's current picture is a candidate: one provide
+   row per joined word (backend `legacy-current`, key
+   ProvideKey(legacy-current, picture, word id), answer items = the
+   picture's sha and ext), no attempt-outcome row. It is judged under the
+   current rubric by spec 3 §5's assess-first step on the first run that
+   queues its need (654 pictures, 645 joined). The provide row makes it a
+   candidate, never a ranked choice: no rating or verdict marks it as the
+   old deck's pick.
 3. **Forvo answers** (work/forvo_lookups.jsonl) → provide/forvo cache
    rows, hit and miss alike.
 4. **Proof-gallery notes + ReviewNote harvests + waivers.yaml** → learner
