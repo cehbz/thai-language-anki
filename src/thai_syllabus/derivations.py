@@ -158,7 +158,7 @@ def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
             ranks[sha_] = rank
     out: dict[str, float] = {}
     sources: dict[str, str] = {}
-    shas = {s for ranks in by_backend.values() for s in ranks}
+    shas = sorted({s for ranks in by_backend.values() for s in ranks})
     for s in shas:
         for backend in order:               # most authoritative first
             if s in by_backend.get(backend, {}):
@@ -309,7 +309,8 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
     scene-for-sentence, sentence-for-target) the learner's rating wins
     outright, subject to the regression floor -- else the candidate the
     most authoritative backend that has spoken ranks highest, provenance
-    prior among equals. Where "learner" is not named (recording-for-word,
+    prior among equals. A remaining tie goes to the lower artifact sha
+    (spec 3 section 6). Where "learner" is not named (recording-for-word,
     recording-for-sentence, rendition-for-pair, spec 3 section 4 r8) the
     learner only vetoes: an "unacceptable-none" rating excludes its sha
     until a newer rating on the same sha lifts it; "unacceptable-use-this"
@@ -336,7 +337,7 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
         _apply_prior(machine_ranks, prior, provenance_source)
         passing = {s: r for s, r in machine_ranks.items() if r > _JUDGE_FAIL_RANK}
         if passing:
-            best_sha = max(passing, key=passing.get)
+            best_sha = max(sorted(passing), key=passing.get)
             return CurrentBest(artifact_sha=best_sha, source=machine_sources.get(best_sha),
                                rank=passing[best_sha], speaker=_speaker_for(rows, best_sha))
         return CurrentBest(artifact_sha=None, source=None, rank=-1.0)
@@ -370,7 +371,7 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
     # the same as "no candidate at all" (rank -1.0).
     passing = {s: r for s, r in machine_ranks.items() if r > _JUDGE_FAIL_RANK}
     if passing:
-        best_sha = max(passing, key=passing.get)
+        best_sha = max(sorted(passing), key=passing.get)
         return CurrentBest(artifact_sha=best_sha, source=machine_sources.get(best_sha),
                            rank=passing[best_sha], speaker=_speaker_for(rows, best_sha))
 

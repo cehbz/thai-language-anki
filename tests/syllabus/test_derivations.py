@@ -231,6 +231,23 @@ def test_current_best_is_none_with_no_history(cache):
     assert best.source is None
 
 
+def test_current_best_breaks_a_rank_tie_by_the_lower_artifact_sha(cache):
+    seed_judge_pass(cache, "rice", "f" * 64, rubric=R)
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    seed_judge_pass(cache, "rice", "c" * 64, rubric=R)
+    best = current_best(cache, "rice", "picture", current_rubric={"picture-for-word": R},
+                        prior=(), provenance_source=_no_provenance)
+    assert best.artifact_sha == "a" * 64
+
+
+def test_current_best_tie_break_ignores_insertion_order(cache):
+    seed_judge_pass(cache, "rice", "a" * 64, rubric=R)
+    seed_judge_pass(cache, "rice", "f" * 64, rubric=R)
+    best = current_best(cache, "rice", "picture", current_rubric={"picture-for-word": R},
+                        prior=(), provenance_source=_no_provenance)
+    assert best.artifact_sha == "a" * 64
+
+
 def test_current_best_prefers_the_best_passing_judge_verdict(cache):
     cache.rows += [
         judge_row("rice", "picture", "sha-a", False),
