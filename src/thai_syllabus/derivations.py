@@ -139,12 +139,13 @@ def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
     artifact's rank -- on a role the learner ranks, current_best folds the
     learner's own rating in on top of this; on a veto-only role (spec 3
     section 4 r8) this is the whole ranking, the learner only vetoes.
-    Returns (ranks, deciding backend per sha); pictures also fold in
-    preference-row bonuses.
+    Of one backend's several verdicts on an artifact, the newest ranks
+    (spec 3 section 6). Returns (ranks, deciding backend per sha);
+    pictures also fold in preference-row bonuses.
     """
     order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
     by_backend: dict[str, dict[str, float]] = {}
-    for r in rows:
+    for r in sorted(rows, key=lambda r: r.ts):
         if r.port != "assess" or r.backend not in order or _stale(r, current_rubric):
             continue
         if r.question.get("role") != role:
@@ -154,8 +155,7 @@ def _machine_ranks(rows: Sequence[Answer], kind: str, role: str,
             continue
         rank = _judge_rank(r.answer.get("value"))
         ranks = by_backend.setdefault(r.backend, {})
-        if sha_ not in ranks or rank > ranks[sha_]:
-            ranks[sha_] = rank
+        ranks[sha_] = rank
     out: dict[str, float] = {}
     sources: dict[str, str] = {}
     shas = sorted({s for ranks in by_backend.values() for s in ranks})

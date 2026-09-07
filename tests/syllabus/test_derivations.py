@@ -259,6 +259,26 @@ def test_current_best_prefers_the_best_passing_judge_verdict(cache):
     assert best.source == "judge"
 
 
+def test_a_newer_fail_by_the_same_backend_outranks_an_older_pass(cache):
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric=R, ts=2))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, False, rubric=R, ts=3))
+    best = current_best(cache, "rice", "picture", current_rubric={"picture-for-word": R},
+                        prior=(), provenance_source=_no_provenance)
+    assert best.artifact_sha is None
+
+
+def test_a_newer_pass_by_the_same_backend_lifts_an_older_fail(cache):
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric=R, ts=3))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, False, rubric=R, ts=2))
+    best = current_best(cache, "rice", "picture", current_rubric={"picture-for-word": R},
+                        prior=(), provenance_source=_no_provenance)
+    assert best.artifact_sha == "a" * 64
+
+
 def test_current_best_carries_the_speaker_a_provide_item_names(cache):
     cache.rows.append(provide_row("pair-1", "rendition", backend="forvo",
                                   items=[{"member": "near", "sha": "a" * 64,
