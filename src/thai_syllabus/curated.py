@@ -513,8 +513,10 @@ def rulebook_file_text(path: str | Path) -> str:
 #
 # load_providers_config refuses a file describing a run the code cannot
 # perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
-# price_per_mtok or no anthropic secret, an empty male_voices or
-# female_voices pool. An absent file refuses, naming the path.
+# price_per_mtok or no anthropic secret, an unknown judge.thinking, an
+# unknown drafter.transport, an api drafter with no anthropic secret or
+# no price_per_mtok, an empty male_voices or female_voices pool. An
+# absent file refuses, naming the path.
 
 @dataclass(frozen=True)
 class JudgeConfig:

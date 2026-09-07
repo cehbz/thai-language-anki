@@ -712,7 +712,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n"
             + "Targets:\n" + "\n".join(lines) + "\n"
             'Output JSON only: {"sentences": [{"text": "...", "gloss": "...", '
-            '"targets": ["<target id>", ...]}]}')
+            '"targets": ["<target id, as written after \'target \' above>", ...]}]}')
 
 
 def _fills(ctx: Sourcing, draft: SentenceDraft, targets_by_id: Mapping[str, Target],

@@ -931,6 +931,7 @@ def test_sentence_prompt_gives_each_target_its_cutoff():
     assert "- target eat/receptive: word กิน (eat); may use items 1..1" in prompt
     assert "- target rice/receptive: word ข้าว (rice); may use items 1..2" in prompt
     assert "- target tasty/receptive: word อร่อย (tasty); may use items 1..3" in prompt
+    assert '"targets": ["<target id, as written after \'target \' above>", ...]' in prompt
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():

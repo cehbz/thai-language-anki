@@ -3,7 +3,7 @@ curated/providers.yaml (spec 3 section 5), and a Syllabus assembled from
 a deck directory's curated files plus db-backed ports (spec 1/2).
 
 Secrets resolve lazily (spec 3 section 5): each secret-backed backend
-(pexels, forvo, tts, the judge/llm api transport) is wrapped in `_Lazy`,
+(pexels, forvo, tts, the judge's and the drafter's api transports) is wrapped in `_Lazy`,
 which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
