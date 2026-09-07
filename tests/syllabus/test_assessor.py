@@ -6,6 +6,7 @@ transports -- no network, no subprocess, no anthropic import.
 """
 import hashlib
 import importlib
+import logging
 import pkgutil
 from pathlib import Path
 
@@ -517,8 +518,8 @@ def test_ask_many_collects_misses_under_a_batch_transport(assessor_with_batch_tr
 
 def test_ask_many_collects_one_duplicated_question_once(assessor_with_batch_transport):
     """Two AssessQuestions that resolve to the same JudgeKey (e.g. one
-    drafter answer with a duplicated draft) collect once: submit() sees no
-    shared key, so a duplicated draft never aborts the whole run.
+    drafter answer with a duplicated draft) collect once: the duplicated
+    question is collected once, and the batch submits.
     """
     a = assessor_with_batch_transport
     res = a.ask_many("judge", [fit_question("rice", "a" * 64), fit_question("rice", "a" * 64)])
@@ -553,6 +554,20 @@ def test_submit_then_resolve_writes_verdicts_and_releases_the_marker(
     got = a.resolve(bid)
     assert got and a.unresolved_batch() is None
     assert a.ask_many("judge", [fit_question("rice", "a" * 64)]).resolved  # now a cache hit
+
+
+def test_resolve_warns_when_a_result_matches_no_question(assessor_with_batch_transport, fake_batch, caplog):
+    a = assessor_with_batch_transport
+    q = fit_question("rice", "a" * 64)
+    bid = a.submit(a.ask_many("judge", [q]).collected)
+    stray = JudgeKey.for_question(fit_question("noodles", "b" * 64))
+    fake_batch.complete(bid, {stray: '{"value": true}'})
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.assessor"):
+        got = a.resolve(bid)
+    assert got == {}
+    assert a.unresolved_batch() is None
+    assert "1 of 1 questions have no result" in caplog.text
+    assert "1 results match no question" in caplog.text
 
 
 def test_resolve_rebuilds_the_typed_key_from_the_recorded_question(

@@ -347,7 +347,9 @@ class Assessor:
         while the batch is not ended, or once it has already been
         resolved. Raises JudgeUnreachable when the transport cannot be
         reached: the marker stays submitted and the batch is read again
-        on a later run.
+        on a later run. Logs a warning when questions and results do not
+        match one to one (an expired result, or a batch submitted under
+        another key shape).
         """
         marker = self._cache.latest("assess", "judge", BatchMarkerKey(batch_id))
         if marker is None or marker.answer.get("status") != "submitted":
@@ -368,6 +370,8 @@ class Assessor:
         subject_kinds = marker.question.get("subject_kinds") or ["word"] * n
         params = marker.question.get("params") or [{}] * n
         resolved: dict[CacheKey, Verdict] = {}
+        rebuilt_ids: set[str] = set()
+        unanswered = 0
         for subject, role, artifact_sha, rubric, kind, subject_kind, question_params in zip(
                 marker.question["subjects"], marker.question["roles"],
                 artifact_shas, rubrics, kinds, subject_kinds, params):
@@ -375,8 +379,11 @@ class Assessor:
                                       rubric=rubric, kind=kind, subject_kind=subject_kind,
                                       params=question_params or {})
             key = JudgeKey.for_question(question)
-            completion = results.get(_custom_id(key))
+            custom_id = _custom_id(key)
+            rebuilt_ids.add(custom_id)
+            completion = results.get(custom_id)
             if completion is None:
+                unanswered += 1
                 continue
             try:
                 parsed = impl._parse(completion.text, question)
@@ -388,6 +395,10 @@ class Assessor:
             ts = self._append_verdict("judge", key, question, raw)
             resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
                                     evidence=raw.evidence, suggestion=raw.suggestion)
+        unmatched = sum(1 for result_id in results if result_id not in rebuilt_ids)
+        if unanswered or unmatched:
+            _log.warning("batch %s: %d of %d questions have no result; %d results match no question",
+                        batch_id, unanswered, n, unmatched)
         final_status = "resolved"
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
