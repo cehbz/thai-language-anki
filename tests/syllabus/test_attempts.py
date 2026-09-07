@@ -25,7 +25,7 @@ from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRI
 from thai_syllabus.rules import OrderEntry
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
-from thai_syllabus.transport import Completion, TransportError
+from thai_syllabus.transport import Completion, FetchRefused, TransportError
 from thai_syllabus.tts import pick_voice
 
 from .builders import target, word
@@ -543,6 +543,66 @@ def test_rendition_attempt_falls_to_one_tts_voice_across_the_members(tmp_path):
     assert {i["speaker"]["kind"] for i in provided[-1].answer["items"]} == {"synthetic"}
 
 
+class _PairForvo:
+    """Two members share one speaker; each member's own lookup counts its
+    own re-asks (spec 3 section 5: one lookup per member, shared with the
+    recording need)."""
+    def __init__(self, thai_of):
+        self.thai_of = dict(thai_of)      # member -> thai
+        self.lookups: dict[str, int] = {}
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        thai = q.params["word"]
+        member = next(m for m, t in self.thai_of.items() if t == thai)
+        self.lookups[member] = self.lookups.get(member, 0) + 1
+        n = self.lookups[member]
+        return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m",
+                                 "country": "Thailand",
+                                 "pathmp3": f"https://forvo/{member}/{n}.mp3"},), cost=1.0)
+
+
+class _RefusesOneMembersFirstUrl:
+    """Refuses one member's first-round url as content-type; every other
+    url, including that member's retried one, answers."""
+    def __init__(self, media, refused_url):
+        self.media, self.asked, self.refused_url = media, [], refused_url
+
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        url = q.params["url"]
+        self.asked.append(url)
+        if url == self.refused_url:
+            raise FetchRefused(reason="content-type",
+                               detail='content-type "application/json" is not allowed')
+        sha = self.media.write(f"ID3-{url}".encode(), "mp3")
+        return RawAnswer(items=({"sha": sha, "ext": "mp3", "speaker": q.params["speaker"],
+                                 "speaker_kind": "native", "source": "forvo"},), cost=0.0)
+
+
+def test_a_served_refusal_in_a_rendition_re_asks_once_for_that_member_only(tmp_path):
+    forvo = _PairForvo({"white": "ขาว", "news": "ข่าว"})   # ขาว: white, ข่าว: news
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _RefusesOneMembersFirstUrl(media, "https://forvo/white/1.mp3")
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    ctx = _sourcing(tmp_path, _pair_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical(), "rendition": _rendition_backend(db)},
+                    media=media)
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    assert forvo.lookups == {"white": 2, "news": 1}   # one re-ask for white, none for news
+    provided = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"]
+    items = provided[-1].answer["items"]
+    assert {i["member"] for i in items} == {"white", "news"}
+    assert {i["speaker"]["id"] for i in items} == {"forvo:somchai"}
+    for i in items:
+        assert ctx.db.media_provenance(i["sha"])["speaker_id"] == "forvo:somchai"
+
+
 # --- the sentence attempt: draft, verify with fills(), collect questions ----
 
 def _sentence_ctx(tmp_path, llm_text, *, judge_value="true", batch=False, syllabus=None):
@@ -791,6 +851,121 @@ def test_a_forvo_recording_attempt_writes_transient_failure_when_every_download_
     assert result.attempted
     row = _outcome(ctx.db, "rice", "recording", "forvo")
     assert row.answer == {"outcome": "transient-failure", "candidates": []}
+
+
+class _ExpiringForvo:
+    """The first lookup's url is refused by the server; the re-asked
+    lookup carries a fresh url for the same item id."""
+    def __init__(self):
+        self.lookups = 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        self.lookups += 1
+        return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m", "country": "Thailand",
+                                 "pathmp3": f"https://forvo/audio/{self.lookups}.mp3"},), cost=1.0)
+
+
+class _RefusingAudiofetch:
+    """Refuses every url it has not seen served fresh: the first url of an
+    item is refused as content-type, the second answers."""
+    def __init__(self, media):
+        self.media, self.asked = media, []
+
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        self.asked.append(q.params["url"])
+        if q.params["url"].endswith("/1.mp3"):
+            raise FetchRefused(reason="content-type", detail='content-type "application/json" is not allowed')
+        sha = self.media.write(b"ID3fresh", "mp3")
+        return RawAnswer(items=({"sha": sha, "ext": "mp3", "speaker": q.params["speaker"],
+                                 "speaker_kind": "native", "source": "forvo"},), cost=0.0)
+
+
+def test_a_served_refusal_of_a_forvo_url_re_asks_the_lookup_once_and_retries(tmp_path):
+    forvo = _ExpiringForvo()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _RefusingAudiofetch(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    result = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert forvo.lookups == 2
+    assert audiofetch.asked == ["https://forvo/audio/1.mp3", "https://forvo/audio/2.mp3"]
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+    forvo_rows = [r for r in rows_for(ctx.db, "rice", "recording")
+                 if r.backend == "forvo" and r.port == "provide"]
+    assert len(forvo_rows) == 2
+
+
+def test_a_second_served_refusal_is_transient_and_re_asks_no_further(tmp_path):
+    class _AlwaysRefusing(_RefusingAudiofetch):
+        def fetch(self, q):
+            self.asked.append(q.params["url"])
+            raise FetchRefused(reason="http", detail="http 404")
+
+    forvo = _ExpiringForvo()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _AlwaysRefusing(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert forvo.lookups == 2 and len(audiofetch.asked) == 2
+    assert _outcome(ctx.db, "rice", "recording", "forvo").answer["outcome"] == "transient-failure"
+
+
+def test_a_wire_refusal_re_asks_nothing(tmp_path):
+    class _WireDead(_RefusingAudiofetch):
+        def fetch(self, q):
+            self.asked.append(q.params["url"])
+            raise FetchRefused(reason="wire", detail="request failed: timeout")
+
+    forvo = _ExpiringForvo()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _WireDead(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert forvo.lookups == 1 and len(audiofetch.asked) == 1
+    assert _outcome(ctx.db, "rice", "recording", "forvo").answer["outcome"] == "transient-failure"
+
+
+class _NoIdForvo:
+    """A lookup whose item carries no Forvo id: nothing a re-ask's item
+    can be matched back to."""
+    def __init__(self):
+        self.lookups = 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        self.lookups += 1
+        return RawAnswer(items=({"username": "somchai", "sex": "m", "country": "Thailand",
+                                 "pathmp3": f"https://forvo/audio/{self.lookups}.mp3"},), cost=1.0)
+
+
+def test_a_served_refusal_of_an_item_with_no_id_is_not_retried(tmp_path):
+    forvo = _NoIdForvo()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _RefusingAudiofetch(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    # relookup() still runs once (the id-less item can never match); the
+    # download itself is not retried
+    assert forvo.lookups == 2
+    assert audiofetch.asked == ["https://forvo/audio/1.mp3"]
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "transient-failure" and row.answer["candidates"] == []
 
 
 def test_a_tts_recording_attempt_writes_a_candidates_outcome(tmp_path):

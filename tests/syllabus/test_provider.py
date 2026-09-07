@@ -119,6 +119,29 @@ def test_the_stored_cache_row_carries_the_readable_key(db):
     assert answer.port == "provide" and answer.backend == "openverse"
 
 
+# --- reask (spec 3 section 2; section 6a's re-ask rule) ---------------
+
+def test_reask_executes_over_a_hit_and_the_newest_row_answers(db):
+    calls = []
+
+    class _Counting:
+        def cache_key(self, q):
+            return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+        def fetch(self, q):
+            calls.append(q.params["word"])
+            return RawAnswer(items=({"id": len(calls)},), cost=1.0)
+
+    provider = Provider(record=db, cache=db, backends={"forvo": _Counting()})
+    q = Question(subject="dog", provides="recording", params={"word": "หมา"},  # หมา: dog
+                 kind="recording", subject_kind="word")
+    first = provider.ask("forvo", q)
+    again = provider.reask("forvo", q)
+    assert first.items == ({"id": 1},) and again.items == ({"id": 2},) and again.hit is False
+    assert provider.ask("forvo", q).items == ({"id": 2},)
+    assert calls == ["หมา", "หมา"]
+
+
 # --- image search backends --------------------------------------------
 
 class _FakeResponse:

@@ -110,13 +110,28 @@ class Provider:
             return ProviderAnswer(items=tuple(cached.answer.get("items", [])),
                                   cost=0.0, ts=cached.ts, hit=True)
         raw = impl.fetch(question)  # transport errors propagate uncached
-        ts = self._record.append(
+        ts = self._append_answer(backend, key, question, raw)
+        return ProviderAnswer(items=raw.items, cost=raw.cost, ts=ts)
+
+    def reask(self, backend: str, question: Question) -> ProviderAnswer:
+        """Executes and appends over a hit (spec 3 section 6a's re-ask
+        rule); the newest row is the answer ask() reads next."""
+        if backend == "learner":
+            raise LearnerAskNotSupported("the learner Provide backend has no reask()")
+        impl = self._backends[backend]
+        key = impl.cache_key(question)
+        raw = impl.fetch(question)  # transport errors propagate uncached
+        ts = self._append_answer(backend, key, question, raw)
+        return ProviderAnswer(items=raw.items, cost=raw.cost, ts=ts)
+
+    def _append_answer(self, backend: str, key: CacheKey, question: Question,
+                       raw: RawAnswer) -> int:
+        return self._record.append(
             port="provide", backend=backend, key=key, subject=question.subject,
             question={"provides": question.provides, "kind": question.kind,
                      "subject_kind": question.subject_kind,
                      "params": dict(question.params)},
             answer={"items": list(raw.items)}, cost=raw.cost)
-        return ProviderAnswer(items=raw.items, cost=raw.cost, ts=ts)
 
 
 # --- image search: openverse, wikimedia, pexels -----------------------------
@@ -298,7 +313,8 @@ class FetchBackend:
         return RawAnswer(items=(item,), cost=0.0)
 
 
-# --- forvo: recording lookups (500/day quota; never re-asked) --------------
+# --- forvo: recording lookups (450/day quota; re-asked once per attempt
+# when a url has expired, spec 3 section 6a) --------------------------------
 
 @dataclass
 class ForvoBackend:

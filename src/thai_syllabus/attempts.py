@@ -20,6 +20,7 @@ JudgeUnreachable out of ask_many and stops the run.
 """
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -46,7 +47,7 @@ from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT, SentenceDraft
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import TransportError
+from .transport import FetchRefused, TransportError
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
@@ -163,20 +164,31 @@ class _Fetches:
     candidates: list[str] = field(default_factory=list)
     attempts: int = 0
     transient_failures: int = 0
+    served_refusals: int = 0
+    # Set by failed(served=True), read by _download_forvo to decide
+    # whether a miss re-asks the lookup; cleared by stored() and missed().
+    last_refusal_served: bool = False
 
     def stored(self, sha: str) -> None:
         self.attempts += 1
         self.candidates.append(sha)
+        self.last_refusal_served = False
 
     def missed(self) -> None:
         """A fetch attempted and answered, producing no candidate for a
         non-transport reason."""
         self.attempts += 1
+        self.last_refusal_served = False
 
-    def failed(self) -> None:
-        """A fetch, or the source's own ask, failed on the wire."""
+    def failed(self, *, served: bool = False) -> None:
+        """A fetch, or the source's own ask, failed on the wire. `served`
+        marks a served refusal (spec 3 section 6a): a typed reason other
+        than wire."""
         self.attempts += 1
         self.transient_failures += 1
+        self.last_refusal_served = served
+        if served:
+            self.served_refusals += 1
 
     @property
     def outcome(self) -> Outcome:
@@ -449,13 +461,15 @@ def _forvo_speaker(item: Mapping) -> Speaker:
 
 def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend],
                   *, subject_kind: SubjectKind = "word",
-                  constraint: str = "any") -> list[Mapping]:
+                  constraint: str = "any", fresh: bool = False) -> list[Mapping]:
     """One lookup, cached forever, appended under `subject`. Under a
     "male" constraint only speakers Forvo states are male are admitted
-    (E2: a productive back plays in the learner's register)."""
-    answer = ctx.provider.ask("forvo", Question(subject=subject, provides="recording",
-                                                params={"word": thai}, kind="recording",
-                                                subject_kind=subject_kind))
+    (E2: a productive back plays in the learner's register). `fresh`
+    re-asks over the cached answer (spec 3 section 6a's re-ask rule)."""
+    ask = ctx.provider.reask if fresh else ctx.provider.ask
+    answer = ask("forvo", Question(subject=subject, provides="recording",
+                                   params={"word": thai}, kind="recording",
+                                   subject_kind=subject_kind))
     _count(spend, "forvo", answer)
     items = [i for i in answer.items
              if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
@@ -481,25 +495,60 @@ def _store(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin: str, lice
 
 
 def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str, Spend],
-                    fetches: _Fetches, *, subject_kind: SubjectKind = "word") -> str | None:
-    url = item["pathmp3"]
-    try:
-        got = ctx.provider.ask("audiofetch", Question(
-            subject=subject, provides="recording-bytes",
-            params={"url": url, "speaker": item["username"], "speaker_kind": "native",
-                    "source": "forvo"}, kind="recording", subject_kind=subject_kind))
-    except TransportError as e:
-        _log.warning("audiofetch refused %s for %s: %s", url, subject, e)
-        fetches.failed()
+                    fetches: _Fetches, *, subject_kind: SubjectKind = "word",
+                    relookup: Callable[[], Sequence[Mapping]] | None = None
+                    ) -> tuple[str, Mapping] | None:
+    """One item's mp3 through audiofetch, and the item its sha actually
+    came from (the retried item on a re-ask, `item` otherwise). A served
+    refusal of its url re-asks the lookup through `relookup` once and
+    retries the item found under the same Forvo id (spec 3 section 6a);
+    an item with no id is not retried. A second refusal, or a wire
+    failure, counts as transient."""
+    got = _fetch_forvo_item(ctx, subject, item, fetches, subject_kind=subject_kind)
+    if got is None and fetches.last_refusal_served and relookup is not None:
+        key = item.get("id")
+        fresh = next((i for i in relookup() if key is not None and i.get("id") == key), None)
+        if fresh is not None:
+            got = _fetch_forvo_item(ctx, subject, fresh, fetches, subject_kind=subject_kind)
+            item = fresh
+    if got is None:
         return None
     _count(spend, "audiofetch", got)
-    sha = _store(ctx, got, source="forvo", origin=url, licence="forvo",
+    sha = _store(ctx, got, source="forvo", origin=item["pathmp3"], licence="forvo",
                  speaker=_forvo_speaker(item))
     if sha:
         fetches.stored(sha)
-    else:
-        fetches.missed()
-    return sha
+        return sha, item
+    fetches.missed()
+    return None
+
+
+def _fetch_forvo_item(ctx: Sourcing, subject: str, item: Mapping, fetches: _Fetches, *,
+                      subject_kind: SubjectKind) -> ProviderAnswer | None:
+    url = item["pathmp3"]
+    try:
+        return ctx.provider.ask("audiofetch", Question(
+            subject=subject, provides="recording-bytes",
+            params={"url": url, "speaker": item["username"], "speaker_kind": "native",
+                    "source": "forvo"}, kind="recording", subject_kind=subject_kind))
+    except FetchRefused as e:
+        _log.warning("audiofetch refused %s for %s: %s", url, subject, e)
+        fetches.failed(served=e.served)
+        return None
+    except TransportError as e:
+        _log.warning("audiofetch failed on %s for %s: %s", url, subject, e)
+        fetches.failed()
+        return None
+
+
+def _relookup_once(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend], *,
+                   subject_kind: SubjectKind, constraint: str,
+                   memo: dict[str, Sequence[Mapping]]) -> Sequence[Mapping]:
+    """One fresh lookup per subject within an attempt, memoized in `memo`."""
+    if subject not in memo:
+        memo[subject] = _forvo_lookup(ctx, subject, thai, spend, subject_kind=subject_kind,
+                                      constraint=constraint, fresh=True)
+    return memo[subject]
 
 
 def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str, spend: dict[str, Spend],
@@ -537,13 +586,17 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
         try:
             items = _forvo_lookup(ctx, need.subject, text, spend,
                                   subject_kind=need.subject_kind, constraint=constraint)
+            memo: dict[str, Sequence[Mapping]] = {}
+            relookup = functools.partial(_relookup_once, ctx, need.subject, text, spend,
+                                         subject_kind=need.subject_kind, constraint=constraint,
+                                         memo=memo)
+            for item in items:
+                _download_forvo(ctx, need.subject, item, spend, fetches,
+                                subject_kind=need.subject_kind, relookup=relookup)
         except TransportError:
             fetches.failed()
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
             raise
-        for item in items:
-            _download_forvo(ctx, need.subject, item, spend, fetches,
-                            subject_kind=need.subject_kind)
     elif source == "tts":
         voice = pick_voice(need.subject, _pool(ctx, constraint))
         try:
@@ -633,14 +686,18 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[st
     """
     by_member = {m: _forvo_lookup(ctx, m, words[m].thai, spend, constraint=constraint)
                  for m in pair.members}
+    memo: dict[str, Sequence[Mapping]] = {}
     shared = set.intersection(*[{i["username"] for i in items} for items in by_member.values()])
     for username in sorted(shared):
         members: dict[str, tuple[str, Speaker]] = {}
         for member in pair.members:
             item = next(i for i in by_member[member] if i["username"] == username)
-            sha = _download_forvo(ctx, member, item, spend, fetches)
-            if sha is not None:
-                members[member] = (sha, _forvo_speaker(item))
+            relookup = functools.partial(_relookup_once, ctx, member, words[member].thai, spend,
+                                         subject_kind="word", constraint=constraint, memo=memo)
+            stored = _download_forvo(ctx, member, item, spend, fetches, relookup=relookup)
+            if stored is not None:
+                sha, stored_item = stored
+                members[member] = (sha, _forvo_speaker(stored_item))
         if len(members) == len(pair.members):
             return members
     return {}
