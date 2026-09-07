@@ -395,8 +395,8 @@ def fit_question(subject: str, artifact_sha: str) -> AssessQuestion:
 
 class _FakeBatch:
     """A batch transport test double: `submit` hands back a fresh batch id
-    every call; a test drives its outcome with `complete`/`expire` before
-    Assessor.resolve() reads `status`/`results`.
+    every call; a test drives its outcome with `complete`/`end_with_no_results`
+    before Assessor.resolve() reads `status`/`results`.
     """
     def __init__(self):
         self._requests: dict[str, dict[str, tuple[str, list]]] = {}
@@ -416,8 +416,9 @@ class _FakeBatch:
         self._texts[batch_id] = {"q" + sha(key.encode()): Completion(text=text)
                                  for key, text in text_by_key.items()}
 
-    def expire(self, batch_id: str) -> None:
-        self._status[batch_id] = "expired"
+    def end_with_no_results(self, batch_id: str) -> None:
+        """Sets status to ended with no completions recorded for it."""
+        self._status[batch_id] = "ended"
 
     def status(self, batch_id):
         return self._status[batch_id]
@@ -524,12 +525,21 @@ def test_submits_marker_carries_no_keys_entry_and_resolve_writes_the_verdict_fro
     assert row.answer == {"value": True, "evidence": "ok"}
 
 
-def test_expired_batch_releases_and_questions_reask(assessor_with_batch_transport, fake_batch):
+def test_a_canceling_batch_stays_outstanding(assessor_with_batch_transport, fake_batch):
     a = assessor_with_batch_transport
     bid = a.submit(a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected)
-    fake_batch.expire(bid)
+    fake_batch._status[bid] = "canceling"
+    assert a.resolve(bid) == {}
+    assert a.unresolved_batch() == (bid, frozenset({("rice", "picture")}))
+
+
+def test_an_ended_batch_with_an_expired_result_releases_and_the_question_reasks(
+        assessor_with_batch_transport, fake_batch):
+    a = assessor_with_batch_transport
+    bid = a.submit(a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected)
+    fake_batch.end_with_no_results(bid)
     assert a.resolve(bid) == {} and a.unresolved_batch() is None
-    assert a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected  # asked again
+    assert a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected
 
 
 def test_an_unparseable_batch_answer_is_skipped_and_re_asks(assessor_with_batch_transport, fake_batch):

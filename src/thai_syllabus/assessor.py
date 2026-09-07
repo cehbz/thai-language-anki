@@ -322,13 +322,13 @@ class Assessor:
     def resolve(self, batch_id: str) -> dict[CacheKey, Verdict]:
         """Fetches the batch's results and appends a verdict row per
         succeeded question (keyed by that question's own submitted key),
-        then appends a marker row releasing it: "resolved" once the batch
-        ended, "expired"/"failed" for a batch that will never answer --
-        either way a question with no verdict row carries none and
-        re-asks on a later run. A no-op (returns {}) while the batch is
-        still "in_progress", or once it has already been resolved. Raises
-        JudgeUnreachable when the transport cannot be reached: the marker
-        stays submitted and the batch is read again on a later run.
+        then appends a marker row releasing it as "resolved". A result of
+        type expired or errored carries no completion; its question has
+        no verdict row and re-asks on a later run. A no-op (returns {})
+        while the batch is not ended, or once it has already been
+        resolved. Raises JudgeUnreachable when the transport cannot be
+        reached: the marker stays submitted and the batch is read again
+        on a later run.
         """
         marker = self._cache.latest("assess", "judge", BatchMarkerKey(batch_id))
         if marker is None or marker.answer.get("status") != "submitted":
@@ -336,9 +336,9 @@ class Assessor:
         impl = self._backends["judge"]
         try:
             status = impl.batch_transport.status(batch_id)
-            if status == "in_progress":
+            if status != "ended":
                 return {}
-            results = impl.batch_transport.results(batch_id) if status == "ended" else {}
+            results = impl.batch_transport.results(batch_id)
         except TransportError as e:
             raise JudgeUnreachable(
                 f"the judge's batch transport could not be read for {batch_id}: {e}") from e
@@ -369,7 +369,7 @@ class Assessor:
             ts = self._append_verdict("judge", key, question, raw)
             resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
                                     evidence=raw.evidence, suggestion=raw.suggestion)
-        final_status = "resolved" if status == "ended" else ("expired" if status == "expired" else "failed")
+        final_status = "resolved"
         self._record.append(
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
             question={"kind": "batch", "batch_id": batch_id}, answer={"status": final_status})
