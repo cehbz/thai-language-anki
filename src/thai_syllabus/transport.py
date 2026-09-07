@@ -33,6 +33,21 @@ class TransportError(RuntimeError):
     """
 
 
+class FetchRefused(TransportError):
+    """A fetcher refused a url: `reason` is the tool's typed kind (wire,
+    http, content-type, too-large, format, io); `served` is whether a
+    server answered (every kind but wire)."""
+
+    def __init__(self, reason: str, detail: str):
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+
+    @property
+    def served(self) -> bool:
+        return self.reason != "wire"
+
+
 def _import_anthropic():
     try:
         import anthropic

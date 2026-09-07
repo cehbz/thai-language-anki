@@ -322,6 +322,55 @@ def test_tool_fetcher_raises_transport_error_when_binary_is_missing():
         fetcher("https://x/y.jpg")
 
 
+def test_tool_fetcher_raises_a_typed_refusal_from_the_tools_json_line():
+    import subprocess as sp
+    from thai_syllabus.transport import FetchRefused
+
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(cmd, 1, '{"refused":"content-type","detail":"content-type \\"application/json\\" is not allowed"}\n',
+                                   "audiofetch: refused ...")
+
+    fetcher = tool_fetcher("audiofetch", runner=runner)
+    with pytest.raises(FetchRefused) as err:
+        fetcher("https://x/expired.mp3")
+    assert err.value.reason == "content-type" and err.value.served is True
+    assert "application/json" in err.value.detail
+
+
+def test_tool_fetcher_wire_refusal_is_not_served():
+    import subprocess as sp
+    from thai_syllabus.transport import FetchRefused
+
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(cmd, 1, '{"refused":"wire","detail":"request failed: timeout"}\n', "")
+
+    with pytest.raises(FetchRefused) as err:
+        tool_fetcher("imgfetch", runner=runner)("https://x/y.jpg")
+    assert err.value.reason == "wire" and err.value.served is False
+
+
+def test_tool_fetcher_without_a_json_line_raises_a_plain_transport_error():
+    import subprocess as sp
+    from thai_syllabus.transport import FetchRefused
+
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(cmd, 1, "", "imgfetch: refused: not an image")
+
+    with pytest.raises(TransportError) as err:
+        tool_fetcher("imgfetch", runner=runner)("https://x/y.jpg")
+    assert not isinstance(err.value, FetchRefused)
+
+
+def test_fetch_backend_reports_an_undecodable_image_as_a_format_refusal(tmp_path):
+    from thai_syllabus.transport import FetchRefused
+    backend = FetchBackend(media=MediaStore(tmp_path / "media"),
+                           fetcher=lambda url: (b"not an image", "jpg"))
+    with pytest.raises(FetchRefused) as err:
+        backend.fetch(Question(subject="w", provides="picture-bytes", params={"url": "https://x/a.jpg"},
+                               kind="picture", subject_kind="word"))
+    assert err.value.reason == "format" and err.value.served is True
+
+
 # --- forvo: never re-asked, key = forvo:WORD ----------------------------
 
 def test_forvo_cache_key_is_forvo_colon_word():

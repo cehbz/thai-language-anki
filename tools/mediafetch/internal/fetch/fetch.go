@@ -16,6 +16,19 @@ import (
 	"time"
 )
 
+// Refusal is why a fetch was refused: Kind names the class (wire, http,
+// content-type, too-large, format, io) and Err the detail.
+type Refusal struct {
+	Kind string
+	Err  error
+}
+
+func (r *Refusal) Error() string { return r.Err.Error() }
+func (r *Refusal) Unwrap() error { return r.Err }
+
+// Refuse builds a *Refusal of kind, wrapping err, as an error.
+func Refuse(kind string, err error) error { return &Refusal{Kind: kind, Err: err} }
+
 // Options bound what a Download will accept.
 type Options struct {
 	MaxBytes int64
@@ -51,29 +64,29 @@ func Download(url string, opts Options) (path string, contentType string, size i
 	}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("bad url: %w", err)
+		return "", "", 0, Refuse("wire", fmt.Errorf("bad url: %w", err))
 	}
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("request failed: %w", err)
+		return "", "", 0, Refuse("wire", fmt.Errorf("request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", 0, fmt.Errorf("http %d", resp.StatusCode)
+		return "", "", 0, Refuse("http", fmt.Errorf("http %d", resp.StatusCode))
 	}
 	ct := resp.Header.Get("Content-Type")
 	if !contentTypeAllowed(ct, opts.ContentTypes) {
-		return "", "", 0, fmt.Errorf("content-type %q is not allowed", ct)
+		return "", "", 0, Refuse("content-type", fmt.Errorf("content-type %q is not allowed", ct))
 	}
 	if resp.ContentLength > opts.MaxBytes {
-		return "", "", 0, fmt.Errorf("too large: content-length %d > %d", resp.ContentLength, opts.MaxBytes)
+		return "", "", 0, Refuse("too-large", fmt.Errorf("too large: content-length %d > %d", resp.ContentLength, opts.MaxBytes))
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(opts.OutPath), ".mediafetch-*")
 	if err != nil {
-		return "", "", 0, fmt.Errorf("temp file: %w", err)
+		return "", "", 0, Refuse("io", fmt.Errorf("temp file: %w", err))
 	}
 	// Always close before removing: on any error return below, this closes
 	// tmp first and then, seeing a non-nil err, removes it. On success the
@@ -88,13 +101,13 @@ func Download(url string, opts Options) (path string, contentType string, size i
 	// +1 so a stream that exactly hits the cap is distinguishable from one that exceeds it.
 	n, err := io.Copy(tmp, io.LimitReader(resp.Body, opts.MaxBytes+1))
 	if err != nil {
-		return "", "", 0, fmt.Errorf("download: %w", err)
+		return "", "", 0, Refuse("wire", fmt.Errorf("download: %w", err))
 	}
 	if n > opts.MaxBytes {
-		return "", "", 0, fmt.Errorf("too large: stream exceeds %d bytes", opts.MaxBytes)
+		return "", "", 0, Refuse("too-large", fmt.Errorf("too large: stream exceeds %d bytes", opts.MaxBytes))
 	}
 	if err = tmp.Close(); err != nil {
-		return "", "", 0, err
+		return "", "", 0, Refuse("io", err)
 	}
 	return tmp.Name(), ct, n, nil
 }

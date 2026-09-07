@@ -26,7 +26,7 @@ import requests
 from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, TransportError
+from .transport import Completion, FetchRefused, TransportError
 
 __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
@@ -226,8 +226,10 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
                  ) -> Callable[[str], tuple[bytes, str]]:
     """Fetch through one of the Go tools (tools/mediafetch: imgfetch,
     audiofetch): `<binary> <url> <out-path>`, a JSON line {format,...} on
-    stdout, non-zero exit on refusal. `runner` defaults to this module's
-    `subprocess.run`, looked up at call time.
+    stdout, non-zero exit on refusal. On refusal the tool prints a JSON
+    line {refused, detail} on stdout; this parses that line into a
+    `FetchRefused`. `runner` defaults to this module's `subprocess.run`,
+    looked up at call time.
     """
     def fetch(url: str) -> tuple[bytes, str]:
         run = runner if runner is not None else subprocess.run
@@ -240,6 +242,10 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
             except subprocess.TimeoutExpired as e:
                 raise TransportError(f"{binary} timed out on {url!r}") from e
             if proc.returncode != 0 or not out.is_file():
+                refusal = _refusal_line(proc.stdout or "")
+                if refusal is not None:
+                    raise FetchRefused(reason=str(refusal.get("refused") or "io"),
+                                       detail=str(refusal.get("detail") or ""))
                 raise TransportError(f"{binary} refused {url!r}: {(proc.stderr or '').strip()}")
             try:
                 fmt = json.loads((proc.stdout or "{}").splitlines()[-1]).get("format", "")
@@ -247,6 +253,19 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
                 fmt = ""
             return out.read_bytes(), _FORMAT_EXT.get(fmt, fmt or "bin")
     return fetch
+
+
+def _refusal_line(stdout: str) -> dict | None:
+    """The tool's {"refused", "detail"} line, when its last stdout line
+    is one."""
+    lines = stdout.strip().splitlines()
+    if not lines:
+        return None
+    try:
+        data = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) and "refused" in data else None
 
 
 @dataclass
@@ -266,7 +285,10 @@ class FetchBackend:
         url = question.params["url"]
         data, ext = self.fetcher(url)
         if question.provides == "picture-bytes":
-            ingest = self.media.add_image(data, ext)
+            try:
+                ingest = self.media.add_image(data, ext)
+            except ValueError as e:
+                raise FetchRefused(reason="format", detail=str(e)) from e
             sha_, ext = ingest.sha, ingest.ext
         else:
             ext = ext if ext in ("mp3", "ogg", "wav") else "mp3"

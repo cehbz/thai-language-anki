@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mediafetch/internal/fetch"
 )
 
 func serve(t *testing.T, contentType string, body []byte) *httptest.Server {
@@ -90,6 +93,20 @@ func TestFetchLeavesNoTempFileBehind(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 0 {
 		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
+
+func TestFetchRefusalIsTypedFormatForNonMP3Bytes(t *testing.T) {
+	srv := serve(t, "application/octet-stream", []byte("definitely not an mp3 stream"))
+	defer srv.Close()
+	out := filepath.Join(t.TempDir(), "a.mp3")
+	_, err := Fetch(srv.URL, out, opts())
+	var r *fetch.Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *fetch.Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "format" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "format")
 	}
 }
 

@@ -57,22 +57,22 @@ func Fetch(url, outPath string, opts Options) (result Result, err error) {
 
 	f, err := os.Open(tmp)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fetch.Refuse("io", err)
 	}
 	cfg, format, err := image.DecodeConfig(f)
 	f.Close()
 	if err != nil {
-		return Result{}, fmt.Errorf("not a decodable image: %w", err)
+		return Result{}, fetch.Refuse("format", fmt.Errorf("not a decodable image: %w", err))
 	}
 	if !slices.Contains(opts.Allow, format) {
-		return Result{}, fmt.Errorf("format %q not allowed (allowed: %s)", format, strings.Join(opts.Allow, ","))
+		return Result{}, fetch.Refuse("format", fmt.Errorf("format %q not allowed (allowed: %s)", format, strings.Join(opts.Allow, ",")))
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxSide || cfg.Height > maxSide {
-		return Result{}, fmt.Errorf("unreasonable dimensions %dx%d", cfg.Width, cfg.Height)
+		return Result{}, fetch.Refuse("format", fmt.Errorf("unreasonable dimensions %dx%d", cfg.Width, cfg.Height))
 	}
 
 	if err = fetch.Commit(tmp, outPath); err != nil {
-		return Result{}, fmt.Errorf("move into place: %w", err)
+		return Result{}, fetch.Refuse("io", fmt.Errorf("move into place: %w", err))
 	}
 	return Result{Format: format, Width: cfg.Width, Height: cfg.Height, Bytes: n}, nil
 }

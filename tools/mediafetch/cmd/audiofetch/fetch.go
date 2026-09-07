@@ -50,14 +50,14 @@ func Fetch(url, outPath string, opts Options) (result Result, err error) {
 	}()
 
 	if err = validate(tmp); err != nil {
-		return Result{}, err
+		return Result{}, fetch.Refuse("format", err)
 	}
 	if !slices.Contains(opts.Allow, "mp3") {
-		return Result{}, fmt.Errorf("format \"mp3\" not allowed (allowed: %s)", strings.Join(opts.Allow, ","))
+		return Result{}, fetch.Refuse("format", fmt.Errorf("format \"mp3\" not allowed (allowed: %s)", strings.Join(opts.Allow, ",")))
 	}
 
 	if err = fetch.Commit(tmp, outPath); err != nil {
-		return Result{}, fmt.Errorf("move into place: %w", err)
+		return Result{}, fetch.Refuse("io", fmt.Errorf("move into place: %w", err))
 	}
 	return Result{Format: "mp3", Bytes: n}, nil
 }

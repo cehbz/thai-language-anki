@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -173,6 +174,67 @@ func TestDownloadSendsDescriptiveUserAgent(t *testing.T) {
 	os.Remove(tmp)
 	if !strings.HasPrefix(ua, "mediafetch/") || !strings.Contains(ua, "github.com/cehbz") {
 		t.Fatalf("user-agent %q must identify the tool and a contact URL (Wikimedia policy)", ua)
+	}
+}
+
+func TestDownloadRefusalIsTypedHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	_, _, _, err := Download(srv.URL, imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "http" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "http")
+	}
+}
+
+func TestDownloadRefusalIsTypedContentType(t *testing.T) {
+	srv := serve(t, "text/html", []byte("<html>"), nil)
+	defer srv.Close()
+	dir := t.TempDir()
+	_, _, _, err := Download(srv.URL, imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "content-type" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "content-type")
+	}
+}
+
+func TestDownloadRefusalIsTypedTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", "99999999")
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	o := imageOpts(dir)
+	o.MaxBytes = 1000
+	_, _, _, err := Download(srv.URL, o)
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "too-large" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "too-large")
+	}
+}
+
+func TestDownloadRefusalIsTypedWireOnUnreachableHost(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _, err := Download("http://127.0.0.1:1", imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "wire" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "wire")
 	}
 }
 

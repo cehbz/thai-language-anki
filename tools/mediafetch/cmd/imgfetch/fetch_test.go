@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mediafetch/internal/fetch"
 )
 
 func pngBytes(t *testing.T, w, h int) []byte {
@@ -123,6 +126,20 @@ func TestFetchLeavesNoTempFileBehind(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 0 {
 		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
+
+func TestFetchRefusalIsTypedFormatForUndecodableBytes(t *testing.T) {
+	srv := serve(t, "image/png", []byte("definitely not a png"), nil)
+	defer srv.Close()
+	out := filepath.Join(t.TempDir(), "a.png")
+	_, err := Fetch(srv.URL, out, opts())
+	var r *fetch.Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *fetch.Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "format" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "format")
 	}
 }
 
