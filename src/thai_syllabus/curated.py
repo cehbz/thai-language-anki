@@ -444,10 +444,11 @@ def load_curated(root: str | Path) -> CuratedBundle:
             errors.append(f"words[{w.id!r}]: classifier {w.classifier!r} "
                           f"does not resolve")
 
-    # cross-file: a targeted word needs a category (only an untargeted,
-    # closure word may have none).
-    targeted_word_ids = {t.word for t in targets}
-    for word_id in sorted(wid for wid in targeted_word_ids if wid in words_by_id):
+    # cross-file: a word with a picture-introduced target needs a category
+    # (an untargeted word, and a word whose only targets are sentence-
+    # introduced, may have none).
+    picture_targeted_word_ids = {t.word for t in targets if t.introduction == "picture_card"}
+    for word_id in sorted(wid for wid in picture_targeted_word_ids if wid in words_by_id):
         if category_by_word_id.get(word_id) is None:
             errors.append(f"words[{word_id!r}]: targeted but has no category")
 
@@ -724,12 +725,13 @@ def save_curated(root: str | Path, bundle: CuratedBundle) -> None:
     root = Path(root)
     category_by_word: dict[WordId, CategoryName] = {
         word_id: cat.name for cat in bundle.categories for word_id in cat.members}
-    # Same condition load_curated enforces on read: a targeted word needs
-    # a category. Checked here too so a bundle that would fail to load is
-    # never written in the first place.
+    # Same condition load_curated enforces on read: a word with a picture-
+    # introduced target needs a category. Checked here too, on the bundle
+    # about to be written.
     word_ids = {w.id for w in bundle.words}
-    targeted_word_ids = {t.word for t in bundle.targets}
-    missing = sorted(wid for wid in targeted_word_ids
+    picture_targeted_word_ids = {t.word for t in bundle.targets
+                                 if t.introduction == "picture_card"}
+    missing = sorted(wid for wid in picture_targeted_word_ids
                      if wid in word_ids and category_by_word.get(wid) is None)
     if missing:
         raise CuratedValidationError(

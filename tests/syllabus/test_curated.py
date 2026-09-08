@@ -599,6 +599,41 @@ def test_load_curated_allows_an_untargeted_word_with_no_category(tmp_path):
     assert bundle.categories == ()
 
 
+def test_load_curated_allows_a_sentence_introduced_target_without_a_category(tmp_path):
+    """A word whose only Target is sentence-introduced is in no category
+    (spec 1 r6); the category requirement is on a picture-introduced
+    target."""
+    curated.save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), None)])  # ใกล้: near
+    curated.save_targets(tmp_path / "targets.yaml", [
+        Target(id=TargetId("near/receptive"), word=WordId("near"), skill="receptive",
+              introduction="sentence")])
+    curated.save_graphemes(tmp_path / "graphemes.yaml", [])
+    curated.save_confusions(tmp_path / "confusions.yaml", [])
+    curated.save_pairs(tmp_path / "pairs.yaml", [])
+    curated.save_profile(tmp_path / "profile.yaml", Profile(register="male_colloquial"))
+    curated.save_rulebook_config(tmp_path / "rulebook.yaml", curated.RulebookConfig())
+
+    bundle = curated.load_curated(tmp_path)
+    assert bundle.categories == ()
+
+
+def test_load_curated_refuses_a_picture_introduced_target_without_a_category(tmp_path):
+    """A picture-introduced Target carries the category requirement; only
+    a sentence-introduced target is exempt (spec 1 r6)."""
+    curated.save_words(tmp_path / "words.yaml", [(_word("near", "ใกล้", "near"), None)])  # ใกล้: near
+    curated.save_targets(tmp_path / "targets.yaml", [
+        Target(id=TargetId("near/receptive"), word=WordId("near"), skill="receptive",
+              introduction="picture_card")])
+    curated.save_graphemes(tmp_path / "graphemes.yaml", [])
+    curated.save_confusions(tmp_path / "confusions.yaml", [])
+    curated.save_pairs(tmp_path / "pairs.yaml", [])
+    curated.save_profile(tmp_path / "profile.yaml", Profile(register="male_colloquial"))
+    curated.save_rulebook_config(tmp_path / "rulebook.yaml", curated.RulebookConfig())
+
+    with pytest.raises(curated.CuratedValidationError, match="near"):
+        curated.load_curated(tmp_path)
+
+
 def test_save_curated_refuses_a_targeted_word_without_a_category(tmp_path):
     """Same condition load_curated enforces on read, checked on write too:
     a bundle that would fail to load must not be written."""
@@ -615,6 +650,17 @@ def test_save_curated_refuses_a_targeted_word_without_a_category(tmp_path):
 def test_save_curated_allows_an_untargeted_word_with_no_category(tmp_path):
     bundle = curated.CuratedBundle(
         words=(_word("near", "ใกล้", "near"),), targets=(),
+        graphemes=(), confusions=(), pairs=(),
+        profile=Profile(register="male_colloquial"), rulebook=curated.RulebookConfig())
+    curated.save_curated(tmp_path, bundle)
+    assert curated.load_curated(tmp_path).categories == ()
+
+
+def test_save_curated_allows_a_sentence_introduced_target_without_a_category(tmp_path):
+    bundle = curated.CuratedBundle(
+        words=(_word("near", "ใกล้", "near"),),  # ใกล้: near
+        targets=(Target(id=TargetId("near/receptive"), word=WordId("near"),
+                        skill="receptive", introduction="sentence"),),
         graphemes=(), confusions=(), pairs=(),
         profile=Profile(register="male_colloquial"), rulebook=curated.RulebookConfig())
     curated.save_curated(tmp_path, bundle)
