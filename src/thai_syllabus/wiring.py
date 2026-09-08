@@ -16,10 +16,10 @@ producer.
 load_syllabus reads the deck's media relationships through `_DbMediaIndex`
 (derivations.current_best over the db; the `media` table carries
 provenance only), its sentences through `SyllabusDb.all_sentences()`, and
-its frequency map from `deck_root/data/frequency_th.txt` (or
-`frequency_path`; absent, an empty map). The tokenizer is pythainlp,
-imported lazily; load_syllabus refuses with a RuntimeError naming it when
-it is not installed.
+its frequency map from `deck_root/curated/frequency_th.txt` (spec 2
+section 1); a deck without that file is refused with a FileNotFoundError
+naming it. The tokenizer is pythainlp, imported lazily; load_syllabus
+refuses with a RuntimeError naming it when it is not installed.
 """
 from __future__ import annotations
 
@@ -548,7 +548,6 @@ class _DbMediaIndex:
 
 
 def load_syllabus(deck_root: str | Path, *,
-                  frequency_path: str | Path | None = None,
                   db: SyllabusDb | None = None,
                   bundle: CuratedBundle | None = None) -> Syllabus:
     """A Syllabus (spec 1 section 3) from a deck directory: its
@@ -569,8 +568,9 @@ def load_syllabus(deck_root: str | Path, *,
                                 rubrics=rubrics_for(rules),
                                 provenance_prior=bundle.rulebook.provenance_prior)
 
-    freq_file = (Path(frequency_path) if frequency_path is not None
-                else root / "data" / "frequency_th.txt")
+    freq_file = root / "curated" / "frequency_th.txt"
+    if not freq_file.exists():
+        raise FileNotFoundError(f"no frequency corpus at {freq_file}")
     freq_map = load_frequency_map(freq_file)
     frequency = {w.id: rank for w in bundle.words
                 if (rank := freq_map.rank(w.thai)) is not None}

@@ -421,6 +421,7 @@ def _write_curated_dir(root):
     (curated / "profile.yaml").write_text(yaml.safe_dump(
         {"register": "male_colloquial", "emphasis": {}}))
     (curated / "rulebook.yaml").write_text("{}\n", encoding="utf-8")
+    (curated / "frequency_th.txt").write_text("", encoding="utf-8")
     return root
 
 
@@ -446,10 +447,9 @@ def test_emphasis_from_profile_moves_a_word_earlier_through_load_syllabus(tmp_pa
         rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset({"rice"})),
                    Category(name="Colors", members=frozenset({"red"})))))
-    (root / "data").mkdir()
     # red ranks more frequent (1) than rice (2); Food's 3x emphasis must
     # still bring rice's target ahead of red's.
-    (root / "data" / "frequency_th.txt").write_text("แดง\nข้าว\n", encoding="utf-8")
+    (root / "curated" / "frequency_th.txt").write_text("แดง\nข้าว\n", encoding="utf-8")
 
     syllabus = load_syllabus(root)
     ids = [e.id for e in syllabus.order() if e.kind == "word_target"]
@@ -738,16 +738,16 @@ def test_load_syllabus_refuses_when_pythainlp_is_absent(tmp_path, monkeypatch):
         load_syllabus(root)
 
 
-def test_load_syllabus_no_frequency_file_leaves_empty_frequency_map(tmp_path):
+def test_load_syllabus_refuses_a_deck_without_a_frequency_corpus(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
-    syllabus = load_syllabus(root)
-    assert syllabus.frequency == {}
+    (root / "curated" / "frequency_th.txt").unlink()
+    with pytest.raises(FileNotFoundError, match="frequency_th.txt"):
+        load_syllabus(root)
 
 
 def test_load_syllabus_reads_a_frequency_file_when_present(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
-    (root / "data").mkdir()
-    (root / "data" / "frequency_th.txt").write_text("ข้าว\nใกล้\n", encoding="utf-8")
+    (root / "curated" / "frequency_th.txt").write_text("ข้าว\nใกล้\n", encoding="utf-8")
     syllabus = load_syllabus(root)
     assert syllabus.frequency["rice"] == 1
     assert syllabus.frequency["near"] == 2
@@ -762,6 +762,7 @@ def _minimal_deck(tmp_path):
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(),
         categories=(Category(name="Adjectives", members=frozenset({"slow"})),)))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     return root
 
 

@@ -160,6 +160,7 @@ def old_data(tmp_path):
         # deliberately malformed: missing 'thai'
         {"id": "broken-row", "gloss": "nothing here"},
     ])
+    (d / "frequency_th.txt").write_text("ไก่\nหมา\nช้า\n", encoding="utf-8")  # chicken, dog, slow
     return d
 
 
@@ -313,6 +314,35 @@ def test_migrate_twice_appends_nothing(old_deck, old_data, tmp_path):
     assert sum(report.already_present.values()) > 0
     assert report.already_present["media"] > 0
     assert report.media.get("objects_written", 0) == 0
+
+
+def test_migrate_copies_the_frequency_corpus_under_curated(old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)
+    copied = new_root / "curated" / "frequency_th.txt"
+    assert copied.read_bytes() == (old_data / "frequency_th.txt").read_bytes()
+
+
+def test_a_second_migration_leaves_the_corpus_untouched(old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)
+    copied = new_root / "curated" / "frequency_th.txt"
+    before_bytes = copied.read_bytes()
+    before_mtime = copied.stat().st_mtime_ns
+    report = migrate(old_deck, old_data, new_root)
+    assert copied.read_bytes() == before_bytes
+    assert copied.stat().st_mtime_ns == before_mtime
+    assert report.already_present["frequency_corpus"] == 1
+    assert report.curated.get("frequency_corpus_written", 0) == 0
+
+
+def test_migrate_refuses_an_old_data_dir_without_a_corpus(old_deck, old_data, tmp_path):
+    (old_data / "frequency_th.txt").unlink()
+    new_root = tmp_path / "new_root"
+    with pytest.raises(FileNotFoundError, match="frequency_th.txt"):
+        migrate(old_deck, old_data, new_root)
+    # the refusal fires before migrate() writes anything: no half-built deck.
+    assert not (new_root / "curated").exists()
 
 
 def test_does_not_touch_judge_cache_sqlite(old_deck, old_data, tmp_path):

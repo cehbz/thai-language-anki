@@ -1234,6 +1234,7 @@ def deck_with_history(tmp_path):
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset({rice.id, fish.id})),)))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     (root / "curated" / "providers.yaml").write_text(
         "imgfetch_path: /opt/bin/imgfetch\n"
         "audiofetch_path: /opt/bin/audiofetch\n"
@@ -1355,6 +1356,7 @@ def test_load_context_builds_its_syllabus_through_the_shared_loader(tmp_path):
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset({"orange"})),)))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     (root / "curated" / "providers.yaml").write_text(
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
         encoding="utf-8")
@@ -1402,6 +1404,7 @@ def test_load_context_session_cap_comes_from_providers_yaml_learner_quota(tmp_pa
         graphemes=(), confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset(w.id for w in words)),)))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     (root / "curated" / "providers.yaml").write_text(
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
         "quotas:\n  learner: {max_asks: 3}\n", encoding="utf-8")

@@ -176,8 +176,9 @@ class StudyRecord:
 
 @runtime_checkable
 class FrequencyMap(Protocol):
-    """Word-frequency corpus lookup (spec 2 section 3) over a static
-    project resource (data/frequency_th.txt), not deck state.
+    """Word-frequency corpus lookup (spec 2 sections 1 and 3) over
+    curated/frequency_th.txt, copied into the deck from the repo's data/
+    at migration time; read-only, never hand-edited.
     """
     def rank(self, word_thai: str) -> int | None: ...
 

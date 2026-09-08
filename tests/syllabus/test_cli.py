@@ -44,6 +44,7 @@ def _write_curated_dir(root):
     (curated / "profile.yaml").write_text(yaml.safe_dump(
         {"register": "male_colloquial", "emphasis": {}}))
     (curated / "rulebook.yaml").write_text("{}\n", encoding="utf-8")
+    (curated / "frequency_th.txt").write_text("", encoding="utf-8")
     (curated / "providers.yaml").write_text(yaml.safe_dump(
         {"imgfetch_path": "/opt/bin/imgfetch", "audiofetch_path": "/opt/bin/audiofetch",
          "judge": {"transport": "cli", "model": "m"}}))

@@ -19,6 +19,12 @@ Items 1-4 and 6 of spec 2 section 4:
   6. StudyRecords: nothing is written to the `study` table
 Item 5 (judge_cache.sqlite) is retired.
 
+The frequency corpus (spec 2 section 1) copies byte for byte from
+old_data/frequency_th.txt to curated/frequency_th.txt; a missing source is
+refused, named, before migrate() writes anything to new_root. A second run
+with identical bytes at the destination writes nothing new and counts the
+skip in MigrationReport.already_present.
+
 An old picture note joins a word-list row by (thai, category)
 (join_key); a key matching several rows is reported in
 MigrationReport.ambiguous and left unjoined, one matching none is
@@ -222,6 +228,22 @@ def _ingest_and_count(media_store: MediaStore, db: SyllabusDb, report: Migration
     else:
         report.bump(report.already_present, "media")
     return sha
+
+
+def _migrate_frequency_corpus(data: bytes, curated_dir: Path, report: MigrationReport) -> None:
+    """curated/frequency_th.txt <- `data` (spec 2 section 1), bytes
+    unchanged; `data` was already read from old_data/frequency_th.txt by
+    migrate(), which refuses a missing source before any write. A
+    destination already holding the same bytes is left untouched and
+    counted in report.already_present. A destination holding different
+    bytes is rewritten and counted in report.curated.
+    """
+    dest = curated_dir / "frequency_th.txt"
+    if dest.exists() and dest.read_bytes() == data:
+        report.bump(report.already_present, "frequency_corpus")
+        return
+    dest.write_bytes(data)
+    report.bump(report.curated, "frequency_corpus_written")
 
 
 def _record_once(db: SyllabusDb, report: MigrationReport, bucket: str, *,
@@ -610,6 +632,11 @@ def _migrate_waivers(old_deck: Path, db: SyllabusDb, report: MigrationReport) ->
 
 def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     old_deck, old_data, new_root = Path(old_deck), Path(old_data), Path(new_root)
+    frequency_corpus_src = old_data / "frequency_th.txt"
+    if not frequency_corpus_src.exists():
+        raise FileNotFoundError(f"migrate: no frequency corpus at {frequency_corpus_src}")
+    frequency_corpus_bytes = frequency_corpus_src.read_bytes()
+
     new_root.mkdir(parents=True, exist_ok=True)
     curated_dir = new_root / "curated"
     media_store = MediaStore(new_root / "media")
@@ -623,6 +650,7 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
         words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
         confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
         rulebook=RulebookConfig(), categories=build_categories(word_rows)))
+    _migrate_frequency_corpus(frequency_corpus_bytes, curated_dir, report)
 
     note_subjects = _note_subjects(old_deck, word_id_by_key, ambiguous_keys, report)
 

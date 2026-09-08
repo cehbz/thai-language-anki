@@ -58,6 +58,7 @@ def _deck(tmp_path, words, targets, *, transport="batch", pairs=(), confusions=(
         words=words, targets=targets, graphemes=(), confusions=confusions, pairs=pairs,
         profile=Profile(register="male_colloquial"), rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset(w.id for w in words)),)))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     (root / "curated" / "providers.yaml").write_text(
         "imgfetch_path: /opt/bin/imgfetch\n"
         "audiofetch_path: /opt/bin/audiofetch\n"

@@ -37,6 +37,7 @@ def _deck(tmp_path):
         rulebook=RulebookConfig(),
         categories=(Category(name="Food", members=frozenset({"orange"})),
                    Category(name="Verbs", members=frozenset({"eat"})))))
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
     # imgfetch/audiofetch paths and the anthropic secret reference are what
     # load_providers_config now requires of any real providers.yaml; the
     # test replaces both fetch backends (and the judge's transport) with
