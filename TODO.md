@@ -30,34 +30,32 @@ still run against them.
   under s2's no-drafts rule and re-asked every run; an honest "no
   sentence fits" answer needs a recognized shape that caches.
 
+## Deferred from the assess-first and judge-key arcs
+
+- Escalation anchor: `_anchor_ts` takes current-best rubric-agnostically;
+  a legacy pass and a fresh pass tie at 50 and the tie now breaks by
+  sha, so a word whose legacy sha sorts first anchors at -1. Prefer the
+  tied sha that has a producing attempt row.
+- Review screen: a need kept queued for an awaiting candidate is listed
+  both as a queue item and as a direction question (reviewserver
+  ~272-278; pre-existing for directed needs).
+- `Assessor.resolve` matches results by rebuilding keys; storing the
+  submitted custom ids in the marker makes a key-shape change lossless.
+- The inline judge path does not dedupe a repeated question in one
+  `ask_many` call (the second overwrites `resolved[key]` as a hit; its
+  ask and cost are lost from the spend).
+- `assess_first` logs but does not report the excluded items when every
+  awaiting candidate is excluded; the run report never sees them.
+- Rendition escalation anchor (above) still open.
+
 ## Cutover
 
-- Write `~/decks/thai-ff/curated/providers.yaml`: judge transport batch,
-  model, price_per_mtok (required), imgfetch_path and audiofetch_path
-  (required; ~/bin/imgfetch, ~/bin/audiofetch), image_candidates,
-  attempt_cap, tts male_voices and female_voices (both non-empty),
-  secrets forvo / google_tts / anthropic / pexels as 0600 files under
-  ~/.config/thai-deck-gen/ (the tts key file is google-tts.key),
-  search_proxy. The loader refuses a missing file or field; the review
-  screen also needs this file.
-- Migrate: `thai-syllabus migrate --old-deck ~/decks/thai-ff.20260903
-  --old-data data --new-root ~/decks/thai-ff`. Joins pictures by (thai,
-  category) and reports ambiguous forms; carries candidates.yaml
-  verdicts under a legacy rubric id that never ranks; idempotent (run it
-  twice, read already_present). The current picture migrates as a
-  candidate (a legacy-current provide row); a re-run into the live deck
-  appends only those rows.
-  Provider cache rows are keyed by the current ProvideKey
-  encoding (source:kind:query): a syllabus.db written before 2026-09-06
-  would miss every provider cache row and a re-run of migrate into it
-  would duplicate the forvo rows, so migrate only into a fresh
-  syllabus.db.
-- First run, batch judge, smoke-capped per source (`--backend-cap
-  NAME=N` is a per-day cap read from the record): expect every picture
-  question in one batch, nothing improved, pending == pictures. Second
-  run resolves it. Read the RunReport line: available == attempted +
-  exhausted + pending + unserved + budgeted + deferred (B8 closes the
-  known exceptions).
+- Runs 1-5 done (work/run-*.log); the 692-question assess-first batch
+  is outstanding; the next run resolves it. Read the RunReport line:
+  available == attempted + exhausted + pending + unserved + budgeted +
+  deferred. Every run that collects a question leaves one batch
+  outstanding; a key-shape change between submit and resolve loses that
+  batch's answers (logged; they re-ask).
 - Compile, delete-and-reimport in Anki, proof pass in `thai-syllabus
   review`, then `import` after a study session; verify study rows (family,
   anchor, card_kind) and flag rows.
