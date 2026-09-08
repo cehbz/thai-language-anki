@@ -40,9 +40,9 @@ from .derivations import (
     pictures_awaiting_preference,
     unjudged_candidates,
 )
-from .entities import Target, Word
+from .entities import Sentence, Target, Word
 from .ids import PairId, TargetId, WordId
-from .media import Speaker
+from .media import Provenance, Speaker
 from .provider import Provider, ProviderAnswer, Question
 from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT, SentenceDraft
@@ -811,15 +811,26 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             '"targets": ["<target id, as written after \'target \' above>", ...]}]}')
 
 
+def _draft_sentence(draft: SentenceDraft) -> Sentence:
+    """`draft` as a Sentence value, learner_voice, for calls that need one
+    off a still-unadopted draft (`Syllabus.last_used_word`).
+    """
+    return Sentence(text=draft.text, gloss=draft.gloss, voice="learner_voice",
+                    provenance=Provenance(source="llm", origin="draft",
+                                          licence="generated", acquired=date.today()))
+
+
 def _fills(ctx: Sourcing, draft: SentenceDraft, open_targets: Sequence[Target],
            spend: dict[str, Spend]) -> list[Target]:
     """fills() on every open Target whose word the draft's text mentions
     at a token boundary (`Syllabus.mentions_at`), plus every open Target
-    the draft claims: the claim is a hint, not the gate -- a claimed
-    Target the text does not mention still gets a fills question, and
-    fills() clause 1 is that same boundary check, so it records a
-    refusal there, never coverage. One fills question per Target
-    checked."""
+    the draft claims: `open_targets` is the full open set
+    (`syllabus.gaps().unfilled_targets`), not only the run's handed
+    batch -- a text mentioning an open Target outside the batch still
+    gets checked. The claim is a hint, not the gate -- a claimed Target
+    the text does not mention still gets a fills question, and fills()
+    clause 1 is that same boundary check, recording a refusal there,
+    never coverage. One fills question per Target checked."""
     tokens = ctx.syllabus.tokenizer.tokens(draft.text)
     open_by_id = {t.id: t for t in open_targets}
     mentioned = [t for t in open_targets
@@ -846,16 +857,20 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
     many, and subjects_handed which words they belong to), each draft
-    verified with fills() against every open Target its text mentions
-    and every open Target it claims, and, where it fills one, put to
-    the judge with its gloss. Adoption is the run's, after the verdicts
-    land."""
+    verified with fills() against every open Target its text mentions --
+    the whole open set, not only the handed batch -- and every open
+    Target it claims, and, where it fills one, put to the judge with its
+    gloss and its last used word (Syllabus.last_used_word). Adoption is
+    the run's, after the verdicts land."""
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
-    open_ids = set(syllabus.gaps().unfilled_targets[:max_targets])
+    unfilled = syllabus.gaps().unfilled_targets
+    all_open_ids = set(unfilled)
+    open_ids = set(unfilled[:max_targets])
     targets = [t for t in syllabus.targets if t.id in open_ids]
     if not targets:
         return AttemptResult(attempted=False)
+    open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
 
     answer = ctx.provider.ask("llm-sentence", Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
@@ -868,14 +883,14 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     for draft in record.merge_drafts(raw_drafts):
         if draft.text_sha in adopted:
             continue
-        filled = _fills(ctx, draft, targets, spend)
+        filled = _fills(ctx, draft, open_targets, spend)
         if not filled:
             continue
+        last_word = syllabus.word(syllabus.last_used_word(_draft_sentence(draft))).thai
         questions.append(AssessQuestion(
             subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
             rubric=ctx.rubrics[role_for("sentence")],
-            params={"text": draft.text, "gloss": draft.gloss,
-                    "word": syllabus.word(filled[0].word).thai},
+            params={"text": draft.text, "gloss": draft.gloss, "word": last_word},
             kind="sentence", subject_kind="sentence"))
     result = ctx.assessor.ask_many("judge", questions)
     _count_verdicts(spend, "judge", result)

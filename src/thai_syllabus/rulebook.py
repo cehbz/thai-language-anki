@@ -85,23 +85,28 @@ GRAPHEME_KEYWORD_CONTAINS_SYMBOL = Rule(id="grapheme/keyword-contains-symbol",
 
 
 # --- sentence/fills-novelty --------------------------------------------------
-# F5: a sentence's permitted new-word count. Flags every (sentence, target)
-# where the sentence mentions the target's word in the right voice but
-# fills() rejects it on the novelty clause.
+# F5: the fill-set rule (spec 1 section 3, clause 3) -- a sentence-level
+# gate on registered vocabulary and full target coverage, then at most one
+# candidate Target may be a sentence-introduced Target no earlier-or-same
+# adopted sentence already contains. Flags every (sentence, target) where
+# the sentence mentions the target's word in the right voice but the
+# target is not in the sentence's fill set (Syllabus.fill_set).
 
 def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []
     for s in syllabus.sentences:
+        filled = syllabus.fill_set(s)
+        tokens = syllabus.tokens_of(s)
         for t in syllabus.targets:
             target_word = syllabus.find_word(t.word)
-            if target_word is None or not syllabus.mentions(s, target_word.thai):
+            if target_word is None or not syllabus.mentions_at(tokens, target_word.thai):
                 continue
             if t.skill == "productive" and s.voice != "learner_voice":
                 continue
-            if not syllabus.fills(s, t):
+            if t not in filled:
                 findings.append(Finding(
                     rule="sentence/fills-novelty", note_id=sentence_note_id(s),
-                    evidence=f"exceeds the novelty budget for target {t.id!r}"))
+                    evidence=f"not in the fill set: target {t.id!r}"))
     return findings
 
 
@@ -317,8 +322,9 @@ TARGET_RECORDING_REQUIRED = Rule(id="target/recording-required", principle="F7",
 
 
 def _check_target_sentence(syllabus: "Syllabus") -> list[Finding]:
+    filled_ids = {t.id for s in syllabus.sentences for t in syllabus.fill_set(s)}
     return [Finding(rule="target/sentence-required", note_id=t.id, evidence="no adopted sentence fills it")
-           for t in syllabus.targets if not any(syllabus.fills(s, t) for s in syllabus.sentences)]
+           for t in syllabus.targets if t.id not in filled_ids]
 
 
 TARGET_SENTENCE_REQUIRED = Rule(id="target/sentence-required", principle="F5",
@@ -409,7 +415,7 @@ RENDITION_MIXED_SPEAKERS = Rule(id="rendition/mixed-speakers", principle="F1",
 def _check_sentence_synthetic_productive(syllabus: "Syllabus") -> list[Finding]:
     out = []
     for s in syllabus.sentences:
-        productive = [t for t in syllabus.targets if t.skill == "productive" and syllabus.fills(s, t)]
+        productive = [t for t in syllabus.fill_set(s) if t.skill == "productive"]
         if not productive:
             continue
         prov = syllabus.media.recording_provenance(sentence_note_id(s))

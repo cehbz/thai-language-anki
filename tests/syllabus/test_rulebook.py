@@ -155,7 +155,7 @@ def test_grapheme_keyword_rule_flags_a_grapheme_loaded_with_a_bad_keyword():
 
 # --- sentence/fills-novelty --------------------------------------------------
 
-def test_sentence_fills_novelty_flags_a_sentence_exceeding_its_budget():
+def test_sentence_fills_novelty_flags_a_sentence_using_an_untargeted_word():
     rice = word("rice", "ข้าว")  # rice
     unmet1 = word("unmet1", "จาน")  # plate
     unmet2 = word("unmet2", "ช้อน")  # spoon
@@ -169,7 +169,24 @@ def test_sentence_fills_novelty_flags_a_sentence_exceeding_its_budget():
     assert len(findings) == 1
 
 
-def test_sentence_fills_novelty_is_silent_when_the_sentence_stays_within_budget():
+def test_sentence_fills_novelty_flags_every_mentioned_target_with_two_unmet_glue_targets():
+    """Two sentence-introduced (glue) Targets in one adopted sentence,
+    neither met by any other adopted sentence: the fill set is empty, so
+    every mentioned Target is flagged, not just one of them."""
+    rice = word("rice", "ข้าว")  # rice -- glue, sentence-introduced
+    spoon = word("spoon", "ช้อน")  # spoon -- glue, sentence-introduced
+    t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")
+    t_spoon = target("spoon/receptive", "spoon", "receptive", introduction="sentence")
+    s = sentence("ข้าวช้อน", voice="learner_voice")  # rice, spoon
+    tok = FakeTokenizer({s.text: ["ข้าว", "ช้อน"]})
+    syllabus = make_syllabus(words=(rice, spoon), targets=(t_rice, t_spoon),
+                             sentences=(s,), tokenizer=tok)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/fills-novelty"]
+    assert len(findings) == 2
+
+
+def test_sentence_fills_novelty_is_silent_when_the_sentence_fills_its_target():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")
     s = sentence("ข้าว", voice="learner_voice")  # rice

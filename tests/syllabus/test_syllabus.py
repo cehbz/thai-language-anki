@@ -130,6 +130,28 @@ def test_cover_skips_a_draft_that_fills_nothing_still_unfilled():
     assert syl.cover([(sentence("another a"), [ta])]) == []
 
 
+def test_adopting_a_draft_cover_chose_still_has_that_target_in_its_own_fill_set():
+    """Adopt-then-gate agreement (spec 1 r6): a draft cover() adopts for
+    a Target still has that Target in its own live fill_set once
+    with_sentences actually adopts it, agreeing with what fill_set()
+    computed for it as a candidate before adoption -- adoption must not
+    change what a sentence itself fills, and a sentence-introduced
+    Target's own novelty check must still exclude the sentence from its
+    own "other adopted" check once it is one of self.sentences.
+    """
+    a = word("a", "ก")  # a
+    ta = target("a/r", "a", "receptive", introduction="sentence")
+    syl = Syllabus(words=(a,), targets=(ta,), tokenizer=FakeTokenizer())
+    draft = sentence("ก")   # ก: the letter a
+    chosen = syl.cover([(draft, [ta])])
+    adopted_sentence, gained = chosen[0]
+    assert ta in gained
+    before = syl.fill_set(draft)
+    new_syllabus = syl.with_sentences([adopted_sentence])
+    after = new_syllabus.fill_set(adopted_sentence)
+    assert before == after == (ta,)
+
+
 # --- lookups and the voice a recording may draw (E2, E7) -------------------
 
 def _voice_syllabus(skill="receptive") -> Syllabus:

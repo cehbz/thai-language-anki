@@ -1624,20 +1624,20 @@ def _draft_syllabus(sentences=()):
                     sentences=tuple(sentences), tokenizer=FakeTokenizer())
 
 
-def _fills_row(value=True, ts=None):
+def _fills_row(value=True, ts=None, target="eat/receptive", subject=_DRAFT_SHA):
     ts = ts if ts is not None else _next_ts()
     return Answer(port="assess", backend="fills", key=f"fills:{ts}", key_sha="x",
-                 subject=_DRAFT_SHA,
+                 subject=subject,
                  question={"role": "sentence-for-target", "artifact_sha": None, "rubric": None,
                           "kind": "sentence", "subject_kind": "sentence",
-                          "params": {"target": "eat/receptive"}},
+                          "params": {"target": target}},
                  answer={"value": value}, cost=0.0, ts=ts)
 
 
-def _sentence_verdict(backend, value, rubric=None, ts=None):
+def _sentence_verdict(backend, value, rubric=None, ts=None, subject=_DRAFT_SHA):
     ts = ts if ts is not None else _next_ts()
     return Answer(port="assess", backend=backend, key=f"{backend}:{ts}", key_sha="x",
-                 subject=_DRAFT_SHA,
+                 subject=subject,
                  question={"role": "sentence-for-target", "artifact_sha": None,
                           "rubric": rubric, "kind": "sentence", "subject_kind": "sentence",
                           "params": {}},
@@ -1711,6 +1711,39 @@ def test_a_draft_that_fills_nothing_is_not_adoptable(cache):
     cache.rows += [_fills_row(value=False), _sentence_verdict("judge", True, rubric="R")]
     assert adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
+
+
+_TWO_TARGET_DRAFT_JSON = (
+    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice", '
+    '"targets": ["eat/receptive", "rice/receptive"]}]}')   # กินข้าว: eat rice
+_TWO_TARGET_DRAFT_SHA = text_sha("กินข้าว")   # กินข้าว: eat rice
+
+
+def _two_target_draft_syllabus():
+    return Syllabus(words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),  # กิน: eat, ข้าว: rice
+                    targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+                    tokenizer=FakeTokenizer())
+
+
+def test_a_draft_with_all_false_fills_rows_is_not_adoptable_one_with_a_true_row_is(cache):
+    """A draft's fills rows, one per candidate Target: a draft whose rows
+    are all False (neither Target confirmed) is not adoptable; the same
+    draft with one True row among them is adoptable, offered with only
+    the confirmed Target."""
+    cache.rows.append(provide_row("sentence-drafts", "sentence", backend="llm-sentence",
+                                  items=[]))
+    cache.rows[-1].answer["items"] = [_TWO_TARGET_DRAFT_JSON]
+    cache.rows += [_fills_row(value=False, target="eat/receptive", subject=_TWO_TARGET_DRAFT_SHA),
+                   _fills_row(value=False, target="rice/receptive", subject=_TWO_TARGET_DRAFT_SHA)]
+    assert adoptable_drafts(cache, _two_target_draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+    cache.rows += [_fills_row(value=True, target="rice/receptive", subject=_TWO_TARGET_DRAFT_SHA),
+                   _sentence_verdict("judge", True, rubric="R", subject=_TWO_TARGET_DRAFT_SHA)]
+    adoptable = adoptable_drafts(cache, _two_target_draft_syllabus(),
+                                 current_rubric={"sentence-for-target": "R"})
+    assert [(s.text, tuple(t.id for t in ts)) for s, ts in adoptable] == [
+        ("กินข้าว", ("rice/receptive",))]   # กินข้าว: eat rice -- only the confirmed Target
 
 
 def test_a_draft_already_adopted_is_not_offered_again(cache):

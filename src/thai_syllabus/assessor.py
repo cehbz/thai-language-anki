@@ -20,7 +20,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from . import record
 from .cachekeys import (BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey,
-                        rendition_identity, sha)
+                        adopted_identity, rendition_identity, sha)
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError, strip_fences
 
@@ -708,21 +708,24 @@ class FormatBackend:
 class FillsBackend:
     """`Syllabus.fills()` as an Assess backend (spec 3 section 4): does the
     drafted text in `params["text"]` fill the Target named by
-    `params["target"]`? Keyed mech:fills:TARGET:VERSION:SUBJECT. A fills
-    verdict is computed from words.yaml (the registered word list),
-    targets.yaml (a target's membership, skill and introduction --
-    `fills()` tests membership in `_target_positions`, not a position
-    value) and the tokenizer -- `version` names that state (spec 3
-    section 6a), built from curated.py's `curated_version(root)` and
-    wiring's `tokenizer_version()`. `syllabus_of` reads the Syllabus at
-    ask time, as a run adopts sentences into it.
+    `params["target"]`? Keyed mech:fills:TARGET:VERSION:ADOPTED:SUBJECT.
+    A fills verdict is computed from words.yaml (the registered word
+    list), targets.yaml (a target's membership, skill and introduction),
+    the tokenizer, and the adopted sentence set (clause 3's novelty rule
+    reads other adopted sentences) -- `version` names the curated/
+    tokenizer state (spec 3 section 6a), built from curated.py's
+    `curated_version(root)` and wiring's `tokenizer_version()`; ADOPTED
+    is a sha over the sorted adopted text_shas, computed from
+    `syllabus_of()` at ask time, as a run adopts sentences into it.
     """
     syllabus_of: Callable[[], Any]
     version: str = ""
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
+        syllabus = self.syllabus_of()
+        adopted = adopted_identity(s.text_sha for s in syllabus.sentences)
         return MechanicalKey(check="fills",
-                             params=f"{question.params['target']}:{self.version}",
+                             params=f"{question.params['target']}:{self.version}:{adopted}",
                              artifact_sha=question.subject)
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:

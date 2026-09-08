@@ -807,6 +807,43 @@ def test_sentence_attempt_checks_every_open_target_the_text_mentions_not_only_it
     assert {r.question["params"]["target"] for r in fills} == {"eat/receptive", "rice/receptive"}
 
 
+def test_sentence_attempt_checks_an_open_target_beyond_the_handed_batch(tmp_path):
+    """max_targets caps the handed batch (targets_handed, the prompt),
+    but _fills checks every open Target the whole syllabus still has
+    open -- including one the capped batch left out."""
+    syllabus = Syllabus(
+        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),   # กิน: eat, ข้าว: rice
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+        frequency={"eat": 1, "rice": 2},
+        tokenizer=FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]}))   # กินข้าว: eat rice
+    text = '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'\
+           ' "targets": ["eat/receptive"]}]}'   # กินข้าว: eat rice
+    judge = JudgeBackend(model="m", transport="api",
+                         complete=lambda p, a=(): Completion(text='{"value": true, "evidence": "e"}'))
+    holder = []
+    ctx = _sourcing(tmp_path, syllabus, backends={"llm-sentence": _Llm(text)},
+                    assess={"judge": judge,
+                            "fills": FillsBackend(syllabus_of=lambda: holder[0].syllabus)})
+    holder.append(ctx)
+    res = sentence_attempt(ctx, max_targets=1)
+    assert res.targets_handed == 1   # only eat/receptive handed (rice/receptive is capped out)
+    fills = [r for r in ctx.db.assessments_of(text_sha("กินข้าว"))   # กินข้าว: eat rice
+             if r.backend == "fills"]
+    assert {r.question["params"]["target"] for r in fills} == {"eat/receptive", "rice/receptive"}
+
+
+def test_the_judge_question_names_the_last_used_word(tmp_path):
+    """params["word"] is the last used word (Syllabus.last_used_word),
+    not the first mentioned Target's word: "rice" is ordered after "eat"
+    (frequency), so it is the sentence's last used word though "eat" is
+    listed first among the targets it fills."""
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["eat/receptive", "rice/receptive"]}]}',
+                        batch=True)
+    res = sentence_attempt(ctx)
+    assert res.questions[0].question.params["word"] == "ข้าว"   # ข้าว: rice -- the last used word
+
+
 def test_sentence_attempt_merges_a_duplicated_draft_into_one_judge_question(tmp_path):
     text = ('{"sentences": ['
            '{"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},'   # กินข้าว: eat rice

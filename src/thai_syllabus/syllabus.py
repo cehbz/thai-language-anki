@@ -124,7 +124,7 @@ class Syllabus:
         """Whether this sentence fills a productive Target, so its own
         recording plays on a productive back.
         """
-        return any(self.fills(sentence, t) for t in self.targets if t.skill == "productive")
+        return any(t.skill == "productive" for t in self.fill_set(sentence))
 
     def pair_voice_constraint(self, pair_id: PairId) -> str:
         """The strictest of the members' voice constraints, a rendition
@@ -188,6 +188,24 @@ class Syllabus:
             positions[t.word] = max(positions.get(t.word, i), i)
         return positions
 
+    @cached_property
+    def _sentence_tokens(self) -> dict[str, list[str]]:
+        """Every adopted sentence's tokens, tokenized once per instance
+        and keyed by text_sha -- `tokens_of` reads this for an adopted
+        sentence instead of re-running the tokenizer once per
+        (sentence, target) pair; `with_sentences` returns a new
+        instance, so this cannot go stale under it.
+        """
+        return {s.text_sha: self.tokenizer.tokens(s.text) for s in self.sentences}
+
+    def tokens_of(self, sentence: Sentence) -> list[str]:
+        """`sentence`'s tokens: the cached tokenization for an adopted
+        sentence (self.sentences); a direct tokenizer call for any
+        other sentence.
+        """
+        cached = self._sentence_tokens.get(sentence.text_sha)
+        return cached if cached is not None else self.tokenizer.tokens(sentence.text)
+
     def last_used_word(self, sentence: Sentence) -> WordId:
         """The word `sentence` uses whose own target position
         (_word_last_position) is greatest -- two words can never tie
@@ -198,7 +216,7 @@ class Syllabus:
         sentence. Raises ValueError naming the sentence's text_sha when
         it uses no targeted word.
         """
-        used = self._words_used(self.tokenizer.tokens(sentence.text))
+        used = self._words_used(self.tokens_of(sentence))
         candidates = [w for w in used if w in self._word_last_position]
         if not candidates:
             raise ValueError(f"sentence {sentence.text_sha!r} uses no targeted word")
@@ -257,32 +275,146 @@ class Syllabus:
         """Whether `thai` appears in `sentence.text` at a token boundary
         (rulebook helper: exposes the same boundary rule fills() uses).
         """
-        return self.mentions_at(self.tokenizer.tokens(sentence.text), thai)
+        return self.mentions_at(self.tokens_of(sentence), thai)
 
-    def fills(self, sentence: Sentence, target: Target) -> bool:
-        tokens = self.tokenizer.tokens(sentence.text)
+    def _target_satisfies_clauses_1_and_2(self, tokens: list[str], voice: str,
+                                          target: Target) -> bool:
+        """Clauses 1 and 2 alone, over an already-tokenized text: the word
+        at a token boundary, the voice satisfying the skill -- the
+        "contains" test a fill set is built from, distinct from
+        membership in one (spec 1 section 3).
+        """
         target_word = self.word(target.word)
-
-        # clause 1: word at a token boundary
         if not self.mentions_at(tokens, target_word.thai):
             return False
+        return not (target.skill == "productive" and voice != "learner_voice")
 
-        # clause 2: voice satisfies skill (other_voice fills receptive only)
-        if target.skill == "productive" and sentence.voice != "learner_voice":
+    def _sentence_order_key(self, sentence: Sentence) -> tuple[int, str] | None:
+        """(last_used_word's order() position, text_sha): the key
+        order()'s own sentence_after sorts sentences by, and clause 3's
+        novelty rule compares to place one adopted sentence at or before
+        another. None when the sentence uses no targeted word at all.
+        """
+        try:
+            word = self.last_used_word(sentence)
+        except ValueError:
+            return None
+        return (self._word_last_position[word], sentence.text_sha)
+
+    @cached_property
+    def _adopted_order_keys(self) -> dict[str, tuple[int, str] | None]:
+        """Every adopted sentence's own `_sentence_order_key`, computed
+        once per instance and keyed by text_sha -- `_order_key_of` reads
+        this for an adopted sentence instead of recomputing
+        `last_used_word` (an O(words) scan) on every comparison in the
+        novelty check's inner loop over self.sentences.
+        """
+        return {s.text_sha: self._sentence_order_key(s) for s in self.sentences}
+
+    def _order_key_of(self, sentence: Sentence) -> tuple[int, str] | None:
+        """`_sentence_order_key`, from `_adopted_order_keys` for an
+        adopted sentence, computed fresh for any other sentence.
+        """
+        if sentence.text_sha in self._adopted_order_keys:
+            return self._adopted_order_keys[sentence.text_sha]
+        return self._sentence_order_key(sentence)
+
+    @cached_property
+    def _adopted_placement_order(self) -> tuple[Sentence, ...]:
+        """self.sentences sorted by placement order (spec 1 section 3,
+        clause 3): `_order_key_of`, or (-1, text_sha) for a sentence
+        with no order key at all (order()'s own fallback) -- a strict
+        total order over a finite set, the basis the fill-set recursion
+        below is well-founded on.
+        """
+        def key(s: Sentence) -> tuple[int, str]:
+            return self._order_key_of(s) or (-1, s.text_sha)
+        return tuple(sorted(self.sentences, key=key))
+
+    @cached_property
+    def _adopted_fill_sets(self) -> dict[str, tuple[Target, ...]]:
+        """Every adopted sentence's own fill set (spec 1 section 3,
+        clause 3), computed once per instance in placement order
+        (`_adopted_placement_order`): each sentence's novelty rule reads
+        only the fill sets already computed here for sentences placed
+        strictly before it in that same order: well-founded, placement
+        order being a strict total order over a finite set. `fill_set`
+        looks an adopted sentence up here directly, memoized
+        for the life of this instance (`with_sentences` returns a new
+        one, so this cannot go stale); a candidate not itself adopted is
+        computed fresh against this completed map.
+        """
+        computed: dict[str, tuple[Target, ...]] = {}
+        for s in self._adopted_placement_order:
+            computed[s.text_sha] = self._compute_fill_set(s, computed)
+        return computed
+
+    def _compute_fill_set(self, sentence: Sentence,
+                          adopted_fill_sets: Mapping[str, tuple[Target, ...]]
+                          ) -> tuple[Target, ...]:
+        """fill_set's body (spec 1 section 3, clause 3): a sentence-level
+        gate first -- every content token a registered word, every used
+        word carrying a Target -- then the candidates passing clauses 1
+        and 2, in target-id order. Among the candidates, a
+        sentence-introduced Target is unmet unless some other adopted
+        sentence, placed at or before this one, already has it in ITS
+        OWN fill set (read from `adopted_fill_sets`, not clauses 1 and 2
+        alone -- a sentence whose own fill set is empty, an unregistered
+        token or an untargeted word, meets nothing for anyone); more
+        than one unmet candidate empties the fill set; zero or one
+        leaves every candidate as the fill set. `adopted_fill_sets`
+        carries every sentence placed strictly before `sentence` in
+        placement order, when called from `_adopted_fill_sets`'s own
+        recursive build, or the complete map, for a candidate that is
+        not itself adopted.
+        """
+        tokens = self.tokens_of(sentence)
+        if self._unknown_tokens(tokens):
+            return ()
+        used = self._words_used(tokens)
+        if not used <= self._word_target_positions.keys():
+            return ()
+
+        candidates = tuple(sorted(
+            (t for t in self.targets
+            if self._target_satisfies_clauses_1_and_2(tokens, sentence.voice, t)),
+            key=lambda t: t.id))
+        if not candidates:
+            return ()
+
+        this_key = self._order_key_of(sentence)
+
+        def met_by_another_adopted_sentence(target: Target) -> bool:
+            for other in self.sentences:
+                if other.text_sha == sentence.text_sha:
+                    continue
+                other_key = self._order_key_of(other)
+                if other_key is None or other_key > this_key:
+                    continue
+                if target in adopted_fill_sets.get(other.text_sha, ()):
+                    return True
             return False
 
-        # clause 3: strict i+1 with a novelty budget. The sentence enters
-        # the order after its last used word's target, so a used word with
-        # a target anywhere is met by entry; a word with no target at all,
-        # and any content token matching no registered word, is new
-        # (spec 1 section 3).
-        if target.id not in self._target_positions:
-            return False
-        used_other_words = self._words_used(tokens) - {target.word}
-        untargeted = [w for w in used_other_words if w not in self._word_target_positions]
-        new_words = untargeted + self._unknown_tokens(tokens)
-        budget = 1 if target.introduction == "sentence" else 0
-        return len(new_words) <= budget
+        unmet = [t for t in candidates
+                if t.introduction == "sentence" and not met_by_another_adopted_sentence(t)]
+        if len(unmet) > 1:
+            return ()
+        return candidates
+
+    def fill_set(self, sentence: Sentence) -> tuple[Target, ...]:
+        """Every Target `sentence` fills (spec 1 section 3, clause 3):
+        `_compute_fill_set`'s result, memoized per instance for an
+        adopted sentence (`_adopted_fill_sets`), computed fresh for a
+        candidate that is not itself adopted.
+        """
+        adopted = self._adopted_fill_sets
+        cached = adopted.get(sentence.text_sha)
+        if cached is not None:
+            return cached
+        return self._compute_fill_set(sentence, adopted)
+
+    def fills(self, sentence: Sentence, target: Target) -> bool:
+        return target in self.fill_set(sentence)
 
     def vocabulary_met_by(self, target: Target) -> tuple[Word, ...]:
         """Every Word with a Target at or before `target`'s order()

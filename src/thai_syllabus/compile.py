@@ -327,8 +327,7 @@ def _positions(syllabus: "Syllabus") -> _Positions:
     # total_blocks fallback, as fills_entries did before.
     unsorted_entries: list[tuple[Sentence, tuple[Target, ...], int]] = []
     for s in syllabus.sentences:
-        filled = tuple(sorted((t for t in syllabus.targets if syllabus.fills(s, t)),
-                              key=lambda t: t.id))
+        filled = syllabus.fill_set(s)   # already sorted by target id
         if not filled:
             continue
         position = sentence_position.get(sentence_note_id(s), total_blocks)
