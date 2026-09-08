@@ -235,6 +235,14 @@ def test_unknown_tokens_is_empty_for_an_attached_abbreviation_mark_over_a_regist
     assert syllabus._unknown_tokens(["กรุงเทพฯ"]) == []  # กรุงเทพฯ: Bangkok, with the abbreviation mark attached
 
 
+def test_tokens_of_returns_an_immutable_tuple():
+    rice = word("rice", "ข้าว", "rice")  # ข้าว: rice
+    s = sentence("ข้าว")
+    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    syllabus = Syllabus(words=(rice,), tokenizer=tok)
+    assert isinstance(syllabus.tokens_of(s), tuple)
+
+
 def test_gaps_excludes_a_sentence_introduced_word_from_words_missing_pictures():
     rice = word("rice", "ข้าว", "rice")  # ข้าว: rice -- picture-introduced
     glue = word("with", "กับ", "with")  # กับ: with -- glue word, sentence-introduced

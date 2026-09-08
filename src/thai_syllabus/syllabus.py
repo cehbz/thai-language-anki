@@ -189,27 +189,27 @@ class Syllabus:
         return positions
 
     @cached_property
-    def _sentence_tokens(self) -> dict[str, list[str]]:
+    def _sentence_tokens(self) -> dict[str, tuple[str, ...]]:
         """Every adopted sentence's tokens, tokenized once per instance
         and keyed by text_sha -- `tokens_of` reads this for an adopted
         sentence instead of re-running the tokenizer once per
         (sentence, target) pair; `with_sentences` returns a new
-        instance, so this cannot go stale under it.
+        instance -- this cannot go stale under it.
         """
-        return {s.text_sha: self.tokenizer.tokens(s.text) for s in self.sentences}
+        return {s.text_sha: tuple(self.tokenizer.tokens(s.text)) for s in self.sentences}
 
-    def tokens_of(self, sentence: Sentence) -> list[str]:
-        """`sentence`'s tokens: the cached tokenization for an adopted
-        sentence (self.sentences); a direct tokenizer call for any
-        other sentence.
+    def tokens_of(self, sentence: Sentence) -> tuple[str, ...]:
+        """`sentence`'s tokens, immutable: the cached tokenization for an
+        adopted sentence (self.sentences); a direct tokenizer call for
+        any other sentence.
         """
         cached = self._sentence_tokens.get(sentence.text_sha)
-        return cached if cached is not None else self.tokenizer.tokens(sentence.text)
+        return cached if cached is not None else tuple(self.tokenizer.tokens(sentence.text))
 
     def last_used_word(self, sentence: Sentence) -> WordId:
         """The word `sentence` uses whose own target position
         (_word_last_position) is greatest -- two words can never tie
-        (each target belongs to one word, so every word's own last
+        (each target belongs to one word; every word's own last
         position is a distinct index), but the (position, word) key
         still orders any hypothetical tie to the greater word id.
         order()'s sentence_after shares this computation to place the
@@ -236,7 +236,7 @@ class Syllabus:
     # --- fills() -----------------------------------------------------------
 
     @staticmethod
-    def mentions_at(tokens: list[str], thai: str) -> bool:
+    def mentions_at(tokens: Sequence[str], thai: str) -> bool:
         """Whether `thai` matches one of `tokens` at a boundary (exact, or
         a compound starting or ending with it) -- the one boundary rule
         fills(), mentions() and compile.thai_cloze's blanking all share.
@@ -244,7 +244,7 @@ class Syllabus:
         return any(tok == thai or tok.startswith(thai) or tok.endswith(thai)
                   for tok in tokens)
 
-    def _words_used(self, tokens: list[str]) -> set[WordId]:
+    def _words_used(self, tokens: Sequence[str]) -> set[WordId]:
         return {w.id for w in self.words if self.mentions_at(tokens, w.thai)}
 
     @staticmethod
@@ -254,15 +254,15 @@ class Syllabus:
         tokens do not."""
         return any(ch.isalpha() and ch not in ORTHOGRAPHIC_MARKS for ch in tok)
 
-    def _unknown_tokens(self, tokens: list[str]) -> list[str]:
+    def _unknown_tokens(self, tokens: Sequence[str]) -> list[str]:
         """Content tokens that do not decompose into registered Words at
         a boundary (token_is_known), the unstripped token tried first and
         the token with its ORTHOGRAPHIC_MARKS characters stripped tried
         second -- a tokenizer that keeps a mark attached to its host word
         (e.g. "ช้าๆ") still resolves against a registration of the bare
-        word ("ช้า"). Each remaining token counts against the novelty
-        budget (spec 1 section 3); a known prefix does not excuse an
-        unregistered remainder.
+        word ("ช้า"). Each remaining token empties the fill set (spec 1
+        section 3); a known prefix does not excuse an unregistered
+        remainder.
         """
         known = {w.thai for w in self.words}
 
@@ -277,7 +277,7 @@ class Syllabus:
         """
         return self.mentions_at(self.tokens_of(sentence), thai)
 
-    def _target_satisfies_clauses_1_and_2(self, tokens: list[str], voice: str,
+    def _target_satisfies_clauses_1_and_2(self, tokens: Sequence[str], voice: str,
                                           target: Target) -> bool:
         """Clauses 1 and 2 alone, over an already-tokenized text: the word
         at a token boundary, the voice satisfying the skill -- the
@@ -341,7 +341,7 @@ class Syllabus:
         order being a strict total order over a finite set. `fill_set`
         looks an adopted sentence up here directly, memoized
         for the life of this instance (`with_sentences` returns a new
-        one, so this cannot go stale); a candidate not itself adopted is
+        one -- this cannot go stale); a candidate not itself adopted is
         computed fresh against this completed map.
         """
         computed: dict[str, tuple[Target, ...]] = {}

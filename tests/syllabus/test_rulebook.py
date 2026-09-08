@@ -330,7 +330,7 @@ def _syl(media=None, sentences=(), targets=None):
     t = targets or (target("slow/receptive", "slow"),)
     # A bare single-word sentence -- FakeTokenizer's default (no mapping)
     # treats unmapped text as one whole token, so this fills "slow" with
-    # no companion tokens to register (a strict clause-3 novelty budget
+    # no companion tokens to register (the fill-set rule's clause 3
     # would otherwise need every other token registered as its own Word).
     return Syllabus(words=(w,), targets=t, sentences=tuple(sentences),
                     media=media or FakeMediaIndex(), tokenizer=FakeTokenizer())

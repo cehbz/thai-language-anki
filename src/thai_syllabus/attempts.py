@@ -828,9 +828,10 @@ def _fills(ctx: Sourcing, draft: SentenceDraft, open_targets: Sequence[Target],
     (`syllabus.gaps().unfilled_targets`), not only the run's handed
     batch -- a text mentioning an open Target outside the batch still
     gets checked. The claim is a hint, not the gate -- a claimed Target
-    the text does not mention still gets a fills question, and fills()
-    clause 1 is that same boundary check, recording a refusal there,
-    never coverage. One fills question per Target checked."""
+    the text does not mention still gets a fills question. Such a
+    target's fills() clause 1 is that same boundary check; it records a
+    refusal there, not coverage. One fills question per Target
+    checked."""
     tokens = ctx.syllabus.tokenizer.tokens(draft.text)
     open_by_id = {t.id: t for t in open_targets}
     mentioned = [t for t in open_targets

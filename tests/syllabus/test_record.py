@@ -310,3 +310,22 @@ def test_sentence_drafts_merges_a_text_split_across_one_row_s_items(cache):
     drafts = sentence_drafts(cache)
     assert len(drafts) == 1
     assert drafts[0].claimed == ("eat/receptive", "rice/receptive")
+
+
+def test_sentence_drafts_merges_a_text_split_across_two_provide_rows(cache):
+    """Two separate provide rows each listing the same text with
+    differing claims fold to one draft, its claims unioned -- a text
+    drafted in two runs is still one draft."""
+    cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q1"),
+                DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
+                {"items": [
+                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
+                    ' "targets": ["eat/receptive"]}]}']}, 0, ts=100)
+    cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q2"),
+                DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
+                {"items": [
+                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
+                    ' "targets": ["rice/receptive"]}]}']}, 0, ts=200)
+    drafts = sentence_drafts(cache)
+    assert len(drafts) == 1
+    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")

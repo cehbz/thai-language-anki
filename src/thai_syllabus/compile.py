@@ -1,9 +1,10 @@
 """compile_syllabus (spec 4): a Syllabus, a SyllabusDb (current-best
 artifacts and media provenance) and a MediaStore into one Anki .apkg.
 
-One note per picture-introduced word, grapheme, and adopted sentence,
-one per minimal-pair member; every note tagged, due-stamped from
-Syllabus.order(), and stamped with this compile's CompileId.
+One note per picture-introduced word, grapheme, and adopted sentence
+that fills a target, one per minimal-pair member; every note tagged,
+due-stamped from Syllabus.order(), and stamped with this compile's
+CompileId.
 
 It raises GateRefusal when Syllabus.report().gate is False, or when the
 compiled notes duplicate a card front (rule card/unique-front), unless
@@ -279,7 +280,7 @@ class _Resolver:
 class _Positions:
     """Where each order() entry's due block starts, in STRIDE units, plus
     one block per adopted sentence. A block is `width` units wide (a
-    pair: len(members); everything else: 1), so blocks never overlap.
+    pair: len(members); everything else: 1); blocks never overlap.
     """
     entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
     target_index: dict[str, int]          # target id -> block start

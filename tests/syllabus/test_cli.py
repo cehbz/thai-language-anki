@@ -106,7 +106,7 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
     # The default tokenizer falls back to whitespace when pythainlp is
     # absent (as here); a bare single-word sentence puts "rice" at a
     # boundary with no companion token that would need its own curated
-    # Word+Target to satisfy fills()'s strict novelty budget (spec 1 §3).
+    # Word+Target to satisfy the fill-set rule's clause 3 (spec 1 §3).
     db.add_sentence(text_sha="s1", text="ข้าว", gloss="rice", voice="learner_voice",  # rice
                     source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
 

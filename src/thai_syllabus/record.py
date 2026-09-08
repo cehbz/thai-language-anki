@@ -299,14 +299,14 @@ def drafts_in(text: str) -> list[SentenceDraft]:
 def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
     """Every sentence draft any run's drafting ask produced, newest ask
     last -- what there is to adopt once the verdicts land. `merge_drafts`
-    folds one row's own items together before the next row's are added:
-    a text split across two items of one provide row is one draft here,
-    the same as `sentence_attempt`'s own merge over one run's items.
+    runs once over every provide row's own parsed drafts, across rows as
+    well as within one: a text drafted in two separate runs is one draft
+    here, the same as `sentence_attempt`'s own merge over one run's
+    items.
     """
-    drafts: list[SentenceDraft] = []
+    raw: list[SentenceDraft] = []
     for row in rows_for(cache, DRAFT_SUBJECT, "sentence"):
         if row.port != "provide":
             continue
-        raw = [d for item in row.answer.get("items", []) for d in parse_drafts(str(item))]
-        drafts.extend(merge_drafts(raw))
-    return drafts
+        raw.extend(d for item in row.answer.get("items", []) for d in parse_drafts(str(item)))
+    return merge_drafts(raw)

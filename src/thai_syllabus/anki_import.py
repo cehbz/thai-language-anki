@@ -23,9 +23,8 @@ columns). `ts` is the revlog row's own id, stored verbatim, and
 Flag import: (family, card kind) resolves to a role through the two
 tables below. A rating or card-flag row's idempotence key is a FlagKey
 over (family, anchor, card_kind, flags), the card-and-flags fact itself.
-A sentence card's flag anchor is its text_sha; a flag imported before
-this shape was keyed target:sha, so an already-imported flag on an old
-collection re-imports once more under the new anchor.
+A sentence card's flag anchor is its text_sha; a flag keyed under the
+old target:sha shape re-imports once under the text_sha anchor.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
