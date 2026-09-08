@@ -789,18 +789,19 @@ def _entry_vocabulary(syllabus: Syllabus,
 
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
     vocabulary, cutoffs = _entry_vocabulary(syllabus, targets)
+    cutoff = max(cutoffs.values(), default=0)
     lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        lines.append(f"- target {target.id}: word {word.thai} ({word.meaning}); "
-                     f"may use items 1..{cutoffs[target.id]}")
+        mark = " (sentence-introduced)" if target.introduction == "sentence" else ""
+        lines.append(f"- target {target.id}: word {word.thai} ({word.meaning}){mark}")
     openings = sorted({syllabus.tokenizer.tokens(s.text)[0] for s in syllabus.sentences
                        if syllabus.tokenizer.tokens(s.text)})
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
-            "Write one short sentence per target, or one sentence covering several targets when "
-            "their permitted vocabularies allow it. A target's sentence may use only vocabulary "
-            "items 1..N for the N given on its line.\n"
+            f"Sentences may use items 1..{cutoff} of the vocabulary below.\n"
+            "Write the fewest natural sentences that together cover these targets. A sentence "
+            "may introduce at most one of the targets marked sentence-introduced.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
             + "Vocabulary, in the order met:\n"
@@ -810,18 +811,33 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             '"targets": ["<target id, as written after \'target \' above>", ...]}]}')
 
 
-def _fills(ctx: Sourcing, draft: SentenceDraft, targets_by_id: Mapping[str, Target],
+def _fills(ctx: Sourcing, draft: SentenceDraft, open_targets: Sequence[Target],
            spend: dict[str, Spend]) -> list[Target]:
-    """fills() on each Target the draft claims: the verdict that decides
-    whether the draft is worth a judge question at all."""
-    claimed = [targets_by_id[t] for t in draft.claimed if t in targets_by_id]
+    """fills() on every open Target whose word the draft's text mentions
+    at a token boundary (`Syllabus.mentions_at`), plus every open Target
+    the draft claims: the claim is a hint, not the gate -- a claimed
+    Target the text does not mention still gets a fills question, and
+    fills() clause 1 is that same boundary check, so it records a
+    refusal there, never coverage. One fills question per Target
+    checked."""
+    tokens = ctx.syllabus.tokenizer.tokens(draft.text)
+    open_by_id = {t.id: t for t in open_targets}
+    mentioned = [t for t in open_targets
+                if ctx.syllabus.mentions_at(tokens, ctx.syllabus.word(t.word).thai)]
+    claimed = [open_by_id[t] for t in draft.claimed if t in open_by_id]
+    checked: list[Target] = []
+    seen: set[str] = set()
+    for target in mentioned + claimed:
+        if target.id not in seen:
+            seen.add(target.id)
+            checked.append(target)
     questions = {target.id: AssessQuestion(
         subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
         params={"target": target.id, "text": draft.text, "gloss": draft.gloss},
-        kind="sentence", subject_kind="sentence") for target in claimed}
+        kind="sentence", subject_kind="sentence") for target in checked}
     result = ctx.assessor.ask_many("fills", list(questions.values()))
     _count_verdicts(spend, "fills", result)
-    return [target for target in claimed
+    return [target for target in checked
             if (v := result.resolved.get(ctx.assessor.key_of("fills", questions[target.id])))
             is not None and v.value is True]
 
@@ -830,9 +846,10 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
     many, and subjects_handed which words they belong to), each draft
-    verified with fills() against the Targets it claims and, where it
-    fills one, put to the judge with its gloss. Adoption is the run's,
-    after the verdicts land."""
+    verified with fills() against every open Target its text mentions
+    and every open Target it claims, and, where it fills one, put to
+    the judge with its gloss. Adoption is the run's, after the verdicts
+    land."""
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
     open_ids = set(syllabus.gaps().unfilled_targets[:max_targets])
@@ -845,13 +862,13 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         params={"prompt": _sentence_prompt(syllabus, targets)}))
     _count(spend, "llm-sentence", answer)
 
-    targets_by_id = {t.id: t for t in syllabus.targets}
     adopted = {s.text_sha for s in syllabus.sentences}
     questions: list[AssessQuestion] = []
-    for draft in [d for item in answer.items for d in record.drafts_in(str(item))]:
+    raw_drafts = [d for item in answer.items for d in record.parse_drafts(str(item))]
+    for draft in record.merge_drafts(raw_drafts):
         if draft.text_sha in adopted:
             continue
-        filled = [t for t in _fills(ctx, draft, targets_by_id, spend) if t.id in open_ids]
+        filled = _fills(ctx, draft, targets, spend)
         if not filled:
             continue
         questions.append(AssessQuestion(

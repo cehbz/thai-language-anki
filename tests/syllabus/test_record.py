@@ -2,19 +2,27 @@
 by each row's own explicit question["kind"] -- never inferred from a
 `provides` or `role` string.
 """
+import json
+import logging
+
 import pytest
 
 from thai_syllabus.cachekeys import DirectionKey, JudgeKey, LearnerKey, ProvideKey, sha
 from thai_syllabus.record import (
+    DRAFT_SUBJECT,
+    SentenceDraft,
     asks_since,
     candidate_shas,
     directions,
+    drafts_in,
     judge_verdicts,
     latest_query,
     latest_rating,
     learner_ratings,
+    merge_drafts,
     ratings_for_role,
     rows_for,
+    sentence_drafts,
     source_asks,
     spend_since,
 )
@@ -234,3 +242,71 @@ def test_spend_since_sums_the_cost_of_those_asks(cache):
                 "fish", {"kind": "recording"}, {"items": []}, 2.5, ts=300)
     assert spend_since(cache, "forvo", 200) == pytest.approx(2.5)
     assert spend_since(cache, "forvo", 0) == pytest.approx(3.5)
+
+
+# --- drafts_in: one draft per distinct text, claims merged ------------------
+
+def test_drafts_in_merges_a_duplicated_text_unioning_claims_in_order():
+    """A text listed twice is one draft: its target claims union in
+    first-seen order, and the first non-empty gloss wins."""
+    text = json.dumps({"sentences": [
+        {"text": " กินข้าว ", "gloss": "", "targets": ["eat/receptive"]},
+        {"text": "กินข้าว", "gloss": "eat rice",
+         "targets": ["rice/receptive", "eat/receptive"]}]})   # กินข้าว: eat rice
+    drafts = drafts_in(text)
+    assert len(drafts) == 1
+    assert drafts[0].text == "กินข้าว"     # กินข้าว: eat rice, whitespace stripped
+    assert drafts[0].gloss == "eat rice"                       # the first non-empty gloss
+    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")
+
+
+def test_drafts_in_drops_a_gloss_conflict_and_warns(caplog):
+    """Two listings of one text carrying differing non-empty glosses drop
+    the text -- fed no candidate downstream -- with a warning naming its
+    first 40 characters."""
+    text = json.dumps({"sentences": [
+        {"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},
+        {"text": "กินข้าว", "gloss": "rice is eaten",
+         "targets": ["rice/receptive"]}]})   # กินข้าว: eat rice
+    with caplog.at_level(logging.WARNING):
+        drafts = drafts_in(text)
+    assert drafts == []
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
+def test_drafts_in_keeps_distinct_texts_distinct():
+    text = json.dumps({"sentences": [
+        {"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},
+        {"text": "ข้าวอร่อย", "gloss": "tasty rice",
+         "targets": ["rice/receptive"]}]})   # กินข้าว: eat rice, ข้าวอร่อย: tasty rice
+    drafts = drafts_in(text)
+    assert [d.text for d in drafts] == ["กินข้าว", "ข้าวอร่อย"]   # eat rice, tasty rice
+
+
+def test_merge_drafts_merges_a_text_across_two_lists_handed_together():
+    """merge_drafts merges over whatever `drafts` it is given, not just
+    one item's own listings -- spec 3 section 5's "a text listed twice is
+    one candidate" holds across items, not per item."""
+    from_item_a = [SentenceDraft(text="กินข้าว", gloss="eat rice",   # กินข้าว: eat rice
+                                 claimed=("eat/receptive",))]
+    from_item_b = [SentenceDraft(text="กินข้าว", gloss="eat rice",   # กินข้าว: eat rice
+                                 claimed=("rice/receptive",))]
+    merged = merge_drafts(from_item_a + from_item_b)
+    assert len(merged) == 1
+    assert merged[0].claimed == ("eat/receptive", "rice/receptive")
+
+
+def test_sentence_drafts_merges_a_text_split_across_one_row_s_items(cache):
+    """One provide row's own two items listing the same text with
+    differing claims fold to one draft, its claims unioned -- the same
+    merge `sentence_attempt` applies within a run."""
+    cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q"),
+                DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
+                {"items": [
+                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
+                    ' "targets": ["eat/receptive"]}]}',
+                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
+                    ' "targets": ["rice/receptive"]}]}']}, 0)
+    drafts = sentence_drafts(cache)
+    assert len(drafts) == 1
+    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")

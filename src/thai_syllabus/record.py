@@ -12,6 +12,7 @@ row's kind is "batch". A fold here reads those fields, `backend`, `port`,
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -20,12 +21,15 @@ from .entities import text_sha
 from .ports import Answer, CacheReader
 from .transport import strip_fences
 
+_log = logging.getLogger(__name__)
+
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query",
           "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
-          "drafts_in", "sentence_drafts", "excluded_candidates", "card_flags"]
+          "parse_drafts", "merge_drafts", "drafts_in", "sentence_drafts",
+          "excluded_candidates", "card_flags"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
 # proposed for a run's open Targets as a set, not for one subject.
@@ -235,9 +239,14 @@ class SentenceDraft:
         return text_sha(self.text)
 
 
-def drafts_in(text: str) -> list[SentenceDraft]:
-    """The drafts one llm answer item carries; empty when it is not the
-    JSON the drafting prompt asked for."""
+def parse_drafts(text: str) -> list[SentenceDraft]:
+    """The listings one llm answer item's JSON carries, one `SentenceDraft`
+    per listing, not merged -- a text repeated in the same item comes
+    back as several entries here; empty when `text` is not the JSON the
+    drafting prompt asked for. `merge_drafts` does the merging, over
+    this item alone (`drafts_in`) or over a whole run's items
+    (`sentence_attempt`).
+    """
     try:
         data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
@@ -248,8 +257,56 @@ def drafts_in(text: str) -> list[SentenceDraft]:
             for d in drafted if isinstance(d, Mapping) and d.get("text")]
 
 
+def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
+    """One draft per distinct text among `drafts`: their claimed targets
+    union in first-seen order, and their gloss is the first non-empty
+    one -- unless two of them carry differing non-empty glosses, in
+    which case the text is dropped (a `logging` warning names its first
+    40 characters), in first-seen order.
+    """
+    order: list[str] = []
+    glosses: dict[str, str] = {}
+    conflicted: set[str] = set()
+    claimed: dict[str, list[str]] = {}
+    for d in drafts:
+        one_text = d.text
+        if one_text not in glosses:
+            order.append(one_text)
+            glosses[one_text] = d.gloss
+            claimed[one_text] = []
+        elif d.gloss and glosses[one_text] and d.gloss != glosses[one_text]:
+            conflicted.add(one_text)
+        elif d.gloss and not glosses[one_text]:
+            glosses[one_text] = d.gloss
+        for target_id in d.claimed:
+            if target_id not in claimed[one_text]:
+                claimed[one_text].append(target_id)
+    for one_text in order:
+        if one_text in conflicted:
+            _log.warning("merge_drafts: dropping a draft with conflicting glosses: %r",
+                         one_text[:40])
+    return [SentenceDraft(text=one_text, gloss=glosses[one_text],
+                          claimed=tuple(claimed[one_text]))
+            for one_text in order if one_text not in conflicted]
+
+
+def drafts_in(text: str) -> list[SentenceDraft]:
+    """The drafts one llm answer item carries, `merge_drafts` applied
+    over that item's own listings alone."""
+    return merge_drafts(parse_drafts(text))
+
+
 def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
     """Every sentence draft any run's drafting ask produced, newest ask
-    last -- what there is to adopt once the verdicts land."""
-    return [draft for row in rows_for(cache, DRAFT_SUBJECT, "sentence") if row.port == "provide"
-            for item in row.answer.get("items", []) for draft in drafts_in(str(item))]
+    last -- what there is to adopt once the verdicts land. `merge_drafts`
+    folds one row's own items together before the next row's are added:
+    a text split across two items of one provide row is one draft here,
+    the same as `sentence_attempt`'s own merge over one run's items.
+    """
+    drafts: list[SentenceDraft] = []
+    for row in rows_for(cache, DRAFT_SUBJECT, "sentence"):
+        if row.port != "provide":
+            continue
+        raw = [d for item in row.answer.get("items", []) for d in parse_drafts(str(item))]
+        drafts.extend(merge_drafts(raw))
+    return drafts

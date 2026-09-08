@@ -785,7 +785,7 @@ def test_sentence_attempt_adopts_nothing_itself(tmp_path):
     assert ctx.db.all_sentences() == []        # ...and the run, not the attempt, adopts
 
 
-def test_sentence_attempt_records_a_fills_verdict_per_claimed_target(tmp_path):
+def test_sentence_attempt_records_a_fills_verdict_per_open_target_the_text_mentions(tmp_path):
     ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
                                   ' "targets": ["rice/receptive", "eat/receptive"]}]}')
     sentence_attempt(ctx)
@@ -793,6 +793,78 @@ def test_sentence_attempt_records_a_fills_verdict_per_claimed_target(tmp_path):
              if r.backend == "fills"]
     assert {r.answer["value"] for r in fills} == {True}
     assert len(fills) == 2
+
+
+def test_sentence_attempt_checks_every_open_target_the_text_mentions_not_only_its_claim(tmp_path):
+    """The claim is a hint: a text mentioning two open targets' words at a
+    token boundary gets a fills question for each, though it claimed one."""
+    ctx = _sentence_ctx(tmp_path, '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'
+                                  ' "targets": ["rice/receptive"]}]}')   # กินข้าว: eat rice
+    sentence_attempt(ctx)
+    fills = [r for r in ctx.db.assessments_of(text_sha("กินข้าว"))   # กินข้าว: eat rice
+             if r.backend == "fills"]
+    assert len(fills) == 2
+    assert {r.question["params"]["target"] for r in fills} == {"eat/receptive", "rice/receptive"}
+
+
+def test_sentence_attempt_merges_a_duplicated_draft_into_one_judge_question(tmp_path):
+    text = ('{"sentences": ['
+           '{"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},'   # กินข้าว: eat rice
+           '{"text": "กินข้าว", "gloss": "eat rice", "targets": ["rice/receptive"]}]}')
+    ctx = _sentence_ctx(tmp_path, text, batch=True)
+    res = sentence_attempt(ctx)
+    assert len(res.questions) == 1
+
+
+def test_sentence_attempt_drops_a_repeated_draft_whose_glosses_disagree(tmp_path, caplog):
+    text = ('{"sentences": ['
+           '{"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},'   # กินข้าว: eat rice
+           '{"text": "กินข้าว", "gloss": "rice is eaten", "targets": ["rice/receptive"]}]}')
+    ctx = _sentence_ctx(tmp_path, text, batch=True)
+    with caplog.at_level(logging.WARNING):
+        res = sentence_attempt(ctx)
+    assert res.questions == [] and res.drafted == 0
+    assert not [r for r in ctx.db.assessments_of(text_sha("กินข้าว")) if r.backend == "fills"]
+    assert any("conflicting glosses" in r.message for r in caplog.records)
+
+
+class _MultiItemLlm:
+    """An llm-sentence backend answering with several items, each its own
+    piece of the drafting JSON -- one text split across two items."""
+
+    def __init__(self, *item_texts):
+        self.item_texts = item_texts
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="sentence-drafter", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        return RawAnswer(items=self.item_texts)
+
+
+def test_sentence_attempt_drops_a_text_whose_glosses_disagree_across_answer_items(tmp_path):
+    """A text listed in two different answer items is one candidate: a
+    gloss conflict between the items drops it, the same as a conflict
+    within one item -- the merge spans every item, not just one."""
+    syllabus = Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),   # ข้าว: rice, กิน: eat
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+        frequency={"eat": 1, "rice": 2},
+        tokenizer=FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]}))              # กินข้าว: eat rice
+    judge = _batch_judge()
+    holder = []
+    ctx = _sourcing(tmp_path, syllabus,
+                    backends={"llm-sentence": _MultiItemLlm(
+                        '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
+                        ' "targets": ["eat/receptive"]}]}',
+                        '{"sentences": [{"text": "กินข้าว", "gloss": "rice is eaten",'
+                        ' "targets": ["rice/receptive"]}]}')},   # กินข้าว: eat rice
+                    assess={"judge": judge,
+                            "fills": FillsBackend(syllabus_of=lambda: holder[0].syllabus)})
+    holder.append(ctx)
+    res = sentence_attempt(ctx)
+    assert res.questions == []
 
 
 def test_sentence_attempt_does_not_judge_a_draft_that_fills_nothing(tmp_path):
@@ -1427,13 +1499,37 @@ def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
     assert prompt.count("อร่อย") == 2          # once in the list, once on its own target line
 
 
-def test_sentence_prompt_gives_each_target_its_cutoff():
+def test_sentence_prompt_carries_one_cutoff_for_the_whole_batch():
+    """One cutoff for the batch (the furthest handed target's), not a
+    per-target "may use items" line."""
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets))
-    assert "- target eat/receptive: word กิน (eat); may use items 1..1" in prompt
-    assert "- target rice/receptive: word ข้าว (rice); may use items 1..2" in prompt
-    assert "- target tasty/receptive: word อร่อย (tasty); may use items 1..3" in prompt
+    assert "may use items 1..3" in prompt          # tasty/receptive's cutoff, the furthest
+    assert "may use items" not in prompt.split("may use items 1..3", 1)[1]
+    assert "- target eat/receptive: word กิน (eat)" in prompt
+    assert "- target rice/receptive: word ข้าว (rice)" in prompt
+    assert "- target tasty/receptive: word อร่อย (tasty)" in prompt
     assert '"targets": ["<target id, as written after \'target \' above>", ...]' in prompt
+
+
+def test_sentence_prompt_asks_for_the_fewest_sentences_covering_the_targets():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    assert "fewest natural sentences that together cover these targets" in prompt
+    assert "at most one of the targets marked sentence-introduced" in prompt
+
+
+def test_sentence_prompt_marks_a_sentence_introduced_target():
+    syllabus = Syllabus(
+        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),   # กิน: eat, ข้าว: rice
+        targets=(target("eat/receptive", "eat", introduction="sentence"),
+                 target("rice/receptive", "rice")),
+        frequency={"eat": 1, "rice": 2},
+        tokenizer=FakeTokenizer({}))
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    assert "- target eat/receptive: word กิน (eat) (sentence-introduced)" in prompt
+    assert "- target rice/receptive: word ข้าว (rice)" in prompt
+    assert "rice/receptive: word ข้าว (rice) (sentence-introduced)" not in prompt
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
