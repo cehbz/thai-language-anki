@@ -5,11 +5,13 @@ ReviewNote harvest over one caller-supplied collection.anki2, read-only
 Card identity -> (family, anchor, card kind, compile_id) comes from
 compile.py's tag/CompileId convention: family::, word::/pair::/grapheme::/
 target::/sentence::/member::/speaker:: tags, CompileId as a note field.
-Every tag is atomic; an anchor spanning several tags (a pair member's
-MemberKey, a sentence's target+sha) composes those tags' values. The card
-kind (Listening/Production/.../Cloze, lowered) is the card's own template
-name, via `col.models` and the card's `ord`, which names one sibling
-where a note-level `kind::` tag names them all.
+Every tag is atomic; a pair member's anchor (MemberKey) composes its three
+tags' values, and a sentence note's target:: tags (one per filled target,
+plural) come along as target_ids beside its own text_sha anchor -- the
+sentence anchor itself is the sentence:: tag's value alone, matching the
+note's guid. The card kind (Listening/Production/.../Cloze, lowered) is
+the card's own template name, via `col.models` and the card's `ord`,
+which names one sibling where a note-level `kind::` tag names them all.
 
 Revlog import appends one `study` row per revlog entry, keyed (spec 2
 section 2) by (family, anchor, card_kind, ts); `anchor` is the family's
@@ -21,6 +23,9 @@ columns). `ts` is the revlog row's own id, stored verbatim, and
 Flag import: (family, card kind) resolves to a role through the two
 tables below. A rating or card-flag row's idempotence key is a FlagKey
 over (family, anchor, card_kind, flags), the card-and-flags fact itself.
+A sentence card's flag anchor is its text_sha; a flag imported before
+this shape was keyed target:sha, so an already-imported flag on an old
+collection re-imports once more under the new anchor.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
@@ -87,6 +92,14 @@ def _tag_value(tags: list[str], prefix: str) -> str | None:
     return None
 
 
+def _tag_values(tags: list[str], prefix: str) -> tuple[str, ...]:
+    """Every tag's value for `prefix` (atomic, one part per tag) -- a
+    sentence note carries one target:: tag per filled target.
+    """
+    needle = prefix + "::"
+    return tuple(t[len(needle):] for t in tags if t.startswith(needle))
+
+
 def _word_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
     word_id = _tag_value(tags, "word")
     if word_id is None:
@@ -114,13 +127,16 @@ def _grapheme_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
     return symbol, {"grapheme_symbol": symbol}
 
 
-def _sentence_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
-    target_id = _tag_value(tags, "target")
+def _sentence_anchor(tags: list[str]) -> tuple[str, dict[str, Any]] | None:
+    # One note per adopted Sentence (spec 4 section 1): the anchor is its
+    # own text_sha, matching the note's guid; target_ids carries every
+    # target:: tag the note fills (target-id order preserved from the
+    # note's own tags).
     sentence_sha = _tag_value(tags, "sentence")
-    if target_id is None or sentence_sha is None:
+    target_ids = _tag_values(tags, "target")
+    if sentence_sha is None or not target_ids:
         return None
-    anchor = f"{target_id}:{sentence_sha}"
-    return anchor, {"target_id": target_id, "sentence_sha": sentence_sha}
+    return sentence_sha, {"sentence_sha": sentence_sha, "target_ids": target_ids}
 
 
 _ANCHOR_BUILDERS: dict[str, Any] = {
@@ -144,7 +160,7 @@ _ENTITY_SUBJECT_FIELD: dict[str, str] = {
 }
 
 
-def _family_anchor_parts(tags: list[str]) -> tuple[str, str, dict[str, str]] | None:
+def _family_anchor_parts(tags: list[str]) -> tuple[str, str, dict[str, Any]] | None:
     family = _tag_value(tags, "family")
     if family is None:
         return None
@@ -210,7 +226,7 @@ class _CardIdentity:
     speaker_id: str | None = None
     member_index: str | None = None
     grapheme_symbol: str | None = None
-    target_id: str | None = None
+    target_ids: tuple[str, ...] = ()
     sentence_sha: str | None = None
 
 

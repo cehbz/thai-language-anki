@@ -147,32 +147,62 @@ class Syllabus:
                  + [OrderEntry("grapheme", g.symbol)
                    for g in sorted(self.graphemes, key=lambda g: g.symbol)])
 
+        target_entries = [OrderEntry("word_target", t.id) for t in self._ordered_targets]
+
+        def sentence_after(sentence: Sentence) -> int:
+            try:
+                word = self.last_used_word(sentence)
+            except ValueError:
+                return -1
+            return self._word_last_position[word]
+
+        ordered_sentences = sorted(self.sentences, key=lambda s: (sentence_after(s), s.text_sha))
+        sentence_entries = [OrderEntry("sentence", s.text_sha) for s in ordered_sentences]
+
+        return [*sounds, *target_entries, *sentence_entries]
+
+    @cached_property
+    def _ordered_targets(self) -> tuple[Target, ...]:
+        """Targets sorted by (frequency/emphasis, word id, skill), the
+        basis of order()'s word_target block and of _word_last_position;
+        order() builds that block from this same tuple, with no
+        recursion through order() itself.
+        """
         def key(t: Target) -> tuple[float, str, int]:
             freq = self.frequency.get(t.word, float("inf"))
             weight = self._emphasis_weight(t.word)
             skill_rank = 0 if t.skill == "receptive" else 1
             return (freq / weight if weight else float("inf"), str(t.word), skill_rank)
 
-        ordered_targets = sorted(self.targets, key=key)
-        target_entries = [OrderEntry("word_target", t.id) for t in ordered_targets]
+        return tuple(sorted(self.targets, key=key))
 
-        # A word's position for sentence placement: the LAST of its own
-        # targets' positions (receptive and productive both included), so a
-        # sentence using that word is placed after every target it has.
-        word_last_position: dict[WordId, int] = {}
-        for i, t in enumerate(ordered_targets):
-            position = len(sounds) + i
-            word_last_position[t.word] = max(word_last_position.get(t.word, position), position)
+    @cached_property
+    def _word_last_position(self) -> dict[WordId, int]:
+        """Each word's greatest index among its own targets in
+        _ordered_targets (receptive and productive both included) --
+        the relative position a sentence using that word is placed
+        after in order(); shared by last_used_word.
+        """
+        positions: dict[WordId, int] = {}
+        for i, t in enumerate(self._ordered_targets):
+            positions[t.word] = max(positions.get(t.word, i), i)
+        return positions
 
-        def sentence_after(sentence: Sentence) -> int:
-            used = self._words_used(self.tokenizer.tokens(sentence.text))
-            return max((word_last_position[w] for w in used if w in word_last_position),
-                      default=-1)
-
-        ordered_sentences = sorted(self.sentences, key=lambda s: (sentence_after(s), s.text_sha))
-        sentence_entries = [OrderEntry("sentence", s.text_sha) for s in ordered_sentences]
-
-        return [*sounds, *target_entries, *sentence_entries]
+    def last_used_word(self, sentence: Sentence) -> WordId:
+        """The word `sentence` uses whose own target position
+        (_word_last_position) is greatest -- two words can never tie
+        (each target belongs to one word, so every word's own last
+        position is a distinct index), but the (position, word) key
+        still orders any hypothetical tie to the greater word id.
+        order()'s sentence_after shares this computation to place the
+        sentence. Raises ValueError naming the sentence's text_sha when
+        it uses no targeted word.
+        """
+        used = self._words_used(self.tokenizer.tokens(sentence.text))
+        candidates = [w for w in used if w in self._word_last_position]
+        if not candidates:
+            raise ValueError(f"sentence {sentence.text_sha!r} uses no targeted word")
+        return max(candidates, key=lambda w: (self._word_last_position[w], w))
 
     @cached_property
     def _target_positions(self) -> dict[str, int]:

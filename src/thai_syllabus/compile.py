@@ -1,10 +1,9 @@
 """compile_syllabus (spec 4): a Syllabus, a SyllabusDb (current-best
 artifacts and media provenance) and a MediaStore into one Anki .apkg.
 
-One note per word, grapheme and (sentence, target) pair with a
-card-yielding skill, one per minimal-pair member; every note tagged,
-due-stamped from Syllabus.order(), and stamped with this compile's
-CompileId.
+One note per picture-introduced word, grapheme, and adopted sentence,
+one per minimal-pair member; every note tagged, due-stamped from
+Syllabus.order(), and stamped with this compile's CompileId.
 
 It raises GateRefusal when Syllabus.report().gate is False, or when the
 compiled notes duplicate a card front (rule card/unique-front), unless
@@ -33,7 +32,7 @@ import genanki
 from . import ipa
 from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
-from .rulebook import sentence_note_id
+from .rulebook import _picture_introduced_words, sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
 from .syllabus import Syllabus
 
@@ -279,13 +278,15 @@ class _Resolver:
 @dataclass
 class _Positions:
     """Where each order() entry's due block starts, in STRIDE units, plus
-    one block per (sentence, target) fill. A block is `width` units wide
-    (a pair: len(members); everything else: 1), so blocks never overlap.
+    one block per adopted sentence. A block is `width` units wide (a
+    pair: len(members); everything else: 1), so blocks never overlap.
     """
     entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
     target_index: dict[str, int]          # target id -> block start
     word_index: dict[str, int]            # word id -> min block start of its targets
-    sentence_entries: list[tuple[Sentence, Target, int]]  # (sentence, target, due block index)
+    # one entry per adopted sentence: (sentence, filled targets in target-id
+    # order, due block index)
+    sentence_entries: list[tuple[Sentence, tuple[Target, ...], int]]
     order_length: int
 
 
@@ -320,15 +321,21 @@ def _positions(syllabus: "Syllabus") -> _Positions:
         block += _order_entry_width(entry, pairs_by_id)
     total_blocks = block
 
-    fills_entries: list[tuple[Sentence, Target, int]] = []
+    # One entry per adopted sentence with at least one filled target
+    # (the note it compiles into), due block from the sentence's own
+    # order() position -- a sentence with no order position keeps the
+    # total_blocks fallback, as fills_entries did before.
+    unsorted_entries: list[tuple[Sentence, tuple[Target, ...], int]] = []
     for s in syllabus.sentences:
-        for t in syllabus.targets:
-            if syllabus.fills(s, t):
-                position = sentence_position.get(sentence_note_id(s), total_blocks)
-                fills_entries.append((s, t, position))
-    fills_entries.sort(key=lambda e: (e[2], sentence_note_id(e[0]), e[1].id))
-    sentence_entries = [(s, t, total_blocks + i)
-                        for i, (s, t, _) in enumerate(fills_entries)]
+        filled = tuple(sorted((t for t in syllabus.targets if syllabus.fills(s, t)),
+                              key=lambda t: t.id))
+        if not filled:
+            continue
+        position = sentence_position.get(sentence_note_id(s), total_blocks)
+        unsorted_entries.append((s, filled, position))
+    unsorted_entries.sort(key=lambda e: (e[2], sentence_note_id(e[0])))
+    sentence_entries = [(s, filled, total_blocks + i)
+                        for i, (s, filled, _) in enumerate(unsorted_entries)]
 
     return _Positions(entry_index=entry_index, target_index=target_index,
                       word_index=word_index, sentence_entries=sentence_entries,
@@ -465,21 +472,26 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     return _GraphemeBuild(note, due, None)
 
 
-def _sentence_note(sentence: Sentence, target: Target, due_block: int,
+def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], due_block: int,
                    syllabus: "Syllabus", resolver: _Resolver,
-                   compile_id: str) -> tuple[genanki.Note, int] | None:
-    target_word = syllabus.find_word(target.word)
-    if target_word is None:
-        return None
+                   compile_id: str) -> tuple[genanki.Note, int]:
+    """One note for `sentence`, `targets` the ones it fills (target-id
+    order). TargetWord/cloze are on syllabus.last_used_word(sentence);
+    Productive is "1" iff one of `targets` on that word is productive
+    (spec 4 section 1).
+    """
+    last_used = syllabus.last_used_word(sentence)
+    target_word = syllabus.word(last_used)
     tokens = syllabus.tokenizer.tokens(sentence.text)
     cloze = thai_cloze(tokens, target_word.thai)
     text_sha = sentence_note_id(sentence)
-    productive = target.skill == "productive"
+    productive = any(t.skill == "productive" for t in targets if t.word == last_used)
 
     # A sentence's audio/picture are resolved by (text_sha, kind), the
     # same artifact kinds a word's audio and picture carry.
-    tags = ["family::sentence", f"target::{target.id}", f"sentence::{text_sha}",
-           f"compile::{compile_id}", "kind::cloze", "kind::listening"]
+    tags = ["family::sentence"]
+    tags += [f"target::{t.id}" for t in targets]
+    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::cloze", "kind::listening"]
     tags += resolver.src_tag("audio", text_sha, "recording")
     tags += resolver.src_tag("img", text_sha, "picture")
 
@@ -496,7 +508,7 @@ def _sentence_note(sentence: Sentence, target: Target, due_block: int,
         compile_id,
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
-                        guid=_guid("sentence", target.id, text_sha))
+                        guid=_guid("sentence", text_sha))
     due = due_block * STRIDE
     return note, due
 
@@ -707,9 +719,12 @@ def _gated_items(built: tuple[genanki.Note, int] | None, model: genanki.Model,
 
 def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> Iterator[Built | DroppedCard]:
-    targeted_word_ids = {t.word for t in syllabus.targets}
+    # A word note is compiled only for a word with a picture-introduced
+    # Target (spec 4 section 1); a sentence-introduced word compiles no
+    # word note, it is carried by its sentence note.
+    picture_introduced_word_ids = set(_picture_introduced_words(syllabus))
     for word in syllabus.words:
-        if word.id not in targeted_word_ids:
+        if word.id not in picture_introduced_word_ids:
             continue
         built = _word_note(syllabus, word, resolver, compile_id, positions)
         yield from _gated_items(built, WORD_MODEL, "word", word.id)
@@ -750,9 +765,9 @@ def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
 
 def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
                     compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
-    for sentence, target, due_block in positions.sentence_entries:
-        built = _sentence_note(sentence, target, due_block, syllabus, resolver, compile_id)
-        subject = f"{target.id}:{sentence_note_id(sentence)}"
+    for sentence, targets, due_block in positions.sentence_entries:
+        built = _sentence_note(sentence, targets, due_block, syllabus, resolver, compile_id)
+        subject = sentence_note_id(sentence)
         yield from _gated_items(built, SENTENCE_MODEL, "sentence", subject)
 
 

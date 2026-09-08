@@ -291,6 +291,27 @@ def duplicate_front_syllabus(tokenizer) -> Syllabus:
     return Syllabus(words=(rice_a, rice_b), targets=targets, tokenizer=tokenizer, rules=rules)
 
 
+# --- fixture: one receptive-only Target filled by its own sentence --------
+
+def receptive_only_sentence_syllabus(tokenizer) -> Syllabus:
+    """gin "กิน" (to eat), one receptive Target, one sentence using only
+    that word -- so its last used word (Syllabus.last_used_word) carries
+    no productive Target and the sentence note gets no Cloze card (spec 4
+    section 1: Productive gates the Cloze card).
+    """
+    gin = _word("gin", "กิน", "to eat")
+    target = Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive")
+    eat = Sentence(text="กิน", gloss="to eat", voice="learner_voice",
+                   provenance=PROV)  # to eat
+    return Syllabus(words=(gin,), targets=(target,), sentences=(eat,), tokenizer=tokenizer,
+                    profile=Profile(register="male_colloquial"), rules=RULES_WITHOUT_COMPLETENESS)
+
+
+def seed_receptive_only_sentence(world: SyllabusWorld, syllabus: Syllabus) -> None:
+    world.seed_recording("gin", "eat")
+    world.seed_recording(sentence_note_id(syllabus.sentences[0]), "กิน")
+
+
 # --- fixture: one minimal pair with no rendition seeded -------------------
 
 def pair_only_syllabus(tokenizer) -> tuple[Syllabus, MinimalPair]:

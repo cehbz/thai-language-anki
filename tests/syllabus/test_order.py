@@ -103,6 +103,32 @@ def test_order_places_a_sentence_after_every_word_it_uses():
     assert pos[("sentence", s.id)] > max(pos[("word_target", "t1")], pos[("word_target", "t2")])
 
 
+# --- Syllabus.last_used_word ------------------------------------------------
+
+def test_last_used_word_picks_the_word_with_the_greatest_last_target_position():
+    # "eat" < "rice" by word id, so eat's target sorts before rice's
+    # (order()'s tie-break: frequency tied at inf for both, then word id)
+    # -- rice's target position is the greater of the two.
+    rice = word("rice", "ข้าว")  # rice
+    eat = word("eat", "กิน")  # eat
+    t_rice = target("t1", "rice")
+    t_eat = target("t2", "eat")
+    tok = FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]})  # eat rice
+    s = sentence("กินข้าว", gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(rice, eat), targets=(t_rice, t_eat), sentences=(s,),
+                        tokenizer=tok)
+    assert syllabus.last_used_word(s) == rice.id
+
+
+def test_last_used_word_raises_naming_the_text_sha_when_no_used_word_has_a_target():
+    rice = word("rice", "ข้าว")  # rice
+    tok = FakeTokenizer({"ข้าว": ["ข้าว"]})  # rice
+    s = sentence("ข้าว", gloss="rice")  # rice, no Target on rice
+    syllabus = Syllabus(words=(rice,), targets=(), sentences=(s,), tokenizer=tok)
+    with pytest.raises(ValueError, match=s.text_sha):
+        syllabus.last_used_word(s)
+
+
 # --- constructor: a tokenizer is required -----------------------------------
 
 def test_syllabus_requires_a_tokenizer():

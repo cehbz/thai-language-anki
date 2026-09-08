@@ -13,7 +13,8 @@ from thai_syllabus.wiring import _DbMediaIndex
 
 from tests.spec.syllabus_world import (
     SplitTokenizer, SyllabusWorld, duplicate_front_syllabus, fully_seeded_syllabus,
-    pair_only_syllabus, read_apkg,
+    pair_only_syllabus, read_apkg, receptive_only_sentence_syllabus,
+    seed_receptive_only_sentence,
 )
 
 
@@ -198,20 +199,24 @@ def test_forcing_past_a_closed_gate_writes_the_package_with_declared_warnings(wo
 # --- a receptive-only sentence note yields only the Listening card --------
 
 def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
-    syllabus = fully_seeded_syllabus(world)
+    # One note per adopted Sentence (spec 4 r5): a sentence whose last
+    # used word carries no productive Target among the targets it fills
+    # gets no Cloze card -- receptive_only_sentence_syllabus isolates
+    # that (gin's only Target is receptive, and it is the sentence's only
+    # used word).
+    tokenizer = SplitTokenizer({"กิน": ["กิน"]})  # to eat
+    syllabus = receptive_only_sentence_syllabus(tokenizer)
+    seed_receptive_only_sentence(world, syllabus)
     compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
                      provenance_source=lambda sha: None)
     pkg = read_apkg(world.out_path)
 
     s_model = _models_by_name(pkg)["sentence"]
-    target_idx = None
     tmpl_names = [t["name"] for t in s_model["tmpls"]]
     s_notes = [n for n in pkg["notes"] if str(n["mid"]) == s_model["id"]]
+    assert len(s_notes) == 1
 
-    # pom/receptive is the only target whose skill is receptive -- its
-    # tag names it (spec 4 section 2: tags carry target::TARGET).
-    pom_note = next(n for n in s_notes if "target::pom/receptive" in n["tags"].split(" "))
-    generated = {tmpl_names[c["ord"]] for c in _cards_of(pkg, pom_note["id"])}
+    generated = {tmpl_names[c["ord"]] for c in _cards_of(pkg, s_notes[0]["id"])}
     assert generated == {"Listening"}
 
 

@@ -256,7 +256,7 @@ def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_role_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -282,7 +282,7 @@ def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(f
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flag_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, "rice/productive", "Cloze")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze")
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -314,7 +314,7 @@ def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_noscene_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, "rice/productive", "Cloze")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze")
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -409,26 +409,27 @@ def _find_pair_card(conn, pair_id: str):
     raise AssertionError(f"no Recognition card found for pair {pair_id!r}")
 
 
-def _find_sentence_card(conn, target_id: str, template_name: str):
-    """(card_id, note_id) for the given template on the sentence note
-    tagged target::TARGET_ID."""
+def _find_sentence_card(conn, sentence_sha: str, template_name: str):
+    """(card_id, note_id) for the given template on the one sentence note
+    tagged sentence::SENTENCE_SHA -- the note's own guid-bearing anchor,
+    one note per adopted Sentence (spec 4 r5)."""
     models, notes, cards = _models_notes_cards(conn)
     sentence_model = next(m for m in models.values() if m["name"] == "sentence")
     tmpl_ord = next(i for i, t in enumerate(sentence_model["tmpls"])
                     if t["name"] == template_name)
-    target_tag = f"target::{target_id}"
+    sentence_tag = f"sentence::{sentence_sha}"
     target_nid = None
     for nid, mid, flds, tags in notes:
         if str(mid) != sentence_model["id"]:
             continue
-        if target_tag in [t for t in tags.split(" ") if t]:
+        if sentence_tag in [t for t in tags.split(" ") if t]:
             target_nid = nid
             break
     assert target_nid is not None
     for cid, nid, ord_ in cards:
         if nid == target_nid and ord_ == tmpl_ord:
             return cid, target_nid
-    raise AssertionError(f"no {template_name} card found for target {target_id!r}")
+    raise AssertionError(f"no {template_name} card found for sentence {sentence_sha!r}")
 
 
 def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
@@ -472,7 +473,7 @@ def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -511,7 +512,7 @@ def test_a_lapsed_sentence_card_imported_into_a_real_db_yields_one_sentence_reas
                 answer={"value": "good"})
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, "pom/receptive", "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
     conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
                 (1_700_000_000_000, card_id, 0, 1, 1000, 1000, 2500, 4200, 1))
     conn.commit()
@@ -655,6 +656,27 @@ def test_pair_member_cards_have_distinct_anchors(fx):
     identities = card_identities(collection_path)
     anchors = {i.anchor for i in identities if i.family == "minimal_pair"}
     assert anchors == {"p1:s1:0", "p1:s1:1"}
+
+
+def test_sentence_card_anchor_is_the_text_sha(fx):
+    # One note per adopted Sentence (spec 4 r5): its anchor is the note's
+    # own sentence::TEXT_SHA tag alone, even though several target:: tags
+    # (one per filled target) sit alongside it -- never composed with a
+    # target id, unlike a pair member's MemberKey anchor above.
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_anchor_extracted")
+
+    identities = card_identities(collection_path)
+    sentence_identities = [i for i in identities if i.family == "sentence"]
+    assert sentence_identities
+    assert {i.anchor for i in sentence_identities} == {text_sha}
+    assert set(sentence_identities[0].target_ids) == {
+        "pom/receptive", "gin/receptive", "rice/receptive", "rice/productive"}
 
 
 # --- read-only ---------------------------------------------------------
