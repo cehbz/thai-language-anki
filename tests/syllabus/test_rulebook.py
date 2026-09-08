@@ -329,6 +329,15 @@ def test_target_without_picture_is_an_error_finding():
     assert _rules("target/picture-required")[0].severity == "error"
 
 
+def test_sentence_introduced_target_needs_no_picture_but_still_needs_a_recording():
+    # A glue word introduced only by a sentence is abstract -- no picture
+    # can depict it, so it never joins target/picture-required's subjects
+    # (spec 1 section 3, r5). Its recording is still required.
+    s = _syl(targets=(target("slow/receptive", "slow", introduction="sentence"),))
+    assert _rules("target/picture-required")[0].check(s) == []
+    assert [f.note_id for f in _rules("target/recording-required")[0].check(s)] == ["slow"]
+
+
 def test_target_with_picture_recording_and_sentence_has_no_completeness_findings():
     # recording_speakers deliberately left empty -- target/recording-required
     # must key off recording_provenance, not recording_speakers (see the
@@ -521,6 +530,14 @@ def test_picture_fit_judged_subjects_includes_a_targeted_word_with_a_picture():
 
 def test_picture_fit_judged_subjects_excludes_a_targeted_word_with_no_picture():
     assert PICTURE_FIT.judged_subjects(_syl()) == []
+
+
+def test_picture_fit_judged_subjects_excludes_a_sentence_introduced_word_even_with_a_picture():
+    # A sentence-introduced word compiles to no picture card, so judging a
+    # picture attached to one anyway buys nothing.
+    media = FakeMediaIndex(pictures={"slow"})
+    s = _syl(media=media, targets=(target("slow/receptive", "slow", introduction="sentence"),))
+    assert PICTURE_FIT.judged_subjects(s) == []
 
 
 def test_picture_fit_rubric_is_the_old_text_verbatim():

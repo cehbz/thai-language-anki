@@ -24,6 +24,11 @@ from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 
 
+# Repetition mark ๆ (U+0E46) and abbreviation mark ฯ (U+0E2F): Thai
+# orthographic marks with no vocabulary of their own (spec 1 section 3).
+ORTHOGRAPHIC_MARKS = "ๆฯ"
+
+
 def token_is_known(token: str, known: Collection[str]) -> bool:
     """Whether `token` is a known word, or a known word is its prefix or
     suffix with a remainder that is itself known, recursively. A known
@@ -196,19 +201,27 @@ class Syllabus:
 
     @staticmethod
     def _has_lexical_content(tok: str) -> bool:
-        """Whether a token carries vocabulary at all: whitespace-only and
-        punctuation/digit-only tokens do not."""
-        return any(ch.isalpha() for ch in tok)
+        """Whether a token carries vocabulary at all: whitespace-only,
+        punctuation/digit-only, and orthographic-mark-only (ORTHOGRAPHIC_MARKS)
+        tokens do not."""
+        return any(ch.isalpha() and ch not in ORTHOGRAPHIC_MARKS for ch in tok)
 
     def _unknown_tokens(self, tokens: list[str]) -> list[str]:
         """Content tokens that do not decompose into registered Words at
-        a boundary (token_is_known). Each counts against the novelty
+        a boundary (token_is_known), the unstripped token tried first and
+        the token with its ORTHOGRAPHIC_MARKS characters stripped tried
+        second -- a tokenizer that keeps a mark attached to its host word
+        (e.g. "ช้าๆ") still resolves against a registration of the bare
+        word ("ช้า"). Each remaining token counts against the novelty
         budget (spec 1 section 3); a known prefix does not excuse an
         unregistered remainder.
         """
         known = {w.thai for w in self.words}
-        return [tok for tok in tokens
-               if self._has_lexical_content(tok) and not token_is_known(tok, known)]
+
+        def is_known(tok: str) -> bool:
+            return token_is_known(tok, known) or token_is_known(tok.strip(ORTHOGRAPHIC_MARKS), known)
+
+        return [tok for tok in tokens if self._has_lexical_content(tok) and not is_known(tok)]
 
     def mentions(self, sentence: Sentence, thai: str) -> bool:
         """Whether `thai` appears in `sentence.text` at a token boundary

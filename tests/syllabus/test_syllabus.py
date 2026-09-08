@@ -176,3 +176,48 @@ def test_a_pair_takes_the_strictest_of_its_members_voice_constraints():
                                 confusions=(confusion,))
     assert strict.pair_voice_constraint("p1") == "male"
     assert loose.pair_voice_constraint("p1") == "any"
+
+
+# --- orthographic marks carry no vocabulary (spec 1 section 3) -------------
+
+def test_has_lexical_content_is_false_for_orthographic_marks_true_for_a_word():
+    assert Syllabus._has_lexical_content("ๆ") is False  # repetition mark
+    assert Syllabus._has_lexical_content("ฯ") is False  # abbreviation mark
+    assert Syllabus._has_lexical_content("วิ่ง") is True  # run -- a real word
+
+
+def test_a_repetition_mark_is_not_a_new_word_and_the_sentence_fills_its_target():
+    run = word("run", "วิ่ง", "run")  # วิ่ง: run
+    t = target("run/receptive", "run", "receptive")
+    s = sentence("วิ่งๆ", voice="learner_voice")  # run repeatedly -- ๆ repeats "run"
+    tok = FakeTokenizer({s.text: ["วิ่ง", "ๆ"]})
+    syllabus = Syllabus(words=(run,), targets=(t,), tokenizer=tok)
+    assert syllabus.fills(s, t) is True
+
+
+def test_an_attached_repetition_mark_still_resolves_to_the_bare_registered_word():
+    """newmm keeps some reduplications as one token ("ช้าๆ") rather than
+    splitting the mark off; the attached form still resolves against a
+    registration of the bare word ("ช้า")."""
+    slow = word("slow", "ช้า", "slow")  # ช้า: slow
+    t = target("slow/receptive", "slow", "receptive")
+    s = sentence("ช้าๆ", voice="learner_voice")  # slowly -- ๆ attached to "ช้า"
+    tok = FakeTokenizer({s.text: ["ช้าๆ"]})
+    syllabus = Syllabus(words=(slow,), targets=(t,), tokenizer=tok)
+    assert syllabus.fills(s, t) is True
+
+
+def test_unknown_tokens_is_empty_for_an_attached_abbreviation_mark_over_a_registered_word():
+    bangkok = word("bangkok", "กรุงเทพ", "Bangkok")  # กรุงเทพ: Bangkok
+    syllabus = Syllabus(words=(bangkok,), tokenizer=FakeTokenizer())
+    assert syllabus._unknown_tokens(["กรุงเทพฯ"]) == []  # กรุงเทพฯ: Bangkok, with the abbreviation mark attached
+
+
+def test_gaps_excludes_a_sentence_introduced_word_from_words_missing_pictures():
+    rice = word("rice", "ข้าว", "rice")  # ข้าว: rice -- picture-introduced
+    glue = word("with", "กับ", "with")  # กับ: with -- glue word, sentence-introduced
+    syllabus = Syllabus(words=(rice, glue),
+                        targets=(target("rice/r", "rice"),
+                                 target("with/r", "with", introduction="sentence")),
+                        tokenizer=FakeTokenizer())
+    assert syllabus.gaps().words_missing_pictures == ("rice",)

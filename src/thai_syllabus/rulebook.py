@@ -284,9 +284,17 @@ def _targeted_words(syllabus: "Syllabus") -> list["WordId"]:
     return out
 
 
+def _picture_introduced_words(syllabus: "Syllabus") -> list["WordId"]:
+    """Every word with at least one Target whose introduction is
+    picture_card, in _targeted_words order. A word introduced only by a
+    sentence (a glue word) is excluded."""
+    picture_words = {t.word for t in syllabus.targets if t.introduction == "picture_card"}
+    return [w for w in _targeted_words(syllabus) if w in picture_words]
+
+
 def _check_target_picture(syllabus: "Syllabus") -> list[Finding]:
     return [Finding(rule="target/picture-required", note_id=w, evidence="no current-best picture")
-           for w in _targeted_words(syllabus) if not syllabus.media.has_picture(w)]
+           for w in _picture_introduced_words(syllabus) if not syllabus.media.has_picture(w)]
 
 
 TARGET_PICTURE_REQUIRED = Rule(id="target/picture-required", principle="F3",
@@ -422,7 +430,7 @@ SENTENCE_SYNTHETIC_PRODUCTIVE = Rule(id="sentence/synthetic-productive", princip
 # names the AssessmentReader verdict this reads (spec 4's judge role).
 
 def _picture_fit_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
-    return [(w, syllabus.media.picture_sha(w)) for w in _targeted_words(syllabus)
+    return [(w, syllabus.media.picture_sha(w)) for w in _picture_introduced_words(syllabus)
            if syllabus.media.has_picture(w)]
 
 
