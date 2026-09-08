@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 4, proposed 2026-09-06 against principles r2 and architecture
+Revision 5, proposed 2026-09-08 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -18,6 +18,12 @@ Revision log:
   member order; atomic tags; cumulative due blocks per order() entry;
   flag roles per (family, kind) with Production rating the picture; the
   typed FlagKey. Evidence: Tasks C1-C4.
+- r5 2026-09-08: one note per adopted Sentence, clozed on its last used
+  word, a target tag per filled target, guid = text_sha; word notes for
+  picture-introduced words only. Evidence: compile emitted one Listening
+  note per (target, sentence), six identical cards for a sentence
+  filling six; the sibling-interference finding of the 2026-09-08
+  research.
 
 Scope: Syllabus.compile() — the translation of Syllabus state into Anki's
 domain — and the return path: revlog, flags, and ReviewNote harvests.
@@ -33,7 +39,7 @@ card CSS (legible Thai, bounded images, answer distinct, night mode — as
 shipped in the current compiler) and two service fields rendered by no
 template: ReviewNote (the mid-review comment channel) and CompileId.
 
-**word** (from a Word with a vocabulary Target):
+**word** (from a Word with a picture-introduced Target):
 fields Thai, Meaning, Picture, Audio, Ipa, Classifier, FrontGloss,
 TestSpelling, ProductiveTarget, ReviewNote, CompileId. ProductiveTarget
 gates the Production card (non-empty iff the word has a productive
@@ -71,12 +77,15 @@ KeywordPicture, Audio, ReviewNote, CompileId.
   substitute audio: a grapheme whose name word has no current-best
   recording drops the card, counted.
 
-**sentence** (one note per (Target, Sentence) with a card-yielding skill):
+**sentence** (one note per adopted Sentence, at its order position):
 fields ThaiCloze, Thai, TargetWord, Audio, ScenePicture, Gloss,
 GrammarNote, Productive, ReviewNote, CompileId. Gloss = Sentence.gloss;
-Productive gates the Cloze card (non-empty iff the Target is productive).
-- Cloze (productive Target only): front cloze + optional scene picture;
-  back target word, NATIVE audio (F7), gloss.
+TargetWord is the sentence's last used word, the target it enters the
+order after; Productive gates the Cloze card (non-empty iff that target
+is productive). Tags: one target::ID per target the sentence fills, one
+sentence::SHA.
+- Cloze (productive last used word only): front cloze on that word +
+  optional scene picture; back target word, NATIVE audio (F7), gloss.
 - Listening (receptive): front audio; back full text, target, gloss.
 ThaiCloze is built by token-boundary replacement via the tokenizer port —
 never str.replace (the ยา/โรงพยาบาล corruption class: blanking "medicine"
@@ -85,12 +94,13 @@ inside "hospital").
 ## 2. Identity, tags, order
 
 - guid: word = word id; grapheme = symbol; pair = MemberKey;
-  sentence = (target id, sentence text_sha). A replaced sentence resets
+  sentence = text_sha. A replaced sentence resets
   its scheduling; everything else updates in place.
 - Tags are atomic, one part per tag, never composed or split: family::,
   kind:: (card kind), word::ID (word notes), pair::ID, confusion::ID,
   member::INDEX and speaker::ID (pair notes), grapheme::SYMBOL,
-  target::ID and sentence::SHA (sentence notes, two tags), compile::ID,
+  target::ID per filled target and sentence::SHA (sentence notes),
+  compile::ID,
   src tags for audio/image provenance. The import reads each tag's
   value by prefix and writes the parts as study columns (spec 2); a word
   card's Target is derived from its kind (Listening receptive, Production

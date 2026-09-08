@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 13, proposed 2026-09-07 against principles r2 and architecture
+Revision 14, proposed 2026-09-08 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -72,6 +72,12 @@ Revision log:
 - r13 2026-09-07: the newest verdict per backend and artifact ranks
   (§6). Evidence: the judge-key arc's final review (a re-keyed verdict
   re-asked once leaves two rows per artifact; the fold took the higher).
+- r14 2026-09-08: the sentence attempt drafts for coverage: one cutoff
+  per batch, fills against every open target the text contains, one
+  candidate per distinct text (§5). Evidence: 118 of 119 live drafts
+  claimed one target and 76 of 113 filled nothing, while the 8 adopted
+  sentences fill 5 to 7 targets each under fills(); research of
+  2026-09-08 (placement at the last unknown word).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -250,15 +256,20 @@ when the members' current-best recordings differ in speaker and no
 rendition exists.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target: the prompt carries the vocabulary met by the furthest handed target
-once, in entry-position order (Syllabus.order), and per target the count of
-that list it may use (the per-target vocabularies nest by position), the
-profile register, and the existing sentence openings to avoid. Each drafted text is a candidate:
-mechanical `fills()` against the targets it claims, judge
-sentence-for-target (naturalness; register), then adopt:
-`Syllabus.add_sentence` with provenance. Each draft carries its L1
-gloss, judged with the text (a gloss that misstates the sentence fails
-the candidate). Adoption creates needs: the sentence's recording (tts
+target: the prompt carries the vocabulary met by the furthest handed
+target once, in entry-position order (Syllabus.order), as one cutoff for
+the whole batch, the handed targets, the profile register, and the
+existing sentence openings to avoid; it asks for the fewest natural
+sentences that cover the handed targets, each introducing at most one
+sentence-introduced target. Each distinct drafted text is a candidate: a
+text listed twice is one candidate whose target claims merge, and
+differing glosses reject it. Mechanical `fills()` is checked against
+every open target whose word the text contains (the drafter's claim is a
+hint, not the gate); the judge sees each text once (sentence-for-target:
+naturalness; register; the L1 gloss with the text, a gloss that
+misstates the sentence fails the candidate); adoption
+(`Syllabus.add_sentence` with provenance) fills every target `fills()`
+says it fills, chosen greedily by targets filled. Adoption creates needs: the sentence's recording (tts
 allowed for receptive-only; a productive fill wants native, warn
 otherwise) and an optional scene picture. A candidate
 that fills nothing is a rejected draft in the record.

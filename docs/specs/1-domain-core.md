@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 4, proposed 2026-09-05 against principles r2 and architecture
+Revision 5, proposed 2026-09-08 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -19,6 +19,11 @@ Revision log:
 - r4 2026-09-05: scene/fit joins the F3 row (a scene picture is judged
   against the sentence it illustrates). Evidence: Task B4 review found
   no scene rubric existed outside test fixtures.
+- r5 2026-09-08: orthographic marks carry no vocabulary (§3 fills);
+  target/picture-required covers words with a picture-introduced target
+  (rule table, F3). Evidence: the live drafts' fills failures (ๆ counted
+  as an unregistered word); glue words registered as sentence-introduced
+  targets are abstract and get no picture.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -154,7 +159,9 @@ none re-derives placement.
    only),
 3. at the sentence's entry position (after its last word's target),
    every word it uses has an earlier Target — except one new word iff
-   some filled target has introduction == sentence.
+   some filled target has introduction == sentence. Orthographic marks
+   (the repetition mark ๆ, the abbreviation mark ฯ, punctuation, digits)
+   carry no vocabulary and never count as new.
 Used by generation as acceptance and by report() as coverage. Novelty
 budget is a property of the fill set, not the sentence.
 
@@ -213,7 +220,7 @@ violated by construction.
 | A4 | compile (a missing artifact drops the card, counted) |
 | F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, rendition/mixed-speakers, coverage/confusions |
 | F2 | syllabus/closure, coverage/categories (measure), category/single-membership |
-| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required; front-gloss policy provisional |
+| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (over words with a picture-introduced target); front-gloss policy provisional |
 | F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
 | F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
 | F7, E2 | target/recording-required, sentence/recording-required, recording/synthetic, sentence/synthetic-productive |
