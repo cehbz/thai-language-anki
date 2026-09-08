@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 5, proposed 2026-09-08 against principles r2 and architecture
+Revision 6, proposed 2026-09-08 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -24,6 +24,12 @@ Revision log:
   (rule table, F3). Evidence: the live drafts' fills failures (ๆ counted
   as an unregistered word); glue words registered as sentence-introduced
   targets are abstract and get no picture.
+- r6 2026-09-08: fills' novelty is one unmet sentence-introduced target
+  per sentence, over the fill set (§3); a word whose targets are all
+  sentence-introduced carries no category (§2). Evidence: the final
+  review of the parsimonious-sentences arc (a registered glue word was
+  never "new", so two could enter in one sentence; the per-target
+  budget adopted a sentence the gate then refused).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -79,7 +85,9 @@ Category                            # curated learning list: a theme of
   members: frozenset[WordId]        # invariant: a word is in at most one
                                     # category (rule category/single-
                                     # membership); closure words (pair
-                                    # members, keywords) are in none.
+                                    # members, keywords) and words whose
+                                    # only targets are sentence-introduced
+                                    # are in none.
                                     # Consumers: coverage/categories (F2),
                                     # emphasis (Profile), the picture query
                                     # qualifier (derived reverse lookup;
@@ -157,13 +165,15 @@ none re-derives placement.
    (tokenizer port; prefix/suffix compound membership counts),
 2. sentence.voice satisfies target.skill (other_voice fills receptive
    only),
-3. at the sentence's entry position (after its last word's target),
-   every word it uses has an earlier Target — except one new word iff
-   some filled target has introduction == sentence. Orthographic marks
-   (the repetition mark ๆ, the abbreviation mark ฯ, punctuation, digits)
-   carry no vocabulary and never count as new.
-Used by generation as acceptance and by report() as coverage. Novelty
-budget is a property of the fill set, not the sentence.
+3. at the sentence's entry position (after its last word's target):
+   every content token is a registered word (an orthographic mark, the
+   repetition mark ๆ, the abbreviation mark ฯ, punctuation or a digit,
+   is none), every word it uses has a Target, and at most one filled
+   Target is sentence-introduced and unmet, no adopted sentence placed
+   at or before this one filling it.
+Used by generation as acceptance and by report() as coverage. Clause 3
+is a rule over the fill set, applied once per sentence, by acceptance
+(the attempt), by adoption (the fold) and by the gate.
 
 **report() -> Report** — runs every check on every note and every
 measure on the aggregate. Report { syllabus_state_id, findings, metrics,
