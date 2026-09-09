@@ -27,7 +27,7 @@ from thai_syllabus.provider import (
     wikimedia_backend,
 )
 from thai_syllabus.store import ImageIngestResult, MediaStore, SyllabusDb
-from thai_syllabus.transport import Completion, TransportError
+from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
 from thai_syllabus.tts import GoogleTts, pick_voice
 
 
@@ -514,6 +514,28 @@ def test_forvo_a_200_body_that_is_not_json_is_a_transport_error():
     backend = ForvoBackend(api_key="k", get=lambda url, timeout=None: _Bad(status_code=200))
     with pytest.raises(TransportError):
         backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+
+
+def test_forvo_400_with_limit_day_reached_raises_quota_exhausted():
+    backend = ForvoBackend(api_key="k", get=lambda url, timeout=None:
+                           _FakeResponse(status_code=400, json_data=["Limit/day reached."]))
+    with pytest.raises(QuotaExhausted) as err:
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+    assert err.value.source == "forvo"
+
+
+@pytest.mark.parametrize("payload", [
+    ["Limit/day reached.", "another entry"],  # not length 1
+    ["some other message"],                    # wrong text
+    {"error": "bad request"},                  # not a list at all
+    "Limit/day reached.",                      # a bare string, not a list
+])
+def test_forvo_400_with_another_body_stays_a_plain_transport_error(payload):
+    backend = ForvoBackend(api_key="k", get=lambda url, timeout=None:
+                           _FakeResponse(status_code=400, json_data=payload))
+    with pytest.raises(TransportError) as err:
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+    assert not isinstance(err.value, QuotaExhausted)
 
 
 def test_forvo_empty_result_is_still_a_valid_answer(db):

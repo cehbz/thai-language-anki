@@ -43,7 +43,7 @@ from .derivations import (
 from .entities import Sentence
 from .ports import RecordWriter
 from .record import asks_since, spend_since
-from .transport import TransportError
+from .transport import QuotaExhausted, TransportError
 
 __all__ = ["Budget", "Spend", "RunReport", "run"]
 
@@ -254,11 +254,16 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     candidate on record is owed (spec 3 section 5), else the cheapest
     source not yet tried since current-best last changed. A Source that
     fails on the wire is skipped for the rest of the run and every need
-    waiting on it is deferred; an unreachable judge stops the loop.
+    waiting on it is deferred; an unreachable judge stops the loop. A
+    Source that states its own quota is spent (spec 3 section 6a's Quota
+    state) is skipped for the rest of the run too, and every need on it,
+    this one included, counts budgeted, not deferred -- the same bucket a
+    spent day budget uses, and it is never a source_failures entry.
     Returns how many entries it never reached (zero unless a dead judge
     stopped it), for run() to defer.
     """
     dead_sources: set[str] = set()
+    budgeted_sources: set[str] = set()
     for index, entry in enumerate(entries):
         need = Need(entry.subject, entry.kind, entry.subject_kind)
         before = current_best_of(ctx, need.subject, need.kind)
@@ -280,6 +285,12 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 # same source again.
                 tally.deferred += 1
                 continue
+            if source in budgeted_sources:
+                # Same reasoning as a spent day budget below: the source
+                # said its own allowance is gone, so this need is
+                # budgeted, not deferred, and asks nothing.
+                tally.budgeted += 1
+                continue
             budget = budgets.get(source)
             if budget is not None and budget.exceeded_by(_spent_on(source, carried, tally)):
                 tally.budgeted += 1
@@ -290,6 +301,12 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 tally.unreachable = True
                 tally.attempted += 1
                 return len(entries) - index - 1
+            except QuotaExhausted:
+                budgeted_sources.add(source)
+                tally.budgeted += 1
+                _log.warning("source %s: quota exhausted; budgeted for the rest of the run",
+                            source)
+                continue
             except TransportError as e:
                 dead_sources.add(source)
                 tally.deferred += 1

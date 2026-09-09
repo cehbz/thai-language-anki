@@ -26,7 +26,7 @@ import requests
 from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, FetchRefused, TransportError
+from .transport import Completion, FetchRefused, QuotaExhausted, TransportError
 
 __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
@@ -331,6 +331,18 @@ class FetchBackend:
 # --- forvo: recording lookups (450/day quota; re-asked once per attempt
 # when a url has expired, spec 3 section 6a) --------------------------------
 
+def _forvo_quota_exhausted(resp: Any) -> bool:
+    """Forvo's own statement that today's allowance is spent (spec 3
+    section 6a): a 400 body that is a list of exactly one element, the
+    string "Limit/day reached." -- any other 400 body stays a plain
+    TransportError."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, list) and len(body) == 1 and body[0] == "Limit/day reached."
+
+
 @dataclass
 class ForvoBackend:
     api_key: str
@@ -347,6 +359,8 @@ class ForvoBackend:
               f"action/word-pronunciations/word/{word}")
         try:
             resp = self.get(url, timeout=30)
+            if resp.status_code == 400 and _forvo_quota_exhausted(resp):
+                raise QuotaExhausted("forvo")
             if resp.status_code != 200:
                 raise TransportError(f"forvo returned {resp.status_code}")
             data = resp.json()

@@ -38,7 +38,7 @@ from thai_syllabus.run import (
     run,
 )
 from thai_syllabus.store import MediaStore, SyllabusDb
-from thai_syllabus.transport import Completion, TransportError
+from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
 from thai_syllabus.wiring import build_sourcing
 
 from .builders import sentence, syl, target, thai_of, word
@@ -1323,6 +1323,24 @@ def test_a_dead_source_is_counted_and_skipped_for_the_rest_of_the_run(db, monkey
     assert report.unreachable is False
     assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
         "openverse": 1}
+
+
+def test_a_quota_exhausted_source_budgets_the_need_and_every_later_one_on_it(db, monkeypatch):
+    """Forvo's own quota statement (spec 3 section 6a) is not a source
+    failure: the need that hit it counts budgeted, not deferred, no
+    source_failures entry is recorded, and a later need whose next
+    source is the same one is skipped as budgeted too, without ever
+    calling attempt() for it -- the source is budgeted for the rest of
+    the run, the same bucket a spent day budget uses."""
+    calls = _patch(monkeypatch, {("a", "forvo"): QuotaExhausted})
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {})
+    assert [n.subject for n, _s in calls] == ["a"]   # "b" never reaches attempt()
+    assert report.budgeted == 2 and report.deferred == 0
+    assert report.source_failures == {}
+    assert report.available == 2 and report.attempted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+    assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {}
 
 
 def test_a_drafter_transport_failure_is_a_source_failure_and_the_loop_runs(db, monkeypatch):

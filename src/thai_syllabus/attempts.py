@@ -48,7 +48,7 @@ from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import FetchRefused, SynthesisRefused, TransportError
+from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
@@ -320,6 +320,8 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                         params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
     try:
         hits = ctx.provider.ask(source, question)
+    except QuotaExhausted:
+        raise
     except TransportError:
         fetches.failed()
         _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
@@ -334,6 +336,8 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     if not fetches.candidates and fetches.served_refusals:
         try:
             hits = ctx.provider.reask(source, question)
+        except QuotaExhausted:
+            raise
         except TransportError:
             fetches.failed()
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
@@ -542,12 +546,17 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str,
     refusal of its url re-asks the lookup through `relookup` once and
     retries the item found under the same Forvo id (spec 3 section 6a);
     an item with no id is not retried. A second refusal, a wire failure,
-    or a failed re-lookup, counts as transient."""
+    or a failed re-lookup, counts as transient. A re-lookup that hits
+    Forvo's own quota (`QuotaExhausted`) is not a transient failure: it
+    propagates unchanged to the attempt function's own catch, the same
+    contract a quota hit on the first lookup has."""
     got = _fetch_forvo_item(ctx, subject, item, fetches, subject_kind=subject_kind)
     if got is None and fetches.last_refusal_served and relookup is not None:
         key = item.get("id")
         try:
             candidates = relookup()
+        except QuotaExhausted:
+            raise
         except TransportError as e:
             _log.warning("forvo re-lookup failed for %s: %s", subject, e)
             fetches.failed()
@@ -644,6 +653,8 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
             for item in items:
                 _download_forvo(ctx, need.subject, item, spend, fetches,
                                 subject_kind=need.subject_kind, relookup=relookup)
+        except QuotaExhausted:
+            raise
         except TransportError:
             fetches.failed()
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
@@ -653,6 +664,8 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
         try:
             _synthesize(ctx, need.subject, text, voice, spend,
                         subject_kind=need.subject_kind, fetches=fetches)
+        except QuotaExhausted:
+            raise
         except TransportError:
             fetches.failed()
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
@@ -688,6 +701,8 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
             members = _tts_rendition(ctx, pair, words, constraint, spend, fetches)
         else:
             raise ValueError(f"no rendition source named {source!r}")
+    except QuotaExhausted:
+        raise
     except TransportError:
         fetches.failed()
         _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)

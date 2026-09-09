@@ -26,7 +26,8 @@ from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRI
                                     SENTENCE_FOR_TARGET_RUBRIC)
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
-from thai_syllabus.transport import Completion, FetchRefused, SynthesisRefused, TransportError
+from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused,
+                                     TransportError)
 from thai_syllabus.tts import pick_voice
 
 from .builders import target, word
@@ -98,6 +99,15 @@ class _Forvo:
 
     def fetch(self, q):
         return RawAnswer(items=tuple(self.items_by_word.get(q.params["word"], ())), cost=1.0)
+
+
+class _QuotaForvo:
+    """Forvo stating its own daily quota is spent (spec 3 section 6a)."""
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        raise QuotaExhausted("forvo")
 
 
 class _Tts:
@@ -514,6 +524,16 @@ def test_forvo_attempt_leaves_an_attribute_forvo_did_not_give_unknown(tmp_path):
     assert ctx.db.speaker("forvo:anon") == Speaker("forvo:anon", "native")
 
 
+def test_a_recording_attempt_raises_quota_exhausted_and_appends_no_row(tmp_path):
+    """Forvo's own quota statement is not a transient failure: it
+    reraises without a fetches.failed() and without an outcome row."""
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx.provider._backends["forvo"] = _QuotaForvo()
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("rice", "recording"), "forvo")
+    assert not [r for r in rows_for(ctx.db, "rice", "recording") if r.port == "attempt"]
+
+
 def test_a_forvo_attempt_that_found_nothing_is_still_on_the_record(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     res = attempt(ctx, Need("rice", "recording"), "forvo")
@@ -633,6 +653,16 @@ def test_a_source_that_cannot_guarantee_one_speaker_answers_empty(tmp_path):
     provided = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"]
     assert res.attempted and provided[-1].answer["items"] == []
     assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
+
+
+def test_a_rendition_attempt_raises_quota_exhausted_and_appends_no_row(tmp_path):
+    """Same reraise-without-appending contract as a word's own recording
+    attempt (spec 3 section 6a's Quota state)."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus())
+    ctx.provider._backends["forvo"] = _QuotaForvo()
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    assert not [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "attempt"]
 
 
 def test_rendition_attempt_falls_to_one_tts_voice_across_the_members(tmp_path):
@@ -953,6 +983,17 @@ class _DeadImgfetch:
         raise TransportError("imgfetch refused")
 
 
+class _QuotaSearch:
+    """A picture search source stating its own quota is spent. Forvo is
+    the only real quota source (spec 3 section 3); this stands in for it
+    to check the picture attempt's catch is source-agnostic."""
+    def cache_key(self, q):
+        return ProvideKey(source="openverse", kind="", query=q.params["query"])
+
+    def fetch(self, q):
+        raise QuotaExhausted("openverse")
+
+
 def test_a_picture_attempt_writes_a_candidates_outcome_when_a_hit_is_stored(tmp_path):
     ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
     attempt(ctx, Need("rice", "picture"), "openverse")
@@ -989,6 +1030,16 @@ def test_a_picture_attempt_writes_transient_failure_when_every_fetch_it_needed_f
     assert result.attempted
     row = _outcome(ctx.db, "rice", "picture", "openverse")
     assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
+
+
+def test_a_picture_attempt_raises_quota_exhausted_and_appends_no_row(tmp_path):
+    """The source's own quota statement is not a transient failure: it
+    reraises without a fetches.failed() and without an outcome row."""
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    ctx.provider._backends["openverse"] = _QuotaSearch()
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("rice", "picture"), "openverse")
+    assert not [r for r in rows_for(ctx.db, "rice", "picture") if r.port == "attempt"]
 
 
 class _RotatingSearch(_Search):
@@ -1410,6 +1461,45 @@ def test_a_failed_relookup_after_a_stored_item_is_a_transient_fetch(tmp_path):
     assert forvo.lookups == 2
     row = _outcome(ctx.db, "rice", "recording", "forvo")
     assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+
+
+class _QuotaOnRelookupForvo:
+    """The first lookup succeeds; the re-lookup a served refusal triggers
+    hits Forvo's own daily quota (spec 3 section 6a) instead of a fresh
+    item -- the live failure: audiofetch refused Forvo's JSON error body,
+    the re-lookup itself answered 400."""
+    def __init__(self):
+        self.lookups = 0
+
+    def cache_key(self, q):
+        return ProvideKey(source="forvo", kind="", query=q.params["word"])
+
+    def fetch(self, q):
+        self.lookups += 1
+        if self.lookups > 1:
+            raise QuotaExhausted("forvo")
+        return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m",
+                                 "country": "Thailand",
+                                 "pathmp3": "https://forvo/audio/1.mp3"},), cost=1.0)
+
+
+def test_a_quota_exhausted_relookup_appends_no_row_and_reaches_the_caller(tmp_path):
+    """A served refusal of the first download re-asks the lookup (spec 3
+    section 6a's re-ask rule); when that re-lookup hits Forvo's own quota
+    instead of answering fresh, it is not a transient fetch failure --
+    no outcome row is appended and QuotaExhausted reaches attempt()'s own
+    caller unchanged, the same contract a quota hit on the first lookup
+    has."""
+    forvo = _QuotaOnRelookupForvo()
+    media = MediaStore(tmp_path / "media")
+    audiofetch = _RefusingAudiofetch(media)
+    ctx = _sourcing(tmp_path, _word_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": audiofetch},
+                    assess={"mechanical": _mechanical()}, media=media)
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("rice", "recording"), "forvo")
+    assert forvo.lookups == 2
+    assert not [r for r in rows_for(ctx.db, "rice", "recording") if r.port == "attempt"]
 
 
 def test_a_tts_recording_attempt_writes_a_candidates_outcome(tmp_path):

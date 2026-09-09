@@ -13,6 +13,7 @@ from thai_syllabus.transport import (
     ClaudeBatchTransport,
     ClaudeCliTransport,
     Completion,
+    QuotaExhausted,
     TransportError,
     image_block,
     image_media_type,
@@ -58,6 +59,14 @@ def test_cli_transport_raises_on_empty_output():
     t = ClaudeCliTransport(runner=runner)
     with pytest.raises(TransportError):
         t.complete("x")
+
+
+# --- quota exhaustion (spec 3 section 6a) -----------------------------------
+
+def test_quota_exhausted_is_a_transport_error_carrying_its_source():
+    err = QuotaExhausted("forvo")
+    assert isinstance(err, TransportError)
+    assert err.source == "forvo"
 
 
 # --- api -------------------------------------------------------------------
