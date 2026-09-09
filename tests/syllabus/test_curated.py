@@ -427,6 +427,46 @@ def test_empty_female_voice_pool_refuses(tmp_path):
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 
+def test_an_unparseable_quotas_day_starts_refuses_naming_the_field(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"max_asks": 450, "day_starts": "22"}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo\.day_starts"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_quotas_day_starts_with_no_zone_refuses(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"day_starts": "22:00"}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo\.day_starts"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_an_unquoted_day_starts_that_yaml_parses_as_an_int_refuses(tmp_path):
+    """An unquoted `22:00` is YAML sexagesimal (int 1320), not the HH:MM
+    string parse_day_starts takes -- the loader refuses it the same way
+    as any other unparseable day_starts, naming the field, rather than
+    raising a TypeError out of parse_day_starts."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(textwrap.dedent("""
+        imgfetch_path: /opt/bin/imgfetch
+        audiofetch_path: /opt/bin/audiofetch
+        judge: {transport: cli, model: m}
+        quotas:
+          forvo:
+            max_asks: 450
+            day_starts: 22:00
+    """), encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo\.day_starts"):
+        curated.load_providers_config(path)
+
+
+def test_a_well_formed_quotas_day_starts_loads(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"max_asks": 450, "day_starts": "22:00Z"}})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.quotas["forvo"]["day_starts"] == "22:00Z"
+
+
 def test_providers_config_round_trip(tmp_path):
     path = tmp_path / "providers.yaml"
     config = curated.ProvidersConfig(

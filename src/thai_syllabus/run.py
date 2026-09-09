@@ -12,9 +12,10 @@ appended its own checkpoint before this loop saw it (spec 2).
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import datetime, time, timedelta, timezone
 
 from .assessor import JudgeUnreachable, PreparedQuestion
 from .cachekeys import RunReportKey
@@ -54,11 +55,14 @@ _log = logging.getLogger(__name__)
 class Budget:
     """One backend's spend cap for a day, in that backend's own currency
     (spec 3 section 7), measured against what the record says it spent
-    since midnight plus what this run has spent. Either field may be set;
-    a backend with neither is unbounded.
+    since `day_starts` plus what this run has spent. `max_asks` and
+    `max_cost` may each be set independently; a backend with neither is
+    unbounded. `day_starts` is `"HH:MM"` plus `Z` or `+HH:MM`/`-HH:MM`
+    (day_start_ns's format); None sums from local midnight.
     """
     max_asks: int | None = None
     max_cost: float | None = None
+    day_starts: str | None = None
 
     def exceeded_by(self, spend: Spend) -> bool:
         """Whether `spend` has reached this cap."""
@@ -69,7 +73,7 @@ class Budget:
         return False
 
 
-FORVO_DEFAULT_DAILY_BUDGET = Budget(max_asks=450)
+FORVO_DEFAULT_DAILY_BUDGET = Budget(max_asks=450, day_starts="22:00Z")
 LEARNER_DEFAULT_SESSION_BUDGET = Budget(max_asks=20)
 
 
@@ -191,20 +195,56 @@ def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
     return None
 
 
-def day_start_ns(today: date) -> int:
-    """Midnight local on `today`, in the nanoseconds a cache row's ts is
-    stamped in -- the window a per-day budget is summed over."""
-    return int(datetime.combine(today, time.min).timestamp() * 1_000_000_000)
+_DAY_STARTS_RE = re.compile(
+    r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)(?P<zone>Z|[+-][01]\d:[0-5]\d)$")
+
+
+def parse_day_starts(day_starts: str) -> tuple[time, timezone]:
+    """The wall time and zone a `day_starts` string names: `HH:MM`
+    followed by `Z` or a `+HH:MM`/`-HH:MM` offset. Raises ValueError,
+    naming `day_starts`, on anything else.
+    """
+    match = _DAY_STARTS_RE.match(day_starts)
+    if match is None:
+        raise ValueError(
+            f"day_starts: {day_starts!r} does not parse as HH:MM plus Z or +/-HH:MM")
+    hour, minute, zone = int(match["hour"]), int(match["minute"]), match["zone"]
+    if zone == "Z":
+        offset = timedelta(0)
+    else:
+        sign = 1 if zone[0] == "+" else -1
+        zone_hour, zone_minute = zone[1:].split(":")
+        offset = sign * timedelta(hours=int(zone_hour), minutes=int(zone_minute))
+    return time(hour, minute), timezone(offset)
+
+
+def day_start_ns(now: datetime, day_starts: str | None) -> int:
+    """The most recent instant at `day_starts`'s wall time, in
+    `day_starts`'s own zone, at or before `now` -- local midnight in
+    `now`'s own zone when `day_starts` is None. Nanoseconds, the unit a
+    cache row's ts is stamped in -- the window a per-day budget is
+    summed over.
+    """
+    wall, zone = (time.min, now.tzinfo) if day_starts is None else parse_day_starts(day_starts)
+    at_zone = now.astimezone(zone)
+    candidate = at_zone.replace(hour=wall.hour, minute=wall.minute, second=0, microsecond=0)
+    if candidate > at_zone:
+        candidate -= timedelta(days=1)
+    return int(candidate.timestamp() * 1_000_000_000)
 
 
 def _spent_today(ctx: Sourcing, budgets: Mapping[str, Budget]) -> dict[str, Spend]:
-    """What the record says each budgeted backend spent since midnight,
-    read once; this run's own asks are counted from the tally.
+    """What the record says each budgeted backend spent since its own
+    budget's `day_starts`, read once; this run's own asks are counted
+    from the tally.
     """
-    since = day_start_ns(ctx.today())
-    return {name: Spend(asks=asks_since(ctx.db, name, since),
-                        cost=spend_since(ctx.db, name, since))
-            for name in budgets}
+    now = datetime.now().astimezone()
+    spent: dict[str, Spend] = {}
+    for name, budget in budgets.items():
+        since = day_start_ns(now, budget.day_starts)
+        spent[name] = Spend(asks=asks_since(ctx.db, name, since),
+                            cost=spend_since(ctx.db, name, since))
+    return spent
 
 
 def _spent_on(source: str, carried: Mapping[str, Spend], tally: _Tally) -> Spend:

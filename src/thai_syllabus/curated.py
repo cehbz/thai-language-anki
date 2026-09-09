@@ -22,6 +22,7 @@ import yaml
 from .entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
+from .run import parse_day_starts
 from .secrets import SecretStore
 from .tts import FEMALE_VOICES, MALE_VOICES
 
@@ -538,8 +539,9 @@ def rulebook_file_text(path: str | Path) -> str:
 # price_per_mtok or no anthropic secret, an unknown judge.thinking, a
 # judge.max_tokens under 16000 with thinking: adaptive, an unknown
 # drafter.transport, an api drafter with no anthropic secret or no
-# price_per_mtok, an empty male_voices or female_voices pool. An absent
-# file refuses, naming the path.
+# price_per_mtok, an empty male_voices or female_voices pool, a
+# quotas.<source>.day_starts that does not parse (run.parse_day_starts).
+# An absent file refuses, naming the path.
 
 @dataclass(frozen=True)
 class JudgeConfig:
@@ -689,6 +691,23 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if not isinstance(transient_cap, int) or transient_cap < 1:
         errors.append(f"providers.transient_cap: {transient_cap!r} must be a positive integer")
 
+    quotas_cfg = dict(data.get("quotas") or {})
+    for source, quota in quotas_cfg.items():
+        day_starts = quota.get("day_starts") if isinstance(quota, Mapping) else None
+        if day_starts is None:
+            continue
+        if not isinstance(day_starts, str):
+            # An unquoted "22:00" parses as YAML sexagesimal (int 1320),
+            # not the HH:MM string parse_day_starts takes.
+            errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} does not "
+                          "parse as HH:MM plus Z or +/-HH:MM")
+            continue
+        try:
+            parse_day_starts(day_starts)
+        except ValueError:
+            errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} does not "
+                          "parse as HH:MM plus Z or +/-HH:MM")
+
     if errors:
         raise CuratedValidationError(errors)
 
@@ -699,7 +718,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, image_candidates=image_candidates,
         image_width=image_width,
-        batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
+        batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
         attempt_cap=attempt_cap, transient_cap=transient_cap)
 
 

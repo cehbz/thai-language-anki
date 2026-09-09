@@ -401,6 +401,11 @@ def test_default_budgets_includes_forvo_and_learner_defaults(cfg):
     assert budgets["learner"].max_asks == 20
 
 
+def test_default_budgets_forvo_default_carries_its_22_00z_reset(cfg):
+    budgets = default_budgets(cfg)
+    assert budgets["forvo"].day_starts == "22:00Z"
+
+
 def test_default_budgets_layers_configured_quotas_over_defaults():
     cfg = ProvidersConfig(quotas={"forvo": {"max_asks": 10},
                                   "judge-api": {"max_cost": 5.0}})
@@ -408,6 +413,22 @@ def test_default_budgets_layers_configured_quotas_over_defaults():
     assert budgets["forvo"].max_asks == 10  # overridden
     assert budgets["learner"].max_asks == 20  # default still present
     assert budgets["judge-api"].max_cost == 5.0
+
+
+def test_default_budgets_a_configured_forvo_entry_without_day_starts_keeps_the_default():
+    """spec 3 section 7/9: forvo's documented reset time is a property of
+    the default, not something every quotas.forvo entry must repeat --
+    the layering is field by field, not a whole-Budget replacement."""
+    cfg = ProvidersConfig(quotas={"forvo": {"max_asks": 10}})
+    budgets = default_budgets(cfg)
+    assert budgets["forvo"].day_starts == "22:00Z"
+
+
+def test_default_budgets_a_configured_forvo_entry_can_override_day_starts():
+    cfg = ProvidersConfig(quotas={"forvo": {"day_starts": "18:00+02:00"}})
+    budgets = default_budgets(cfg)
+    assert budgets["forvo"].day_starts == "18:00+02:00"
+    assert budgets["forvo"].max_asks == 450  # untouched by the override
 
 
 # --- load_syllabus: round trip over a synthetic curated dir ---------------

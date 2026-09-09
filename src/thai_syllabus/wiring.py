@@ -263,18 +263,22 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
 
 def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
     """Budget per backend (spec 3 section 4): the two documented defaults
-    (forvo 450/day, learner 20/session) layered under whatever
-    providers.yaml's `quotas` section configures -- a configured entry
-    overrides the matching default; every other configured backend just
-    adds its own Budget.
+    (forvo 450/day from 22:00Z, learner 20/session) layered under
+    whatever providers.yaml's `quotas` section configures, field by
+    field -- a configured entry that names only `max_asks` still keeps
+    the matching default's `day_starts` (and vice versa); every other
+    configured backend just adds its own Budget from the fields it names.
     """
     budgets: dict[str, Budget] = {
         "forvo": FORVO_DEFAULT_DAILY_BUDGET,
         "learner": LEARNER_DEFAULT_SESSION_BUDGET,
     }
     for backend, quota in cfg.quotas.items():
-        budgets[backend] = Budget(max_asks=quota.get("max_asks"),
-                                  max_cost=quota.get("max_cost"))
+        base = budgets.get(backend, Budget())
+        budgets[backend] = Budget(
+            max_asks=quota.get("max_asks", base.max_asks),
+            max_cost=quota.get("max_cost", base.max_cost),
+            day_starts=quota.get("day_starts", base.day_starts))
     return budgets
 
 

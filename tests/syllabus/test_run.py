@@ -13,7 +13,7 @@ import dataclasses
 import hashlib
 import io
 import json
-from datetime import date
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from PIL import Image as PILImage
@@ -676,7 +676,7 @@ def test_a_cap_of_one_on_llm_sentence_already_spent_today_skips_the_sentence_att
 
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "llm-sentence", "x", ts=midnight + 1)
     report = run(_ctx(db, _Syl(_Gaps())), {"llm-sentence": Budget(max_asks=1)})
     assert calls == []
@@ -1027,7 +1027,7 @@ def test_one_words_two_open_targets_are_one_budgeted_sentence_need(db, monkeypat
 
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "llm-sentence", "x", ts=midnight + 1)
     report = run(_ctx(db, _TargetedSyl(_one_word_two_targets())),
                 {"llm-sentence": Budget(max_asks=1)})
@@ -1070,7 +1070,7 @@ def test_the_llm_sentence_gate_skipping_the_attempt_leaves_open_targets_budgeted
 
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "llm-sentence", "x", ts=midnight + 1)
     report = run(_ctx(db, _Syl(_Gaps(sentences=("t1", "t2")))),
                 {"llm-sentence": Budget(max_asks=1)})
@@ -1109,7 +1109,7 @@ def test_the_llm_sentence_gate_counts_every_open_word_budgeted_when_it_skips(
 
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "llm-sentence", "x", ts=midnight + 1)
     sentences = tuple(f"t{i}" for i in range(45))
     report = run(_ctx(db, _Syl(_Gaps(sentences=sentences))),
@@ -1137,7 +1137,7 @@ def _row_today(db, backend, subject, *, ts):
 
 def test_todays_asks_already_on_record_count_against_a_per_day_budget(db, monkeypatch):
     calls = _patch(monkeypatch, {})
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "forvo", "x", ts=midnight + 1)
     _row_today(db, "forvo", "y", ts=midnight + 2)
     run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {"forvo": Budget(max_asks=2)})
@@ -1146,11 +1146,42 @@ def test_todays_asks_already_on_record_count_against_a_per_day_budget(db, monkey
 
 def test_yesterdays_asks_do_not_count_against_it(db, monkeypatch):
     calls = _patch(monkeypatch, {})
-    midnight = run_mod.day_start_ns(date.today())
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
     _row_today(db, "forvo", "x", ts=midnight - 2)
     _row_today(db, "forvo", "y", ts=midnight - 1)
     run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {"forvo": Budget(max_asks=2)})
     assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
+
+
+class _FixedNow(datetime):
+    """Stands in for run.py's module-level `datetime` name so
+    `_spent_today` reads a fixed, zone-aware instant instead of the real
+    wall clock."""
+    _fixed = datetime(2026, 9, 9, 4, 0, tzinfo=timezone(timedelta(hours=7)))
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._fixed if tz is None else cls._fixed.astimezone(tz)
+
+
+def test_spent_today_sums_each_budget_from_its_own_day_starts(db, monkeypatch):
+    """A row logged after forvo's own 22:00Z reset but before local
+    midnight the next ICT day counts against forvo's own budget and not
+    against a budget with no `day_starts` of its own -- the two windows
+    differ, and `_spent_today` reads each budget's own.
+    """
+    monkeypatch.setattr(run_mod, "datetime", _FixedNow)
+    now = _FixedNow.now()
+    forvo_reset = run_mod.day_start_ns(now, "22:00Z")
+    local_midnight = run_mod.day_start_ns(now, None)
+    assert forvo_reset < local_midnight
+    _row_today(db, "forvo", "x", ts=forvo_reset + 1)
+    _row_today(db, "other", "x", ts=forvo_reset + 1)
+    spent = run_mod._spent_today(
+        _ctx(db, _Syl(_Gaps())),
+        {"forvo": Budget(max_asks=1, day_starts="22:00Z"), "other": Budget(max_asks=1)})
+    assert spent["forvo"].asks == 1     # forvo_reset <= its own ts: counts
+    assert spent["other"].asks == 0     # its ts is before local midnight: does not
 
 
 # --- what went wrong -------------------------------------------------------
@@ -1417,6 +1448,10 @@ def test_forvo_default_daily_budget_is_450_asks():
     assert FORVO_DEFAULT_DAILY_BUDGET.max_asks == 450
 
 
+def test_forvo_default_daily_budget_resets_at_22_00_utc():
+    assert FORVO_DEFAULT_DAILY_BUDGET.day_starts == "22:00Z"
+
+
 def test_learner_default_session_budget_is_20_questions():
     assert LEARNER_DEFAULT_SESSION_BUDGET.max_asks == 20
 
@@ -1463,3 +1498,44 @@ def test_a_budget_says_when_a_spend_has_reached_it():
     assert not Budget(max_asks=5).exceeded_by(Spend(asks=4))
     assert Budget(max_cost=1.0).exceeded_by(Spend(cost=1.0))
     assert not Budget(max_cost=1.0).exceeded_by(Spend(cost=0.5))
+
+
+def test_a_budget_carries_no_day_starts_by_default():
+    assert Budget(max_asks=5).day_starts is None
+
+
+# --- day_start_ns (spec 3 section 7): a window from the source's own
+# reset time, never the machine's local midnight when day_starts names
+# another zone --------------------------------------------------------
+
+def test_day_start_ns_at_06_27_ict_with_22_00z_is_05_00_ict_the_same_day():
+    ict = timezone(timedelta(hours=7))
+    now = datetime(2026, 9, 9, 6, 27, tzinfo=ict)
+    since = run_mod.day_start_ns(now, "22:00Z")
+    assert since == int(datetime(2026, 9, 9, 5, 0, tzinfo=ict).timestamp() * 1_000_000_000)
+
+
+def test_day_start_ns_at_04_00_ict_with_22_00z_is_the_previous_days_05_00():
+    ict = timezone(timedelta(hours=7))
+    now = datetime(2026, 9, 9, 4, 0, tzinfo=ict)
+    since = run_mod.day_start_ns(now, "22:00Z")
+    assert since == int(datetime(2026, 9, 8, 5, 0, tzinfo=ict).timestamp() * 1_000_000_000)
+
+
+def test_day_start_ns_with_no_day_starts_is_local_midnight():
+    ict = timezone(timedelta(hours=7))
+    now = datetime(2026, 9, 9, 6, 27, tzinfo=ict)
+    since = run_mod.day_start_ns(now, None)
+    assert since == int(datetime(2026, 9, 9, 0, 0, tzinfo=ict).timestamp() * 1_000_000_000)
+
+
+def test_day_start_ns_accepts_a_numeric_offset_zone():
+    ict = timezone(timedelta(hours=7))
+    now = datetime(2026, 9, 9, 6, 27, tzinfo=ict)
+    since = run_mod.day_start_ns(now, "22:00+00:00")
+    assert since == int(datetime(2026, 9, 9, 5, 0, tzinfo=ict).timestamp() * 1_000_000_000)
+
+
+def test_day_start_ns_refuses_an_unparseable_day_starts():
+    with pytest.raises(ValueError, match="day_starts"):
+        run_mod.day_start_ns(datetime.now().astimezone(), "22")
