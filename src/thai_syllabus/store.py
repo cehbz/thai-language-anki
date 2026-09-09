@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .cachekeys import CacheKey, WaiverKey
-from .entities import Sentence
+from .entities import Clauses, Sentence, clauses_from_json, clauses_to_json
 from .media import Provenance, Speaker
 from .ports import Answer, StudyRecord
 
@@ -46,6 +46,7 @@ _SCHEMA = """
 create table if not exists sentences (
     text_sha text primary key,
     text text not null,
+    clauses text,
     gloss text not null,
     voice text not null,
     source text not null,
@@ -138,7 +139,17 @@ class SyllabusDb:
         self._con = sqlite3.connect(self.path, isolation_level=None)
         self._con.execute("pragma journal_mode=WAL")
         self._con.executescript(_SCHEMA)
+        self._add_clauses_column_if_missing()
         self._last_ts = 0
+
+    def _add_clauses_column_if_missing(self) -> None:
+        """A pre-r10 db's `sentences` table predates the `clauses` column
+        (spec 2 section 4 migration): add it once, nullable, so existing
+        rows read back with clauses=None until set_clauses backfills them.
+        """
+        columns = {row[1] for row in self._con.execute("pragma table_info(sentences)")}
+        if "clauses" not in columns:
+            self._con.execute("alter table sentences add column clauses text")
 
     def close(self) -> None:
         self._con.close()
@@ -258,19 +269,45 @@ class SyllabusDb:
 
     # --- sentences ----------------------------------------------------
 
-    def add_sentence(self, *, text_sha: str, text: str, gloss: str, voice: str,
-                     source: str, origin: str, licence: str,
+    def add_sentence(self, *, text_sha: str, text: str, clauses: Clauses, gloss: str,
+                     voice: str, source: str, origin: str, licence: str,
                      acquired: date) -> bool:
         """Insert-or-ignore on text_sha. Returns True if a new row was
-        inserted, False if text_sha already had one.
+        inserted, False if text_sha already had one. `clauses` is stored as
+        clauses_to_json's JSON shape (spec 2 section 2).
         """
         with self._con:
             cur = self._con.execute(
-                "insert or ignore into sentences (text_sha, text, gloss, voice, "
-                "source, origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?)",
-                (text_sha, text, gloss, voice, source, origin, licence,
-                 acquired.isoformat()))
+                "insert or ignore into sentences (text_sha, text, clauses, gloss, "
+                "voice, source, origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (text_sha, text, json.dumps(clauses_to_json(clauses)), gloss, voice,
+                 source, origin, licence, acquired.isoformat()))
             return cur.rowcount > 0
+
+    def set_clauses(self, text_sha: str, clauses: Clauses) -> None:
+        """Backfill a sentence row's clauses column (spec 2 section 4
+        migration's parse-ask step writes verified clauses this way).
+        """
+        with self._con:
+            self._con.execute(
+                "update sentences set clauses=? where text_sha=?",
+                (json.dumps(clauses_to_json(clauses)), text_sha))
+
+    def delete_sentence(self, text_sha: str) -> None:
+        """Remove a sentences row (spec 2 section 4 migration deletes a
+        row whose parse ask fails; the draft that produced it stays in the
+        record's own cache rows).
+        """
+        with self._con:
+            self._con.execute("delete from sentences where text_sha=?", (text_sha,))
+
+    def sentences_without_clauses(self) -> list[tuple[str, str]]:
+        """(text_sha, text) for every sentences row with no clauses yet --
+        the migration's worklist for the parse ask.
+        """
+        rows = self._con.execute(
+            "select text_sha, text from sentences where clauses is null").fetchall()
+        return [(text_sha, text) for text_sha, text in rows]
 
     # --- speakers -------------------------------------------------------
 
@@ -321,16 +358,27 @@ class SyllabusDb:
         section 2 stores sentences; spec 1 section 1 owns the entity). Not a
         Protocol method (ports.py names no SentenceReader) -- load_syllabus
         (wiring.py) is this method's one caller, assembling a Syllabus from
-        db-backed state alongside the curated files.
+        db-backed state alongside the curated files. Raises ValueError
+        naming the row's text_sha when its clauses column is NULL (a
+        pre-r10 row the migration has not backfilled yet) or does not parse
+        (clauses_from_json's own ValueError).
         """
         rows = self._con.execute(
-            "select text, gloss, voice, source, origin, licence, acquired "
-            "from sentences").fetchall()
-        return [Sentence(clauses=(), text=text, gloss=gloss, voice=voice,
-                         provenance=Provenance(source=source, origin=origin,
-                                              licence=licence,
-                                              acquired=date.fromisoformat(acquired)))
-               for text, gloss, voice, source, origin, licence, acquired in rows]
+            "select text_sha, text, clauses, gloss, voice, source, origin, licence, "
+            "acquired from sentences").fetchall()
+        sentences = []
+        for text_sha, text, clauses_json, gloss, voice, source, origin, licence, acquired in rows:
+            if clauses_json is None:
+                raise ValueError(f"sentence {text_sha!r} has no clauses (run migrate)")
+            try:
+                clauses = clauses_from_json(json.loads(clauses_json))
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise ValueError(f"sentence {text_sha!r} has malformed clauses: {exc}") from exc
+            sentences.append(Sentence(
+                clauses=clauses, text=text, gloss=gloss, voice=voice,
+                provenance=Provenance(source=source, origin=origin, licence=licence,
+                                      acquired=date.fromisoformat(acquired))))
+        return sentences
 
     def has_media(self, sha: str) -> bool:
         row = self._con.execute("select 1 from media where sha=?", (sha,)).fetchone()

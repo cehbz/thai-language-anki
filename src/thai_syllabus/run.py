@@ -156,6 +156,7 @@ def _adopt_sentences(ctx: Sourcing) -> int:
         today=ctx.today))
     for sentence, _targets in chosen:
         ctx.db.add_sentence(text_sha=sentence.text_sha, text=sentence.text,
+                            clauses=sentence.clauses,
                             gloss=sentence.gloss, voice=sentence.voice,
                             source=sentence.provenance.source,
                             origin=sentence.provenance.origin,

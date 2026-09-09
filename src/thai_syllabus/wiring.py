@@ -15,10 +15,13 @@ producer.
 
 load_syllabus reads the deck's media relationships through `_DbMediaIndex`
 (derivations.current_best over the db; the `media` table carries
-provenance only), its sentences through `SyllabusDb.all_sentences()`, and
-its frequency map from `deck_root/curated/frequency_th.txt` (spec 2
-section 1); a deck without that file is refused with a FileNotFoundError
-naming it.
+provenance only), its sentences through `SyllabusDb.all_sentences()`
+(unless a caller passes `sentences=` itself), and its frequency map from
+`deck_root/curated/frequency_th.txt` (spec 2 section 1); a deck without
+that file is refused with a FileNotFoundError naming it. Every sentence is
+checked with Syllabus.check_sentence before load_syllabus returns; its
+ValueError propagates, refusing a deck whose row is unregistered or
+mis-rendered (spec 2 section 2).
 """
 from __future__ import annotations
 
@@ -522,13 +525,20 @@ class _DbMediaIndex:
 
 def load_syllabus(deck_root: str | Path, *,
                   db: SyllabusDb | None = None,
-                  bundle: CuratedBundle | None = None) -> Syllabus:
+                  bundle: CuratedBundle | None = None,
+                  sentences: Sequence[Sentence] | None = None) -> Syllabus:
     """A Syllabus (spec 1 section 3) from a deck directory: its
     curated/*.yaml, plus the db-backed ports spec 2 section 3 adds --
     AssessmentReader/RecordWriter (the db itself), a MediaIndex over the
     db, a FrequencyMap, and the `sentences` table. `db`/`bundle` are
     opened here when not passed; a caller passes its own so the Syllabus
-    and it share one connection.
+    and it share one connection. `sentences`, when given, is used in place
+    of `db.all_sentences()` and the sentences table is not read (the
+    migration's parse step loads a Syllabus with sentences=() to run
+    check_sentence over drafted clauses before they are written). Every
+    resulting sentence is checked with Syllabus.check_sentence, whose
+    ValueError (an unregistered word id or a text/rendering mismatch)
+    propagates, naming the offending row.
     """
     root = Path(deck_root)
     if bundle is None:
@@ -536,9 +546,9 @@ def load_syllabus(deck_root: str | Path, *,
     if db is None:
         db = SyllabusDb(root / "syllabus.db")
     rules = apply_overlay(RULES, bundle.rulebook)
-    sentences = tuple(db.all_sentences())
-    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=bundle.words, sentences=sentences,
-                                rubrics=rubrics_for(rules),
+    resolved_sentences = tuple(sentences) if sentences is not None else tuple(db.all_sentences())
+    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=bundle.words,
+                                sentences=resolved_sentences, rubrics=rubrics_for(rules),
                                 provenance_prior=bundle.rulebook.provenance_prior)
 
     freq_file = root / "curated" / "frequency_th.txt"
@@ -552,8 +562,11 @@ def load_syllabus(deck_root: str | Path, *,
 
     kwargs: dict[str, Any] = dict(
         words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
-        graphemes=bundle.graphemes, sentences=sentences, confusions=bundle.confusions,
+        graphemes=bundle.graphemes, sentences=resolved_sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
         media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)
 
-    return Syllabus(**kwargs)
+    syllabus = Syllabus(**kwargs)
+    for s in syllabus.sentences:
+        syllabus.check_sentence(s)
+    return syllabus

@@ -312,20 +312,6 @@ def test_build_assessor_registers_judge_and_mechanical(cfg, db, media_store):
     assert isinstance(a, Assessor)
 
 
-def test_build_assessor_fills_key_names_curated_and_tokenizer_version(cfg, db, media_store, tmp_path):
-    """build_assessor's fills backend carries a version naming both the
-    curated files a fills verdict reads and the tokenizer it runs (spec 3
-    section 6a): curated_version(deck_root/curated) + tokenizer_version().
-    """
-    from thai_syllabus.curated import curated_version
-    from thai_syllabus.wiring import tokenizer_version
-
-    root = _write_curated_dir(tmp_path / "deck")
-    a = build_assessor(cfg, db, media_store, syllabus_of=lambda: None, deck_root=root)
-    expected = f"{curated_version(root / 'curated')}:{tokenizer_version()}"
-    assert a._backends["fills"].version == expected
-
-
 def test_build_assessor_fills_version_is_empty_with_no_deck_root(cfg, db, media_store):
     a = build_assessor(cfg, db, media_store, syllabus_of=lambda: None)
     assert a._backends["fills"].version == ""
@@ -474,11 +460,38 @@ def test_load_syllabus_sentences_come_from_the_db(tmp_path):
     from datetime import date
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
-    db.add_sentence(text_sha="s1", text="ผมกินข้าว", gloss="I eat rice",  # I eat rice
+    # _write_curated_dir registers only "rice"/"near" -- clauses must stay
+    # inside that vocabulary for check_sentence (load_syllabus's own
+    # refusal check) to pass.
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
                     voice="learner_voice", source="llm", origin="draft", licence="n/a",
                     acquired=date(2026, 1, 1))
     syllabus = load_syllabus(root)
-    assert any(s.text == "ผมกินข้าว" for s in syllabus.sentences)  # I eat rice
+    assert any(s.text == "ข้าว" for s in syllabus.sentences)  # rice
+
+
+def test_load_syllabus_refuses_a_sentence_naming_an_unregistered_word(tmp_path):
+    from datetime import date
+    root = _write_curated_dir(tmp_path / "deck")
+    db = SyllabusDb(root / "syllabus.db")
+    db.add_sentence(text_sha="s1", text="แมว", clauses=(("cat",),), gloss="cat",  # cat
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    with pytest.raises(ValueError, match="cat"):
+        load_syllabus(root)
+
+
+def test_load_syllabus_with_a_given_sentences_sequence_does_not_read_the_db(tmp_path):
+    from datetime import date
+    root = _write_curated_dir(tmp_path / "deck")
+    db = SyllabusDb(root / "syllabus.db")
+    # A row that would refuse the deck through db.all_sentences() -- proves
+    # `sentences=()` bypasses the table read entirely (Task 7's parse step).
+    db.add_sentence(text_sha="s1", text="แมว", clauses=(("cat",),), gloss="cat",  # cat
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    syllabus = load_syllabus(root, db=db, sentences=())
+    assert syllabus.sentences == ()
 
 
 def test_load_syllabus_media_index_reflects_current_best(tmp_path):
@@ -720,21 +733,6 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     gaps = syllabus.gaps()
     assert real_confusion.id not in gaps.missing_renditions
     assert fallback_confusion.id in gaps.missing_renditions
-
-
-def test_load_syllabus_refuses_when_pythainlp_is_absent(tmp_path, monkeypatch):
-    import builtins
-    real_import = builtins.__import__
-
-    def blocking_import(name, *args, **kwargs):
-        if name == "pythainlp" or name.startswith("pythainlp."):
-            raise ImportError("pythainlp not installed")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocking_import)
-    root = _write_curated_dir(tmp_path / "deck")
-    with pytest.raises(RuntimeError, match="pythainlp"):
-        load_syllabus(root)
 
 
 def test_load_syllabus_refuses_a_deck_without_a_frequency_corpus(tmp_path):

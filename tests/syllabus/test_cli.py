@@ -103,12 +103,12 @@ def test_compile_writes_an_apkg_and_prints_a_summary(tmp_path, capsys):
                 origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1),
                 speaker_id="somchai")
 
-    # The default tokenizer falls back to whitespace when pythainlp is
-    # absent (as here); a bare single-word sentence puts "rice" at a
-    # boundary with no companion token that would need its own curated
-    # Word+Target to satisfy the fill-set rule's clause 3 (spec 1 §3).
-    db.add_sentence(text_sha="s1", text="ข้าว", gloss="rice", voice="learner_voice",  # rice
-                    source="llm", origin="draft", licence="n/a", acquired=date(2026, 1, 1))
+    # A bare single-word sentence: its one clause names the curated "rice"
+    # word, so check_sentence (load_syllabus's own refusal check) sees a
+    # registered id whose rendering equals the stored text.
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
 
     # sentence/recording-required (F7): a current-best recording under the
     # sentence's OWN text_sha (Sentence.text_sha derives from the text, not

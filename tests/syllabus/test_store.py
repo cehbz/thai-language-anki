@@ -347,7 +347,7 @@ def test_study_rows_returns_every_row_ordered_by_ts(db):
 # --- sentences / media provenance --------------------------------------
 
 def test_add_sentence_and_read_back(db):
-    db.add_sentence(text_sha="abc123", text="text", gloss="a gloss",
+    db.add_sentence(text_sha="abc123", text="text", clauses=(), gloss="a gloss",
                     voice="learner_voice", source="llm", origin="draft",
                     licence="n/a", acquired=date(2026, 1, 1))
     con = sqlite3.connect(db.path)
@@ -356,10 +356,10 @@ def test_add_sentence_and_read_back(db):
 
 
 def test_add_sentence_is_idempotent_and_returns_whether_inserted(db):
-    assert db.add_sentence(text_sha="dup", text="text", gloss="a gloss",
+    assert db.add_sentence(text_sha="dup", text="text", clauses=(), gloss="a gloss",
                            voice="learner_voice", source="llm", origin="draft",
                            licence="n/a", acquired=date(2026, 1, 1)) is True
-    assert db.add_sentence(text_sha="dup", text="text", gloss="a gloss",
+    assert db.add_sentence(text_sha="dup", text="text", clauses=(), gloss="a gloss",
                            voice="learner_voice", source="llm", origin="draft",
                            licence="n/a", acquired=date(2026, 1, 1)) is False
     con = sqlite3.connect(db.path)
@@ -367,7 +367,7 @@ def test_add_sentence_is_idempotent_and_returns_whether_inserted(db):
 
 
 def test_sentences_table_round_trips_gloss(db):
-    db.add_sentence(text_sha="x" * 64, text="ผมกินข้าว", gloss="I eat rice",  # I eat rice
+    db.add_sentence(text_sha="x" * 64, text="ผมกินข้าว", clauses=(), gloss="I eat rice",  # I eat rice
                     voice="learner_voice", source="llm", origin="o", licence="cc",
                     acquired=date(2026, 9, 4))
     assert db.all_sentences()[0].gloss == "I eat rice"
@@ -377,10 +377,10 @@ def test_all_sentences_reads_back_as_entities(db):
     from thai_syllabus.entities import Sentence
     from thai_syllabus.media import Provenance
 
-    db.add_sentence(text_sha="s1", text="ผมกินข้าว", gloss="I eat rice",  # I eat rice
+    db.add_sentence(text_sha="s1", text="ผมกินข้าว", clauses=(), gloss="I eat rice",  # I eat rice
                     voice="learner_voice", source="llm", origin="draft", licence="n/a",
                     acquired=date(2026, 1, 1))
-    db.add_sentence(text_sha="s2", text="เขากินข้าว", gloss="(s)he eats rice",  # (s)he eats rice
+    db.add_sentence(text_sha="s2", text="เขากินข้าว", clauses=(), gloss="(s)he eats rice",  # (s)he eats rice
                     voice="other_voice", source="forvo", origin="https://forvo.com/x",
                     licence="cc-by", acquired=date(2026, 2, 2))
     sentences = db.all_sentences()
@@ -396,6 +396,112 @@ def test_all_sentences_reads_back_as_entities(db):
 
 def test_all_sentences_on_empty_store_is_empty(db):
     assert db.all_sentences() == []
+
+
+def test_add_sentence_round_trips_clauses(db):
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    assert db.all_sentences()[0].clauses == (("rice",),)
+
+
+# --- clauses column schema evolution / migration surface ------------------
+
+def test_opening_a_pre_r10_db_adds_the_clauses_column(tmp_path):
+    path = tmp_path / "syllabus.db"
+    con = sqlite3.connect(path)
+    con.execute("""
+        create table sentences (
+            text_sha text primary key,
+            text text not null,
+            gloss text not null,
+            voice text not null,
+            source text not null,
+            origin text not null,
+            licence text not null,
+            acquired text not null
+        )
+    """)
+    con.execute(
+        "insert into sentences (text_sha, text, gloss, voice, source, origin, "
+        "licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("legacy", "ผมกินข้าว", "I eat rice", "learner_voice", "llm", "draft",  # I eat rice
+         "n/a", "2026-01-01"))
+    con.commit()
+    con.close()
+
+    reopened = SyllabusDb(path)
+    columns = {row[1] for row in reopened._con.execute("pragma table_info(sentences)")}
+    assert "clauses" in columns
+    row = reopened._con.execute(
+        "select clauses from sentences where text_sha='legacy'").fetchone()
+    assert row[0] is None
+
+
+def test_reopening_a_pre_r10_db_does_not_duplicate_the_alter(tmp_path):
+    path = tmp_path / "syllabus.db"
+    SyllabusDb(path)  # first open runs the migration
+    reopened = SyllabusDb(path)  # second open must not re-alter (column exists)
+    columns = [row[1] for row in reopened._con.execute("pragma table_info(sentences)")]
+    assert columns.count("clauses") == 1
+
+
+def _insert_legacy_row(db, *, text_sha, text, clauses_json=None):
+    """A raw insert bypassing add_sentence, so a NULL or malformed clauses
+    column can be simulated (add_sentence always requires clauses).
+    """
+    db._con.execute(
+        "insert into sentences (text_sha, text, clauses, gloss, voice, source, "
+        "origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (text_sha, text, clauses_json, "a gloss", "learner_voice", "llm", "draft",
+         "n/a", "2026-01-01"))
+
+
+def test_all_sentences_raises_on_a_null_clauses_row_naming_the_text_sha(db):
+    _insert_legacy_row(db, text_sha="legacy-1", text="ผมกินข้าว")  # I eat rice
+    with pytest.raises(ValueError, match="legacy-1"):
+        db.all_sentences()
+
+
+def test_all_sentences_raises_on_malformed_clauses_json_naming_the_text_sha(db):
+    _insert_legacy_row(db, text_sha="bad-json", text="ผมกินข้าว",  # I eat rice
+                       clauses_json="not json")
+    with pytest.raises(ValueError, match="bad-json"):
+        db.all_sentences()
+
+
+def test_all_sentences_raises_on_malformed_clause_shape_naming_the_text_sha(db):
+    import json
+    _insert_legacy_row(db, text_sha="bad-shape", text="ผมกินข้าว",  # I eat rice
+                       clauses_json=json.dumps([[]]))  # an empty clause: invalid
+    with pytest.raises(ValueError, match="bad-shape"):
+        db.all_sentences()
+
+
+def test_set_clauses_backfills_a_null_row_then_all_sentences_loads_it(db):
+    _insert_legacy_row(db, text_sha="s1", text="ข้าว")  # rice
+    db.set_clauses("s1", (("rice",),))
+    sentences = db.all_sentences()
+    assert len(sentences) == 1
+    assert sentences[0].clauses == (("rice",),)
+
+
+def test_delete_sentence_removes_the_row(db):
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    db.delete_sentence("s1")
+    assert db.all_sentences() == []
+    con = sqlite3.connect(db.path)
+    assert con.execute("select count(*) from sentences").fetchone()[0] == 0
+
+
+def test_sentences_without_clauses_lists_only_the_null_rows(db):
+    _insert_legacy_row(db, text_sha="legacy-1", text="ผมกินข้าว")  # I eat rice
+    db.add_sentence(text_sha="s2", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    assert db.sentences_without_clauses() == [("legacy-1", "ผมกินข้าว")]  # I eat rice
 
 
 # --- speakers -----------------------------------------------------------
