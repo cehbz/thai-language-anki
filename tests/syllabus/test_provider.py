@@ -278,34 +278,45 @@ def test_wikimedia_and_pexels_backends_key_by_backend_name():
     assert px.cache_key(q).encode() == "pexels::cat"
 
 
-def test_wikimedia_uses_imageinfo_generator_and_returns_urls():
+def test_wikimedia_uses_imageinfo_generator_and_returns_thumburl():
     seen = {}
 
     def get(url, params, headers, timeout, proxies=None):
         seen.update(params)
         return _FakeResponse(json_data={"batchcomplete": "", "query": {"pages": {"1": {
             "title": "File:A.jpg",
-            "imageinfo": [{"url": "https://u/A.jpg"}]}}}})
+            "imageinfo": [{"url": "https://u/A.jpg",
+                          "thumburl": "https://u/thumb/A-1600px.jpg"}]}}}})
 
     backend = wikimedia_backend(get=get)
     answer = backend.fetch(Question(subject="w", provides="picture",
                                     params={"query": "orange"}))
     assert seen["generator"] == "search" and seen["prop"] == "imageinfo"
-    assert seen["iiprop"] == "url" and seen["gsrsearch"] == "orange"
+    assert seen["iiprop"] == "url"
+    assert seen["gsrsearch"] == "orange filetype:bitmap"
     assert seen["gsrnamespace"] == "6"
-    assert answer.items[0]["url"] == "https://u/A.jpg"
+    assert seen["iiurlwidth"] == 1600
+    assert answer.items[0]["url"] == "https://u/thumb/A-1600px.jpg"
     assert answer.items[0]["source"] == "wikimedia"
     assert answer.items[0]["origin"] == "https://commons.wikimedia.org/wiki/File:A.jpg"
 
 
-def test_wikimedia_parse_skips_pages_without_a_url():
+def test_wikimedia_image_width_bounds_the_request():
+    backend = wikimedia_backend(image_width=800)
+    _, params, _, _ = backend.build_request("orange")
+    assert params["iiurlwidth"] == 800
+    assert params["gsrsearch"] == "orange filetype:bitmap"
+
+
+def test_wikimedia_parse_skips_an_info_without_a_thumburl():
     backend = wikimedia_backend()
     data = {"query": {"pages": {
-        "1": {"title": "File:NoUrl.jpg", "imageinfo": [{}]},
-        "2": {"title": "File:B.jpg", "imageinfo": [{"url": "https://u/B.jpg"}]},
+        "1": {"title": "File:NoThumb.jpg", "imageinfo": [{"url": "https://u/NoThumb.jpg"}]},
+        "2": {"title": "File:B.jpg", "imageinfo": [{"url": "https://u/B.jpg",
+                                                    "thumburl": "https://u/thumb/B-1600px.jpg"}]},
     }}}
     items = backend.parse_items(data)
-    assert [i["url"] for i in items] == ["https://u/B.jpg"]
+    assert [i["url"] for i in items] == ["https://u/thumb/B-1600px.jpg"]
 
 
 def test_pexels_fetch_sends_the_api_key_as_authorization_header():

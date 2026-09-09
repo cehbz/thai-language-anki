@@ -529,9 +529,9 @@ def rulebook_file_text(path: str | Path) -> str:
 # Per-backend settings: secret references (resolved by SecretStore),
 # search_proxy, imgfetch/audiofetch paths, tts voice pools (defaulting to
 # tts.py's lists) + cost_per_char, judge transport + model +
-# price_per_mtok, image_candidates, batch limits, quotas, attempt_cap and
-# transient_cap. One file, no env vars; judged-rule rubric text stays in
-# rulebook.yaml.
+# price_per_mtok, image_candidates, image_width, batch limits, quotas,
+# attempt_cap and transient_cap. One file, no env vars; judged-rule rubric
+# text stays in rulebook.yaml.
 #
 # load_providers_config refuses a file describing a run the code cannot
 # perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
@@ -567,6 +567,7 @@ class ProvidersConfig:
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     drafter: DrafterConfig = field(default_factory=DrafterConfig)
     image_candidates: int = 5  # candidate images fetched per target word
+    image_width: int = 1600    # iiurlwidth bound on a wikimedia thumburl
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
@@ -675,6 +676,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.image_candidates: {image_candidates!r} must be "
                       "a positive integer")
 
+    image_width = data.get("image_width", 1600)
+    if not isinstance(image_width, int) or image_width < 1:
+        errors.append(f"providers.image_width: {image_width!r} must be "
+                      "a positive integer")
+
     attempt_cap = data.get("attempt_cap", 8)
     if not isinstance(attempt_cap, int) or attempt_cap < 1:
         errors.append(f"providers.attempt_cap: {attempt_cap!r} must be a positive integer")
@@ -692,6 +698,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, image_candidates=image_candidates,
+        image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=dict(data.get("quotas") or {}),
         attempt_cap=attempt_cap, transient_cap=transient_cap)
 
@@ -714,6 +721,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "judge": judge,
         "drafter": {"transport": config.drafter.transport},
         "image_candidates": config.image_candidates,
+        "image_width": config.image_width,
         "batch": dict(config.batch),
         "quotas": dict(config.quotas),
         "attempt_cap": config.attempt_cap,

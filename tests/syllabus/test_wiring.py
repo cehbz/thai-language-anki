@@ -171,6 +171,15 @@ def test_search_proxy_reaches_only_openverse(cfg, db, media_store):
     assert provider._backends["pexels"]._resolve().search_proxy is None
 
 
+def test_wikimedia_image_width_reaches_the_backend(db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          imgfetch_path="curl", audiofetch_path="curl",
+                          image_width=800)
+    provider = build_provider(cfg, db, media_store)
+    _, params, _, _ = provider._backends["wikimedia"].build_request("cat")
+    assert params["iiurlwidth"] == 800
+
+
 def test_imgfetch_binary_comes_from_imgfetch_path(db, media_store, secret_paths, monkeypatch):
     cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
                           imgfetch_path="/opt/bin/imgfetch",

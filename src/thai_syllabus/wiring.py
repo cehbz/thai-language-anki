@@ -140,15 +140,15 @@ def _drafter_quota_cost(cfg: ProvidersConfig) -> float:
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None) -> Provider:
     """The Provide port's backend roster (spec 3 section 2), wired from
-    providers.yaml: search_proxy for openverse, imgfetch_path/
-    audiofetch_path for the mediafetch fetchers, the tts voice pools, and
-    the drafter transport for llm-*.
+    providers.yaml: search_proxy for openverse, image_width for wikimedia,
+    imgfetch_path/audiofetch_path for the mediafetch fetchers, the tts
+    voice pools, and the drafter transport for llm-*.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
     backends: dict[str, Backend] = {
         "openverse": openverse_backend(search_proxy=cfg.search_proxy),
-        "wikimedia": wikimedia_backend(),
+        "wikimedia": wikimedia_backend(image_width=cfg.image_width),
         "pexels": _Lazy(lambda: pexels_backend(api_key=secrets.get("pexels") or "")),
         "forvo": _Lazy(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
         "tts": _Lazy(lambda: TtsBackend(

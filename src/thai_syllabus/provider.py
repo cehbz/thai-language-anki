@@ -202,23 +202,28 @@ def openverse_backend(get: Callable[..., Any] = requests.get,
                                   parse_items=parse, get=get, search_proxy=search_proxy)
 
 
-def wikimedia_backend(get: Callable[..., Any] = requests.get) -> HttpImageSearchBackend:
+def wikimedia_backend(get: Callable[..., Any] = requests.get,
+                      image_width: int = 1600) -> HttpImageSearchBackend:
     def build(query: str) -> tuple[str, dict, dict, str]:
         # "batchcomplete" is on every MediaWiki action-API search reply,
         # zero hits included (zero hits omits "query" entirely); an
-        # {"error": {...}} body carries neither.
+        # {"error": {...}} body carries neither. gsrsearch's "filetype:
+        # bitmap" excludes PDF/DjVu hits; iiurlwidth bounds the scaled
+        # rendition imgfetch is handed (its thumburl), instead of the
+        # source file's full-resolution bytes.
         return ("https://commons.wikimedia.org/w/api.php",
-               {"action": "query", "generator": "search", "gsrsearch": query,
+               {"action": "query", "generator": "search",
+                "gsrsearch": f"{query} filetype:bitmap",
                 "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url",
-                "format": "json"},
+                "iiurlwidth": image_width, "format": "json"},
                {"User-Agent": IMAGE_SEARCH_USER_AGENT}, "batchcomplete")
 
     def parse(data: Any) -> list[dict]:
         out = []
         for page in (data.get("query", {}).get("pages", {}) or {}).values():
             for info in page.get("imageinfo", []) or []:
-                if info.get("url"):
-                    out.append({"url": info["url"], "source": "wikimedia", "licence": None,
+                if info.get("thumburl"):
+                    out.append({"url": info["thumburl"], "source": "wikimedia", "licence": None,
                                "origin": f"https://commons.wikimedia.org/wiki/{page.get('title', '')}"})
         return out
 

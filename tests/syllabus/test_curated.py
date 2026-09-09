@@ -535,6 +535,37 @@ def test_providers_image_candidates_rejects_a_string(tmp_path):
         curated.load_providers_config(path)
 
 
+def test_providers_image_width_defaults_to_1600():
+    assert curated.ProvidersConfig().image_width == 1600
+
+
+def test_providers_image_width_round_trip(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(textwrap.dedent("""
+        imgfetch_path: /opt/bin/imgfetch
+        audiofetch_path: /opt/bin/audiofetch
+        image_width: 800
+    """), encoding="utf-8")
+    cfg = curated.load_providers_config(path)
+    assert cfg.image_width == 800
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_image_width_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"image_width": 0}))
+    with pytest.raises(curated.CuratedValidationError, match="image_width"):
+        curated.load_providers_config(path)
+
+
+def test_providers_image_width_rejects_a_string(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump({"image_width": "wide"}))
+    with pytest.raises(curated.CuratedValidationError, match="image_width"):
+        curated.load_providers_config(path)
+
+
 def test_providers_config_secrets_resolve_via_secret_store(tmp_path):
     key_file = tmp_path / "forvo.key"
     key_file.write_text("s3cret\n", encoding="utf-8")
