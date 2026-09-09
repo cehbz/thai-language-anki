@@ -226,7 +226,7 @@ def test_llm_backends_are_always_registered(cfg, db, media_store):
                   JudgeConfig(transport="batch", model="m", price_per_mtok=(2.0, 10.0))):
         backends = build_provider(ProvidersConfig(secrets=cfg.secrets, judge=judge),
                                   db, media_store)._backends
-        assert {"llm-sentence", "llm-phrase", "llm-entry"} <= set(backends)
+        assert {"llm-sentence", "llm-phrase", "llm-entry", "llm-parse"} <= set(backends)
 
 
 def test_llm_sentence_recognizes_only_a_completion_drafts_in_reads(cfg, db, media_store):
@@ -236,6 +236,18 @@ def test_llm_sentence_recognizes_only_a_completion_drafts_in_reads(cfg, db, medi
     backends = build_provider(cfg, db, media_store)._backends
     assert backends["llm-sentence"].recognize("no json here") is False
     assert backends["llm-phrase"].recognize("no json here") is True
+
+
+def test_llm_parse_recognizes_only_a_completion_parses_in_reads(cfg, db, media_store):
+    """Spec 3 r16 section 5: llm-parse's LlmBackend.recognize rejects a
+    completion parses_in cannot read as a parse."""
+    import json
+
+    backends = build_provider(cfg, db, media_store)._backends
+    assert backends["llm-parse"].recognize("no json here") is False
+    assert backends["llm-parse"].recognize(
+        json.dumps({"parses": [{"text": "t", "clauses": [["eat"]]}]})) is True
+    assert backends["llm-parse"].producer == "sentence-parser"
 
 
 def test_the_default_drafter_is_the_cli_transport_whatever_the_judge_is(

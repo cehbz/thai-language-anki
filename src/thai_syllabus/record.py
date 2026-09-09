@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .cachekeys import RunReportKey
-from .entities import Clauses, Sentence, clauses_from_json, text_sha
+from .entities import Clauses, Sentence, Word, clauses_from_json, text_sha
 from .media import Provenance
 from .ports import Answer, CacheReader
 from .transport import strip_fences
@@ -31,11 +31,17 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner
           "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "merge_drafts", "draft_sentence", "drafts_in", "sentence_drafts",
-          "excluded_candidates", "card_flags"]
+          "excluded_candidates", "card_flags",
+          "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
 # proposed for a run's open Targets as a set, not for one subject.
 DRAFT_SUBJECT = "sentence-drafts"
+
+# The subject every sentence-parsing ask is appended under (spec 2 r10
+# section 4's migration parse step): the whole worklist of rows lacking
+# clauses is one ask, not one subject per row.
+PARSE_SUBJECT = "sentence-parses"
 
 # provide rows from these backends are not Source asks (spec 3 section 3
 # vocabulary: an attempt is one Source ask): imgfetch/audiofetch write the
@@ -337,3 +343,60 @@ def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
             continue
         raw.extend(d for item in row.answer.get("items", []) for d in parse_drafts(str(item)))
     return merge_drafts(raw)
+
+
+# --- sentence parsing (spec 2 r10 section 4 / spec 3 r16 section 5) --------
+
+def vocabulary_line(word: Word) -> str:
+    """One vocabulary entry as both the sentence-drafting prompt
+    (attempts._sentence_prompt) and `parse_prompt` list it: id, Thai
+    form, English meaning.
+    """
+    return f"- {word.id}  {word.thai}  ({word.meaning})"
+
+
+def parse_prompt(texts: Sequence[str], vocabulary: Sequence[Word]) -> str:
+    """The migration parse ask's prompt (spec 3 r16 section 5): the full
+    registered vocabulary as `vocabulary_line`, the clause-rendering
+    rule, and each of `texts` numbered. Asks
+    {"parses": [{"text": "...", "clauses": [["id", ...], ...]}]}.
+    """
+    vocab_lines = "\n".join(vocabulary_line(w) for w in vocabulary)
+    numbered = "\n".join(f"{i}. {t}" for i, t in enumerate(texts, start=1))
+    return (
+        "Parse each numbered Thai sentence below into clauses of vocabulary ids, "
+        "drawing only on this vocabulary:\n"
+        f"{vocab_lines}\n"
+        "A clause renders as its words' Thai concatenated in order with no "
+        'separator; clauses within one sentence join with one space; a repeated '
+        'word renders as its Thai form followed by ๆ and is written [id, "ๆ"]. '
+        "Find the clauses whose rendering reproduces each sentence exactly.\n"
+        f"Sentences:\n{numbered}\n"
+        'Output JSON only: {"parses": [{"text": "...", '
+        '"clauses": [["id", ...], ...]}]}')
+
+
+def parses_in(text: str) -> dict[str, Clauses]:
+    """The text -> Clauses map one llm-parse answer item's JSON carries
+    (`parse_prompt`'s own {"parses": [...]} shape), keyed by each entry's
+    exact text. An item lacking `text` or `clauses` is skipped; one whose
+    `clauses` do not parse (clauses_from_json) is skipped with a
+    `logging` warning naming the text's first 40 characters. Empty when
+    `text` is not the JSON the parsing prompt asked for.
+    """
+    try:
+        data = json.loads(strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    parsed = (data.get("parses") if isinstance(data, Mapping) else None) or []
+    out: dict[str, Clauses] = {}
+    for p in parsed:
+        if not isinstance(p, Mapping) or not p.get("text") or not p.get("clauses"):
+            continue
+        one_text = str(p["text"]).strip()
+        try:
+            out[one_text] = clauses_from_json(p["clauses"])
+        except ValueError as e:
+            _log.warning("parses_in: skipping a parse with malformed clauses (text %r): %s",
+                         one_text[:40], e)
+    return out

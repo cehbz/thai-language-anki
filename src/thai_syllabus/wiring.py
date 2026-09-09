@@ -8,7 +8,7 @@ which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
 
-The llm Provide backends (llm-sentence/llm-phrase/llm-entry) ride
+The llm Provide backends (llm-sentence/llm-phrase/llm-entry/llm-parse) ride
 the drafter's transport from drafter.transport (cli by default; api rides
 the judge's account, model, price and thinking), one registered name per
 producer.
@@ -166,14 +166,17 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
 
     drafter_transport = _drafter_transport(cfg, secrets)
     # llm-sentence recognizes only a completion drafts_in can read (spec 3
-    # r10 section 2); llm-phrase and llm-entry keep LlmBackend's default,
-    # which recognizes any text.
+    # r10 section 2); llm-parse recognizes only one parses_in can read
+    # (spec 3 r16 section 5); llm-phrase and llm-entry keep LlmBackend's
+    # default, which recognizes any text.
     recognizers: dict[str, Callable[[str], bool]] = {
         "llm-sentence": lambda text: bool(record.drafts_in(text)),
+        "llm-parse": lambda text: bool(record.parses_in(text)),
     }
     for producer, name in (("sentence-drafter", "llm-sentence"),
                            ("phrase-drafter", "llm-phrase"),
-                           ("entry-drafter", "llm-entry")):
+                           ("entry-drafter", "llm-entry"),
+                           ("sentence-parser", "llm-parse")):
         kwargs = {"recognize": recognizers[name]} if name in recognizers else {}
         backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
                                     transport=drafter_transport,

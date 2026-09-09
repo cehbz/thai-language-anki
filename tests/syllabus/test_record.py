@@ -12,6 +12,7 @@ from thai_syllabus.cachekeys import DirectionKey, JudgeKey, LearnerKey, ProvideK
 from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
     DRAFT_SUBJECT,
+    PARSE_SUBJECT,
     SentenceDraft,
     asks_since,
     candidate_shas,
@@ -24,13 +25,18 @@ from thai_syllabus.record import (
     learner_ratings,
     merge_drafts,
     parse_drafts,
+    parse_prompt,
+    parses_in,
     ratings_for_role,
     rows_for,
     sentence_drafts,
     source_asks,
     spend_since,
+    vocabulary_line,
 )
 from thai_syllabus.store import SyllabusDb
+
+from .builders import word
 
 
 @pytest.fixture
@@ -398,3 +404,55 @@ def test_draft_sentence_carries_the_drafts_own_clauses_learner_voice_and_provena
     assert sentence.voice == "learner_voice"
     assert sentence.provenance.source == "llm" and sentence.provenance.origin == "draft"
     assert sentence.provenance.acquired == date(2026, 9, 9)
+
+
+# --- vocabulary_line / parse_prompt / parses_in (spec 3 r16 section 5) -----
+
+def test_vocabulary_line_matches_the_drafting_prompt_s_format():
+    w = word("eat", "กิน", "eat")   # กิน: eat
+    assert vocabulary_line(w) == "- eat  กิน  (eat)"
+
+
+def test_parse_prompt_carries_every_vocabulary_id_and_every_text():
+    vocabulary = [word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")]   # กิน: eat, ข้าว: rice
+    texts = ["กินข้าว", "ข้าวอร่อย"]   # eat rice, tasty rice
+    prompt = parse_prompt(texts, vocabulary)
+    for w in vocabulary:
+        assert w.id in prompt and w.thai in prompt
+    for t in texts:
+        assert t in prompt
+
+
+def test_parse_subject_names_the_migration_worklist():
+    assert PARSE_SUBJECT == "sentence-parses"
+
+
+def test_parses_in_returns_the_text_to_clauses_map():
+    text = json.dumps({"parses": [
+        {"text": "กินข้าว", "clauses": [["eat"], ["rice"]]},   # กินข้าว: eat rice
+        {"text": "ข้าวอร่อย", "clauses": [["rice"], ["tasty"]]}]})   # ข้าวอร่อย: tasty rice
+    parses = parses_in(text)
+    assert parses == {
+        "กินข้าว": ((WordId("eat"),), (WordId("rice"),)),
+        "ข้าวอร่อย": ((WordId("rice"),), (WordId("tasty"),))}
+
+
+def test_parses_in_skips_an_entry_lacking_text_or_clauses():
+    text = json.dumps({"parses": [
+        {"clauses": [["eat"]]},
+        {"text": "กินข้าว"}]})   # กินข้าว: eat rice
+    assert parses_in(text) == {}
+
+
+def test_parses_in_skips_a_malformed_clause_and_warns(caplog):
+    text = json.dumps({"parses": [
+        {"text": "กินข้าว", "clauses": [["eat"], []]}]})   # กินข้าว: eat rice, empty clause: invalid
+    with caplog.at_level(logging.WARNING):
+        parses = parses_in(text)
+    assert parses == {}
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
+def test_parses_in_is_empty_for_text_that_is_not_the_parsing_json():
+    assert parses_in("not json") == {}
+    assert parses_in(json.dumps({"sentences": []})) == {}

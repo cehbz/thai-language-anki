@@ -5,6 +5,7 @@ touches ~/decks or the real data/ directory.
 import io
 import json
 import sqlite3
+from datetime import date
 
 import genanki
 import pytest
@@ -12,12 +13,16 @@ import yaml
 from PIL import Image
 
 from thai_syllabus import curated
-from thai_syllabus.cachekeys import LegacyVerdictKey, sha
+from thai_syllabus.cachekeys import LegacyVerdictKey, LlmPromptKey, sha
 from thai_syllabus.derivations import current_best, unjudged_candidates
-from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate
-from thai_syllabus.record import candidate_shas, rows_for
+from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate, parse_sentences
+from thai_syllabus.provider import Provider, RawAnswer
+from thai_syllabus.record import PARSE_SUBJECT, candidate_shas, rows_for
 from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
 from thai_syllabus.store import IMAGE_MAX_LONG_EDGE, SyllabusDb
+from thai_syllabus.syllabus import Syllabus
+
+from .builders import word
 
 PW1_GUID = genanki.guid_for("picture_word", "pw-1")
 
@@ -558,3 +563,105 @@ def test_an_unjoined_picture_note_gets_no_candidate_row(old_deck, old_data, tmp_
                        "  image: images/pw-2.jpg\n", encoding="utf-8")
     report = migrate(old_deck, old_data, tmp_path / "new")
     assert report.cache["current_picture"] == 2
+
+
+# --- parse_sentences (spec 2 r10 section 4 / spec 3 r16 section 5) ---------
+
+def _insert_legacy_row(db, *, text_sha, text):
+    """A raw insert bypassing add_sentence, simulating a pre-r10 row a
+    running deck already accumulated before the clauses column existed
+    (add_sentence always requires clauses).
+    """
+    db._con.execute(
+        "insert into sentences (text_sha, text, clauses, gloss, voice, source, "
+        "origin, licence, acquired) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (text_sha, text, None, "a gloss", "learner_voice", "llm", "draft", "n/a",
+         "2026-01-01"))
+
+
+class _FakeParseLlm:
+    """An llm-parse backend answering with one fixed completion, its
+    prompt recorded for inspection."""
+
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="sentence-parser", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.prompts.append(q.params["prompt"])
+        return RawAnswer(items=(self.text,))
+
+
+class _NoAskLlm:
+    """An llm-parse backend that fails the test if ever asked -- proves a
+    re-run over rows that all already carry clauses asks nothing."""
+
+    def cache_key(self, q):
+        raise AssertionError("parse_sentences must not ask when no rows lack clauses")
+
+    def fetch(self, q):
+        raise AssertionError("parse_sentences must not ask when no rows lack clauses")
+
+
+def test_parse_sentences_writes_a_verified_row_and_deletes_an_unparsed_one(tmp_path):
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    _insert_legacy_row(db, text_sha="good", text="กินข้าว")  # กินข้าว: eat rice
+    _insert_legacy_row(db, text_sha="bad", text="ไม่มีคำ")  # ไม่มีคำ: no matching parse
+    syllabus = Syllabus(words=(word("eat", "กิน", "eat"),        # กิน: eat
+                               word("rice", "ข้าว", "rice")))    # ข้าว: rice
+    answer_json = json.dumps({"parses": [
+        # one clause, no space: renders "กิน" + "ข้าว" = "กินข้าว"
+        {"text": "กินข้าว", "clauses": [["eat", "rice"]]},
+        # renders "กิน", not "ไม่มีคำ" -- fails check_sentence
+        {"text": "ไม่มีคำ", "clauses": [["eat"]]}]})
+    llm = _FakeParseLlm(answer_json)
+    provider = Provider(record=db, cache=db, backends={"llm-parse": llm})
+    report = MigrationReport()
+
+    parse_sentences(db, syllabus, provider, report)
+
+    remaining = db.all_sentences()
+    assert len(remaining) == 1
+    assert remaining[0].text == "กินข้าว"  # กินข้าว: eat rice
+    assert remaining[0].words == ("eat", "rice")
+    assert report.curated["sentence_parsed"] == 1
+    dropped = {u.identity: u.reason for u in report.unmigratable}
+    assert dropped["bad"].startswith("unparsed:")
+    # one ask over the whole worklist, not one per row
+    assert len(llm.prompts) == 1
+    assert "กินข้าว" in llm.prompts[0] and "ไม่มีคำ" in llm.prompts[0]
+
+
+def test_parse_sentences_asks_nothing_when_no_rows_lack_clauses(tmp_path):
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice"),))  # ข้าว: rice
+    provider = Provider(record=db, cache=db, backends={"llm-parse": _NoAskLlm()})
+    report = MigrationReport()
+
+    parse_sentences(db, syllabus, provider, report)  # must not raise
+
+    assert report.curated == {}
+    assert report.unmigratable == []
+    assert [s.text for s in db.all_sentences()] == ["ข้าว"]  # rice
+
+
+def test_migrate_refuses_a_deck_with_rows_lacking_clauses_and_no_providers_yaml(
+        old_deck, old_data, tmp_path):
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)  # first run: no sentences yet, no providers.yaml needed
+
+    db = SyllabusDb(new_root / "syllabus.db")
+    _insert_legacy_row(db, text_sha="legacy-1", text="ไก่")  # ไก่: chicken, a registered word
+    db.close()
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        migrate(old_deck, old_data, new_root)
+    message = str(excinfo.value)
+    assert str(new_root) in message
+    assert "providers.yaml" in message

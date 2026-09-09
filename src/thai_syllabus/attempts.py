@@ -818,7 +818,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             target_lines.append(line)
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
-               + "\n".join(f"- {w.id}  {w.thai}  ({w.meaning})" for w in vocabulary) + "\n")
+               + "\n".join(record.vocabulary_line(w) for w in vocabulary) + "\n")
     if target_lines:
         sections += "Targets:\n" + "\n".join(target_lines) + "\n"
     if introducible_lines:

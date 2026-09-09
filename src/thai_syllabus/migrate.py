@@ -32,10 +32,19 @@ reported unmatched. Everything the old deck keyed by note id is re-keyed
 under the word id the join finds. Spelling-sound notes always drop.
 Every row this migration cannot place is reported in
 MigrationReport.unmigratable.
+
+Spec 2 r10 section 4's parse step (parse_sentences): a running deck's
+`sentences` rows from before the clauses column existed are asked once
+through the llm-parse producer; a row whose parse passes
+Syllabus.check_sentence is backfilled, every other row is deleted and
+reported. migrate() runs this step, when any row needs it, before its
+final load_syllabus check, and refuses a deck with such rows and no
+providers.yaml, naming both.
 """
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -44,15 +53,28 @@ from typing import Any
 import genanki
 import yaml
 
+from . import record
 from .authority import role_for
 from .cachekeys import DirectionKey, LearnerNoteKey, LegacyVerdictKey, ProvideKey, WaiverKey
 from .cachekeys import sha as _key_component_sha
-from .curated import build_categories, save_curated, CuratedBundle, RulebookConfig
-from .entities import Pronunciation, Syllable, Target, Word
+from .curated import (
+    build_categories,
+    load_curated,
+    load_providers_config,
+    save_curated,
+    CuratedBundle,
+    RulebookConfig,
+)
+from .entities import Clauses, Pronunciation, Sentence, Syllable, Target, Word
 from .ids import TargetId, WordId
 from .media import Provenance
 from .profile import Profile
+from .provider import Provider, Question
 from .store import MediaStore, SyllabusDb
+from .syllabus import Syllabus
+from .wiring import build_provider, load_syllabus
+
+_log = logging.getLogger(__name__)
 
 # A candidates.yaml verdict's rubric is unknown (the old record never said
 # which rubric version judged); carried under this id, it can never equal
@@ -628,6 +650,58 @@ def _migrate_waivers(old_deck: Path, db: SyllabusDb, report: MigrationReport) ->
                         reason=r.get("reason", "")))
 
 
+# --- parse step (spec 2 r10 section 4 / spec 3 r16 section 5) --------------
+
+def parse_sentences(db: SyllabusDb, syllabus: Syllabus, provider: Provider,
+                    report: MigrationReport) -> None:
+    """The migration's parse step: every `sentences` row without clauses
+    (db.sentences_without_clauses), asked in one llm-parse ask over the
+    whole worklist against `syllabus.words` as the vocabulary. A row
+    whose text comes back with clauses that pass `syllabus.check_sentence`
+    is backfilled (db.set_clauses) and counted in
+    report.curated["sentence_parsed"]; every other row -- no parse
+    returned for its text, or one that fails check_sentence -- is deleted
+    (db.delete_sentence) and recorded in report.unmigratable
+    (report.drop("sentences", text_sha, "unparsed: " + reason)), never
+    left silently. Asks nothing when no row lacks clauses.
+    """
+    rows = db.sentences_without_clauses()
+    if not rows:
+        return
+    vocabulary = sorted(syllabus.words, key=lambda w: w.id)
+    texts = [text for _, text in rows]
+    answer = provider.ask("llm-parse", Question(
+        subject=record.PARSE_SUBJECT, provides="parse", kind="sentence",
+        subject_kind="sentence", params={"prompt": record.parse_prompt(texts, vocabulary)}))
+
+    parses: dict[str, Clauses] = {}
+    for item in answer.items:
+        parses.update(record.parses_in(str(item)))
+    for unexpected in sorted(set(parses) - set(texts)):
+        _log.warning("parse_sentences: ignoring a parse for a text never asked about: %r",
+                     unexpected[:40])
+
+    for text_sha, text in rows:
+        clauses = parses.get(text)
+        reason: str | None = None
+        if clauses is None:
+            reason = "no parse returned for this text"
+        else:
+            sentence = Sentence(clauses=clauses, text=text, gloss="", voice="learner_voice",
+                                provenance=Provenance(source="llm", origin="parse",
+                                                      licence="generated", acquired=date.today()))
+            try:
+                syllabus.check_sentence(sentence)
+            except ValueError as e:
+                reason = str(e)
+        if reason is not None:
+            db.delete_sentence(text_sha)
+            report.drop("sentences", text_sha, "unparsed: " + reason)
+            continue
+        db.set_clauses(text_sha, clauses)
+        report.bump(report.curated, "sentence_parsed")
+
+
 # --- entry point -------------------------------------------------------
 
 def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
@@ -660,6 +734,25 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     _migrate_forvo(old_deck, db, report)
     _migrate_proof_notes(old_deck, note_subjects, db, report)
     _migrate_waivers(old_deck, db, report)
+
+    curated_bundle = load_curated(curated_dir)
+    if db.sentences_without_clauses():
+        providers_path = curated_dir / "providers.yaml"
+        if not providers_path.exists():
+            raise FileNotFoundError(
+                f"migrate: {new_root} has sentence rows lacking clauses but no "
+                f"providers.yaml at {providers_path}")
+        cfg = load_providers_config(providers_path)
+        provider = build_provider(cfg, db, media_store)
+        # No sentences read from the db here: check_sentence runs against
+        # clauses before they are written -- a null-clauses row makes
+        # all_sentences raise.
+        syllabus_for_parse = load_syllabus(new_root, db=db, bundle=curated_bundle, sentences=())
+        parse_sentences(db, syllabus_for_parse, provider, report)
+
+    # The final load check (spec 2 section 4): every curated file and
+    # every sentence loads cleanly once the parse step has run.
+    load_syllabus(new_root, db=db, bundle=curated_bundle)
 
     db.close()
     return report
