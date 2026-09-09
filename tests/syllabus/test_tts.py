@@ -3,6 +3,7 @@ other than 429 is a definitive refusal of this text/voice; 429, 5xx, and
 a 200 body without audioContent stay transient.
 """
 import pytest
+import requests
 
 from thai_syllabus.transport import SynthesisRefused, TransportError
 from thai_syllabus.tts import GoogleTts
@@ -38,6 +39,15 @@ def test_google_tts_a_200_without_audio_content_is_transient():
     with pytest.raises(TransportError) as err:
         tts.synthesize("สวัสดี", "v")   # สวัสดี: hello
     assert not isinstance(err.value, SynthesisRefused)
+
+
+def test_google_tts_wraps_a_wire_failure_in_transport_error():
+    def raise_timeout(url, json, timeout):
+        raise requests.exceptions.ReadTimeout("timed out")
+
+    tts = GoogleTts(api_key="k", http_post=raise_timeout)
+    with pytest.raises(TransportError):
+        tts.synthesize("สวัสดี", "v")   # สวัสดี: hello
 
 
 def test_google_tts_synthesizes_on_200_with_audio_content():

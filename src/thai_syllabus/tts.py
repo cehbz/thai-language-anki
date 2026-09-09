@@ -56,7 +56,11 @@ class GoogleTts:
             "voice": {"languageCode": "th-TH", "name": voice},
             "audioConfig": {"audioEncoding": "MP3"},
         }
-        resp = self.http_post(url, json=body, timeout=30)
+        import requests
+        try:
+            resp = self.http_post(url, json=body, timeout=30)
+        except requests.RequestException as e:
+            raise TransportError(f"google tts failed: {e}") from e
         if resp.status_code != 200:
             if 400 <= resp.status_code < 500 and resp.status_code != 429:
                 raise SynthesisRefused(
