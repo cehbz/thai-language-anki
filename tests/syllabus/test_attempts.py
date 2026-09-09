@@ -23,7 +23,6 @@ from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer
 from thai_syllabus.record import drafts_in, rows_for
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
-from thai_syllabus.rules import OrderEntry
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, FetchRefused, SynthesisRefused, TransportError
@@ -1536,37 +1535,96 @@ def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
     assert prompt.count("อร่อย") == 2          # once in the list, once on its own target line
 
 
-def test_sentence_prompt_carries_one_cutoff_for_the_whole_batch():
-    """One cutoff for the batch (the furthest handed target's), not a
-    per-target "may use items" line."""
+def test_sentence_prompt_lists_a_targets_line_per_handed_target():
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets))
-    assert "may use items 1..3" in prompt          # tasty/receptive's cutoff, the furthest
-    assert "may use items" not in prompt.split("may use items 1..3", 1)[1]
     assert "- target eat/receptive: word กิน (eat)" in prompt
     assert "- target rice/receptive: word ข้าว (rice)" in prompt
     assert "- target tasty/receptive: word อร่อย (tasty)" in prompt
     assert '"targets": ["<target id, as written after \'target \' above>", ...]' in prompt
 
 
-def test_sentence_prompt_asks_for_the_fewest_sentences_covering_the_targets():
+def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets))
-    assert "fewest natural sentences that together cover these targets" in prompt
-    assert "at most one of the targets marked sentence-introduced" in prompt
+    assert ("Each JSON item is one sentence. Write the fewest natural sentences that together "
+           "cover the targets below; a sentence may cover several targets. A sentence may "
+           "introduce at most one word from the Introducible list and must otherwise use only "
+           "the vocabulary below.") in prompt
 
 
-def test_sentence_prompt_marks_a_sentence_introduced_target():
+def _glue_word_syllabus():
+    # กิน: eat, ข้าว: rice -- picture-introduced; แล้ว: already, ก็: also --
+    # sentence-introduced glue words; ก็ already met via a sentence that
+    # fills ก็/receptive (its only adopted sentence, so nothing else meets
+    # แล้ว/receptive).
+    return Syllabus(
+        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice"),
+               word("glue1", "แล้ว", "already"), word("glue2", "ก็", "also")),
+        targets=(target("eat/receptive", "eat"),
+                 target("rice/receptive", "rice"),
+                 target("glue1/receptive", "glue1", introduction="sentence"),
+                 target("glue2/receptive", "glue2", introduction="sentence")),
+        frequency={"eat": 1, "rice": 2, "glue1": 3, "glue2": 4},
+        sentences=(_sentence(text="ก็กิน", gloss="also eats"),),   # ก็กิน: also eats
+        tokenizer=FakeTokenizer({"ก็กิน": ["ก็", "กิน"]}))
+
+
+def test_sentence_prompt_omits_an_unmet_glue_word_from_vocabulary_and_lists_it_introducible():
+    syllabus = _glue_word_syllabus()
+    glue1, glue2 = (t for t in syllabus.targets if t.id in ("glue1/receptive", "glue2/receptive"))
+    prompt = _sentence_prompt(syllabus, [glue1, glue2])
+    vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nIntroducible")[0]
+    assert "แล้ว" not in vocabulary   # แล้ว: already -- unmet, left out of vocabulary
+    assert "- target glue1/receptive: word แล้ว (already)" in prompt
+    assert "Introducible (at most one per sentence):" in prompt
+
+
+def test_sentence_prompt_shows_a_target_an_adopted_sentence_fills_as_a_targets_line():
+    """A handed sentence-introduced Target some adopted sentence already
+    fills (spec 3 r15 section 5) is an ordinary Targets line -- present,
+    not dropped, and not Introducible."""
+    syllabus = _glue_word_syllabus()
+    glue2 = next(t for t in syllabus.targets if t.id == "glue2/receptive")
+    prompt = _sentence_prompt(syllabus, [glue2])
+    vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
+    assert "ก็" in vocabulary   # ก็: also -- met by the adopted sentence
+    assert "- target glue2/receptive: word ก็ (also)" in prompt
+    assert "Introducible (at most one per sentence):" not in prompt
+
+
+def test_sentence_prompt_appends_a_met_glue_word_whose_target_lies_beyond_the_handed_batch():
+    """ก็/receptive's own entry sits after แล้ว/receptive's (the only
+    handed target's) own entry; the bounded walk stops at the furthest
+    handed target, so a second pass over the whole order appends a met
+    sentence-introduced word wherever its own entry falls. There is no
+    numeric cutoff line to declare it unusable -- the vocabulary list is
+    the whole usable set."""
+    syllabus = _glue_word_syllabus()
+    glue1 = next(t for t in syllabus.targets if t.id == "glue1/receptive")
+    prompt = _sentence_prompt(syllabus, [glue1])
+    vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nIntroducible")[0]
+    assert "ก็" in vocabulary   # ก็: also -- appended though its own entry is beyond the batch
+    assert "items 1.." not in prompt
+
+
+def test_sentence_prompt_shows_a_picture_introduced_target_though_its_word_is_already_met():
+    """A picture-introduced Target is always a Targets line: a met
+    sentence-introduced Target of the same word plays no part in it."""
+    met_sentence = Sentence(
+        text="ช่วย", gloss="a person helps", voice="other_voice",   # ช่วย: help
+        provenance=Provenance(source="llm", origin="m", licence="generated",
+                              acquired=date(2026, 9, 3)))
     syllabus = Syllabus(
-        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),   # กิน: eat, ข้าว: rice
-        targets=(target("eat/receptive", "eat", introduction="sentence"),
-                 target("rice/receptive", "rice")),
-        frequency={"eat": 1, "rice": 2},
-        tokenizer=FakeTokenizer({}))
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
-    assert "- target eat/receptive: word กิน (eat) (sentence-introduced)" in prompt
-    assert "- target rice/receptive: word ข้าว (rice)" in prompt
-    assert "rice/receptive: word ข้าว (rice) (sentence-introduced)" not in prompt
+        words=(word("help", "ช่วย", "help"),),   # ช่วย: help
+        targets=(target("help/receptive", "help", introduction="sentence"),
+                 target("help/productive", "help", skill="productive")),
+        frequency={"help": 1},
+        sentences=(met_sentence,),
+        tokenizer=FakeTokenizer({"ช่วย": ["ช่วย"]}))
+    productive = next(t for t in syllabus.targets if t.id == "help/productive")
+    prompt = _sentence_prompt(syllabus, [productive])
+    assert "- target help/productive: word ช่วย (help)" in prompt
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
@@ -1575,28 +1633,3 @@ def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
     vocabulary = _sentence_prompt(syllabus, first_only).split(
         "Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert vocabulary.splitlines() == ["1. กิน"]
-
-
-def test_sentence_prompt_refuses_a_target_whose_met_vocabulary_disagrees_with_order():
-    class _Syl:
-        """order() meets eat then tasty; vocabulary_met_by claims tasty met rice."""
-        profile = type("P", (), {"register": "male_colloquial"})()
-        sentences = ()
-        tokenizer = FakeTokenizer({})
-        _by_id = {"eat": word("eat", "กิน", "eat"), "rice": word("rice", "ข้าว", "rice"),
-                  "tasty": word("tasty", "อร่อย", "tasty")}
-        targets = (target("eat/receptive", "eat"), target("tasty/receptive", "tasty"))
-
-        def word(self, id):
-            return self._by_id[id]
-
-        def order(self):
-            return [OrderEntry("word_target", "eat/receptive"),
-                    OrderEntry("word_target", "tasty/receptive")]
-
-        def vocabulary_met_by(self, t):
-            return {"eat/receptive": (self._by_id["eat"],),
-                    "tasty/receptive": (self._by_id["eat"], self._by_id["rice"])}[t.id]
-
-    with pytest.raises(ValueError, match="tasty/receptive"):
-        _sentence_prompt(_Syl(), list(_Syl.targets))

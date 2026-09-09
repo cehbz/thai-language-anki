@@ -41,7 +41,7 @@ from .derivations import (
     unjudged_candidates,
 )
 from .entities import Sentence, Target, Word
-from .ids import PairId, TargetId, WordId
+from .ids import PairId, WordId
 from .media import Provenance, Speaker
 from .provider import Provider, ProviderAnswer, Question
 from .query import QUERY_HINTS, picture_query
@@ -757,57 +757,83 @@ def _tts_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str,
 
 # --- the sentence attempt (per run, over the open Targets) ------------------
 
-def _entry_vocabulary(syllabus: Syllabus,
-                      targets: Sequence[Target]) -> tuple[list[Word], dict[TargetId, int]]:
-    """The words met in entry order (Syllabus.order) up to the furthest
-    handed target, and per handed target how many of them were met at or
-    before it. Refuses a target whose vocabulary_met_by is not that
-    prefix."""
-    wanted = {t.id: t for t in targets}
+def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Word]:
+    """The vocabulary a sentence prompt may draw on, entirely: the
+    picture-introduced words met in entry order (Syllabus.order) up to
+    the furthest handed target -- a met sentence-introduced word
+    (`Syllabus.met_sentence_introduced_targets`) interleaved at its own
+    entry within that same bounded walk when its entry falls at or
+    before the furthest handed target, appended after the walk, still in
+    entry order, when its entry falls beyond it. An unmet
+    sentence-introduced word stays out throughout.
+    """
+    met_targets = syllabus.met_sentence_introduced_targets()
+    wanted = {t.id for t in targets}
     by_id = {t.id: t for t in syllabus.targets}
     vocabulary: list[Word] = []
     seen: set[WordId] = set()
-    cutoffs: dict[TargetId, int] = {}
+    remaining = set(wanted)
     for entry in syllabus.order():
         if entry.kind != "word_target":
             continue
-        word_id = by_id[entry.id].word
-        if word_id not in seen:
+        entry_target = by_id[entry.id]
+        word_id = entry_target.word
+        include = entry_target.introduction == "picture_card" or entry.id in met_targets
+        if include and word_id not in seen:
             seen.add(word_id)
             vocabulary.append(syllabus.word(word_id))
-        if entry.id in wanted:
-            cutoffs[entry.id] = len(vocabulary)
-            if len(cutoffs) == len(wanted):
-                break
-    for target in targets:
-        met = {w.id for w in syllabus.vocabulary_met_by(target)}
-        if met != {w.id for w in vocabulary[:cutoffs[target.id]]}:
-            raise ValueError(f"target {target.id}: vocabulary_met_by differs from the "
-                             "words order() meets at or before it")
-    return vocabulary, cutoffs
+        remaining.discard(entry.id)
+        if not remaining:
+            break
+    for entry in syllabus.order():
+        if entry.kind != "word_target":
+            continue
+        entry_target = by_id[entry.id]
+        if (entry_target.introduction == "sentence" and entry.id in met_targets
+                and entry_target.word not in seen):
+            seen.add(entry_target.word)
+            vocabulary.append(syllabus.word(entry_target.word))
+    return vocabulary
 
 
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
-    vocabulary, cutoffs = _entry_vocabulary(syllabus, targets)
-    cutoff = max(cutoffs.values(), default=0)
-    lines = []
+    """The drafting prompt (spec 3 section 5): the met vocabulary once,
+    a Targets line per picture-introduced handed target and per handed
+    sentence-introduced target some adopted sentence already fills, an
+    Introducible line per handed sentence-introduced target no adopted
+    sentence fills, the profile register, and the existing sentence
+    openings to avoid.
+    """
+    vocabulary = _entry_vocabulary(syllabus, targets)
+    met_targets = syllabus.met_sentence_introduced_targets()
+    target_lines = []
+    introducible_lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        mark = " (sentence-introduced)" if target.introduction == "sentence" else ""
-        lines.append(f"- target {target.id}: word {word.thai} ({word.meaning}){mark}")
+        line = f"- target {target.id}: word {word.thai} ({word.meaning})"
+        if target.introduction == "sentence" and target.id not in met_targets:
+            introducible_lines.append(line)
+        else:
+            target_lines.append(line)
     openings = sorted({syllabus.tokenizer.tokens(s.text)[0] for s in syllabus.sentences
                        if syllabus.tokenizer.tokens(s.text)})
+    sections = ("Vocabulary, in the order met:\n"
+               + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n")
+    if target_lines:
+        sections += "Targets:\n" + "\n".join(target_lines) + "\n"
+    if introducible_lines:
+        sections += ("Introducible (at most one per sentence):\n"
+                    + "\n".join(introducible_lines) + "\n")
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
-            f"Sentences may use items 1..{cutoff} of the vocabulary below.\n"
-            "Write the fewest natural sentences that together cover these targets. A sentence "
-            "may introduce at most one of the targets marked sentence-introduced.\n"
+            "Each JSON item is one sentence. Write the fewest natural sentences that together "
+            "cover the targets below; a sentence may cover several targets. A sentence may "
+            "introduce at most one word from the Introducible list and must otherwise use only "
+            "the vocabulary below.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
-            + "Vocabulary, in the order met:\n"
-            + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n"
-            + "Targets:\n" + "\n".join(lines) + "\n"
-            'Output JSON only: {"sentences": [{"text": "...", "gloss": "...", '
+            + sections
+            + 'Output JSON only: {"sentences": [{"text": "...", "gloss": "...", '
             '"targets": ["<target id, as written after \'target \' above>", ...]}]}')
 
 
