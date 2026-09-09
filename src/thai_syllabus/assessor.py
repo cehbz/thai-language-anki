@@ -711,11 +711,10 @@ class FillsBackend:
     `params["target"]`? Keyed mech:fills:TARGET:VERSION:ADOPTED:SUBJECT.
     A fills verdict is computed from words.yaml (the registered word
     list), targets.yaml (a target's membership, skill and introduction),
-    the tokenizer, and the adopted sentence set (clause 3's novelty rule
-    reads other adopted sentences) -- `version` names the curated/
-    tokenizer state (spec 3 section 6a), built from curated.py's
-    `curated_version(root)` and wiring's `tokenizer_version()`; ADOPTED
-    is a sha over the sorted adopted text_shas, computed from
+    and the adopted sentence set (clause 3's novelty rule reads other
+    adopted sentences) -- `version` names the curated state (spec 3
+    section 6a), built from curated.py's `curated_version(root)`;
+    ADOPTED is a sha over the sorted adopted text_shas, computed from
     `syllabus_of()` at ask time, as a run adopts sentences into it.
     """
     syllabus_of: Callable[[], Any]
@@ -737,8 +736,8 @@ class FillsBackend:
         target = next((t for t in syllabus.targets if t.id == target_id), None)
         if target is None:
             raise PreparationError(f"fills: no target {target_id!r} in the syllabus")
-        draft = Sentence(text=question.params["text"], gloss=question.params.get("gloss", ""),
-                         voice="learner_voice",
+        draft = Sentence(clauses=(), text=question.params["text"],
+                         gloss=question.params.get("gloss", ""), voice="learner_voice",
                          provenance=Provenance(source="llm", origin="draft",
                                                licence="generated", acquired=date.today()))
         ok = syllabus.fills(draft, target)

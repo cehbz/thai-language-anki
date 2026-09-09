@@ -96,10 +96,9 @@ def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []
     for s in syllabus.sentences:
         filled = syllabus.fill_set(s)
-        tokens = syllabus.tokens_of(s)
+        used = syllabus.words_used(s)
         for t in syllabus.targets:
-            target_word = syllabus.find_word(t.word)
-            if target_word is None or not syllabus.mentions_at(tokens, target_word.thai):
+            if t.word not in used:
                 continue
             if t.skill == "productive" and s.voice != "learner_voice":
                 continue
@@ -616,20 +615,18 @@ def _check_order_sentence_after_words(syllabus: "Syllabus") -> list[Finding]:
         sentence_pos = positions.get(("sentence", note_id))
         if sentence_pos is None:
             continue
-        for w in syllabus.words:
-            if not syllabus.mentions(s, w.thai):
-                continue
-            word_targets = [t for t in syllabus.targets if t.word == w.id]
+        for w in s.words:
+            word_targets = [t for t in syllabus.targets if t.word == w]
             if not word_targets:
                 findings.append(Finding(rule="order/sentence-after-words", note_id=note_id,
-                                        evidence=f"uses word {w.id!r} with no Target"))
+                                        evidence=f"uses word {w!r} with no Target"))
                 continue
             for t in word_targets:
                 target_pos = positions.get(("word_target", t.id))
                 if target_pos is not None and target_pos >= sentence_pos:
                     findings.append(Finding(
                         rule="order/sentence-after-words", note_id=note_id,
-                        evidence=f"target {t.id!r} for word {w.id!r} is not before the sentence"))
+                        evidence=f"target {t.id!r} for word {w!r} is not before the sentence"))
     return findings
 
 

@@ -26,7 +26,7 @@ from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
-    Target, Word,
+    Target, Word, render,
 )
 from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.media import Provenance, Speaker
@@ -85,21 +85,6 @@ def read_apkg(path: Path) -> dict:
            "models": json.loads(models_json), "media": media}
 
 
-# --- a Tokenizer stub: pre-declared tokens per exact sentence text ---------
-
-class SplitTokenizer:
-    """Tokenizer (ports.py): returns pre-declared tokens for a known
-    sentence text, or the whole text as one token otherwise. Thai has no
-    whitespace to split on, so fixtures supply their own token lists
-    instead of running a real segmenter.
-    """
-    def __init__(self, tokens_by_text: dict[str, list[str]] | None = None):
-        self._map = dict(tokens_by_text or {})
-
-    def tokens(self, text: str) -> list[str]:
-        return self._map.get(text, [text])
-
-
 def _syl(onset: str = "m", vowel: str = "a", coda: str = "",
         length: str = "short", tone: str = "mid") -> Syllable:
     return Syllable(segments=(onset, vowel, coda), vowel_length=length, tone=tone)
@@ -112,6 +97,16 @@ def _pron(*syllables: Syllable) -> Pronunciation:
 
 def _word(id_: str, thai: str, meaning: str, tone: str = "mid") -> Word:
     return Word(id=WordId(id_), thai=thai, pron=_pron(_syl(tone=tone)), meaning=meaning)
+
+
+def _sentence(words: tuple[Word, ...], clauses, *, gloss: str,
+             voice: str = "learner_voice") -> Sentence:
+    """Sentence.text as entities.render over `clauses`, resolving each
+    element's word id against `words`' own thai forms.
+    """
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    return Sentence(clauses=clauses, text=render(clauses, thai_of), gloss=gloss,
+                    voice=voice, provenance=PROV)
 
 
 # --- the real db + media store, and what compile.py needs seeded ----------
@@ -198,14 +193,14 @@ class SyllabusWorld:
 # --- fixture: a word target, a pair, a grapheme, and a sentence that fills
 # several targets at once (spec 4 sections 1-2) ----------------------------
 
-def full_syllabus(tokenizer) -> Syllabus:
+def full_syllabus() -> Syllabus:
     """pom "ผม" (I, male speaker), gin "กิน" (to eat), rice "ข้าว" (cooked
     rice -- carries both a receptive and a productive Target), chicken
     "ไก่" (chicken, a grapheme keyword), the letter name "กอ ไก่" ("gɔɔ
     gài", the grapheme ก's own recited name), a near/far tone pair "ใกล้"/
     "ไกล" (near/far), the grapheme ก itself, and the sentence "ผมกินข้าว"
-    (I eat rice -- mentions pom, gin and rice at token boundaries, so it
-    fills all three of their Targets, spec 1 section 3's fills()).
+    (I eat rice -- names pom, gin and rice as its elements, so it fills
+    all three of their Targets, spec 1 section 3's fills()).
     """
     pom = _word("pom", "ผม", "I (male speaker)")
     gin = _word("gin", "กิน", "to eat")
@@ -230,14 +225,14 @@ def full_syllabus(tokenizer) -> Syllabus:
         Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
         Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"),
     )
-    sentence = Sentence(text="ผมกินข้าว", gloss="I eat rice",
-                        voice="learner_voice", provenance=PROV)
+    sentence = _sentence((pom, gin, rice), ((pom.id, gin.id, rice.id),),
+                        gloss="I eat rice")  # I eat rice
 
     return Syllabus(
         words=(pom, gin, rice, chicken, ko_name, near, far), targets=targets,
         pairs=(pair,), graphemes=(grapheme,), sentences=(sentence,),
         confusions=(confusion,), profile=Profile(register="male_colloquial"),
-        tokenizer=tokenizer, rules=RULES_WITHOUT_COMPLETENESS)
+        rules=RULES_WITHOUT_COMPLETENESS)
 
 
 def seed_full(world: SyllabusWorld, syllabus: Syllabus) -> None:
@@ -268,8 +263,7 @@ def fully_seeded_syllabus(world: SyllabusWorld) -> Syllabus:
     goes through Syllabus.media, not through the word/picture Resolver
     the rest of this fixture's artifacts resolve through).
     """
-    tokenizer = SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})  # I / eat / rice
-    syllabus = full_syllabus(tokenizer)
+    syllabus = full_syllabus()
     seed_full(world, syllabus)
     world.seed_rendition(syllabus.pairs[0], {"near": "near", "far": "far"})
     return dataclasses.replace(
@@ -278,7 +272,7 @@ def fully_seeded_syllabus(world: SyllabusWorld) -> Syllabus:
 
 # --- fixture: two words sharing one spelling, for card/unique-front -------
 
-def duplicate_front_syllabus(tokenizer) -> Syllabus:
+def duplicate_front_syllabus() -> Syllabus:
     """Two distinct words both spelled "ข้าว" (rice) -- their Reading
     template fronts ("{{Thai}}" alone) render identically, tripping
     card/unique-front (A3: no two cards share a front).
@@ -288,12 +282,12 @@ def duplicate_front_syllabus(tokenizer) -> Syllabus:
     targets = (Target(id=TargetId("rice-a/receptive"), word=rice_a.id, skill="receptive"),
               Target(id=TargetId("rice-b/receptive"), word=rice_b.id, skill="receptive"))
     rules = RULES_WITHOUT_COMPLETENESS + (UNIQUE_FRONT_RULE,)
-    return Syllabus(words=(rice_a, rice_b), targets=targets, tokenizer=tokenizer, rules=rules)
+    return Syllabus(words=(rice_a, rice_b), targets=targets, rules=rules)
 
 
 # --- fixture: one receptive-only Target filled by its own sentence --------
 
-def receptive_only_sentence_syllabus(tokenizer) -> Syllabus:
+def receptive_only_sentence_syllabus() -> Syllabus:
     """gin "กิน" (to eat), one receptive Target, one sentence using only
     that word -- so its last used word (Syllabus.last_used_word) carries
     no productive Target and the sentence note gets no Cloze card (spec 4
@@ -301,9 +295,8 @@ def receptive_only_sentence_syllabus(tokenizer) -> Syllabus:
     """
     gin = _word("gin", "กิน", "to eat")
     target = Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive")
-    eat = Sentence(text="กิน", gloss="to eat", voice="learner_voice",
-                   provenance=PROV)  # to eat
-    return Syllabus(words=(gin,), targets=(target,), sentences=(eat,), tokenizer=tokenizer,
+    eat = _sentence((gin,), ((gin.id,),), gloss="to eat")  # to eat
+    return Syllabus(words=(gin,), targets=(target,), sentences=(eat,),
                     profile=Profile(register="male_colloquial"), rules=RULES_WITHOUT_COMPLETENESS)
 
 
@@ -314,7 +307,7 @@ def seed_receptive_only_sentence(world: SyllabusWorld, syllabus: Syllabus) -> No
 
 # --- fixture: one minimal pair with no rendition seeded -------------------
 
-def pair_only_syllabus(tokenizer) -> tuple[Syllabus, MinimalPair]:
+def pair_only_syllabus() -> tuple[Syllabus, MinimalPair]:
     """A near/far tone pair ("ใกล้"/"ไกล") with no word Targets at all --
     the syllabus a "no rendition seeded" test wires its own `media` port
     onto (see test_compiled_deck.py), so compile must drop both member
@@ -327,6 +320,6 @@ def pair_only_syllabus(tokenizer) -> tuple[Syllabus, MinimalPair]:
                                sounds=("mid", "low"))
     pair = MinimalPair.create(id=PairId("p1"), confusion=confusion, members=(near, far))
     syllabus = Syllabus(words=(near, far), pairs=(pair,), confusions=(confusion,),
-                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        profile=Profile(register="male_colloquial"),
                         rules=RULES_WITHOUT_COMPLETENESS)
     return syllabus, pair

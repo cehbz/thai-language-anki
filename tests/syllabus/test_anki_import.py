@@ -21,7 +21,7 @@ from thai_syllabus.cachekeys import sha
 from thai_syllabus.compile import compile_syllabus
 from thai_syllabus.wiring import _DbMediaIndex
 
-from .test_compile import Fixture, _fully_seeded, _pair_only_syllabus, _SplitTokenizer
+from .test_compile import Fixture, _fully_seeded, _pair_only_syllabus
 
 
 @pytest.fixture
@@ -437,7 +437,7 @@ def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
     # C2) -- a flag is about the PAIR (its rendition, current_best, and
     # compile's own audio resolution are all keyed on the pair id), so
     # the assessment row must land under the pair id, not a member's key.
-    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    syllabus, pair = _pair_only_syllabus()
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
@@ -646,7 +646,7 @@ def test_pair_member_cards_have_distinct_anchors(fx):
     # Both member notes of one pair used to anchor on the pair id alone,
     # so their Recognition cards collapsed onto one anchor -- the anchor
     # is now each member's own MemberKey (pair id, speaker, index).
-    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    syllabus, pair = _pair_only_syllabus()
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,

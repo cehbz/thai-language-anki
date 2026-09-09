@@ -1019,6 +1019,6 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
         ranked = _role_rank(rows, role, current_rubric)
         if not filled or ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
             continue
-        out.append((Sentence(text=draft.text, gloss=draft.gloss, voice="learner_voice",
-                             provenance=provenance), filled))
+        out.append((Sentence(clauses=(), text=draft.text, gloss=draft.gloss,
+                             voice="learner_voice", provenance=provenance), filled))
     return out

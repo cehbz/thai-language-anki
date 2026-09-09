@@ -18,8 +18,7 @@ load_syllabus reads the deck's media relationships through `_DbMediaIndex`
 provenance only), its sentences through `SyllabusDb.all_sentences()`, and
 its frequency map from `deck_root/curated/frequency_th.txt` (spec 2
 section 1); a deck without that file is refused with a FileNotFoundError
-naming it. The tokenizer is pythainlp, imported lazily; load_syllabus
-refuses with a RuntimeError naming it when it is not installed.
+naming it.
 """
 from __future__ import annotations
 
@@ -67,7 +66,7 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "Derivations", "load_derivations", "load_syllabus", "tokenizer_version"]
+          "Derivations", "load_derivations", "load_syllabus"]
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -216,16 +215,6 @@ def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
     return speaker_of
 
 
-def tokenizer_version() -> str:
-    """The tokenizer load_syllabus wires, named and versioned: pythainlp's
-    own version, the engine `_pythainlp_tokenizer` runs (the default
-    newmm). Imported lazily, as `_pythainlp_tokenizer` imports pythainlp.
-    """
-    import pythainlp
-
-    return f"pythainlp-{pythainlp.__version__}-newmm"
-
-
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None,
                    deck_root: str | Path | None = None) -> Assessor:
@@ -234,8 +223,8 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     `syllabus_of` names one, "fills". `syllabus_of` is a callable: a run
     adopts sentences into its Syllabus between attempts. `deck_root`
     names the curated/ directory a fills verdict is computed from (spec 3
-    section 6a); its version, and the tokenizer's, become the fills
-    backend's key part. Empty when `deck_root` is not given.
+    section 6a); its version becomes the fills backend's key part. Empty
+    when `deck_root` is not given.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -249,7 +238,7 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     if syllabus_of is not None:
-        version = (f"{curated_version(Path(deck_root) / 'curated')}:{tokenizer_version()}"
+        version = (f"{curated_version(Path(deck_root) / 'curated')}"
                   if deck_root is not None else "")
         backends["fills"] = FillsBackend(syllabus_of=syllabus_of, version=version)
     return Assessor(record=db, cache=db, backends=backends)
@@ -376,22 +365,6 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------
-
-def _pythainlp_tokenizer():
-    try:
-        from pythainlp.tokenize import word_tokenize
-    except ImportError as exc:
-        raise RuntimeError(
-            "pythainlp is required to tokenize Thai text for load_syllabus; "
-            "install it before loading a Syllabus") from exc
-
-    @dataclass
-    class _PythainlpTokenizer:
-        def tokens(self, text: str) -> list[str]:
-            return word_tokenize(text)
-
-    return _PythainlpTokenizer()
-
 
 @dataclass
 class _DbMediaIndex:
@@ -581,7 +554,6 @@ def load_syllabus(deck_root: str | Path, *,
         words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
-        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules,
-        tokenizer=_pythainlp_tokenizer())
+        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)
 
     return Syllabus(**kwargs)

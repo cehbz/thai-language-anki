@@ -7,70 +7,23 @@ report() identifies the state it judged so a stale report steers nothing.
 import dataclasses
 import hashlib
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
 
 from .cachekeys import JudgeKey
-from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
+from .entities import (
+    Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word, render,
+)
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
     AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, StudyReader,
-    StudyRecord, Tokenizer,
+    StudyRecord,
 )
 from .profile import Profile
 from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
-
-
-# Repetition mark ๆ (U+0E46) and abbreviation mark ฯ (U+0E2F): Thai
-# orthographic marks with no vocabulary of their own (spec 1 section 3).
-ORTHOGRAPHIC_MARKS = "ๆฯ"
-
-
-def token_is_known(token: str, known: Collection[str]) -> bool:
-    """Whether `token` is a known word, or a known word is its prefix or
-    suffix with a remainder that is itself known, recursively. A known
-    word matching neither end of the token is not a boundary.
-    """
-    if token in known:
-        return True
-    for candidate in known:
-        if not candidate or candidate == token:
-            continue
-        if token.startswith(candidate) and token_is_known(token[len(candidate):], known):
-            return True
-        if token.endswith(candidate) and token_is_known(token[:len(token) - len(candidate)], known):
-            return True
-    return False
-
-
-def decompose(token: str, known: Collection[str]) -> tuple[str, ...] | None:
-    """The registered words `token` splits into wholly, in order, or
-    None with no split accounting for the whole token. A proper split is
-    tried first, regardless of whether `token` itself is registered: a
-    known prefix strictly shorter than `token`, longest first (ties
-    broken by the prefix text itself, for a fixed order over any
-    Collection), whose remainder itself decomposes, recursively. A
-    token itself registered is a fallback tried only when no proper
-    split succeeds -- "โรงพยาบาล" ("hospital") registered alongside its
-    own parts "โรง" ("building") and "พยาบาล" ("nurse") still splits
-    into the two parts, not the whole compound: the parts remain
-    reachable as components even when the compound is also a word in
-    its own right.
-    """
-    if not token:
-        return ()
-    prefixes = sorted((c for c in known if c and c != token and token.startswith(c)),
-                      key=lambda c: (-len(c), c))
-    for candidate in prefixes:
-        sub = decompose(token[len(candidate):], known)
-        if sub is not None:
-            return (candidate,) + sub
-    if token in known:
-        return (token,)
-    return None
 
 
 @dataclass(frozen=True)
@@ -82,7 +35,6 @@ class Syllabus:
     sentences: tuple[Sentence, ...] = ()
     confusions: tuple[SoundConfusion, ...] = ()
     profile: Profile = field(default_factory=lambda: Profile(register="male_colloquial"))
-    tokenizer: Tokenizer = field(kw_only=True)
     # Rank per word, lower = more frequent; loaded from spec 2's storage
     # and handed in here.
     frequency: Mapping[WordId, int] = field(default_factory=dict)
@@ -215,23 +167,30 @@ class Syllabus:
             positions[t.word] = max(positions.get(t.word, i), i)
         return positions
 
-    @cached_property
-    def _sentence_tokens(self) -> dict[str, tuple[str, ...]]:
-        """Every adopted sentence's tokens, tokenized once per instance
-        and keyed by text_sha -- `tokens_of` reads this for an adopted
-        sentence instead of re-running the tokenizer once per
-        (sentence, target) pair; `with_sentences` returns a new
-        instance -- this cannot go stale under it.
+    def words_used(self, sentence: Sentence) -> frozenset[WordId]:
+        """Every word id `sentence`'s clauses name, a repeated word
+        counted once (spec 1 section 3 fills clause 1): `sentence.words`
+        as a set.
         """
-        return {s.text_sha: tuple(self.tokenizer.tokens(s.text)) for s in self.sentences}
+        return frozenset(sentence.words)
 
-    def tokens_of(self, sentence: Sentence) -> tuple[str, ...]:
-        """`sentence`'s tokens, immutable: the cached tokenization for an
-        adopted sentence (self.sentences); a direct tokenizer call for
-        any other sentence.
+    def check_sentence(self, sentence: Sentence) -> None:
+        """The Sentence invariant a syllabus's own vocabulary decides
+        (spec 1 section 1): every element's word registered here, and
+        render(sentence.clauses, ...) equal to sentence.text. Raises
+        ValueError naming the sentence's text_sha and the offending id,
+        or the two texts, on the first violation found.
         """
-        cached = self._sentence_tokens.get(sentence.text_sha)
-        return cached if cached is not None else tuple(self.tokenizer.tokens(sentence.text))
+        known = {w.id for w in self.words}
+        for word_id in sentence.words:
+            if word_id not in known:
+                raise ValueError(
+                    f"sentence {sentence.text_sha!r} names unregistered word {word_id!r}")
+        rendered = render(sentence.clauses, lambda w: self.word(w).thai)
+        if rendered != sentence.text:
+            raise ValueError(
+                f"sentence {sentence.text_sha!r} text {sentence.text!r} does not match "
+                f"its clauses' rendering {rendered!r}")
 
     def last_used_word(self, sentence: Sentence) -> WordId:
         """The word `sentence` uses whose own target position
@@ -243,7 +202,7 @@ class Syllabus:
         sentence. Raises ValueError naming the sentence's text_sha when
         it uses no targeted word.
         """
-        used = self._words_used(self.tokens_of(sentence))
+        used = self.words_used(sentence)
         candidates = [w for w in used if w in self._word_last_position]
         if not candidates:
             raise ValueError(f"sentence {sentence.text_sha!r} uses no targeted word")
@@ -262,130 +221,14 @@ class Syllabus:
 
     # --- fills() -----------------------------------------------------------
 
-    @cached_property
-    def known_words(self) -> frozenset[str]:
-        """This syllabus's own registered vocabulary, by Thai text --
-        `mentions_at`'s own known set, and the set compile.thai_cloze
-        reads to blank a target inside a decomposed token.
-        """
-        return frozenset(w.thai for w in self.words)
-
-    @staticmethod
-    def mentions_in(tokens: Sequence[str], thai: str, known: Collection[str]) -> bool:
-        """Whether `thai` is mentioned in `tokens` (spec 1 section 3
-        fills clause 1): a token equal to `thai` outright, or a token
-        that decomposes wholly into registered words (`decompose`,
-        against `known`) with `thai` among them. A registered word that
-        is only a prefix or suffix of a token, with no full
-        decomposition, is not a match. Each token is tried unstripped
-        first and with its ORTHOGRAPHIC_MARKS characters stripped
-        second, matching `_unknown_tokens`'s own reading of a mark
-        attached to its host word ("ช้าๆ" resolves against "ช้า"). The
-        staticmethod form, for a caller with no Syllabus instance to
-        hand (compile.thai_cloze); `mentions_at` is the memoized
-        instance form of this same predicate.
-        """
-        for tok in tokens:
-            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
-                if candidate == thai:
-                    return True
-                parts = decompose(candidate, known)
-                if parts is not None and thai in parts:
-                    return True
-        return False
-
-    @cached_property
-    def _decompose_cache(self) -> dict[str, tuple[str, ...] | None]:
-        """A private, per-instance memo of `decompose(token,
-        self.known_words)`, read and filled by `_decompose` -- one
-        Syllabus instance decomposes a given token at most once, across
-        every word and every target checked against it.
-        """
-        return {}
-
-    def _decompose(self, token: str) -> tuple[str, ...] | None:
-        """`decompose(token, self.known_words)`, memoized in
-        `_decompose_cache`: `mentions_at` and `_words_used` both read
-        this instead of recomputing a token's split once per word or
-        target -- `decompose`'s own recursion, run at most once per
-        distinct token this instance ever sees.
-        """
-        cache = self._decompose_cache
-        if token not in cache:
-            cache[token] = decompose(token, self.known_words)
-        return cache[token]
-
-    def mentions_at(self, tokens: Sequence[str], thai: str) -> bool:
-        """`mentions_in`'s own predicate, against this syllabus's own
-        registered words (`known_words`) and its memoized decomposition
-        (`_decompose`) -- fills(), mentions() and the rulebook's own
-        boundary checks all share this one predicate, and repeated
-        calls over the same tokens (one per word, one per target) do
-        not repeat a token's decomposition.
-        """
-        for tok in tokens:
-            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
-                if candidate == thai:
-                    return True
-                parts = self._decompose(candidate)
-                if parts is not None and thai in parts:
-                    return True
-        return False
-
-    def _words_used(self, tokens: Sequence[str]) -> set[WordId]:
-        """Every registered Word `tokens` mentions (`mentions_at`'s own
-        rule), each token's identity and decomposition
-        (`_decompose`, memoized) read once and tested against every
-        registered word's Thai text, rather than one `mentions_at` scan
-        -- and one `decompose` -- per word.
-        """
-        mentioned: set[str] = set()
-        for tok in tokens:
-            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
-                mentioned.add(candidate)
-                parts = self._decompose(candidate)
-                if parts is not None:
-                    mentioned.update(parts)
-        return {w.id for w in self.words if w.thai in mentioned}
-
-    @staticmethod
-    def _has_lexical_content(tok: str) -> bool:
-        """Whether a token carries vocabulary at all: whitespace-only,
-        punctuation/digit-only, and orthographic-mark-only (ORTHOGRAPHIC_MARKS)
-        tokens do not."""
-        return any(ch.isalpha() and ch not in ORTHOGRAPHIC_MARKS for ch in tok)
-
-    def _unknown_tokens(self, tokens: Sequence[str]) -> list[str]:
-        """Content tokens with no full decomposition into registered
-        Words (`decompose`, memoized via `_decompose`), the unstripped
-        token tried first and the token with its ORTHOGRAPHIC_MARKS
-        characters stripped tried second -- a tokenizer that keeps a
-        mark attached to its host word (e.g. "ช้าๆ") still resolves
-        against a registration of the bare word ("ช้า"). Each remaining
-        token empties the fill set (spec 1 section 3); a known prefix
-        does not excuse an unregistered remainder.
-        """
-        def is_known(tok: str) -> bool:
-            return self._decompose(tok) is not None or self._decompose(
-                tok.strip(ORTHOGRAPHIC_MARKS)) is not None
-
-        return [tok for tok in tokens if self._has_lexical_content(tok) and not is_known(tok)]
-
-    def mentions(self, sentence: Sentence, thai: str) -> bool:
-        """Whether `thai` appears in `sentence.text` at a token boundary
-        (rulebook helper: exposes the same boundary rule fills() uses).
-        """
-        return self.mentions_at(self.tokens_of(sentence), thai)
-
-    def _target_satisfies_clauses_1_and_2(self, tokens: Sequence[str], voice: str,
+    def _target_satisfies_clauses_1_and_2(self, words: frozenset[WordId], voice: str,
                                           target: Target) -> bool:
-        """Clauses 1 and 2 alone, over an already-tokenized text: the word
-        at a token boundary, the voice satisfying the skill -- the
-        "contains" test a fill set is built from, distinct from
+        """Clauses 1 and 2 alone: the target's word among `words` (a
+        sentence's own words_used), the voice satisfying the skill --
+        the "contains" test a fill set is built from, distinct from
         membership in one (spec 1 section 3).
         """
-        target_word = self.word(target.word)
-        if not self.mentions_at(tokens, target_word.thai):
+        if target.word not in words:
             return False
         return not (target.skill == "productive" and voice != "learner_voice")
 
@@ -453,31 +296,27 @@ class Syllabus:
                           adopted_fill_sets: Mapping[str, tuple[Target, ...]]
                           ) -> tuple[Target, ...]:
         """fill_set's body (spec 1 section 3, clause 3): a sentence-level
-        gate first -- every content token a registered word, every used
-        word carrying a Target -- then the candidates passing clauses 1
-        and 2, in target-id order. Among the candidates, a
+        gate first -- every word `words_used` names carries a Target --
+        then the candidates passing clauses 1 and 2, in target-id order.
+        Among the candidates, a
         sentence-introduced Target is unmet unless some other adopted
         sentence, placed at or before this one, already has it in ITS
         OWN fill set (read from `adopted_fill_sets`, not clauses 1 and 2
-        alone -- a sentence whose own fill set is empty, an unregistered
-        token or an untargeted word, meets nothing for anyone); more
-        than one unmet candidate empties the fill set; zero or one
-        leaves every candidate as the fill set. `adopted_fill_sets`
-        carries every sentence placed strictly before `sentence` in
-        placement order, when called from `_adopted_fill_sets`'s own
-        recursive build, or the complete map, for a candidate that is
-        not itself adopted.
+        alone -- a sentence whose own fill set is empty, an untargeted
+        word, meets nothing for anyone); more than one unmet candidate
+        empties the fill set; zero or one leaves every candidate as the
+        fill set. `adopted_fill_sets` carries every sentence placed
+        strictly before `sentence` in placement order, when called from
+        `_adopted_fill_sets`'s own recursive build, or the complete map,
+        for a candidate that is not itself adopted.
         """
-        tokens = self.tokens_of(sentence)
-        if self._unknown_tokens(tokens):
-            return ()
-        used = self._words_used(tokens)
+        used = self.words_used(sentence)
         if not used <= self._word_target_positions.keys():
             return ()
 
         candidates = tuple(sorted(
             (t for t in self.targets
-            if self._target_satisfies_clauses_1_and_2(tokens, sentence.voice, t)),
+            if self._target_satisfies_clauses_1_and_2(used, sentence.voice, t)),
             key=lambda t: t.id))
         if not candidates:
             return ()
@@ -542,6 +381,8 @@ class Syllabus:
         return tuple(out)
 
     def with_sentences(self, new: Sequence[Sentence]) -> "Syllabus":
+        for s in new:
+            self.check_sentence(s)
         return dataclasses.replace(self, sentences=self.sentences + tuple(new))
 
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]

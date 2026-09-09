@@ -3,18 +3,6 @@ from thai_syllabus.ports import Answer
 from thai_syllabus.rules import Finding
 
 
-class FakeTokenizer:
-    """Returns pre-declared tokens per exact sentence text; falls back to
-    treating the whole text as one token (fine for tests that only care
-    about a sentence's word-level structure via explicit token lists).
-    """
-    def __init__(self, tokens_by_text: dict[str, list[str]] | None = None):
-        self._map = dict(tokens_by_text or {})
-
-    def tokens(self, text: str) -> list[str]:
-        return self._map.get(text, [text])
-
-
 class FakeAssessmentReader:
     """`verdicts` is keyed the way tests read (rule_id, note_id,
     artifact_sha) -> bool, not by the cachekeys.JudgeKey report() actually

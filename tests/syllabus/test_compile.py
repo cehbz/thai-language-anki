@@ -20,8 +20,8 @@ from thai_syllabus.compile import (
     compile_syllabus, thai_cloze,
 )
 from thai_syllabus.entities import (
-    Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
-    Target, Word,
+    Grapheme, MinimalPair, Pronunciation, REPEAT_MARK, Sentence, SoundConfusion, Syllable,
+    Target, Word, render,
 )
 from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.media import Provenance, Speaker
@@ -73,19 +73,14 @@ def _word(id_, thai, meaning, tone="mid") -> Word:
     return Word(id=WordId(id_), thai=thai, pron=_pron(_syl(tone=tone)), meaning=meaning)
 
 
-class _SplitTokenizer:
-    """A real (if crude) whole-string tokenizer good enough for the
-    fixture's short sentences: splits on nothing (Thai has no spaces) --
-    tests instead supply pre-tokenized text via a lookup, matching
-    tests/syllabus/fakes.py's FakeTokenizer pattern but reusable here
-    without importing a test-only fake into a fixture module other tests
-    also import from.
+def _sentence(words: tuple[Word, ...], clauses, *, gloss: str,
+             voice: str = "learner_voice") -> Sentence:
+    """Sentence.text as entities.render over `clauses`, resolving each
+    element's word id against `words`' own thai forms.
     """
-    def __init__(self, tokens_by_text: dict[str, list[str]]):
-        self._map = tokens_by_text
-
-    def tokens(self, text: str) -> list[str]:
-        return self._map.get(text, [text])
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    return Sentence(clauses=clauses, text=render(clauses, thai_of), gloss=gloss,
+                    voice=voice, provenance=PROV)
 
 
 # --- fixture: a small synthetic Syllabus, seeded db + media store --------
@@ -168,7 +163,7 @@ def fx(tmp_path):
     return Fixture(tmp_path)
 
 
-def _small_syllabus(tokenizer, extra_targets=()) -> Syllabus:
+def _small_syllabus(extra_targets=()) -> Syllabus:
     pom = _word("pom", "ผม", "I (male speaker)")
     gin = _word("gin", "กิน", "to eat")
     rice = _word("rice", "ข้าว", "cooked rice")
@@ -194,8 +189,8 @@ def _small_syllabus(tokenizer, extra_targets=()) -> Syllabus:
         *extra_targets,
     ]
 
-    sentence = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
-                        provenance=PROV)  # I eat rice
+    sentence = _sentence((pom, gin, rice), ((pom.id, gin.id, rice.id),),
+                        gloss="I eat rice")  # I eat rice
 
     return Syllabus(
         words=(pom, gin, rice, chicken, ko_name, near, far),
@@ -205,14 +200,12 @@ def _small_syllabus(tokenizer, extra_targets=()) -> Syllabus:
         sentences=(sentence,),
         confusions=(confusion,),
         profile=Profile(register="male_colloquial"),
-        tokenizer=tokenizer,
         rules=_RULES_WITHOUT_COMPLETENESS,
     )
 
 
 def _fully_seeded(fx) -> Syllabus:
-    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
-    syllabus = _small_syllabus(tokenizer)
+    syllabus = _small_syllabus()
 
     fx.seed_picture("rice", "cooked rice")
     fx.seed_recording("rice", "cooked rice")
@@ -222,61 +215,64 @@ def _fully_seeded(fx) -> Syllabus:
     fx.seed_recording("letter-name:ko", "gɔɔ")
     fx.seed_recording("near", "near")
     fx.seed_recording("far", "far")
-    text_sha = __import__("thai_syllabus.rulebook", fromlist=["sentence_note_id"]).sentence_note_id(
-        syllabus.sentences[0])
+    text_sha = sentence_note_id(syllabus.sentences[0])
     fx.seed_recording(text_sha, "ผมกินข้าว")
     return syllabus
 
 
-# --- thai_cloze: the corruption table ------------------------------------
+# --- thai_cloze: renders over clauses, blanking by element word identity --
 
-@pytest.mark.parametrize("tokens,known,target,expected", [
-    (["ผม", "กิน", "ยา"], {"ยา"}, "ยา", "ผมกิน___"),  # I take medicine
-    # the corruption class: "ยา" ("medicine") must NOT be blanked inside
-    # "โรงพยาบาล" ("hospital") -- with only "ยา" registered the token has
-    # no full decomposition, so it is not a boundary match at all (a real
-    # tokenizer never splits it out as its own token either).
-    (["ผม", "ไป", "โรงพยาบาล"], {"ยา"}, "ยา", "ผมไปโรงพยาบาล"),
-    (["หมา", "วิ่ง"], {"หมา"}, "หมา", "___วิ่ง"),               # dog runs -- exact token
-    (["ยา", "ยา"], {"ยา"}, "ยา", "______"),                    # every matching token blanked
-    # "โรงพยาบาล" ("hospital") decomposes wholly into "โรง"
-    # ("building/hall") + "พยาบาล" ("nurse"): blanking "โรง" replaces
-    # only that component, "พยาบาล" stays.
-    (["โรงพยาบาล"], {"โรง", "พยาบาล"}, "โรง", "___พยาบาล"),
-    # "น้ำยา" ("solution/liquid medicine"): "ยา" is only a suffix; with
-    # "น้ำ" ("water") not registered there is no full decomposition, so
-    # the token stays untouched -- spec 1 section 3 fills clause 1 drops
-    # the old prefix/suffix-only rule.
-    (["น้ำยา"], {"ยา"}, "ยา", "น้ำยา"),
-])
-def test_thai_cloze_blanks_only_full_decompositions(tokens, known, target, expected):
-    assert thai_cloze(tokens, target, known) == expected
+def test_thai_cloze_blanks_the_target_word_only():
+    pom = _word("pom", "ผม", "I")
+    gin = _word("gin", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    words = (pom, gin, rice)
+    clauses = ((pom.id, gin.id, rice.id),)
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    sentence = Sentence(clauses=clauses, text=render(clauses, thai_of),
+                        gloss="I eat rice", voice="learner_voice", provenance=PROV)
+    assert thai_cloze(sentence, rice.id, thai_of) == "ผมกิน___"  # I eat ___
 
 
-def test_thai_cloze_never_touches_a_non_matching_token():
-    tokens = ["โรงพยาบาล", "ใหญ่"]  # hospital (big)
-    assert thai_cloze(tokens, "ยา", {"ยา"}) == "".join(tokens)  # ยา: medicine
+def test_thai_cloze_blanks_every_occurrence_of_the_target_word():
+    med = _word("med", "ยา", "medicine")
+    pom = _word("pom", "ผม", "I")
+    words = (pom, med)
+    clauses = ((pom.id, med.id), (med.id,))  # I take medicine, medicine
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    sentence = Sentence(clauses=clauses, text=render(clauses, thai_of),
+                        gloss="I take medicine, medicine", voice="learner_voice",
+                        provenance=PROV)
+    assert thai_cloze(sentence, med.id, thai_of) == "ผม___ ___"  # I take ___, ___
 
 
-def test_thai_cloze_blanks_the_component_even_when_the_whole_compound_is_registered():
-    """ห้องน้ำ (bathroom) with ห้อง (room), น้ำ (water) AND ห้องน้ำ
-    itself all registered: blanking "ห้อง" ("room") -- a component, not
-    the whole token -- blanks only that component; the compound being
-    also a registered word does not suppress the split.
+def test_thai_cloze_keeps_the_repeat_mark_outside_the_blank():
+    run = _word("run", "วิ่ง", "run")
+    fast = _word("fast", "เร็ว", "fast")
+    words = (run, fast)
+    clauses = ((run.id, (fast.id, REPEAT_MARK)),)  # run fast-fast (reduplicated)
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    sentence = Sentence(clauses=clauses, text=render(clauses, thai_of),
+                        gloss="run fast", voice="learner_voice", provenance=PROV)
+    assert thai_cloze(sentence, fast.id, thai_of) == "วิ่ง___ๆ"  # run ___-___ (reduplicated)
+
+
+def test_thai_cloze_leaves_a_word_whose_form_is_a_substring_of_another_registered_words_form_untouched():
+    """"โรง" (building) is a substring of "โรงพยาบาล" (hospital), a
+    distinct registered Word -- the corruption class thai_cloze cannot
+    produce by construction: an element names its own word, never a
+    substring of another word's rendered form (spec 4 section 1).
     """
-    tokens = ["ห้องน้ำ", "สกปรก"]  # bathroom (dirty)
-    known = {"ห้อง", "น้ำ", "ห้องน้ำ"}
-    assert thai_cloze(tokens, "ห้อง", known) == "___น้ำสกปรก"
-
-
-def test_thai_cloze_blanks_a_target_word_with_an_attached_repetition_mark():
-    """newmm keeps some reduplications as one token ("ช้าๆ") rather than
-    splitting the mark off; thai_cloze reads the attached form against a
-    registration of the bare word ("ช้า") and keeps the mark in place
-    around the blank -- matching Syllabus.mentions_in's own handling.
-    """
-    tokens = ["ช้า", "ๆ", "ช้าๆ"]  # slow, slow (attached) -- three tokens, one glossed pair repeated
-    assert thai_cloze(tokens, "ช้า", {"ช้า"}) == "___ๆ___ๆ"
+    building = _word("building", "โรง", "building")
+    pom = _word("pom", "ผม", "I")
+    go = _word("go", "ไป", "go")
+    hospital = _word("hospital", "โรงพยาบาล", "hospital")
+    words = (building, pom, go, hospital)
+    clauses = ((pom.id, go.id, hospital.id),)  # I go to the hospital
+    thai_of = {w.id: w.thai for w in words}.__getitem__
+    sentence = Sentence(clauses=clauses, text=render(clauses, thai_of),
+                        gloss="I go to the hospital", voice="learner_voice", provenance=PROV)
+    assert thai_cloze(sentence, building.id, thai_of) == sentence.text
 
 
 # --- compile agrees with the rulebook about a stale rubric (F1 defect 4) --
@@ -313,7 +309,7 @@ def test_compile_refuses_when_the_gate_is_closed(fx):
 
     rule = Rule(id="test/always-fails", principle="F1", severity="error",
                shape="check", check=always_fails)
-    syllabus = _small_syllabus(_SplitTokenizer({}))
+    syllabus = _small_syllabus()
     syllabus = syllabus_with_rules(syllabus, (rule,))
     with pytest.raises(GateRefusal):
         compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
@@ -336,7 +332,7 @@ def test_gate_refusal_counts_unwaived_errors_only(fx):
         Rule(id="test/one-warn", principle="F1", severity="warn",
             shape="check", check=one_warn),
     )
-    syllabus = syllabus_with_rules(_small_syllabus(_SplitTokenizer({})), rules)
+    syllabus = syllabus_with_rules(_small_syllabus(), rules)
     with pytest.raises(GateRefusal) as excinfo:
         compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -351,19 +347,19 @@ _RULES_FOR_UNIQUE_FRONT = _RULES_WITHOUT_COMPLETENESS + (
     next(r for r in RULES if r.id == "card/unique-front"),)
 
 
-def _duplicate_front_syllabus(tokenizer) -> Syllabus:
+def _duplicate_front_syllabus() -> Syllabus:
     # Two distinct words sharing one Thai spelling -- their Reading
     # template fronts ("{{Thai}}" alone) render identically.
     rice_a = _word("rice-a", "ข้าว", "cooked rice (a)")
     rice_b = _word("rice-b", "ข้าว", "cooked rice (b)")
     targets = (Target(id=TargetId("rice-a/receptive"), word=rice_a.id, skill="receptive"),
               Target(id=TargetId("rice-b/receptive"), word=rice_b.id, skill="receptive"))
-    return Syllabus(words=(rice_a, rice_b), targets=targets, tokenizer=tokenizer,
+    return Syllabus(words=(rice_a, rice_b), targets=targets,
                     rules=_RULES_FOR_UNIQUE_FRONT)
 
 
 def test_compile_refuses_on_duplicate_card_fronts(fx):
-    syllabus = _duplicate_front_syllabus(_SplitTokenizer({}))
+    syllabus = _duplicate_front_syllabus()
     fx.seed_recording("rice-a", "recording a")
     fx.seed_recording("rice-b", "recording b")
     with pytest.raises(GateRefusal) as excinfo:
@@ -374,7 +370,7 @@ def test_compile_refuses_on_duplicate_card_fronts(fx):
 
 
 def test_compile_forced_past_duplicate_fronts_reports_the_finding_and_writes(fx):
-    syllabus = _duplicate_front_syllabus(_SplitTokenizer({}))
+    syllabus = _duplicate_front_syllabus()
     fx.seed_recording("rice-a", "recording a")
     fx.seed_recording("rice-b", "recording b")
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
@@ -392,7 +388,7 @@ def test_compile_with_distinct_fronts_reports_no_unique_front_finding(fx):
     dog = _word("dog", "หมา", "dog")
     targets = (Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
               Target(id=TargetId("dog/receptive"), word=dog.id, skill="receptive"))
-    syllabus = Syllabus(words=(rice, dog), targets=targets, tokenizer=_SplitTokenizer({}),
+    syllabus = Syllabus(words=(rice, dog), targets=targets,
                         rules=_RULES_FOR_UNIQUE_FRONT)
     fx.seed_recording("rice", "recording rice")
     fx.seed_recording("dog", "recording dog")
@@ -505,16 +501,14 @@ def test_a_sentence_introduced_word_compiles_no_word_note(fx):
     # (a sentence-introduced word), so eat compiles no word note; it is
     # carried by its sentence note instead. rice's Target is the default
     # picture_card, so rice DOES compile a word note.
-    tokenizer = _SplitTokenizer({"กินข้าว": ["กิน", "ข้าว"]})  # eat rice
     rice = _word("rice", "ข้าว", "cooked rice")
     eat = _word("eat", "กิน", "to eat")
     rice_target = Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive")
     eat_target = Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive",
                         introduction="sentence")
-    kin_khaao = Sentence(text="กินข้าว", gloss="eat rice", voice="learner_voice",
-                         provenance=PROV)  # eat rice
+    kin_khaao = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
     syllabus = Syllabus(words=(rice, eat), targets=(rice_target, eat_target),
-                        sentences=(kin_khaao,), tokenizer=tokenizer,
+                        sentences=(kin_khaao,),
                         profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_picture("rice", "cooked rice")
@@ -555,8 +549,7 @@ def test_dropped_reason_distinguishes_gate_from_missing(fx):
 
 
 def test_word_note_listening_dropped_and_counted_when_audio_is_missing(fx):
-    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
-    syllabus = _small_syllabus(tokenizer)
+    syllabus = _small_syllabus()
     # Deliberately do NOT seed pom's recording.
     fx.seed_picture("rice", "cooked rice")
     fx.seed_recording("rice", "cooked rice")
@@ -594,8 +587,7 @@ def test_word_spelling_dropped_for_missing_recording_when_productive(fx):
     # recording seeded -- Listening and Spelling both drop for the
     # missing artifact, not the gate; Production (gated only by
     # ProductiveTarget, never by Audio) still generates.
-    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
-    syllabus = _small_syllabus(tokenizer)
+    syllabus = _small_syllabus()
     fx.seed_picture("rice", "cooked rice")
     # Deliberately do NOT seed rice's recording.
     fx.seed_recording("pom", "I")
@@ -660,7 +652,6 @@ def test_grapheme_without_a_name_recording_is_dropped_not_substituted(fx):
                                consonant_class="mid", keyword_word=chicken,
                                name_word=ko_name)
     syllabus = Syllabus(words=(chicken, ko_name), graphemes=(grapheme,),
-                        tokenizer=_SplitTokenizer({}),
                         profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_picture("chicken", "chicken")
@@ -679,7 +670,6 @@ def test_grapheme_without_a_name_recording_is_dropped_not_substituted(fx):
 
 
 def test_grapheme_without_a_name_word_is_dropped_not_fabricated(fx):
-    tokenizer = _SplitTokenizer({"ผมกินข้าว": ["ผม", "กิน", "ข้าว"]})
     chicken = _word("chicken", "ไก่", "chicken")
     grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
                                consonant_class="mid", keyword_word=chicken)
@@ -692,7 +682,7 @@ def test_grapheme_without_a_name_word_is_dropped_not_fabricated(fx):
         Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
     ]
     syllabus = Syllabus(words=(pom, gin, rice, chicken), targets=tuple(targets),
-                        graphemes=(grapheme,), tokenizer=tokenizer,
+                        graphemes=(grapheme,),
                         profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_picture("rice", "cooked rice")
@@ -712,14 +702,14 @@ def test_grapheme_without_a_name_word_is_dropped_not_fabricated(fx):
 
 # --- compile: minimal_pair notes play the pair's rendition ---------------
 
-def _pair_only_syllabus(tokenizer) -> tuple[Syllabus, MinimalPair]:
+def _pair_only_syllabus() -> tuple[Syllabus, MinimalPair]:
     near = _word("near", "ใกล้", "near", tone="mid")
     far = _word("far", "ไกล", "far", tone="low")
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     pair = MinimalPair.create(id=PairId("p1"), confusion=confusion, members=(near, far))
     syllabus = Syllabus(words=(near, far), pairs=(pair,), confusions=(confusion,),
-                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     return syllabus, pair
 
@@ -731,7 +721,7 @@ def _compile_pair(fx, *, with_rendition: bool):
     where `shas` is member id -> the seeded rendition's sha (empty when
     none was seeded) and each of `notes` is {fields, tags, due}.
     """
-    syllabus, pair = _pair_only_syllabus(_SplitTokenizer({}))
+    syllabus, pair = _pair_only_syllabus()
     shas = fx.seed_rendition(pair, {"near": "near", "far": "far"}) if with_rendition else {}
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
@@ -799,7 +789,6 @@ def test_two_pair_blocks_and_a_following_word_target_never_overlap(fx):
     # wide enough for their own members (width = member count) before the
     # next entry's block starts, or pB's/chicken's dues would collide with
     # pA's/pB's own member dues (the fix round 1 regression).
-    tokenizer = _SplitTokenizer({})
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     near = _word("near", "ใกล้", "near", tone="mid")
@@ -813,7 +802,7 @@ def test_two_pair_blocks_and_a_following_word_target_never_overlap(fx):
 
     syllabus = Syllabus(words=(near, far, dog, horse, chicken), targets=(target,),
                         pairs=(pair_a, pair_b), confusions=(confusion,),
-                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_rendition(pair_a, {"near": "near", "far": "far"})
     fx.seed_rendition(pair_b, {"dog": "dog", "horse": "horse"})
@@ -898,12 +887,11 @@ def test_receptive_sentence_note_gets_no_cloze_card(fx):
     # the targets it fills, its note must not carry a Cloze card (spec 4
     # section 1: Productive gates the Cloze card). A one-word, one-target
     # sentence isolates that: gin's Target is receptive only.
-    tokenizer = _SplitTokenizer({"กิน": ["กิน"]})  # to eat
     gin = _word("gin", "กิน", "to eat")
     target = Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive")
-    sentence = Sentence(text="กิน", gloss="to eat", voice="learner_voice", provenance=PROV)
+    sentence = _sentence((gin,), ((gin.id,),), gloss="to eat")  # to eat
     syllabus = Syllabus(words=(gin,), targets=(target,), sentences=(sentence,),
-                        tokenizer=tokenizer, profile=Profile(register="male_colloquial"),
+                        profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_recording("gin", "eat")
     text_sha = sentence_note_id(sentence)
@@ -937,17 +925,15 @@ def test_a_filled_productive_target_off_the_last_used_word_does_not_gate_cloze(f
     # is filled and tagged on this note, but it sits on eat, not on the
     # last used word -- Productive must follow the LAST USED WORD's own
     # filled targets only, not "any filled target is productive".
-    tokenizer = _SplitTokenizer({"กินข้าว": ["กิน", "ข้าว"]})  # eat rice
     eat = _word("eat", "กิน", "to eat")
     rice = _word("rice", "ข้าว", "cooked rice")
     eat_receptive = Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive")
     eat_productive = Target(id=TargetId("eat/productive"), word=eat.id, skill="productive")
     rice_receptive = Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive")
-    kin_khaao = Sentence(text="กินข้าว", gloss="eat rice", voice="learner_voice",
-                         provenance=PROV)  # eat rice
+    kin_khaao = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
     syllabus = Syllabus(words=(eat, rice),
                         targets=(eat_receptive, eat_productive, rice_receptive),
-                        sentences=(kin_khaao,), tokenizer=tokenizer,
+                        sentences=(kin_khaao,),
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)
@@ -1051,10 +1037,6 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     # notes land in order() position order: "หมาวิ่ง"'s note (clozed on
     # run, the later of dog/run) due before "กินข้าว"'s note (clozed on
     # rice, the later of eat/rice), one STRIDE apart.
-    tokenizer = _SplitTokenizer({
-        "กินข้าว": ["กิน", "ข้าว"],  # eat rice
-        "หมาวิ่ง": ["หมา", "วิ่ง"],  # dog runs
-    })
     eat = _word("eat", "กิน", "to eat")
     dog = _word("dog", "หมา", "dog")
     run = _word("run", "วิ่ง", "to run")
@@ -1065,10 +1047,10 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
         Target(id=TargetId("run/receptive"), word=run.id, skill="receptive"),
         Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
     )
-    eat_rice = Sentence(text="กินข้าว", gloss="eat rice", voice="learner_voice", provenance=PROV)
-    dog_runs = Sentence(text="หมาวิ่ง", gloss="dog runs", voice="learner_voice", provenance=PROV)
+    eat_rice = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
+    dog_runs = _sentence((dog, run), ((dog.id, run.id),), gloss="dog runs")  # dog runs
     syllabus = Syllabus(words=(eat, dog, run, rice), targets=targets,
-                        sentences=(eat_rice, dog_runs), tokenizer=tokenizer,
+                        sentences=(eat_rice, dog_runs),
                         frequency={eat.id: 1, dog.id: 2, run.id: 3, rice.id: 4},
                         profile=Profile(register="male_colloquial"),
                         rules=_RULES_WITHOUT_COMPLETENESS)

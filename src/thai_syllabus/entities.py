@@ -280,7 +280,7 @@ class Sentence:
     """One sentence artifact. Identity: text_sha, the sha256 of `text`.
     Which Targets it fills is derived (Syllabus.fills), never stored.
     """
-    clauses: Clauses = field(default=(), kw_only=True)
+    clauses: Clauses = field(kw_only=True)
     text: str
     gloss: str
     voice: Voice

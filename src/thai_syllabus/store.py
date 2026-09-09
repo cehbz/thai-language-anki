@@ -326,7 +326,7 @@ class SyllabusDb:
         rows = self._con.execute(
             "select text, gloss, voice, source, origin, licence, acquired "
             "from sentences").fetchall()
-        return [Sentence(text=text, gloss=gloss, voice=voice,
+        return [Sentence(clauses=(), text=text, gloss=gloss, voice=voice,
                          provenance=Provenance(source=source, origin=origin,
                                               licence=licence,
                                               acquired=date.fromisoformat(acquired)))

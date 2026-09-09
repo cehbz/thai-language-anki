@@ -9,8 +9,7 @@ from thai_syllabus.ids import CategoryName, ConfusionId, PairId
 from thai_syllabus.profile import Profile
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import sentence, target, word
-from .fakes import FakeTokenizer
+from .builders import sentence, target, thai_of, word
 
 
 def make_pair(id_, confusion_id, member_words) -> MinimalPair:
@@ -35,7 +34,7 @@ def test_sounds_stage_precedes_every_word_target():
     syllabus = Syllabus(
         words=(rice, dog, mid_w, low_w), targets=(t1, t2), pairs=(pair,),
         graphemes=(grapheme,),
-        profile=Profile(register="male_colloquial"), tokenizer=FakeTokenizer(),
+        profile=Profile(register="male_colloquial"),
     )
     ordering = syllabus.order()
     positions = {(e.kind, e.id): i for i, e in enumerate(ordering)}
@@ -49,8 +48,7 @@ def test_receptive_precedes_productive_for_the_same_word():
     receptive = target("rice/receptive", "rice", "receptive")
     productive = target("rice/productive", "rice", "productive")
     syllabus = Syllabus(words=(rice,), targets=(productive, receptive),
-                        profile=Profile(register="male_colloquial"),
-                        tokenizer=FakeTokenizer())
+                        profile=Profile(register="male_colloquial"))
     ordering = [e.id for e in syllabus.order() if e.kind == "word_target"]
     assert ordering.index(receptive.id) < ordering.index(productive.id)
 
@@ -62,7 +60,7 @@ def test_ties_are_broken_by_frequency_rank_over_emphasis_weight():
     t_rare = target("rare/receptive", "rare", "receptive")
     syllabus = Syllabus(
         words=(common, rare), targets=(t_rare, t_common),
-        profile=Profile(register="male_colloquial"), tokenizer=FakeTokenizer(),
+        profile=Profile(register="male_colloquial"),
         frequency={common.id: 10, rare.id: 5000},
     )
     ordering = [e.id for e in syllabus.order() if e.kind == "word_target"]
@@ -78,7 +76,6 @@ def test_emphasis_weight_can_move_a_lower_frequency_word_earlier():
         words=(common, rare), targets=(t_rare, t_common),
         profile=Profile(register="male_colloquial",
                         emphasis={"food": 100.0}),
-        tokenizer=FakeTokenizer(),
         frequency={common.id: 10, rare.id: 100},
         categories=(Category(name=CategoryName("food"), members=frozenset({rare.id})),),
     )
@@ -93,10 +90,9 @@ def test_order_places_a_sentence_after_every_word_it_uses():
     eat = word("eat", "กิน")  # eat
     t1 = target("t1", "rice")
     t2 = target("t2", "eat")
-    tok = FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]})  # eat rice
-    syllabus = Syllabus(words=(rice, eat), targets=(t1, t2),
-                        sentences=(sentence("กินข้าว", gloss="eat rice"),),  # eat rice
-                        tokenizer=tok)
+    to = thai_of(rice, eat)
+    s = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(rice, eat), targets=(t1, t2), sentences=(s,))
     entries = syllabus.order()
     pos = {(e.kind, e.id): i for i, e in enumerate(entries)}
     s = next(e for e in entries if e.kind == "sentence")
@@ -113,35 +109,26 @@ def test_last_used_word_picks_the_word_with_the_greatest_last_target_position():
     eat = word("eat", "กิน")  # eat
     t_rice = target("t1", "rice")
     t_eat = target("t2", "eat")
-    tok = FakeTokenizer({"กินข้าว": ["กิน", "ข้าว"]})  # eat rice
-    s = sentence("กินข้าว", gloss="eat rice")  # eat rice
-    syllabus = Syllabus(words=(rice, eat), targets=(t_rice, t_eat), sentences=(s,),
-                        tokenizer=tok)
+    to = thai_of(rice, eat)
+    s = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(rice, eat), targets=(t_rice, t_eat), sentences=(s,))
     assert syllabus.last_used_word(s) == rice.id
 
 
 def test_last_used_word_raises_naming_the_text_sha_when_no_used_word_has_a_target():
     rice = word("rice", "ข้าว")  # rice
-    tok = FakeTokenizer({"ข้าว": ["ข้าว"]})  # rice
-    s = sentence("ข้าว", gloss="rice")  # rice, no Target on rice
-    syllabus = Syllabus(words=(rice,), targets=(), sentences=(s,), tokenizer=tok)
+    to = thai_of(rice)
+    s = sentence(((rice.id,),), to, gloss="rice")  # rice, no Target on rice
+    syllabus = Syllabus(words=(rice,), targets=(), sentences=(s,))
     with pytest.raises(ValueError, match=s.text_sha):
         syllabus.last_used_word(s)
-
-
-# --- constructor: a tokenizer is required -----------------------------------
-
-def test_syllabus_requires_a_tokenizer():
-    with pytest.raises(TypeError):
-        Syllabus(words=(), targets=(), graphemes=(), pairs=(), sentences=(), confusions=(),
-                profile=Profile("male_colloquial"))
 
 
 # --- Syllabus.category_of ------------------------------------------------
 
 def test_category_of_returns_the_owning_categorys_name():
     rice = word("rice", "ข้าว")  # rice
-    syllabus = Syllabus(words=(rice,), tokenizer=FakeTokenizer(),
+    syllabus = Syllabus(words=(rice,),
                         categories=(Category(name=CategoryName("Food"),
                                             members=frozenset({rice.id})),))
     assert syllabus.category_of(rice.id) == "Food"
@@ -151,5 +138,5 @@ def test_category_of_is_none_for_a_word_in_no_category():
     # a closure word (spec 1: pair members and grapheme keywords are in no
     # category)
     keyword = word("chicken", "ไก่")  # chicken
-    syllabus = Syllabus(words=(keyword,), categories=(), tokenizer=FakeTokenizer())
+    syllabus = Syllabus(words=(keyword,), categories=())
     assert syllabus.category_of(keyword.id) is None

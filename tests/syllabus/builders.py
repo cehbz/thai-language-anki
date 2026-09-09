@@ -1,9 +1,10 @@
 """Terse constructors for tests -- not part of the domain, just less
 boilerplate around the frozen dataclasses' full field lists.
 """
+from collections.abc import Callable
 from datetime import date
 
-from thai_syllabus.entities import Pronunciation, Sentence, Syllable, Target, Word
+from thai_syllabus.entities import Clauses, Pronunciation, Sentence, Syllable, Target, Word, render
 from thai_syllabus.ids import TargetId, WordId
 from thai_syllabus.media import Provenance
 
@@ -35,5 +36,15 @@ def target(id: str, word_id: str, skill: str = "receptive",
                  introduction=introduction)
 
 
-def sentence(text: str, voice: str = "learner_voice", gloss: str = "") -> Sentence:
-    return Sentence(text=text, gloss=gloss, voice=voice, provenance=PROV)
+def thai_of(*words: Word) -> Callable[[WordId], str]:
+    """Word id -> thai text, from a fixture's own registered Words --
+    the lookup a sentence() call renders its text through.
+    """
+    index = {w.id: w.thai for w in words}
+    return index.__getitem__
+
+
+def sentence(clauses: Clauses, thai_of: Callable[[WordId], str], *,
+             gloss: str = "", voice: str = "learner_voice") -> Sentence:
+    return Sentence(clauses=clauses, text=render(clauses, thai_of), gloss=gloss,
+                    voice=voice, provenance=PROV)

@@ -12,7 +12,7 @@ from thai_syllabus.rules import DroppedCard, Finding, Rule
 from thai_syllabus.wiring import _DbMediaIndex
 
 from tests.spec.syllabus_world import (
-    SplitTokenizer, SyllabusWorld, duplicate_front_syllabus, fully_seeded_syllabus,
+    SyllabusWorld, duplicate_front_syllabus, fully_seeded_syllabus,
     pair_only_syllabus, read_apkg, receptive_only_sentence_syllabus,
     seed_receptive_only_sentence,
 )
@@ -68,7 +68,7 @@ def test_recompiling_a_changed_syllabus_updates_notes_in_place(world):
 # --- A3: no two cards share a front ----------------------------------------
 
 def test_two_notes_sharing_a_front_refuse_the_compile_with_a_finding(world):
-    syllabus = duplicate_front_syllabus(SplitTokenizer({}))
+    syllabus = duplicate_front_syllabus()
     world.seed_recording("rice-a", "recording a")
     world.seed_recording("rice-b", "recording b")
     with pytest.raises(GateRefusal) as excinfo:
@@ -204,8 +204,7 @@ def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
     # gets no Cloze card -- receptive_only_sentence_syllabus isolates
     # that (gin's only Target is receptive, and it is the sentence's only
     # used word).
-    tokenizer = SplitTokenizer({"กิน": ["กิน"]})  # to eat
-    syllabus = receptive_only_sentence_syllabus(tokenizer)
+    syllabus = receptive_only_sentence_syllabus()
     seed_receptive_only_sentence(world, syllabus)
     compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
                      provenance_source=lambda sha: None)
@@ -223,7 +222,7 @@ def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
 # --- a pair with no rendition is dropped and counted -----------------------
 
 def test_a_pair_with_no_rendition_is_dropped_and_counted(world):
-    syllabus, pair = pair_only_syllabus(SplitTokenizer({}))
+    syllabus, pair = pair_only_syllabus()
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=world.db, pairs=(pair,)))
     # Deliberately no seed_rendition call.
 

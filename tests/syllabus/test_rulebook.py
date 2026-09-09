@@ -18,13 +18,12 @@ from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE
                                     traceability_metric)
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import pron, sentence, syl, target, word
-from .fakes import FakeAssessmentReader, FakeMediaIndex, FakeTokenizer
+from .builders import pron, sentence, syl, target, thai_of, word
+from .fakes import FakeAssessmentReader, FakeMediaIndex
 
 
 def make_syllabus(**kwargs):
     kwargs.setdefault("profile", Profile(register="male_colloquial"))
-    kwargs.setdefault("tokenizer", FakeTokenizer())
     kwargs.setdefault("rules", RULES)
     return Syllabus(**kwargs)
 
@@ -160,10 +159,10 @@ def test_sentence_fills_novelty_flags_a_sentence_using_an_untargeted_word():
     unmet1 = word("unmet1", "จาน")  # plate
     unmet2 = word("unmet2", "ช้อน")  # spoon
     t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")
-    s = sentence("ข้าวอยู่ในจานกับช้อน", voice="learner_voice")  # the rice is on the plate with a spoon
-    tok = FakeTokenizer({s.text: ["ข้าว", "อยู่ใน", "จาน", "กับ", "ช้อน"]})
-    syllabus = make_syllabus(words=(rice, unmet1, unmet2), targets=(t_rice,),
-                             sentences=(s,), tokenizer=tok)
+    to = thai_of(rice, unmet1, unmet2)
+    s = sentence(((rice.id, unmet1.id, unmet2.id),), to,
+                voice="learner_voice")  # rice, plate, spoon
+    syllabus = make_syllabus(words=(rice, unmet1, unmet2), targets=(t_rice,), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/fills-novelty"]
     assert len(findings) == 1
@@ -177,30 +176,27 @@ def test_sentence_fills_novelty_flags_every_mentioned_target_with_two_unmet_glue
     spoon = word("spoon", "ช้อน")  # spoon -- glue, sentence-introduced
     t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")
     t_spoon = target("spoon/receptive", "spoon", "receptive", introduction="sentence")
-    s = sentence("ข้าวช้อน", voice="learner_voice")  # rice, spoon
-    tok = FakeTokenizer({s.text: ["ข้าว", "ช้อน"]})
-    syllabus = make_syllabus(words=(rice, spoon), targets=(t_rice, t_spoon),
-                             sentences=(s,), tokenizer=tok)
+    to = thai_of(rice, spoon)
+    s = sentence(((rice.id, spoon.id),), to, voice="learner_voice")  # rice, spoon
+    syllabus = make_syllabus(words=(rice, spoon), targets=(t_rice, t_spoon), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/fills-novelty"]
     assert len(findings) == 2
 
 
-def test_sentence_fills_novelty_does_not_flag_a_word_that_is_only_a_token_prefix():
-    """Spec 1 section 3 fills clause 1: a registered word that is only a
-    prefix of a token, with no full decomposition, is not mentioned --
-    "come" ("มา") never actually appears; the loop that gathers
-    candidate Targets skips it on `mentions_at`, so it raises no finding
-    even though its own Target has no adopted sentence to fill it.
+def test_sentence_fills_novelty_does_not_flag_a_word_that_is_not_used():
+    """A registered Target whose word is not among the sentence's own
+    words is not a candidate at all: the loop that gathers candidate
+    Targets (`words_used`) skips it, so it raises no finding even though
+    its own Target has no adopted sentence to fill it.
     """
-    very = word("very", "มาก")  # มาก: very -- the only word actually mentioned
-    come = word("come", "มา")   # มา: come -- registered, but never truly mentioned
+    very = word("very", "มาก")  # very -- the only word actually used
+    come = word("come", "มา")   # come -- registered, but never used here
     t_very = target("very/receptive", "very", "receptive", introduction="sentence")
     t_come = target("come/receptive", "come", "receptive", introduction="sentence")
-    s = sentence("มาก", voice="learner_voice")  # very
-    tok = FakeTokenizer({s.text: ["มาก"]})
-    syllabus = make_syllabus(words=(very, come), targets=(t_very, t_come),
-                             sentences=(s,), tokenizer=tok)
+    to = thai_of(very, come)
+    s = sentence(((very.id,),), to, voice="learner_voice")  # very
+    syllabus = make_syllabus(words=(very, come), targets=(t_very, t_come), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/fills-novelty"]
     assert findings == []
@@ -209,10 +205,9 @@ def test_sentence_fills_novelty_does_not_flag_a_word_that_is_only_a_token_prefix
 def test_sentence_fills_novelty_is_silent_when_the_sentence_fills_its_target():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")
-    s = sentence("ข้าว", voice="learner_voice")  # rice
-    tok = FakeTokenizer({s.text: ["ข้าว"]})
-    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,),
-                             tokenizer=tok)
+    to = thai_of(rice)
+    s = sentence(((rice.id,),), to, voice="learner_voice")  # rice
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/fills-novelty"]
     assert findings == []
@@ -295,25 +290,34 @@ def test_coverage_confusions_measures_pairs_and_speakers_per_confusion():
 
 # --- sentence/register-natural (judged) --------------------------------------
 
+def _pom_gin_khaao():
+    pom = word("pom", "ผม")  # I (male speaker)
+    gin = word("gin", "กิน")  # eat
+    rice = word("rice", "ข้าว")  # rice
+    to = thai_of(pom, gin, rice)
+    s = sentence(((pom.id, gin.id, rice.id),), to, voice="learner_voice")  # I eat rice
+    return (pom, gin, rice), s
+
+
 def test_sentence_register_rule_reads_a_cached_verdict_and_never_a_live_judge():
-    s = sentence("ผมกินข้าว", voice="learner_voice")  # I eat rice
+    words, s = _pom_gin_khaao()
     reader = FakeAssessmentReader()
     identity = None
     for r in RULES:
         if r.id == "sentence/register-natural":
-            identity = r.judged_subjects(make_syllabus(sentences=(s,)))[0]
+            identity = r.judged_subjects(make_syllabus(words=words, sentences=(s,)))[0]
     assert identity is not None
     note_id, sha = identity
     reader = FakeAssessmentReader(verdicts={("sentence/register-natural", note_id, sha): False})
-    syllabus = make_syllabus(sentences=(s,), assessments=reader)
+    syllabus = make_syllabus(words=words, sentences=(s,), assessments=reader)
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/register-natural"]
     assert len(findings) == 1
 
 
 def test_sentence_register_rule_is_silent_with_no_cached_verdict():
-    s = sentence("ผมกินข้าว", voice="learner_voice")  # I eat rice
-    syllabus = make_syllabus(sentences=(s,))
+    words, s = _pom_gin_khaao()
+    syllabus = make_syllabus(words=words, sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/register-natural"]
     assert findings == []
@@ -345,15 +349,17 @@ def test_rule_role_defaults_to_id():
 
 # --- completeness errors, synthetic/mixed-speaker warnings, picture fit -----
 
+_SLOW = word("slow", "ช้า", "slow")
+
+
+def _slow_sentence():
+    return sentence(((_SLOW.id,),), thai_of(_SLOW))  # slow
+
+
 def _syl(media=None, sentences=(), targets=None):
-    w = word("slow", "ช้า", "slow")
     t = targets or (target("slow/receptive", "slow"),)
-    # A bare single-word sentence -- FakeTokenizer's default (no mapping)
-    # treats unmapped text as one whole token, so this fills "slow" with
-    # no companion tokens to register (the fill-set rule's clause 3
-    # would otherwise need every other token registered as its own Word).
-    return Syllabus(words=(w,), targets=t, sentences=tuple(sentences),
-                    media=media or FakeMediaIndex(), tokenizer=FakeTokenizer())
+    return Syllabus(words=(_SLOW,), targets=t, sentences=tuple(sentences),
+                    media=media or FakeMediaIndex())
 
 
 def _rules(rid):
@@ -382,7 +388,7 @@ def test_target_with_picture_recording_and_sentence_has_no_completeness_findings
     # speakers and still be a current-best recording.
     media = FakeMediaIndex(pictures={"slow"},
                            recording_provenance={"slow": {"source": "forvo", "speaker": Speaker("s", "native")}})
-    s = _syl(media=media, sentences=[sentence("ช้า")])
+    s = _syl(media=media, sentences=[_slow_sentence()])
     for rid in ("target/picture-required", "target/recording-required", "target/sentence-required"):
         assert _rules(rid)[0].check(s) == []
 
@@ -396,7 +402,7 @@ def test_target_recording_required_is_silent_for_a_recording_with_no_speaker_id(
 
 
 def test_target_sentence_required_is_silent_when_a_sentence_fills_the_target():
-    s = _syl(sentences=[sentence("ช้า")])
+    s = _syl(sentences=[_slow_sentence()])
     assert _rules("target/sentence-required")[0].check(s) == []
 
 
@@ -514,12 +520,10 @@ def test_rendition_mixed_speakers_ignores_a_null_speaker_id():
 def test_sentence_synthetic_productive_flags_tts_audio_on_a_filling_productive_sentence():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/productive", "rice", "productive")
-    s = sentence("ข้าว", voice="learner_voice")  # rice
-    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
     media = FakeMediaIndex(recording_provenance={
         sentence_note_id(s): {"source": "tts", "speaker": Speaker("tts:v", "synthetic")}})
-    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
-                             media=media)
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), media=media)
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/synthetic-productive"]
     assert [f.note_id for f in findings] == [sentence_note_id(s)]
@@ -528,12 +532,10 @@ def test_sentence_synthetic_productive_flags_tts_audio_on_a_filling_productive_s
 def test_sentence_synthetic_productive_is_silent_for_a_receptive_only_sentence():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence("ข้าว", voice="learner_voice")  # rice
-    tok = FakeTokenizer({s.text: ["ข้าว"]})
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
     media = FakeMediaIndex(recording_provenance={
         sentence_note_id(s): {"source": "tts", "speaker": Speaker("tts:v", "synthetic")}})
-    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok,
-                             media=media)
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), media=media)
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/synthetic-productive"]
     assert findings == []
@@ -642,18 +644,20 @@ def test_classifier_known_is_silent_when_the_classifier_resolves():
 # --- sentence/recording-required (F7) ---------------------------------------
 
 def test_sentence_recording_required_flags_a_sentence_with_no_recording():
-    s = sentence("ข้าว", voice="learner_voice")  # rice
-    syllabus = make_syllabus(sentences=(s,))
+    rice = word("rice", "ข้าว")  # rice
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
+    syllabus = make_syllabus(words=(rice,), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/recording-required"]
     assert [f.note_id for f in findings] == [sentence_note_id(s)]
 
 
 def test_sentence_recording_required_is_silent_with_a_current_best_recording():
-    s = sentence("ข้าว", voice="learner_voice")  # rice
+    rice = word("rice", "ข้าว")  # rice
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
     media = FakeMediaIndex(recording_provenance={
         sentence_note_id(s): {"source": "forvo", "speaker": Speaker("s", "native")}})
-    syllabus = make_syllabus(sentences=(s,), media=media)
+    syllabus = make_syllabus(words=(rice,), sentences=(s,), media=media)
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/recording-required"]
     assert findings == []
@@ -702,20 +706,15 @@ class _FixedOrderSyllabus:
     productive at equal frequency) can't be forced into a violating shape
     without it.
     """
-    def __init__(self, targets=(), order_list=(), graphemes=(), sentences=(), words=(),
-                mentions=None):
+    def __init__(self, targets=(), order_list=(), graphemes=(), sentences=(), words=()):
         self.targets = targets
         self.graphemes = graphemes
         self.sentences = sentences
         self.words = words
         self._order_list = order_list
-        self._mentions = mentions or (lambda sentence, thai: False)
 
     def order(self):
         return self._order_list
-
-    def mentions(self, sentence, thai):
-        return self._mentions(sentence, thai)
 
 
 def test_order_receptive_before_productive_flags_a_reversed_pair():
@@ -757,9 +756,9 @@ def test_order_sentence_after_words_flags_a_word_the_sentence_uses_with_no_targe
     rice = word("rice", "ข้าว")  # rice
     plate = word("plate", "จาน")  # plate, no Target
     t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence("ข้าวอยู่บนจาน", voice="learner_voice")  # the rice is on the plate
-    tok = FakeTokenizer({s.text: ["ข้าว", "อยู่บน", "จาน"]})
-    syllabus = make_syllabus(words=(rice, plate), targets=(t_rice,), sentences=(s,), tokenizer=tok)
+    to = thai_of(rice, plate)
+    s = sentence(((rice.id, plate.id),), to, voice="learner_voice")  # rice, plate
+    syllabus = make_syllabus(words=(rice, plate), targets=(t_rice,), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "order/sentence-after-words"]
     assert [f.note_id for f in findings] == [sentence_note_id(s)]
@@ -768,9 +767,8 @@ def test_order_sentence_after_words_flags_a_word_the_sentence_uses_with_no_targe
 def test_order_sentence_after_words_is_silent_when_every_used_word_has_a_target():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence("ข้าว", voice="learner_voice")  # rice
-    tok = FakeTokenizer({s.text: ["ข้าว"]})
-    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,), tokenizer=tok)
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
+    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,))
     findings = [f for f in syllabus.report().findings
                if f.rule == "order/sentence-after-words"]
     assert findings == []
@@ -780,7 +778,7 @@ def test_order_sentence_after_words_flags_a_target_not_before_the_sentence():
     from thai_syllabus.rulebook import _check_order_sentence_after_words
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence("ข้าว", voice="learner_voice")  # rice
+    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
     # A fabricated order() placing the sentence entry BEFORE its own
     # word's target entry -- real Syllabus.order() never builds this
     # shape (the sentence block always trails every word_target entry),
@@ -789,8 +787,7 @@ def test_order_sentence_after_words_flags_a_target_not_before_the_sentence():
     fixed = _FixedOrderSyllabus(
         targets=(t_rice,), words=(rice,), sentences=(s,),
         order_list=[OrderEntry("sentence", sentence_note_id(s)),
-                   OrderEntry("word_target", t_rice.id)],
-        mentions=lambda sentence, thai: thai == rice.thai)
+                   OrderEntry("word_target", t_rice.id)])
     findings = _check_order_sentence_after_words(fixed)
     assert [f.rule for f in findings] == ["order/sentence-after-words"]
     assert findings[0].note_id == sentence_note_id(s)

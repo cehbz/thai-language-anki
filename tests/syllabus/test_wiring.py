@@ -46,8 +46,7 @@ from thai_syllabus.wiring import (
     load_syllabus,
 )
 
-from .builders import PROV, sentence, syl, pron, target, word
-from .fakes import FakeTokenizer
+from .builders import PROV, sentence, syl, pron, target, thai_of, word
 
 
 # --- fixtures ----------------------------------------------------------
@@ -651,7 +650,8 @@ def test_speakers_of_recording_returns_the_shared_speaker_with_its_attributes(db
 
 
 def test_speakers_of_sentence_returns_the_sentence_recordings_speaker(db):
-    s = sentence("ข้าว")  # rice
+    rice = word("rice", "ข้าว")  # rice
+    s = sentence(((rice.id,),), thai_of(rice))  # rice
     note_id = sentence_note_id(s)
     _seed_member_recording(db, note_id, "sha-sentence", "malee", sex="female")
 
@@ -716,8 +716,7 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
 
     media = _DbMediaIndex(db=db, pairs=(real_pair, fallback_pair))
     syllabus = Syllabus(confusions=(real_confusion, fallback_confusion),
-                        pairs=(real_pair, fallback_pair), media=media,
-                        tokenizer=FakeTokenizer())
+                        pairs=(real_pair, fallback_pair), media=media)
     gaps = syllabus.gaps()
     assert real_confusion.id not in gaps.missing_renditions
     assert fallback_confusion.id in gaps.missing_renditions

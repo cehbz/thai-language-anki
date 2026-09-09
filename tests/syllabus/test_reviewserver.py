@@ -39,7 +39,6 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import Derivations
 
 from .builders import PROV, syl, pron, target, word
-from .fakes import FakeTokenizer
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -91,8 +90,7 @@ def pair(confusion, w1, w2):
 def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
     targets = (target("t-rice", w1.id), target("t-near", w2.id))
     return Syllabus(words=(w1, w2, keyword_word), targets=targets, pairs=(pair,),
-                    graphemes=(grapheme,), confusions=(confusion,), assessments=db,
-                    tokenizer=FakeTokenizer())
+                    graphemes=(grapheme,), confusions=(confusion,), assessments=db)
 
 
 @pytest.fixture
@@ -248,7 +246,8 @@ def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
 
 def test_gloss_for_a_sentence_subject_is_the_sentences_own_gloss(syllabus):
-    s = Sentence(text="ข้าวอร่อย", gloss="the rice is delicious", voice="learner_voice",
+    s = Sentence(clauses=(), text="ข้าวอร่อย", gloss="the rice is delicious",
+                voice="learner_voice",
                 provenance=Provenance(source="test", origin="fixture", licence="cc0",
                                       acquired=date(2026, 1, 1)))
     with_sentence = dataclasses.replace(syllabus, sentences=(s,))
@@ -867,8 +866,7 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
              answer={"value": True})
 
     syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
-                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db,
-                        tokenizer=FakeTokenizer())
+                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
     derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
                               current_rubric={}, prior=(), provenance_source=lambda sha: None,
                               sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,

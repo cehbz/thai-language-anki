@@ -1,8 +1,8 @@
-"""The ports the Syllabus reads through: Tokenizer, AssessmentReader and
-MediaIndex (spec 1), plus FrequencyMap, RecordWriter, CacheReader and
-StudyReader (spec 2 section 3). All are read-only from the aggregate's
-point of view: report() never calls a judge, fills() never calls a live
-tokenizer service.
+"""The ports the Syllabus reads through: AssessmentReader and MediaIndex
+(spec 1), plus FrequencyMap, RecordWriter, CacheReader and StudyReader
+(spec 2 section 3). All are read-only from the aggregate's point of
+view: report() never calls a judge, fills() reads a sentence's own
+clauses.
 
 store.py's SyllabusDb satisfies AssessmentReader, RecordWriter,
 CacheReader and StudyReader; MediaIndex is satisfied by wiring.py's
@@ -17,16 +17,6 @@ if TYPE_CHECKING:
     from .ids import ConfusionId, PairId, WordId
     from .media import Recording, Speaker
     from .rules import Finding
-
-
-@runtime_checkable
-class Tokenizer(Protocol):
-    """Splits Thai text into tokens. Boundary membership (used by
-    Syllabus.fills) is token == word.thai or token.startswith/endswith
-    (word.thai) -- so a compound token naturally counts for each of the
-    known words it starts or ends with.
-    """
-    def tokens(self, text: str) -> list[str]: ...
 
 
 @runtime_checkable

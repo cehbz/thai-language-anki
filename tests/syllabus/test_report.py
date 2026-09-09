@@ -11,8 +11,8 @@ from thai_syllabus.rulebook import (COVERAGE_CONFUSIONS, SENTENCE_RECORDING_REQU
 from thai_syllabus.rules import Finding, Metric, Rule
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import sentence, target, word
-from .fakes import FakeAssessmentReader, FakeMediaIndex, FakeTokenizer
+from .builders import sentence, target, thai_of, word
+from .fakes import FakeAssessmentReader, FakeMediaIndex
 
 
 def always_fails(syllabus) -> list[Finding]:
@@ -32,8 +32,7 @@ WORD_COUNT = Rule(id="test/word-count", principle="F1", severity="info",
 
 def make_syllabus(words=(), rules=(), assessments=None):
     return Syllabus(words=words, profile=Profile(register="male_colloquial"),
-                    tokenizer=FakeTokenizer(), rules=rules,
-                    assessments=assessments or FakeAssessmentReader())
+                    rules=rules, assessments=assessments or FakeAssessmentReader())
 
 
 def test_report_runs_check_rules_and_collects_findings():
@@ -142,44 +141,45 @@ def test_report_carries_the_live_rulebook_id():
 
 
 def test_rulebook_id_is_stable_for_identical_rulebook_text_and_rules():
-    a = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}",
-                tokenizer=FakeTokenizer()).rulebook_id()
-    b = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}",
-                tokenizer=FakeTokenizer()).rulebook_id()
+    a = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}").rulebook_id()
+    b = Syllabus(rules=(ERROR_CHECK,), rulebook_text="severities: {}").rulebook_id()
     assert a == b
 
 
 def test_rulebook_id_changes_when_the_rulebook_text_changes_but_content_does_not():
     rice = word("rice", "ข้าว")  # rice
-    a = Syllabus(words=(rice,), rulebook_text="severities: {}", tokenizer=FakeTokenizer())
-    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/exact-confusion: warn}",
-                tokenizer=FakeTokenizer())
+    a = Syllabus(words=(rice,), rulebook_text="severities: {}")
+    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/exact-confusion: warn}")
     assert a.state_id() == b.state_id()          # same content
     assert a.rulebook_id() != b.rulebook_id()     # different rulebook
 
 
 def test_rulebook_id_changes_when_the_registrys_rule_ids_change():
-    a = Syllabus(rules=(ERROR_CHECK,), tokenizer=FakeTokenizer()).rulebook_id()
-    b = Syllabus(rules=(ERROR_CHECK, WORD_COUNT), tokenizer=FakeTokenizer()).rulebook_id()
+    a = Syllabus(rules=(ERROR_CHECK,)).rulebook_id()
+    b = Syllabus(rules=(ERROR_CHECK, WORD_COUNT)).rulebook_id()
     assert a != b
 
 
 # --- gaps(): derived from report()'s findings, never recomputed beside them
 # (spec 1, section 3) -------------------------------------------------------
 
-def make_gaps_syllabus(targets=(), sentences=(), confusions=(), rules=(), media=None):
+def make_gaps_syllabus(words=(), targets=(), sentences=(), confusions=(), rules=(), media=None):
     # coverage/confusions always runs: gaps() reads missing_renditions from
     # its measure and refuses when that rule is absent.
-    return Syllabus(targets=targets, sentences=sentences, confusions=confusions,
+    return Syllabus(words=words, targets=targets, sentences=sentences, confusions=confusions,
                     profile=Profile(register="male_colloquial"),
-                    tokenizer=FakeTokenizer(), rules=(COVERAGE_CONFUSIONS, *rules),
+                    rules=(COVERAGE_CONFUSIONS, *rules),
                     media=media or FakeMediaIndex(),
                     assessments=FakeAssessmentReader())
 
 
 def test_gaps_lists_the_sentence_without_a_recording():
-    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
-    syl = make_gaps_syllabus(sentences=(eat_rice,), rules=(SENTENCE_RECORDING_REQUIRED,))
+    eat = word("eat", "กิน")  # eat
+    rice = word("rice", "ข้าว")  # rice
+    to = thai_of(eat, rice)
+    eat_rice = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
+    syl = make_gaps_syllabus(words=(eat, rice), sentences=(eat_rice,),
+                             rules=(SENTENCE_RECORDING_REQUIRED,))
     assert syl.gaps().sentence_recordings == (eat_rice.text_sha,)
 
 
@@ -192,15 +192,21 @@ def test_gaps_agree_with_the_completeness_findings():
 
 
 def test_gaps_lists_the_sentence_without_a_scene_picture():
-    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
-    syl = make_gaps_syllabus(sentences=(eat_rice,), media=FakeMediaIndex())
+    eat = word("eat", "กิน")  # eat
+    rice = word("rice", "ข้าว")  # rice
+    to = thai_of(eat, rice)
+    eat_rice = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
+    syl = make_gaps_syllabus(words=(eat, rice), sentences=(eat_rice,), media=FakeMediaIndex())
     assert syl.gaps().scene_pictures == (eat_rice.text_sha,)
 
 
 def test_gaps_omits_a_sentence_that_already_has_a_scene_picture():
-    eat_rice = sentence("กินข้าว", gloss="eat rice")  # eat rice
+    eat = word("eat", "กิน")  # eat
+    rice = word("rice", "ข้าว")  # rice
+    to = thai_of(eat, rice)
+    eat_rice = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
     media = FakeMediaIndex(pictures={eat_rice.text_sha})
-    syl = make_gaps_syllabus(sentences=(eat_rice,), media=media)
+    syl = make_gaps_syllabus(words=(eat, rice), sentences=(eat_rice,), media=media)
     assert syl.gaps().scene_pictures == ()
 
 
@@ -217,7 +223,7 @@ def test_gaps_lists_a_confusion_with_no_registered_pairs():
 
 
 def test_gaps_raises_when_coverage_confusions_is_not_registered():
-    syl = Syllabus(profile=Profile(register="male_colloquial"), tokenizer=FakeTokenizer(),
+    syl = Syllabus(profile=Profile(register="male_colloquial"),
                   rules=(), media=FakeMediaIndex(), assessments=FakeAssessmentReader())
     with pytest.raises(RuntimeError, match="coverage/confusions"):
         syl.gaps()

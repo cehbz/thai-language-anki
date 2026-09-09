@@ -182,18 +182,12 @@ def test_category_is_frozen():
 # --- Sentence -----------------------------------------------------------------
 
 def test_sentence_identity_is_the_text_sha_regardless_of_provenance():
-    a = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
+    a = Sentence(clauses=(), text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
                 provenance=PROV)  # "I eat rice"
     b = dataclasses.replace(a, provenance=Provenance(
         source="llm", origin="other-run", licence="cc", acquired=date(2026, 9, 5)))
     assert a.text_sha == b.text_sha == hashlib.sha256(a.text.encode()).hexdigest()
     assert sentence_note_id(a) == a.text_sha
-
-
-def test_sentence_clauses_defaults_to_empty():
-    s = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
-                 provenance=PROV)  # "I eat rice"
-    assert s.clauses == ()
 
 
 def test_sentence_words_dedups_in_order_of_first_occurrence():

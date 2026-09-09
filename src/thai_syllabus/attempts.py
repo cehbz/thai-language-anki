@@ -815,8 +815,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             introducible_lines.append(line)
         else:
             target_lines.append(line)
-    openings = sorted({syllabus.tokenizer.tokens(s.text)[0] for s in syllabus.sentences
-                       if syllabus.tokenizer.tokens(s.text)})
+    openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
                + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n")
     if target_lines:
@@ -839,29 +838,29 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
 
 def _draft_sentence(draft: SentenceDraft) -> Sentence:
     """`draft` as a Sentence value, learner_voice, for calls that need one
-    off a still-unadopted draft (`Syllabus.last_used_word`).
+    off a still-unadopted draft (`Syllabus.last_used_word`). clauses=()
+    for now -- a draft carries no clauses until Task 5.
     """
-    return Sentence(text=draft.text, gloss=draft.gloss, voice="learner_voice",
+    return Sentence(clauses=(), text=draft.text, gloss=draft.gloss, voice="learner_voice",
                     provenance=Provenance(source="llm", origin="draft",
                                           licence="generated", acquired=date.today()))
 
 
 def _fills(ctx: Sourcing, draft: SentenceDraft, open_targets: Sequence[Target],
            spend: dict[str, Spend]) -> list[Target]:
-    """fills() on every open Target whose word the draft's text mentions
-    at a token boundary (`Syllabus.mentions_at`), plus every open Target
-    the draft claims: `open_targets` is the full open set
+    """fills() on every open Target whose word is among the draft's own
+    words (`Syllabus.words_used`), plus every open Target the draft
+    claims: `open_targets` is the full open set
     (`syllabus.gaps().unfilled_targets`), not only the run's handed
-    batch -- a text mentioning an open Target outside the batch still
-    gets checked. The claim is a hint, not the gate -- a claimed Target
-    the text does not mention still gets a fills question. Such a
-    target's fills() clause 1 is that same boundary check; it records a
+    batch -- a draft using an open Target outside the batch still gets
+    checked. The claim is a hint, not the gate -- a claimed Target the
+    draft does not use still gets a fills question. Such a target's
+    fills() clause 1 is that same membership check; it records a
     refusal there, not coverage. One fills question per Target
     checked."""
-    tokens = ctx.syllabus.tokenizer.tokens(draft.text)
     open_by_id = {t.id: t for t in open_targets}
     mentioned = [t for t in open_targets
-                if ctx.syllabus.mentions_at(tokens, ctx.syllabus.word(t.word).thai)]
+                if t.word in ctx.syllabus.words_used(_draft_sentence(draft))]
     claimed = [open_by_id[t] for t in draft.claimed if t in open_by_id]
     checked: list[Target] = []
     seen: set[str] = set()
