@@ -26,7 +26,6 @@ from thai_syllabus.assessor import (
     RawVerdict,
     Verdict,
     DurationBackend,
-    FillsBackend,
     FormatBackend,
     RenditionBackend,
     parse_preference,
@@ -271,47 +270,6 @@ def test_format_mechanical_evaluates_extension_match():
     backend = FormatBackend(expected_ext="mp3", resolve_ext=lambda sha: "wav")
     raw = backend.fetch(AssessQuestion(subject="s", role="r", artifact_sha="x"))
     assert raw.value is False
-
-
-class _FakeAdoptedSentence:
-    def __init__(self, text_sha):
-        self.text_sha = text_sha
-
-
-class _FakeSyllabusForFillsKey:
-    """A stand-in `syllabus_of()` result: only `.sentences` matters to
-    FillsBackend.cache_key's adopted-sentences version.
-    """
-    def __init__(self, adopted_text_shas=()):
-        self.sentences = tuple(_FakeAdoptedSentence(t) for t in adopted_text_shas)
-
-
-def test_fills_key_names_the_version_it_was_computed_under():
-    backend = FillsBackend(syllabus_of=lambda: _FakeSyllabusForFillsKey(),
-                           version="abc123:pythainlp-5.3.7-newmm")
-    q = AssessQuestion(subject="s" * 64, role="sentence-for-target",
-                       params={"target": "eat/receptive", "text": "กิน"}, kind="sentence")   # กิน: eat
-    no_adopted_sentences = sha(",".join(sorted(())))
-    assert backend.cache_key(q).encode() == (
-        f"mech:fills:eat/receptive:abc123:pythainlp-5.3.7-newmm:{no_adopted_sentences}:"
-        + "s" * 64)
-
-
-def test_fills_key_names_the_adopted_sentence_set_it_was_computed_under():
-    """spec 3 section 6a: a key over mutable state names its version --
-    clause 3's novelty rule reads other adopted sentences, so the fills
-    key carries a sha over the adopted text_shas (order-independent)
-    beside the curated/tokenizer version."""
-    q = AssessQuestion(subject="s" * 64, role="sentence-for-target",
-                       params={"target": "eat/receptive", "text": "กิน"}, kind="sentence")   # กิน: eat
-    two_adopted = FillsBackend(syllabus_of=lambda: _FakeSyllabusForFillsKey(("b", "a")),
-                               version="v1")
-    reordered = FillsBackend(syllabus_of=lambda: _FakeSyllabusForFillsKey(("a", "b")),
-                             version="v1")
-    three_adopted = FillsBackend(syllabus_of=lambda: _FakeSyllabusForFillsKey(("a", "b", "c")),
-                                 version="v1")
-    assert two_adopted.cache_key(q).encode() == reordered.cache_key(q).encode()
-    assert two_adopted.cache_key(q).encode() != three_adopted.cache_key(q).encode()
 
 
 def test_duration_check_on_a_nonexistent_path_is_a_preparation_error_and_uncached(db):

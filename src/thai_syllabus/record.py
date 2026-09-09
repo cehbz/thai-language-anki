@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from .cachekeys import RunReportKey
-from .entities import text_sha
+from .entities import Clauses, Sentence, clauses_from_json, text_sha
+from .media import Provenance
 from .ports import Answer, CacheReader
 from .transport import strip_fences
 
@@ -28,7 +30,7 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner
           "latest_query",
           "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
-          "parse_drafts", "merge_drafts", "drafts_in", "sentence_drafts",
+          "parse_drafts", "merge_drafts", "draft_sentence", "drafts_in", "sentence_drafts",
           "excluded_candidates", "card_flags"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
@@ -228,11 +230,15 @@ def unresolved_batch(
 
 @dataclass(frozen=True)
 class SentenceDraft:
-    """One drafted sentence as the LLM answered it: text, L1 gloss, and
-    the Targets it claims to fill."""
+    """One drafted sentence as the LLM answered it: clauses of vocabulary
+    ids, the rendered text, and the L1 gloss (spec 1 section 1, spec 3
+    section 5). Which Targets it fills is derived, never carried here:
+    fills is membership of a target's word in `clauses` (spec 1 section
+    3), checked against the Sentence `draft_sentence` builds.
+    """
+    clauses: Clauses
     text: str
     gloss: str
-    claimed: tuple[str, ...]
 
     @property
     def text_sha(self) -> str:
@@ -243,51 +249,72 @@ def parse_drafts(text: str) -> list[SentenceDraft]:
     """The listings one llm answer item's JSON carries, one `SentenceDraft`
     per listing, not merged -- a text repeated in the same item comes
     back as several entries here; empty when `text` is not the JSON the
-    drafting prompt asked for. `merge_drafts` does the merging, over
-    this item alone (`drafts_in`) or over a whole run's items
-    (`sentence_attempt`).
+    drafting prompt asked for. An item lacking `clauses` or `text` is
+    skipped; one whose `clauses` do not parse (clauses_from_json) is
+    skipped with a `logging` warning naming the text's first 40
+    characters. `merge_drafts` does the merging, over this item alone
+    (`drafts_in`) or over a whole run's items (`sentence_attempt`).
     """
     try:
         data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
         return []
     drafted = (data.get("sentences") if isinstance(data, Mapping) else None) or []
-    return [SentenceDraft(text=str(d["text"]).strip(), gloss=str(d.get("gloss") or ""),
-                          claimed=tuple(d.get("targets") or []))
-            for d in drafted if isinstance(d, Mapping) and d.get("text")]
+    out: list[SentenceDraft] = []
+    for d in drafted:
+        if not isinstance(d, Mapping) or not d.get("text") or not d.get("clauses"):
+            continue
+        one_text = str(d["text"]).strip()
+        try:
+            clauses = clauses_from_json(d["clauses"])
+        except ValueError as e:
+            _log.warning("parse_drafts: skipping a draft with malformed clauses (text %r): %s",
+                         one_text[:40], e)
+            continue
+        out.append(SentenceDraft(clauses=clauses, text=one_text, gloss=str(d.get("gloss") or "")))
+    return out
 
 
 def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
-    """One draft per distinct text among `drafts`: their claimed targets
-    union in first-seen order, and their gloss is the first non-empty
-    one -- unless two of them carry differing non-empty glosses, in
-    which case the text is dropped (a `logging` warning names its first
-    40 characters), in first-seen order.
+    """One draft per distinct text among `drafts`, in first-seen order:
+    their gloss is the first non-empty one -- unless two of them carry
+    differing non-empty glosses, or differing clauses, in which case the
+    text is dropped (a `logging` warning names its first 40 characters).
     """
     order: list[str] = []
     glosses: dict[str, str] = {}
+    clauses: dict[str, Clauses] = {}
     conflicted: set[str] = set()
-    claimed: dict[str, list[str]] = {}
     for d in drafts:
         one_text = d.text
         if one_text not in glosses:
             order.append(one_text)
             glosses[one_text] = d.gloss
-            claimed[one_text] = []
-        elif d.gloss and glosses[one_text] and d.gloss != glosses[one_text]:
+            clauses[one_text] = d.clauses
+            continue
+        if d.clauses != clauses[one_text]:
+            conflicted.add(one_text)
+        if d.gloss and glosses[one_text] and d.gloss != glosses[one_text]:
             conflicted.add(one_text)
         elif d.gloss and not glosses[one_text]:
             glosses[one_text] = d.gloss
-        for target_id in d.claimed:
-            if target_id not in claimed[one_text]:
-                claimed[one_text].append(target_id)
     for one_text in order:
         if one_text in conflicted:
-            _log.warning("merge_drafts: dropping a draft with conflicting glosses: %r",
+            _log.warning("merge_drafts: dropping a draft with conflicting glosses or clauses: %r",
                          one_text[:40])
-    return [SentenceDraft(text=one_text, gloss=glosses[one_text],
-                          claimed=tuple(claimed[one_text]))
+    return [SentenceDraft(clauses=clauses[one_text], text=one_text, gloss=glosses[one_text])
             for one_text in order if one_text not in conflicted]
+
+
+def draft_sentence(draft: SentenceDraft, today: Callable[[], date]) -> Sentence:
+    """`draft` as a Sentence value: its own clauses, learner_voice,
+    provenance llm/draft. `today` is called once for the provenance date
+    (Sourcing.today / adoptable_drafts' own `today` parameter).
+    """
+    return Sentence(clauses=draft.clauses, text=draft.text, gloss=draft.gloss,
+                    voice="learner_voice",
+                    provenance=Provenance(source="llm", origin="draft",
+                                          licence="generated", acquired=today()))
 
 
 def drafts_in(text: str) -> list[SentenceDraft]:

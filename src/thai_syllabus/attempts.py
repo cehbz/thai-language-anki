@@ -40,12 +40,12 @@ from .derivations import (
     pictures_awaiting_preference,
     unjudged_candidates,
 )
-from .entities import Sentence, Target, Word
+from .entities import Target, Word
 from .ids import PairId, WordId
-from .media import Provenance, Speaker
+from .media import Speaker
 from .provider import Provider, ProviderAnswer, Question
 from .query import QUERY_HINTS, picture_query
-from .record import DRAFT_SUBJECT, SentenceDraft
+from .record import DRAFT_SUBJECT
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import FetchRefused, SynthesisRefused, TransportError
@@ -797,12 +797,13 @@ def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Wor
 
 
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
-    """The drafting prompt (spec 3 section 5): the met vocabulary once,
-    a Targets line per picture-introduced handed target and per handed
-    sentence-introduced target some adopted sentence already fills, an
-    Introducible line per handed sentence-introduced target no adopted
-    sentence fills, the profile register, and the existing sentence
-    openings to avoid.
+    """The drafting prompt (spec 3 section 5): the met vocabulary once as
+    id/thai/meaning lines, a Targets line per picture-introduced handed
+    target and per handed sentence-introduced target some adopted
+    sentence already fills, an Introducible line per handed
+    sentence-introduced target no adopted sentence fills, the profile
+    register, the existing sentence openings to avoid, and the clause
+    rendering rule (spec 1 section 1).
     """
     vocabulary = _entry_vocabulary(syllabus, targets)
     met_targets = syllabus.met_sentence_introduced_targets()
@@ -810,14 +811,14 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
     introducible_lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        line = f"- target {target.id}: word {word.thai} ({word.meaning})"
+        line = f"- target {target.id}: {word.thai} ({word.meaning})"
         if target.introduction == "sentence" and target.id not in met_targets:
             introducible_lines.append(line)
         else:
             target_lines.append(line)
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
-               + "\n".join(f"{i}. {w.thai}" for i, w in enumerate(vocabulary, 1)) + "\n")
+               + "\n".join(f"- {w.id}  {w.thai}  ({w.meaning})" for w in vocabulary) + "\n")
     if target_lines:
         sections += "Targets:\n" + "\n".join(target_lines) + "\n"
     if introducible_lines:
@@ -832,62 +833,27 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
             + sections
-            + 'Output JSON only: {"sentences": [{"text": "...", "gloss": "...", '
-            '"targets": ["<target id, as written after \'target \' above>", ...]}]}')
-
-
-def _draft_sentence(draft: SentenceDraft) -> Sentence:
-    """`draft` as a Sentence value, learner_voice, for calls that need one
-    off a still-unadopted draft (`Syllabus.last_used_word`). clauses=()
-    for now -- a draft carries no clauses until Task 5.
-    """
-    return Sentence(clauses=(), text=draft.text, gloss=draft.gloss, voice="learner_voice",
-                    provenance=Provenance(source="llm", origin="draft",
-                                          licence="generated", acquired=date.today()))
-
-
-def _fills(ctx: Sourcing, draft: SentenceDraft, open_targets: Sequence[Target],
-           spend: dict[str, Spend]) -> list[Target]:
-    """fills() on every open Target whose word is among the draft's own
-    words (`Syllabus.words_used`), plus every open Target the draft
-    claims: `open_targets` is the full open set
-    (`syllabus.gaps().unfilled_targets`), not only the run's handed
-    batch -- a draft using an open Target outside the batch still gets
-    checked. The claim is a hint, not the gate -- a claimed Target the
-    draft does not use still gets a fills question. Such a target's
-    fills() clause 1 is that same membership check; it records a
-    refusal there, not coverage. One fills question per Target
-    checked."""
-    open_by_id = {t.id: t for t in open_targets}
-    mentioned = [t for t in open_targets
-                if t.word in ctx.syllabus.words_used(_draft_sentence(draft))]
-    claimed = [open_by_id[t] for t in draft.claimed if t in open_by_id]
-    checked: list[Target] = []
-    seen: set[str] = set()
-    for target in mentioned + claimed:
-        if target.id not in seen:
-            seen.add(target.id)
-            checked.append(target)
-    questions = {target.id: AssessQuestion(
-        subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
-        params={"target": target.id, "text": draft.text, "gloss": draft.gloss},
-        kind="sentence", subject_kind="sentence") for target in checked}
-    result = ctx.assessor.ask_many("fills", list(questions.values()))
-    _count_verdicts(spend, "fills", result)
-    return [target for target in checked
-            if (v := result.resolved.get(ctx.assessor.key_of("fills", questions[target.id])))
-            is not None and v.value is True]
+            + "Write each sentence as clauses of vocabulary ids in order; a clause renders as "
+            "its words' Thai concatenated, clauses are separated by one space; write a repeated "
+            'word as [id, "ๆ"]; standard spelling (ครับ, never คับ); numbers as number words; '
+            "no punctuation or digits. "
+            'Output JSON only: {"sentences": [{"clauses": [["id", ...], ...], "text": "...", '
+            '"gloss": "..."}]}')
 
 
 def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
-    many, and subjects_handed which words they belong to), each draft
-    verified with fills() against every open Target its text mentions --
-    the whole open set, not only the handed batch -- and every open
-    Target it claims, and, where it fills one, put to the judge with its
-    gloss and its last used word (Syllabus.last_used_word). Adoption is
-    the run's, after the verdicts land."""
+    many, and subjects_handed which words they belong to). Each merged
+    draft becomes a Sentence (record.draft_sentence); acceptance is the
+    Sentence invariant (Syllabus.check_sentence) -- a refused draft is
+    logged ("draft refused: %s") and skipped, nothing else. Of the
+    Targets it fills (Syllabus.fill_set), only those still open go to
+    the judge; a draft filling none of them is skipped. The judge
+    question carries the text, gloss, and the sentence's own last used
+    word (Syllabus.last_used_word). Adoption is the run's, after the
+    verdicts land.
+    """
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
     unfilled = syllabus.gaps().unfilled_targets
@@ -909,10 +875,16 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     for draft in record.merge_drafts(raw_drafts):
         if draft.text_sha in adopted:
             continue
-        filled = _fills(ctx, draft, open_targets, spend)
+        sentence = record.draft_sentence(draft, ctx.today)
+        try:
+            syllabus.check_sentence(sentence)
+        except ValueError as e:
+            _log.warning("draft refused: %s", e)
+            continue
+        filled = [t for t in open_targets if t in syllabus.fill_set(sentence)]
         if not filled:
             continue
-        last_word = syllabus.word(syllabus.last_used_word(_draft_sentence(draft))).thai
+        last_word = syllabus.word(syllabus.last_used_word(sentence)).thai
         questions.append(AssessQuestion(
             subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
             rubric=ctx.rubrics[role_for("sentence")],

@@ -31,13 +31,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from .assessor import (AssessBackend, Assessor, DurationBackend, FillsBackend,
-                       JudgeBackend, Price, RenditionBackend)
+from .assessor import AssessBackend, Assessor, DurationBackend, JudgeBackend, Price, RenditionBackend
 from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
     ProvidersConfig,
-    curated_version,
     load_curated,
     load_frequency_map,
     load_providers_config,
@@ -219,15 +217,11 @@ def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
 
 
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
-                   *, secret_store=None, syllabus_of: Callable[[], Syllabus] | None = None,
-                   deck_root: str | Path | None = None) -> Assessor:
+                   *, secret_store=None) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge",
-    "mechanical" (the duration check), "rendition", and where
-    `syllabus_of` names one, "fills". `syllabus_of` is a callable: a run
-    adopts sentences into its Syllabus between attempts. `deck_root`
-    names the curated/ directory a fills verdict is computed from (spec 3
-    section 6a); its version becomes the fills backend's key part. Empty
-    when `deck_root` is not given.
+    "mechanical" (the duration check), "rendition". Fills is membership
+    (Syllabus.fills), not an Assess backend (spec 1 section 3 r8; spec 3
+    r16).
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -240,10 +234,6 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "mechanical": DurationBackend(resolve_path=resolve),
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
-    if syllabus_of is not None:
-        version = (f"{curated_version(Path(deck_root) / 'curated')}"
-                  if deck_root is not None else "")
-        backends["fills"] = FillsBackend(syllabus_of=syllabus_of, version=version)
     return Assessor(record=db, cache=db, backends=backends)
 
 
@@ -355,8 +345,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
     db, media_store = derivations.db, derivations.media_store
     ctx = Sourcing(
         syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
-        assessor=build_assessor(cfg, db, media_store, syllabus_of=lambda: ctx.syllabus,
-                               deck_root=root),
+        assessor=build_assessor(cfg, db, media_store),
         db=db, media_store=media_store, rubrics=derivations.current_rubric,
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,

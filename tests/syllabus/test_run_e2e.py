@@ -1,6 +1,5 @@
 """End to end over a fixture deck: build_sourcing + run with fake search, Forvo, LLM, judge and
 mechanical backends; picture, recording and sentence needs close; the gate opens."""
-import dataclasses
 import hashlib
 import io
 import json
@@ -23,8 +22,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion
 from thai_syllabus.wiring import build_sourcing, load_syllabus
 
-from .builders import sentence, target, word
-from .fakes import FakeTokenizer
+from .builders import sentence, target, thai_of, word
 from .test_run import RICE, _Llm as _DraftLlm, _deck as _batch_fixture_deck, _wire, fake_batch, fake_search
 
 
@@ -79,8 +77,9 @@ class _Llm:
         return LlmPromptKey(producer="sentence-drafter", model="m", prompt_sha="x")
 
     def fetch(self, q):
-        return RawAnswer(items=('{"sentences": [{"text": "กินส้ม", "gloss": "eat orange", '
-                                '"targets": ["orange/receptive", "eat/receptive"]}]}',))
+        # กิน = eat, ส้ม = orange, one clause renders กินส้ม with no space
+        return RawAnswer(items=(json.dumps({"sentences": [
+            {"clauses": [["eat", "orange"]], "text": "กินส้ม", "gloss": "eat orange"}]}),))
 
 
 def _jpeg_bytes(seed: str) -> bytes:
@@ -114,7 +113,6 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
         "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
     ctx.assessor._backends["judge"].complete = _judge_complete
     ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
-    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"]}))
 
     before = load_syllabus(root).gaps()
     assert before.unfilled_targets and before.words_missing_pictures and before.words_missing_recordings
@@ -143,7 +141,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
                           "kind": "recording"},
                  answer={"value": True})
 
-    after = dataclasses.replace(load_syllabus(root), tokenizer=FakeTokenizer({"กินส้ม": ["กิน", "ส้ม"]}))
+    after = load_syllabus(root)
     g = after.gaps()
     assert g.words_missing_pictures == () and g.words_missing_recordings == () and g.unfilled_targets == ()
     rep = after.report()
@@ -232,10 +230,9 @@ def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batc
     root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
                llm=_DraftLlm(json.dumps({"sentences": [
-                   {"text": "ข้าว", "gloss": "rice", "targets": ["rice/receptive"]}]})))
+                   {"clauses": [["rice"]], "text": "ข้าว", "gloss": "rice"}]})))   # ข้าว: rice
     ctx.provider._backends["forvo"] = _Forvo()
     ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
-    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
 
     r1 = run(ctx, budgets={})
     assert r1.batch_id is not None
@@ -284,10 +281,10 @@ def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
     ctx.provider._backends["forvo"] = _Forvo()
     ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
-    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
     # No LLM/judge round trip needed to close the Target: with_sentences
     # is exactly the effect _adopt_sentences has on ctx.syllabus.
-    ctx.syllabus = ctx.syllabus.with_sentences((sentence("ข้าว", gloss="rice"),))
+    ctx.syllabus = ctx.syllabus.with_sentences(
+        (sentence(((RICE.id,),), thai_of(RICE), gloss="rice"),))   # ข้าว: rice
 
     # The word's own recording, already settled.
     ctx.db.add_speaker(Speaker(id="somchai", kind="native"))
@@ -368,8 +365,8 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
     ctx.provider._backends["tts"] = _Tts(ctx.media_store)   # forvo stays silent (_wire's default)
     ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
-    ctx.syllabus = dataclasses.replace(ctx.syllabus, tokenizer=FakeTokenizer({"ข้าว": ["ข้าว"]}))
-    ctx.syllabus = ctx.syllabus.with_sentences((sentence("ข้าว", gloss="rice"),))
+    ctx.syllabus = ctx.syllabus.with_sentences(
+        (sentence(((RICE.id,),), thai_of(RICE), gloss="rice"),))   # ข้าว: rice
 
     # The sentence's text is the word's own thai spelling: its own
     # recording/picture needs (F1 defect 2) share Forvo/TTS's

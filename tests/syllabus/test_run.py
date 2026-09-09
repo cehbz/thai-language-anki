@@ -27,7 +27,7 @@ from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
 from thai_syllabus.derivations import available_need_keys, current_best, next_source, open_words
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
-from thai_syllabus.ids import ConfusionId, PairId
+from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import FetchBackend, RawAnswer
 from thai_syllabus.record import rows_for
@@ -41,8 +41,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 from thai_syllabus.wiring import build_sourcing
 
-from .builders import sentence, syl, target, word
-from .fakes import FakeTokenizer
+from .builders import sentence, syl, target, thai_of, word
 
 # --- a fixture deck and fake backends --------------------------------------
 
@@ -223,15 +222,12 @@ def ctx_batch_sentences(tmp_path, fake_search, fake_batch):
     root = _deck(tmp_path, (RICE, EAT),
                  (target("rice/receptive", "rice"), target("eat/receptive", "eat")))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                # กิน = eat, ข้าว = rice, one clause so it renders กินข้าว with no space
                 llm=_Llm(json.dumps({"sentences": [
-                    {"text": EAT_RICE, "gloss": "eat rice",
-                     "targets": ["rice/receptive", "eat/receptive"]}]})))
+                    {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"}]})))
     ctx.provider._backends["openverse"] = _Silent("openverse")
     ctx.provider._backends["wikimedia"] = _Silent("wikimedia")
     ctx.provider._backends["pexels"] = _Silent("pexels")
-    # กิน = eat, ข้าว = rice
-    ctx.syllabus = dataclasses.replace(
-        ctx.syllabus, tokenizer=FakeTokenizer({EAT_RICE: ["กิน", "ข้าว"]}))
     return ctx
 
 
@@ -322,17 +318,14 @@ def ctx_inline_sentences(tmp_path, fake_search):
                  (target("rice/receptive", "rice"), target("eat/receptive", "eat")),
                  transport="api")
     ctx = _wire(build_sourcing(root), fake_search,
+                # กิน = eat, ข้าว = rice, one clause so it renders กินข้าว with no space
                 llm=_Llm(json.dumps({"sentences": [
-                    {"text": EAT_RICE, "gloss": "eat rice",
-                     "targets": ["rice/receptive", "eat/receptive"]}]})),
+                    {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"}]})),
                 complete=lambda prompt, attachments=(): Completion(
                     text=json.dumps({"value": True, "evidence": "ok"})))
     ctx.provider._backends["openverse"] = _Silent("openverse")
     ctx.provider._backends["wikimedia"] = _Silent("wikimedia")
     ctx.provider._backends["pexels"] = _Silent("pexels")
-    # กิน = eat, ข้าว = rice
-    ctx.syllabus = dataclasses.replace(
-        ctx.syllabus, tokenizer=FakeTokenizer({EAT_RICE: ["กิน", "ข้าว"]}))
     return ctx
 
 
@@ -1390,7 +1383,8 @@ def test_run_adopts_a_cover_of_the_adoptable_drafts_before_computing_the_queue(d
                                    exhausted=0)
 
     monkeypatch.setattr(run_mod, "queued", fake_queued)
-    _patch(monkeypatch, {}, drafts=[(sentence("x", gloss="ex"), ("t1",))])
+    _patch(monkeypatch, {}, drafts=[
+        (sentence(((WordId("x"),),), thai_of(word("x", "x")), gloss="ex"), ("t1",))])
 
     report = run(_ctx(db, _AdoptingSyl(("t1", "t2"))), {})
 

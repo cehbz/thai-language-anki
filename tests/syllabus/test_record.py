@@ -4,22 +4,26 @@ by each row's own explicit question["kind"] -- never inferred from a
 """
 import json
 import logging
+from datetime import date
 
 import pytest
 
 from thai_syllabus.cachekeys import DirectionKey, JudgeKey, LearnerKey, ProvideKey, sha
+from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
     DRAFT_SUBJECT,
     SentenceDraft,
     asks_since,
     candidate_shas,
     directions,
+    draft_sentence,
     drafts_in,
     judge_verdicts,
     latest_query,
     latest_rating,
     learner_ratings,
     merge_drafts,
+    parse_drafts,
     ratings_for_role,
     rows_for,
     sentence_drafts,
@@ -244,88 +248,153 @@ def test_spend_since_sums_the_cost_of_those_asks(cache):
     assert spend_since(cache, "forvo", 0) == pytest.approx(3.5)
 
 
-# --- drafts_in: one draft per distinct text, claims merged ------------------
+# --- parse_drafts: clauses alongside text and gloss -------------------------
 
-def test_drafts_in_merges_a_duplicated_text_unioning_claims_in_order():
-    """A text listed twice is one draft: its target claims union in
-    first-seen order, and the first non-empty gloss wins."""
+def test_parse_drafts_reads_clauses_alongside_text_and_gloss():
     text = json.dumps({"sentences": [
-        {"text": " กินข้าว ", "gloss": "", "targets": ["eat/receptive"]},
-        {"text": "กินข้าว", "gloss": "eat rice",
-         "targets": ["rice/receptive", "eat/receptive"]}]})   # กินข้าว: eat rice
-    drafts = drafts_in(text)
+        {"clauses": [["eat"], ["rice"]], "text": " กินข้าว ",
+         "gloss": "eat rice"}]})   # กินข้าว: eat rice
+    drafts = parse_drafts(text)
     assert len(drafts) == 1
+    assert drafts[0].clauses == ((WordId("eat"),), (WordId("rice"),))
     assert drafts[0].text == "กินข้าว"     # กินข้าว: eat rice, whitespace stripped
-    assert drafts[0].gloss == "eat rice"                       # the first non-empty gloss
-    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")
+    assert drafts[0].gloss == "eat rice"
 
 
-def test_drafts_in_drops_a_gloss_conflict_and_warns(caplog):
-    """Two listings of one text carrying differing non-empty glosses drop
-    the text -- fed no candidate downstream -- with a warning naming its
-    first 40 characters."""
+def test_parse_drafts_reads_a_repeated_word_element():
     text = json.dumps({"sentences": [
-        {"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},
-        {"text": "กินข้าว", "gloss": "rice is eaten",
-         "targets": ["rice/receptive"]}]})   # กินข้าว: eat rice
+        {"clauses": [[["red", "ๆ"]]], "text": "แดงๆ", "gloss": "very red"}]})   # แดงๆ: very red
+    drafts = parse_drafts(text)
+    assert drafts[0].clauses == (((WordId("red"), "ๆ"),),)
+
+
+def test_parse_drafts_skips_an_item_lacking_clauses():
+    text = json.dumps({"sentences": [{"text": "กินข้าว", "gloss": "eat rice"}]})   # กินข้าว: eat rice
+    assert parse_drafts(text) == []
+
+
+def test_parse_drafts_skips_an_item_lacking_text():
+    text = json.dumps({"sentences": [{"clauses": [["eat"]], "gloss": "eat"}]})
+    assert parse_drafts(text) == []
+
+
+def test_parse_drafts_skips_a_malformed_clause_and_warns(caplog):
+    """An empty clause list is malformed (entities.clauses_from_json
+    raises); the item is skipped and a warning names the text's first 40
+    characters."""
+    text = json.dumps({"sentences": [
+        {"clauses": [["eat"], []], "text": "กินข้าว", "gloss": "eat rice"}]})   # กินข้าว: eat rice
     with caplog.at_level(logging.WARNING):
-        drafts = drafts_in(text)
+        drafts = parse_drafts(text)
     assert drafts == []
     assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
 
 
 def test_drafts_in_keeps_distinct_texts_distinct():
     text = json.dumps({"sentences": [
-        {"text": "กินข้าว", "gloss": "eat rice", "targets": ["eat/receptive"]},
-        {"text": "ข้าวอร่อย", "gloss": "tasty rice",
-         "targets": ["rice/receptive"]}]})   # กินข้าว: eat rice, ข้าวอร่อย: tasty rice
+        {"clauses": [["eat"], ["rice"]], "text": "กินข้าว", "gloss": "eat rice"},
+        {"clauses": [["rice"], ["tasty"]], "text": "ข้าวอร่อย",
+         "gloss": "tasty rice"}]})   # กินข้าว: eat rice, ข้าวอร่อย: tasty rice
     drafts = drafts_in(text)
     assert [d.text for d in drafts] == ["กินข้าว", "ข้าวอร่อย"]   # eat rice, tasty rice
+
+
+# --- merge_drafts: one draft per distinct text -------------------------------
+
+def test_merge_drafts_keeps_a_text_whose_repeated_clauses_agree():
+    """A text listed twice with the same clauses is one draft; the first
+    non-empty gloss wins."""
+    a = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",   # กินข้าว: eat rice
+                      gloss="")
+    b = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",
+                      gloss="eat rice")
+    merged = merge_drafts([a, b])
+    assert len(merged) == 1
+    assert merged[0].clauses == a.clauses
+    assert merged[0].gloss == "eat rice"
+
+
+def test_merge_drafts_drops_a_text_whose_glosses_disagree_and_warns(caplog):
+    """Two listings of one text carrying differing non-empty glosses drop
+    the text -- fed no candidate downstream -- with a warning naming its
+    first 40 characters."""
+    a = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",   # กินข้าว: eat rice
+                      gloss="eat rice")
+    b = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",
+                      gloss="rice is eaten")
+    with caplog.at_level(logging.WARNING):
+        merged = merge_drafts([a, b])
+    assert merged == []
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
+def test_merge_drafts_drops_a_text_whose_clauses_disagree_and_warns(caplog):
+    """Spec 3 r16: differing clauses for one text drop it, the same as a
+    gloss conflict -- two answers cannot both be the sentence's own
+    parse."""
+    a = SentenceDraft(clauses=((WordId("eat"),),), text="กินข้าว", gloss="eat rice")   # กินข้าว: eat rice
+    b = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",
+                      gloss="eat rice")
+    with caplog.at_level(logging.WARNING):
+        merged = merge_drafts([a, b])
+    assert merged == []
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
 
 
 def test_merge_drafts_merges_a_text_across_two_lists_handed_together():
     """merge_drafts merges over whatever `drafts` it is given, not just
     one item's own listings -- spec 3 section 5's "a text listed twice is
     one candidate" holds across items, not per item."""
-    from_item_a = [SentenceDraft(text="กินข้าว", gloss="eat rice",   # กินข้าว: eat rice
-                                 claimed=("eat/receptive",))]
-    from_item_b = [SentenceDraft(text="กินข้าว", gloss="eat rice",   # กินข้าว: eat rice
-                                 claimed=("rice/receptive",))]
+    clauses = ((WordId("eat"),), (WordId("rice"),))
+    from_item_a = [SentenceDraft(clauses=clauses, text="กินข้าว", gloss="")]   # กินข้าว: eat rice
+    from_item_b = [SentenceDraft(clauses=clauses, text="กินข้าว", gloss="eat rice")]
     merged = merge_drafts(from_item_a + from_item_b)
     assert len(merged) == 1
-    assert merged[0].claimed == ("eat/receptive", "rice/receptive")
+    assert merged[0].gloss == "eat rice"
 
 
 def test_sentence_drafts_merges_a_text_split_across_one_row_s_items(cache):
     """One provide row's own two items listing the same text with
-    differing claims fold to one draft, its claims unioned -- the same
-    merge `sentence_attempt` applies within a run."""
+    agreeing clauses fold to one draft -- the same merge
+    `sentence_attempt` applies within a run."""
     cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q"),
                 DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
                 {"items": [
-                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
-                    ' "targets": ["eat/receptive"]}]}',
-                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
-                    ' "targets": ["rice/receptive"]}]}']}, 0)
+                    '{"sentences": [{"clauses": [["eat"], ["rice"]], "text": "กินข้าว",'
+                    ' "gloss": ""}]}',   # กินข้าว: eat rice
+                    '{"sentences": [{"clauses": [["eat"], ["rice"]], "text": "กินข้าว",'
+                    ' "gloss": "eat rice"}]}']}, 0)
     drafts = sentence_drafts(cache)
     assert len(drafts) == 1
-    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")
+    assert drafts[0].gloss == "eat rice"
 
 
 def test_sentence_drafts_merges_a_text_split_across_two_provide_rows(cache):
     """Two separate provide rows each listing the same text with
-    differing claims fold to one draft, its claims unioned -- a text
-    drafted in two runs is still one draft."""
+    agreeing clauses fold to one draft -- a text drafted in two runs is
+    still one draft."""
     cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q1"),
                 DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
                 {"items": [
-                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
-                    ' "targets": ["eat/receptive"]}]}']}, 0, ts=100)
+                    '{"sentences": [{"clauses": [["eat"], ["rice"]], "text": "กินข้าว",'
+                    ' "gloss": ""}]}']}, 0, ts=100)   # กินข้าว: eat rice
     cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q2"),
                 DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
                 {"items": [
-                    '{"sentences": [{"text": "กินข้าว", "gloss": "eat rice",'   # กินข้าว: eat rice
-                    ' "targets": ["rice/receptive"]}]}']}, 0, ts=200)
+                    '{"sentences": [{"clauses": [["eat"], ["rice"]], "text": "กินข้าว",'
+                    ' "gloss": "eat rice"}]}']}, 0, ts=200)
     drafts = sentence_drafts(cache)
     assert len(drafts) == 1
-    assert drafts[0].claimed == ("eat/receptive", "rice/receptive")
+    assert drafts[0].gloss == "eat rice"
+
+
+# --- draft_sentence: a SentenceDraft as a Sentence value ---------------------
+
+def test_draft_sentence_carries_the_drafts_own_clauses_learner_voice_and_provenance():
+    draft = SentenceDraft(clauses=((WordId("eat"),),), text="กิน", gloss="eat")   # กิน: eat
+    sentence = draft_sentence(draft, lambda: date(2026, 9, 9))
+    assert sentence.clauses == draft.clauses
+    assert sentence.text == "กิน" and sentence.gloss == "eat"
+    assert sentence.voice == "learner_voice"
+    assert sentence.provenance.source == "llm" and sentence.provenance.origin == "draft"
+    assert sentence.provenance.acquired == date(2026, 9, 9)

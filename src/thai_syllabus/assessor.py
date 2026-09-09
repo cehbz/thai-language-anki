@@ -14,13 +14,11 @@ import logging
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from . import record
-from .cachekeys import (BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey,
-                        adopted_identity, rendition_identity, sha)
+from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, TransportError, strip_fences
 
@@ -31,7 +29,7 @@ __all__ = [
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "parse_preference",
-    "DurationBackend", "FormatBackend", "FillsBackend", "RenditionBackend",
+    "DurationBackend", "FormatBackend", "RenditionBackend",
     "ffprobe_duration_seconds",
 ]
 
@@ -86,8 +84,8 @@ class LearnerAskNotSupported(RuntimeError):
 
 class PreparationError(Exception):
     """Raised by a backend's prompt builder or attachment resolver, and by
-    DurationBackend.fetch, ffprobe_duration_seconds, RenditionBackend.fetch
-    and FillsBackend.fetch: the question cannot be asked (a missing or
+    DurationBackend.fetch, ffprobe_duration_seconds and
+    RenditionBackend.fetch: the question cannot be asked (a missing or
     unreadable artifact). Never cached: the candidate is unusable, the
     backend is not unreachable.
     """
@@ -702,47 +700,6 @@ class FormatBackend:
         ext = self.resolve_ext(question.artifact_sha)
         return RawVerdict(value=ext == self.expected_ext,
                           evidence=f"ext={ext!r}, expected={self.expected_ext!r}")
-
-
-@dataclass
-class FillsBackend:
-    """`Syllabus.fills()` as an Assess backend (spec 3 section 4): does the
-    drafted text in `params["text"]` fill the Target named by
-    `params["target"]`? Keyed mech:fills:TARGET:VERSION:ADOPTED:SUBJECT.
-    A fills verdict is computed from words.yaml (the registered word
-    list), targets.yaml (a target's membership, skill and introduction),
-    and the adopted sentence set (clause 3's novelty rule reads other
-    adopted sentences) -- `version` names the curated state (spec 3
-    section 6a), built from curated.py's `curated_version(root)`;
-    ADOPTED is a sha over the sorted adopted text_shas, computed from
-    `syllabus_of()` at ask time, as a run adopts sentences into it.
-    """
-    syllabus_of: Callable[[], Any]
-    version: str = ""
-
-    def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        syllabus = self.syllabus_of()
-        adopted = adopted_identity(s.text_sha for s in syllabus.sentences)
-        return MechanicalKey(check="fills",
-                             params=f"{question.params['target']}:{self.version}:{adopted}",
-                             artifact_sha=question.subject)
-
-    def fetch(self, question: AssessQuestion) -> RawVerdict:
-        from .entities import Sentence
-        from .media import Provenance
-
-        syllabus = self.syllabus_of()
-        target_id = question.params["target"]
-        target = next((t for t in syllabus.targets if t.id == target_id), None)
-        if target is None:
-            raise PreparationError(f"fills: no target {target_id!r} in the syllabus")
-        draft = Sentence(clauses=(), text=question.params["text"],
-                         gloss=question.params.get("gloss", ""), voice="learner_voice",
-                         provenance=Provenance(source="llm", origin="draft",
-                                               licence="generated", acquired=date.today()))
-        ok = syllabus.fills(draft, target)
-        return RawVerdict(value=ok,
-                          evidence=f"fills {target_id}" if ok else f"does not fill {target_id}")
 
 
 @dataclass

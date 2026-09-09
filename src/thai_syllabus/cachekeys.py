@@ -20,16 +20,6 @@ def preference_identity(candidates) -> str:
     return sha(",".join(sorted(candidates)))
 
 
-def adopted_identity(text_shas) -> str:
-    """The adopted-sentences version a key over mutable state names
-    (spec 3 section 6a): one sha over the adopted text_shas,
-    order-independent (sorted before hashing). Clause 3's novelty rule
-    (spec 1 section 3) reads other adopted sentences -- FillsBackend's
-    cache_key carries this beside the curated version.
-    """
-    return sha(",".join(sorted(text_shas)))
-
-
 def rendition_identity(members) -> str:
     """A rendition's artifact identity: the member recordings it is made
     of, as one sha (member -> artifact sha, ordered by member).

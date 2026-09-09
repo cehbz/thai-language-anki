@@ -312,9 +312,11 @@ def test_build_assessor_registers_judge_and_mechanical(cfg, db, media_store):
     assert isinstance(a, Assessor)
 
 
-def test_build_assessor_fills_version_is_empty_with_no_deck_root(cfg, db, media_store):
-    a = build_assessor(cfg, db, media_store, syllabus_of=lambda: None)
-    assert a._backends["fills"].version == ""
+def test_build_assessor_registers_no_fills_backend(cfg, db, media_store):
+    """Fills is membership (Syllabus.fills), not an Assess backend (spec 1
+    section 3 r8; spec 3 r16): build_assessor's roster carries none."""
+    a = build_assessor(cfg, db, media_store)
+    assert "fills" not in a._backends
 
 
 def test_build_assessor_building_the_roster_reads_no_secret_files(cfg, db, media_store, monkeypatch):

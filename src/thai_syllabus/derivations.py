@@ -20,6 +20,7 @@ is a pure fold over an injected CacheReader.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -31,6 +32,8 @@ from .media import Provenance, Speaker
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "CurrentBest", "current_best", "learner_ranks", "vetoed",
@@ -996,29 +999,37 @@ def _role_rank(rows: Sequence[Answer], role: str,
 def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                      model: str = "llm", today: Callable[[], date] = date.today
                      ) -> list[tuple[Sentence, tuple[Target, ...]]]:
-    """Every unadopted sentence draft with a gloss, whose fills() rows
-    confirm at least one Target and whose sentence-for-target assessment
-    passes (authority order deciding), with those Targets. `model` and
-    `today` go on the Sentence's provenance.
+    """Every unadopted sentence draft with a gloss, accepted by the
+    Sentence invariant (Syllabus.check_sentence -- a refused draft is
+    logged and skipped), that fills at least one still-open Target
+    (Syllabus.fill_set, spec 1 section 3) and whose sentence-for-target
+    assessment passes (authority order deciding), with those Targets.
+    `model` and `today` go on the Sentence's provenance.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
-    targets_by_id = {t.id: t for t in syllabus.targets}
     provenance = Provenance(source="llm", origin=model, licence="generated", acquired=today())
+    unfilled = set(syllabus.gaps().unfilled_targets)
     out: list[tuple[Sentence, tuple[Target, ...]]] = []
     for draft in record.sentence_drafts(cache):
         if draft.text_sha in adopted:
             continue
         if not draft.gloss:
             continue
+        sentence = Sentence(clauses=draft.clauses, text=draft.text, gloss=draft.gloss,
+                            voice="learner_voice", provenance=provenance)
+        try:
+            syllabus.check_sentence(sentence)
+        except ValueError as e:
+            _log.warning("adoptable_drafts: draft refused: %s", e)
+            continue
+        filled = tuple(t for t in syllabus.targets
+                       if t.id in unfilled and t in syllabus.fill_set(sentence))
+        if not filled:
+            continue
         rows = cache.assessments_of(draft.text_sha)
         role = role_for("sentence", record.subject_kind_of(rows))
-        confirmed = {target for r in rows if r.backend == "fills"
-                    and r.answer.get("value") is True
-                    and (target := r.question.get("params", {}).get("target")) in targets_by_id}
-        filled = tuple(targets_by_id[t] for t in sorted(confirmed))
         ranked = _role_rank(rows, role, current_rubric)
-        if not filled or ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
+        if ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
             continue
-        out.append((Sentence(clauses=(), text=draft.text, gloss=draft.gloss,
-                             voice="learner_voice", provenance=provenance), filled))
+        out.append((sentence, filled))
     return out
