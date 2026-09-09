@@ -10,14 +10,20 @@ import pytest
 
 from thai_syllabus.entities import (
     Category,
+    Clauses,
     Grapheme,
     MinimalPair,
     Pronunciation,
+    REPEAT_MARK,
     SoundConfusion,
     Syllable,
     Target,
     Sentence,
     Word,
+    clauses_from_json,
+    clauses_to_json,
+    element_word,
+    render,
 )
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
@@ -182,3 +188,73 @@ def test_sentence_identity_is_the_text_sha_regardless_of_provenance():
         source="llm", origin="other-run", licence="cc", acquired=date(2026, 9, 5)))
     assert a.text_sha == b.text_sha == hashlib.sha256(a.text.encode()).hexdigest()
     assert sentence_note_id(a) == a.text_sha
+
+
+def test_sentence_clauses_defaults_to_empty():
+    s = Sentence(text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
+                 provenance=PROV)  # "I eat rice"
+    assert s.clauses == ()
+
+
+def test_sentence_words_dedups_in_order_of_first_occurrence():
+    dog, big, run = WordId("dog"), WordId("big"), WordId("run")
+    clauses: Clauses = ((dog, big), (run, (dog, REPEAT_MARK)))
+    s = Sentence(clauses=clauses, text="", gloss="", voice="learner_voice", provenance=PROV)
+    assert s.words == (dog, big, run)
+
+
+def test_sentence_elements_flattens_clauses_in_clause_order():
+    dog, big, run = WordId("dog"), WordId("big"), WordId("run")
+    clauses: Clauses = ((dog, big), (run, (dog, REPEAT_MARK)))
+    s = Sentence(clauses=clauses, text="", gloss="", voice="learner_voice", provenance=PROV)
+    assert s.elements == (dog, big, run, (dog, REPEAT_MARK))
+
+
+def test_element_word_returns_the_word_id_for_a_plain_element():
+    dog = WordId("dog")
+    assert element_word(dog) == dog
+
+
+def test_element_word_returns_the_word_id_for_a_repeated_element():
+    dog = WordId("dog")
+    assert element_word((dog, REPEAT_MARK)) == dog
+
+
+def test_render_joins_clause_forms_and_appends_the_repeat_mark():
+    dog, big, run = WordId("dog"), WordId("big"), WordId("run")
+    thai = {dog: "หมา", big: "ใหญ่", run: "วิ่ง"}  # dog, big, run
+    clauses: Clauses = ((dog, big), (run, (dog, REPEAT_MARK)))
+    text = render(clauses, lambda w: thai[w])
+    assert text == "หมาใหญ่ วิ่งหมาๆ"  # "big dog" "run dog-dog" (repeated)
+
+
+def test_clauses_from_json_round_trips_clauses_to_json():
+    data = [["dog", "big"], ["run", ["fast", "ๆ"]]]  # "big dog runs fast fast"
+    clauses = clauses_from_json(data)
+    assert clauses == ((WordId("dog"), WordId("big")),
+                        (WordId("run"), (WordId("fast"), REPEAT_MARK)))
+    assert clauses_to_json(clauses) == data
+
+
+def test_clauses_from_json_refuses_a_non_list_top_level():
+    with pytest.raises(ValueError) as exc:
+        clauses_from_json("not a list")
+    assert repr("not a list") in str(exc.value)
+
+
+def test_clauses_from_json_refuses_an_empty_clause():
+    with pytest.raises(ValueError) as exc:
+        clauses_from_json([[]])
+    assert repr([]) in str(exc.value)
+
+
+def test_clauses_from_json_refuses_an_element_that_is_neither_a_word_id_nor_a_repeat_pair():
+    with pytest.raises(ValueError) as exc:
+        clauses_from_json([[3]])
+    assert repr(3) in str(exc.value)
+
+
+def test_clauses_from_json_refuses_a_repeat_pair_whose_second_item_is_not_the_repeat_mark():
+    with pytest.raises(ValueError) as exc:
+        clauses_from_json([[["run", "not-the-mark"]]])
+    assert repr(["run", "not-the-mark"]) in str(exc.value)

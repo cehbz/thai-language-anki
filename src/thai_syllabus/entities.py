@@ -8,8 +8,8 @@ classmethod; rulebook.py's `grapheme/keyword-contains-symbol` and
 diff functions.
 """
 import hashlib
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Any, Callable, Literal
 
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .media import Provenance
@@ -219,11 +219,68 @@ def text_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+REPEAT_MARK = "ๆ"  # U+0E46, the Thai repetition mark
+Element = WordId | tuple[WordId, Literal["ๆ"]]
+Clauses = tuple[tuple[Element, ...], ...]
+
+
+def element_word(e: Element) -> WordId:
+    """The word id an Element names, plain or repeated."""
+    return e if isinstance(e, str) else e[0]
+
+
+def render(clauses: Clauses, thai_of: Callable[[WordId], str]) -> str:
+    """The sentence text a set of clauses renders to: each clause is its
+    elements' Thai forms concatenated, a repeated word's form followed by
+    REPEAT_MARK; clauses join with one space. Does not validate ids.
+    """
+    def element_text(e: Element) -> str:
+        form = thai_of(element_word(e))
+        return form + REPEAT_MARK if isinstance(e, tuple) else form
+
+    return " ".join("".join(element_text(e) for e in clause) for clause in clauses)
+
+
+def _element_from_json(el: Any) -> Element:
+    if isinstance(el, str) and el:
+        return WordId(el)
+    if (isinstance(el, list) and len(el) == 2 and isinstance(el[0], str)
+            and el[0] and el[1] == REPEAT_MARK):
+        return (WordId(el[0]), REPEAT_MARK)
+    raise ValueError(
+        f"expected a word id or a [id, {REPEAT_MARK!r}] repeat pair, got {el!r}")
+
+
+def clauses_from_json(data: Any) -> Clauses:
+    """Parse the JSON clause shape `[["dog", "big"], ["run", ["fast", "ๆ"]]]`
+    into Clauses. Raises ValueError naming the offending element.
+    """
+    if not isinstance(data, list):
+        raise ValueError(f"expected a list of clauses, got {data!r}")
+    clauses = []
+    for clause in data:
+        if not isinstance(clause, list) or not clause:
+            raise ValueError(
+                f"expected a non-empty list of elements for a clause, got {clause!r}")
+        clauses.append(tuple(_element_from_json(el) for el in clause))
+    return tuple(clauses)
+
+
+def _element_to_json(e: Element) -> str | list[str]:
+    return list(e) if isinstance(e, tuple) else e
+
+
+def clauses_to_json(clauses: Clauses) -> list[list[str | list[str]]]:
+    """The JSON shape clauses_from_json parses."""
+    return [[_element_to_json(e) for e in clause] for clause in clauses]
+
+
 @dataclass(frozen=True)
 class Sentence:
     """One sentence artifact. Identity: text_sha, the sha256 of `text`.
     Which Targets it fills is derived (Syllabus.fills), never stored.
     """
+    clauses: Clauses = field(default=(), kw_only=True)
     text: str
     gloss: str
     voice: Voice
@@ -232,3 +289,18 @@ class Sentence:
     @property
     def text_sha(self) -> str:
         return text_sha(self.text)
+
+    @property
+    def words(self) -> tuple[WordId, ...]:
+        """Every word id in clause order, first occurrence only."""
+        seen: list[WordId] = []
+        for e in self.elements:
+            w = element_word(e)
+            if w not in seen:
+                seen.append(w)
+        return tuple(seen)
+
+    @property
+    def elements(self) -> tuple[Element, ...]:
+        """The clauses flattened, clause order."""
+        return tuple(e for clause in self.clauses for e in clause)
