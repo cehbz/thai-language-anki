@@ -182,8 +182,9 @@ def test_category_is_frozen():
 # --- Sentence -----------------------------------------------------------------
 
 def test_sentence_identity_is_the_text_sha_regardless_of_provenance():
-    a = Sentence(clauses=(), text="ผมกินข้าว", gloss="I eat rice", voice="learner_voice",
-                provenance=PROV)  # "I eat rice"
+    text = "ผมกินข้าว"  # I eat rice
+    a = Sentence(clauses=((text,),), text=text, gloss="I eat rice", voice="learner_voice",
+                provenance=PROV)
     b = dataclasses.replace(a, provenance=Provenance(
         source="llm", origin="other-run", licence="cc", acquired=date(2026, 9, 5)))
     assert a.text_sha == b.text_sha == hashlib.sha256(a.text.encode()).hexdigest()

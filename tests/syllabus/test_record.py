@@ -296,6 +296,18 @@ def test_parse_drafts_skips_a_malformed_clause_and_warns(caplog):
     assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
 
 
+def test_parse_drafts_skips_an_item_whose_clauses_are_an_empty_list_and_warns(caplog):
+    """"clauses": [] carries the key -- distinct from a missing key --
+    but names no clause at all; entities.clauses_from_json refuses it, and
+    the item is skipped with the same malformed warning."""
+    text = json.dumps({"sentences": [
+        {"clauses": [], "text": "กินข้าว", "gloss": "eat rice"}]})   # กินข้าว: eat rice
+    with caplog.at_level(logging.WARNING):
+        drafts = parse_drafts(text)
+    assert drafts == []
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
 def test_drafts_in_keeps_distinct_texts_distinct():
     text = json.dumps({"sentences": [
         {"clauses": [["eat"], ["rice"]], "text": "กินข้าว", "gloss": "eat rice"},
@@ -408,9 +420,9 @@ def test_draft_sentence_carries_the_drafts_own_clauses_learner_voice_and_provena
 
 # --- vocabulary_line / parse_prompt / parses_in (spec 3 r16 section 5) -----
 
-def test_vocabulary_line_matches_the_drafting_prompt_s_format():
+def test_vocabulary_line_carries_no_leading_marker():
     w = word("eat", "กิน", "eat")   # กิน: eat
-    assert vocabulary_line(w) == "- eat  กิน  (eat)"
+    assert vocabulary_line(w) == "eat  กิน  (eat)"
 
 
 def test_parse_prompt_carries_every_vocabulary_id_and_every_text():
@@ -447,6 +459,17 @@ def test_parses_in_skips_an_entry_lacking_text_or_clauses():
 def test_parses_in_skips_a_malformed_clause_and_warns(caplog):
     text = json.dumps({"parses": [
         {"text": "กินข้าว", "clauses": [["eat"], []]}]})   # กินข้าว: eat rice, empty clause: invalid
+    with caplog.at_level(logging.WARNING):
+        parses = parses_in(text)
+    assert parses == {}
+    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
+def test_parses_in_skips_an_entry_whose_clauses_are_an_empty_list_and_warns(caplog):
+    """"clauses": [] carries the key -- distinct from a missing key --
+    but names no clause at all; entities.clauses_from_json refuses it, and
+    the entry is skipped with the same malformed warning."""
+    text = json.dumps({"parses": [{"text": "กินข้าว", "clauses": []}]})   # กินข้าว: eat rice
     with caplog.at_level(logging.WARNING):
         parses = parses_in(text)
     assert parses == {}

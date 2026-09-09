@@ -499,8 +499,9 @@ def test_load_syllabus_with_a_given_sentences_sequence_does_not_read_the_db(tmp_
     from datetime import date
     root = _write_curated_dir(tmp_path / "deck")
     db = SyllabusDb(root / "syllabus.db")
-    # A row that would refuse the deck through db.all_sentences() -- proves
-    # `sentences=()` bypasses the table read entirely (Task 7's parse step).
+    # A row naming an unregistered word: reading it through
+    # db.all_sentences() refuses the deck. `sentences=()` bypasses the
+    # table read entirely (Task 7's parse step).
     db.add_sentence(text_sha="s1", text="แมว", clauses=(("cat",),), gloss="cat",  # cat
                     voice="learner_voice", source="llm", origin="draft", licence="n/a",
                     acquired=date(2026, 1, 1))

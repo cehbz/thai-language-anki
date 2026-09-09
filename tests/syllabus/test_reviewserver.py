@@ -38,7 +38,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import Derivations
 
-from .builders import PROV, syl, pron, target, word
+from .builders import PROV, sentence, syl, pron, target, thai_of, word
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -246,10 +246,8 @@ def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
 
 def test_gloss_for_a_sentence_subject_is_the_sentences_own_gloss(syllabus):
-    s = Sentence(clauses=(), text="ข้าวอร่อย", gloss="the rice is delicious",
-                voice="learner_voice",
-                provenance=Provenance(source="test", origin="fixture", licence="cc0",
-                                      acquired=date(2026, 1, 1)))
+    scene_word = word("scene", "ข้าวอร่อย", "the rice is delicious")  # the rice is delicious
+    s = sentence(((scene_word.id,),), thai_of(scene_word), gloss="the rice is delicious")
     with_sentence = dataclasses.replace(syllabus, sentences=(s,))
     assert rs._gloss_for(with_sentence, s.text_sha, "sentence") == "the rice is delicious"
 

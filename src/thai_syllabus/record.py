@@ -268,7 +268,7 @@ def parse_drafts(text: str) -> list[SentenceDraft]:
     drafted = (data.get("sentences") if isinstance(data, Mapping) else None) or []
     out: list[SentenceDraft] = []
     for d in drafted:
-        if not isinstance(d, Mapping) or not d.get("text") or not d.get("clauses"):
+        if not isinstance(d, Mapping) or not d.get("text") or "clauses" not in d:
             continue
         one_text = str(d["text"]).strip()
         try:
@@ -348,11 +348,13 @@ def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
 # --- sentence parsing (spec 2 r10 section 4 / spec 3 r16 section 5) --------
 
 def vocabulary_line(word: Word) -> str:
-    """One vocabulary entry as both the sentence-drafting prompt
-    (attempts._sentence_prompt) and `parse_prompt` list it: id, Thai
-    form, English meaning.
+    """One vocabulary entry's own text -- id, Thai form, English meaning
+    -- with no leading marker: a caller prefixes its own list marker
+    (attempts._sentence_prompt's `"- " + vocabulary_line(w)` for its
+    vocabulary section, `"- target {id}: " + vocabulary_line(w)` for a
+    target/introducible line; `parse_prompt` likewise).
     """
-    return f"- {word.id}  {word.thai}  ({word.meaning})"
+    return f"{word.id}  {word.thai}  ({word.meaning})"
 
 
 def parse_prompt(texts: Sequence[str], vocabulary: Sequence[Word]) -> str:
@@ -361,7 +363,7 @@ def parse_prompt(texts: Sequence[str], vocabulary: Sequence[Word]) -> str:
     rule, and each of `texts` numbered. Asks
     {"parses": [{"text": "...", "clauses": [["id", ...], ...]}]}.
     """
-    vocab_lines = "\n".join(vocabulary_line(w) for w in vocabulary)
+    vocab_lines = "\n".join("- " + vocabulary_line(w) for w in vocabulary)
     numbered = "\n".join(f"{i}. {t}" for i, t in enumerate(texts, start=1))
     return (
         "Parse each numbered Thai sentence below into clauses of vocabulary ids, "
@@ -391,7 +393,7 @@ def parses_in(text: str) -> dict[str, Clauses]:
     parsed = (data.get("parses") if isinstance(data, Mapping) else None) or []
     out: dict[str, Clauses] = {}
     for p in parsed:
-        if not isinstance(p, Mapping) or not p.get("text") or not p.get("clauses"):
+        if not isinstance(p, Mapping) or not p.get("text") or "clauses" not in p:
             continue
         one_text = str(p["text"]).strip()
         try:

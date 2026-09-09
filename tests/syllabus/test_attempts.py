@@ -1531,9 +1531,9 @@ def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
 def test_sentence_prompt_lists_a_targets_line_per_handed_target():
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets))
-    assert "- target eat/receptive: กิน (eat)" in prompt
-    assert "- target rice/receptive: ข้าว (rice)" in prompt
-    assert "- target tasty/receptive: อร่อย (tasty)" in prompt
+    assert "- target eat/receptive: eat  กิน  (eat)" in prompt
+    assert "- target rice/receptive: rice  ข้าว  (rice)" in prompt
+    assert "- target tasty/receptive: tasty  อร่อย  (tasty)" in prompt
 
 
 def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
@@ -1579,7 +1579,9 @@ def test_sentence_prompt_omits_an_unmet_glue_word_from_vocabulary_and_lists_it_i
     prompt = _sentence_prompt(syllabus, [glue1, glue2])
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nIntroducible")[0]
     assert "แล้ว" not in vocabulary   # แล้ว: already -- unmet, left out of vocabulary
-    assert "- target glue1/receptive: แล้ว (already)" in prompt
+    introducible = prompt.split("Introducible (at most one per sentence):\n")[1]
+    assert "- target glue1/receptive: glue1  แล้ว  (already)" in prompt
+    assert "glue1" in introducible.splitlines()[0]   # the word id appears on the introducible line
     assert "Introducible (at most one per sentence):" in prompt
 
 
@@ -1592,7 +1594,7 @@ def test_sentence_prompt_shows_a_target_an_adopted_sentence_fills_as_a_targets_l
     prompt = _sentence_prompt(syllabus, [glue2])
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert "ก็" in vocabulary   # ก็: also -- met by the adopted sentence
-    assert "- target glue2/receptive: ก็ (also)" in prompt
+    assert "- target glue2/receptive: glue2  ก็  (also)" in prompt
     assert "Introducible (at most one per sentence):" not in prompt
 
 
@@ -1624,7 +1626,7 @@ def test_sentence_prompt_shows_a_picture_introduced_target_though_its_word_is_al
         sentences=(met_sentence,))
     productive = next(t for t in syllabus.targets if t.id == "help/productive")
     prompt = _sentence_prompt(syllabus, [productive])
-    assert "- target help/productive: ช่วย (help)" in prompt
+    assert "- target help/productive: help  ช่วย  (help)" in prompt
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():

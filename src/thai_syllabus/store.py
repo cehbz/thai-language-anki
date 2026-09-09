@@ -302,11 +302,13 @@ class SyllabusDb:
             self._con.execute("delete from sentences where text_sha=?", (text_sha,))
 
     def sentences_without_clauses(self) -> list[tuple[str, str]]:
-        """(text_sha, text) for every sentences row with no clauses yet --
-        the migration's worklist for the parse ask.
+        """(text_sha, text) for every sentences row with no clauses yet,
+        ordered by text_sha -- the migration's worklist for the parse ask,
+        in a deterministic order regardless of insertion order.
         """
         rows = self._con.execute(
-            "select text_sha, text from sentences where clauses is null").fetchall()
+            "select text_sha, text from sentences where clauses is null "
+            "order by text_sha").fetchall()
         return [(text_sha, text) for text_sha, text in rows]
 
     # --- speakers -------------------------------------------------------

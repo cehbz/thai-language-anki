@@ -347,7 +347,7 @@ def test_study_rows_returns_every_row_ordered_by_ts(db):
 # --- sentences / media provenance --------------------------------------
 
 def test_add_sentence_and_read_back(db):
-    db.add_sentence(text_sha="abc123", text="text", clauses=(), gloss="a gloss",
+    db.add_sentence(text_sha="abc123", text="text", clauses=(("text",),), gloss="a gloss",
                     voice="learner_voice", source="llm", origin="draft",
                     licence="n/a", acquired=date(2026, 1, 1))
     con = sqlite3.connect(db.path)
@@ -356,10 +356,10 @@ def test_add_sentence_and_read_back(db):
 
 
 def test_add_sentence_is_idempotent_and_returns_whether_inserted(db):
-    assert db.add_sentence(text_sha="dup", text="text", clauses=(), gloss="a gloss",
+    assert db.add_sentence(text_sha="dup", text="text", clauses=(("text",),), gloss="a gloss",
                            voice="learner_voice", source="llm", origin="draft",
                            licence="n/a", acquired=date(2026, 1, 1)) is True
-    assert db.add_sentence(text_sha="dup", text="text", clauses=(), gloss="a gloss",
+    assert db.add_sentence(text_sha="dup", text="text", clauses=(("text",),), gloss="a gloss",
                            voice="learner_voice", source="llm", origin="draft",
                            licence="n/a", acquired=date(2026, 1, 1)) is False
     con = sqlite3.connect(db.path)
@@ -367,9 +367,9 @@ def test_add_sentence_is_idempotent_and_returns_whether_inserted(db):
 
 
 def test_sentences_table_round_trips_gloss(db):
-    db.add_sentence(text_sha="x" * 64, text="ผมกินข้าว", clauses=(), gloss="I eat rice",  # I eat rice
-                    voice="learner_voice", source="llm", origin="o", licence="cc",
-                    acquired=date(2026, 9, 4))
+    db.add_sentence(text_sha="x" * 64, text="ผมกินข้าว", clauses=(("ผมกินข้าว",),),  # I eat rice
+                    gloss="I eat rice", voice="learner_voice", source="llm", origin="o",
+                    licence="cc", acquired=date(2026, 9, 4))
     assert db.all_sentences()[0].gloss == "I eat rice"
 
 
@@ -377,12 +377,12 @@ def test_all_sentences_reads_back_as_entities(db):
     from thai_syllabus.entities import Sentence
     from thai_syllabus.media import Provenance
 
-    db.add_sentence(text_sha="s1", text="ผมกินข้าว", clauses=(), gloss="I eat rice",  # I eat rice
-                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
-                    acquired=date(2026, 1, 1))
-    db.add_sentence(text_sha="s2", text="เขากินข้าว", clauses=(), gloss="(s)he eats rice",  # (s)he eats rice
-                    voice="other_voice", source="forvo", origin="https://forvo.com/x",
-                    licence="cc-by", acquired=date(2026, 2, 2))
+    db.add_sentence(text_sha="s1", text="ผมกินข้าว", clauses=(("ผมกินข้าว",),),  # I eat rice
+                    gloss="I eat rice", voice="learner_voice", source="llm", origin="draft",
+                    licence="n/a", acquired=date(2026, 1, 1))
+    db.add_sentence(text_sha="s2", text="เขากินข้าว", clauses=(("เขากินข้าว",),),  # (s)he eats rice
+                    gloss="(s)he eats rice", voice="other_voice", source="forvo",
+                    origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 2, 2))
     sentences = db.all_sentences()
     assert len(sentences) == 2
     assert all(isinstance(s, Sentence) for s in sentences)
@@ -502,6 +502,13 @@ def test_sentences_without_clauses_lists_only_the_null_rows(db):
                     voice="learner_voice", source="llm", origin="draft", licence="n/a",
                     acquired=date(2026, 1, 1))
     assert db.sentences_without_clauses() == [("legacy-1", "ผมกินข้าว")]  # I eat rice
+
+
+def test_sentences_without_clauses_is_ordered_by_text_sha(db):
+    _insert_legacy_row(db, text_sha="zzz", text="ข้าว")  # rice, inserted first, sorts last
+    _insert_legacy_row(db, text_sha="aaa", text="ผมกินข้าว")  # I eat rice, inserted second, sorts first
+    assert db.sentences_without_clauses() == [("aaa", "ผมกินข้าว"),  # I eat rice
+                                              ("zzz", "ข้าว")]  # rice
 
 
 # --- speakers -----------------------------------------------------------

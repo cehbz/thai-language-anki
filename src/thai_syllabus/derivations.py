@@ -1022,8 +1022,8 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
         except ValueError as e:
             _log.warning("adoptable_drafts: draft refused: %s", e)
             continue
-        filled = tuple(t for t in syllabus.targets
-                       if t.id in unfilled and t in syllabus.fill_set(sentence))
+        fills = syllabus.fill_set(sentence)
+        filled = tuple(t for t in syllabus.targets if t.id in unfilled and t in fills)
         if not filled:
             continue
         rows = cache.assessments_of(draft.text_sha)

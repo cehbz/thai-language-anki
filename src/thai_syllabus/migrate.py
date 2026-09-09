@@ -7,7 +7,10 @@ idempotent (content-addressed, insert-or-ignore provenance).
 
 Items 1-4 and 6 of spec 2 section 4:
   1. word list -> curated/words.yaml + curated/targets.yaml, refusing any
-     row with no category
+     row with no category. Written only when curated/words.yaml does not
+     exist yet: a live deck's hand-edited curated files (glue words,
+     sentence-introduced targets, merges) are never overwritten by a
+     re-run, counted in MigrationReport.already_present["curated"]
   2. judged images -> media CAS + provenance (ingest_picture normalizes
      at ingest, spec 4 section 3) + judge cache rows under
      LEGACY_PICTURE_RUBRIC, which never ranks under the current rubric;
@@ -720,10 +723,15 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     word_rows, targets, word_id_by_key, ambiguous_keys = \
         _migrate_word_list(old_data, old_deck, db, report)
     report.ambiguous = sorted(ambiguous_keys)
-    save_curated(curated_dir, CuratedBundle(
-        words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
-        confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
-        rulebook=RulebookConfig(), categories=build_categories(word_rows)))
+    curated_words_path = curated_dir / "words.yaml"
+    if curated_words_path.exists():
+        _log.info("curated present at %s; kept as is", curated_words_path)
+        report.bump(report.already_present, "curated")
+    else:
+        save_curated(curated_dir, CuratedBundle(
+            words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
+            confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
+            rulebook=RulebookConfig(), categories=build_categories(word_rows)))
     _migrate_frequency_corpus(frequency_corpus_bytes, curated_dir, report)
 
     note_subjects = _note_subjects(old_deck, word_id_by_key, ambiguous_keys, report)

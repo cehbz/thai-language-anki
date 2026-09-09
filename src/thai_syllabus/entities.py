@@ -253,10 +253,12 @@ def _element_from_json(el: Any) -> Element:
 
 def clauses_from_json(data: Any) -> Clauses:
     """Parse the JSON clause shape `[["dog", "big"], ["run", ["fast", "ๆ"]]]`
-    into Clauses. Raises ValueError naming the offending element.
+    into Clauses. Raises ValueError naming the offending element, or when
+    `data` itself is not a non-empty list -- a sentence names at least one
+    clause.
     """
-    if not isinstance(data, list):
-        raise ValueError(f"expected a list of clauses, got {data!r}")
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"expected a non-empty list of clauses, got {data!r}")
     clauses = []
     for clause in data:
         if not isinstance(clause, list) or not clause:

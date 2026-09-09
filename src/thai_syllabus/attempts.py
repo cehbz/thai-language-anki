@@ -811,14 +811,14 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
     introducible_lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        line = f"- target {target.id}: {word.thai} ({word.meaning})"
+        line = f"- target {target.id}: {record.vocabulary_line(word)}"
         if target.introduction == "sentence" and target.id not in met_targets:
             introducible_lines.append(line)
         else:
             target_lines.append(line)
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
-               + "\n".join(record.vocabulary_line(w) for w in vocabulary) + "\n")
+               + "\n".join("- " + record.vocabulary_line(w) for w in vocabulary) + "\n")
     if target_lines:
         sections += "Targets:\n" + "\n".join(target_lines) + "\n"
     if introducible_lines:
@@ -881,7 +881,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         except ValueError as e:
             _log.warning("draft refused: %s", e)
             continue
-        filled = [t for t in open_targets if t in syllabus.fill_set(sentence)]
+        fills = syllabus.fill_set(sentence)
+        filled = [t for t in open_targets if t in fills]
         if not filled:
             continue
         last_word = syllabus.word(syllabus.last_used_word(sentence)).thai

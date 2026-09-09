@@ -22,7 +22,7 @@ from thai_syllabus.rulebook import PICTURE_FIT_RUBRIC
 from thai_syllabus.store import IMAGE_MAX_LONG_EDGE, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import word
+from .builders import target, word
 
 PW1_GUID = genanki.guid_for("picture_word", "pw-1")
 
@@ -665,3 +665,32 @@ def test_migrate_refuses_a_deck_with_rows_lacking_clauses_and_no_providers_yaml(
     message = str(excinfo.value)
     assert str(new_root) in message
     assert "providers.yaml" in message
+
+
+def test_migrate_rerun_never_overwrites_hand_edited_curated_files(old_deck, old_data, tmp_path):
+    # A live deck's curated/ carries hand edits migrate() itself never
+    # produces: a glue word introduced only by a sentence. A re-run must
+    # keep it, never regenerate curated/words.yaml and targets.yaml from
+    # the old word list.
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)  # first run: writes curated/words.yaml
+
+    curated_dir = new_root / "curated"
+    bundle = curated.load_curated(curated_dir)
+    category_by_word = {word_id: cat.name for cat in bundle.categories
+                        for word_id in cat.members}
+    glue_word = word("glue-word", "แล้ว", "then")  # แล้ว = then, a glue word
+    glue_target = target("glue-word/receptive", "glue-word", skill="receptive",
+                         introduction="sentence")
+    curated.save_words(curated_dir / "words.yaml",
+                       [(w, category_by_word.get(w.id)) for w in bundle.words]
+                       + [(glue_word, None)])
+    curated.save_targets(curated_dir / "targets.yaml",
+                         list(bundle.targets) + [glue_target])
+
+    report = migrate(old_deck, old_data, new_root)  # second run: must not overwrite
+
+    reloaded = curated.load_curated(curated_dir)
+    assert "glue-word" in {w.id for w in reloaded.words}
+    assert any(t.id == "glue-word/receptive" for t in reloaded.targets)
+    assert report.already_present["curated"] == 1
