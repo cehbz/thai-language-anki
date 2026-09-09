@@ -30,6 +30,25 @@ still run against them.
   under s2's no-drafts rule and re-asked every run; an honest "no
   sentence fits" answer needs a recognized shape that caches.
 
+## Sentences: after the parsimonious-sentences arc
+
+- Spec 1 §3: a productive target is filled only by a sentence whose last
+  used word is the target's word (a productive target filled by a
+  sentence clozed on another word yields no card).
+- Run-loop termination as a CLI feature (`run --cycles N`,
+  `--spend-cap`): resolve, attempt, submit, wait, repeat until a run
+  submits nothing or the cap is reached; the scratchpad runner is the
+  interim.
+- `ask_many`: warn when a key repeats within one call.
+- Wire-failure messages interpolate the request URL, which carries the
+  Google TTS and Forvo API keys as query parameters (tts.py, provider.py);
+  a timeout can put a key in a log. Send keys as headers or redact them
+  in the message.
+- Fill-set memo keyed by text_sha ignores voice; `met_by` scans every
+  adopted sentence per candidate (2 s at 400 sentences).
+- Glue-word pronunciations are disputed placeholders; they join the
+  adjudication pass with the 221 migrated words.
+
 ## Deferred from the assess-first and judge-key arcs
 
 - Escalation anchor: `_anchor_ts` takes current-best rubric-agnostically;
@@ -50,8 +69,8 @@ still run against them.
 
 ## Cutover
 
-- Runs 1-5 done (work/run-*.log); the 692-question assess-first batch
-  is outstanding; the next run resolves it. Read the RunReport line:
+- Runs 1-7 done (work/run-*.log) and overnight cycles (work/cycle.log);
+  each run resolves the previous batch. Read the RunReport line:
   available == attempted + exhausted + pending + unserved + budgeted +
   deferred. Every run that collects a question leaves one batch
   outstanding; a key-shape change between submit and resolve loses that
