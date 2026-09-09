@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 9, proposed 2026-09-08 against principles r2 and architecture
+Revision 10, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -33,6 +33,9 @@ Revision log:
 - r9 2026-09-08: the frequency corpus lives at curated/frequency_th.txt;
   a deck without one is refused. Evidence: the live deck had none,
   loaded an empty map silently, and was never frequency-ordered.
+- r10 2026-09-09: sentences rows carry `clauses`; a row that fails the
+  Sentence invariant refuses the load; migrate parses rows without
+  clauses through the parse ask. Evidence: spec 1 r8.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -80,10 +83,15 @@ write is one transaction (the append-is-checkpoint rule).
 ## 2. syllabus.db tables
 
 ```
-sentences(text_sha PK, text, gloss, voice, source, origin, licence,
-          acquired)
+sentences(text_sha PK, text, clauses, gloss, voice, source, origin,
+          licence, acquired)
   -- Sentence artifacts; identity = text_sha, the one sentence id
   -- everywhere (rules, compile, learner rows); fills derived, never here.
+  -- clauses: JSON, a list of clauses, each a list of elements (a word id,
+  -- or [word id, "ๆ"] for a repeated word). The loader constructs the
+  -- Sentence and refuses the deck, naming the row, when an id is
+  -- unregistered or the rendering differs from text: a curated change
+  -- that retires a word id is a migration, never a silent drift.
 media(sha PK, kind, ext, source, origin, licence, acquired, speaker_id)
   -- provenance for media/objects/*; speaker_id null for pictures.
 speakers(id PK, kind, sex, age_band, region)
@@ -140,6 +148,11 @@ All implemented over syllabus.db + curated files; faked in domain tests.
 ## 4. Migration (one script, run once, idempotent)
 
 Carry-over per the handoff's table; everything else regenerates.
+
+Into a live deck: `migrate` finds sentences rows whose clauses are
+missing, asks the parse (spec 3 §5) for their texts, writes the verified
+clauses, and deletes and reports the rest (their drafts stay in the
+record).
 
 1. **Word list** (data/word_list_th.yaml, 766 rows with ids) →
    curated/words.yaml (id, thai, pron from note ipa where present,

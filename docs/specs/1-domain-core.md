@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 7, proposed 2026-09-09 against principles r2 and architecture
+Revision 8, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -34,6 +34,15 @@ Revision log:
   decomposition into registered words (§3 clause 1). Evidence: run 7,
   the prefix rule made "very" a mention of "come" and inflated the unmet
   glue count of every draft.
+- r8 2026-09-09: a Sentence is clauses of registered Words; its text is
+  the rendering; fills is membership; the tokenizer leaves the domain
+  (§1, §3, §6); r5's mark rule and r7's decomposition rule are
+  superseded (a curated `components` field on Word is where
+  decomposition returns if wanted; TODO). Evidence: measurement
+  2026-09-09 over the 70 adopted sentences, 152 of 453 fills land on a
+  Thai form shared by several Words (ผม pŏm "I"/"hair"; คับ káp, the
+  spoken particle, filling "tight"; ที่ thîi "at" filling two "serving"
+  senses); form-to-sense is a disambiguation no rule over text can make.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -51,7 +60,10 @@ rule).
 ```
 Word                                # language model
   id: WordId                        # identity: the sense, stable slug
-  thai: str                         # written form
+  thai: str                         # written form; not unique across
+                                    # Words: a form shared by several
+                                    # senses is a homograph, and a
+                                    # sentence names the sense
   pron: Pronunciation               # spoken form
   meaning: str                      # today rendered as the English gloss
   classifier: WordId | None         # nouns: unmarked colloquial classifier
@@ -105,14 +117,33 @@ MinimalPair
   # the confusion's dimension and values; loaded data re-checked by rule
 
 Sentence                            # artifact
-  text: str                         # identity: sha of the text; provenance
-                                    # is a fact of the row, not identity
+  clauses: tuple[tuple[Element, ...], ...]
+                                    # Element = WordId | (WordId, "ๆ"): the
+                                    # sentence as its author parsed it,
+                                    # clauses of registered Words in order,
+                                    # a word carrying the repetition mark
+                                    # where it is repeated
+  text: str                         # the rendering: a clause is its words'
+                                    # thai forms concatenated (ๆ appended
+                                    # to a repeated word), clauses join
+                                    # with one space; identity: sha of the
+                                    # text; provenance is a fact of the
+                                    # row, not identity; invariant
+                                    # (constructed, re-checked on load):
+                                    # every id is registered and
+                                    # text == render(clauses)
   gloss: str                        # L1 gloss, drafted and judged with
                                     # the text (F3: a gloss on any back)
   voice: Literal[learner_voice, other_voice]
   provenance: Provenance
   # which Targets it fills is DERIVED (Syllabus.fills), never stored
 ```
+
+The words a sentence uses are a fact of the artifact, authored with it,
+never recovered from its text. A sentence carries no character outside
+its words' forms, ๆ after a repeated word, and the clause spaces: a
+number is a number word, no punctuation occurs. Spelling is standard
+(ครับ "kráp"; the spoken คับ "káp" is pronunciation, not text).
 
 Media artifacts (Picture, Recording) are content-addressed values:
 
@@ -165,20 +196,15 @@ invalidated sentences). Consumers (compile, the screen) read positions;
 none re-derives placement.
 
 **fills(sentence, target) -> bool** — the single definition:
-1. target.word is a token of sentence.text, or a component of a token
-   that decomposes wholly into registered words (tokenizer port;
-   token_is_known's parts). A registered word that is only a prefix or
-   suffix of a token is not mentioned: มาก "mâak" (very) mentions itself
-   alone, โรงพยาบาล "roong phayaabaan" (hospital) mentions โรง "roong"
-   (building). thai_cloze blanks on the same rule.
+1. target.word is in sentence.clauses (a repeated word counts once),
 2. sentence.voice satisfies target.skill (other_voice fills receptive
    only),
 3. at the sentence's entry position (after its last word's target):
-   every content token is a registered word (an orthographic mark, the
-   repetition mark ๆ, the abbreviation mark ฯ, punctuation or a digit,
-   is none), every word it uses has a Target, and at most one filled
-   Target is sentence-introduced and unmet, no adopted sentence placed
-   at or before this one filling it.
+   every word it uses has a Target, and at most one filled Target is
+   sentence-introduced and unmet, no adopted sentence placed at or
+   before this one filling it. That every element is a registered word
+   holds by construction (§1).
+last_used_word and order() read the clauses. No tokenizer port.
 Used by generation as acceptance and by report() as coverage. Clause 3
 is a rule over the fill set, applied once per sentence, by acceptance
 (the attempt), by adoption (the fold) and by the gate.
@@ -267,6 +293,6 @@ rule; the traceability measure reads this table.
 Spec-level suite mirrors tests/spec today: doctrine tests written against
 Syllabus.report()/order()/fills() with fake ports and builder-made
 aggregates; entity invariants property-tested (pair construction,
-grapheme keyword containment); fills() table-tested against the measured
-tokenizer gotchas (compound membership, boundary cases). The existing
-tests/spec suite is the behavioral baseline to port, not to import.
+grapheme keyword containment); fills() table-tested over clauses
+(shared forms, the repetition mark, novelty). The existing tests/spec
+suite is the behavioral baseline to port, not to import.

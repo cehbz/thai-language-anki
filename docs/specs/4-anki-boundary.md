@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 5, proposed 2026-09-08 against principles r2 and architecture
+Revision 6, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -24,6 +24,8 @@ Revision log:
   note per (target, sentence), six identical cards for a sentence
   filling six; the sibling-interference finding of the 2026-09-08
   research.
+- r6 2026-09-09: ThaiCloze is the rendering with every element equal to
+  the last used word blanked; no tokenizer. Evidence: spec 1 r8.
 
 Scope: Syllabus.compile() — the translation of Syllabus state into Anki's
 domain — and the return path: revlog, flags, and ReviewNote harvests.
@@ -87,9 +89,11 @@ sentence::SHA.
 - Cloze (productive last used word only): front cloze on that word +
   optional scene picture; back target word, NATIVE audio (F7), gloss.
 - Listening (receptive): front audio; back full text, target, gloss.
-ThaiCloze is built by token-boundary replacement via the tokenizer port —
-never str.replace (the ยา/โรงพยาบาล corruption class: blanking "medicine"
-inside "hospital").
+ThaiCloze is the sentence's rendering with every element whose word is
+the last used word blanked (a repeated word keeps its ๆ outside the
+blank), never str.replace over the text (the ยา/โรงพยาบาล corruption
+class: blanking "medicine" inside "hospital" cannot arise from
+elements).
 
 ## 2. Identity, tags, order
 
@@ -160,7 +164,7 @@ retains only final fit-to-viewport.
 - No deck deletion/orphan cleanup in v1 (delete-and-reimport is the
   current practice; AnkiConnect-based cleanup is a later addition).
 - No native Anki cloze type: the two-template design (cloze + listening)
-  stays; corruption is fixed by tokenized replacement instead.
+  stays; corruption is impossible by construction (element replacement).
 - Scheduling migration: out of scope, not prohibited. Guid stability
   preserves scheduling across reimports, which covers current needs;
   cross-collection migration (AnkiConnect/colpkg) is possible if ever

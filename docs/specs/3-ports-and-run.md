@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 15, proposed 2026-09-09 against principles r2 and architecture
+Revision 17, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -83,6 +83,20 @@ Revision log:
   (§5). Evidence: run 7, the drafter was told early-placed glue words
   were available and used 2 to 6 per sentence; 11 of 12 drafts filled
   nothing.
+- r16 2026-09-09: the drafter answers clauses of word ids with the text
+  and gloss; acceptance is the Sentence invariant; fills is membership,
+  the `fills` Assess backend and its key are gone; a parse ask for
+  existing text (§3, §4, §5, §6a). Evidence: spec 1 r8.
+- r17 2026-09-09: Wikimedia asks for bitmaps at a bounded width; an
+  attempt tries hits no earlier attempt tried, tried urls on the outcome
+  row; a source's own quota statement is budget exhaustion; a budget
+  window starts at a configured time (§3, §5, §6a, §7, §9). Evidence:
+  the 2026-09-09 cycles: imgfetch refused 45 to 108 Wikimedia hits per
+  cycle (PDF, DjVu, over 10 MB), the same file up to 6 times for one
+  need; Forvo's daily limit answers 400 `["Limit/day reached."]` and
+  resets at 22:00 UTC (api.forvo.com general information), so every
+  cycle after the first killed Forvo with a transient-failure on an
+  arbitrary need while the 450/day count ran from local midnight.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -163,12 +177,12 @@ one speaker answers empty.
 | source | provides | key | cost | re-ask |
 |---|---|---|---|---|
 | openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key; re-asked once per attempt when every hit is refused by its server (§6a) |
-| wikimedia | picture (search hits with url, via generator=search + prop=imageinfo, iiprop=url) | wikimedia:query | free HTTP | same |
+| wikimedia | picture (search hits with url, via generator=search + prop=imageinfo; gsrsearch carries `filetype:bitmap`; imageinfo asks `iiurlwidth` = providers.yaml `image_width`, default 1600, and the hit's url is the scaled `thumburl`, origin the file page) | wikimedia:query | free HTTP | same |
 | imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
-| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day | re-asked once per attempt when a url has expired (§6a) |
+| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day from 22:00 UTC; 400 `["Limit/day reached."]` is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
-| llm | sentence (per run over open targets), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
+| llm | sentence (per run over open targets), parse (clauses for given texts), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
@@ -183,7 +197,7 @@ speaker-directed search does not exist.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording duration/format; media resolvable; fills(); provenance rules | parameter-explicit, e.g. mech:duration:0.2-5.0:sha | ground truth for what it checks |
+| mechanical | recording duration/format; media resolvable; provenance rules | parameter-explicit, e.g. mech:duration:0.2-5.0:sha | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -216,8 +230,11 @@ requires `judge.max_tokens` (at least 16000), which both transports send.
 **Picture (Word).** Query = the word's image phrase if a human or judge
 drafted one, else gloss head term + category qualifier. Source order:
 openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
-(providers.yaml `image_candidates`, default 5; a served refusal of every
-hit re-asks the search once and ingests what is new), judge *fit* on each
+(providers.yaml `image_candidates`, default 5) hits no earlier attempt on
+the same need and source fetched, fetched meaning ingested or refused
+(the outcome row carries `tried: [url, ...]`; a served refusal of every
+hit re-asks the search once within the attempt and ingests what is new),
+judge *fit* on each
 (pass/fail, the old rubric texts verbatim), and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
@@ -262,24 +279,38 @@ rendition exists.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
 target: the prompt carries the vocabulary met in the fill-set sense,
-once: the picture-introduced words in entry-position order up to the
-furthest handed target, plus every sentence-introduced word an adopted
-sentence fills; the handed sentence-introduced targets not yet met are
-listed as introducible, at most one per sentence; one sentence per
-item; the profile register; and the existing sentence openings to
-avoid; it asks for the fewest natural sentences that cover the handed
-targets. Each distinct drafted text is a candidate: a
-text listed twice is one candidate whose target claims merge, and
-differing glosses reject it. Mechanical `fills()` is checked against
-every open target whose word the text contains (the drafter's claim is a
-hint, not the gate); the judge sees each text once (sentence-for-target:
-naturalness; register; the L1 gloss with the text, a gloss that
-misstates the sentence fails the candidate); adoption
-(`Syllabus.add_sentence` with provenance) fills every target `fills()`
-says it fills, chosen greedily by targets filled. Adoption creates needs: the sentence's recording (tts
-allowed for receptive-only; a productive fill wants native, warn
-otherwise) and an optional scene picture. A candidate
-that fills nothing is a rejected draft in the record.
+once, as `id  thai  (meaning)` lines: the picture-introduced words in
+entry-position order up to the furthest handed target, plus every
+sentence-introduced word an adopted sentence fills; the handed
+sentence-introduced targets not yet met are listed as introducible, at
+most one per sentence; one sentence per item; the profile register; and
+the existing sentence openings to avoid; it asks for the fewest natural
+sentences that cover the handed targets, and states the rendering rule
+(spec 1 §1: clauses of word ids, ๆ after a repeated word, clauses
+separated by one space, standard spelling, numbers as words, no
+punctuation). The answer item is
+`{"sentences": [{"clauses": [["<word id>" | ["<word id>", "ๆ"], ...], ...],
+"text": "...", "gloss": "..."}]}`. Acceptance is the Sentence invariant,
+local and mechanical: an unregistered id or a rendering that differs
+from text refuses the draft, logged with the reason, the provide row
+keeping it. Each distinct accepted text is a candidate: a text listed
+twice is one candidate, and differing glosses reject it. Fills is
+membership of an open target's word in the clauses; a draft filling no
+open target is not judged. The judge sees each candidate once
+(sentence-for-target: naturalness; register; the L1 gloss with the
+text, a gloss that misstates the sentence fails the candidate);
+adoption (`Syllabus.add_sentence` with provenance) fills every target
+`fills()` says it fills, chosen greedily by targets filled. Adoption
+creates needs: the sentence's recording (tts allowed for receptive-only;
+a productive fill wants native, warn otherwise) and an optional scene
+picture. A refused draft and a draft filling nothing are rejected
+drafts in the record.
+
+**Parse (existing texts).** The same transport, asked once per migration
+for the clauses of given texts against the full registered vocabulary
+(`id  thai  (meaning)` lines); the answer is
+`{"parses": [{"text": "...", "clauses": [...]}]}`, verified by the
+Sentence invariant; a text whose parse fails is reported (spec 2 §4).
 
 **Grapheme keyword (Grapheme).** Source: llm proposal (concrete, picturable,
 containing the symbol); mechanical `grapheme/keyword-contains-symbol`; the
@@ -333,7 +364,7 @@ Implemented after cutover.
 
 ## 6a. Failure taxonomy
 
-Every ask and fetch ends in one of three states:
+Every ask and fetch ends in one of four states:
 
 - **Got it.** An artifact stored, or an answer the backend recognized.
   Appended; outcome `candidates`.
@@ -352,6 +383,11 @@ Every ask and fetch ends in one of three states:
   anchor, it counts as tried: next_source advances past it and exhausted
   counts it as one attempt. Learner input resets the anchor as for every
   other outcome.
+- **Quota.** The source itself says its allowance is spent (Forvo: 400
+  with body `["Limit/day reached."]`, recognized by the backend and
+  raised typed, never matched downstream). No row is appended, the need
+  counts under budgeted, the source is budgeted for the rest of the
+  run, and source_failures does not count it.
 
 A backend appends a row only for an answer it positively recognized
 (§2). A refusal carries a typed reason, never matched as text: the
@@ -372,14 +408,16 @@ for the run and never cached; only a backend that answered none of the
 questions it was given on the wire is unreachable. An unrun check is
 never a failed check.
 
-**Keys over mutable state name its version.** A verdict computed from
-the curated files or a tokenizer (fills) carries a version of that
-state in its key, as pair-search carries the dictionary version.
+**Keys over mutable state name its version.** An answer computed from
+mutable reference data carries a version of that data in its key, as
+pair-search carries the dictionary version.
 
 ## 7. Budget and the run
 
-Budget per source in its currency: {max_asks?, max_cost?}; forvo 450/day,
-learner 20/session. Spend is summed from the record for per-day budgets.
+Budget per source in its currency: {max_asks?, max_cost?, day_starts?};
+forvo 450/day from 22:00 UTC, learner 20/session. Spend is summed from
+the record since the most recent `day_starts` instant (HH:MM with a
+zone; default local midnight).
 
 One source per need per run; one judge batch per run; at most one batch
 outstanding: when the previous run's batch is still in progress, the run
@@ -387,7 +425,7 @@ adopts what has resolved, attempts nothing, submits nothing, and reports
 that batch's subjects as pending and the rest as deferred. Escalation to
 the next source happens on the next run, for every transport alike, so
 the loop has one shape and a run is cheap and repeatable (F10). Per-day
-budgets are measured from the record since the local day's start plus
+budgets are measured from the record since the source's day start plus
 this run's spend.
 
 ```
@@ -479,7 +517,8 @@ path besides compile --force.
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
-`image_candidates` (5) and `transient_cap` (3). `search_proxy` is the HTTP
+`image_candidates` (5), `image_width` (1600), `transient_cap` (3) and
+`quotas.<source>.day_starts` (forvo `22:00Z`). `search_proxy` is the HTTP
 forward proxy Openverse searches go through (media sourcing: Openverse
 refuses a Thai egress); no other request uses it. The provenance prior lives in rulebook.yaml (it is
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,

@@ -35,6 +35,11 @@ still run against them.
 - Spec 1 §3: a productive target is filled only by a sentence whose last
   used word is the target's word (a productive target filled by a
   sentence clozed on another word yields no card).
+- `Word.components` (curated): a compound's registered parts, so a
+  sentence using โรงพยาบาล ("hospital") also mentions โรง ("building")
+  where the curator says so; fills clause 1 then reads "in the clauses
+  or a component of a word in them" (spec 1 r8 log). Deferred until a
+  registered compound and its registered part both matter.
 - Run-loop termination as a CLI feature (`run --cycles N`,
   `--spend-cap`): resolve, attempt, submit, wait, repeat until a run
   submits nothing or the cap is reached; the scratchpad runner is the
