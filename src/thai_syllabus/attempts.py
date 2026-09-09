@@ -167,6 +167,10 @@ class _Fetches:
     attempts: int = 0
     transient_failures: int = 0
     served_refusals: int = 0
+    # Every url handed to imgfetch this attempt, ingested or refused
+    # (picture attempts only; record.tried_urls unions this list's
+    # outcome-row copies across attempts).
+    tried: list[str] = field(default_factory=list)
     # Set by failed(served=True), read by _download_forvo to decide
     # whether a miss re-asks the lookup; cleared by stored() and missed().
     last_refusal_served: bool = False
@@ -202,17 +206,20 @@ class _Fetches:
 
 
 def _append_outcome(ctx: Sourcing, need: Need, source: str, outcome: Outcome,
-                    candidates: Sequence[str]) -> None:
+                    candidates: Sequence[str], *, tried: Sequence[str] = ()) -> None:
     """One outcome row per (need, source) an attempt asks, after the ask
     and its fetches (spec 3 section 6): the row every derivation over
-    next_source/exhausted folds over.
+    next_source/exhausted folds over. `tried` is every url a picture
+    attempt handed to imgfetch this attempt, ingested or refused; empty
+    for a recording or rendition attempt's row.
     """
     ctx.db.append(port="attempt", backend=source,
                   key=AttemptOutcomeKey(subject=need.subject, kind=need.kind, source=source),
                   subject=need.subject,
                   question={"kind": need.kind, "subject_kind": need.subject_kind,
                             "source": source},
-                  answer={"outcome": outcome, "candidates": list(candidates)})
+                  answer={"outcome": outcome, "candidates": list(candidates),
+                          "tried": list(tried)})
 
 
 # --- reading the record -----------------------------------------------------
@@ -308,17 +315,20 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     spend: dict[str, Spend] = {}
     query = _picture_query_for(ctx, need)
     fetches = _Fetches()
+    already = record.tried_urls(ctx.db, need.subject, need.kind, source)
     question = Question(subject=need.subject, provides="picture",
                         params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
     try:
         hits = ctx.provider.ask(source, question)
     except TransportError:
         fetches.failed()
-        _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+        _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
+                        tried=fetches.tried)
         raise
     _count(spend, source, hits)
     hit_items = [i for i in hits.items if isinstance(i, Mapping) and i.get("url")]
-    tried_items = hit_items[:ctx.image_candidates]
+    fresh_hits = [i for i in hit_items if i["url"] not in already]
+    tried_items = fresh_hits[:ctx.image_candidates]
     for item in tried_items:
         _ingest_picture(ctx, need, item, source, spend, fetches)
     if not fetches.candidates and fetches.served_refusals:
@@ -326,15 +336,16 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
             hits = ctx.provider.reask(source, question)
         except TransportError:
             fetches.failed()
-            _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+            _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
+                            tried=fetches.tried)
             raise
         _count(spend, source, hits)
-        tried = {i["url"] for i in tried_items}
+        excluded = already | {i["url"] for i in tried_items}
         fresh_items = [i for i in hits.items
-                       if isinstance(i, Mapping) and i.get("url") and i["url"] not in tried]
+                       if isinstance(i, Mapping) and i.get("url") and i["url"] not in excluded]
         for item in fresh_items[:ctx.image_candidates]:
             _ingest_picture(ctx, need, item, source, spend, fetches)
-    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates, tried=fetches.tried)
     return _judge_pictures(ctx, need, query, spend)
 
 
@@ -342,7 +353,12 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
                     spend: dict[str, Spend], fetches: _Fetches) -> None:
     """One search hit's bytes through imgfetch, with a media row naming
     where it came from. A url the fetcher refuses is logged and counted on
-    `fetches`: served or wire.
+    `fetches`: served or wire. `fetches.tried` records the url on the two
+    outcomes spec 3 section 5 calls fetched: ingested, or a served
+    FetchRefused (every reason but wire). A wire FetchRefused, and a bare
+    TransportError, are both spec 3 section 6a's transient failures -- a
+    retry may succeed, so neither marks the url tried; it stays open to a
+    later attempt.
     """
     url = item["url"]
     try:
@@ -351,6 +367,8 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
             kind=need.kind, subject_kind=need.subject_kind))
     except FetchRefused as e:
         _log.warning("imgfetch refused %s for %s/%s: %s", url, need.subject, need.kind, e)
+        if e.served:
+            fetches.tried.append(url)
         fetches.failed(served=e.served)
         return
     except TransportError as e:
@@ -369,6 +387,7 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
                          licence=str(item.get("licence") or "unknown"), acquired=ctx.today())
         stored = sha
     if stored:
+        fetches.tried.append(url)
         fetches.stored(stored)
     else:
         fetches.missed()

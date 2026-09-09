@@ -27,7 +27,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
-          "latest_query",
+          "latest_query", "tried_urls",
           "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "merge_drafts", "draft_sentence", "drafts_in", "sentence_drafts",
@@ -153,6 +153,17 @@ def latest_query(rows: Sequence[Answer]) -> str | None:
     latest = max(asks, key=lambda r: r.ts)
     params = latest.question.get("params", {}) or {}
     return params.get("query") or params.get("url") or params.get("text")
+
+
+def tried_urls(cache: CacheReader, subject: str, kind: str, source: str) -> frozenset[str]:
+    """Every url an attempt-outcome row for (subject, kind, source) names
+    as handed to imgfetch, ingested or refused (spec 3 section 5): the
+    union of answer["tried"] over every such row.
+    """
+    return frozenset(
+        url for r in rows_for(cache, subject, kind)
+        if r.port == "attempt" and r.backend == source
+        for url in r.answer.get("tried", ()))
 
 
 def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:

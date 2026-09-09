@@ -966,7 +966,7 @@ def test_a_picture_attempt_writes_a_nothing_outcome_when_the_search_finds_nothin
     ctx, _search, _judge = _picture_ctx(tmp_path, urls=())
     attempt(ctx, Need("rice", "picture"), "openverse")
     row = _outcome(ctx.db, "rice", "picture", "openverse")
-    assert row.answer == {"outcome": "nothing", "candidates": []}
+    assert row.answer == {"outcome": "nothing", "candidates": [], "tried": []}
 
 
 def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_search_fails(tmp_path):
@@ -975,7 +975,7 @@ def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_searc
     with pytest.raises(TransportError):
         attempt(ctx, Need("rice", "picture"), "openverse")
     row = _outcome(ctx.db, "rice", "picture", "openverse")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 def test_a_picture_attempt_writes_transient_failure_when_every_fetch_it_needed_fails(tmp_path):
@@ -988,7 +988,7 @@ def test_a_picture_attempt_writes_transient_failure_when_every_fetch_it_needed_f
     result = attempt(ctx, Need("rice", "picture"), "openverse")
     assert result.attempted
     row = _outcome(ctx.db, "rice", "picture", "openverse")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 class _RotatingSearch(_Search):
@@ -1094,7 +1094,75 @@ def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_re_as
     with pytest.raises(TransportError):
         attempt(ctx, Need("rice", "picture"), "openverse")
     row = _outcome(ctx.db, "rice", "picture", "openverse")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [],
+                         "tried": ["https://x/rotted1.jpg", "https://x/rotted2.jpg"]}
+
+
+# --- an attempt fetches only hits no earlier attempt fetched -----------
+
+def test_a_second_attempt_fetches_only_the_hits_the_first_did_not_try(tmp_path):
+    urls = ("https://x/good1.jpg", "https://x/good2.jpg",
+           "https://x/good3.jpg", "https://x/good4.jpg")
+    ctx, search, _judge = _picture_ctx(tmp_path, urls=urls)
+    ctx.image_candidates = 2
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    first = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert first.answer["tried"] == list(urls[:2])
+    assert len(first.answer["candidates"]) == 2
+
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    second = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert second.answer["tried"] == list(urls[2:4])
+    assert len(second.answer["candidates"]) == 2
+    assert search.queries == ["rice food"]           # the search itself was a cache hit both times
+
+    shas = [i["sha"] for r in rows_for(ctx.db, "rice", "picture") if r.port == "provide"
+           for i in r.answer["items"] if "sha" in i]
+    assert len(shas) == 4                             # every hit ingested, none refetched
+
+
+def test_a_refused_url_counts_as_tried_and_is_not_retried_by_a_later_attempt(tmp_path):
+    ctx, search, _judge = _picture_ctx(
+        tmp_path, urls=("https://x/rotted.jpg", "https://x/good.jpg"))
+    ctx.image_candidates = 2
+    imgfetch = _ServedRefusingImgfetch(ctx.media_store)
+    ctx.provider._backends["imgfetch"] = imgfetch
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    first = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert first.answer["tried"] == ["https://x/rotted.jpg", "https://x/good.jpg"]
+    assert len(first.answer["candidates"]) == 1        # only the stored one
+
+    imgfetch.asked = []                                # observe only the second attempt's asks
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert imgfetch.asked == []                        # the refused url is not retried
+    second = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert second.answer == {"outcome": "nothing", "candidates": [], "tried": []}
+
+
+class _WireRefusingImgfetch:
+    """Every url is refused on the wire (spec 3 section 6a): no server
+    answered, so the refusal is transient, not a served one."""
+    def __init__(self):
+        self.asked = []
+
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        self.asked.append(q.params["url"])
+        raise FetchRefused(reason="wire", detail="timeout")
+
+
+def test_a_wire_refused_url_is_not_tried_and_is_fetched_again_by_a_later_attempt(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path, urls=("https://x/a.jpg",))
+    imgfetch = _WireRefusingImgfetch()
+    ctx.provider._backends["imgfetch"] = imgfetch
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    first = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert first.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
+
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert imgfetch.asked == ["https://x/a.jpg", "https://x/a.jpg"]   # fetched again
 
 
 class _DeadForvo:
@@ -1152,7 +1220,7 @@ def test_a_forvo_recording_attempt_writes_a_nothing_outcome_when_forvo_has_nothi
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     attempt(ctx, Need("rice", "recording"), "forvo")
     row = _outcome(ctx.db, "rice", "recording", "forvo")
-    assert row.answer == {"outcome": "nothing", "candidates": []}
+    assert row.answer == {"outcome": "nothing", "candidates": [], "tried": []}
 
 
 def test_a_forvo_recording_attempt_writes_transient_failure_when_the_lookup_raises(tmp_path):
@@ -1161,7 +1229,7 @@ def test_a_forvo_recording_attempt_writes_transient_failure_when_the_lookup_rais
     with pytest.raises(TransportError):
         attempt(ctx, Need("rice", "recording"), "forvo")
     row = _outcome(ctx.db, "rice", "recording", "forvo")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 def test_a_forvo_recording_attempt_writes_transient_failure_when_every_download_fails(tmp_path):
@@ -1171,7 +1239,7 @@ def test_a_forvo_recording_attempt_writes_transient_failure_when_every_download_
     result = attempt(ctx, Need("rice", "recording"), "forvo")
     assert result.attempted
     row = _outcome(ctx.db, "rice", "recording", "forvo")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 class _ExpiringForvo:
@@ -1359,7 +1427,7 @@ def test_a_tts_recording_attempt_writes_transient_failure_when_synthesis_raises(
     with pytest.raises(TransportError):
         attempt(ctx, Need("rice", "recording"), "tts")
     row = _outcome(ctx.db, "rice", "recording", "tts")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 def test_a_tts_refusal_is_a_nothing_outcome_not_a_transient_one(tmp_path):
@@ -1370,7 +1438,7 @@ def test_a_tts_refusal_is_a_nothing_outcome_not_a_transient_one(tmp_path):
     result = attempt(ctx, Need("rice", "recording"), "tts")
     assert result.attempted
     row = _outcome(ctx.db, "rice", "recording", "tts")
-    assert row.answer == {"outcome": "nothing", "candidates": []}
+    assert row.answer == {"outcome": "nothing", "candidates": [], "tried": []}
 
 
 def test_a_rendition_attempt_writes_a_candidates_outcome(tmp_path):
@@ -1388,7 +1456,7 @@ def test_a_rendition_attempt_writes_a_nothing_outcome_with_no_shared_speaker(tmp
         "ข่าว": [{"username": "malee", "pathmp3": "https://f/b.mp3"}]})    # ข่าว: news
     attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
     row = _outcome(ctx.db, "p1", "rendition", "forvo")
-    assert row.answer == {"outcome": "nothing", "candidates": []}
+    assert row.answer == {"outcome": "nothing", "candidates": [], "tried": []}
 
 
 def test_a_rendition_attempt_writes_transient_failure_when_a_members_lookup_raises(tmp_path):
@@ -1397,7 +1465,7 @@ def test_a_rendition_attempt_writes_transient_failure_when_a_members_lookup_rais
     with pytest.raises(TransportError):
         attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
     row = _outcome(ctx.db, "p1", "rendition", "forvo")
-    assert row.answer == {"outcome": "transient-failure", "candidates": []}
+    assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
 
 
 def test_a_rendition_tts_attempt_reports_candidates_from_a_partial_success_then_reraises(tmp_path):
@@ -1429,7 +1497,7 @@ def test_a_rendition_tts_attempt_stops_at_the_first_member_the_service_refuses(t
     assert result.attempted
     assert refusing.calls == 1
     row = _outcome(ctx.db, "p1", "rendition", "tts")
-    assert row.answer == {"outcome": "nothing", "candidates": []}
+    assert row.answer == {"outcome": "nothing", "candidates": [], "tried": []}
 
 
 # --- ruling 1: the outcome row is written before the check call ------------

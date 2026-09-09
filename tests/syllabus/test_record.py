@@ -8,7 +8,8 @@ from datetime import date
 
 import pytest
 
-from thai_syllabus.cachekeys import DirectionKey, JudgeKey, LearnerKey, ProvideKey, sha
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LearnerKey,
+                                     ProvideKey, sha)
 from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
     DRAFT_SUBJECT,
@@ -32,6 +33,7 @@ from thai_syllabus.record import (
     sentence_drafts,
     source_asks,
     spend_since,
+    tried_urls,
     vocabulary_line,
 )
 from thai_syllabus.store import SyllabusDb
@@ -120,6 +122,48 @@ def test_candidate_shas_is_first_seen_order_across_rows(cache):
                 {"items": [{"sha": "s2"}, {"sha": "s3"}]}, 0)
     rows = rows_for(cache, "w", "picture")
     assert candidate_shas(rows) == ["s1", "s2", "s3"]
+
+
+def test_tried_urls_unions_the_tried_lists_of_every_matching_attempt_row(cache):
+    cache.append("attempt", "openverse",
+                AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "openverse"},
+                {"outcome": "candidates", "candidates": ["s1"],
+                 "tried": ["https://x/a.jpg", "https://x/b.jpg"]}, 0)
+    cache.append("attempt", "openverse",
+                AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "openverse"},
+                {"outcome": "candidates", "candidates": ["s2"],
+                 "tried": ["https://x/b.jpg", "https://x/c.jpg"]}, 0)
+    assert tried_urls(cache, "w", "picture", "openverse") == frozenset(
+        {"https://x/a.jpg", "https://x/b.jpg", "https://x/c.jpg"})
+
+
+def test_tried_urls_ignores_a_refused_urls_absence_of_a_candidate(cache):
+    """A url a served refusal answered still counts as tried, even though
+    it produced no candidate."""
+    cache.append("attempt", "openverse",
+                AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "openverse"},
+                {"outcome": "nothing", "candidates": [], "tried": ["https://x/refused.jpg"]}, 0)
+    assert tried_urls(cache, "w", "picture", "openverse") == frozenset({"https://x/refused.jpg"})
+
+
+def test_tried_urls_ignores_a_different_source_or_kind(cache):
+    cache.append("attempt", "openverse",
+                AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "openverse"},
+                {"outcome": "candidates", "candidates": ["s1"], "tried": ["https://x/a.jpg"]}, 0)
+    cache.append("attempt", "wikimedia",
+                AttemptOutcomeKey(subject="w", kind="picture", source="wikimedia"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "wikimedia"},
+                {"outcome": "candidates", "candidates": ["s2"], "tried": ["https://x/other.jpg"]}, 0)
+    assert tried_urls(cache, "w", "picture", "openverse") == frozenset({"https://x/a.jpg"})
+    assert tried_urls(cache, "w", "recording", "openverse") == frozenset()
+
+
+def test_tried_urls_is_empty_with_no_attempt_row_on_record(cache):
+    assert tried_urls(cache, "w", "picture", "openverse") == frozenset()
 
 
 def test_learner_ratings_selects_only_rating_kind_rows_newest_last(cache):
