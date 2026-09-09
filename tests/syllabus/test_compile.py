@@ -230,23 +230,53 @@ def _fully_seeded(fx) -> Syllabus:
 
 # --- thai_cloze: the corruption table ------------------------------------
 
-@pytest.mark.parametrize("tokens,target,expected", [
-    (["ผม", "กิน", "ยา"], "ยา", "ผมกิน___"),  # I take medicine
-    # the corruption class: "ยา" must NOT be blanked inside "โรงพยาบาล"
-    # (hospital) -- a real tokenizer never splits it out as its own token,
-    # and boundary matching alone (never str.replace) is what protects it.
-    (["ผม", "ไป", "โรงพยาบาล"], "ยา", "ผมไปโรงพยาบาล"),
-    (["หมา", "วิ่ง"], "หมา", "___วิ่ง"),               # dog runs -- exact token
-    (["ยา", "ยา"], "ยา", "______"),                    # every matching token blanked
-    (["น้ำยา"], "ยา", "___"),                          # compound: suffix match blanks whole token
+@pytest.mark.parametrize("tokens,known,target,expected", [
+    (["ผม", "กิน", "ยา"], {"ยา"}, "ยา", "ผมกิน___"),  # I take medicine
+    # the corruption class: "ยา" ("medicine") must NOT be blanked inside
+    # "โรงพยาบาล" ("hospital") -- with only "ยา" registered the token has
+    # no full decomposition, so it is not a boundary match at all (a real
+    # tokenizer never splits it out as its own token either).
+    (["ผม", "ไป", "โรงพยาบาล"], {"ยา"}, "ยา", "ผมไปโรงพยาบาล"),
+    (["หมา", "วิ่ง"], {"หมา"}, "หมา", "___วิ่ง"),               # dog runs -- exact token
+    (["ยา", "ยา"], {"ยา"}, "ยา", "______"),                    # every matching token blanked
+    # "โรงพยาบาล" ("hospital") decomposes wholly into "โรง"
+    # ("building/hall") + "พยาบาล" ("nurse"): blanking "โรง" replaces
+    # only that component, "พยาบาล" stays.
+    (["โรงพยาบาล"], {"โรง", "พยาบาล"}, "โรง", "___พยาบาล"),
+    # "น้ำยา" ("solution/liquid medicine"): "ยา" is only a suffix; with
+    # "น้ำ" ("water") not registered there is no full decomposition, so
+    # the token stays untouched -- spec 1 section 3 fills clause 1 drops
+    # the old prefix/suffix-only rule.
+    (["น้ำยา"], {"ยา"}, "ยา", "น้ำยา"),
 ])
-def test_thai_cloze_blanks_only_boundary_matching_tokens(tokens, target, expected):
-    assert thai_cloze(tokens, target) == expected
+def test_thai_cloze_blanks_only_full_decompositions(tokens, known, target, expected):
+    assert thai_cloze(tokens, target, known) == expected
 
 
 def test_thai_cloze_never_touches_a_non_matching_token():
     tokens = ["โรงพยาบาล", "ใหญ่"]  # hospital (big)
-    assert thai_cloze(tokens, "ยา") == "".join(tokens)
+    assert thai_cloze(tokens, "ยา", {"ยา"}) == "".join(tokens)  # ยา: medicine
+
+
+def test_thai_cloze_blanks_the_component_even_when_the_whole_compound_is_registered():
+    """ห้องน้ำ (bathroom) with ห้อง (room), น้ำ (water) AND ห้องน้ำ
+    itself all registered: blanking "ห้อง" ("room") -- a component, not
+    the whole token -- blanks only that component; the compound being
+    also a registered word does not suppress the split.
+    """
+    tokens = ["ห้องน้ำ", "สกปรก"]  # bathroom (dirty)
+    known = {"ห้อง", "น้ำ", "ห้องน้ำ"}
+    assert thai_cloze(tokens, "ห้อง", known) == "___น้ำสกปรก"
+
+
+def test_thai_cloze_blanks_a_target_word_with_an_attached_repetition_mark():
+    """newmm keeps some reduplications as one token ("ช้าๆ") rather than
+    splitting the mark off; thai_cloze reads the attached form against a
+    registration of the bare word ("ช้า") and keeps the mark in place
+    around the blank -- matching Syllabus.mentions_in's own handling.
+    """
+    tokens = ["ช้า", "ๆ", "ช้าๆ"]  # slow, slow (attached) -- three tokens, one glossed pair repeated
+    assert thai_cloze(tokens, "ช้า", {"ช้า"}) == "___ๆ___ๆ"
 
 
 # --- compile agrees with the rulebook about a stale rubric (F1 defect 4) --

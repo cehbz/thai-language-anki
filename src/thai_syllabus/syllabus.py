@@ -14,7 +14,7 @@ from typing import Any
 
 from .cachekeys import JudgeKey
 from .entities import Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word
-from .ids import CategoryName, ConfusionId, PairId, WordId
+from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
     AssessmentReader, MediaIndex, NullAssessmentReader, NullMediaIndex, StudyReader,
     StudyRecord, Tokenizer,
@@ -44,6 +44,33 @@ def token_is_known(token: str, known: Collection[str]) -> bool:
         if token.endswith(candidate) and token_is_known(token[:len(token) - len(candidate)], known):
             return True
     return False
+
+
+def decompose(token: str, known: Collection[str]) -> tuple[str, ...] | None:
+    """The registered words `token` splits into wholly, in order, or
+    None with no split accounting for the whole token. A proper split is
+    tried first, regardless of whether `token` itself is registered: a
+    known prefix strictly shorter than `token`, longest first (ties
+    broken by the prefix text itself, for a fixed order over any
+    Collection), whose remainder itself decomposes, recursively. A
+    token itself registered is a fallback tried only when no proper
+    split succeeds -- "โรงพยาบาล" ("hospital") registered alongside its
+    own parts "โรง" ("building") and "พยาบาล" ("nurse") still splits
+    into the two parts, not the whole compound: the parts remain
+    reachable as components even when the compound is also a word in
+    its own right.
+    """
+    if not token:
+        return ()
+    prefixes = sorted((c for c in known if c and c != token and token.startswith(c)),
+                      key=lambda c: (-len(c), c))
+    for candidate in prefixes:
+        sub = decompose(token[len(candidate):], known)
+        if sub is not None:
+            return (candidate,) + sub
+    if token in known:
+        return (token,)
+    return None
 
 
 @dataclass(frozen=True)
@@ -235,17 +262,91 @@ class Syllabus:
 
     # --- fills() -----------------------------------------------------------
 
-    @staticmethod
-    def mentions_at(tokens: Sequence[str], thai: str) -> bool:
-        """Whether `thai` matches one of `tokens` at a boundary (exact, or
-        a compound starting or ending with it) -- the one boundary rule
-        fills(), mentions() and compile.thai_cloze's blanking all share.
+    @cached_property
+    def known_words(self) -> frozenset[str]:
+        """This syllabus's own registered vocabulary, by Thai text --
+        `mentions_at`'s own known set, and the set compile.thai_cloze
+        reads to blank a target inside a decomposed token.
         """
-        return any(tok == thai or tok.startswith(thai) or tok.endswith(thai)
-                  for tok in tokens)
+        return frozenset(w.thai for w in self.words)
+
+    @staticmethod
+    def mentions_in(tokens: Sequence[str], thai: str, known: Collection[str]) -> bool:
+        """Whether `thai` is mentioned in `tokens` (spec 1 section 3
+        fills clause 1): a token equal to `thai` outright, or a token
+        that decomposes wholly into registered words (`decompose`,
+        against `known`) with `thai` among them. A registered word that
+        is only a prefix or suffix of a token, with no full
+        decomposition, is not a match. Each token is tried unstripped
+        first and with its ORTHOGRAPHIC_MARKS characters stripped
+        second, matching `_unknown_tokens`'s own reading of a mark
+        attached to its host word ("ช้าๆ" resolves against "ช้า"). The
+        staticmethod form, for a caller with no Syllabus instance to
+        hand (compile.thai_cloze); `mentions_at` is the memoized
+        instance form of this same predicate.
+        """
+        for tok in tokens:
+            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
+                if candidate == thai:
+                    return True
+                parts = decompose(candidate, known)
+                if parts is not None and thai in parts:
+                    return True
+        return False
+
+    @cached_property
+    def _decompose_cache(self) -> dict[str, tuple[str, ...] | None]:
+        """A private, per-instance memo of `decompose(token,
+        self.known_words)`, read and filled by `_decompose` -- one
+        Syllabus instance decomposes a given token at most once, across
+        every word and every target checked against it.
+        """
+        return {}
+
+    def _decompose(self, token: str) -> tuple[str, ...] | None:
+        """`decompose(token, self.known_words)`, memoized in
+        `_decompose_cache`: `mentions_at` and `_words_used` both read
+        this instead of recomputing a token's split once per word or
+        target -- `decompose`'s own recursion, run at most once per
+        distinct token this instance ever sees.
+        """
+        cache = self._decompose_cache
+        if token not in cache:
+            cache[token] = decompose(token, self.known_words)
+        return cache[token]
+
+    def mentions_at(self, tokens: Sequence[str], thai: str) -> bool:
+        """`mentions_in`'s own predicate, against this syllabus's own
+        registered words (`known_words`) and its memoized decomposition
+        (`_decompose`) -- fills(), mentions() and the rulebook's own
+        boundary checks all share this one predicate, and repeated
+        calls over the same tokens (one per word, one per target) do
+        not repeat a token's decomposition.
+        """
+        for tok in tokens:
+            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
+                if candidate == thai:
+                    return True
+                parts = self._decompose(candidate)
+                if parts is not None and thai in parts:
+                    return True
+        return False
 
     def _words_used(self, tokens: Sequence[str]) -> set[WordId]:
-        return {w.id for w in self.words if self.mentions_at(tokens, w.thai)}
+        """Every registered Word `tokens` mentions (`mentions_at`'s own
+        rule), each token's identity and decomposition
+        (`_decompose`, memoized) read once and tested against every
+        registered word's Thai text, rather than one `mentions_at` scan
+        -- and one `decompose` -- per word.
+        """
+        mentioned: set[str] = set()
+        for tok in tokens:
+            for candidate in (tok, tok.strip(ORTHOGRAPHIC_MARKS)):
+                mentioned.add(candidate)
+                parts = self._decompose(candidate)
+                if parts is not None:
+                    mentioned.update(parts)
+        return {w.id for w in self.words if w.thai in mentioned}
 
     @staticmethod
     def _has_lexical_content(tok: str) -> bool:
@@ -255,19 +356,18 @@ class Syllabus:
         return any(ch.isalpha() and ch not in ORTHOGRAPHIC_MARKS for ch in tok)
 
     def _unknown_tokens(self, tokens: Sequence[str]) -> list[str]:
-        """Content tokens that do not decompose into registered Words at
-        a boundary (token_is_known), the unstripped token tried first and
-        the token with its ORTHOGRAPHIC_MARKS characters stripped tried
-        second -- a tokenizer that keeps a mark attached to its host word
-        (e.g. "ช้าๆ") still resolves against a registration of the bare
-        word ("ช้า"). Each remaining token empties the fill set (spec 1
-        section 3); a known prefix does not excuse an unregistered
-        remainder.
+        """Content tokens with no full decomposition into registered
+        Words (`decompose`, memoized via `_decompose`), the unstripped
+        token tried first and the token with its ORTHOGRAPHIC_MARKS
+        characters stripped tried second -- a tokenizer that keeps a
+        mark attached to its host word (e.g. "ช้าๆ") still resolves
+        against a registration of the bare word ("ช้า"). Each remaining
+        token empties the fill set (spec 1 section 3); a known prefix
+        does not excuse an unregistered remainder.
         """
-        known = {w.thai for w in self.words}
-
         def is_known(tok: str) -> bool:
-            return token_is_known(tok, known) or token_is_known(tok.strip(ORTHOGRAPHIC_MARKS), known)
+            return self._decompose(tok) is not None or self._decompose(
+                tok.strip(ORTHOGRAPHIC_MARKS)) is not None
 
         return [tok for tok in tokens if self._has_lexical_content(tok) and not is_known(tok)]
 
@@ -415,6 +515,15 @@ class Syllabus:
 
     def fills(self, sentence: Sentence, target: Target) -> bool:
         return target in self.fill_set(sentence)
+
+    def met_sentence_introduced_targets(self) -> frozenset[TargetId]:
+        """Every sentence-introduced Target some adopted sentence's own
+        fill set (`_adopted_fill_sets`) contains: the Targets those
+        sentences have already put in front of the learner, for the
+        sentence prompt's vocabulary and Introducible sections.
+        """
+        return frozenset(t.id for fills in self._adopted_fill_sets.values()
+                         for t in fills if t.introduction == "sentence")
 
     def vocabulary_met_by(self, target: Target) -> tuple[Word, ...]:
         """Every Word with a Target at or before `target`'s order()

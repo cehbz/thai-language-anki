@@ -10,7 +10,7 @@ from thai_syllabus.entities import MinimalPair, SoundConfusion
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
-from thai_syllabus.syllabus import Syllabus
+from thai_syllabus.syllabus import Syllabus, decompose
 
 from .builders import sentence, syl, target, word
 from .fakes import FakeTokenizer
@@ -251,3 +251,107 @@ def test_gaps_excludes_a_sentence_introduced_word_from_words_missing_pictures():
                                  target("with/r", "with", introduction="sentence")),
                         tokenizer=FakeTokenizer())
     assert syllabus.gaps().words_missing_pictures == ("rice",)
+
+
+# --- decompose: the fills clause 1 boundary rule's split (spec 1 section 3) --
+
+def test_decompose_of_a_registered_word_is_itself():
+    assert decompose("มาก", {"มาก", "มา"}) == ("มาก",)  # มาก: very -- registered outright
+
+
+def test_decompose_splits_a_compound_into_its_registered_components():
+    # โรงพยาบาล: hospital; โรง: building/hall; พยาบาล: nurse
+    assert decompose("โรงพยาบาล", {"โรง", "พยาบาล"}) == ("โรง", "พยาบาล")
+
+
+def test_decompose_finds_the_split_even_when_the_whole_compound_is_also_registered():
+    """Spec 1 section 3 fills clause 1's own example: โรงพยาบาล
+    (hospital) registered alongside its own parts โรง (building/hall)
+    and พยาบาล (nurse) still splits into the two parts -- a proper
+    split is tried before the whole-token fallback, so registering the
+    compound does not hide its parts.
+    """
+    known = {"โรง", "พยาบาล", "โรงพยาบาล"}
+    assert decompose("โรงพยาบาล", known) == ("โรง", "พยาบาล")
+
+
+def test_decompose_is_none_when_the_registered_prefix_leaves_an_unregistered_remainder():
+    assert decompose("มาก", {"มา"}) is None  # มาก: very; มา: come -- "ก" alone is not registered
+
+
+def test_decompose_is_none_with_no_matching_prefix_at_all():
+    assert decompose("มาก", set()) is None  # มาก: very -- nothing registered
+
+
+# --- mentions_at/mentions_in: the fills clause 1 boundary rule itself -------
+
+def test_mentions_at_is_true_for_an_exact_token():
+    rice = word("rice", "ข้าว", "rice")  # ข้าว: rice
+    syllabus = Syllabus(words=(rice,), tokenizer=FakeTokenizer())
+    assert syllabus.mentions_at(["ข้าว"], "ข้าว") is True
+
+
+def test_mentions_at_is_false_for_a_registered_word_that_is_only_a_token_prefix():
+    """มาก (very) is one token; มา (come) is registered but not
+    mentioned -- the remainder "ก" is not itself registered, so มาก has
+    no full decomposition into มา plus a registered remainder (spec 1
+    section 3 fills clause 1).
+    """
+    come = word("come", "มา", "come")  # มา: come
+    syllabus = Syllabus(words=(come,), tokenizer=FakeTokenizer())
+    assert syllabus.mentions_at(["มาก"], "มา") is False
+
+
+def test_mentions_at_is_true_for_a_word_that_is_a_component_of_a_full_decomposition():
+    """Spec 1 section 3 fills clause 1's own example, with the compound
+    itself registered too (not just its parts): โรงพยาบาล (hospital)
+    still mentions โรง (building/hall) as a component of its
+    decomposition, and mentions itself outright by token identity --
+    registering the whole compound does not suppress its parts.
+    """
+    building = word("building", "โรง", "building/hall")  # โรง: building/hall
+    nurse = word("nurse", "พยาบาล", "nurse")  # พยาบาล: nurse
+    hospital = word("hospital", "โรงพยาบาล", "hospital")  # โรงพยาบาล: hospital
+    syllabus = Syllabus(words=(building, nurse, hospital), tokenizer=FakeTokenizer())
+    assert syllabus.mentions_at(["โรงพยาบาล"], "โรง") is True
+    assert syllabus.mentions_at(["โรงพยาบาล"], "พยาบาล") is True
+    assert syllabus.mentions_at(["โรงพยาบาล"], "โรงพยาบาล") is True
+
+
+def test_mentions_at_is_true_for_every_component_of_a_three_part_registration():
+    """ห้องน้ำ ("hông náam", bathroom), ห้อง ("room") and น้ำ ("water")
+    all registered: the token mentions all three -- itself outright, and
+    both parts as its full decomposition.
+    """
+    room = word("room", "ห้อง", "room")  # ห้อง: room
+    water = word("water", "น้ำ", "water")  # น้ำ: water
+    bathroom = word("bathroom", "ห้องน้ำ", "bathroom")  # ห้องน้ำ: bathroom
+    syllabus = Syllabus(words=(room, water, bathroom), tokenizer=FakeTokenizer())
+    assert syllabus.mentions_at(["ห้องน้ำ"], "ห้อง") is True
+    assert syllabus.mentions_at(["ห้องน้ำ"], "น้ำ") is True
+    assert syllabus.mentions_at(["ห้องน้ำ"], "ห้องน้ำ") is True
+
+
+def test_mentions_at_is_false_for_a_partial_decomposition():
+    """Only โรง (building) is registered; พยาบาล (nurse) is not, so
+    โรงพยาบาล (hospital) has no full decomposition and mentions nothing
+    beyond its own exact token.
+    """
+    building = word("building", "โรง", "building/hall")
+    syllabus = Syllabus(words=(building,), tokenizer=FakeTokenizer())
+    assert syllabus.mentions_at(["โรงพยาบาล"], "โรง") is False
+
+
+def test_known_words_is_every_registered_words_thai_text():
+    rice = word("rice", "ข้าว", "rice")
+    eat = word("eat", "กิน", "eat")
+    syllabus = Syllabus(words=(rice, eat), tokenizer=FakeTokenizer())
+    assert syllabus.known_words == frozenset({"ข้าว", "กิน"})
+
+
+def test_mentions_in_is_mentions_at_against_an_explicit_known_set():
+    """mentions_in is mentions_at's staticmethod form, for a caller with
+    no Syllabus instance to hand (compile.thai_cloze).
+    """
+    assert Syllabus.mentions_in(["โรงพยาบาล"], "โรง", {"โรง", "พยาบาล"}) is True
+    assert Syllabus.mentions_in(["มาก"], "มา", {"มา"}) is False

@@ -22,7 +22,7 @@ import sqlite3
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from pathlib import Path
@@ -35,7 +35,7 @@ from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word
 from .rulebook import _picture_introduced_words, sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
-from .syllabus import Syllabus
+from .syllabus import ORTHOGRAPHIC_MARKS, Syllabus, decompose
 
 if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
@@ -173,13 +173,43 @@ def _guid(family: str, *parts: str) -> str:
     return genanki.guid_for(family, *parts)
 
 
-def thai_cloze(tokens: list[str], target_thai: str, blank: str = "___") -> str:
-    """Blanks every token that boundary-matches `target_thai` (exact, or
-    a compound starting or ending with it, Syllabus.mentions_at's own
-    predicate) and rejoins. A whole token, never a substring:
-    "โรงพยาบาล" ("hospital") survives blanking "ยา" ("medicine").
+def thai_cloze(tokens: list[str], target_thai: str, known: Collection[str],
+               blank: str = "___") -> str:
+    """Blanks `target_thai` and rejoins: a token equal to it outright
+    becomes `blank` whole; a token that decomposes wholly into
+    registered words (`known`, syllabus.decompose) with `target_thai`
+    among them keeps its other components and blanks only that one --
+    the same predicate Syllabus.mentions_in tests for a match. A token
+    only starting or ending with `target_thai`, with no full
+    decomposition, stays untouched: "โรงพยาบาล" ("hospital") survives
+    blanking "ยา" ("medicine") when only "ยา" is registered. A token is
+    read unstripped first and with its ORTHOGRAPHIC_MARKS characters
+    stripped second, the stripped marks kept in place around the
+    blanked component -- "ช้าๆ" blanks to "___ๆ" for the target "ช้า".
     """
-    return "".join(blank if Syllabus.mentions_at([tok], target_thai) else tok for tok in tokens)
+    def blank_core(core: str) -> str | None:
+        if core == target_thai:
+            return blank
+        parts = decompose(core, known)
+        if parts is not None and target_thai in parts:
+            return "".join(blank if p == target_thai else p for p in parts)
+        return None
+
+    def blanked(tok: str) -> str:
+        replaced = blank_core(tok)
+        if replaced is not None:
+            return replaced
+        core = tok.strip(ORTHOGRAPHIC_MARKS)
+        if core == tok:
+            return tok
+        replaced = blank_core(core)
+        if replaced is None:
+            return tok
+        lead = tok[:len(tok) - len(tok.lstrip(ORTHOGRAPHIC_MARKS))]
+        trail = tok[len(tok.rstrip(ORTHOGRAPHIC_MARKS)):]
+        return lead + replaced + trail
+
+    return "".join(blanked(tok) for tok in tokens)
 
 
 # --- media resolution ------------------------------------------------------
@@ -483,7 +513,7 @@ def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], due_block: i
     last_used = syllabus.last_used_word(sentence)
     target_word = syllabus.word(last_used)
     tokens = syllabus.tokenizer.tokens(sentence.text)
-    cloze = thai_cloze(tokens, target_word.thai)
+    cloze = thai_cloze(tokens, target_word.thai, syllabus.known_words)
     text_sha = sentence_note_id(sentence)
     productive = any(t.skill == "productive" for t in targets if t.word == last_used)
 

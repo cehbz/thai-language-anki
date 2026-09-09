@@ -186,6 +186,26 @@ def test_sentence_fills_novelty_flags_every_mentioned_target_with_two_unmet_glue
     assert len(findings) == 2
 
 
+def test_sentence_fills_novelty_does_not_flag_a_word_that_is_only_a_token_prefix():
+    """Spec 1 section 3 fills clause 1: a registered word that is only a
+    prefix of a token, with no full decomposition, is not mentioned --
+    "come" ("มา") never actually appears; the loop that gathers
+    candidate Targets skips it on `mentions_at`, so it raises no finding
+    even though its own Target has no adopted sentence to fill it.
+    """
+    very = word("very", "มาก")  # มาก: very -- the only word actually mentioned
+    come = word("come", "มา")   # มา: come -- registered, but never truly mentioned
+    t_very = target("very/receptive", "very", "receptive", introduction="sentence")
+    t_come = target("come/receptive", "come", "receptive", introduction="sentence")
+    s = sentence("มาก", voice="learner_voice")  # very
+    tok = FakeTokenizer({s.text: ["มาก"]})
+    syllabus = make_syllabus(words=(very, come), targets=(t_very, t_come),
+                             sentences=(s,), tokenizer=tok)
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/fills-novelty"]
+    assert findings == []
+
+
 def test_sentence_fills_novelty_is_silent_when_the_sentence_fills_its_target():
     rice = word("rice", "ข้าว")  # rice
     t_rice = target("rice/receptive", "rice", "receptive", introduction="sentence")

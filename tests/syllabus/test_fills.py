@@ -47,10 +47,10 @@ def test_does_not_fill_when_the_word_is_only_a_substring_not_a_token():
 
 
 def test_fills_on_a_compound_token_that_is_two_known_words_joined():
-    """A token that is the concatenation of two known words counts as a
-    boundary match for each of them (startswith/endswith): the compound
-    token "ตัวอย่าง" (example) is both a startswith-match for "ตัว" (body)
-    and an endswith-match for "อย่าง" (kind), so each is a used word.
+    """A token that is the concatenation of two known words decomposes
+    wholly into them (Syllabus.decompose): the compound token "ตัวอย่าง"
+    (example) splits into "ตัว" (body) and "อย่าง" (kind), and each is a
+    used word.
     """
     body = word("body", "ตัว")  # body/classifier -- already met
     kind = word("kind", "อย่าง")  # kind/sort -- the target under test, only
