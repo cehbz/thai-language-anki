@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 6, proposed 2026-09-08 against principles r2 and architecture
+Revision 7, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -30,6 +30,10 @@ Revision log:
   review of the parsimonious-sentences arc (a registered glue word was
   never "new", so two could enter in one sentence; the per-target
   budget adopted a sentence the gate then refused).
+- r7 2026-09-09: mention is token identity or membership in a token's
+  decomposition into registered words (§3 clause 1). Evidence: run 7,
+  the prefix rule made "very" a mention of "come" and inflated the unmet
+  glue count of every draft.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -161,8 +165,12 @@ invalidated sentences). Consumers (compile, the screen) read positions;
 none re-derives placement.
 
 **fills(sentence, target) -> bool** — the single definition:
-1. target.word appears in sentence.text at a token boundary
-   (tokenizer port; prefix/suffix compound membership counts),
+1. target.word is a token of sentence.text, or a component of a token
+   that decomposes wholly into registered words (tokenizer port;
+   token_is_known's parts). A registered word that is only a prefix or
+   suffix of a token is not mentioned: มาก "mâak" (very) mentions itself
+   alone, โรงพยาบาล "roong phayaabaan" (hospital) mentions โรง "roong"
+   (building). thai_cloze blanks on the same rule.
 2. sentence.voice satisfies target.skill (other_voice fills receptive
    only),
 3. at the sentence's entry position (after its last word's target):

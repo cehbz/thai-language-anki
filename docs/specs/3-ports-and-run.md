@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 14, proposed 2026-09-08 against principles r2 and architecture
+Revision 15, proposed 2026-09-09 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -78,6 +78,11 @@ Revision log:
   claimed one target and 76 of 113 filled nothing, while the 8 adopted
   sentences fill 5 to 7 targets each under fills(); research of
   2026-09-08 (placement at the last unknown word).
+- r15 2026-09-09: the prompt's vocabulary is met in the fill-set sense;
+  unmet sentence-introduced targets are introducible, one per sentence
+  (§5). Evidence: run 7, the drafter was told early-placed glue words
+  were available and used 2 to 6 per sentence; 11 of 12 drafts filled
+  nothing.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -256,12 +261,14 @@ when the members' current-best recordings differ in speaker and no
 rendition exists.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target: the prompt carries the vocabulary met by the furthest handed
-target once, in entry-position order (Syllabus.order), as one cutoff for
-the whole batch, the handed targets, the profile register, and the
-existing sentence openings to avoid; it asks for the fewest natural
-sentences that cover the handed targets, each introducing at most one
-sentence-introduced target. Each distinct drafted text is a candidate: a
+target: the prompt carries the vocabulary met in the fill-set sense,
+once: the picture-introduced words in entry-position order up to the
+furthest handed target, plus every sentence-introduced word an adopted
+sentence fills; the handed sentence-introduced targets not yet met are
+listed as introducible, at most one per sentence; one sentence per
+item; the profile register; and the existing sentence openings to
+avoid; it asks for the fewest natural sentences that cover the handed
+targets. Each distinct drafted text is a candidate: a
 text listed twice is one candidate whose target claims merge, and
 differing glosses reject it. Mechanical `fills()` is checked against
 every open target whose word the text contains (the drafter's claim is a
