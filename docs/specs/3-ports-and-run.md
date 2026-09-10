@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 18, proposed 2026-09-10 against principles r2 and architecture
+Revision 19, proposed 2026-09-10 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -103,6 +103,18 @@ Revision log:
   `quotas.<source>.max_asks: null` lifts a default cap (§9). Evidence:
   2026-09-10, a fresh Forvo window answered `Limit/day reached.` after
   232 lookups and 268 downloads while the budget read 232 of 450.
+- r19 2026-09-10: a live search is not re-asked (§5); the judge's answer
+  is the last JSON object in its completion and the prompts ask for
+  that object alone (§2); `candidates` means stored, and outcome rows
+  never rank (§6); the queue counts attempts as exhausted() does (§6);
+  a draft text's first gloss stands and only differing clauses reject
+  it, the drafting prompt lists the texts the judge failed, and a
+  no-fit answer is recognized, cached, and escalates a target to the
+  learner after a cap (§5); `nothing` from a growing source ages out
+  (§6a, §9). Evidence: 2026-09-10 cycles: two of 164 judge answers
+  carried prose before a valid verdict and were refused; one text was
+  drafted twice with a paraphrased gloss after the judge failed it, and
+  merge dropped both every run; user rulings 2026-09-10.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -155,7 +167,12 @@ executes and appends a row over a hit; the newest row is the answer. Only
 the attempt calls it, and only under §6a's re-ask rule. A backend appends
 a row only for an answer it positively recognized as the answer to the
 question asked: a body of the wrong shape, an unparseable verdict, a
-completion with no drafts raise and append nothing.
+completion with no drafts raise and append nothing. The judge's answer
+is the last JSON object in its completion; prose before it is not a
+refusal, since the verdict is positively recognized (r19: with thinking
+disabled the model sometimes reasons in text first). The prompts ask
+for the JSON object alone. A drafter answer `{"sentences": [],
+"reason": "..."}` is recognized (§5).
 
 **Cost contract.** Every Answer and Verdict carries the cost the backend
 incurred, in that backend's currency, measured by the backend: Forvo one
@@ -240,7 +257,9 @@ openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row
 carries `tried: [url, ...]`; a served refusal of every
-hit re-asks the search once within the attempt and ingests what is new),
+hit of a cached answer re-asks the search once within the attempt and
+ingests what is new; a search asked live in this attempt is not
+re-asked, its hits having just been served (r19)),
 judge *fit* on each
 (pass/fail, the old rubric texts verbatim), and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
@@ -301,7 +320,17 @@ punctuation). The answer item is
 local and mechanical: an unregistered id or a rendering that differs
 from text refuses the draft, logged with the reason, the provide row
 keeping it. Each distinct accepted text is a candidate: a text listed
-twice is one candidate, and differing glosses reject it. Fills is
+twice is one candidate; differing clauses reject it; differing glosses
+keep the first, since the verdict is keyed by the text and was given on
+that gloss (r19). The prompt also lists, as sentences not to propose,
+the texts the judge failed since the last adoption, each with the
+verdict's evidence. A no-fit answer `{"sentences": [], "reason":
+"..."}` is recognized and cached: one `nothing` outcome row per handed
+target (port attempt, backend llm). A target with `sentence_nothing_cap`
+(providers.yaml, default 3) such rows since its last handed draft is
+exhausted: the drafter is not handed it again, and the feedback screen
+asks the learner a direction question for it (supply a sentence, or
+retire the target); a learner row reopens it (§6a). Fills is
 membership of an open target's word in the clauses; a draft filling no
 open target is not judged. The judge sees each candidate once
 (sentence-for-target: naturalness; register; the L1 gloss with the
@@ -345,7 +374,9 @@ Implemented after cutover.
   run. A pending need gets no new attempt.
 - **outcome(subject, kind, source)**: what one attempt of a need at a
   source produced: `candidates` (at least one artifact from it was
-  stored and checked), `nothing` (the source answered and nothing
+  stored; the check's own verdict rows decide whether it ranks, and an
+  outcome row's candidates never rank: current_best reads assessments
+  only, r19), `nothing` (the source answered and nothing
   usable came of it), or `transient-failure` (the ask or any fetch it
   needed failed on the wire; retry). The attempt appends one outcome
   row per source it asks (port `attempt`, backend = the source, key
@@ -365,7 +396,8 @@ Implemented after cutover.
   role, or a card-level flag all make a subject directed); (2) an untried
   option remains (unasked suggestion, a candidate unjudged under the
   current rubric, unsearched source); (3) acceptable/unrated by rank then
-  attempts; excluded: good, exhausted with no candidate awaiting
+  attempts, counted as exhausted() counts them (a source at the
+  transient cap is one attempt, r19); excluded: good, exhausted with no candidate awaiting
   judgement, pending (pending is reported, not queued).
 - **confusion_weights()**: unchanged.
 
@@ -390,6 +422,11 @@ Every ask and fetch ends in one of four states:
   anchor, it counts as tried: next_source advances past it and exhausted
   counts it as one attempt. Learner input resets the anchor as for every
   other outcome.
+- **Ageing.** A `nothing` outcome from a source whose corpus grows
+  (Forvo) stops counting as tried once older than
+  `quotas.<source>.nothing_ttl_days` (§9; forvo 180, other sources
+  never): next_source offers the source again and a fresh lookup
+  appends a new row. r19.
 - **Quota.** The source itself says its allowance is spent (Forvo: 400
   with body `["Limit/day reached."]`, recognized by the backend and
   raised typed, never matched downstream). No row is appended, the need
@@ -528,7 +565,8 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3) and
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
 layered field by field over the defaults; an explicit `max_asks: null`
-lifts a default cap for the day. `search_proxy` is the HTTP
+lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
+(forvo 180; absent = never) and `sentence_nothing_cap` (3) per r19. `search_proxy` is the HTTP
 forward proxy Openverse searches go through (media sourcing: Openverse
 refuses a Thai egress); no other request uses it. The provenance prior lives in rulebook.yaml (it is
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,

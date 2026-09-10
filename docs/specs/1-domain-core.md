@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 8, proposed 2026-09-09 against principles r2 and architecture
+Revision 9, proposed 2026-09-10 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -43,6 +43,17 @@ Revision log:
   Thai form shared by several Words (ผม pŏm "I"/"hair"; คับ káp, the
   spoken particle, filling "tight"; ที่ thîi "at" filling two "serving"
   senses); form-to-sense is a disambiguation no rule over text can make.
+- r9 2026-09-10: productive Targets are derived by the loader from the
+  Profile's `productive_cutoff` (2000): a Word with a Category whose
+  frequency rank is at or above the cutoff carries one; targets.yaml
+  lists only exceptions (§1 Target, §2 Profile, §3 order). Evidence:
+  Nation's high-frequency line at the 2000 most frequent words, the
+  Lexical Frequency Profile (native speech is about 70% first-1000 and
+  10% second-1000; learners lean harder on the first 1000), subtitle
+  frequencies as the best spoken proxy (SUBTLEX), and the 2026-09-10
+  measurement: 429 of 822 targeted words rank at or above 2000 on the
+  deck's blend; user decision 2026-09-10 (frequency, introduced in
+  frequency order).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -95,6 +106,22 @@ Target                              # curated learning list; the unit of
   word: WordId
   skill: Literal[receptive, productive]
   introduction: Literal[picture_card, sentence]   # default picture_card
+                                    # A receptive Target is listed in
+                                    # targets.yaml. A productive Target
+                                    # is derived: every Word with a
+                                    # Category whose frequency rank is at
+                                    # or above Profile.productive_cutoff
+                                    # carries one (id "<word>/productive",
+                                    # introduction picture_card); a
+                                    # targets.yaml row with skill
+                                    # productive adds one below the cutoff,
+                                    # and a Word's `no_productive: true`
+                                    # withholds one (r9). Closure words
+                                    # (classifiers, pair members, keyword
+                                    # words) and unranked words carry none
+                                    # unless listed. The loader refuses a
+                                    # targets.yaml row that duplicates a
+                                    # derived Target.
 
 Category                            # curated learning list: a theme of
   name: str                         # the FF 625 list. identity
@@ -171,6 +198,10 @@ Profile
   register: Literal[male_colloquial]      # shapes generation prompts,
                                           # voice constraints
   emphasis: dict[CategoryName, float]     # order tie-breaking, drafting
+  productive_cutoff: int = 2000           # r9: the frequency rank at or
+                                          # above which a categorized Word
+                                          # carries a productive Target
+                                          # (Nation's high-frequency line)
 ```
 
 Confusion training weights are NOT stored here: derived as
@@ -188,7 +219,8 @@ cross-entity behavior:
 | grapheme | sentence, id }: the one introduction order of everything the
 learner meets. Constraints, each also stated as a rule: sounds stage
 (pairs, graphemes) before words; a sentence after every word it uses;
-receptive target before productive target per word. Ties: frequency rank
+receptive target before productive target per word, so productive
+Targets enter in frequency order like their words. Ties: frequency rank
 ÷ emphasis weight; the loader resolves ranks through the FrequencyMap
 port and the aggregate holds the mapping. Pure; recomputed each call;
 the studied past is not consulted (StudyRecords fix history, rules catch
