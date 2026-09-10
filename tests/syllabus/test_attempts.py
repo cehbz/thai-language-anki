@@ -1130,15 +1130,38 @@ class _ServedRefusingImgfetch:
         return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext},), cost=0.0)
 
 
-def test_a_picture_attempt_re_asks_the_search_once_when_every_hit_is_refused_by_its_server(tmp_path):
-    ctx, search, _judge = _picture_ctx(tmp_path, urls=("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
-    search = _RotatingSearch(("https://x/rotted1.jpg", "https://x/rotted2.jpg"),
-                             ("https://x/rotted1.jpg", "https://x/fresh.jpg"))
-    ctx.provider._backends["openverse"] = search
+def _cache_search_hit(ctx, urls, *, query="rice food"):
+    """A provide row already on record for this query: ask() serves it as
+    a cache hit (`hit=True`), making a later served refusal of every hit
+    the "cached answer" case spec 3 section 5/6a re-asks."""
+    ctx.db.append(port="provide", backend="openverse",
+                  key=ProvideKey(source="openverse", kind="", query=query), subject="rice",
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"query": query}},
+                  answer={"items": [{"url": u, "source": "openverse", "origin": u,
+                                     "licence": "cc0"} for u in urls]})
+
+
+def test_a_picture_attempt_does_not_re_ask_a_search_asked_live_in_this_attempt(tmp_path):
+    """spec 3 section 5 (r19): a search asked live in this attempt is not
+    re-asked -- its hits were just served, so a served refusal of all of
+    them is the attempt's own outcome, not cause for a second ask."""
+    ctx, search, _judge = _picture_ctx(
+        tmp_path, urls=("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
+    ctx.provider._backends["imgfetch"] = _ServedRefusingImgfetch(ctx.media_store)
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert len(search.queries) == 1                   # one live ask, no reask
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer["outcome"] == "transient-failure"
+
+
+def test_a_picture_attempt_re_asks_the_search_once_when_its_cached_hits_are_all_refused(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path, urls=("https://x/fresh.jpg",))
+    _cache_search_hit(ctx, ("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
     imgfetch = _ServedRefusingImgfetch(ctx.media_store)
     ctx.provider._backends["imgfetch"] = imgfetch
     attempt(ctx, Need("rice", "picture"), "openverse")
-    assert search.fetches == 2
+    assert len(search.queries) == 1                   # only the reask calls the backend
     assert imgfetch.asked == ["https://x/rotted1.jpg", "https://x/rotted2.jpg", "https://x/fresh.jpg"]
     row = _outcome(ctx.db, "rice", "picture", "openverse")
     assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
@@ -1169,36 +1192,21 @@ def test_a_picture_attempt_does_not_re_ask_on_wire_refusals(tmp_path):
 
 
 def test_a_picture_attempt_caps_the_re_ask_at_image_candidates_and_spends_on_it(tmp_path):
-    ctx, search, _judge = _picture_ctx(tmp_path, urls=("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
     fresh = tuple(f"https://x/fresh{i}.jpg" for i in range(5))
-    search = _RotatingSearch(("https://x/rotted1.jpg", "https://x/rotted2.jpg"), fresh)
-    ctx.provider._backends["openverse"] = search
+    ctx, search, _judge = _picture_ctx(tmp_path, urls=fresh)
+    _cache_search_hit(ctx, ("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
     imgfetch = _ServedRefusingImgfetch(ctx.media_store)
     ctx.provider._backends["imgfetch"] = imgfetch
     result = attempt(ctx, Need("rice", "picture"), "openverse")
     assert imgfetch.asked == ["https://x/rotted1.jpg", "https://x/rotted2.jpg",
                               *fresh[:ctx.image_candidates]]
-    assert result.spend["openverse"].asks == 2
-
-
-class _SearchThenDead(_Search):
-    """First answer: the given urls; the second fetch raises TransportError."""
-    def __init__(self, urls):
-        super().__init__(urls)
-        self.fetches = 0
-
-    def fetch(self, q):
-        self.fetches += 1
-        if self.fetches == 1:
-            return RawAnswer(items=tuple({"url": u, "source": "openverse", "origin": u,
-                                          "licence": "cc0"} for u in self.urls), cost=0.0)
-        raise TransportError("openverse down")
+    assert result.spend["openverse"].asks == 1        # the cache hit costs nothing; only the reask asks
 
 
 def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_re_ask_fails(tmp_path):
     ctx, search, _judge = _picture_ctx(tmp_path, urls=("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
-    search = _SearchThenDead(("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
-    ctx.provider._backends["openverse"] = search
+    _cache_search_hit(ctx, ("https://x/rotted1.jpg", "https://x/rotted2.jpg"))
+    ctx.provider._backends["openverse"] = _DeadSearch()
     ctx.provider._backends["imgfetch"] = _ServedRefusingImgfetch(ctx.media_store)
     with pytest.raises(TransportError):
         attempt(ctx, Need("rice", "picture"), "openverse")

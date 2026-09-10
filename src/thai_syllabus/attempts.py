@@ -312,6 +312,11 @@ def _picture_params(ctx: Sourcing, need: Need, query: str) -> dict[str, Any]:
 
 
 def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
+    """One attempt (spec 3 section 5): search, imgfetch each hit, judge.
+    A served refusal of every hit of a *cached* answer re-asks the search
+    once within the attempt and ingests what is new; a search asked live
+    in this attempt is not re-asked, its hits having just been served
+    (spec 3 section 6a's re-ask rule)."""
     spend: dict[str, Spend] = {}
     query = _picture_query_for(ctx, need)
     fetches = _Fetches()
@@ -333,7 +338,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     tried_items = fresh_hits[:ctx.image_candidates]
     for item in tried_items:
         _ingest_picture(ctx, need, item, source, spend, fetches)
-    if not fetches.candidates and fetches.served_refusals:
+    if not fetches.candidates and fetches.served_refusals and hits.hit:
         try:
             hits = ctx.provider.reask(source, question)
         except QuotaExhausted:
