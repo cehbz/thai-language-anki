@@ -28,6 +28,7 @@ from thai_syllabus.assessor import (
     DurationBackend,
     FormatBackend,
     RenditionBackend,
+    _custom_id,
     parse_preference,
     picture_fit_prompt,
     picture_preference_prompt,
@@ -657,6 +658,75 @@ def test_submits_marker_carries_no_keys_entry_and_resolve_writes_the_verdict_fro
     assert row.port == "assess" and row.subject == "rice"
     assert row.question["role"] == "picture-for-word" and row.question["artifact_sha"] == "a" * 64
     assert row.answer == {"value": True, "evidence": "ok"}
+
+
+def test_submit_records_the_custom_ids_it_used_in_submission_order(
+        assessor_with_batch_transport, fake_batch):
+    """spec 3 section 6: the marker names what was submitted, including the
+    custom_id each question was submitted under, so resolve can look a
+    completion up by the id actually used rather than recomputing it."""
+    a = assessor_with_batch_transport
+    prepared = a.ask_many(
+        "judge", [fit_question("rice", "a" * 64), fit_question("corn", "b" * 64)]).collected
+    bid = a.submit(prepared)
+    marker = a._cache.latest("assess", "judge", BatchMarkerKey(bid))
+    assert marker.question["custom_ids"] == [_custom_id(p.key) for p in prepared]
+
+
+def test_resolve_uses_the_marker_recorded_custom_id_even_if_the_key_shape_changed(
+        assessor_with_batch_transport, fake_batch, db):
+    """spec 3 section 6: resolve looks a completion up by the custom_id the
+    marker recorded at submission time, not by recomputing _custom_id(key)
+    from the rebuilt question -- so a later change to the key's encoding
+    does not strand an already-submitted batch's answers."""
+    a = assessor_with_batch_transport
+    q = fit_question("rice", "a" * 64)
+    db.append(
+        port="assess", backend="judge", key=BatchMarkerKey("b1"), subject="batch",
+        question={"kind": "batch", "batch_id": "b1", "subjects": [q.subject],
+                 "roles": [q.role], "artifact_shas": [q.artifact_sha], "rubrics": [q.rubric],
+                 "kinds": [q.kind], "subject_kinds": [q.subject_kind], "params": [dict(q.params)],
+                 "custom_ids": ["fixed-1"]},
+        answer={"status": "submitted"}, cost=0.0)
+    fake_batch._status["b1"] = "ended"
+    fake_batch._texts["b1"] = {"fixed-1": Completion(text='{"value": true}')}
+
+    got = a.resolve("b1")
+
+    assert len(got) == 1
+    key = JudgeKey.for_question(q)
+    assert key in got and got[key].value is True
+    assert _custom_id(key) != "fixed-1"  # the recomputed id would have missed
+
+
+def test_resolve_falls_back_per_element_when_custom_ids_is_shorter_than_subjects(
+        assessor_with_batch_transport, fake_batch, db):
+    """spec 3 section 6: a marker's "custom_ids" degrades per element like
+    its sibling optional lists (artifact_shas, rubrics, subject_kinds,
+    params) rather than crashing the whole resolve when it is shorter than
+    "subjects" -- e.g. a corrupted or hand-edited marker."""
+    a = assessor_with_batch_transport
+    q1 = fit_question("rice", "a" * 64)
+    q2 = fit_question("corn", "b" * 64)
+    db.append(
+        port="assess", backend="judge", key=BatchMarkerKey("b1"), subject="batch",
+        question={"kind": "batch", "batch_id": "b1", "subjects": [q1.subject, q2.subject],
+                 "roles": [q1.role, q2.role],
+                 "artifact_shas": [q1.artifact_sha, q2.artifact_sha],
+                 "rubrics": [q1.rubric, q2.rubric], "kinds": [q1.kind, q2.kind],
+                 "subject_kinds": [q1.subject_kind, q2.subject_kind],
+                 "params": [dict(q1.params), dict(q2.params)],
+                 "custom_ids": ["fixed-1"]},
+        answer={"status": "submitted"}, cost=0.0)
+    fake_batch._status["b1"] = "ended"
+    fake_batch._texts["b1"] = {
+        "fixed-1": Completion(text='{"value": true}'),
+        _custom_id(JudgeKey.for_question(q2)): Completion(text='{"value": true}'),
+    }
+
+    got = a.resolve("b1")
+
+    assert JudgeKey.for_question(q1) in got and JudgeKey.for_question(q2) in got
 
 
 def test_a_canceling_batch_stays_outstanding(assessor_with_batch_transport, fake_batch):

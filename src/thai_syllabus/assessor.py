@@ -318,6 +318,7 @@ class Assessor:
         kinds: list[str] = []
         subject_kinds: list[str] = []
         params: list[dict] = []
+        custom_ids: list[str] = []
         for p in prepared:
             custom_id = _custom_id(p.key)
             if custom_id in requests:
@@ -335,6 +336,7 @@ class Assessor:
             kinds.append(p.question.kind)
             subject_kinds.append(p.question.subject_kind)
             params.append(dict(p.question.params))
+            custom_ids.append(custom_id)
         try:
             batch_id = impl.batch_transport.submit(requests)
         except TransportError as e:
@@ -343,7 +345,8 @@ class Assessor:
             port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
             question={"kind": "batch", "batch_id": batch_id, "subjects": subjects,
                      "roles": roles, "artifact_shas": artifact_shas, "rubrics": rubrics,
-                     "kinds": kinds, "subject_kinds": subject_kinds, "params": params},
+                     "kinds": kinds, "subject_kinds": subject_kinds, "params": params,
+                     "custom_ids": custom_ids},
             answer={"status": "submitted"}, cost=0.0)
         return batch_id
 
@@ -358,7 +361,13 @@ class Assessor:
         reached: the marker stays submitted and the batch is read again
         on a later run. Logs a warning when questions and results do not
         match one to one (an expired result, or a batch submitted under
-        another key shape).
+        another key shape). Looks each completion up by the custom_id the
+        marker recorded at submission time (spec 3 section 6: the marker
+        names what was submitted, including the ids it was submitted
+        under); an older marker with no "custom_ids" entry, or one whose
+        "custom_ids" is shorter than "subjects" (per element, like the
+        other optional lists), falls back to recomputing _custom_id(key)
+        from the rebuilt question, as before.
         """
         marker = self._cache.latest("assess", "judge", BatchMarkerKey(batch_id))
         if marker is None or marker.answer.get("status") != "submitted":
@@ -378,17 +387,19 @@ class Assessor:
         kinds = marker.question["kinds"]
         subject_kinds = marker.question.get("subject_kinds") or ["word"] * n
         params = marker.question.get("params") or [{}] * n
+        custom_ids = marker.question.get("custom_ids")
         resolved: dict[CacheKey, Verdict] = {}
         rebuilt_ids: set[str] = set()
         unanswered = 0
-        for subject, role, artifact_sha, rubric, kind, subject_kind, question_params in zip(
+        for i, (subject, role, artifact_sha, rubric, kind, subject_kind, question_params) in enumerate(zip(
                 marker.question["subjects"], marker.question["roles"],
-                artifact_shas, rubrics, kinds, subject_kinds, params):
+                artifact_shas, rubrics, kinds, subject_kinds, params)):
             question = AssessQuestion(subject=subject, role=role, artifact_sha=artifact_sha,
                                       rubric=rubric, kind=kind, subject_kind=subject_kind,
                                       params=question_params or {})
             key = JudgeKey.for_question(question)
-            custom_id = _custom_id(key)
+            custom_id = (custom_ids[i] if custom_ids is not None and i < len(custom_ids)
+                        else _custom_id(key))
             rebuilt_ids.add(custom_id)
             completion = results.get(custom_id)
             if completion is None:
