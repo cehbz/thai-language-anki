@@ -6,7 +6,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
-from .entities import Target, exact_confusion_violation, is_corroborated
+from .entities import exact_confusion_violation, is_corroborated
 from .rules import Finding, Metric, Rule
 
 if TYPE_CHECKING:
@@ -112,58 +112,6 @@ def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
 SENTENCE_FILLS_NOVELTY = Rule(id="sentence/fills-novelty", principle="F5",
                               severity="error", shape="check",
                               check=_check_sentence_fills_novelty)
-
-
-# --- syllabus/closure ---------------------------------------------------
-# Every referenced WordId resolves: target words, word classifiers, pair
-# members, grapheme keywords.
-
-def _check_closure(syllabus: "Syllabus") -> list[Finding]:
-    known = {w.id for w in syllabus.words}
-    findings: list[Finding] = []
-    for t in syllabus.targets:
-        if t.word not in known:
-            findings.append(Finding(rule="syllabus/closure", note_id=t.id,
-                                    evidence=f"target references unknown word {t.word!r}"))
-    for w in syllabus.words:
-        if w.classifier is not None and w.classifier not in known:
-            findings.append(Finding(rule="syllabus/closure", note_id=w.id,
-                                    evidence=f"classifier references unknown word {w.classifier!r}"))
-    for p in syllabus.pairs:
-        for m in p.members:
-            if m not in known:
-                findings.append(Finding(rule="syllabus/closure", note_id=p.id,
-                                        evidence=f"pair references unknown word {m!r}"))
-    for g in syllabus.graphemes:
-        if g.keyword not in known:
-            findings.append(Finding(rule="syllabus/closure", note_id=g.symbol,
-                                    evidence=f"grapheme keyword references unknown word {g.keyword!r}"))
-    return findings
-
-
-SYLLABUS_CLOSURE = Rule(id="syllabus/closure", principle="F2", severity="error",
-                        shape="check", check=_check_closure)
-
-
-# --- category/single-membership ---------------------------------------------
-# F2: a word belongs to at most one Category.
-
-def _check_category_single_membership(syllabus: "Syllabus") -> list[Finding]:
-    seen: set["WordId"] = set()
-    duplicates: list["WordId"] = []
-    for cat in syllabus.categories:
-        for word_id in cat.members:
-            if word_id in seen and word_id not in duplicates:
-                duplicates.append(word_id)
-            seen.add(word_id)
-    return [Finding(rule="category/single-membership", note_id=word_id,
-                    evidence="word is a member of more than one category")
-           for word_id in duplicates]
-
-
-CATEGORY_SINGLE_MEMBERSHIP = Rule(id="category/single-membership", principle="F2",
-                                  severity="error", shape="check",
-                                  check=_check_category_single_membership)
 
 
 # --- coverage/categories ----------------------------------------------------
@@ -355,11 +303,13 @@ GRAPHEME_KEYWORD_PICTURE_REQUIRED = Rule(id="grapheme/keyword-picture-required",
                                          check=_check_grapheme_keyword_picture)
 
 
-# --- synthetic / mixed-speaker warnings (F7/F1) -----------------------------
+# --- synthetic warnings (F7/F1) ----------------------------------------------
 # A completeness error only asks "is there a current-best artifact at all";
 # these ask "is what's current-best actually good enough" -- TTS standing in
-# for a human voice, or a minimal pair's two members voiced by different
-# speakers (a third confound on top of the sound contrast itself).
+# for a human voice. (rendition/mixed-speakers, the other warning that once
+# lived here, is retired spec 1 section 4 r10: the rendition attempt's own
+# one-speaker intersection makes a mixed-speaker rendition impossible by
+# construction.)
 
 def _speaker_kind(prov: Mapping[str, Any] | None) -> str | None:
     speaker = prov.get("speaker") if prov else None
@@ -393,22 +343,6 @@ def _check_rendition_synthetic(syllabus: "Syllabus") -> list[Finding]:
 RENDITION_SYNTHETIC = Rule(id="rendition/synthetic", principle="F1",
                            severity="warn", shape="check",
                            check=_check_rendition_synthetic)
-
-
-def _check_rendition_mixed(syllabus: "Syllabus") -> list[Finding]:
-    out = []
-    for p in syllabus.pairs:
-        rows = syllabus.media.rendition_provenance(p.id)
-        speakers = {r.get("speaker_id") for r in rows if r and r.get("speaker_id") is not None}
-        if len(rows) == len(p.members) and len(speakers) > 1:
-            out.append(Finding(rule="rendition/mixed-speakers", note_id=p.id,
-                               evidence=f"speakers {sorted(map(str, speakers))}"))
-    return out
-
-
-RENDITION_MIXED_SPEAKERS = Rule(id="rendition/mixed-speakers", principle="F1",
-                                severity="warn", shape="check",
-                                check=_check_rendition_mixed)
 
 
 def _check_sentence_synthetic_productive(syllabus: "Syllabus") -> list[Finding]:
@@ -550,91 +484,6 @@ SENTENCE_RECORDING_REQUIRED = Rule(id="sentence/recording-required", principle="
                                    check=_check_sentence_recording)
 
 
-# --- order constraint checks (F8, E1) ----------------------------------------
-# Checks over order()'s own shape: OrderEntry.kind names pair, grapheme,
-# word_target and sentence entries.
-
-def _check_order_sounds_first(syllabus: "Syllabus") -> list[Finding]:
-    entries = list(syllabus.order())
-    sound_idxs = [i for i, e in enumerate(entries) if e.kind in ("pair", "grapheme")]
-    target_idxs = [i for i, e in enumerate(entries) if e.kind == "word_target"]
-    if sound_idxs and target_idxs and max(sound_idxs) > min(target_idxs):
-        return [Finding(rule="order/sounds-first", note_id="order",
-                        evidence="a pair or grapheme entry follows a word target")]
-    return []
-
-
-ORDER_SOUNDS_FIRST = Rule(id="order/sounds-first", principle="F8", severity="error",
-                          shape="check", check=_check_order_sounds_first)
-
-
-def _check_order_reading_after_graphemes(syllabus: "Syllabus") -> list[Finding]:
-    entries = list(syllabus.order())
-    grapheme_idxs = [i for i, e in enumerate(entries) if e.kind == "grapheme"]
-    target_idxs = [i for i, e in enumerate(entries) if e.kind == "word_target"]
-    if grapheme_idxs and target_idxs and max(grapheme_idxs) > min(target_idxs):
-        return [Finding(rule="order/reading-after-graphemes", note_id="order",
-                        evidence="a grapheme entry follows a word target")]
-    return []
-
-
-ORDER_READING_AFTER_GRAPHEMES = Rule(id="order/reading-after-graphemes", principle="E1",
-                                     severity="error", shape="check",
-                                     check=_check_order_reading_after_graphemes)
-
-
-def _check_order_receptive_first(syllabus: "Syllabus") -> list[Finding]:
-    positions = {e.id: i for i, e in enumerate(syllabus.order()) if e.kind == "word_target"}
-    by_skill: dict["WordId", dict[str, Target]] = {}
-    for t in syllabus.targets:
-        by_skill.setdefault(t.word, {})[t.skill] = t
-    findings = []
-    for word_id, skills in by_skill.items():
-        receptive, productive = skills.get("receptive"), skills.get("productive")
-        if receptive is not None and productive is not None \
-              and positions[receptive.id] > positions[productive.id]:
-            findings.append(Finding(rule="order/receptive-before-productive", note_id=word_id,
-                                    evidence="productive Target precedes its receptive Target"))
-    return findings
-
-
-ORDER_RECEPTIVE_FIRST = Rule(id="order/receptive-before-productive", principle="F8",
-                             severity="error", shape="check",
-                             check=_check_order_receptive_first)
-
-
-def _check_order_sentence_after_words(syllabus: "Syllabus") -> list[Finding]:
-    """Every sentence entry sits after the word_target entry of every
-    word it uses: a used word with no Target, or one whose Target is not
-    before the sentence's own position, is a finding.
-    """
-    positions = {(e.kind, e.id): i for i, e in enumerate(syllabus.order())}
-    findings = []
-    for s in syllabus.sentences:
-        note_id = sentence_note_id(s)
-        sentence_pos = positions.get(("sentence", note_id))
-        if sentence_pos is None:
-            continue
-        for w in s.words:
-            word_targets = [t for t in syllabus.targets if t.word == w]
-            if not word_targets:
-                findings.append(Finding(rule="order/sentence-after-words", note_id=note_id,
-                                        evidence=f"uses word {w!r} with no Target"))
-                continue
-            for t in word_targets:
-                target_pos = positions.get(("word_target", t.id))
-                if target_pos is not None and target_pos >= sentence_pos:
-                    findings.append(Finding(
-                        rule="order/sentence-after-words", note_id=note_id,
-                        evidence=f"target {t.id!r} for word {w!r} is not before the sentence"))
-    return findings
-
-
-ORDER_SENTENCE_AFTER_WORDS = Rule(id="order/sentence-after-words", principle="F8",
-                                  severity="error", shape="check",
-                                  check=_check_order_sentence_after_words)
-
-
 # --- card/unique-front (A3) --------------------------------------------------
 # shape="compile": evaluated by compile.py against compiled notes, not by
 # report(); carries no check/measure/judged_subjects function.
@@ -688,8 +537,6 @@ RULES: list[Rule] = [
     PAIR_EXACT_CONFUSION,
     GRAPHEME_KEYWORD_CONTAINS_SYMBOL,
     SENTENCE_FILLS_NOVELTY,
-    SYLLABUS_CLOSURE,
-    CATEGORY_SINGLE_MEMBERSHIP,
     COVERAGE_CATEGORIES,
     COVERAGE_CONFUSIONS,
     SENTENCE_REGISTER_NATURAL,
@@ -701,7 +548,6 @@ RULES: list[Rule] = [
     GRAPHEME_KEYWORD_PICTURE_REQUIRED,
     RECORDING_SYNTHETIC,
     RENDITION_SYNTHETIC,
-    RENDITION_MIXED_SPEAKERS,
     SENTENCE_SYNTHETIC_PRODUCTIVE,
     PICTURE_FIT,
     SCENE_FIT,
@@ -710,10 +556,6 @@ RULES: list[Rule] = [
     WORD_PRONUNCIATION_CORROBORATED,
     WORD_CLASSIFIER_KNOWN,
     SENTENCE_RECORDING_REQUIRED,
-    ORDER_SOUNDS_FIRST,
-    ORDER_READING_AFTER_GRAPHEMES,
-    ORDER_RECEPTIVE_FIRST,
-    ORDER_SENTENCE_AFTER_WORDS,
     CARD_UNIQUE_FRONT,
 ]
 

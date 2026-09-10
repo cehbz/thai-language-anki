@@ -10,7 +10,7 @@ from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusi
 from thai_syllabus.ids import ConfusionId, PairId
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
-from thai_syllabus.rules import OrderEntry, Rule
+from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
                                     PICTURE_PREFERENCE, PRINCIPLES, RULES, SCENE_FIT_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC, SENTENCE_REGISTER_NATURAL,
@@ -81,22 +81,41 @@ def test_rulebook_traceability_rule_is_itself_in_the_registry():
 # --- rule enumeration against the spec table --------------------------------
 
 def test_registered_rules_match_the_spec_table():
+    # order/sounds-first, order/reading-after-graphemes,
+    # order/receptive-before-productive, order/sentence-after-words,
+    # category/single-membership, syllabus/closure and
+    # rendition/mixed-speakers are retired spec 1 section 4 r10: they held
+    # by construction (order(), the loader's registration checks, the
+    # rendition attempt's one-speaker intersection).
     expected = {
         "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
-        "rendition/mixed-speakers", "coverage/confusions", "syllabus/closure",
-        "coverage/categories", "category/single-membership", "picture/fit",
+        "coverage/confusions",
+        "coverage/categories", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
         "sentence/fills-novelty",
         "target/sentence-required", "grapheme/keyword-picture-required",
         "grapheme/keyword-contains-symbol", "target/recording-required",
         "sentence/recording-required", "recording/synthetic",
-        "sentence/synthetic-productive", "order/sounds-first",
-        "order/sentence-after-words", "order/receptive-before-productive",
-        "order/reading-after-graphemes", "sentence/register-natural",
+        "sentence/synthetic-productive",
+        "sentence/register-natural",
         "word/pronunciation-corroborated", "word/classifier-known",
         "coverage/speakers", "card/unique-front", "rulebook/traceability",
     }
     assert {r.id for r in RULES} == expected
+
+
+def test_rules_holds_none_of_the_seven_ids_retired_by_construction():
+    """Spec 1 section 4 r10: these seven hold by construction (order(),
+    the loader's registration checks, the rendition attempt's one-speaker
+    intersection) and carry no registered rule.
+    """
+    retired = {
+        "order/sounds-first", "order/reading-after-graphemes",
+        "order/receptive-before-productive", "order/sentence-after-words",
+        "category/single-membership", "syllabus/closure",
+        "rendition/mixed-speakers",
+    }
+    assert {r.id for r in RULES} & retired == set()
 
 
 def test_principles_matches_the_locked_principles_doc():
@@ -213,44 +232,6 @@ def test_sentence_fills_novelty_is_silent_when_the_sentence_fills_its_target():
     assert findings == []
 
 
-# --- syllabus/closure ---------------------------------------------------
-
-def test_closure_flags_a_target_whose_word_does_not_resolve():
-    t = target("ghost/receptive", "ghost", "receptive")  # no matching Word
-    syllabus = make_syllabus(words=(), targets=(t,))
-    findings = [f for f in syllabus.report().findings if f.rule == "syllabus/closure"]
-    assert len(findings) == 1
-    assert findings[0].note_id == t.id
-
-
-def test_closure_is_silent_when_every_reference_resolves():
-    rice = word("rice", "ข้าว")  # rice
-    t = target("rice/receptive", "rice", "receptive")
-    syllabus = make_syllabus(words=(rice,), targets=(t,))
-    findings = [f for f in syllabus.report().findings if f.rule == "syllabus/closure"]
-    assert findings == []
-
-
-# --- category/single-membership -----------------------------------------
-
-def test_single_membership_flags_a_word_in_two_categories():
-    syllabus = make_syllabus(categories=(
-        Category(name="Food", members=frozenset({"rice"})),
-        Category(name="Verbs", members=frozenset({"rice"}))))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "category/single-membership"]
-    assert [f.note_id for f in findings] == ["rice"]
-
-
-def test_single_membership_is_silent_when_every_word_is_in_at_most_one_category():
-    syllabus = make_syllabus(categories=(
-        Category(name="Food", members=frozenset({"rice"})),
-        Category(name="Colors", members=frozenset({"red"}))))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "category/single-membership"]
-    assert findings == []
-
-
 # --- coverage/categories ---------------------------------------------------
 
 def test_coverage_categories_counts_categories_with_a_target():
@@ -332,15 +313,15 @@ def test_overlay_changes_severity_and_rubric_only_where_configured():
     by_id = {r.id: r for r in out}
     assert by_id["sentence/register-natural"].severity == "error"
     assert by_id["sentence/register-natural"].rubric == "new text"
-    assert by_id["syllabus/closure"].severity == "error"
+    assert by_id["card/unique-front"].severity == "error"
     assert SENTENCE_REGISTER_NATURAL.severity == "warn"  # registry untouched
 
 
 def test_overlay_ignores_a_rubric_override_targeting_a_non_judged_rule():
-    cfg = RulebookConfig(rubrics={"syllabus/closure": "should be ignored"})
+    cfg = RulebookConfig(rubrics={"card/unique-front": "should be ignored"})
     out = apply_overlay(RULES, cfg)
     by_id = {r.id: r for r in out}
-    assert by_id["syllabus/closure"].rubric is None
+    assert by_id["card/unique-front"].rubric is None
 
 
 def test_rule_role_defaults_to_id():
@@ -477,7 +458,7 @@ def test_grapheme_keyword_picture_required_is_silent_when_the_keyword_has_a_pict
     assert findings == []
 
 
-# --- rendition/synthetic, rendition/mixed-speakers --------------------------
+# --- rendition/synthetic -----------------------------------------------------
 
 def test_rendition_synthetic_flags_a_tts_rendition():
     confusion, mid_word, low_word, pair = _mid_low_pair()
@@ -488,31 +469,6 @@ def test_rendition_synthetic_flags_a_tts_rendition():
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "rendition/synthetic"]
     assert [f.note_id for f in findings] == [pair.id]
-
-
-def test_rendition_mixed_speakers_flags_different_speaker_ids():
-    confusion, mid_word, low_word, pair = _mid_low_pair()
-    media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker": Speaker("a", "native")},
-        {"speaker_id": "b", "speaker": Speaker("b", "native")})})
-    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
-                             media=media)
-    findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
-    assert [f.note_id for f in findings] == [pair.id]
-
-
-def test_rendition_mixed_speakers_ignores_a_null_speaker_id():
-    # both rows present (so the count check passes) but one has no
-    # speaker_id on file -- must not be counted as a second, distinct
-    # speaker.
-    confusion, mid_word, low_word, pair = _mid_low_pair()
-    media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker": Speaker("a", "native")},
-        {"speaker_id": None, "speaker": Speaker("a2", "native")})})
-    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
-                             media=media)
-    findings = [f for f in syllabus.report().findings if f.rule == "rendition/mixed-speakers"]
-    assert findings == []
 
 
 # --- sentence/synthetic-productive ------------------------------------------
@@ -661,136 +617,6 @@ def test_sentence_recording_required_is_silent_with_a_current_best_recording():
     findings = [f for f in syllabus.report().findings
                if f.rule == "sentence/recording-required"]
     assert findings == []
-
-
-# --- order constraint checks (F8, E1) ---------------------------------------
-
-def test_order_sounds_first_is_silent_over_orders_own_shape():
-    confusion, mid_word, low_word, pair = _mid_low_pair()
-    chicken = word("chicken", "ไก่", "chicken")
-    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
-                               consonant_class="mid", keyword_word=chicken)
-    rice = word("rice", "ข้าว")  # rice
-    t = target("rice/receptive", "rice", "receptive")
-    syllabus = make_syllabus(words=(mid_word, low_word, chicken, rice), pairs=(pair,),
-                             graphemes=(grapheme,), confusions=(confusion,), targets=(t,))
-    findings = [f for f in syllabus.report().findings if f.rule == "order/sounds-first"]
-    assert findings == []
-
-
-def test_order_reading_after_graphemes_is_silent_over_orders_own_shape():
-    chicken = word("chicken", "ไก่", "chicken")
-    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
-                               consonant_class="mid", keyword_word=chicken)
-    rice = word("rice", "ข้าว")  # rice
-    t = target("rice/receptive", "rice", "receptive")
-    syllabus = make_syllabus(words=(chicken, rice), graphemes=(grapheme,), targets=(t,))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "order/reading-after-graphemes"]
-    assert findings == []
-
-
-def test_order_receptive_before_productive_is_silent_when_ordered_correctly():
-    rice = word("rice", "ข้าว")  # rice
-    t_receptive = target("rice/receptive", "rice", "receptive")
-    t_productive = target("rice/productive", "rice", "productive")
-    syllabus = make_syllabus(words=(rice,), targets=(t_receptive, t_productive))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "order/receptive-before-productive"]
-    assert findings == []
-
-
-class _FixedOrderSyllabus:
-    """A minimal stand-in exposing only what an order() check reads --
-    order()'s own ranking (sounds before words; receptive before
-    productive at equal frequency) can't be forced into a violating shape
-    without it.
-    """
-    def __init__(self, targets=(), order_list=(), graphemes=(), sentences=(), words=()):
-        self.targets = targets
-        self.graphemes = graphemes
-        self.sentences = sentences
-        self.words = words
-        self._order_list = order_list
-
-    def order(self):
-        return self._order_list
-
-
-def test_order_receptive_before_productive_flags_a_reversed_pair():
-    from thai_syllabus.rulebook import _check_order_receptive_first
-    rice = word("rice", "ข้าว")  # rice
-    t_productive = target("rice/productive", "rice", "productive")
-    t_receptive = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(
-        targets=(t_productive, t_receptive),
-        order_list=[OrderEntry("word_target", t_productive.id),
-                   OrderEntry("word_target", t_receptive.id)])
-    findings = _check_order_receptive_first(fixed)
-    assert [f.note_id for f in findings] == ["rice"]
-
-
-def test_order_sounds_first_flags_a_target_before_a_pair_or_grapheme_entry():
-    from thai_syllabus.rulebook import _check_order_sounds_first
-    t = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(order_list=[OrderEntry("word_target", t.id),
-                                            OrderEntry("pair", "tone:mid-low/klai")])
-    findings = _check_order_sounds_first(fixed)
-    assert [f.rule for f in findings] == ["order/sounds-first"]
-
-
-def test_order_reading_after_graphemes_flags_a_target_before_a_grapheme():
-    from thai_syllabus.rulebook import _check_order_reading_after_graphemes
-    chicken = word("chicken", "ไก่", "chicken")
-    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
-                               consonant_class="mid", keyword_word=chicken)
-    t = target("rice/receptive", "rice", "receptive")
-    fixed = _FixedOrderSyllabus(order_list=[OrderEntry("word_target", t.id),
-                                            OrderEntry("grapheme", "ก")],
-                                graphemes=(grapheme,))
-    findings = _check_order_reading_after_graphemes(fixed)
-    assert [f.rule for f in findings] == ["order/reading-after-graphemes"]
-
-
-def test_order_sentence_after_words_flags_a_word_the_sentence_uses_with_no_target():
-    rice = word("rice", "ข้าว")  # rice
-    plate = word("plate", "จาน")  # plate, no Target
-    t_rice = target("rice/receptive", "rice", "receptive")
-    to = thai_of(rice, plate)
-    s = sentence(((rice.id, plate.id),), to, voice="learner_voice")  # rice, plate
-    syllabus = make_syllabus(words=(rice, plate), targets=(t_rice,), sentences=(s,))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "order/sentence-after-words"]
-    assert [f.note_id for f in findings] == [sentence_note_id(s)]
-
-
-def test_order_sentence_after_words_is_silent_when_every_used_word_has_a_target():
-    rice = word("rice", "ข้าว")  # rice
-    t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
-    syllabus = make_syllabus(words=(rice,), targets=(t_rice,), sentences=(s,))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "order/sentence-after-words"]
-    assert findings == []
-
-
-def test_order_sentence_after_words_flags_a_target_not_before_the_sentence():
-    from thai_syllabus.rulebook import _check_order_sentence_after_words
-    rice = word("rice", "ข้าว")  # rice
-    t_rice = target("rice/receptive", "rice", "receptive")
-    s = sentence(((rice.id,),), thai_of(rice), voice="learner_voice")  # rice
-    # A fabricated order() placing the sentence entry BEFORE its own
-    # word's target entry -- real Syllabus.order() never builds this
-    # shape (the sentence block always trails every word_target entry),
-    # but the check reads positions, not the aggregate's own invariants,
-    # so it must catch a violation if one were ever produced.
-    fixed = _FixedOrderSyllabus(
-        targets=(t_rice,), words=(rice,), sentences=(s,),
-        order_list=[OrderEntry("sentence", sentence_note_id(s)),
-                   OrderEntry("word_target", t_rice.id)])
-    findings = _check_order_sentence_after_words(fixed)
-    assert [f.rule for f in findings] == ["order/sentence-after-words"]
-    assert findings[0].note_id == sentence_note_id(s)
 
 
 # --- scene/fit: a sentence's scene picture has its own rubric ---------------

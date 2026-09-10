@@ -421,10 +421,13 @@ class _DbMediaIndex:
     "rendition-for-pair"), and that row's `params["members"]` (word id ->
     sha) names the per-member recordings backing it. With no pair-level
     rendition row current-best, rendition_provenance falls back to each
-    member's own current-best recording, so pair/rendition-required and
-    rendition/mixed-speakers still see provenance to warn on;
-    rendition_speakers takes no such fallback, so the pair stays in
-    Syllabus.gaps().missing_renditions for the run to source.
+    member's own current-best recording, so pair/rendition-required still
+    sees provenance to check against; rendition_speakers takes no such
+    fallback, so the pair stays in Syllabus.gaps().missing_renditions for
+    the run to source. (rendition/mixed-speakers, which once read this
+    same provenance to warn, is retired spec 1 section 4 r10: the
+    rendition attempt's own one-speaker intersection holds by
+    construction.)
     """
     db: SyllabusDb
     pairs: tuple[MinimalPair, ...] = ()

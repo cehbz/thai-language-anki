@@ -112,7 +112,8 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
         note = next(n for n in _notes_of(pkg, model_name) if n["flds"][idx] == thai_value)
         return [c["due"] for c in _cards_of(pkg, note["id"])]
 
-    # order/sounds-first (F8): graphemes and pairs precede every word target.
+    # F8: order() guarantees sounds-first -- graphemes and pairs precede
+    # every word target -- by construction (spec 1 section 4 r10).
     grapheme_due = due_of("grapheme", "Symbol", "ก")  # ก: the letter k, "gɔɔ gài"
     rice_due = due_of("word", "Thai", "ข้าว")  # rice
     assert max(grapheme_due) < min(rice_due)
@@ -129,8 +130,9 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
     assert len(member_dues) == 2
     assert member_dues[1] - member_dues[0] == STRIDE
 
-    # order/sentence-after-words (F8): the sentence "ผมกินข้าว" (I eat rice)
-    # uses pom, gin and rice -- its cards are due after every one of them.
+    # F8: order() guarantees sentence-after-words -- the sentence
+    # "ผมกินข้าว" (I eat rice) uses pom, gin and rice -- its cards are due
+    # after every one of them, by construction (spec 1 section 4 r10).
     pom_due = due_of("word", "Thai", "ผม")     # I
     gin_due = due_of("word", "Thai", "กิน")    # eat
     s_model = _models_by_name(pkg)["sentence"]

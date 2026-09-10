@@ -398,7 +398,7 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
     base_due = positions.entry_index[pair.id] * STRIDE
     members = [syllabus.find_word(m) for m in pair.members]
     if any(m is None for m in members):
-        return []  # syllabus/closure already flags this; compile just skips it
+        return []  # the loader's registration check already enforces this (spec 1 section 4 r10)
 
     choices = " / ".join(m.thai for m in members)
     notes = []
@@ -445,7 +445,8 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
         return _GraphemeBuild(None, None, None)
     keyword = syllabus.find_word(grapheme.keyword)
     if keyword is None:
-        return _GraphemeBuild(None, None, None)  # syllabus/closure already flags this
+        # the loader's registration check already enforces this (spec 1 section 4 r10)
+        return _GraphemeBuild(None, None, None)
     name_word = syllabus.find_word(grapheme.name_word) if grapheme.name_word else None
     if name_word is None:
         return _GraphemeBuild(None, None, "no name word")

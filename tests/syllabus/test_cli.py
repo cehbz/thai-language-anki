@@ -165,7 +165,7 @@ def test_compile_refuses_and_reports_the_blocking_count_and_findings(
     # finding (blocking or not) is still listed.
     root = _write_curated_dir(tmp_path / "deck")
     findings = (
-        Finding(rule="syllabus/closure", note_id="t-rice", evidence="bad reference"),
+        Finding(rule="card/unique-front", note_id="t-rice", evidence="bad reference"),
         Finding(rule="test/warn-only", note_id="t-rice", evidence="fyi"),
     )
     report = Report(syllabus_state_id="s", rulebook_id="r",
@@ -181,7 +181,7 @@ def test_compile_refuses_and_reports_the_blocking_count_and_findings(
     assert rc == 1
     text = capsys.readouterr().out
     assert "gate is closed (1 finding(s))" in text
-    assert "syllabus/closure" in text
+    assert "card/unique-front" in text
     assert "bad reference" in text
     assert "test/warn-only" in text
 
