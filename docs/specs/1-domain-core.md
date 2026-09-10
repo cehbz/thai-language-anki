@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 9, proposed 2026-09-10 against principles r2 and architecture
+Revision 10, proposed 2026-09-10 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -54,6 +54,30 @@ Revision log:
   measurement: 429 of 822 targeted words rank at or above 2000 on the
   deck's blend; user decision 2026-09-10 (frequency, introduced in
   frequency order).
+- r10 2026-09-10: Word gains `speaker`, the sex a word marks its speaker
+  as; a sentence's marking is the union over its words, and a
+  recording's speaker must match it: spec 3 §5 derives the voice
+  constraint from the marking (female → female, male → male, empty →
+  any, or male on a productive back). No rulebook rule: the constraint
+  holds at sourcing time, and recordings on record that contradict it
+  are vetoed once (a learner unacceptable-none row each) and re-sourced
+  when r10 lands. A productive Target is filled only by a
+  sentence clozed on its word (the sentence's last used word) whose
+  marking admits the learner's voice (§3 fills clause 2). The Word
+  block also records `no_productive` (r9 omitted the line). Evidence:
+  2026-09-10 measurement on the live deck: 295 of 368 productive Targets
+  read as filled under clause 1 alone while only 24 sentences are clozed
+  on their word and compile emits 26 Cloze cards; user rulings
+  2026-09-10 (a production sentence must be one the learner would say;
+  the speaker and the sentence's register must match, for every card).
+  Seven rules that hold by construction are retired (§4): the four
+  order/* checks re-check what order() enforces, category/single-
+  membership what the loader's one category field enforces,
+  syllabus/closure what the loader's registration checks enforce (r8),
+  rendition/mixed-speakers what the rendition attempt's one-speaker
+  intersection enforces; none fired on the live deck and each can only
+  fire on a code defect the unit tests cover. Ruling 2026-09-10: no
+  rule for what a constraint already prevents.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -78,6 +102,19 @@ Word                                # language model
   pron: Pronunciation               # spoken form
   meaning: str                      # today rendered as the English gloss
   classifier: WordId | None         # nouns: unmarked colloquial classifier
+  no_productive: bool = False       # r9: withholds the derived productive
+                                    # Target
+  speaker: Literal[male, female] | None   # r10: the sex a word marks its
+                                    # speaker as (ครับ, ผม male; ค่ะ, คะ,
+                                    # ดิฉัน female); None for every other
+                                    # word. Curated. A sentence's marking
+                                    # is the union over its words (empty
+                                    # = any speaker; both = a defect the
+                                    # invariant refuses). It constrains
+                                    # the recording's speaker (spec 3 §5)
+                                    # and the productive fill (§3 clause 2);
+                                    # a female-marked sentence still
+                                    # fills receptive Targets (E7)
 
 Pronunciation
   syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone
@@ -196,7 +233,9 @@ speaker across members), sentence→recording.
 ```
 Profile
   register: Literal[male_colloquial]      # shapes generation prompts,
-                                          # voice constraints
+                                          # voice constraints; names the
+                                          # learner's speaker sex (male)
+                                          # for §3 clause 2 (r10)
   emphasis: dict[CategoryName, float]     # order tie-breaking, drafting
   productive_cutoff: int = 2000           # r9: the frequency rank at or
                                           # above which a categorized Word
@@ -230,7 +269,10 @@ none re-derives placement.
 **fills(sentence, target) -> bool** — the single definition:
 1. target.word is in sentence.clauses (a repeated word counts once),
 2. sentence.voice satisfies target.skill (other_voice fills receptive
-   only),
+   only); a productive Target is filled only when the sentence's last
+   used word is the target's word (the word the Cloze card is on, spec
+   4) and the sentence's marking admits the learner's voice, i.e. is
+   empty or the Profile's own sex (r10),
 3. at the sentence's entry position (after its last word's target):
    every word it uses has a Target, and at most one filled Target is
    sentence-introduced and unmet, no adopted sentence placed at or
@@ -294,15 +336,15 @@ violated by construction.
 | A2, A5, A6, A7, A8 | compile |
 | A3 | card/unique-front (check, error) |
 | A4 | compile (a missing artifact drops the card, counted) |
-| F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, rendition/mixed-speakers, coverage/confusions |
-| F2 | syllabus/closure, coverage/categories (measure), category/single-membership |
+| F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, coverage/confusions (rendition/mixed-speakers retired r10: one speaker by construction) |
+| F2 | coverage/categories (measure) (syllabus/closure and category/single-membership retired r10: the loader enforces both) |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (over words with a picture-introduced target); front-gloss policy provisional |
 | F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
 | F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
 | F7, E2 | target/recording-required, sentence/recording-required, recording/synthetic, sentence/synthetic-productive |
-| F8 | order/sounds-first, order/sentence-after-words, order/receptive-before-productive (checks over order()) |
+| F8 | order() enforces sounds-first, sentence-after-words and receptive-before-productive by construction (the three checks retired r10; unit tests cover order()) |
 | F11 | structural: current-best ranks judged candidates only |
-| E1 | order/reading-after-graphemes (check over order()) |
+| E1 | order() enforces reading-after-graphemes by construction (check retired r10) |
 | E3 | sentence/register-natural (judged) |
 | E4 | word/pronunciation-corroborated (check, error; blocks card emission) |
 | E5 | word/classifier-known (check, warn, nouns) |

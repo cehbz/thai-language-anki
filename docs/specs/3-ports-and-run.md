@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 19, proposed 2026-09-10 against principles r2 and architecture
+Revision 20, proposed 2026-09-11 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -115,6 +115,13 @@ Revision log:
   carried prose before a valid verdict and were refused; one text was
   drafted twice with a paraphrased gloss after the judge failed it, and
   merge dropped both every run; user rulings 2026-09-10.
+- r20 2026-09-11: §5's wording aligned with the r19 implementation: the
+  no-fit rows and the cap are per word (the sentence need's subject,
+  the target ids on the row), the count reopens on any learner row on
+  the word, the drafting prompt lists the unadopted failed texts newest
+  first (at most 20), and a no-fit served from cache is re-asked once so
+  the cap counts refusals. Evidence: the r19 reviews (word-keyed folds,
+  the no-fit cache replay measured at three runs to exhaustion).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -323,14 +330,18 @@ keeping it. Each distinct accepted text is a candidate: a text listed
 twice is one candidate; differing clauses reject it; differing glosses
 keep the first, since the verdict is keyed by the text and was given on
 that gloss (r19). The prompt also lists, as sentences not to propose,
-the texts the judge failed since the last adoption, each with the
-verdict's evidence. A no-fit answer `{"sentences": [], "reason":
-"..."}` is recognized and cached: one `nothing` outcome row per handed
-target (port attempt, backend llm). A target with `sentence_nothing_cap`
-(providers.yaml, default 3) such rows since its last handed draft is
-exhausted: the drafter is not handed it again, and the feedback screen
-asks the learner a direction question for it (supply a sentence, or
-retire the target); a learner row reopens it (§6a). Fills is
+the unadopted texts the judge failed, newest first, at most 20, each
+with the verdict's evidence (whitespace-collapsed, 200 characters). A
+no-fit answer `{"sentences": [], "reason": "..."}` is recognized and
+cached: one `nothing` outcome row per handed word (the sentence need's
+subject; port attempt, backend llm, the handed target ids on the row);
+a no-fit served from the cache is re-asked once, so the rows count
+refusals, not runs. A word with `sentence_nothing_cap` (providers.yaml,
+default 3) such rows since its newest learner row is exhausted: its
+targets are not handed again, the run counts it exhausted, and the
+feedback screen asks the learner a direction question carrying the
+drafter's reason (supply a sentence, or retire the target); any learner
+row on the word reopens it (§6a). Fills is
 membership of an open target's word in the clauses; a draft filling no
 open target is not judged. The judge sees each candidate once
 (sentence-for-target: naturalness; register; the L1 gloss with the
