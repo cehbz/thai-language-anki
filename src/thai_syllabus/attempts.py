@@ -688,7 +688,11 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     """One recording per member by one speaker (spec 3 section 2's
     compound question), appended under the pair; Forvo's per-member
     lookups stay cached under the members. A Source that cannot guarantee
-    one speaker answers empty."""
+    one speaker answers empty. When members is non-empty, the outcome
+    row's candidates carry the rendition identity
+    (cachekeys.rendition_identity) alongside the member recording shas,
+    so the row anchors escalation on the rendition current-best
+    (spec 3 section 6a)."""
     spend: dict[str, Spend] = {}
     pair = ctx.syllabus.pair(PairId(need.subject))
     words = {member: _word_of(ctx, member) for member in pair.members}
@@ -717,10 +721,12 @@ def _rendition_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                   answer={"items": [{"member": member, "sha": sha,
                                      "speaker": asdict(speaker)}
                                     for member, (sha, speaker) in members.items()]})
-    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
+    shas = {member: sha for member, (sha, _speaker) in members.items()}
+    outcome_candidates = ([*fetches.candidates, rendition_identity(shas)] if members
+                          else fetches.candidates)
+    _append_outcome(ctx, need, source, fetches.outcome, outcome_candidates)
     if not members:
         return AttemptResult(attempted=True, spend=spend)
-    shas = {member: sha for member, (sha, _speaker) in members.items()}
     result = ctx.assessor.ask_many("rendition", [AssessQuestion(
         subject=pair.id, role=need.role, artifact_sha=rendition_identity(shas),
         kind="rendition", subject_kind="pair",

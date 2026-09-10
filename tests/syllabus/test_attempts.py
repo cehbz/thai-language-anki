@@ -14,9 +14,9 @@ from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, assess_first,
                                     attempt, current_best_of, sentence_attempt, sources_for)
-from thai_syllabus.cachekeys import (JudgeKey, LlmPromptKey, MechanicalKey, ProvideKey,
-                                    rendition_identity, sha)
-from thai_syllabus.derivations import exhausted
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, JudgeKey, LlmPromptKey, MechanicalKey,
+                                    ProvideKey, rendition_identity, sha)
+from thai_syllabus.derivations import attempts_since_change, exhausted
 from thai_syllabus.record import DRAFT_SUBJECT, drafts_in, rows_for, sentence_drafts
 from thai_syllabus.entities import Category, Clauses, MinimalPair, Sentence, SoundConfusion, text_sha
 from thai_syllabus.ids import WordId
@@ -592,8 +592,11 @@ def test_rendition_attempt_appends_under_the_pair(tmp_path):
     provided = [r for r in rows if r.port == "provide"]
     assert provided and set(provided[-1].answer["items"][0]) >= {"member", "sha", "speaker"}
     assert {i["speaker"]["id"] for i in provided[-1].answer["items"]} == {"forvo:somchai"}
+    # spec 3 section 6a: this attempt's own outcome row anchors escalation
+    # on the rendition identity it produced (current_best's artifact), so
+    # it does not itself count toward exhaustion.
     assert exhausted(ctx.db, "p1", "rendition", sources=("forvo",), attempt_cap=8,
-                     transient_cap=ctx.transient_cap).attempts == 1
+                     transient_cap=ctx.transient_cap).attempts == 0
 
 
 def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):
@@ -1562,7 +1565,43 @@ def test_a_rendition_attempt_writes_a_candidates_outcome(tmp_path):
         "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
     attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
     row = _outcome(ctx.db, "p1", "rendition", "forvo")
-    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 2
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 3
+
+
+def test_a_rendition_attempts_candidates_end_with_the_rendition_identity(tmp_path):
+    """spec 3 section 6a: escalation anchors on the attempt-outcome row
+    that produced current-best's artifact. A rendition's current-best
+    artifact_sha is the rendition identity over its members
+    (cachekeys.rendition_identity), so the outcome row's candidates must
+    include that identity alongside the member recording shas for
+    derivations._anchor_ts to ever find a producing row."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    row = _outcome(ctx.db, "p1", "rendition", "forvo")
+    member_shas = row.answer["candidates"][:2]
+    assert row.answer["candidates"][2] == rendition_identity(
+        {"white": member_shas[0], "news": member_shas[1]})
+
+
+def test_a_passing_rendition_attempt_anchors_escalation_on_its_own_row(tmp_path):
+    """spec 3 section 6a: the row that produced current-best's artifact
+    anchors escalation -- attempts_since_change is empty right after the
+    producing attempt, and a later outcome row counts as one attempt
+    since that anchor."""
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
+        "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
+        "ข่าว": [{"username": "somchai", "pathmp3": "https://f/b.mp3"}]})  # ข่าว: news
+    attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    assert attempts_since_change(ctx.db, "p1", "rendition") == []
+
+    ctx.db.append(port="attempt", backend="tts",
+                  key=AttemptOutcomeKey(subject="p1", kind="rendition", source="tts"),
+                  subject="p1",
+                  question={"kind": "rendition", "source": "tts", "subject_kind": "pair"},
+                  answer={"outcome": "nothing", "candidates": []})
+    assert len(attempts_since_change(ctx.db, "p1", "rendition")) == 1
 
 
 def test_a_rendition_attempt_writes_a_nothing_outcome_with_no_shared_speaker(tmp_path):
