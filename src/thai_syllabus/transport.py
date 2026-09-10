@@ -67,7 +67,7 @@ class QuotaExhausted(TransportError):
     (spec 3 section 6a's Quota state: Forvo's 400 body
     `["Limit/day reached."]`), recognized by the backend and raised
     typed -- never matched downstream by text. `source` names the
-    Provide backend (run.py's budgeted_sources)."""
+    backend that answered, carried for the log message."""
 
     def __init__(self, source: str):
         super().__init__(f"{source} quota exhausted")

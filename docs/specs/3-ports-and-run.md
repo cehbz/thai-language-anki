@@ -231,8 +231,9 @@ requires `judge.max_tokens` (at least 16000), which both transports send.
 drafted one, else gloss head term + category qualifier. Source order:
 openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
-the same need and source fetched, fetched meaning ingested or refused
-(the outcome row carries `tried: [url, ...]`; a served refusal of every
+the same need and source fetched, fetched meaning ingested or refused by
+its server (a wire failure leaves the url untried, §6a) (the outcome row
+carries `tried: [url, ...]`; a served refusal of every
 hit re-asks the search once within the attempt and ingests what is new),
 judge *fit* on each
 (pass/fail, the old rubric texts verbatim), and if more than one passes

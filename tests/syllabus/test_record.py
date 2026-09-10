@@ -166,6 +166,16 @@ def test_tried_urls_is_empty_with_no_attempt_row_on_record(cache):
     assert tried_urls(cache, "w", "picture", "openverse") == frozenset()
 
 
+def test_tried_urls_folds_a_pre_tried_field_attempt_row_as_empty(cache):
+    """An attempt row written before the `tried` field existed has no
+    `tried` key at all; it must fold in as empty, not raise."""
+    cache.append("attempt", "wikimedia",
+                AttemptOutcomeKey(subject="w", kind="picture", source="wikimedia"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "wikimedia"},
+                {"outcome": "candidates", "candidates": ["s1"]}, 0)
+    assert tried_urls(cache, "w", "picture", "wikimedia") == frozenset()
+
+
 def test_learner_ratings_selects_only_rating_kind_rows_newest_last(cache):
     cache.append("assess", "learner",
                 DirectionKey(subject="w", role="picture-for-word", text_sha=sha("try red")),
