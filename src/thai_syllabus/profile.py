@@ -16,3 +16,11 @@ class Profile:
                                      # rank at or above which a categorized
                                      # Word carries a productive Target
                                      # (Nation's high-frequency line)
+
+    @property
+    def learner_speaker(self) -> Literal["male", "female"]:
+        """Spec 1 section 2, r10: the sex the learner speaks as under this
+        profile's register -- "male" for male_colloquial, the only
+        register today.
+        """
+        return "male"

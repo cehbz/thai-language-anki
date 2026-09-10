@@ -228,6 +228,37 @@ def _food(*word_ids: str) -> Category:
     return Category(name=CategoryName("Food"), members=frozenset(word_ids))
 
 
+# --- marking() and check_sentence's speaker-marking refusal (spec 1
+# section 1, r10) --------------------------------------------------------
+
+def test_marking_of_a_sentence_using_male_marked_words_is_male():
+    khrap = word("khrap", "ครับ", "male politeness particle", speaker="male")
+    phom = word("phom", "ผม", "I (male speaker)", speaker="male")
+    to = thai_of(khrap, phom)
+    s = sentence(((phom.id, khrap.id),), to)
+    syllabus = Syllabus(words=(khrap, phom))
+    assert syllabus.marking(s) == frozenset({"male"})
+
+
+def test_marking_of_a_sentence_with_no_speaker_marked_words_is_empty():
+    rice = word("rice", "ข้าว")
+    s = sentence(((rice.id,),), thai_of(rice))
+    syllabus = Syllabus(words=(rice,))
+    assert syllabus.marking(s) == frozenset()
+
+
+def test_check_sentence_refuses_a_sentence_marking_both_a_male_and_a_female_speaker():
+    khrap = word("khrap", "ครับ", "male politeness particle", speaker="male")
+    kha = word("kha", "ค่ะ", "female politeness particle", speaker="female")
+    to = thai_of(khrap, kha)
+    mixed = sentence(((khrap.id, kha.id),), to)
+    syllabus = Syllabus(words=(khrap, kha),
+                        targets=(target("khrap/receptive", "khrap"),
+                                 target("kha/receptive", "kha")))
+    with pytest.raises(ValueError, match=f"{mixed.text_sha}.*both a male and a female"):
+        syllabus.check_sentence(mixed)
+
+
 def test_derive_productive_targets_derives_for_a_categorized_word_at_the_cutoff():
     rice = word("rice", "ข้าว")
     derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2000}, 2000)

@@ -41,13 +41,13 @@ def test_words_round_trip(tmp_path):
 
 
 def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="engines_agree",
-         no_productive=False):
+         no_productive=False, speaker=None):
     from thai_syllabus.entities import Pronunciation, Syllable
     syl = Syllable(segments=("k", "aː", "w"), vowel_length="long", tone=tone)
     return Word(id=WordId(id_), thai=thai,
                pron=Pronunciation(syllables=(syl,), corroboration=corroboration),
                meaning=meaning, classifier=WordId(classifier) if classifier else None,
-               no_productive=no_productive)
+               no_productive=no_productive, speaker=speaker)
 
 
 # --- curated_version ----------------------------------------------------
@@ -147,6 +147,46 @@ def test_load_words_refuses_a_non_bool_no_productive_naming_the_row(tmp_path):
     with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
         curated.load_words(tmp_path / "words.yaml")
     with pytest.raises(curated.CuratedValidationError, match="no_productive"):
+        curated.load_words(tmp_path / "words.yaml")
+
+
+# --- speaker (spec 1 section 1, r10) ------------------------------------
+
+def test_load_words_a_row_with_speaker_female_loads(tmp_path):
+    rows = [{"id": "khâ", "thai": "ค่ะ", "pron": _pron_dict(),
+            "meaning": "female politeness particle", "speaker": "female"}]
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    loaded = curated.load_words(tmp_path / "words.yaml")
+    (w, _), = loaded
+    assert w.speaker == "female"
+
+
+def test_words_speaker_round_trips(tmp_path):
+    path = tmp_path / "words.yaml"
+    curated.save_words(path, [
+        (_word("khrap", "ครับ", "male politeness particle", speaker="male"), None)])
+    loaded = curated.load_words(path)
+    (w, _), = loaded
+    assert w.speaker == "male"
+
+
+def test_save_words_omits_speaker_key_when_absent(tmp_path):
+    """Mirrors no_productive (r9): the key is written only when set, so
+    the vast majority of words -- which mark no speaker -- gain no
+    `speaker: null` line apiece."""
+    path = tmp_path / "words.yaml"
+    curated.save_words(path, [(_word("rice", "ข้าว", "cooked rice"), "Food")])
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "speaker" not in raw[0]
+
+
+def test_load_words_refuses_an_unknown_speaker_value_naming_the_row(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+            "speaker": "both"}]  # แดง = red; not a valid speaker value
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
+        curated.load_words(tmp_path / "words.yaml")
+    with pytest.raises(curated.CuratedValidationError, match="speaker"):
         curated.load_words(tmp_path / "words.yaml")
 
 

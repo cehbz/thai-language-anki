@@ -27,6 +27,7 @@ from thai_syllabus.entities import (
 )
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
+from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import sentence_note_id
 
 
@@ -50,6 +51,24 @@ def test_word_is_frozen_and_holds_its_pronunciation():
     assert w.thai == "ข้าว"  # rice
     with pytest.raises(dataclasses.FrozenInstanceError):
         w.meaning = "something else"
+
+
+def test_word_speaker_defaults_to_none():
+    w = Word(id=WordId("rice"), thai="ข้าว", pron=pron(syl("kh", "aː", "w")),
+              meaning="cooked rice")
+    assert w.speaker is None
+
+
+def test_word_speaker_marks_male():
+    khrap = Word(id=WordId("khrap"), thai="ครับ", pron=pron(syl("kh", "a", "p")),
+                 meaning="male politeness particle", speaker="male")
+    assert khrap.speaker == "male"
+
+
+# --- Profile (spec 1 section 2) -------------------------------------------
+
+def test_profile_learner_speaker_is_male_for_male_colloquial():
+    assert Profile(register="male_colloquial").learner_speaker == "male"
 
 
 def test_word_classifier_references_another_word_id():

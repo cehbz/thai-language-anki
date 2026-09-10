@@ -200,12 +200,24 @@ class Syllabus:
             positions[t.word] = max(positions.get(t.word, i), i)
         return positions
 
+    def marking(self, sentence: Sentence) -> frozenset[str]:
+        """The sentence's own speaker marking (spec 1 section 1, r10):
+        the union of `speaker` over its words' Words -- "male"/"female"
+        values only, a Word with no speaker marking contributing
+        nothing.
+        """
+        return frozenset(
+            speaker for w in sentence.words
+            if (speaker := self.word(w).speaker) is not None)
+
     def check_sentence(self, sentence: Sentence) -> None:
         """The Sentence invariant a syllabus's own vocabulary decides
-        (spec 1 section 1): every element's word registered here, and
-        render(sentence.clauses, ...) equal to sentence.text. Raises
-        ValueError naming the sentence's text_sha and the offending id,
-        or the two texts, on the first violation found.
+        (spec 1 section 1): every element's word registered here,
+        render(sentence.clauses, ...) equal to sentence.text, and its
+        marking (r10) not holding both a male and a female speaker.
+        Raises ValueError naming the sentence's text_sha and the
+        offending id, the two texts, or the marking conflict, on the
+        first violation found.
         """
         known = {w.id for w in self.words}
         for word_id in sentence.words:
@@ -217,6 +229,9 @@ class Syllabus:
             raise ValueError(
                 f"sentence {sentence.text_sha!r} text {sentence.text!r} does not match "
                 f"its clauses' rendering {rendered!r}")
+        if self.marking(sentence) == {"male", "female"}:
+            raise ValueError(
+                f"sentence {sentence.text_sha!r} marks both a male and a female speaker")
 
     def last_used_word(self, sentence: Sentence) -> WordId:
         """The word `sentence` uses whose own target position

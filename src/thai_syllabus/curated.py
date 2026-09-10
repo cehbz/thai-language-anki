@@ -118,6 +118,11 @@ def _word_to_dict(w: Word, category: CategoryName | None) -> dict:
         # words that carry the default don't gain a `no_productive: false`
         # line apiece.
         d["no_productive"] = True
+    if w.speaker is not None:
+        # r10: the key is written only when set, so the vast majority of
+        # words -- which mark no speaker -- don't gain a `speaker: null`
+        # line apiece.
+        d["speaker"] = w.speaker
     return d
 
 
@@ -128,8 +133,9 @@ def _word_from_dict(d: dict) -> Word:
 
 
 def save_words(path: str | Path, rows: list[tuple[Word, CategoryName | None]]) -> None:
-    """Writes words.yaml (spec 1 section 1). `no_productive` (r9) is
-    written only for a row where it is true -- see `_word_to_dict`.
+    """Writes words.yaml (spec 1 section 1). `no_productive` (r9) and
+    `speaker` (r10) are each written only for a row that carries one --
+    see `_word_to_dict`.
     """
     _atomic_write_yaml(Path(path), [_word_to_dict(w, c) for w, c in rows])
 
@@ -138,7 +144,9 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
     """Row order kept (spec 1 section 1). `category` is optional (a
     closure word is in none); a row naming one outside CATEGORY_NAMES is
     refused, named. `no_productive` (r9) is optional, defaulting False;
-    a row naming anything but a bool is refused, named.
+    a row naming anything but a bool is refused, named. `speaker` (r10)
+    is optional, defaulting None; a row naming anything but "male" or
+    "female" is refused, named.
     """
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
@@ -164,6 +172,13 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
             continue
         if no_productive:
             w = replace(w, no_productive=True)
+        speaker = row.get("speaker")
+        if speaker is not None and speaker not in ("male", "female"):
+            errors.append(f"words[{i}] ({w.id!r}): speaker {speaker!r} must be "
+                          "'male' or 'female'")
+            continue
+        if speaker is not None:
+            w = replace(w, speaker=speaker)
         seen.add(w.id)
         words.append((w, CategoryName(category) if category is not None else None))
     if errors:

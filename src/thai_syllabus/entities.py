@@ -71,6 +71,12 @@ class Word:
                                       # derived productive Target this Word
                                       # would otherwise carry above the
                                       # Profile's productive_cutoff
+    speaker: Literal["male", "female"] | None = None  # spec 1 section 1,
+                                      # r10: the sex this Word marks its
+                                      # speaker as (ครับ khráp, ผม phǒm
+                                      # male; ค่ะ khâ, คะ khá, ดิฉัน
+                                      # dì-chǎn female); None for a Word
+                                      # that marks no speaker
 
 
 @dataclass(frozen=True)
