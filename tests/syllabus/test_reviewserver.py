@@ -338,6 +338,29 @@ def test_build_queue_direction_candidates_carry_judge_verdicts(derivations, db, 
     assert by_sha["sB"]["verdict"] is None
 
 
+def test_build_queue_lists_a_need_kept_queued_for_an_awaiting_candidate_once(derivations, db, w1):
+    """spec 5 section 1: a need kept queued because a candidate awaits a
+    verdict (derivations.queue's bucket 2) can also be exhausted on
+    attempts -- it must appear once, not once as a rate question and
+    again as a direction question. A current_rubric entry for the
+    picture role is needed for unjudged_candidates to see sA as
+    awaiting -- an empty mapping (this file's `derivations` fixture)
+    judges no role at all (derivations.unjudged_candidates).
+    """
+    rubric_derivations = dataclasses.replace(
+        derivations, current_rubric={"picture-for-word": "rubric-v1"})
+    _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
+    for src in sources_for("picture"):
+        db.append(port="attempt", backend=src,
+                  key=AttemptOutcomeKey(subject=w1.id, kind="picture", source=src),
+                  subject=w1.id,
+                  question={"kind": "picture", "source": src, "subject_kind": "word"},
+                  answer={"outcome": "nothing", "candidates": []})
+    items = rs.build_queue(rubric_derivations, budget=50)
+    matches = [i for i in items if i["subject"] == w1.id and i["kind"] == "picture"]
+    assert len(matches) == 1
+
+
 def test_build_queue_challenger_kind_when_rubric_change_outranks_learner_pick(derivations, db,
                                                                               w1):
     _learner(db, w1.id, "picture", "s-old", "acceptable")

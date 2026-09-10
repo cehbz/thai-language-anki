@@ -268,9 +268,16 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                        rank=e.rank, attempts=e.attempts)
         for e in entries
     ][:budget]
+    # A need kept queued for a candidate awaiting a verdict under the
+    # current rubric (derivations.queue's bucket 2) can also be exhausted
+    # on attempts -- already rated above, it is skipped here so the
+    # screen lists it once (spec 5 section 1).
+    queued = {(e.subject, e.kind) for e in entries}
 
     if len(items) < budget:
         for subject, kind, subject_kind in available_needs(d.syllabus):
+            if (subject, kind) in queued:
+                continue
             status = _exhausted(d, subject, kind)
             if status.exhausted:
                 items.append(_direction_question(d, subject, kind, subject_kind,
