@@ -41,7 +41,7 @@ __all__ = [
     "JudgeVerdict", "judge_verdict",
     "pending",
     "attempts_since_change", "tried_sources", "next_source",
-    "ExhaustedStatus", "exhausted",
+    "ExhaustedStatus", "exhausted", "sentence_exhausted",
     "improved",
     "directed",
     "QueueEntry", "queue", "QueuedNeeds", "queued",
@@ -55,6 +55,7 @@ __all__ = [
     "stale",
     "DEFAULT_ATTEMPT_CAP",
     "DEFAULT_TRANSIENT_CAP",
+    "DEFAULT_SENTENCE_NOTHING_CAP",
 ]
 
 # LEARNER_RANK (record.py): a numeric rank on the same scale judge
@@ -77,6 +78,12 @@ DEFAULT_ATTEMPT_CAP = 8
 # a source at this many transient-failure outcomes since the anchor
 # counts as tried.
 DEFAULT_TRANSIENT_CAP = 3
+
+# The no-fit cap sentence_exhausted() enforces (spec 3 r19 section 5): a
+# word whose sentence need has this many `nothing` outcome rows since its
+# last handed draft is not handed to the drafter again, and the feedback
+# screen asks the learner for a direction instead.
+DEFAULT_SENTENCE_NOTHING_CAP = 3
 
 # The one artifact kind with no Source (attempts.SOURCES has no entry for
 # it) and no per-run pass either -- unlike "sentence", which the run's own
@@ -512,13 +519,56 @@ class ExhaustedStatus:
     attempts: int
 
 
+def _sentence_anchor_ts(cache: CacheReader, word: str) -> int:
+    """The ts a word's sentence need is counted from: the newest learner
+    row of ANY kind on the word, or -1 when it carries none.
+
+    Spec 3 r19 section 6a reopens a sentence-exhausted word on "a learner
+    row", and the row the feedback screen's direction question writes is
+    a `direction` row -- it carries no rating value, so `_anchor_ts`'s
+    own learner term (record.ratings_for_role, LEARNER_RANK-valued rating
+    rows under the need's role) cannot see it. Its other term, the ts of
+    the attempt that produced current-best's artifact, is always -1 here:
+    a sentence need stores no artifact under the word. So `_anchor_ts`
+    has nothing to add, and the newest learner row on the subject is the
+    whole anchor -- architecture section 4's "any learner input reopens a
+    need", read as widely as the direction question needs.
+    """
+    return max((r.ts for r in cache.assessments_of(word) if r.backend == "learner"),
+              default=-1)
+
+
+def sentence_exhausted(cache: CacheReader, word: str, *,
+                       cap: int = DEFAULT_SENTENCE_NOTHING_CAP) -> ExhaustedStatus:
+    """`word`'s sentence need after `cap` no-fit answers (spec 3 r19
+    section 5): the `nothing` attempt-outcome rows under (word,
+    "sentence") since `_sentence_anchor_ts`, one per handed draft the
+    drafter answered "nothing fits" to. At the cap the word is not handed
+    to the drafter again and the feedback screen asks the learner for a
+    direction; a learner row on the word reopens it (section 6a), which
+    is what the anchor carries.
+    """
+    rows = record.rows_for(cache, word, "sentence")
+    since_ts = _sentence_anchor_ts(cache, word)
+    nothing = [r for r in rows if r.port == "attempt" and r.ts > since_ts
+              and r.answer.get("outcome") == "nothing"]
+    return ExhaustedStatus(exhausted=len(nothing) >= cap, attempts=len(nothing))
+
+
 def exhausted(cache: CacheReader, subject: str, kind: str, *,
-              sources: Sequence[str], attempt_cap: int, transient_cap: int) -> ExhaustedStatus:
+              sources: Sequence[str], attempt_cap: int, transient_cap: int,
+              sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP) -> ExhaustedStatus:
     """Every source in `sources` is tried since current-best last changed,
     or the attempt count since then reached `attempt_cap`; a source at
     the transient cap counts as one attempt. Reopened by a learner row or
     a new source.
+
+    Kind "sentence" has no Source roster of its own -- the run's own
+    sentence attempt serves it -- so it is `sentence_exhausted` under
+    `sentence_nothing_cap` instead (spec 3 r19 section 5).
     """
+    if kind == _RUN_SENTENCE_KIND:
+        return sentence_exhausted(cache, subject, cap=sentence_nothing_cap)
     since = attempts_since_change(cache, subject, kind)
     capped = tried_sources(cache, subject, kind, transient_cap=transient_cap) - {
         r.backend for r in since}
@@ -728,6 +778,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         sources = sources_for(kind)
         # attempts: the same count exhausted() reports -- a source at the
         # transient cap is one attempt (spec 3 section 6).
+        # Never kind "sentence": queued() skips it above, so exhausted()'s
+        # own sentence_nothing_cap never decides anything from here.
         status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
                           transient_cap=transient_cap)
         attempts = status.attempts

@@ -14,8 +14,8 @@ from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, assess_first,
                                     attempt, current_best_of, sentence_attempt, sources_for)
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, JudgeKey, LlmPromptKey, MechanicalKey,
-                                    ProvideKey, rendition_identity, sha)
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
+                                    MechanicalKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
 from thai_syllabus.record import DRAFT_SUBJECT, drafts_in, rows_for, sentence_drafts
 from thai_syllabus.entities import Category, Clauses, MinimalPair, Sentence, SoundConfusion, text_sha
@@ -859,6 +859,147 @@ def test_sentence_attempt_reports_the_words_it_was_handed_targets_for(tmp_path):
         frequency={"rice": 1})
     result = sentence_attempt(_sentence_ctx(tmp_path, '{"sentences": []}', syllabus=one_word))
     assert result.targets_handed == 2 and result.subjects_handed == frozenset({"rice"})
+
+
+# --- the no-fit answer (spec 3 r19 section 5) -------------------------------
+
+_NO_FIT = json.dumps({"sentences": [], "reason": "no natural sentence covers both"})
+
+
+def _seed_no_fit(db, word_id, target_id, *, times=1, reason="earlier no-fit"):
+    """`times` no-fit outcome rows on one word's sentence need, in the
+    shape sentence_attempt appends them."""
+    for _ in range(times):
+        db.append(port="attempt", backend="llm",
+                  key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                  subject=word_id,
+                  question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                           "targets": [target_id]},
+                  answer={"outcome": "nothing", "candidates": [], "reason": reason})
+
+
+def test_a_no_fit_answer_appends_one_nothing_row_per_handed_word(tmp_path):
+    """Spec 3 r19 section 5: the drafter's own "nothing fits" answer is
+    recognized and cached -- one outcome row per handed Target's WORD,
+    the Target ids in the row's question, and no draft to judge."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT)
+    res = sentence_attempt(ctx)
+    assert res.attempted is True and res.drafted == 0
+    assert res.targets_handed == 2 and res.subjects_handed == frozenset({"eat", "rice"})
+    assert res.questions == []
+    for word_id in ("eat", "rice"):
+        rows = [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+        assert len(rows) == 1
+        assert rows[0].backend == "llm"
+        assert rows[0].question == {"kind": "sentence", "source": "llm",
+                                    "subject_kind": "word",
+                                    "targets": [f"{word_id}/receptive"]}
+        assert rows[0].answer == {"outcome": "nothing", "candidates": [],
+                                  "reason": "no natural sentence covers both"}
+        assert ctx.db.latest("attempt", "llm", AttemptOutcomeKey(
+            subject=word_id, kind="sentence", source="llm")) is not None
+
+
+def test_a_no_fit_answer_asks_the_judge_nothing(tmp_path):
+    def never(prompt, attachments=()):
+        raise AssertionError("a no-fit answer has no draft to judge")
+
+    ctx = _sourcing(tmp_path, _sentence_ctx(tmp_path / "unused", _NO_FIT).syllabus,
+                    backends={"llm-sentence": _Llm(_NO_FIT)},
+                    assess={"judge": JudgeBackend(model="m", transport="api", complete=never)})
+    assert sentence_attempt(ctx).questions == []
+
+
+def test_a_cached_no_fit_is_re_asked_so_the_cap_counts_refusals_not_runs(tmp_path):
+    """Spec 3 r19 section 6a's re-ask rule: a no-fit adds nothing to the
+    prompt's refused block, so the next run's ask would hit the very same
+    cached answer and cache one more `nothing` row for a refusal that
+    never happened. A recognized no-fit served from the cache is re-asked
+    once, and only the fresh answer is recorded."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT)
+    drafter = ctx.provider._backends["llm-sentence"]
+    sentence_attempt(ctx)
+    sentence_attempt(ctx)
+    assert len(drafter.prompts) == 2            # the second run re-asked
+    assert drafter.prompts[0] == drafter.prompts[1]    # ...on the same prompt
+    for word_id in ("eat", "rice"):
+        rows = [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+        assert len(rows) == 2                   # one per refusal, not one per run
+
+
+def test_a_re_asked_no_fit_that_comes_back_with_drafts_records_no_nothing_row(tmp_path):
+    """The re-ask is the run's answer: drafts go to the judge and the
+    cached no-fit leaves no second outcome row behind."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, batch=True)
+    drafter = ctx.provider._backends["llm-sentence"]
+    sentence_attempt(ctx)
+    drafter.text = _draft_json(("eat", "rice"), "กินข้าว", "eat rice")   # กินข้าว: eat rice
+    res = sentence_attempt(ctx)
+    assert res.attempted is True and res.drafted == 1 and len(res.questions) == 1
+    for word_id in ("eat", "rice"):
+        rows = [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+        assert len(rows) == 1                   # only the first run's refusal
+
+
+def test_a_re_asked_no_fit_counts_both_drafter_asks_under_spend(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT)
+    sentence_attempt(ctx)
+    # the hit itself is free; the re-ask it triggers is the run's one ask
+    assert sentence_attempt(ctx).spend["llm-sentence"].asks == 1
+
+
+def test_a_sentence_exhausted_word_s_targets_are_not_handed_to_the_drafter(tmp_path):
+    """At the no-fit cap the word stops being drafted for: it is neither
+    handed over nor counted as deferred -- `subjects_exhausted` is how the
+    run buckets it."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat",), "กิน", "eat"))   # กิน: eat
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=3)
+    res = sentence_attempt(ctx)
+    assert res.targets_handed == 1 and res.subjects_handed == frozenset({"eat"})
+    assert res.subjects_exhausted == frozenset({"rice"})
+    prompt = ctx.provider._backends["llm-sentence"].prompts[-1]
+    assert "target eat/receptive" in prompt and "target rice/receptive" not in prompt
+
+
+def test_a_word_below_the_no_fit_cap_is_still_handed_to_the_drafter(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat",), "กิน", "eat"))   # กิน: eat
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=2)
+    res = sentence_attempt(ctx)
+    assert res.subjects_handed == frozenset({"eat", "rice"})
+    assert res.subjects_exhausted == frozenset()
+
+
+def test_the_sourcing_s_own_no_fit_cap_decides_when_a_word_is_withheld(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat",), "กิน", "eat"))   # กิน: eat
+    ctx.sentence_nothing_cap = 2
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=2)
+    assert sentence_attempt(ctx).subjects_exhausted == frozenset({"rice"})
+
+
+def test_the_drafter_is_not_asked_at_all_when_every_open_word_is_exhausted(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT)
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=3)
+    _seed_no_fit(ctx.db, "eat", "eat/receptive", times=3)
+    res = sentence_attempt(ctx)
+    assert res.attempted is False and res.targets_handed == 0
+    assert res.subjects_exhausted == frozenset({"eat", "rice"})
+    assert ctx.provider._backends["llm-sentence"].prompts == []
+
+
+def test_a_learner_direction_hands_a_withheld_word_back_to_the_drafter(tmp_path):
+    """Spec 3 r19 section 6a: a learner row on the word reopens it."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat",), "กิน", "eat"))   # กิน: eat
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=3)
+    ctx.db.append(port="assess", backend="learner",
+                  key=DirectionKey(subject="rice", role="sentence-for-target",
+                                   text_sha=sha("pair it with a verb")),
+                  subject="rice",
+                  question={"kind": "direction", "role": "sentence-for-target",
+                           "subject_kind": "word"},
+                  answer={"direction": "pair it with a verb"})
+    res = sentence_attempt(ctx)
+    assert res.subjects_handed == frozenset({"eat", "rice"})
+    assert res.subjects_exhausted == frozenset()
 
 
 def test_sentence_attempt_adopts_nothing_itself(tmp_path):

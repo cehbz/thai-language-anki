@@ -58,6 +58,7 @@ from .record import (
     candidate_shas,
     card_flags,
     excluded_candidates,
+    latest_nothing_reason,
     latest_query,
     latest_rating,
     rows_for,
@@ -100,7 +101,8 @@ def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
 
 def _exhausted(d: "Derivations", subject: str, kind: str) -> ExhaustedStatus:
     return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
-                     attempt_cap=d.attempt_cap, transient_cap=d.transient_cap)
+                     attempt_cap=d.attempt_cap, transient_cap=d.transient_cap,
+                     sentence_nothing_cap=d.sentence_nothing_cap)
 
 
 def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
@@ -212,6 +214,10 @@ def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind:
         "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject, subject_kind),
         "tried": _tried_summary(rows), "candidates": _tried_candidates(d, subject, kind, rows),
         "attempts": attempts,
+        # Why the source declined in its own words, where it stated one: a
+        # sentence need's no-fit answer (spec 3 r19 section 5). Always
+        # present, None for a kind whose `nothing` outcomes state none.
+        "reason": latest_nothing_reason(rows),
     }
 
 
@@ -1219,6 +1225,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
   function renderDirection(q, box) {
     box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- exhausted, attempts=" + q.attempts));
+    // The source's own words for declining, where it stated any (spec 3
+    // r19 section 5's no-fit answer on a sentence need).
+    if (q.reason) { box.appendChild(el("div", { "class": "query" }, "reason: " + q.reason)); }
     var tried = el("div", { "class": "tried" });
     tried.appendChild(el("h4", {}, "tried"));
     if (q.tried && q.tried.length) {

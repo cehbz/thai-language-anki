@@ -306,6 +306,75 @@ def test_build_queue_direction_kind_for_exhausted_subject(derivations, db, w1):
     assert "openverse" in {t["source"] for t in direction[0]["tried"]}
 
 
+def _no_fit(db, word_id, *, targets=("t-rice",), reason="nothing fits"):
+    """One no-fit outcome row the sentence attempt appends for a word
+    (spec 3 r19 section 5): subject the WORD, Target ids in the question.
+    """
+    return db.append(port="attempt", backend="llm",
+                     key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                     subject=word_id,
+                     question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                              "targets": list(targets)},
+                     answer={"outcome": "nothing", "candidates": [], "reason": reason})
+
+
+def test_build_queue_asks_a_direction_for_a_word_at_the_sentence_no_fit_cap(derivations, db, w1):
+    """Spec 3 r19 section 5: below the cap a word's unfilled Target is the
+    drafter's to serve and the screen says nothing about it; at the cap
+    the screen asks the learner where to go instead."""
+    def sentence_directions():
+        return [i for i in rs.build_queue(derivations, budget=50)
+                if i["type"] == "direction" and i["kind"] == "sentence"
+                and i["subject"] == w1.id]
+
+    _no_fit(db, w1.id)
+    _no_fit(db, w1.id)
+    assert sentence_directions() == []
+    _no_fit(db, w1.id)
+    asked = sentence_directions()
+    assert len(asked) == 1
+    assert asked[0]["role"] == "sentence-for-target" and asked[0]["attempts"] == 3
+    assert asked[0]["gloss"] == w1.meaning
+
+
+def test_a_sentence_direction_question_carries_the_drafter_s_own_reason(derivations, db, w1):
+    """Spec 5 section 1 kind 2: the learner is told why the drafter
+    declined -- the newest no-fit row's reason (spec 3 r19 section 5)."""
+    _no_fit(db, w1.id, reason="the vocabulary has no verb yet")
+    _no_fit(db, w1.id, reason="still no verb to use it with")
+    _no_fit(db, w1.id, reason="still no verb to use it with")
+    asked = next(i for i in rs.build_queue(derivations, budget=50)
+                 if i["type"] == "direction" and i["kind"] == "sentence"
+                 and i["subject"] == w1.id)
+    assert asked.get("reason") == "still no verb to use it with"
+
+
+def test_a_picture_direction_question_carries_no_reason(derivations, db, w1):
+    """A picture attempt's `nothing` outcome states none, so the field is
+    None rather than absent -- the screen reads one shape."""
+    for backend in ("openverse", "wikimedia", "pexels"):
+        _provide(db, w1.id, "picture", backend=backend, items=[])
+    asked = next(i for i in rs.build_queue(derivations, budget=50)
+                 if i["type"] == "direction" and i["kind"] == "picture"
+                 and i["subject"] == w1.id)
+    assert "reason" in asked and asked["reason"] is None
+
+
+def test_build_queue_stops_asking_a_direction_once_the_learner_gave_one(derivations, db, w1):
+    for _ in range(3):
+        _no_fit(db, w1.id)
+    db.append(port="assess", backend="learner",
+              key=DirectionKey(subject=w1.id, role="sentence-for-target",
+                               text_sha=sha("use it with กิน")),   # กิน: eat
+              subject=w1.id,
+              question={"kind": "direction", "role": "sentence-for-target",
+                       "subject_kind": "word"},
+              answer={"direction": "use it with กิน"})
+    items = rs.build_queue(derivations, budget=50)
+    assert not [i for i in items if i["type"] == "direction" and i["kind"] == "sentence"
+                and i["subject"] == w1.id]
+
+
 def test_build_queue_direction_tried_lists_source_asks_only_never_fetch_rows(derivations, db, w1):
     """spec 5 section 1 kind 2: "what was tried" is the phrases and Sources
     a need's Source asks carried -- never a bytes-fetch row (imgfetch) or

@@ -41,7 +41,7 @@ from .curated import (
     load_providers_config,
     rulebook_file_text,
 )
-from .derivations import current_best
+from .derivations import DEFAULT_SENTENCE_NOTHING_CAP, current_best
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
@@ -137,6 +137,16 @@ def _drafter_quota_cost(cfg: ProvidersConfig) -> float:
 
 # --- build_provider ----------------------------------------------------
 
+def _recognize_drafting_answer(text: str) -> bool:
+    """What the sentence drafter counts as having answered: drafts
+    `record.drafts_in` can read (spec 3 r10 section 2), or a no-fit answer
+    `record.parse_no_fit` can read (spec 3 r19 section 5). Anything else
+    is an unusable completion and LlmBackend.fetch raises rather than
+    caching it.
+    """
+    return bool(record.drafts_in(text)) or record.parse_no_fit(text) is not None
+
+
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None) -> Provider:
     """The Provide port's backend roster (spec 3 section 2), wired from
@@ -165,12 +175,15 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
                                           fetcher=tool_fetcher(cfg.audiofetch_path))
 
     drafter_transport = _drafter_transport(cfg, secrets)
-    # llm-sentence recognizes only a completion drafts_in can read (spec 3
-    # r10 section 2); llm-parse recognizes only one parses_in can read
-    # (spec 3 r16 section 5); llm-phrase and llm-entry keep LlmBackend's
-    # default, which recognizes any text.
+    # llm-sentence recognizes a completion drafts_in can read (spec 3 r10
+    # section 2) or one that is a no-fit answer (spec 3 r19 section 5's
+    # {"sentences": [], "reason": ...}, record.parse_no_fit) -- both are
+    # answers the drafting attempt acts on, so both are cached; llm-parse
+    # recognizes only one parses_in can read (spec 3 r16 section 5);
+    # llm-phrase and llm-entry keep LlmBackend's default, which
+    # recognizes any text.
     recognizers: dict[str, Callable[[str], bool]] = {
-        "llm-sentence": lambda text: bool(record.drafts_in(text)),
+        "llm-sentence": _recognize_drafting_answer,
         "llm-parse": lambda text: bool(record.parses_in(text)),
     }
     for producer, name in (("sentence-drafter", "llm-sentence"),
@@ -289,10 +302,10 @@ class Derivations:
     """One deck's record and every parameter derivations.py asks for: the
     Syllabus (media index included), the db the record lives in, the media
     store its artifacts resolve to, and the current_rubric / prior /
-    provenance_source / sources_for / attempt_cap / transient_cap a fold
-    is measured under. build_sourcing wires the run's Sourcing from this
-    same bundle, so a surface holding one derives exactly what the run
-    derives.
+    provenance_source / sources_for / attempt_cap / transient_cap /
+    sentence_nothing_cap a fold is measured under. build_sourcing wires
+    the run's Sourcing from this same bundle, so a surface holding one
+    derives exactly what the run derives.
     """
     syllabus: Syllabus
     db: SyllabusDb                     # CacheReader + RecordWriter
@@ -303,6 +316,9 @@ class Derivations:
     sources_for: Callable[[str], Sequence[str]]
     attempt_cap: int
     transient_cap: int
+    # sentence_exhausted()'s no-fit cap (spec 3 r19 section 5), the same
+    # value build_sourcing hands the run's Sourcing.
+    sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
     # rulebook.yaml's thresholds overlay (curated.RulebookConfig.thresholds),
     # e.g. "reask/lapses" -- spec 5 section 1 kind 4's own lapse threshold.
     thresholds: Mapping[str, float] = field(default_factory=dict)
@@ -333,6 +349,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        provenance_source=provenance_source_for(db),
                        sources_for=sources_for, attempt_cap=cfg.attempt_cap,
                        transient_cap=cfg.transient_cap,
+                       sentence_nothing_cap=cfg.sentence_nothing_cap,
                        thresholds=dict(bundle.rulebook.thresholds),
                        budgets=default_budgets(cfg))
 
@@ -359,7 +376,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
         query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
         sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
-        transient_cap=derivations.transient_cap)
+        transient_cap=derivations.transient_cap,
+        sentence_nothing_cap=derivations.sentence_nothing_cap)
     return ctx
 
 

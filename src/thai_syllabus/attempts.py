@@ -33,12 +33,14 @@ from .authority import role_for
 from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
+    DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
     CurrentBest,
     current_best,
     passing_pictures,
     pictures_awaiting_preference,
     refused_drafts,
+    sentence_exhausted,
     unjudged_candidates,
 )
 from .entities import Target, Word
@@ -131,6 +133,10 @@ class Sourcing:
     sources_for: Callable[[str], Sequence[str]] = field(default=sources_for)
     attempt_cap: int = DEFAULT_ATTEMPT_CAP
     transient_cap: int = DEFAULT_TRANSIENT_CAP
+    # The `nothing` outcomes a word's sentence need may carry since its
+    # last handed draft before the drafter stops being handed its Targets
+    # (spec 3 r19 section 5, derivations.sentence_exhausted).
+    sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
 
 
 @dataclass(frozen=True)
@@ -149,6 +155,10 @@ class AttemptResult:
     # the words those Targets belong to -- one (word, "sentence") need
     # each, which is how the run accounts for them
     subjects_handed: frozenset[str] = frozenset()
+    # the words whose open Targets the sentence attempt withheld because
+    # their sentence need is exhausted (spec 3 r19 section 5): neither
+    # attempted nor deferred -- the run counts them `exhausted`
+    subjects_exhausted: frozenset[str] = frozenset()
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -913,22 +923,58 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     verdicts land. The drafting prompt also names the texts the judge
     has already failed (derivations.refused_drafts, spec 3 r19 section
     5) so the drafter does not propose them again.
+
+    A word whose sentence need is at the no-fit cap
+    (derivations.sentence_exhausted under ctx.sentence_nothing_cap) is
+    withheld: its Targets are not handed over, and
+    `subjects_exhausted` names it so the run counts it `exhausted`
+    rather than attempted or deferred. A no-fit answer -- spec 3 r19
+    section 5's `{"sentences": [], "reason": "..."}`, read by
+    record.parse_no_fit -- appends one `nothing` outcome row per handed
+    Target's word, under that WORD as subject with the Target ids in the
+    row's question, and asks the judge nothing. A no-fit served from the
+    provider cache is re-asked once first (section 6a): the cap counts
+    the drafter's refusals, never the runs that read the same cached one.
     """
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
     unfilled = syllabus.gaps().unfilled_targets
     all_open_ids = set(unfilled)
-    open_ids = set(unfilled[:max_targets])
+    word_of = {t.id: t.word for t in syllabus.targets}
+    withheld = frozenset(
+        w for w in {word_of[t] for t in unfilled if t in word_of}
+        if sentence_exhausted(ctx.db, w, cap=ctx.sentence_nothing_cap).exhausted)
+    handable = [t for t in unfilled if word_of.get(t) not in withheld]
+    open_ids = set(handable[:max_targets])
     targets = [t for t in syllabus.targets if t.id in open_ids]
     if not targets:
-        return AttemptResult(attempted=False)
+        return AttemptResult(attempted=False, subjects_exhausted=withheld)
     open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
 
     refused = refused_drafts(ctx.db, syllabus, current_rubric=ctx.rubrics)
-    answer = ctx.provider.ask("llm-sentence", Question(
+    question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
-        params={"prompt": _sentence_prompt(syllabus, targets, refused)}))
+        params={"prompt": _sentence_prompt(syllabus, targets, refused)})
+    answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
+
+    no_fit = _no_fit_in(answer)
+    if no_fit is not None and answer.hit:
+        # Spec 3 r19 section 6a's re-ask rule. A no-fit adds nothing to the
+        # prompt's refused block, so the next run's prompt -- and its cache
+        # key -- is the very same one; served from the cache it would cache
+        # one more `nothing` row per run for a refusal the drafter never
+        # made, and sentence_exhausted would count runs instead. Re-ask
+        # once and let the fresh answer (drafts or a new no-fit) be the
+        # run's answer; only an answer that was not a hit is recorded.
+        answer = ctx.provider.reask("llm-sentence", question)
+        _count(spend, "llm-sentence", answer)
+        no_fit = _no_fit_in(answer)
+    if no_fit is not None:
+        _append_no_fit(ctx, targets, no_fit)
+        return AttemptResult(attempted=True, drafted=0, targets_handed=len(targets),
+                             subjects_handed=frozenset(t.word for t in targets),
+                             subjects_exhausted=withheld, spend=spend)
 
     adopted = {s.text_sha for s in syllabus.sentences}
     questions: list[AssessQuestion] = []
@@ -957,7 +1003,35 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend,
                          drafted=len(questions), targets_handed=len(targets),
-                         subjects_handed=frozenset(t.word for t in targets))
+                         subjects_handed=frozenset(t.word for t in targets),
+                         subjects_exhausted=withheld)
+
+
+def _no_fit_in(answer: ProviderAnswer) -> str | None:
+    """The reason the first no-fit item in a drafting answer gives (spec 3
+    r19 section 5, record.parse_no_fit), or None when no item is one."""
+    return next((reason for item in answer.items
+                if (reason := record.parse_no_fit(str(item)))), None)
+
+
+def _append_no_fit(ctx: Sourcing, targets: Sequence[Target], reason: str) -> None:
+    """One `nothing` outcome row per handed Target's word (spec 3 r19
+    section 5): the drafter answered that nothing fits, and the record
+    keeps that per word, since the sentence need's subject is the word
+    everywhere -- the Target ids it covered sit in the row's question.
+    `derivations.sentence_exhausted` counts these rows against the
+    no-fit cap.
+    """
+    by_word: dict[str, list[str]] = {}
+    for t in targets:
+        by_word.setdefault(str(t.word), []).append(str(t.id))
+    for word_id, target_ids in by_word.items():
+        ctx.db.append(port="attempt", backend="llm",
+                      key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                      subject=word_id,
+                      question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                                "targets": target_ids},
+                      answer={"outcome": "nothing", "candidates": [], "reason": reason})
 
 
 _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {

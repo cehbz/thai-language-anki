@@ -34,6 +34,7 @@ from thai_syllabus.derivations import (
     queued,
     reasks,
     refused_drafts,
+    sentence_exhausted,
     unjudged_candidates,
 )
 from thai_syllabus.derivations import _role_row
@@ -713,6 +714,79 @@ def test_reopened_by_a_new_source_in_the_roster(cache):
                              attempt_cap=8, transient_cap=3)
     assert status_before.exhausted is True
     assert status_after.exhausted is False
+
+
+# --- sentence_exhausted: the no-fit cap (spec 3 r19 section 5) ------------
+
+def _no_fit_row(word, *, ts=None, reason="nothing fits", targets=("t1",)):
+    """One `nothing` outcome row the sentence attempt appends for a word
+    whose handed Targets the drafter answered no-fit for: its subject is
+    the WORD, and the Target ids sit in the row's question."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="attempt", backend="llm",
+                 key=f"attempt:{word}:sentence:llm:{ts}", key_sha="x", subject=word,
+                 question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                          "targets": list(targets)},
+                 answer={"outcome": "nothing", "candidates": [], "reason": reason},
+                 cost=0.0, ts=ts)
+
+
+def test_a_word_below_the_no_fit_cap_is_not_sentence_exhausted(cache):
+    cache.rows.extend([_no_fit_row("rice", ts=1), _no_fit_row("rice", ts=2)])
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is False and status.attempts == 2
+
+
+def test_a_word_at_the_no_fit_cap_is_sentence_exhausted(cache):
+    for ts in (1, 2, 3):
+        cache.rows.append(_no_fit_row("rice", ts=ts))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is True and status.attempts == 3
+
+
+def test_sentence_exhausted_counts_only_nothing_rows_on_the_word_s_sentence_need(cache):
+    """A `nothing` outcome on another need's kind, and another word's
+    sentence rows, are not this word's no-fit answers."""
+    for ts in (1, 2, 3):
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="nothing", ts=ts))
+        cache.rows.append(_no_fit_row("fish", ts=ts + 10))
+    cache.rows.append(_no_fit_row("rice", ts=30))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is False and status.attempts == 1
+
+
+def test_a_learner_direction_row_reopens_a_sentence_exhausted_word(cache):
+    """Spec 3 r19 section 6a's reopen rule: the direction the feedback
+    screen asked for puts the word back in the drafter's hands."""
+    for ts in (1, 2, 3):
+        cache.rows.append(_no_fit_row("rice", ts=ts))
+    assert sentence_exhausted(cache, "rice", cap=3).exhausted is True
+    cache.rows.append(direction_row("rice", ts=4))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is False and status.attempts == 0
+
+
+def test_no_fit_rows_after_the_reopening_learner_row_count_again(cache):
+    cache.rows.extend([_no_fit_row("rice", ts=1), direction_row("rice", ts=2)])
+    for ts in (3, 4, 5):
+        cache.rows.append(_no_fit_row("rice", ts=ts))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is True and status.attempts == 3
+
+
+def test_exhausted_dispatches_the_sentence_kind_to_the_no_fit_cap(cache):
+    """A "sentence" need has no Source roster at all, so the source-and-
+    attempt-cap fold would call every word exhausted from the first run;
+    exhausted() hands the kind to sentence_exhausted instead."""
+    assert exhausted(cache, "rice", "sentence", sources=(), attempt_cap=8, transient_cap=3,
+                     sentence_nothing_cap=3).exhausted is False
+    for ts in (1, 2, 3):
+        cache.rows.append(_no_fit_row("rice", ts=ts))
+    assert exhausted(cache, "rice", "sentence", sources=(), attempt_cap=8, transient_cap=3,
+                     sentence_nothing_cap=3).exhausted is True
+    assert exhausted(cache, "rice", "sentence", sources=(), attempt_cap=8, transient_cap=3,
+                     sentence_nothing_cap=4).exhausted is False
 
 
 # --- directed ------------------------------------------------------------

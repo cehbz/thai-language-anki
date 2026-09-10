@@ -27,11 +27,12 @@ _log = logging.getLogger(__name__)
 
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
-          "latest_query", "tried_urls",
+          "latest_query", "tried_urls", "latest_nothing_reason",
           "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
           "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
-          "parse_drafts", "merge_drafts", "draft_sentence", "drafts_in", "sentence_drafts",
+          "parse_drafts", "parse_no_fit", "merge_drafts", "draft_sentence", "drafts_in",
+          "sentence_drafts",
           "excluded_candidates", "card_flags",
           "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in"]
 
@@ -165,6 +166,18 @@ def tried_urls(cache: CacheReader, subject: str, kind: str, source: str) -> froz
         url for r in rows_for(cache, subject, kind)
         if r.port == "attempt" and r.backend == source
         for url in r.answer.get("tried", ()))
+
+
+def latest_nothing_reason(rows: Sequence[Answer]) -> str | None:
+    """The reason the newest `nothing` attempt-outcome row in `rows`
+    states, or None when none of them carries one. The sentence attempt
+    is the writer that states one (spec 3 r19 section 5's no-fit answer),
+    so this is the drafter's own words for declining -- what the feedback
+    screen shows the learner beside its direction question.
+    """
+    reasons = [r for r in rows if r.port == "attempt"
+              and r.answer.get("outcome") == "nothing" and r.answer.get("reason")]
+    return str(max(reasons, key=lambda r: r.ts).answer["reason"]) if reasons else None
 
 
 def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
@@ -317,6 +330,27 @@ def parse_drafts(text: str) -> list[SentenceDraft]:
             continue
         out.append(SentenceDraft(clauses=clauses, text=one_text, gloss=str(d.get("gloss") or "")))
     return out
+
+
+def parse_no_fit(text: str) -> str | None:
+    """The reason one llm answer item gives for drafting nothing at all
+    (spec 3 r19 section 5's no-fit answer): the stripped `reason` of a
+    `{"sentences": [], "reason": "<non-empty string>"}` item, else None.
+    An item listing any sentence is a draft, not a no-fit answer, and one
+    with no `sentences` key, no reason, a blank reason, or a reason that
+    is not a string, is not recognizable as either -- `parse_drafts`
+    reads the same item for its drafts, and the two never both answer.
+    """
+    try:
+        data = json.loads(strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, Mapping) or "sentences" not in data or data.get("sentences"):
+        return None
+    reason = data.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return reason.strip()
 
 
 def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:

@@ -477,13 +477,16 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             tally.sentences_adopted += _adopt_sentences(ctx)
             # No Source is asked per open Target -- the sentence attempt is
             # what serves them. A word whose Targets it was handed is
-            # `attempted`; one it never reached (the per-run Target cap) is
-            # `deferred`; one the adopted drafts closed has already left
-            # gaps() and takes no bucket at all.
+            # `attempted`; one it withheld at the no-fit cap (spec 3 r19
+            # section 5, AttemptResult.subjects_exhausted) is `exhausted`,
+            # once, and never also deferred; one it never reached (the
+            # per-run Target cap) is `deferred`; one the adopted drafts
+            # closed has already left gaps() and takes no bucket at all.
             open_words_after = open_words(ctx.syllabus)
+            served = result.subjects_handed | result.subjects_exhausted
             tally.attempted += len(result.subjects_handed & open_words_after)
-            tally.deferred += len(
-                (open_words_before - result.subjects_handed) & open_words_after)
+            tally.exhausted += len(result.subjects_exhausted & open_words_after)
+            tally.deferred += len((open_words_before - served) & open_words_after)
     else:
         # The llm-sentence budget kept the attempt from running at all:
         # every word with an open Target is budget-constrained, same as a

@@ -28,6 +28,7 @@ from thai_syllabus.record import (
     learner_ratings,
     merge_drafts,
     parse_drafts,
+    parse_no_fit,
     parse_prompt,
     parses_in,
     ratings_for_role,
@@ -397,6 +398,35 @@ def test_parse_drafts_skips_an_item_whose_clauses_are_an_empty_list_and_warns(ca
         drafts = parse_drafts(text)
     assert drafts == []
     assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+
+
+# --- parse_no_fit: the drafter's own "nothing fits" answer (spec 3 r19 s5) --
+
+def test_parse_no_fit_reads_the_reason_of_an_empty_sentences_answer():
+    text = json.dumps({"sentences": [], "reason": "no natural sentence covers ข้าว"})
+    assert parse_no_fit(text) == "no natural sentence covers ข้าว"   # ข้าว: rice
+
+
+def test_parse_no_fit_reads_a_fenced_answer():
+    text = '```json\n' + json.dumps({"sentences": [], "reason": "vocabulary too small"}) + '\n```'
+    assert parse_no_fit(text) == "vocabulary too small"
+
+
+def test_parse_no_fit_is_none_when_the_answer_carries_a_draft():
+    text = json.dumps({"sentences": [{"clauses": [["eat"]], "text": "กิน", "gloss": "eat"}],
+                       "reason": "only one"})   # กิน: eat
+    assert parse_no_fit(text) is None
+
+
+def test_parse_no_fit_is_none_without_a_non_empty_reason():
+    assert parse_no_fit(json.dumps({"sentences": []})) is None
+    assert parse_no_fit(json.dumps({"sentences": [], "reason": "   "})) is None
+    assert parse_no_fit(json.dumps({"sentences": [], "reason": 7})) is None
+
+
+def test_parse_no_fit_is_none_on_text_that_is_not_the_drafting_json():
+    assert parse_no_fit("sorry, I cannot") is None
+    assert parse_no_fit(json.dumps(["a", "b"])) is None
 
 
 def test_drafts_in_keeps_distinct_texts_distinct():

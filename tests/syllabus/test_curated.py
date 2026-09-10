@@ -994,6 +994,32 @@ def test_providers_transient_cap_defaults_to_three_and_round_trips(tmp_path):
     assert curated.load_providers_config(path) == cfg
 
 
+def test_providers_sentence_nothing_cap_defaults_to_three_and_round_trips(tmp_path):
+    """Spec 3 r19 section 9: the no-fit cap derivations.sentence_exhausted
+    counts against."""
+    assert curated.ProvidersConfig().sentence_nothing_cap == 3
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_nothing_cap=5)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.sentence_nothing_cap == 5
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path).sentence_nothing_cap == 5
+
+
+def test_providers_sentence_nothing_cap_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_nothing_cap=0)))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_nothing_cap"):
+        curated.load_providers_config(path)
+
+
+def test_providers_sentence_nothing_cap_rejects_a_non_integer(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_nothing_cap="3")))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_nothing_cap"):
+        curated.load_providers_config(path)
+
+
 def test_providers_transient_cap_rejects_zero(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(transient_cap=0)))

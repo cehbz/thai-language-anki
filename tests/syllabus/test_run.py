@@ -231,6 +231,18 @@ def ctx_batch_sentences(tmp_path, fake_search, fake_batch):
     return ctx
 
 
+def _seed_no_fit(db, word_id, target_id, *, times):
+    """`times` no-fit outcome rows on a word's sentence need, in the shape
+    attempts.sentence_attempt appends them (spec 3 r19 section 5)."""
+    for _ in range(times):
+        db.append(port="attempt", backend="llm",
+                  key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                  subject=word_id,
+                  question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                           "targets": [target_id]},
+                  answer={"outcome": "nothing", "candidates": [], "reason": "nothing fits"})
+
+
 # --- one pass per source, one batch ---------------------------------------
 
 def test_run_tries_one_source_per_need_and_submits_one_batch(
@@ -278,6 +290,45 @@ def test_run_stops_at_the_first_unreachable_judge(ctx_inline_dead_judge):
     # it over, drafting nothing) + 1 for the picture need that hit the
     # dead judge before the loop stopped.
     assert report.unreachable and report.attempted == 2
+
+
+def test_a_word_with_three_no_fit_rows_is_reported_exhausted_not_attempted(
+        tmp_path, fake_search, fake_batch):
+    """End to end over the real Sourcing: three no-fit answers on record
+    and the drafter is not handed rice's Target again -- the run reports
+    the word under `exhausted`, and the identity over its three needs
+    (picture, recording, sentence) holds."""
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                llm=_Llm(json.dumps({"sentences": [], "reason": "nothing fits"})))
+    for name in ("openverse", "wikimedia", "pexels"):
+        ctx.provider._backends[name] = _Silent(name)
+    _seed_no_fit(ctx.db, "rice", "rice/receptive", times=3)
+
+    report = run(ctx, budgets={})
+    assert report.available == 3          # rice's picture, recording and sentence needs
+    assert report.exhausted == 1 and report.attempted == 2 and report.deferred == 0
+    assert report.drafted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+    # The drafter was never asked, so no fourth no-fit row landed.
+    assert len([r for r in rows_for(ctx.db, "rice", "sentence") if r.port == "attempt"]) == 3
+
+
+def test_a_no_fit_answer_leaves_one_nothing_row_per_handed_word(
+        tmp_path, fake_search, fake_batch):
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                llm=_Llm(json.dumps({"sentences": [], "reason": "no natural sentence"})))
+    for name in ("openverse", "wikimedia", "pexels"):
+        ctx.provider._backends[name] = _Silent(name)
+
+    report = run(ctx, budgets={})
+    rows = [r for r in rows_for(ctx.db, "rice", "sentence") if r.port == "attempt"]
+    assert len(rows) == 1 and rows[0].answer["reason"] == "no natural sentence"
+    assert report.attempted == 3 and report.exhausted == 0   # the word was handed over
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_batch):
@@ -773,6 +824,19 @@ def test_run_keeps_the_identity_for_a_directed_sentence_need(db, monkeypatch):
              question={"kind": "direction"}, answer={"direction": "try again"})
     report = run(_ctx(db, _Syl(_Gaps(sentences=("t1",)))), {})
     assert calls == []
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_run_counts_a_word_the_sentence_attempt_withheld_under_exhausted(db, monkeypatch):
+    """Spec 3 r19 section 5: a word at the no-fit cap is not handed to the
+    drafter, and is neither attempted nor deferred -- it is `exhausted`,
+    once, and the run's accounting identity still holds."""
+    withheld = AttemptResult(attempted=False, subjects_exhausted=frozenset({"t1"}))
+    _patch(monkeypatch, {}, sentence_result=withheld)
+    report = run(_ctx(db, _Syl(_Gaps(sentences=("t1",)))), {})
+    assert report.available == 1
+    assert report.exhausted == 1 and report.attempted == 0 and report.deferred == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 

@@ -28,6 +28,7 @@ from thai_syllabus.curated import (
     load_providers_config,
     save_curated,
 )
+from thai_syllabus.derivations import DEFAULT_SENTENCE_NOTHING_CAP
 from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
@@ -245,6 +246,19 @@ def test_llm_sentence_recognizes_only_a_completion_drafts_in_reads(cfg, db, medi
     backends = build_provider(cfg, db, media_store)._backends
     assert backends["llm-sentence"].recognize("no json here") is False
     assert backends["llm-phrase"].recognize("no json here") is True
+
+
+def test_llm_sentence_recognizes_a_no_fit_answer(cfg, db, media_store):
+    """Spec 3 r19 section 5: `{"sentences": [], "reason": "..."}` is an
+    answer, not an unusable completion -- the provide row is cached and
+    sentence_attempt reads the reason off it. An empty listing with no
+    reason stays unrecognized."""
+    import json
+
+    backends = build_provider(cfg, db, media_store)._backends
+    assert backends["llm-sentence"].recognize(
+        json.dumps({"sentences": [], "reason": "nothing natural fits"})) is True
+    assert backends["llm-sentence"].recognize(json.dumps({"sentences": []})) is False
 
 
 def test_llm_parse_recognizes_only_a_completion_parses_in_reads(cfg, db, media_store):
@@ -889,6 +903,26 @@ def test_load_derivations_carries_the_parameters_build_sourcing_runs_under(tmp_p
     assert derivations.transient_cap == ctx.transient_cap == 2
     assert derivations.sources_for is ctx.sources_for
     assert derivations.db is derivations.syllabus.assessments
+
+
+def test_the_sentence_no_fit_cap_reaches_both_derivations_and_sourcing(tmp_path):
+    """Spec 3 r19 section 9: providers.yaml's own sentence_nothing_cap is
+    the cap the run's attempt and the feedback screen's fold both use."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "sentence_nothing_cap: 5\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    derivations = load_derivations(root)
+    ctx = build_sourcing(root)
+    assert derivations.sentence_nothing_cap == ctx.sentence_nothing_cap == 5
+
+
+def test_the_sentence_no_fit_cap_defaults_to_three(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert build_sourcing(root).sentence_nothing_cap == DEFAULT_SENTENCE_NOTHING_CAP == 3
 
 
 def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):
