@@ -40,12 +40,14 @@ def test_words_round_trip(tmp_path):
     assert rice_category == "Food"
 
 
-def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="engines_agree"):
+def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="engines_agree",
+         no_productive=False):
     from thai_syllabus.entities import Pronunciation, Syllable
     syl = Syllable(segments=("k", "aː", "w"), vowel_length="long", tone=tone)
     return Word(id=WordId(id_), thai=thai,
                pron=Pronunciation(syllables=(syl,), corroboration=corroboration),
-               meaning=meaning, classifier=WordId(classifier) if classifier else None)
+               meaning=meaning, classifier=WordId(classifier) if classifier else None,
+               no_productive=no_productive)
 
 
 # --- curated_version ----------------------------------------------------
@@ -109,6 +111,43 @@ def test_load_words_refuses_an_unknown_category_name(tmp_path):
 def _pron_dict():
     return {"syllables": [{"segments": ["k", "a", "w"], "vowel_length": "long",
                           "tone": "falling"}], "corroboration": "engines_agree"}
+
+
+def test_load_words_a_row_with_no_productive_true_loads_with_the_flag(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+            "no_productive": True}]  # แดง = red
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    loaded = curated.load_words(tmp_path / "words.yaml")
+    (w, _), = loaded
+    assert w.no_productive is True
+
+
+def test_words_no_productive_round_trips(tmp_path):
+    path = tmp_path / "words.yaml"
+    curated.save_words(path, [(_word("red", "แดง", "red", no_productive=True), None)])
+    loaded = curated.load_words(path)
+    (w, _), = loaded
+    assert w.no_productive is True
+
+
+def test_save_words_omits_no_productive_key_when_false(tmp_path):
+    """save_words must not emit `no_productive: false` for the common
+    case (spec 1 r9): the key is absent, not written as false.
+    """
+    path = tmp_path / "words.yaml"
+    curated.save_words(path, [(_word("rice", "ข้าว", "cooked rice"), "Food")])
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "no_productive" not in raw[0]
+
+
+def test_load_words_refuses_a_non_bool_no_productive_naming_the_row(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+            "no_productive": "yes"}]  # แดง = red
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
+        curated.load_words(tmp_path / "words.yaml")
+    with pytest.raises(curated.CuratedValidationError, match="no_productive"):
+        curated.load_words(tmp_path / "words.yaml")
 
 
 def test_build_categories_groups_members_by_name():
@@ -243,9 +282,25 @@ def test_pairs_load_validation_collects_all_errors(tmp_path):
 
 def test_profile_round_trip(tmp_path):
     path = tmp_path / "profile.yaml"
-    profile = Profile(register="male_colloquial", emphasis={"Animals": 1.5})
+    profile = Profile(register="male_colloquial", emphasis={"Animals": 1.5},
+                      productive_cutoff=1500)
     curated.save_profile(path, profile)
     assert curated.load_profile(path) == profile
+
+
+def test_profile_without_productive_cutoff_defaults_to_2000(tmp_path):
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump({"register": "male_colloquial", "emphasis": {}}),
+                    encoding="utf-8")
+    assert curated.load_profile(path).productive_cutoff == 2000
+
+
+def test_profile_productive_cutoff_zero_refuses_naming_the_field(tmp_path):
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump({"register": "male_colloquial", "emphasis": {},
+                                    "productive_cutoff": 0}), encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError, match="profile.productive_cutoff"):
+        curated.load_profile(path)
 
 
 # --- rulebook config -----------------------------------------------------

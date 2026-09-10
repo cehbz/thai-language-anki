@@ -67,6 +67,10 @@ class Word:
     pron: Pronunciation
     meaning: str
     classifier: WordId | None = None
+    no_productive: bool = False       # spec 1 section 1, r9: withholds the
+                                      # derived productive Target this Word
+                                      # would otherwise carry above the
+                                      # Profile's productive_cutoff
 
 
 @dataclass(frozen=True)

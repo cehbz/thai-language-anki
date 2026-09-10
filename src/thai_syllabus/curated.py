@@ -13,7 +13,7 @@ import hashlib
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -111,8 +111,14 @@ def _pron_from_dict(d: dict) -> Pronunciation:
 
 
 def _word_to_dict(w: Word, category: CategoryName | None) -> dict:
-    return {"id": w.id, "thai": w.thai, "pron": _pron_to_dict(w.pron),
-           "meaning": w.meaning, "classifier": w.classifier, "category": category}
+    d = {"id": w.id, "thai": w.thai, "pron": _pron_to_dict(w.pron),
+        "meaning": w.meaning, "classifier": w.classifier, "category": category}
+    if w.no_productive:
+        # r9: the key is written only when true, so the ~800 existing
+        # words that carry the default don't gain a `no_productive: false`
+        # line apiece.
+        d["no_productive"] = True
+    return d
 
 
 def _word_from_dict(d: dict) -> Word:
@@ -122,12 +128,17 @@ def _word_from_dict(d: dict) -> Word:
 
 
 def save_words(path: str | Path, rows: list[tuple[Word, CategoryName | None]]) -> None:
+    """Writes words.yaml (spec 1 section 1). `no_productive` (r9) is
+    written only for a row where it is true -- see `_word_to_dict`.
+    """
     _atomic_write_yaml(Path(path), [_word_to_dict(w, c) for w, c in rows])
 
 
 def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
-    """Row order kept. `category` is optional (a closure word is in
-    none); a row naming one outside CATEGORY_NAMES is refused, named.
+    """Row order kept (spec 1 section 1). `category` is optional (a
+    closure word is in none); a row naming one outside CATEGORY_NAMES is
+    refused, named. `no_productive` (r9) is optional, defaulting False;
+    a row naming anything but a bool is refused, named.
     """
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
@@ -146,6 +157,13 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
         if category is not None and category not in CATEGORY_NAMES:
             errors.append(f"words[{i}] ({w.id!r}): unknown category {category!r}")
             continue
+        no_productive = row.get("no_productive", False)
+        if not isinstance(no_productive, bool):
+            errors.append(f"words[{i}] ({w.id!r}): no_productive {no_productive!r} "
+                          "must be a bool")
+            continue
+        if no_productive:
+            w = replace(w, no_productive=True)
         seen.add(w.id)
         words.append((w, CategoryName(category) if category is not None else None))
     if errors:
@@ -331,16 +349,32 @@ def load_pairs(path: str | Path, words_by_id: Mapping[str, Word],
 # --- profile -------------------------------------------------------------
 
 def save_profile(path: str | Path, profile: Profile) -> None:
+    """Writes profile.yaml (spec 1 section 2)."""
     _atomic_write_yaml(Path(path), {"register": profile.register,
-                                    "emphasis": dict(profile.emphasis)})
+                                    "emphasis": dict(profile.emphasis),
+                                    "productive_cutoff": profile.productive_cutoff})
 
 
 def load_profile(path: str | Path) -> Profile:
+    """Reads profile.yaml (spec 1 section 2). `productive_cutoff` (r9)
+    is optional, defaulting 2000; anything but a positive int is
+    refused, naming the field.
+    """
     path = Path(path)
     _require_exists(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    errors: list[str] = []
+    productive_cutoff = data.get("productive_cutoff", 2000)
+    if (isinstance(productive_cutoff, bool)
+            or not isinstance(productive_cutoff, int) or productive_cutoff <= 0):
+        errors.append(f"profile.productive_cutoff: {productive_cutoff!r} must be "
+                      "a positive int")
+        productive_cutoff = 2000
+    if errors:
+        raise CuratedValidationError(errors)
     return Profile(register=data.get("register", "male_colloquial"),
-                   emphasis=dict(data.get("emphasis") or {}))
+                   emphasis=dict(data.get("emphasis") or {}),
+                   productive_cutoff=productive_cutoff)
 
 
 # --- rulebook config -------------------------------------------------------

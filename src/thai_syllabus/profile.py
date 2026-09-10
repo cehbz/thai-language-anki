@@ -12,3 +12,7 @@ from .ids import CategoryName
 class Profile:
     register: Literal["male_colloquial"]
     emphasis: dict[CategoryName, float] = field(default_factory=dict)
+    productive_cutoff: int = 2000   # spec 1 section 2, r9: the frequency
+                                     # rank at or above which a categorized
+                                     # Word carries a productive Target
+                                     # (Nation's high-frequency line)
