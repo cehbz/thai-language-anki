@@ -15,9 +15,11 @@ from thai_syllabus.safety import (
     CuratedHistory,
     Guard,
     HistoryError,
+    RestoreReport,
     SafetyCheckFailed,
     check,
     deck_counts,
+    restore,
     snapshot,
     writing_command,
 )
@@ -424,3 +426,149 @@ def test_safety_check_failed_carries_the_failures_list():
     error = SafetyCheckFailed(["sentences: 1 rows after, 2 in the snapshot, 0 removal(s) reported"])
     assert error.failures == [
         "sentences: 1 rows after, 2 in the snapshot, 0 removal(s) reported"]
+
+
+# -- restore --------------------------------------------------------------
+
+def _fixed_later():
+    return datetime(2026, 9, 10, 12, 5, 0)
+
+
+def test_restore_without_a_backup_raises_value_error_naming_the_path(tmp_path):
+    deck = tmp_path / "deck"
+    deck.mkdir()
+
+    with pytest.raises(ValueError) as excinfo:
+        restore(deck, now=_fixed_now)
+
+    assert str(deck / "backup" / "syllabus.db") in str(excinfo.value)
+
+
+def test_restore_round_trip_brings_back_the_snapshot_db_and_pre_command_curated_state(
+        tmp_path):
+    """A writing_command whose body appends a cache row and edits
+    words.yaml, then restore: the cache count goes back to the snapshot's
+    (taken before the body ran), words.yaml goes back to the pre commit's
+    content, the replaced db is parked under work/, and the history ends
+    with a "post restore" commit whose parent chain holds "pre restore"
+    (spec 2 section 6). An out-of-band edit after the writing_command
+    (curated/ touched directly, the way a human might before noticing a
+    mistake) leaves the tree at restore-time different from the last
+    commit, so "pre restore" actually commits something -- proving
+    restore reads last_pre_commit() BEFORE that commit, since otherwise
+    it would target that very commit instead of the writing command's
+    own "pre x".
+    """
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "words.yaml").write_text("- rice\n", encoding="utf-8")
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+    db.close()
+
+    with writing_command(deck, "x", now=_fixed_now):
+        (curated / "words.yaml").write_text("- rice\n- fish\n", encoding="utf-8")
+        db = SyllabusDb(deck / "syllabus.db")
+        _append_row(db, "k2")
+        db.close()
+
+    expected_target = CuratedHistory(curated).last_pre_commit()
+    (curated / "words.yaml").write_text("- rice\n- fish\n- extra\n", encoding="utf-8")
+
+    report = restore(deck, now=_fixed_later)
+
+    assert isinstance(report, RestoreReport)
+    assert deck_counts(deck).cache == 1
+    assert (curated / "words.yaml").read_text(encoding="utf-8") == "- rice\n"
+    assert report.parked.exists()
+    assert report.parked.parent == deck / "work"
+
+    subjects = _git_log_subjects(curated)
+    assert subjects[0].startswith("post restore ")
+    assert subjects[1].startswith("pre restore ")
+    assert any(s.startswith("pre x ") for s in subjects[2:])
+    assert report.commit == expected_target
+
+    con = sqlite3.connect(report.parked)
+    assert con.execute("select count(*) from cache").fetchone()[0] == 2
+    con.close()
+
+
+def test_restore_reports_none_commit_on_an_empty_history(tmp_path):
+    """No writing command has ever run: curated/'s history has no commits
+    at all (unborn HEAD), so restore()'s target is None and it skips
+    history.restore_tree -- only the db swap happens.
+    """
+    deck = tmp_path / "deck"
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+    db.close()
+    snapshot(deck / "syllabus.db", deck / "backup" / "syllabus.db")
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k2")
+    db.close()
+
+    report = restore(deck, now=_fixed_now)
+
+    assert report.commit is None
+    assert deck_counts(deck).cache == 1
+
+
+def test_restore_reports_none_commit_when_history_has_commits_but_none_are_pre(
+        tmp_path):
+    """curated/'s history is non-empty but every commit's subject fails
+    to start with "pre " (e.g. seeded directly rather than through
+    writing_command) -- restore's target must still be None, not the
+    newest commit regardless of label. An empty history alone (unborn
+    HEAD) can't distinguish "last_pre_commit filters by label" from a
+    buggy "return the newest commit, whatever it's called" -- this test
+    needs at least one real, non-pre commit present to catch that.
+    """
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "words.yaml").write_text("- rice\n", encoding="utf-8")
+    history = CuratedHistory(curated)
+    history.ensure()
+    history.commit("post x 2026-09-10T00:00:00")
+
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+    db.close()
+    snapshot(deck / "syllabus.db", deck / "backup" / "syllabus.db")
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k2")
+    db.close()
+
+    report = restore(deck, now=_fixed_now)
+
+    assert report.commit is None
+    assert (curated / "words.yaml").read_text(encoding="utf-8") == "- rice\n"
+    assert deck_counts(deck).cache == 1
+
+
+def test_restore_parks_a_stale_wal_and_shm_and_leaves_none_behind(tmp_path):
+    """A live WAL-mode db can leave -wal/-shm siblings next to
+    syllabus.db; restore must move all three (whichever exist) to the
+    parked path with the same suffixes before the snapshot is copied in,
+    so no -wal/-shm sits next to the restored db afterwards (spec 2
+    section 6).
+    """
+    deck = tmp_path / "deck"
+    backup = deck / "backup" / "syllabus.db"
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(b"backup-db")
+    (deck / "syllabus.db").write_bytes(b"live-db")
+    (deck / "syllabus.db-wal").write_bytes(b"wal-bytes")
+    (deck / "syllabus.db-shm").write_bytes(b"shm-bytes")
+
+    report = restore(deck, now=_fixed_now)
+
+    parked = report.parked
+    assert parked.read_bytes() == b"live-db"
+    assert parked.with_name(parked.name + "-wal").read_bytes() == b"wal-bytes"
+    assert parked.with_name(parked.name + "-shm").read_bytes() == b"shm-bytes"
+    assert (deck / "syllabus.db").read_bytes() == b"backup-db"
+    assert not (deck / "syllabus.db-wal").exists()
+    assert not (deck / "syllabus.db-shm").exists()

@@ -622,6 +622,58 @@ def test_run_exits_1_and_reports_a_safety_check_failure_when_the_body_deletes_a_
 
 # --- existing subcommands keep working -------------------------------------
 
+# --- restore (spec 2 section 6) --------------------------------------------
+
+def test_restore_subcommand_prints_the_three_facts_and_returns_0(deck, capsys):
+    """A prior writing_command (via `run`, with run_pipeline stubbed so no
+    network/subprocess is needed) leaves both a backup/syllabus.db
+    snapshot and a curated/ history with a "pre run" commit -- restore
+    reads them back and prints the backup path, its mtime, the commit
+    curated/ landed at, and where the replaced db was parked.
+    """
+    from thai_syllabus.run import RunReport
+
+    db = SyllabusDb(deck / "syllabus.db")
+    db.close()
+
+    def fake_run(ctx, budgets, **kwargs):
+        return RunReport(attempted=0)
+
+    orig_run_pipeline = cli.run_pipeline
+    cli.run_pipeline = fake_run
+    try:
+        rc = cli.main(["run", "--deck", str(deck)])
+    finally:
+        cli.run_pipeline = orig_run_pipeline
+    assert rc == 0
+    capsys.readouterr()  # discard the run subcommand's own output
+
+    rc = cli.main(["restore", "--deck", str(deck)])
+
+    assert rc == 0
+    text = capsys.readouterr().out
+    backup = deck / "backup" / "syllabus.db"
+    assert f"restored syllabus.db from {backup} (" in text
+    assert "curated/ at" in text
+    assert "replaced db parked at" in text
+    assert str(deck / "work" / "syllabus.db.") in text
+
+
+def test_restore_without_a_snapshot_exits_1_with_the_message_on_stderr(deck, capsys):
+    rc = cli.main(["restore", "--deck", str(deck)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert str(deck / "backup" / "syllabus.db") in err
+    assert "no snapshot at" in err
+
+
+def test_restore_subcommand_still_parses_with_only_deck_required():
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["restore"])
+    assert exc.value.code == 2
+
+
 def test_migrate_and_import_subcommands_still_parse():
     # not exercised end-to-end here (already covered elsewhere); this only
     # guards against `compile`/`run` breaking argparse's subparser wiring.

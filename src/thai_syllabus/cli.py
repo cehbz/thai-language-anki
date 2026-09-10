@@ -6,6 +6,7 @@
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
+    thai-syllabus restore  --deck DIR
 
 Each command wires itself through wiring.py: load_syllabus() for the
 Syllabus, build_sourcing() for run()'s Sourcing ctx, both from the deck's
@@ -29,7 +30,7 @@ from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
 from .run import Budget, RunReport
 from .run import run as run_pipeline
-from .safety import SafetyCheckFailed, writing_command
+from .safety import SafetyCheckFailed, restore, writing_command
 from .wiring import build_sourcing, default_budgets, load_derivations
 
 
@@ -212,6 +213,12 @@ def main(argv: list[str] | None = None, *,
                    help="how long to sleep between polls of an outstanding "
                         "batch's status")
 
+    p = sub.add_parser(
+        "restore",
+        help="put the last snapshot and the pre-command curated state back "
+             "(spec 2 section 6)")
+    p.add_argument("--deck", type=Path, required=True)
+
     args = parser.parse_args(argv)
 
     try:
@@ -238,6 +245,16 @@ def main(argv: list[str] | None = None, *,
             return _cmd_compile(args)
         if args.command == "run":
             return _cmd_run(args, sleep=sleep)
+        if args.command == "restore":
+            try:
+                report = restore(args.deck)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            backup = args.deck / "backup" / "syllabus.db"
+            print(f"restored syllabus.db from {backup} ({report.snapshot_mtime}); "
+                 f"curated/ at {report.commit}; replaced db parked at {report.parked}")
+            return 0
         return 2
     except SafetyCheckFailed as e:
         print("safety check failed:", file=sys.stderr)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -250,3 +251,54 @@ def writing_command(deck: Path, name: str, *,
     history.commit(f"post {name} {stamp}")
     if failures:
         raise SafetyCheckFailed(failures)
+
+
+@dataclass(frozen=True)
+class RestoreReport:
+    """What `restore` did (spec 2 section 6): the backup's own mtime, the
+    pre commit curated/ was restored to (None when the history had none),
+    and where the replaced db was parked.
+    """
+    snapshot_mtime: str
+    commit: str | None
+    parked: Path
+
+
+def restore(deck: Path, *, now: Callable[[], datetime] = datetime.now) -> RestoreReport:
+    """`thai-syllabus restore` (spec 2 section 6): a human act that puts
+    the last snapshot and the pre-command curated state back. Raises
+    ValueError naming the path when deck/backup/syllabus.db is absent --
+    there is nothing to restore to. The current tree is committed as
+    "pre restore <stamp>" before the target (the newest "pre " commit
+    from an earlier writing command) is read, so restore never restores
+    curated/ to the commit it is about to make of its own.
+    """
+    backup = deck / "backup" / "syllabus.db"
+    if not backup.exists():
+        raise ValueError(f"no snapshot at {backup}")
+    snapshot_mtime = (datetime.fromtimestamp(backup.stat().st_mtime)
+                      .astimezone().isoformat(timespec="seconds"))
+
+    stamp = now().astimezone().isoformat(timespec="seconds")
+    history = CuratedHistory(deck / "curated")
+    history.ensure()
+    # Read BEFORE the pre-restore commit below: otherwise that commit
+    # would itself be the newest "pre " commit and restore would restore
+    # curated/ to itself.
+    target = history.last_pre_commit()
+    history.commit(f"pre restore {stamp}")
+
+    work = deck / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    parked = work / f"syllabus.db.{stamp}"
+    for suffix in ("", "-wal", "-shm"):
+        src = deck / f"syllabus.db{suffix}"
+        if src.exists():
+            src.rename(work / f"syllabus.db.{stamp}{suffix}")
+    shutil.copy2(backup, deck / "syllabus.db")
+
+    if target is not None:
+        history.restore_tree(target)
+    history.commit(f"post restore {stamp}")
+
+    return RestoreReport(snapshot_mtime=snapshot_mtime, commit=target, parked=parked)
