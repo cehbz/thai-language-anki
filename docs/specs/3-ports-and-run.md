@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 17, proposed 2026-09-09 against principles r2 and architecture
+Revision 18, proposed 2026-09-10 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -97,6 +97,12 @@ Revision log:
   resets at 22:00 UTC (api.forvo.com general information), so every
   cycle after the first killed Forvo with a transient-failure on an
   arbitrary need while the 450/day count ran from local midnight.
+- r18 2026-09-10: a Forvo mp3 download is a Forvo request: the per-day
+  budget sums the audiofetch rows attributed to forvo with the lookups,
+  and the attempt tallies each download under forvo (§4, §7);
+  `quotas.<source>.max_asks: null` lifts a default cap (§9). Evidence:
+  2026-09-10, a fresh Forvo window answered `Limit/day reached.` after
+  232 lookups and 268 downloads while the budget read 232 of 450.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -179,7 +185,7 @@ one speaker answers empty.
 | openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key; re-asked once per attempt when every hit is refused by its server (§6a) |
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo; gsrsearch carries `filetype:bitmap`; imageinfo asks `iiurlwidth` = providers.yaml `image_width`, default 1600, and the hit's url is the scaled `thumburl`, origin the file page) | wikimedia:query | free HTTP | same |
 | imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
-| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 lookup per ask, 450/day from 22:00 UTC; 400 `["Limit/day reached."]` is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
+| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one), 450/day from 22:00 UTC; 400 `["Limit/day reached."]` is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
 | llm | sentence (per run over open targets), parse (clauses for given texts), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
@@ -418,7 +424,8 @@ pair-search carries the dictionary version.
 Budget per source in its currency: {max_asks?, max_cost?, day_starts?};
 forvo 450/day from 22:00 UTC, learner 20/session. Spend is summed from
 the record since the most recent `day_starts` instant (HH:MM with a
-zone; default local midnight).
+zone; default local midnight): the source's asks plus the bytes fetches
+attributed to it (§4's forvo row).
 
 One source per need per run; one judge batch per run; at most one batch
 outstanding: when the previous run's batch is still in progress, the run
@@ -519,7 +526,9 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3) and
-`quotas.<source>.day_starts` (forvo `22:00Z`). `search_proxy` is the HTTP
+`quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
+layered field by field over the defaults; an explicit `max_asks: null`
+lifts a default cap for the day. `search_proxy` is the HTTP
 forward proxy Openverse searches go through (media sourcing: Openverse
 refuses a Thai egress); no other request uses it. The provenance prior lives in rulebook.yaml (it is
 a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,

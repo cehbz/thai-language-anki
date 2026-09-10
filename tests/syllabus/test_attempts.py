@@ -1267,6 +1267,17 @@ def test_a_forvo_recording_attempt_writes_a_candidates_outcome(tmp_path):
     assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
 
 
+def test_a_forvo_download_counts_as_a_forvo_request_in_the_attempt_s_spend(tmp_path):
+    """Forvo's daily limit counts the mp3 downloads as requests, so the
+    attempt tallies each download under forvo as well as audiofetch."""
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"},
+                 {"username": "malee", "pathmp3": "https://f/v.mp3"}]})   # ข้าว: rice
+    result = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert result.spend["forvo"].asks == 3   # one lookup, two downloads
+    assert result.spend["audiofetch"].asks == 2
+
+
 def test_a_forvo_recording_attempt_writes_a_nothing_outcome_when_forvo_has_nothing(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     attempt(ctx, Need("rice", "recording"), "forvo")

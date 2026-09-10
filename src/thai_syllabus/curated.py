@@ -693,7 +693,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
-        day_starts = quota.get("day_starts") if isinstance(quota, Mapping) else None
+        if not isinstance(quota, Mapping):
+            errors.append(f"providers.quotas.{source}: {quota!r} is not a mapping "
+                          "(max_asks, max_cost, day_starts)")
+            continue
+        day_starts = quota.get("day_starts")
         if day_starts is None:
             continue
         if not isinstance(day_starts, str):

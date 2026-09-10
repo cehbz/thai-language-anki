@@ -174,6 +174,21 @@ def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
     return len(source_asks(cache.rows_since("provide", backend, since_ts)))
 
 
+def fetches_since(cache: CacheReader, source: str, since_ts: int) -> int:
+    """How many bytes fetches attributed to `source` landed at or after
+    `since_ts`: the audiofetch rows whose question params name it. Forvo
+    counts an mp3 download as a request against its daily limit (spec 3
+    section 4), so its per-day budget sums these with the lookups.
+    """
+    rows = cache.rows_since("provide", "audiofetch", since_ts)
+    return sum(1 for r in rows if _params_of(r).get("source") == source)
+
+
+def _params_of(row: Answer) -> Mapping:
+    params = row.question.get("params") if isinstance(row.question, Mapping) else None
+    return params if isinstance(params, Mapping) else {}
+
+
 def spend_since(cache: CacheReader, backend: str, since_ts: int) -> float:
     """What those asks cost, in `backend`'s own currency."""
     return sum(r.cost for r in source_asks(cache.rows_since("provide", backend, since_ts)))

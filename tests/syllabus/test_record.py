@@ -16,6 +16,7 @@ from thai_syllabus.record import (
     PARSE_SUBJECT,
     SentenceDraft,
     asks_since,
+    fetches_since,
     candidate_shas,
     directions,
     draft_sentence,
@@ -297,6 +298,25 @@ def test_asks_since_counts_that_backend_s_source_asks_in_the_window(cache):
                  {"items": []}, 0.0, ts=300)   # bytes, not a Source ask
     assert asks_since(cache, "forvo", 200) == 1
     assert asks_since(cache, "forvo", 0) == 2
+
+
+def test_fetches_since_counts_the_bytes_fetches_attributed_to_a_source(cache):
+    """Forvo counts an mp3 download as a request against its daily limit
+    (measured 2026-09-10: 232 lookups plus 268 downloads exhausted it), so
+    a per-day budget in Forvo's currency sums the audiofetch rows whose
+    params name forvo as the source, alongside the lookups."""
+    forvo_mp3 = {"kind": "recording", "params": {"source": "forvo", "url": "https://f/a.mp3"}}
+    cache.append("provide", "audiofetch", ProvideKey(source="", kind="", query="k1"),
+                 "rice", forvo_mp3, {"items": []}, 0.0, ts=100)
+    cache.append("provide", "audiofetch", ProvideKey(source="", kind="", query="k2"),
+                 "fish", forvo_mp3, {"items": []}, 0.0, ts=300)
+    cache.append("provide", "audiofetch", ProvideKey(source="", kind="", query="k3"),
+                 "rice", {"kind": "recording", "params": {"url": "https://x/b.mp3"}},
+                 {"items": []}, 0.0, ts=300)   # a fetch from elsewhere
+    cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="rice"),
+                "rice", {"kind": "recording"}, {"items": []}, 1.0, ts=300)   # a lookup
+    assert fetches_since(cache, "forvo", 200) == 1
+    assert fetches_since(cache, "forvo", 0) == 2
 
 
 def test_spend_since_sums_the_cost_of_those_asks(cache):

@@ -406,6 +406,15 @@ def test_default_budgets_forvo_default_carries_its_22_00z_reset(cfg):
     assert budgets["forvo"].day_starts == "22:00Z"
 
 
+def test_an_explicit_null_max_asks_lifts_the_default_cap():
+    """`max_asks: null` in providers.yaml is the documented way to run a
+    budgeted source uncapped for the day (spec 3 section 9)."""
+    cfg = ProvidersConfig(quotas={"forvo": {"max_asks": None}})
+    budget = default_budgets(cfg)["forvo"]
+    assert budget.max_asks is None
+    assert budget.day_starts == "22:00Z"
+
+
 def test_default_budgets_layers_configured_quotas_over_defaults():
     cfg = ProvidersConfig(quotas={"forvo": {"max_asks": 10},
                                   "judge-api": {"max_cost": 5.0}})

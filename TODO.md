@@ -29,6 +29,10 @@ still run against them.
 - A drafter answer with zero drafts (`{"sentences": []}`) is refused
   under s2's no-drafts rule and re-asked every run; an honest "no
   sentence fits" answer needs a recognized shape that caches.
+- An empty Forvo lookup is `nothing`, definitive for the subject (s6a),
+  yet Forvo gains recordings over time: the 333 migrated empty lookups
+  from 2026-08-29 never ask again. Whether `nothing` from a growing
+  source ages out (a re-ask interval per source) is a spec decision.
 
 ## Deck safety (user, 2026-09-09)
 
@@ -39,22 +43,6 @@ still run against them.
   rows never fewer unless the command reports the removals by id; the
   run's identity); `thai-syllabus restore --deck D` as a human act. Spec 2
   revision to draft.
-
-## Sourcing accounting
-
-- Forvo's daily limit counts the audio downloads (apifree.forvo.com mp3
-  fetches through audiofetch) as requests: the run on 2026-09-09 23:36
-  had 223 lookups on record since 22:00 UTC and Forvo still answered
-  `Limit/day reached.`. The per-day count sees lookups only; either count
-  audiofetch rows whose url is a Forvo host, or lower max_asks. The Quota
-  state (spec 3 §6a) covers the gap in the meantime.
-- Wikimedia's cache key (`wikimedia:query`) predates the `filetype:bitmap`
-  and `iiurlwidth` request shape, so cached searches keep serving pre-r17
-  hits; each stale PDF/DjVu hit is refused once and enters `tried`.
-  Versioning the key is a spec 3 §3 change if wanted.
-- Config validation walks past a non-mapping quota entry (`forvo: 450`);
-  `max_asks: null` removes a default cap undocumented; the day_starts
-  offset regex accepts hours 00-19.
 
 ## Sentences: after the parsimonious-sentences arc
 
@@ -103,12 +91,6 @@ still run against them.
 
 - migrate's curated-present guard keys off words.yaml alone (a half-written
   curated dir counts as present).
-- Runs 1-7 done (work/run-*.log) and overnight cycles (work/cycle.log);
-  each run resolves the previous batch. Read the RunReport line:
-  available == attempted + exhausted + pending + unserved + budgeted +
-  deferred. Every run that collects a question leaves one batch
-  outstanding; a key-shape change between submit and resolve loses that
-  batch's answers (logged; they re-ask).
 - Compile, delete-and-reimport in Anki, proof pass in `thai-syllabus
   review`, then `import` after a study session; verify study rows (family,
   anchor, card_kind) and flag rows.

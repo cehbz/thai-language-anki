@@ -434,6 +434,13 @@ def test_an_unparseable_quotas_day_starts_refuses_naming_the_field(tmp_path):
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 
+def test_a_quotas_entry_that_is_not_a_mapping_refuses_naming_the_source(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": 450})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo: 450 is not a mapping"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
 def test_a_quotas_day_starts_with_no_zone_refuses(tmp_path):
     write_providers(tmp_path, quotas={"forvo": {"day_starts": "22:00"}})
     with pytest.raises(curated.CuratedValidationError,

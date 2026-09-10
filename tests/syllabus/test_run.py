@@ -1144,6 +1144,22 @@ def test_todays_asks_already_on_record_count_against_a_per_day_budget(db, monkey
     assert calls == []
 
 
+def test_todays_forvo_downloads_on_record_count_against_its_per_day_budget(db, monkeypatch):
+    """A Forvo mp3 download is a Forvo request (spec 3 section 4's forvo
+    row): one lookup and one download on today's record spend a budget
+    of two."""
+    calls = _patch(monkeypatch, {})
+    midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)
+    _row_today(db, "forvo", "x", ts=midnight + 1)
+    db.append(port="provide", backend="audiofetch",
+              key=ProvideKey(source="", kind="", query="k1"), subject="x",
+              question={"kind": "recording", "subject_kind": "word",
+                        "params": {"source": "forvo", "url": "https://f/x.mp3"}},
+              answer={"items": []}, cost=0.0, ts=midnight + 2)
+    run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {"forvo": Budget(max_asks=2)})
+    assert calls == []
+
+
 def test_yesterdays_asks_do_not_count_against_it(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     midnight = run_mod.day_start_ns(datetime.now().astimezone(), None)

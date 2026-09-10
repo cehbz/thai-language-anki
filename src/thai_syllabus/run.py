@@ -43,7 +43,7 @@ from .derivations import (
 )
 from .entities import Sentence
 from .ports import RecordWriter
-from .record import asks_since, spend_since
+from .record import asks_since, fetches_since, spend_since
 from .transport import QuotaExhausted, TransportError
 
 __all__ = ["Budget", "Spend", "RunReport", "run"]
@@ -236,13 +236,14 @@ def day_start_ns(now: datetime, day_starts: str | None) -> int:
 def _spent_today(ctx: Sourcing, budgets: Mapping[str, Budget]) -> dict[str, Spend]:
     """What the record says each budgeted backend spent since its own
     budget's `day_starts`, read once; this run's own asks are counted
-    from the tally.
+    from the tally. A source's day counts its Source asks plus the bytes
+    fetches attributed to it (Forvo counts downloads as requests).
     """
     now = datetime.now().astimezone()
     spent: dict[str, Spend] = {}
     for name, budget in budgets.items():
         since = day_start_ns(now, budget.day_starts)
-        spent[name] = Spend(asks=asks_since(ctx.db, name, since),
+        spent[name] = Spend(asks=asks_since(ctx.db, name, since) + fetches_since(ctx.db, name, since),
                             cost=spend_since(ctx.db, name, since))
     return spent
 

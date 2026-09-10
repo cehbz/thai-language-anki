@@ -568,6 +568,7 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str,
     if got is None:
         return None
     _count(spend, "audiofetch", got)
+    _count(spend, "forvo", got)   # Forvo counts the download as a request (spec 3 section 4)
     sha = _store(ctx, got, source="forvo", origin=item["pathmp3"], licence="forvo",
                  speaker=_forvo_speaker(item))
     if sha:
