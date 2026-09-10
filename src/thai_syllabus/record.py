@@ -321,9 +321,12 @@ def parse_drafts(text: str) -> list[SentenceDraft]:
 
 def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
     """One draft per distinct text among `drafts`, in first-seen order:
-    their gloss is the first non-empty one -- unless two of them carry
-    differing non-empty glosses, or differing clauses, in which case the
-    text is dropped (a `logging` warning names its first 40 characters).
+    their gloss is the first non-empty one. Differing clauses reject the
+    text (a `logging` warning names its first 40 characters); a differing
+    non-empty gloss does not -- spec 3 r19 section 5's "a text listed
+    twice is one candidate ... differing glosses keep the first, since
+    the verdict is keyed by the text and was given on that gloss" -- the
+    disagreement is only logged, at DEBUG.
     """
     order: list[str] = []
     glosses: dict[str, str] = {}
@@ -339,7 +342,8 @@ def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
         if d.clauses != clauses[one_text]:
             conflicted.add(one_text)
         if d.gloss and glosses[one_text] and d.gloss != glosses[one_text]:
-            conflicted.add(one_text)
+            _log.debug("merge_drafts: keeping the first gloss for a text with differing glosses: %r",
+                      one_text[:40])
         elif d.gloss and not glosses[one_text]:
             glosses[one_text] = d.gloss
     for one_text in order:

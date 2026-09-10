@@ -423,18 +423,21 @@ def test_merge_drafts_keeps_a_text_whose_repeated_clauses_agree():
     assert merged[0].gloss == "eat rice"
 
 
-def test_merge_drafts_drops_a_text_whose_glosses_disagree_and_warns(caplog):
-    """Two listings of one text carrying differing non-empty glosses drop
-    the text -- fed no candidate downstream -- with a warning naming its
-    first 40 characters."""
+def test_merge_drafts_keeps_the_first_gloss_when_glosses_disagree_and_logs_at_debug(caplog):
+    """Spec 3 r19 section 5: a text listed twice with differing non-empty
+    glosses is one candidate, keyed by the text -- the verdict was given
+    on the first gloss, so that gloss stands; the disagreement is logged
+    at DEBUG, not dropped."""
     a = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",   # กินข้าว: eat rice
                       gloss="eat rice")
     b = SentenceDraft(clauses=((WordId("eat"),), (WordId("rice"),)), text="กินข้าว",
                       gloss="rice is eaten")
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG):
         merged = merge_drafts([a, b])
-    assert merged == []
-    assert any("กินข้าว"[:40] in r.message for r in caplog.records)   # กินข้าว: eat rice
+    assert len(merged) == 1
+    assert merged[0].gloss == "eat rice"
+    assert any("กินข้าว"[:40] in r.message and r.levelno == logging.DEBUG
+              for r in caplog.records)
 
 
 def test_merge_drafts_drops_a_text_whose_clauses_disagree_and_warns(caplog):

@@ -38,6 +38,7 @@ from .derivations import (
     current_best,
     passing_pictures,
     pictures_awaiting_preference,
+    refused_drafts,
     unjudged_candidates,
 )
 from .entities import Target, Word
@@ -843,14 +844,18 @@ def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Wor
     return vocabulary
 
 
-def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
+def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
+                     refused: Sequence[tuple[str, str]] = ()) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary once as
     id/thai/meaning lines, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
     sentence already fills, an Introducible line per handed
     sentence-introduced target no adopted sentence fills, the profile
     register, the existing sentence openings to avoid, and the clause
-    rendering rule (spec 1 section 1).
+    rendering rule (spec 1 section 1). When `refused` (derivations.
+    refused_drafts) is non-empty, a block lists those texts as sentences
+    not to propose again, each with the verdict's evidence, before the
+    output-format sentence (spec 3 r19 section 5).
     """
     vocabulary = _entry_vocabulary(syllabus, targets)
     met_targets = syllabus.met_sentence_introduced_targets()
@@ -871,6 +876,11 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
     if introducible_lines:
         sections += ("Introducible (at most one per sentence):\n"
                     + "\n".join(introducible_lines) + "\n")
+    refused_lines = (f"- {text} — {evidence}" if evidence else f"- {text}"
+                     for text, evidence in refused)
+    refused_block = ("Do not propose these sentences; each failed review:\n"
+                     + "\n".join(refused_lines) + "\n"
+                     if refused else "")
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
             "Each JSON item is one sentence. Write the fewest natural sentences that together "
@@ -880,6 +890,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target]) -> str:
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
             + sections
+            + refused_block
             + "Write each sentence as clauses of vocabulary ids in order; a clause renders as "
             "its words' Thai concatenated, clauses are separated by one space; write a repeated "
             'word as [id, "ๆ"]; standard spelling (ครับ, never คับ); numbers as number words; '
@@ -899,7 +910,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     the judge; a draft filling none of them is skipped. The judge
     question carries the text, gloss, and the sentence's own last used
     word (Syllabus.last_used_word). Adoption is the run's, after the
-    verdicts land.
+    verdicts land. The drafting prompt also names the texts the judge
+    has already failed (derivations.refused_drafts, spec 3 r19 section
+    5) so the drafter does not propose them again.
     """
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
@@ -911,9 +924,10 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         return AttemptResult(attempted=False)
     open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
 
+    refused = refused_drafts(ctx.db, syllabus, current_rubric=ctx.rubrics)
     answer = ctx.provider.ask("llm-sentence", Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
-        params={"prompt": _sentence_prompt(syllabus, targets)}))
+        params={"prompt": _sentence_prompt(syllabus, targets, refused)}))
     _count(spend, "llm-sentence", answer)
 
     adopted = {s.text_sha for s in syllabus.sentences}

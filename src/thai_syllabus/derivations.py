@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "CurrentBest", "current_best", "learner_ranks", "vetoed",
-    "role_of", "adoptable_drafts",
+    "role_of", "adoptable_drafts", "refused_drafts",
     "JudgeVerdict", "judge_verdict",
     "pending",
     "attempts_since_change", "tried_sources", "next_source",
@@ -980,22 +980,44 @@ def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
 
 # --- adoptable_drafts -------------------------------------------------------
 
-def _role_rank(rows: Sequence[Answer], role: str,
-               current_rubric: Mapping[str, str]) -> tuple[str, float] | None:
-    """(deciding backend, rank) for a text-only verdict on `role`: the
-    first backend in AUTHORITY_ORDER[role] with a fresh row decides.
-    None when none has spoken.
+def _role_row(rows: Sequence[Answer], role: str,
+             current_rubric: Mapping[str, str]) -> tuple[str, Answer] | None:
+    """(deciding backend, its newest fresh row) for a text-only verdict on
+    `role`: the first backend in AUTHORITY_ORDER[role] with a fresh row
+    decides -- ties within that backend go to the newest row. None when
+    none has spoken.
     """
     for backend in AUTHORITY_ORDER.get(role, ("judge",)):
         spoken = [r for r in rows if r.port == "assess" and r.backend == backend
                  and r.question.get("role") == role and not _stale(r, current_rubric)]
         if not spoken:
             continue
-        value = max(spoken, key=lambda r: r.ts).answer.get("value")
-        if backend == "learner":
-            return backend, LEARNER_RANK.get(value, _JUDGE_FAIL_RANK)
-        return backend, _judge_rank(value)
+        return backend, max(spoken, key=lambda r: r.ts)
     return None
+
+
+def _rank_of(backend: str, row: Answer) -> float:
+    """The numeric rank `row`'s own answer carries, on the shared judge/
+    learner scale -- LEARNER_RANK for a learner row, `_judge_rank`
+    otherwise.
+    """
+    value = row.answer.get("value")
+    if backend == "learner":
+        return LEARNER_RANK.get(value, _JUDGE_FAIL_RANK)
+    return _judge_rank(value)
+
+
+def _role_rank(rows: Sequence[Answer], role: str,
+               current_rubric: Mapping[str, str]) -> tuple[str, float] | None:
+    """(deciding backend, rank) for a text-only verdict on `role`: the
+    first backend in AUTHORITY_ORDER[role] with a fresh row decides.
+    None when none has spoken.
+    """
+    decided = _role_row(rows, role, current_rubric)
+    if decided is None:
+        return None
+    backend, row = decided
+    return backend, _rank_of(backend, row)
 
 
 def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
@@ -1034,4 +1056,40 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
         if ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
             continue
         out.append((sentence, filled))
+    return out
+
+
+def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
+                   limit: int = 20) -> list[tuple[str, str]]:
+    """The texts not to propose again (spec 3 section 5): every unadopted
+    sentence draft (`record.sentence_drafts`) whose sentence-for-target
+    verdict, under the current rubric and the same authority order
+    `adoptable_drafts` reads (`_role_row`), fails (`_JUDGE_FAIL_RANK`),
+    newest draft first, at most `limit`. `record.sentence_drafts` returns
+    drafts oldest first and merges each text to its one draft, so the
+    newest-first order here is by each text's first appearance among the
+    asks, latest such ask first; a text's newest fresh row for the
+    deciding backend is what `_role_row` returns, so a stale-only verdict
+    (no fresh row) decides nothing and a text that later passed is not
+    listed. `(text, evidence)`, evidence the deciding row's own
+    `answer["evidence"]`, whitespace collapsed and cut to 200 characters
+    (empty when it named none).
+    """
+    adopted = {s.text_sha for s in syllabus.sentences}
+    out: list[tuple[str, str]] = []
+    for draft in reversed(record.sentence_drafts(cache)):
+        if draft.text_sha in adopted:
+            continue
+        rows = cache.assessments_of(draft.text_sha)
+        role = role_for("sentence", record.subject_kind_of(rows))
+        decided = _role_row(rows, role, current_rubric)
+        if decided is None:
+            continue
+        backend, row = decided
+        if _rank_of(backend, row) > _JUDGE_FAIL_RANK:
+            continue
+        evidence = " ".join(str(row.answer.get("evidence") or "").split())[:200]
+        out.append((draft.text, evidence))
+        if len(out) >= limit:
+            break
     return out

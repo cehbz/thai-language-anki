@@ -33,8 +33,10 @@ from thai_syllabus.derivations import (
     queue,
     queued,
     reasks,
+    refused_drafts,
     unjudged_candidates,
 )
+from thai_syllabus.derivations import _role_row
 from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
 from thai_syllabus.cachekeys import (BatchMarkerKey, JudgeKey, MechanicalKey, ProvideKey,
                                     preference_identity)
@@ -1646,14 +1648,17 @@ def _draft_syllabus(sentences=()):
                     sentences=tuple(sentences))
 
 
-def _sentence_verdict(backend, value, rubric=None, ts=None, subject=_DRAFT_SHA):
+def _sentence_verdict(backend, value, rubric=None, ts=None, subject=_DRAFT_SHA, evidence=None):
     ts = ts if ts is not None else _next_ts()
+    answer = {"value": value}
+    if evidence is not None:
+        answer["evidence"] = evidence
     return Answer(port="assess", backend=backend, key=f"{backend}:{ts}", key_sha="x",
                  subject=subject,
                  question={"role": "sentence-for-target", "artifact_sha": None,
                           "rubric": rubric, "kind": "sentence", "subject_kind": "sentence",
                           "params": {}},
-                 answer={"value": value}, cost=0.0, ts=ts)
+                 answer=answer, cost=0.0, ts=ts)
 
 
 def _drafted(cache, item=_DRAFT_JSON):
@@ -1794,6 +1799,108 @@ def test_adoptable_drafts_drops_a_draft_with_an_empty_gloss(cache):
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
     assert adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
+
+# --- refused_drafts: the texts the judge failed since the last adoption ----
+
+def _refused_draft_row(text, ts=None):
+    item = '{"sentences": [{"clauses": [["w"]], "text": "' + text + '", "gloss": "g"}]}'
+    return provide_row("sentence-drafts", "sentence", backend="llm-sentence", items=[item], ts=ts)
+
+
+def test_refused_drafts_returns_the_failed_draft_with_its_evidence(cache):
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(text),
+                                        evidence="too formal for a beginner"))
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(text, "too formal for a beginner")]
+
+
+def test_refused_drafts_excludes_a_draft_the_judge_passed(cache):
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(text),
+                                        evidence="fine"))
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_excludes_an_already_adopted_text(cache):
+    """A text the run has since adopted is not "not to propose" -- it is
+    already a Sentence, however a stale verdict on it once read."""
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(text),
+                                        evidence="too formal"))
+    adopted = sentence(((WordId("eat"),),), thai_of(_EAT), gloss="eat")   # renders to "กิน"
+    assert adopted.text == text
+    assert refused_drafts(cache, _draft_syllabus([adopted]),
+                          current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_orders_newest_draft_first_and_respects_limit(cache):
+    early, late = "กิน", "ข้าว"   # กิน: eat, ข้าว: rice
+    cache.rows.append(_refused_draft_row(early))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(early),
+                                        evidence="e1"))
+    cache.rows.append(_refused_draft_row(late))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(late),
+                                        evidence="e2"))
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert [text for text, _ in refused] == [late, early]
+    limited = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"},
+                             limit=1)
+    assert [text for text, _ in limited] == [late]
+
+
+def test_refused_drafts_excludes_a_text_whose_only_failing_verdict_is_stale(cache):
+    """A failing verdict under a rubric the current mapping no longer
+    names is not fresh (`_stale`); with no fresh row for the role,
+    `_role_row` decides nothing, so the text is not listed."""
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="old-R", subject=text_sha(text),
+                                        evidence="stale reason"))
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_excludes_a_text_that_failed_then_later_passed(cache):
+    """A text's newest fresh row for the deciding backend is what decides
+    (`_role_row`'s own newest-row tie-break) -- an earlier fail a later
+    pass has superseded is not listed."""
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(text), ts=10,
+                                        evidence="first take"))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(text), ts=11))
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_collapses_whitespace_and_truncates_evidence_to_200_chars(cache):
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    messy_evidence = "too   formal\n\tfor a  beginner " + "x" * 250
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(text),
+                                        evidence=messy_evidence))
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert len(refused) == 1
+    _, evidence = refused[0]
+    assert evidence == " ".join(messy_evidence.split())[:200]
+    assert len(evidence) == 200
+
+
+def test_role_row_returns_the_newest_row_of_the_deciding_backend():
+    """_role_row (the shared row-decider `_role_rank` and `refused_drafts`
+    both build on): the first backend in AUTHORITY_ORDER with a fresh row
+    decides, and ties within that backend go to its own newest row."""
+    older = _sentence_verdict("judge", False, rubric="R", ts=1)
+    newer = _sentence_verdict("judge", True, rubric="R", ts=2)
+    decided = _role_row([older, newer], "sentence-for-target",
+                        current_rubric={"sentence-for-target": "R"})
+    assert decided == ("judge", newer)
+
 
 def test_passing_pictures_are_the_candidates_the_current_fit_rubric_passed(db):
     _provide(db, "w", "picture", "openverse", ["a", "b", "c"])

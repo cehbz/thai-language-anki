@@ -918,16 +918,21 @@ def test_sentence_attempt_merges_a_duplicated_draft_into_one_judge_question(tmp_
     assert len(res.questions) == 1
 
 
-def test_sentence_attempt_drops_a_repeated_draft_whose_glosses_disagree(tmp_path, caplog):
+def test_sentence_attempt_keeps_the_first_gloss_when_a_repeated_draft_s_glosses_disagree(tmp_path,
+                                                                                          caplog):
+    """Spec 3 r19 section 5: a text listed twice with differing glosses is
+    one candidate, keyed by the text -- the first gloss stands and the
+    draft still reaches the judge."""
     text = json.dumps({"sentences": [
         {"clauses": [["eat", "rice"]], "text": "กินข้าว", "gloss": "eat rice"},
         {"clauses": [["eat", "rice"]], "text": "กินข้าว",
          "gloss": "rice is eaten"}]})   # กินข้าว: eat rice
     ctx = _sentence_ctx(tmp_path, text, batch=True)
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG):
         res = sentence_attempt(ctx)
-    assert res.questions == [] and res.drafted == 0
-    assert any("conflicting glosses" in r.message for r in caplog.records)
+    assert len(res.questions) == 1
+    assert res.questions[0].question.params["gloss"] == "eat rice"
+    assert any("กินข้าว" in r.message and r.levelno == logging.DEBUG for r in caplog.records)
 
 
 class _MultiItemLlm:
@@ -945,10 +950,11 @@ class _MultiItemLlm:
         return RawAnswer(items=self.item_texts)
 
 
-def test_sentence_attempt_drops_a_text_whose_glosses_disagree_across_answer_items(tmp_path):
+def test_sentence_attempt_keeps_the_first_gloss_across_answer_items(tmp_path):
     """A text listed in two different answer items is one candidate: a
-    gloss conflict between the items drops it, the same as a conflict
-    within one item -- the merge spans every item, not just one."""
+    gloss conflict between the items keeps the first gloss, the same as
+    a conflict within one item -- the merge spans every item, not just
+    one."""
     syllabus = Syllabus(
         words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),   # ข้าว: rice, กิน: eat
         targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice")),
@@ -964,7 +970,8 @@ def test_sentence_attempt_drops_a_text_whose_glosses_disagree_across_answer_item
                                                    "gloss": "rice is eaten"}]}))},
                     assess={"judge": judge})
     res = sentence_attempt(ctx)
-    assert res.questions == []
+    assert len(res.questions) == 1
+    assert res.questions[0].question.params["gloss"] == "eat rice"
 
 
 def test_sentence_attempt_does_not_judge_a_draft_that_fills_nothing(tmp_path):
@@ -1906,3 +1913,38 @@ def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
     vocabulary = _sentence_prompt(syllabus, first_only).split(
         "Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert vocabulary.splitlines() == ["- eat  กิน  (eat)"]
+
+
+def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
+    """Spec 3 r19 section 5: the prompt also lists, as sentences not to
+    propose, the texts `refused` names -- unadopted drafts the judge has
+    failed, newest first, at most `derivations.refused_drafts`' own
+    `limit` (`_sentence_prompt` itself is agnostic to how `refused` was
+    selected) -- each with the verdict's evidence, before the
+    output-format sentence."""
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
+                              refused=[("กินข้าว", "too formal")])   # กินข้าว: eat rice
+    assert ("Do not propose these sentences; each failed review:\n"
+           "- กินข้าว — too formal") in prompt
+    assert prompt.index("Do not propose these sentences") < prompt.index(
+        "Write each sentence as clauses")
+
+
+def test_sentence_prompt_lists_each_refused_text_and_omits_the_block_when_empty():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
+                              refused=[("กิน", "e1"), ("ข้าว", "e2")])   # กิน: eat, ข้าว: rice
+    assert "- กิน — e1" in prompt and "- ข้าว — e2" in prompt
+    assert "Do not propose these sentences" not in _sentence_prompt(
+        syllabus, list(syllabus.targets))
+
+
+def test_sentence_prompt_renders_a_refused_text_with_no_evidence_with_no_dangling_separator():
+    """An empty evidence string renders `- <text>` alone -- no trailing
+    ' — ' with nothing after it."""
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
+                              refused=[("กิน", "")])   # กิน: eat
+    assert "- กิน\n" in prompt
+    assert "— " not in prompt and "—\n" not in prompt
