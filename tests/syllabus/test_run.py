@@ -716,6 +716,22 @@ def test_assess_first_returning_none_falls_through_to_the_source(db, monkeypatch
     assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
 
 
+def test_assess_first_exclusions_reach_the_report_on_fall_through(db, monkeypatch):
+    """When assess-first's own result is unattempted (every awaiting
+    candidate excluded, attempts.assess_first), the run still asks a
+    source but must not drop the exclusion on the floor: it lands in
+    RunReport.excluded (spec 3 section 7) and the accounting identity
+    still holds.
+    """
+    calls = _patch(monkeypatch, {}, assess=AttemptResult(
+        attempted=False, excluded={"k": Excluded(subject="a", artifact_sha="s", reason="gone")}))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+    assert report.excluded == 1
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)
+
+
 def test_assess_first_runs_before_the_source_budget_check(db, monkeypatch):
     calls = _patch(monkeypatch, {}, assess=AttemptResult(True, questions=[_Q("a")]))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {"openverse": Budget(max_asks=0)})
@@ -792,6 +808,25 @@ def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
     assert db.latest("run", "runreport", RunReportKey()).answer["excluded"] == 4
     assert len(report.excluded_items) == 4
     assert {item["subject"] for item in report.excluded_items} == {"a", "b", "sentence-drafts"}
+
+
+def test_run_counts_the_same_excluded_candidate_once_across_assess_first_and_the_attempt(
+        db, monkeypatch):
+    """Important fix: on fall-through, assess-first's own exclusion
+    (collected before the source is asked) and the attempt's exclusion
+    for the same candidate (e.g. _judge_pictures re-asking the fit
+    question for every candidate on record, not only the freshly fetched
+    ones) name the same (subject, artifact_sha). RunReport.excluded and
+    excluded_items must agree and count it once, not twice.
+    """
+    same_exclusion = {"k": Excluded(subject="a", artifact_sha="s", reason="gone")}
+    calls = _patch(monkeypatch, {
+        ("a", "openverse"): AttemptResult(True, excluded=same_exclusion)},
+        assess=AttemptResult(attempted=False, excluded=same_exclusion))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+    assert report.excluded == 1
+    assert report.excluded_items == ({"subject": "a", "artifact_sha": "s", "reason": "gone"},)
 
 
 def test_run_keeps_two_no_artifact_exclusions_on_one_subject_distinct(db, monkeypatch):

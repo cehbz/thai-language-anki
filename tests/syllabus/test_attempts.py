@@ -400,7 +400,7 @@ def test_assess_first_is_none_with_no_candidate_on_record(tmp_path):
     assert judge.calls == []
 
 
-def test_assess_first_is_none_when_every_waiting_candidate_is_excluded(tmp_path):
+def test_assess_first_returns_the_exclusion_when_every_waiting_candidate_is_excluded(tmp_path):
     ctx, _search, judge = _picture_ctx(tmp_path)
     ctx.db.append(port="provide", backend="legacy-current",
                   key=ProvideKey(source="legacy-current", kind="picture", query="rice"),
@@ -408,8 +408,21 @@ def test_assess_first_is_none_when_every_waiting_candidate_is_excluded(tmp_path)
                   question={"provides": "picture", "kind": "picture", "subject_kind": "word",
                             "params": {"image": "images/pw-1.jpg"}},
                   answer={"items": [{"sha": "0" * 64, "ext": "jpg"}]})  # bytes never stored
-    assert assess_first(ctx, Need("rice", "picture")) is None
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and not res.attempted and res.questions == []
+    assert [e.artifact_sha for e in res.excluded.values()] == ["0" * 64]
     assert judge.calls == []
+    # Minor fix: the unattempted result is dataclasses.replace(result,
+    # attempted=False), not a bare AttemptResult(attempted=False,
+    # excluded=...) -- every other field of the assess step's own result
+    # (spend included) must survive onto it. Preparation fails here
+    # before the judge backend is ever invoked (judge.calls == [] above),
+    # so this fixture's own assess step never accrues judge spend to
+    # begin with; spend == {} either way, so this only pins the
+    # replace(...)-shape (same excluded, attempted False, questions []),
+    # not spend surviving a nonzero value.
+    assert res.spend == {}
+    assert res.drafted == 0 and res.targets_handed == 0 and res.subjects_handed == frozenset()
 
 
 def test_assess_first_logs_the_candidates_it_excluded_before_falling_through(tmp_path, caplog):
@@ -421,7 +434,8 @@ def test_assess_first_logs_the_candidates_it_excluded_before_falling_through(tmp
                             "params": {"image": "images/pw-1.jpg"}},
                   answer={"items": [{"sha": "0" * 64, "ext": "jpg"}]})
     with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
-        assert assess_first(ctx, Need("rice", "picture")) is None
+        res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and not res.attempted
     assert "every awaiting candidate was excluded" in caplog.text and "0" * 64 in caplog.text
 
 

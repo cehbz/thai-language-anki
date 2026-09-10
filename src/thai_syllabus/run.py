@@ -140,12 +140,34 @@ class _Tally:
         """What an attempt produced, whatever the need was: its
         questions, its exclusions (each naming its own subject and
         artifact_sha), its drafts, and its spend per backend.
+
+        A candidate can be excluded twice across the same need's own
+        calls this run -- assess-first's own exclusion (attempts.py
+        assess_first, spec 3 section 5) collected on fall-through, then
+        the same candidate excluded again by the source attempt that
+        follows (e.g. _judge_pictures re-asks the fit question for every
+        candidate on record, not only the freshly fetched ones). One
+        candidate must count once in RunReport.excluded (spec 3 section
+        7), so an exclusion naming an artifact_sha is deduplicated here
+        on (subject, artifact_sha) across every `collect` call this
+        tally sees. An exclusion naming no artifact_sha (artifact_sha is
+        None -- e.g. one `fills` question per Target under one sentence
+        draft) names no candidate to collide on, so each such exclusion
+        keeps its own item even when it shares a subject with another.
         """
         self.questions += result.questions
-        self.excluded += len(result.excluded)
-        self.excluded_items += tuple(
-            {"subject": item.subject, "artifact_sha": item.artifact_sha, "reason": item.reason}
-            for item in result.excluded.values())
+        seen = {(item["subject"], item["artifact_sha"]) for item in self.excluded_items
+                if item["artifact_sha"] is not None}
+        for item in result.excluded.values():
+            if item.artifact_sha is not None:
+                key = (item.subject, item.artifact_sha)
+                if key in seen:
+                    continue
+                seen.add(key)
+            self.excluded_items += (
+                {"subject": item.subject, "artifact_sha": item.artifact_sha,
+                 "reason": item.reason},)
+        self.excluded = len(self.excluded_items)
         self.drafted += result.drafted
         for backend, incurred in result.spend.items():
             self.spend.setdefault(backend, Spend()).add(incurred.asks, incurred.cost)
@@ -314,7 +336,13 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
             tally.unreachable = True
             tally.attempted += 1
             return len(entries) - index - 1
-        if result is None:
+        if result is None or not result.attempted:
+            if result is not None:
+                # assess-first's own exclusions (spec 3 section 5): every
+                # awaiting candidate was excluded, so its `excluded` must
+                # still reach the report (section 7) even though the
+                # attempt falls through to a source below.
+                tally.collect(result)
             sources = ctx.sources_for(need.kind)
             source = next_source(ctx.db, need.subject, need.kind, sources,
                                 transient_cap=ctx.transient_cap)
