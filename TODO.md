@@ -6,20 +6,6 @@ The old packages (thai_deck_eval, thai_deck_gen) stay; their spec-level
 tests in tests/spec/test_deck_doctrine.py and test_generator_contract.py
 still run against them.
 
-## Spec 3 r19 (proposed 2026-09-10, in the spec file; awaits approval)
-
-- Decides: no re-ask of a live search (§5); the judge's answer is the
-  last JSON object and the prompts ask for it alone (§2); `candidates`
-  means stored and outcome rows never rank (§6); the queue counts
-  attempts as exhausted() does (§6); a text's first gloss stands, only
-  differing clauses reject, the drafting prompt lists refused texts, a
-  no-fit answer caches and escalates a target to the learner after
-  `sentence_nothing_cap` (§5); `nothing` from a growing source ages out
-  (`quotas.<source>.nothing_ttl_days`, forvo 180) (§6a, §9). An
-  implementation plan follows approval.
-- Forvo growth measurement for the ageing interval: re-look up 30 of the
-  333 empty migrated lookups after the 22:00 UTC reset and count how
-  many gained a recording since 2026-08-29.
 ## Sentences: after the parsimonious-sentences arc
 
 - Spec 1 §3: a productive target is filled only by a sentence whose last
@@ -38,6 +24,13 @@ still run against them.
 
 ## Deferred
 
+- Forvo growth measurement for the ageing interval: re-look up 30 of the
+  333 empty migrated lookups after the 22:00 UTC reset and count how
+  many gained a recording since 2026-08-29.
+- Spec 3 §5 wording to align with the r19 code (a spec commit): the
+  no-fit rows and cap are per word (the sentence need's subject), the
+  count reopens on any learner row on the word, and the refused-texts
+  block lists unadopted failed texts, newest first, at most 20.
 - Escalation anchor tie: `_anchor_ts` takes current-best
   rubric-agnostically; a legacy pass and a fresh pass tie at 50 and the
   tie breaks by sha, so a word whose legacy sha sorts first anchors at
