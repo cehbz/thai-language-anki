@@ -427,6 +427,48 @@ def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
     assert len(calls) == 2  # both questions were attempted, not short-circuited
 
 
+class _NoCache:
+    """A CacheReader/RecordWriter double that never reflects a write back
+    as a hit -- unlike the real db fixture (whose cache.latest sees a
+    same-call append immediately, masking the inline path's own dedup
+    bug), this isolates ask_many's in-call guard: without it, a repeated
+    question would be asked twice regardless of the underlying store's
+    write-visibility timing.
+    """
+    def latest(self, port, backend, key):
+        return None
+
+    def append(self, port, backend, key, subject, question, answer, cost=0.0):
+        return 0
+
+
+def test_ask_many_inline_asks_a_repeated_question_once_and_warns(caplog):
+    """spec 3 section 6: a key is collected once per call -- the inline
+    path's equivalent is asked once, not once per repetition, so a
+    repeated question's ask and cost are not lost from the spend.
+    """
+    calls = []
+
+    def complete(prompt, attachments=()):
+        calls.append(prompt)
+        return Completion(text="true")
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    store = _NoCache()
+    a = Assessor(record=store, cache=store, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s1", rubric="r")
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.assessor"):
+        res = a.ask_many("judge", [q, q])
+    assert len(calls) == 1
+    assert set(res.resolved) == {jb.cache_key(q)}
+    key = jb.cache_key(q)
+    assert any(
+        "a question repeated within one call is asked once" in r.message
+        and str(key.encode()) in r.message
+        for r in caplog.records
+    )
+
+
 # --- one judge batch per run: ask_many collects, submit/resolve release ----
 
 def fit_question(subject: str, artifact_sha: str) -> AssessQuestion:
@@ -508,15 +550,24 @@ def test_ask_many_collects_misses_under_a_batch_transport(assessor_with_batch_tr
     assert a.unresolved_batch() is None  # nothing submitted until submit()
 
 
-def test_ask_many_collects_one_duplicated_question_once(assessor_with_batch_transport):
+def test_ask_many_collects_one_duplicated_question_once(assessor_with_batch_transport, caplog):
     """Two AssessQuestions that resolve to the same JudgeKey (e.g. one
     drafter answer with a duplicated draft) collect once: the duplicated
-    question is collected once, and the batch submits.
+    question is collected once, and the batch submits. spec 3 section 6:
+    a key is collected once per call, and it says so.
     """
     a = assessor_with_batch_transport
-    res = a.ask_many("judge", [fit_question("rice", "a" * 64), fit_question("rice", "a" * 64)])
+    q = fit_question("rice", "a" * 64)
+    key = a.key_of("judge", q)
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.assessor"):
+        res = a.ask_many("judge", [q, q])
     assert len(res.collected) == 1
     a.submit(res.collected)  # does not raise
+    assert any(
+        "a question repeated within one call is asked once" in r.message
+        and key.encode() in r.message
+        for r in caplog.records
+    )
 
 
 def test_submit_refuses_two_questions_sharing_one_key(assessor_with_batch_transport):

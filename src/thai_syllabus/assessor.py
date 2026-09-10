@@ -191,11 +191,16 @@ class Assessor:
         is None, `batch_transport` set) never touches the wire here: an
         unpreparable miss goes to `excluded`, every other miss is returned
         in `collected` for a caller to hand to submit(). A key is
-        collected once per call: two questions that resolve to the same
-        key (e.g. one drafter answer with a duplicated draft) put one
-        PreparedQuestion in `collected`, not two -- submit() sees no
-        shared key. Any other exception -- unknown backend,
-        learner/listener -- propagates.
+        collected once per call (spec 3 section 6): two questions that
+        resolve to the same key (e.g. one drafter answer with a
+        duplicated draft) put one PreparedQuestion in `collected`, not
+        two -- submit() sees no shared key. An inline backend's
+        equivalent is asked once, not once per repetition -- a repeated
+        question's later occurrences are skipped, not re-asked, so no
+        ask's cost is lost from the spend by one overwriting another in
+        `resolved`. Either way the repeat is logged as a warning. Any
+        other exception -- unknown backend, learner/listener --
+        propagates.
         """
         impl = self._backends[backend]
         is_batch = (getattr(impl, "complete", None) is None
@@ -216,6 +221,8 @@ class Assessor:
                 continue
             if is_batch:
                 if key in collected_keys:
+                    _log.warning("%s: a question repeated within one call is asked once "
+                                 "(key=%s)", backend, key.encode())
                     continue
                 try:
                     prompt, paths = self._build(impl, q)
@@ -228,6 +235,10 @@ class Assessor:
                 collected.append(PreparedQuestion(question=q, key=key, prompt=prompt,
                                                   attachments=paths))
                 collected_keys.add(key)
+                continue
+            if key in resolved:
+                _log.warning("%s: a question repeated within one call is asked once "
+                             "(key=%s)", backend, key.encode())
                 continue
             try:
                 resolved[key] = self.ask(backend, q)
