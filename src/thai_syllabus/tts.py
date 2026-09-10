@@ -9,6 +9,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
+from .provider import _redact
 from .transport import SynthesisRefused, TransportError
 
 # Google's Thai voices, from the live voices API 2026-09-02. Sentences
@@ -49,8 +50,13 @@ class GoogleTts:
             self.http_post = requests.post
 
     def synthesize(self, text: str, voice: str) -> bytes:
+        """Spec 3 section 2's cost/secrets contract: the key rides the
+        `X-Goog-Api-Key` header, never the url, and every failure message
+        is redacted before it can carry the key into a log.
+        """
         import base64
-        url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={self.api_key}"
+        url = "https://texttospeech.googleapis.com/v1/text:synthesize"
+        headers = {"X-Goog-Api-Key": self.api_key}
         body = {
             "input": {"text": text},
             "voice": {"languageCode": "th-TH", "name": voice},
@@ -58,16 +64,24 @@ class GoogleTts:
         }
         import requests
         try:
-            resp = self.http_post(url, json=body, timeout=30)
+            resp = self.http_post(url, json=body, headers=headers, timeout=30)
         except requests.RequestException as e:
-            raise TransportError(f"google tts failed: {e}") from e
+            # from None: the chained cause would still carry the raw,
+            # unredacted url/key, printed by any full traceback render.
+            raise TransportError(f"google tts failed: {_redact(str(e), self.api_key)}") from None
         if resp.status_code != 200:
             if 400 <= resp.status_code < 500 and resp.status_code != 429:
                 raise SynthesisRefused(
-                    f"google tts refused {voice!r}: {resp.status_code} {resp.text[:200]}")
-            raise TransportError(f"google tts failed with {resp.status_code}: {resp.text[:200]}")
+                    f"google tts refused {voice!r}: {resp.status_code} "
+                    f"{_redact(resp.text[:200], self.api_key)}")
+            raise TransportError(
+                f"google tts failed with {resp.status_code}: "
+                f"{_redact(resp.text[:200], self.api_key)}")
         try:
             content = resp.json()["audioContent"]
         except (ValueError, KeyError, TypeError) as e:
-            raise TransportError(f"google tts answered without audioContent: {e}") from e
+            # from None: keep a stray key out of any full traceback render,
+            # same as the other redacted sites in this method.
+            raise TransportError(
+                f"google tts answered without audioContent: {_redact(str(e), self.api_key)}") from None
         return base64.b64decode(content)

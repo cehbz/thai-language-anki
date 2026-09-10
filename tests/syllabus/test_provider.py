@@ -7,6 +7,7 @@ cache-first behavior; fake backends and fake transports everywhere else
 from pathlib import Path
 
 import pytest
+import requests
 
 from thai_syllabus.assessor import Price
 from thai_syllabus.cachekeys import ProvideKey, sha
@@ -21,6 +22,7 @@ from thai_syllabus.provider import (
     ProviderAnswer,
     Question,
     RawAnswer,
+    _redact,
     openverse_backend,
     pexels_backend,
     tool_fetcher,
@@ -536,6 +538,37 @@ def test_forvo_400_with_another_body_stays_a_plain_transport_error(payload):
     with pytest.raises(TransportError) as err:
         backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
     assert not isinstance(err.value, QuotaExhausted)
+
+
+def test_forvo_wire_failure_redacts_the_api_key_from_the_message():
+    def raise_it(url, timeout=None):
+        raise requests.ConnectionError(
+            "GET https://apifree.forvo.com/key/SECRET123/format/json/"
+            "action/word-pronunciations/word/ไก่")
+
+    backend = ForvoBackend(api_key="SECRET123", get=raise_it)
+    with pytest.raises(TransportError) as err:
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+    assert "SECRET123" not in str(err.value)
+    assert "***" in str(err.value)
+
+
+def test_forvo_wire_failure_has_no_chained_cause_to_leak_the_key():
+    def raise_it(url, timeout=None):
+        raise requests.ConnectionError(
+            "GET https://apifree.forvo.com/key/SECRET123/format/json/"
+            "action/word-pronunciations/word/ไก่")
+
+    backend = ForvoBackend(api_key="SECRET123", get=raise_it)
+    with pytest.raises(TransportError) as err:
+        backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
+    assert err.value.__cause__ is None
+    assert "SECRET123" not in repr(err.value)
+
+
+def test_redact_replaces_every_occurrence_and_is_a_noop_for_an_empty_secret():
+    assert _redact("key=ABC and again ABC", "ABC") == "key=*** and again ***"
+    assert _redact("nothing secret here", "") == "nothing secret here"
 
 
 def test_forvo_empty_result_is_still_a_valid_answer(db):

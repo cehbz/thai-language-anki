@@ -328,6 +328,18 @@ class FetchBackend:
         return RawAnswer(items=(item,), cost=0.0)
 
 
+def _redact(text: str, secret: str) -> str:
+    """Every occurrence of `secret` in `text` replaced with "***" (spec 3
+    section 2's cost/secrets contract, extended to logs: a credential
+    never appears by value outside config, including in a wire-failure
+    message a caller might log). tts.py imports this rather than
+    duplicating it.
+    """
+    if not secret:
+        return text
+    return text.replace(secret, "***")
+
+
 # --- forvo: recording lookups (450/day quota; re-asked once per attempt
 # when a url has expired, spec 3 section 6a) --------------------------------
 
@@ -365,7 +377,10 @@ class ForvoBackend:
                 raise TransportError(f"forvo returned {resp.status_code}")
             data = resp.json()
         except requests.RequestException as e:
-            raise TransportError(f"forvo lookup of {word!r} failed: {e}") from e
+            # from None: the chained cause would still carry the raw,
+            # unredacted url/key, printed by any full traceback render.
+            raise TransportError(
+                f"forvo lookup of {word!r} failed: {_redact(str(e), self.api_key)}") from None
         except ValueError as e:
             raise TransportError(f"forvo answered {word!r} with a body that is not json: {e}") from e
         if not isinstance(data, Mapping) or not isinstance(data.get("items"), list):
