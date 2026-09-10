@@ -543,6 +543,9 @@ def rulebook_file_text(path: str | Path) -> str:
 # quotas.<source>.day_starts that does not parse (run.parse_day_starts).
 # An absent file refuses, naming the path.
 
+DEFAULT_IMAGE_WIDTH = 1600   # iiurlwidth bound on a wikimedia thumburl (spec 3 section 9)
+
+
 @dataclass(frozen=True)
 class JudgeConfig:
     transport: str = "cli"   # "cli" | "api" | "batch"
@@ -569,7 +572,7 @@ class ProvidersConfig:
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     drafter: DrafterConfig = field(default_factory=DrafterConfig)
     image_candidates: int = 5  # candidate images fetched per target word
-    image_width: int = 1600    # iiurlwidth bound on a wikimedia thumburl
+    image_width: int = DEFAULT_IMAGE_WIDTH
     batch: dict[str, Any] = field(default_factory=dict)
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
@@ -678,7 +681,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.image_candidates: {image_candidates!r} must be "
                       "a positive integer")
 
-    image_width = data.get("image_width", 1600)
+    image_width = data.get("image_width", DEFAULT_IMAGE_WIDTH)
     if not isinstance(image_width, int) or image_width < 1:
         errors.append(f"providers.image_width: {image_width!r} must be "
                       "a positive integer")

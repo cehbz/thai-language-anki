@@ -202,8 +202,8 @@ def openverse_backend(get: Callable[..., Any] = requests.get,
                                   parse_items=parse, get=get, search_proxy=search_proxy)
 
 
-def wikimedia_backend(get: Callable[..., Any] = requests.get,
-                      image_width: int = 1600) -> HttpImageSearchBackend:
+def wikimedia_backend(get: Callable[..., Any] = requests.get, *,
+                      image_width: int) -> HttpImageSearchBackend:
     def build(query: str) -> tuple[str, dict, dict, str]:
         # "batchcomplete" is on every MediaWiki action-API search reply,
         # zero hits included (zero hits omits "query" entirely); an

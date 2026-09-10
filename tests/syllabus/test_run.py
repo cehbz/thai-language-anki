@@ -1552,6 +1552,12 @@ def test_day_start_ns_accepts_a_numeric_offset_zone():
     assert since == int(datetime(2026, 9, 9, 5, 0, tzinfo=ict).timestamp() * 1_000_000_000)
 
 
+def test_parse_day_starts_accepts_an_offset_hour_past_nineteen():
+    wall, zone = run_mod.parse_day_starts("22:00+23:30")
+    assert (wall.hour, wall.minute) == (22, 0)
+    assert zone.utcoffset(None) == timedelta(hours=23, minutes=30)
+
+
 def test_day_start_ns_refuses_an_unparseable_day_starts():
     with pytest.raises(ValueError, match="day_starts"):
         run_mod.day_start_ns(datetime.now().astimezone(), "22")

@@ -167,13 +167,6 @@ class Syllabus:
             positions[t.word] = max(positions.get(t.word, i), i)
         return positions
 
-    def words_used(self, sentence: Sentence) -> frozenset[WordId]:
-        """Every word id `sentence`'s clauses name, a repeated word
-        counted once (spec 1 section 3 fills clause 1): `sentence.words`
-        as a set.
-        """
-        return frozenset(sentence.words)
-
     def check_sentence(self, sentence: Sentence) -> None:
         """The Sentence invariant a syllabus's own vocabulary decides
         (spec 1 section 1): every element's word registered here, and
@@ -202,7 +195,7 @@ class Syllabus:
         sentence. Raises ValueError naming the sentence's text_sha when
         it uses no targeted word.
         """
-        used = self.words_used(sentence)
+        used = frozenset(sentence.words)
         candidates = [w for w in used if w in self._word_last_position]
         if not candidates:
             raise ValueError(f"sentence {sentence.text_sha!r} uses no targeted word")
@@ -224,7 +217,7 @@ class Syllabus:
     def _target_satisfies_clauses_1_and_2(self, words: frozenset[WordId], voice: str,
                                           target: Target) -> bool:
         """Clauses 1 and 2 alone: the target's word among `words` (a
-        sentence's own words_used), the voice satisfying the skill --
+        sentence's own words as a set), the voice satisfying the skill --
         the "contains" test a fill set is built from, distinct from
         membership in one (spec 1 section 3).
         """
@@ -296,7 +289,7 @@ class Syllabus:
                           adopted_fill_sets: Mapping[str, tuple[Target, ...]]
                           ) -> tuple[Target, ...]:
         """fill_set's body (spec 1 section 3, clause 3): a sentence-level
-        gate first -- every word `words_used` names carries a Target --
+        gate first -- every word the sentence names carries a Target --
         then the candidates passing clauses 1 and 2, in target-id order.
         Among the candidates, a
         sentence-introduced Target is unmet unless some other adopted
@@ -310,7 +303,7 @@ class Syllabus:
         `_adopted_fill_sets`'s own recursive build, or the complete map,
         for a candidate that is not itself adopted.
         """
-        used = self.words_used(sentence)
+        used = frozenset(sentence.words)
         if not used <= self._word_target_positions.keys():
             return ()
 

@@ -196,7 +196,7 @@ def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
 
 
 _DAY_STARTS_RE = re.compile(
-    r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)(?P<zone>Z|[+-][01]\d:[0-5]\d)$")
+    r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)(?P<zone>Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$")
 
 
 def parse_day_starts(day_starts: str) -> tuple[time, timezone]:

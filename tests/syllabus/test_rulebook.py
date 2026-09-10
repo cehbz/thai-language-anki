@@ -187,7 +187,7 @@ def test_sentence_fills_novelty_flags_every_mentioned_target_with_two_unmet_glue
 def test_sentence_fills_novelty_does_not_flag_a_word_that_is_not_used():
     """A registered Target whose word is not among the sentence's own
     words is not a candidate at all: the loop that gathers candidate
-    Targets (`words_used`) skips it, so it raises no finding even though
+    Targets (the sentence's own words) skips it, so it raises no finding even though
     its own Target has no adopted sentence to fill it.
     """
     very = word("very", "มาก")  # very -- the only word actually used

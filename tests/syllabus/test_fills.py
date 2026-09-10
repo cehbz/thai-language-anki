@@ -63,7 +63,6 @@ def test_a_repeated_element_fills_its_target_once():
     s = sentence(((run.id, (fast.id, REPEAT_MARK)),), to,
                 voice="learner_voice")  # run fast-fast (reduplicated)
     syllabus = base_syllabus((fast, run), (t_fast, t_run))
-    assert syllabus.words_used(s) == frozenset({fast.id, run.id})
     assert syllabus.fills(s, t_fast) is True
 
 
@@ -245,7 +244,7 @@ def test_vocabulary_met_by_includes_words_targeted_at_or_before():
 
 def test_a_word_targeted_anywhere_in_the_order_still_lets_the_sentence_fill():
     """A used word's Target position does not matter to the sentence-level
-    gate: it need only exist (words_used subset of
+    gate: it need only exist (the sentence's words a subset of
     _word_target_positions), whatever order() places it at. "กับ" ("with")
     is a registered glue Word with its own receptive Target -- glue words
     carry a Target like any other (spec 1 section 3)."""

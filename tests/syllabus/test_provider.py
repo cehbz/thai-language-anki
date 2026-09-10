@@ -216,7 +216,7 @@ def test_openverse_a_200_body_without_results_is_a_transport_error():
 
 
 def test_wikimedia_a_200_body_without_batchcomplete_is_a_transport_error():
-    backend = wikimedia_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"detail": "throttled"}))
+    backend = wikimedia_backend(image_width=1600, get=lambda url, **kwargs: _FakeResponse(json_data={"detail": "throttled"}))
     with pytest.raises(TransportError):
         backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
 
@@ -252,7 +252,7 @@ def test_openverse_empty_result_is_still_a_valid_answer(db):
 def test_wikimedia_empty_result_is_still_a_valid_answer(db):
     # a zero-hit MediaWiki search body carries "batchcomplete" and no
     # "query" key at all -- expect="batchcomplete" admits it.
-    backend = wikimedia_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"batchcomplete": ""}))
+    backend = wikimedia_backend(image_width=1600, get=lambda url, **kwargs: _FakeResponse(json_data={"batchcomplete": ""}))
     provider = Provider(record=db, cache=db, backends={"wikimedia": backend})
     provider.ask("wikimedia", Question(subject="rice", provides="picture", params={"query": "q"}))
     hit = db.latest("provide", "wikimedia", ProvideKey(source="wikimedia", kind="", query="q"))
@@ -271,7 +271,7 @@ def test_pexels_empty_result_is_still_a_valid_answer(db):
 
 
 def test_wikimedia_and_pexels_backends_key_by_backend_name():
-    wm = wikimedia_backend()
+    wm = wikimedia_backend(image_width=1600)
     px = pexels_backend(api_key="k")
     q = Question(subject="s", provides="picture", params={"query": "cat"})
     assert wm.cache_key(q).encode() == "wikimedia::cat"
@@ -288,7 +288,7 @@ def test_wikimedia_uses_imageinfo_generator_and_returns_thumburl():
             "imageinfo": [{"url": "https://u/A.jpg",
                           "thumburl": "https://u/thumb/A-1600px.jpg"}]}}}})
 
-    backend = wikimedia_backend(get=get)
+    backend = wikimedia_backend(image_width=1600, get=get)
     answer = backend.fetch(Question(subject="w", provides="picture",
                                     params={"query": "orange"}))
     assert seen["generator"] == "search" and seen["prop"] == "imageinfo"
@@ -309,7 +309,7 @@ def test_wikimedia_image_width_bounds_the_request():
 
 
 def test_wikimedia_parse_skips_an_info_without_a_thumburl():
-    backend = wikimedia_backend()
+    backend = wikimedia_backend(image_width=1600)
     data = {"query": {"pages": {
         "1": {"title": "File:NoThumb.jpg", "imageinfo": [{"url": "https://u/NoThumb.jpg"}]},
         "2": {"title": "File:B.jpg", "imageinfo": [{"url": "https://u/B.jpg",
