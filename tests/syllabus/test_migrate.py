@@ -694,3 +694,36 @@ def test_migrate_rerun_never_overwrites_hand_edited_curated_files(old_deck, old_
     assert "glue-word" in {w.id for w in reloaded.words}
     assert any(t.id == "glue-word/receptive" for t in reloaded.targets)
     assert report.already_present["curated"] == 1
+
+
+def test_migrate_refuses_a_half_written_curated(old_deck, old_data, tmp_path):
+    """Spec 2 section 4 migration is idempotent and keeps an existing
+    curated/ -- but "existing" means complete. A curated/ that has only
+    words.yaml (e.g. a crash mid-write) is neither absent nor present:
+    migrate must refuse it rather than silently treating it as present
+    (the ~726 guard used to check words.yaml alone) or silently
+    regenerating over it."""
+    new_root = tmp_path / "new_root"
+    curated_dir = new_root / "curated"
+    curated_dir.mkdir(parents=True)
+    curated.save_words(curated_dir / "words.yaml", [])
+
+    with pytest.raises(ValueError) as excinfo:
+        migrate(old_deck, old_data, new_root)
+    missing = [f for f in curated.CURATED_FILES if f != "words.yaml"]
+    assert str(excinfo.value) == (
+        f"curated/ at {curated_dir} is half-written: missing {', '.join(missing)}; "
+        f"restore it or remove it before migrating")
+
+
+def test_migrate_keeps_a_complete_curated_dir_as_is(old_deck, old_data, tmp_path):
+    """A complete curated/ (every CURATED_FILES member present) is kept
+    as is, same as today -- migrate is idempotent (spec 2 section 4)."""
+    new_root = tmp_path / "new_root"
+    migrate(old_deck, old_data, new_root)  # first run: writes a complete curated/
+    curated_dir = new_root / "curated"
+    assert {p.name for p in curated_dir.iterdir()} >= set(curated.CURATED_FILES)
+
+    report = migrate(old_deck, old_data, new_root)  # second run: must keep it
+
+    assert report.already_present["curated"] == 1

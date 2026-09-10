@@ -66,6 +66,7 @@ from .curated import (
     load_providers_config,
     save_curated,
     CuratedBundle,
+    CURATED_FILES,
     RulebookConfig,
 )
 from .entities import Clauses, Pronunciation, Sentence, Syllable, Target, Word
@@ -723,15 +724,26 @@ def migrate(old_deck: Path, old_data: Path, new_root: Path) -> MigrationReport:
     word_rows, targets, word_id_by_key, ambiguous_keys = \
         _migrate_word_list(old_data, old_deck, db, report)
     report.ambiguous = sorted(ambiguous_keys)
-    curated_words_path = curated_dir / "words.yaml"
-    if curated_words_path.exists():
-        _log.info("curated present at %s; kept as is", curated_words_path)
+    # Idempotent; keeps an existing curated/ (spec 2 section 4 migration).
+    # "Existing" means complete: a curated/ with only some of
+    # CURATED_FILES is neither absent (never migrated) nor present (safe
+    # to keep) -- it is a half-written directory from an interrupted run,
+    # and silently treating it either way would risk losing or masking
+    # hand edits. Refuse it instead.
+    present = [f for f in CURATED_FILES if (curated_dir / f).exists()]
+    if present == list(CURATED_FILES):
+        _log.info("curated present at %s; kept as is", curated_dir)
         report.bump(report.already_present, "curated")
-    else:
+    elif not present:
         save_curated(curated_dir, CuratedBundle(
             words=tuple(w for w, _ in word_rows), targets=tuple(targets), graphemes=(),
             confusions=(), pairs=(), profile=Profile(register="male_colloquial"),
             rulebook=RulebookConfig(), categories=build_categories(word_rows)))
+    else:
+        missing = [f for f in CURATED_FILES if f not in present]
+        raise ValueError(
+            f"curated/ at {curated_dir} is half-written: missing {', '.join(missing)}; "
+            f"restore it or remove it before migrating")
     _migrate_frequency_corpus(frequency_corpus_bytes, curated_dir, report)
 
     note_subjects = _note_subjects(old_deck, word_id_by_key, ambiguous_keys, report)

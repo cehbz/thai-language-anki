@@ -800,6 +800,20 @@ def test_save_curated_allows_a_sentence_introduced_target_without_a_category(tmp
     assert curated.load_curated(tmp_path).categories == ()
 
 
+def test_save_curated_writes_exactly_curated_files(tmp_path):
+    """save_curated's writers are driven by CURATED_FILES (spec 2 section
+    1), so an empty directory ends up with exactly that tuple's files --
+    no more, no fewer -- and nothing else (frequency_th.txt, providers.yaml
+    are not save_curated's job)."""
+    bundle = curated.CuratedBundle(
+        words=(_word("near", "ใกล้", "near"),), targets=(),  # ใกล้: near
+        graphemes=(), confusions=(), pairs=(),
+        profile=Profile(register="male_colloquial"), rulebook=curated.RulebookConfig())
+    curated.save_curated(tmp_path, bundle)
+    written = {p.name for p in tmp_path.iterdir()}
+    assert written == set(curated.CURATED_FILES)
+
+
 def test_providers_judge_api_transport_requires_a_price(tmp_path):
     """Spec 3 section 2's cost contract: an api/batch judge spends cash, so
     it cannot be configured without the price that measures it -- a missing

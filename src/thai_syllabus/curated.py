@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -789,6 +789,23 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
     })
 
 
+# The exact file names save_curated writes, in write order. migrate.py
+# (spec 2 section 4) uses this tuple to tell a complete curated/ from a
+# half-written one -- it must name exactly what save_curated below
+# produces, so save_curated drives its writers from this tuple instead of
+# listing file names a second time. frequency_th.txt and providers.yaml
+# are deliberately not here: save_curated does not write them.
+CURATED_FILES: tuple[str, ...] = (
+    "words.yaml",
+    "targets.yaml",
+    "graphemes.yaml",
+    "confusions.yaml",
+    "pairs.yaml",
+    "profile.yaml",
+    "rulebook.yaml",
+)
+
+
 def save_curated(root: str | Path, bundle: CuratedBundle) -> None:
     root = Path(root)
     category_by_word: dict[WordId, CategoryName] = {
@@ -804,11 +821,15 @@ def save_curated(root: str | Path, bundle: CuratedBundle) -> None:
     if missing:
         raise CuratedValidationError(
             [f"words.yaml: word {wid!r} is targeted but has no category" for wid in missing])
-    save_words(root / "words.yaml",
-              [(w, category_by_word.get(w.id)) for w in bundle.words])
-    save_targets(root / "targets.yaml", list(bundle.targets))
-    save_graphemes(root / "graphemes.yaml", list(bundle.graphemes))
-    save_confusions(root / "confusions.yaml", list(bundle.confusions))
-    save_pairs(root / "pairs.yaml", list(bundle.pairs))
-    save_profile(root / "profile.yaml", bundle.profile)
-    save_rulebook_config(root / "rulebook.yaml", bundle.rulebook)
+    writers: dict[str, Callable[[Path], None]] = {
+        "words.yaml": lambda path: save_words(
+            path, [(w, category_by_word.get(w.id)) for w in bundle.words]),
+        "targets.yaml": lambda path: save_targets(path, list(bundle.targets)),
+        "graphemes.yaml": lambda path: save_graphemes(path, list(bundle.graphemes)),
+        "confusions.yaml": lambda path: save_confusions(path, list(bundle.confusions)),
+        "pairs.yaml": lambda path: save_pairs(path, list(bundle.pairs)),
+        "profile.yaml": lambda path: save_profile(path, bundle.profile),
+        "rulebook.yaml": lambda path: save_rulebook_config(path, bundle.rulebook),
+    }
+    for name in CURATED_FILES:
+        writers[name](root / name)
