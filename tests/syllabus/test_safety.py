@@ -2,14 +2,25 @@
 a git repository over curated/, committed by label, that a writing
 command commits before and after touching any store.
 """
+import logging
 import sqlite3
 import subprocess
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 from thai_syllabus.cachekeys import ProvideKey
-from thai_syllabus.safety import Counts, CuratedHistory, HistoryError, check, deck_counts, snapshot
+from thai_syllabus.safety import (
+    Counts,
+    CuratedHistory,
+    Guard,
+    HistoryError,
+    SafetyCheckFailed,
+    check,
+    deck_counts,
+    snapshot,
+    writing_command,
+)
 from thai_syllabus.store import SyllabusDb
 
 
@@ -284,3 +295,132 @@ def test_check_accepts_a_shortfall_the_removals_cover():
     after = Counts(words=2, targets=1, sentences=2, cache=5, media=0)
 
     assert check(before, after, {"sentences": 1}) == []
+
+
+# -- writing_command / Guard --------------------------------------------
+
+def _fixed_now():
+    return datetime(2026, 9, 10, 12, 0, 0)
+
+
+def _delete_sentence(deck, text_sha):
+    con = sqlite3.connect(deck / "syllabus.db")
+    con.execute("delete from sentences where text_sha=?", (text_sha,))
+    con.commit()
+    con.close()
+
+
+def _seed_sentence(deck, text_sha="s1"):
+    db = SyllabusDb(deck / "syllabus.db")
+    db.add_sentence(text_sha=text_sha, text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft",
+                    licence="n/a", acquired=date(2026, 1, 1))
+    db.close()
+
+
+def test_writing_command_commits_pre_and_post_around_a_write(tmp_path):
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "profile.yaml").write_text("register: male_colloquial\n", encoding="utf-8")
+
+    with writing_command(deck, "x", now=_fixed_now):
+        (curated / "words.yaml").write_text("- rice\n", encoding="utf-8")
+
+    assert (curated / ".git").is_dir()
+    subjects = _git_log_subjects(curated)
+    assert subjects[0].startswith("post x ")
+    assert subjects[1].startswith("pre x ")
+
+
+def test_writing_command_still_commits_post_when_the_body_raises(tmp_path):
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "profile.yaml").write_text("register: male_colloquial\n", encoding="utf-8")
+
+    class Boom(Exception):
+        pass
+
+    with pytest.raises(Boom):
+        with writing_command(deck, "x", now=_fixed_now):
+            (curated / "words.yaml").write_text("- rice\n", encoding="utf-8")
+            raise Boom()
+
+    subjects = _git_log_subjects(curated)
+    assert subjects[0].startswith("post x ")
+    assert subjects[1].startswith("pre x ")
+
+
+def test_writing_command_raises_safety_check_failed_when_the_body_deletes_a_sentences_row(
+        tmp_path):
+    deck = tmp_path / "deck"
+    _seed_sentence(deck)
+
+    with pytest.raises(SafetyCheckFailed) as excinfo:
+        with writing_command(deck, "x", now=_fixed_now):
+            _delete_sentence(deck, "s1")
+
+    assert any("sentences" in failure for failure in excinfo.value.failures)
+
+
+def test_writing_command_accepts_a_deletion_the_guard_reports_as_a_removal(tmp_path):
+    deck = tmp_path / "deck"
+    _seed_sentence(deck)
+
+    with writing_command(deck, "x", now=_fixed_now) as guard:
+        _delete_sentence(deck, "s1")
+        guard.removed("sentences", ["s1"])
+
+
+def test_writing_command_snapshots_the_db_when_the_deck_has_one(tmp_path):
+    deck = tmp_path / "deck"
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+    db.close()
+
+    with writing_command(deck, "x", now=_fixed_now):
+        pass
+
+    assert (deck / "backup" / "syllabus.db").exists()
+
+
+def test_writing_command_propagates_the_bodys_exception_when_the_post_commit_also_fails(
+        tmp_path, monkeypatch, caplog):
+    """spec 2 section 6: on the exception path "the exception propagates"
+    -- a HistoryError from the post commit itself must not shadow the
+    body's own exception, only be logged.
+    """
+    deck = tmp_path / "deck"
+    original_commit = CuratedHistory.commit
+    calls = {"n": 0}
+
+    def flaky_commit(self, label):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the post commit
+            raise HistoryError("simulated post-commit failure")
+        return original_commit(self, label)
+
+    monkeypatch.setattr(CuratedHistory, "commit", flaky_commit)
+
+    class Boom(ValueError):
+        pass
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(Boom):
+            with writing_command(deck, "x", now=_fixed_now):
+                raise Boom("body failed")
+
+    assert any("post commit failed" in record.message for record in caplog.records)
+
+
+def test_guard_removed_counts_the_length_of_the_ids_given():
+    guard = Guard()
+    guard.removed("sentences", ["a", "b", "c"])
+    assert guard.removals["sentences"] == 3
+
+
+def test_safety_check_failed_carries_the_failures_list():
+    error = SafetyCheckFailed(["sentences: 1 rows after, 2 in the snapshot, 0 removal(s) reported"])
+    assert error.failures == [
+        "sentences: 1 rows after, 2 in the snapshot, 0 removal(s) reported"]

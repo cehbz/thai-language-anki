@@ -29,6 +29,7 @@ from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
 from .run import Budget, RunReport
 from .run import run as run_pipeline
+from .safety import SafetyCheckFailed, writing_command
 from .wiring import build_sourcing, default_budgets, load_derivations
 
 
@@ -126,39 +127,40 @@ def _cmd_run(args: argparse.Namespace, *,
     do (no batch out, nothing adopted or improved), or when --spend-cap
     is set and the judge's and tts's own cost on record has reached it.
     """
-    cfg = load_providers_config(_providers_config_path(args.deck))
-    ctx = build_sourcing(args.deck, cfg)
-    budgets = dict(default_budgets(cfg))
-    for raw in args.backend_cap:
-        name, max_asks = _parse_backend_cap(raw)
-        budgets[name] = Budget(max_asks=max_asks)
+    with writing_command(args.deck, "run"):
+        cfg = load_providers_config(_providers_config_path(args.deck))
+        ctx = build_sourcing(args.deck, cfg)
+        budgets = dict(default_budgets(cfg))
+        for raw in args.backend_cap:
+            name, max_asks = _parse_backend_cap(raw)
+            budgets[name] = Budget(max_asks=max_asks)
 
-    for cycle in range(1, args.cycles + 1):
-        report = run_pipeline(ctx, budgets)
-        _print_run_report(cycle, report)
-        # A run that could not reach the judge exits non-zero, so a
-        # script or a cron job sees the difference from "nothing left
-        # to do".
-        if report.unreachable:
-            print("run: the judge is unreachable; stopped early", file=sys.stderr)
-            return 1
-        if (report.batch_id is None and report.sentences_adopted == 0
-                and report.improved == 0):
-            return 0  # nothing left to do
-        if args.spend_cap is not None:
-            spent = (record.cost_since(ctx.db, "assess", "judge", 0)
-                    + record.cost_since(ctx.db, "provide", "tts", 0))
-            if spent >= args.spend_cap:
-                print("spend cap reached")
-                return 0
-        if cycle < args.cycles and report.batch_id is not None:
-            try:
-                while ctx.assessor.batch_status(report.batch_id) != "ended":
-                    sleep(args.poll_seconds)
-            except JudgeUnreachable:
+        for cycle in range(1, args.cycles + 1):
+            report = run_pipeline(ctx, budgets)
+            _print_run_report(cycle, report)
+            # A run that could not reach the judge exits non-zero, so a
+            # script or a cron job sees the difference from "nothing left
+            # to do".
+            if report.unreachable:
                 print("run: the judge is unreachable; stopped early", file=sys.stderr)
                 return 1
-    return 0
+            if (report.batch_id is None and report.sentences_adopted == 0
+                    and report.improved == 0):
+                return 0  # nothing left to do
+            if args.spend_cap is not None:
+                spent = (record.cost_since(ctx.db, "assess", "judge", 0)
+                        + record.cost_since(ctx.db, "provide", "tts", 0))
+                if spent >= args.spend_cap:
+                    print("spend cap reached")
+                    return 0
+            if cycle < args.cycles and report.batch_id is not None:
+                try:
+                    while ctx.assessor.batch_status(report.batch_id) != "ended":
+                        sleep(args.poll_seconds)
+                except JudgeUnreachable:
+                    print("run: the judge is unreachable; stopped early", file=sys.stderr)
+                    return 1
+        return 0
 
 
 def main(argv: list[str] | None = None, *,
@@ -212,24 +214,36 @@ def main(argv: list[str] | None = None, *,
 
     args = parser.parse_args(argv)
 
-    if args.command == "migrate":
-        report = migrate_mod.migrate(args.old_deck, args.old_data, args.new_root)
-        print(report.summary() if hasattr(report, "summary") else report)
-        return 0
-    if args.command == "review":
-        return reviewserver.main(["--deck", str(args.deck), "--port", str(args.port)])
-    if args.command == "import":
-        derivations = load_derivations(args.deck)
-        report = anki_import.import_collection(
-            args.collection, derivations.db, current_rubric=derivations.current_rubric,
-            prior=derivations.prior, provenance_source=derivations.provenance_source)
-        print(report)
-        return 0
-    if args.command == "compile":
-        return _cmd_compile(args)
-    if args.command == "run":
-        return _cmd_run(args, sleep=sleep)
-    return 2
+    try:
+        if args.command == "migrate":
+            with writing_command(args.new_root, "migrate") as guard:
+                report = migrate_mod.migrate(args.old_deck, args.old_data, args.new_root)
+                guard.removed(
+                    "sentences",
+                    [u.identity for u in report.unmigratable if u.source == "sentences"])
+            print(report.summary() if hasattr(report, "summary") else report)
+            return 0
+        if args.command == "review":
+            with writing_command(args.deck, "review"):
+                return reviewserver.main(["--deck", str(args.deck), "--port", str(args.port)])
+        if args.command == "import":
+            with writing_command(args.deck, "import"):
+                derivations = load_derivations(args.deck)
+                report = anki_import.import_collection(
+                    args.collection, derivations.db, current_rubric=derivations.current_rubric,
+                    prior=derivations.prior, provenance_source=derivations.provenance_source)
+                print(report)
+                return 0
+        if args.command == "compile":
+            return _cmd_compile(args)
+        if args.command == "run":
+            return _cmd_run(args, sleep=sleep)
+        return 2
+    except SafetyCheckFailed as e:
+        print("safety check failed:", file=sys.stderr)
+        for failure in e.failures:
+            print(f"  {failure}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

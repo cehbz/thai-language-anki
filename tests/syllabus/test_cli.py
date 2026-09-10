@@ -15,10 +15,12 @@ build_sourcing/default_budgets/run_pipeline together into a Sourcing ctx
 """
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 import textwrap
 import zipfile
+from datetime import date
 
 import pytest
 import yaml
@@ -575,6 +577,47 @@ def test_run_cycles_never_polls_after_the_last_cycle(deck, monkeypatch):
     rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
     assert rc == 0
     assert status_calls == []
+
+
+# --- writing_command guard (item 3, spec 2 section 6) ----------------------
+
+def test_run_leaves_a_curated_history_with_a_pre_run_commit(deck, monkeypatch):
+    monkeypatch.setattr(cli, "run_pipeline", lambda ctx, budgets, **kw: RunReport(attempted=0))
+
+    rc = cli.main(["run", "--deck", str(deck)])
+
+    assert rc == 0
+    assert (deck / "curated" / ".git").is_dir()
+    subjects = subprocess.run(
+        ["git", "-C", str(deck / "curated"), "log", "--format=%s"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert any(s.startswith("pre run ") for s in subjects)
+
+
+def test_run_exits_1_and_reports_a_safety_check_failure_when_the_body_deletes_a_sentences_row(
+        deck, monkeypatch, capsys):
+    db = SyllabusDb(deck / "syllabus.db")
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft",
+                    licence="n/a", acquired=date(2026, 1, 1))
+    db.close()
+
+    def fake_run(ctx, budgets, **kwargs):
+        con = sqlite3.connect(deck / "syllabus.db")
+        con.execute("delete from sentences where text_sha=?", ("s1",))
+        con.commit()
+        con.close()
+        return RunReport(attempted=1)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    rc = cli.main(["run", "--deck", str(deck)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "safety check failed:" in err
+    assert "sentences" in err
 
 
 # --- existing subcommands keep working -------------------------------------

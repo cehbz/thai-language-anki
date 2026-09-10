@@ -1,19 +1,25 @@
 """Deck safety (spec 2 section 6): curated/'s history as a git repository
 that every writing command commits before and after, the syllabus.db
-snapshot a writing command copies before it writes, and the sanity check
-that compares the deck's row counts to that snapshot. A later task adds
-the writing_command context manager and restore to this module.
+snapshot a writing command copies before it writes, the sanity check that
+compares the deck's row counts to that snapshot, and writing_command --
+the context manager every writing command (run, migrate, review, import)
+runs under to get all three for free.
 """
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
 import subprocess
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 
 class HistoryError(RuntimeError):
@@ -176,3 +182,71 @@ def check(before: Counts, after: Counts, removals: Mapping[str, int]) -> list[st
             problems.append(
                 f"{field}: {a} rows after, {b} in the snapshot, {n} removal(s) reported")
     return problems
+
+
+class SafetyCheckFailed(RuntimeError):
+    """A writing command's post-check (safety.check, spec 2 section 6)
+    found a row-count shortfall that the command's own removals did not
+    account for. `failures` carries check()'s messages, one per field.
+    """
+
+    def __init__(self, failures: list[str]) -> None:
+        super().__init__("; ".join(failures))
+        self.failures = failures
+
+
+@dataclass
+class Guard:
+    """A writing command's own account of rows it deliberately removed
+    (e.g. migrate's unmigratable sentences), keyed by the same field
+    names as Counts/check -- passed to writing_command's post-check so a
+    deliberate removal never reads as a safety failure (spec 2 section 6).
+    """
+    removals: dict[str, int] = field(default_factory=dict)
+
+    def removed(self, store: str, ids: Iterable[str]) -> None:
+        """Record len(ids) removals against store, adding to any already
+        recorded for it this command (spec 2 section 6).
+        """
+        count = len(list(ids))
+        self.removals[store] = self.removals.get(store, 0) + count
+
+
+@contextmanager
+def writing_command(deck: Path, name: str, *,
+                    now: Callable[[], datetime] = datetime.now) -> Iterator[Guard]:
+    """The context every writing command (run, migrate, review, import)
+    runs its body under (spec 2 section 6): a "pre {name} {stamp}" commit
+    of curated/'s history, a snapshot of syllabus.db when one exists, then
+    the body runs with a Guard it can report deliberate removals to. A
+    "post {name} {stamp}" commit always follows the body, whether it
+    returned or raised -- the history covers what the command actually
+    left behind either way. When the body raised, that exception
+    propagates and no post-check runs; a HistoryError from that post
+    commit itself is only logged (never lets a history-write failure mask
+    the body's own exception) (spec 2 section 6). When the body returned,
+    the before/after row counts are compared (safety.check) against the
+    guard's reported removals; any unaccounted shortfall raises
+    SafetyCheckFailed after the post commit is made.
+    """
+    stamp = now().astimezone().isoformat(timespec="seconds")
+    history = CuratedHistory(deck / "curated")
+    history.ensure()
+    history.commit(f"pre {name} {stamp}")
+    db_path = deck / "syllabus.db"
+    if db_path.exists():
+        snapshot(db_path, deck / "backup" / "syllabus.db")
+    before = deck_counts(deck)
+    guard = Guard()
+    try:
+        yield guard
+    except BaseException:
+        try:
+            history.commit(f"post {name} {stamp}")
+        except HistoryError as e:
+            _log.warning("post commit failed after %s: %s", name, e)
+        raise
+    failures = check(before, deck_counts(deck), guard.removals)
+    history.commit(f"post {name} {stamp}")
+    if failures:
+        raise SafetyCheckFailed(failures)
