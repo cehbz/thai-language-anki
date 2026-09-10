@@ -425,6 +425,21 @@ class Assessor:
             question={"kind": "batch", "batch_id": batch_id}, answer={"status": final_status})
         return resolved
 
+    def batch_status(self, batch_id: str) -> str:
+        """The judge's batch transport's own status for `batch_id`
+        ("in_progress" | "canceling" | "ended") -- what cli `run
+        --cycles` polls between cycles (spec 3 section 7) before the
+        next cycle's resolve can see this batch. Raises JudgeUnreachable
+        on a TransportError, the same wrapping a status read gets inside
+        resolve().
+        """
+        impl = self._backends["judge"]
+        try:
+            return impl.batch_transport.status(batch_id)
+        except TransportError as e:
+            raise JudgeUnreachable(
+                f"the judge's batch transport could not be read for {batch_id}: {e}") from e
+
     def unresolved_batch(self) -> tuple[str, frozenset[tuple[str, str]]] | None:
         """The (batch_id, needs) of the newest marker whose latest status
         is "submitted" -- the batch a run must resolve before it submits

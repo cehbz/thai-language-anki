@@ -28,7 +28,8 @@ _log = logging.getLogger(__name__)
 __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls",
-          "asks_since", "spend_since", "unresolved_batch", "run_reports", "subject_kind_of",
+          "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
+          "subject_kind_of",
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "merge_drafts", "draft_sentence", "drafts_in", "sentence_drafts",
           "excluded_candidates", "card_flags",
@@ -192,6 +193,17 @@ def _params_of(row: Answer) -> Mapping:
 def spend_since(cache: CacheReader, backend: str, since_ts: int) -> float:
     """What those asks cost, in `backend`'s own currency."""
     return sum(r.cost for r in source_asks(cache.rows_since("provide", backend, since_ts)))
+
+
+def cost_since(cache: CacheReader, port: str, backend: str, since_ts: int) -> float:
+    """What every row `backend` appended under `port` cost, at or after
+    `since_ts` -- raw cost, with no Source-ask filter (unlike
+    spend_since, which reads "provide" rows only). cli `run --spend-cap`
+    (spec 3 section 7) needs this: a judge verdict's own cost is
+    appended at port "assess" (assessor.py's _append_verdict), where
+    spend_since never looks.
+    """
+    return sum(r.cost for r in cache.rows_since(port, backend, since_ts))
 
 
 def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str | None]]:

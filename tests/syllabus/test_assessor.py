@@ -1167,3 +1167,22 @@ def test_resolve_that_cannot_reach_the_wire_is_an_unreachable_judge(
     a._backends["judge"].batch_transport = _DeadBatch()
     with pytest.raises(JudgeUnreachable):
         a.resolve(bid)
+
+
+# --- batch_status: what cli `run --cycles` polls (Task 8, spec 3 section 7) -
+
+def test_batch_status_returns_the_transports_own_status(
+        assessor_with_batch_transport, fake_batch):
+    a = assessor_with_batch_transport
+    bid = a.submit(a.ask_many("judge", [fit_question("rice", "a" * 64)]).collected)
+    assert a.batch_status(bid) == "in_progress"
+    fake_batch._status[bid] = "ended"
+    assert a.batch_status(bid) == "ended"
+
+
+def test_batch_status_wraps_a_transport_error_as_judge_unreachable(
+        assessor_with_batch_transport):
+    a = assessor_with_batch_transport
+    a._backends["judge"].batch_transport = _DeadBatch()
+    with pytest.raises(JudgeUnreachable):
+        a.batch_status("b1")

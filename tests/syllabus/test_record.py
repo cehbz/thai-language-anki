@@ -16,6 +16,7 @@ from thai_syllabus.record import (
     PARSE_SUBJECT,
     SentenceDraft,
     asks_since,
+    cost_since,
     fetches_since,
     candidate_shas,
     directions,
@@ -326,6 +327,22 @@ def test_spend_since_sums_the_cost_of_those_asks(cache):
                 "fish", {"kind": "recording"}, {"items": []}, 2.5, ts=300)
     assert spend_since(cache, "forvo", 200) == pytest.approx(2.5)
     assert spend_since(cache, "forvo", 0) == pytest.approx(3.5)
+
+
+def test_cost_since_sums_a_ports_own_backend_rows_with_no_source_ask_filter(cache):
+    """cli `run --spend-cap` (spec 3 section 7) needs a judge verdict's
+    own cost, appended at port "assess" (assessor.py's _append_verdict)
+    -- spend_since only ever reads "provide" rows, so it always reads
+    0.0 for the judge. cost_since reads any (port, backend) pair and
+    sums every row's cost as logged, with no Source-ask filter.
+    """
+    cache.append("assess", "judge",
+                 JudgeKey(rubric_sha="r", subject="rice", identity="", role="picture-for-word"),
+                 "rice", {"kind": "picture"}, {"value": True}, 0.5, ts=100)
+    cache.append("provide", "tts", ProvideKey(source="tts", kind="", query="rice"),
+                "rice", {"kind": "recording"}, {"items": []}, 0.25, ts=100)
+    total = cost_since(cache, "assess", "judge", 0) + cost_since(cache, "provide", "tts", 0)
+    assert total == pytest.approx(0.75)
 
 
 # --- parse_drafts: clauses alongside text and gloss -------------------------

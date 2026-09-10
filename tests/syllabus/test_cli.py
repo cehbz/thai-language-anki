@@ -24,11 +24,13 @@ import pytest
 import yaml
 
 from thai_syllabus import cli
+from thai_syllabus.assessor import JudgeUnreachable
 from thai_syllabus.attempts import Sourcing
 from thai_syllabus.cachekeys import JudgeKey, ProvideKey
 from thai_syllabus.compile import GateRefusal
 from thai_syllabus.rules import Compile, CompileReport, Finding, Report
 from thai_syllabus.run import RunReport, Spend
+from thai_syllabus.store import SyllabusDb
 
 
 def _write_curated_dir(root):
@@ -394,6 +396,185 @@ def test_main_configures_logging_so_module_warnings_reach_stderr(deck):
     assert proc.returncode == 0, proc.stderr
     assert "judge unreachable (401)" in proc.stderr
     assert "WARNING" in proc.stderr and "thai_syllabus.attempts" in proc.stderr
+
+
+# --- run --cycles: the loop into the CLI (Task 8, spec 3 section 7) -------
+
+def test_run_cycles_polls_between_cycles_and_stops_when_nothing_left_to_do(
+        deck, monkeypatch):
+    """--cycles 5 with a first report that left a batch out and a second
+    that has nothing left to do: two cycles run, the outstanding batch
+    from the first is polled once (in_progress, then ended) before the
+    second cycle's run_pipeline call, and the second cycle's "nothing
+    left to do" report stops the loop well short of --cycles.
+    """
+    from thai_syllabus import assessor as assessor_module
+
+    reports = [
+        RunReport(batch_id="b1"),
+        RunReport(batch_id=None, sentences_adopted=0, improved=0),
+    ]
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return reports[len(run_calls) - 1]
+
+    statuses = iter(["in_progress", "ended"])
+    status_calls = []
+
+    def fake_status(self, batch_id):
+        status_calls.append(batch_id)
+        return next(statuses)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status", fake_status)
+
+    sleeps = []
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "5", "--poll-seconds", "1"],
+                 sleep=sleeps.append)
+    assert rc == 0
+    assert len(run_calls) == 2
+    assert sleeps == [1]
+    assert status_calls == ["b1", "b1"]
+
+
+def test_run_cycles_exits_1_on_an_unreachable_judge_after_one_cycle(deck, monkeypatch):
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(unreachable=True)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "5"])
+    assert rc == 1
+    assert len(run_calls) == 1
+
+
+def test_run_cycles_stops_at_a_spend_cap(deck, monkeypatch, capsys):
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(sentences_adopted=1)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "5", "--spend-cap", "0"])
+    assert rc == 0
+    assert len(run_calls) == 1
+    assert "spend cap reached" in capsys.readouterr().out
+
+
+def test_run_default_cycles_is_one_and_prints_cycle_number(deck, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(attempted=1))
+    rc = cli.main(["run", "--deck", str(deck)])
+    assert rc == 0
+    assert "cycle=1" in capsys.readouterr().out
+
+
+# --- run --cycles fix round 1 -----------------------------------------------
+
+def test_run_cycles_treats_an_unreachable_judge_during_the_wait_like_report_unreachable(
+        deck, monkeypatch, capsys):
+    """batch_status can raise JudgeUnreachable (spec 3 section 7: the
+    same TransportError-on-the-wire wrapping resolve/submit already give)
+    -- that must stop the run exactly as report.unreachable does, not
+    escape cli.main as a traceback.
+    """
+    from thai_syllabus import assessor as assessor_module
+
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(batch_id="b1")
+
+    def fake_status(self, batch_id):
+        raise JudgeUnreachable("x")
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status", fake_status)
+
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "5"])
+    assert rc == 1
+    assert len(run_calls) == 1
+    assert "run: the judge is unreachable; stopped early" in capsys.readouterr().err
+
+
+def test_run_spend_cap_counts_a_judge_verdicts_own_cost(deck, monkeypatch, capsys):
+    """The judge's own asks are appended at port "assess" (assessor.py's
+    _append_verdict), not "provide" -- record.spend_since (a Source-ask
+    fold, port="provide" only) always reads 0.0 for it. --spend-cap must
+    read the judge's real cost, so a $1.0 verdict already on record stops
+    a $0.5 cap on the very first cycle.
+    """
+    SyllabusDb(deck / "syllabus.db").append(
+        "assess", "judge",
+        JudgeKey(rubric_sha="r", subject="rice", identity="", role="picture-for-word"),
+        "rice", {"kind": "picture"}, {"value": True}, 1.0)
+
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(sentences_adopted=1)  # never "nothing left to do"
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--spend-cap", "0.5", "--cycles", "3"])
+    assert rc == 0
+    assert len(run_calls) == 1
+    assert "spend cap reached" in capsys.readouterr().out
+
+
+def test_run_spend_cap_above_the_judges_cost_does_not_stop_the_run(deck, monkeypatch, capsys):
+    SyllabusDb(deck / "syllabus.db").append(
+        "assess", "judge",
+        JudgeKey(rubric_sha="r", subject="rice", identity="", role="picture-for-word"),
+        "rice", {"kind": "picture"}, {"value": True}, 1.0)
+
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(sentences_adopted=1)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--spend-cap", "5", "--cycles", "3"])
+    assert rc == 0
+    assert len(run_calls) == 3
+    assert "spend cap reached" not in capsys.readouterr().out
+
+
+def test_run_rejects_cycles_below_one(deck):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["run", "--deck", str(deck), "--cycles", "0"])
+    assert exc.value.code == 2
+
+
+def test_run_rejects_poll_seconds_below_one(deck):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["run", "--deck", str(deck), "--poll-seconds", "0"])
+    assert exc.value.code == 2
+
+
+def test_run_cycles_never_polls_after_the_last_cycle(deck, monkeypatch):
+    from thai_syllabus import assessor as assessor_module
+
+    status_calls = []
+
+    def fake_status(self, batch_id):
+        status_calls.append(batch_id)
+        return "ended"
+
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(batch_id="b1", improved=1))
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status", fake_status)
+
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
+    assert rc == 0
+    assert status_calls == []
 
 
 # --- existing subcommands keep working -------------------------------------

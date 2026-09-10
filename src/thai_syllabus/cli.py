@@ -5,6 +5,7 @@
     thai-syllabus import   --deck DIR --collection PATH
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
+                          [--cycles N] [--spend-cap USD] [--poll-seconds S]
 
 Each command wires itself through wiring.py: load_syllabus() for the
 Syllabus, build_sourcing() for run()'s Sourcing ctx, both from the deck's
@@ -18,12 +19,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
-from . import anki_import, migrate as migrate_mod, reviewserver
+from . import anki_import, migrate as migrate_mod, record, reviewserver
+from .assessor import JudgeUnreachable
 from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
-from .run import Budget
+from .run import Budget, RunReport
 from .run import run as run_pipeline
 from .wiring import build_sourcing, default_budgets, load_derivations
 
@@ -74,19 +78,25 @@ def _parse_backend_cap(raw: str) -> tuple[str, int]:
             f"--backend-cap NAME=N: N must be an integer, got {value!r}") from None
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    """Wires a Sourcing ctx through wiring.build_sourcing, then layers
-    --backend-cap overrides onto default_budgets before running.
+def _min_one(flag: str) -> Callable[[str], int]:
+    """An argparse `type=` for an int flag that refuses anything below 1
+    (e.g. --cycles, --poll-seconds): argparse turns an ArgumentTypeError
+    from a type function into a normal usage error (exit 2), the same as
+    an unparseable value.
     """
-    cfg = load_providers_config(_providers_config_path(args.deck))
-    ctx = build_sourcing(args.deck, cfg)
-    budgets = dict(default_budgets(cfg))
-    for raw in args.backend_cap:
-        name, max_asks = _parse_backend_cap(raw)
-        budgets[name] = Budget(max_asks=max_asks)
+    def parse(raw: str) -> int:
+        value = int(raw)
+        if value < 1:
+            raise argparse.ArgumentTypeError(f"--{flag} must be at least 1, got {value}")
+        return value
+    return parse
 
-    report = run_pipeline(ctx, budgets)
-    print(f"attempted={report.attempted} improved={report.improved} "
+
+def _print_run_report(cycle: int, report: RunReport) -> None:
+    """One run's report block (spec 3 section 7), prefixed with the
+    cycle it belongs to -- `cycle=1` for a single-cycle (default) run.
+    """
+    print(f"cycle={cycle} attempted={report.attempted} improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
          f"drafted={report.drafted} excluded={report.excluded} "
@@ -98,15 +108,61 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
     for name, count in sorted(report.source_failures.items()):
         print(f"  source_failures: {name}={count}")
-    # A run that could not reach the judge exits non-zero, so a script or
-    # a cron job sees the difference from "nothing left to do".
-    if report.unreachable:
-        print("run: the judge is unreachable; stopped early", file=sys.stderr)
-        return 1
+
+
+def _cmd_run(args: argparse.Namespace, *,
+            sleep: Callable[[float], None] = time.sleep) -> int:
+    """Wires a Sourcing ctx through wiring.build_sourcing, then layers
+    --backend-cap overrides onto default_budgets before running.
+
+    Loops run_pipeline up to --cycles times (spec 3 section 7: the
+    two-run cycle -- at most one batch outstanding at a time). Between
+    cycles this waits for the batch the cycle just submitted to end, so
+    the next cycle's own resolve can see it; it never waits after the
+    last cycle requested. A cycle stops the loop early when the judge
+    was unreachable -- whether run_pipeline said so, or the wait between
+    cycles found the batch transport itself unreachable (exit 1, same as
+    a single run today) -- when the report says there is nothing left to
+    do (no batch out, nothing adopted or improved), or when --spend-cap
+    is set and the judge's and tts's own cost on record has reached it.
+    """
+    cfg = load_providers_config(_providers_config_path(args.deck))
+    ctx = build_sourcing(args.deck, cfg)
+    budgets = dict(default_budgets(cfg))
+    for raw in args.backend_cap:
+        name, max_asks = _parse_backend_cap(raw)
+        budgets[name] = Budget(max_asks=max_asks)
+
+    for cycle in range(1, args.cycles + 1):
+        report = run_pipeline(ctx, budgets)
+        _print_run_report(cycle, report)
+        # A run that could not reach the judge exits non-zero, so a
+        # script or a cron job sees the difference from "nothing left
+        # to do".
+        if report.unreachable:
+            print("run: the judge is unreachable; stopped early", file=sys.stderr)
+            return 1
+        if (report.batch_id is None and report.sentences_adopted == 0
+                and report.improved == 0):
+            return 0  # nothing left to do
+        if args.spend_cap is not None:
+            spent = (record.cost_since(ctx.db, "assess", "judge", 0)
+                    + record.cost_since(ctx.db, "provide", "tts", 0))
+            if spent >= args.spend_cap:
+                print("spend cap reached")
+                return 0
+        if cycle < args.cycles and report.batch_id is not None:
+            try:
+                while ctx.assessor.batch_status(report.batch_id) != "ended":
+                    sleep(args.poll_seconds)
+            except JudgeUnreachable:
+                print("run: the judge is unreachable; stopped early", file=sys.stderr)
+                return 1
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *,
+        sleep: Callable[[float], None] = time.sleep) -> int:
     # One logging configuration, at the process entry point: attempts.py
     # and assessor.py report a dead judge, an unusable candidate and a
     # dropped question at WARNING, and with nothing configured those go
@@ -143,6 +199,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="cap NAME's asks at N per day, measured from the record "
                         "(spend since local midnight plus this run's own), "
                         "e.g. --backend-cap forvo=100 (repeatable)")
+    p.add_argument("--cycles", type=_min_one("cycles"), default=1,
+                   help="repeat resolve/attempt/submit this many times, waiting "
+                        "between cycles for the batch just submitted to end "
+                        "(spec 3 section 7); default 1, today's single-run behavior")
+    p.add_argument("--spend-cap", type=float, default=None, metavar="USD",
+                   help="stop cycling once the judge's own cost (port assess) "
+                        "plus tts's own cost (port provide) on record reaches this")
+    p.add_argument("--poll-seconds", type=_min_one("poll-seconds"), default=300,
+                   help="how long to sleep between polls of an outstanding "
+                        "batch's status")
 
     args = parser.parse_args(argv)
 
@@ -162,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compile":
         return _cmd_compile(args)
     if args.command == "run":
-        return _cmd_run(args)
+        return _cmd_run(args, sleep=sleep)
     return 2
 
 
