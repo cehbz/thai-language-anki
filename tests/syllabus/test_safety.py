@@ -2,11 +2,15 @@
 a git repository over curated/, committed by label, that a writing
 command commits before and after touching any store.
 """
+import sqlite3
 import subprocess
+from datetime import date
 
 import pytest
 
-from thai_syllabus.safety import CuratedHistory, HistoryError
+from thai_syllabus.cachekeys import ProvideKey
+from thai_syllabus.safety import Counts, CuratedHistory, HistoryError, check, deck_counts, snapshot
+from thai_syllabus.store import SyllabusDb
 
 
 def _git_log_subjects(root):
@@ -148,3 +152,135 @@ def test_restore_tree_deletes_an_added_file_a_gitignore_in_curated_names(history
     history.restore_tree(sha)
 
     assert not (history.root / "targets.yaml").exists()
+
+
+# -- snapshot ---------------------------------------------------------------
+
+def _append_row(db, query):
+    db.append("provide", "openverse", ProvideKey(source="openverse", kind="", query=query),
+              "rice", {"kind": "picture", "query": query}, {"items": []}, 0)
+
+
+def test_snapshot_copies_a_db_with_one_row_to_the_backup_path(tmp_path):
+    db_path = tmp_path / "deck" / "syllabus.db"
+    backup_path = tmp_path / "deck" / "backup" / "syllabus.db"
+    db = SyllabusDb(db_path)
+    _append_row(db, "k1")
+
+    snapshot(db_path, backup_path)
+
+    con = sqlite3.connect(backup_path)
+    assert con.execute("select count(*) from cache").fetchone()[0] == 1
+    con.close()
+    db.close()
+
+
+def test_a_row_appended_after_the_snapshot_leaves_the_backup_at_one(tmp_path):
+    db_path = tmp_path / "deck" / "syllabus.db"
+    backup_path = tmp_path / "deck" / "backup" / "syllabus.db"
+    db = SyllabusDb(db_path)
+    _append_row(db, "k1")
+    snapshot(db_path, backup_path)
+
+    _append_row(db, "k2")
+
+    con = sqlite3.connect(backup_path)
+    assert con.execute("select count(*) from cache").fetchone()[0] == 1
+    con.close()
+    db.close()
+
+
+def test_a_second_snapshot_replaces_the_first(tmp_path):
+    db_path = tmp_path / "deck" / "syllabus.db"
+    backup_path = tmp_path / "deck" / "backup" / "syllabus.db"
+    db = SyllabusDb(db_path)
+    _append_row(db, "k1")
+    snapshot(db_path, backup_path)
+    _append_row(db, "k2")
+
+    snapshot(db_path, backup_path)
+
+    con = sqlite3.connect(backup_path)
+    assert con.execute("select count(*) from cache").fetchone()[0] == 2
+    con.close()
+    db.close()
+
+
+def test_snapshot_failing_to_open_the_backup_path_still_releases_the_source(tmp_path):
+    """backup_path pointing at an existing directory makes
+    sqlite3.connect(backup_path) raise OperationalError; snapshot must
+    still release the source connection it already opened, or a leaked
+    connection could later block another connection from writing db_path
+    (spec 2 section 6 -- snapshot never holds the live db open).
+    """
+    db_path = tmp_path / "deck" / "syllabus.db"
+    backup_path = tmp_path / "deck" / "backup" / "syllabus.db"
+    backup_path.mkdir(parents=True)  # a directory sits where snapshot wants a file
+    db = SyllabusDb(db_path)
+    _append_row(db, "k1")
+    db.close()
+
+    with pytest.raises(sqlite3.OperationalError):
+        snapshot(db_path, backup_path)
+
+    # a leaked src connection could leave the db locked; prove it did not
+    # by opening and writing through a fresh connection.
+    other = SyllabusDb(db_path)
+    other.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k2"),
+                 "rice", {"kind": "picture", "query": "k2"}, {"items": []}, 0)
+    other.close()
+
+
+# -- deck_counts --------------------------------------------------------
+
+def test_deck_counts_reads_words_targets_and_table_rows(tmp_path):
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "words.yaml").write_text("- rice\n- fish\n", encoding="utf-8")
+    (curated / "targets.yaml").write_text("- rice_receptive\n", encoding="utf-8")
+    db = SyllabusDb(deck / "syllabus.db")
+    db.add_sentence(text_sha="s1", text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft",
+                    licence="n/a", acquired=date(2026, 1, 1))
+    db.close()
+
+    assert deck_counts(deck) == Counts(words=2, targets=1, sentences=1, cache=0, media=0)
+
+
+def test_deck_counts_on_an_absent_deck_is_all_zero(tmp_path):
+    assert deck_counts(tmp_path / "no-such-deck") == Counts(
+        words=0, targets=0, sentences=0, cache=0, media=0)
+
+
+def test_deck_counts_sees_a_committed_row_while_the_writer_is_still_open(tmp_path):
+    """The read-only URI connection must see a row committed by a live
+    WAL-mode writer that has not closed (and so has not checkpointed) --
+    sqlite's WAL read path, not the checkpointed main db file, is what a
+    read-only connection reads from (spec 2 section 6).
+    """
+    deck = tmp_path / "deck"
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+
+    counts = deck_counts(deck)
+
+    assert counts.cache == 1
+    db.close()
+
+
+# -- check --------------------------------------------------------------
+
+def test_check_names_a_sentences_shortfall():
+    before = Counts(words=2, targets=1, sentences=3, cache=5, media=0)
+    after = Counts(words=2, targets=1, sentences=2, cache=5, media=0)
+
+    assert check(before, after, {}) == [
+        "sentences: 2 rows after, 3 in the snapshot, 0 removal(s) reported"]
+
+
+def test_check_accepts_a_shortfall_the_removals_cover():
+    before = Counts(words=2, targets=1, sentences=3, cache=5, media=0)
+    after = Counts(words=2, targets=1, sentences=2, cache=5, media=0)
+
+    assert check(before, after, {"sentences": 1}) == []

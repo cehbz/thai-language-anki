@@ -1,13 +1,19 @@
 """Deck safety (spec 2 section 6): curated/'s history as a git repository
-that every writing command commits before and after. Only CuratedHistory
-lives here so far; a later task adds the snapshot, counts, the
-writing_command context manager and restore to this module.
+that every writing command commits before and after, the syllabus.db
+snapshot a writing command copies before it writes, and the sanity check
+that compares the deck's row counts to that snapshot. A later task adds
+the writing_command context manager and restore to this module.
 """
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 
 class HistoryError(RuntimeError):
@@ -95,3 +101,78 @@ class CuratedHistory:
         """
         self._run("restore", "--source", sha, "--worktree", "--staged", "--", ".")
         self._run("clean", "-fdxq")
+
+
+def snapshot(db_path: Path, backup_path: Path) -> None:
+    """Copy db_path through sqlite's online backup API to backup_path,
+    replacing whatever backup_path already held: one generation, the
+    state before the most recent writing command (spec 2 section 6). Safe
+    against a live WAL-mode source -- the backup API reads a consistent
+    snapshot without requiring the source be closed or checkpointed. Both
+    connections are closed on every path, including when opening
+    backup_path itself fails (e.g. a directory sits there), so a failed
+    snapshot never leaves the source db open.
+    """
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.closing(sqlite3.connect(db_path)) as src, \
+            contextlib.closing(sqlite3.connect(backup_path)) as dst:
+        src.backup(dst)
+
+
+@dataclass(frozen=True)
+class Counts:
+    """A deck's row counts, as the sanity check compares them before and
+    after a writing command: words and targets from curated/, sentences,
+    cache and media from syllabus.db (spec 2 section 6).
+    """
+    words: int
+    targets: int
+    sentences: int
+    cache: int
+    media: int
+
+
+def _yaml_list_len(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return len(yaml.safe_load(path.read_text(encoding="utf-8")) or [])
+
+
+def deck_counts(deck: Path) -> Counts:
+    """words and targets are curated/words.yaml and curated/targets.yaml's
+    own list lengths (0 when a file is absent); sentences, cache and media
+    are read from syllabus.db through a read-only connection, so a check
+    never takes a write lock or creates a db that was not there. Every
+    field is 0 when syllabus.db is absent (spec 2 section 6).
+    """
+    deck = Path(deck)
+    words = _yaml_list_len(deck / "curated" / "words.yaml")
+    targets = _yaml_list_len(deck / "curated" / "targets.yaml")
+    db_path = deck / "syllabus.db"
+    if not db_path.exists():
+        return Counts(words=words, targets=targets, sentences=0, cache=0, media=0)
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        sentences = con.execute("select count(*) from sentences").fetchone()[0]
+        cache = con.execute("select count(*) from cache").fetchone()[0]
+        media = con.execute("select count(*) from media").fetchone()[0]
+    finally:
+        con.close()
+    return Counts(words=words, targets=targets, sentences=sentences, cache=cache, media=media)
+
+
+def check(before: Counts, after: Counts, removals: Mapping[str, int]) -> list[str]:
+    """One message per field (words, targets, sentences, cache, media)
+    where `after` counts fewer rows than `before` minus the removals
+    reported for that field -- a writing command's sanity check (spec 2
+    section 6).
+    """
+    problems = []
+    for field in ("words", "targets", "sentences", "cache", "media"):
+        b = getattr(before, field)
+        a = getattr(after, field)
+        n = removals.get(field, 0)
+        if a < b - n:
+            problems.append(
+                f"{field}: {a} rows after, {b} in the snapshot, {n} removal(s) reported")
+    return problems
