@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 10, proposed 2026-09-09 against principles r2 and architecture
+Revision 11, proposed 2026-09-10 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -36,6 +36,12 @@ Revision log:
 - r10 2026-09-09: sentences rows carry `clauses`; a row that fails the
   Sentence invariant refuses the load; migrate parses rows without
   clauses through the parse ask. Evidence: spec 1 r8.
+- r11 2026-09-10: deck safety (§6): curated/ is a git repository every
+  writing command commits before and after; syllabus.db is snapshotted
+  through sqlite's backup API before a writing command; a completed
+  command checks the deck against the snapshot; `restore` is a human
+  act. Evidence: user request 2026-09-09, when the 32-sense merge and
+  the six sentence deletions ran against hand-made copies in work/.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; migration of the carry-over assets. Port mechanics are spec 3;
@@ -71,9 +77,12 @@ never hand-edited.
                                # the repo's data/ and copied in; human-
                                # readable, never hand-edited; the loader
                                # refuses a deck without it
+    .git/                      # the curated history (§6); machine-
+                               # committed, never rewritten
   media/                       # store 2 — artifact bytes
     objects/<sha>.<ext>        # content-addressed; sha = sha256 of bytes
   syllabus.db                  # stores 2b/3/4 — sqlite, WAL
+  backup/syllabus.db           # the one pre-command snapshot (§6)
   work/                        # logs, scratch; disposable
 ```
 
@@ -209,3 +218,55 @@ and refuses anything else, naming the file and field.
 - No .last-report.json: reports are derived and identified by state hash.
 - No media_manifest.yaml: provenance is the media table.
 - No per-filler checkpoint code: sqlite transactions are the checkpoint.
+
+## 6. Deck safety
+
+A **writing command** is one that writes a store: migrate, run, import,
+review (its supply, rating and direction rows), and restore. compile
+reads the deck and writes its .apkg elsewhere. One writer at a time is
+assumed, as today.
+
+**Curated history.** `<deck>/curated/` is a git repository. The first
+writing command that finds none initializes it with the current content
+as its first commit. Before a writing command touches any store, it
+commits curated/'s working tree as `pre <command> <ISO ts>`; when it
+exits, whatever the exit status, it commits again as `post <command>
+<ISO ts>`. A commit with nothing changed is skipped. A hand edit made
+between commands lands in the next pre commit, so no human edit is ever
+lost. The history is machine-owned: the commands never rewrite, rebase
+or prune it; a human reads it with git.
+
+**Snapshot.** Before a writing command touches syllabus.db, it copies
+the db through sqlite's online backup API to `<deck>/backup/syllabus.db`,
+replacing the previous snapshot: one generation, the state before the
+most recent writing command. media/objects/ is not snapshotted: it is
+content-addressed and never deleted, so a restored db references what
+is still there.
+
+**Sanity checks.** When a writing command completes, before its post
+commit, it compares the deck to the snapshot and the pre commit and
+refuses to report success when:
+- words, targets, sentences, cache rows or media rows number fewer
+  than in the snapshot, unless the command reported each removal by id
+  (migrate's unparsed sentences; a curated merge shows in the post
+  commit's diff and is reported by id);
+- a run's accounting identity fails (spec 3 §7);
+- curated/ fails to load (spec 1's invariants), which the loader already
+  refuses; the check names the pre commit to diff against.
+A failed check exits non-zero naming the check and the two counts.
+Nothing is rolled back automatically: an append is a checkpoint, the db
+stands as written, and the human decides.
+
+**Restore.** `thai-syllabus restore --deck D` is a human act. It moves
+the current syllabus.db to `work/syllabus.db.<ISO ts>` (disposable, so a
+mistaken restore is recoverable until work/ is cleaned), copies
+`backup/syllabus.db` into place, checks curated/ out at the most recent
+`pre` commit after committing the current tree as `pre restore <ts>`,
+and prints the snapshot's time and the commit it checked out. It
+refuses when no snapshot exists, and runs no other command afterwards.
+
+Neither the history nor the snapshot is a fifth store: each is a copy
+of store 1 or 3 at an earlier instant, never read by the domain core,
+and a deck loads without them. The interim procedure (copy curated/
+and a `.backup` of syllabus.db into work/ by hand before any edit)
+ends with this revision.
