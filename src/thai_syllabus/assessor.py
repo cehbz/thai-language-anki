@@ -28,7 +28,7 @@ __all__ = [
     "PreparationError", "JudgeUnreachable",
     "Price", "JudgeBackend",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
-    "parse_preference",
+    "parse_preference", "last_json_object",
     "DurationBackend", "FormatBackend", "RenditionBackend",
     "ffprobe_duration_seconds",
 ]
@@ -506,7 +506,8 @@ def picture_fit_prompt(q: AssessQuestion) -> str:
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <true if the image passes every point of the '
            'rubric, else false>, "evidence": <one sentence>, "suggestion": <a better search '
-           'phrase when it fails, else null>}.')
+           'phrase when it fails, else null>}. Respond with only that JSON object and no other '
+           'text.')
 
 
 def picture_preference_prompt(q: AssessQuestion) -> str:
@@ -517,7 +518,7 @@ def picture_preference_prompt(q: AssessQuestion) -> str:
            f"Word: {_field(p.get('word', q.subject))}\nMeaning: {_field(p.get('meaning', ''))}\n\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"ranking": [<every candidate id above, best first>], '
-           '"evidence": <one sentence>}.')
+           '"evidence": <one sentence>}. Respond with only that JSON object and no other text.')
 
 
 def sentence_prompt(q: AssessQuestion) -> str:
@@ -529,25 +530,54 @@ def sentence_prompt(q: AssessQuestion) -> str:
            f"Target word: {_field(p.get('word', ''))}\n\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
-           '"suggestion": <string or null>}.')
+           '"suggestion": <string or null>}. Respond with only that JSON object and no other '
+           'text.')
 
 
 def _not_a_verdict(text: str) -> TransportError:
     return TransportError(f"judge answered without a verdict: {text.strip()[:80]!r}")
 
 
-def parse_preference(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
-    """Parses a picture_preference_prompt response: `value` is the ranked
-    list of candidate shas, best first. A ```` ``` ```` or ```` ```json ````
-    fence around the body is accepted. Raises TransportError for any
-    other shape, which caches nothing (spec 3 section 6a). `question` is
-    unused -- accepted so this can serve as a JudgeBackend parse_response
-    directly, which is always called with (text, question).
+def last_json_object(text: str) -> Any:
+    """The judge's answer is the last JSON object in its completion; prose
+    before it is not a refusal (spec 3 r19 section 2). Tries the whole
+    (fence-stripped) text as JSON first -- the common case, and what
+    accepts a fenced object with nothing else around it. Failing that,
+    scans backward from each '{' in the text for the first one
+    json.JSONDecoder().raw_decode can parse into a dict that reaches the
+    end of the text, trailing whitespace or a closing code fence
+    tolerated -- an object followed by anything else does not qualify,
+    so the verdict must end the answer. Raises TransportError
+    (_not_a_verdict) when nothing qualifies.
     """
     try:
-        data = json.loads(strip_fences(text))
+        return json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
-        raise _not_a_verdict(text) from None
+        pass
+    decoder = json.JSONDecoder()
+    for pos in reversed([i for i, c in enumerate(text) if c == "{"]):
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        tail = text[end:].strip()
+        if tail in ("", "```"):
+            return obj
+    raise _not_a_verdict(text)
+
+
+def parse_preference(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
+    """Parses a picture_preference_prompt response: `value` is the ranked
+    list of candidate shas, best first, taken from the last JSON object in
+    the completion (last_json_object, spec 3 r19 section 2) -- prose
+    before it is not a refusal. Raises TransportError for any other
+    shape, which caches nothing (spec 3 section 6a). `question` is unused
+    -- accepted so this can serve as a JudgeBackend parse_response
+    directly, which is always called with (text, question).
+    """
+    data = last_json_object(text)
     ranking = data.get("ranking") if isinstance(data, dict) else None
     if not isinstance(ranking, list) or not all(isinstance(s, str) for s in ranking):
         raise _not_a_verdict(text)
@@ -556,24 +586,26 @@ def parse_preference(text: str, question: "AssessQuestion | None" = None) -> Raw
 
 def _generic_value_parser(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
     """The {"value": bool, "evidence", "suggestion"} shape picture_fit_prompt
-    and sentence_prompt ask for, or a bare true/false -- also the fallback
-    for any role with no entry in _DEFAULT_JUDGE_BUILDERS. A ```` ``` ````
-    or ```` ```json ```` fence around the body is accepted. Raises
-    TransportError for any other shape, which caches nothing (spec 3
-    section 6a). `question` is unused -- see parse_preference's docstring.
+    and sentence_prompt ask for, taken from the last JSON object in the
+    completion (last_json_object, spec 3 r19 section 2) -- prose before it
+    is not a refusal. A bare true/false (not wrapped in an object, in any
+    case) is also accepted -- this is also the fallback for any role with
+    no entry in _DEFAULT_JUDGE_BUILDERS. Raises TransportError for any
+    other shape, which caches nothing (spec 3 section 6a). `question` is
+    unused -- see parse_preference's docstring.
     """
     try:
-        data = json.loads(strip_fences(text))
-    except (json.JSONDecodeError, TypeError):
-        data = None
+        data = last_json_object(text)
+    except TransportError:
+        stripped = text.strip().lower()
+        if stripped in ("true", "false"):
+            return RawVerdict(value=stripped == "true")
+        raise
     if isinstance(data, dict) and isinstance(data.get("value"), bool):
         return RawVerdict(value=data["value"], evidence=data.get("evidence"),
                           suggestion=data.get("suggestion"))
     if isinstance(data, bool):  # json.loads("true"/"false") -- a bare bool, not an object
         return RawVerdict(value=data)
-    stripped = text.strip().lower()
-    if stripped in ("true", "false"):
-        return RawVerdict(value=stripped == "true")
     raise _not_a_verdict(text)
 
 

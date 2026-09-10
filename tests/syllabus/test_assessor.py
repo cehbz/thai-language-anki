@@ -29,6 +29,7 @@ from thai_syllabus.assessor import (
     FormatBackend,
     RenditionBackend,
     _custom_id,
+    last_json_object,
     parse_preference,
     picture_fit_prompt,
     picture_preference_prompt,
@@ -218,6 +219,75 @@ def test_preference_parser_accepts_a_ranking_wrapped_in_a_code_fence():
     assert parse_preference(fenced).value == ["a", "b"]
 
 
+# --- the judge's verdict is the last JSON object in its answer, not the
+# whole of it (spec 3 r19 section 2) -- two real completions from 2026-09-10 ---
+
+_REAL_FIT_COMPLETION = (
+    "Looking at this image, I need to check whether it fits the word "
+    "ต้นไม้ (tree) against the rubric given.\n\n"
+    "The image shows a wooden crate stacked with round red fruit -- there is no "
+    "trunk, no branches, and no foliage anywhere in the frame. What's pictured is "
+    "fruit in storage, not a living tree.\n\n"
+    "Since the rubric requires the image to depict a tree and this one depicts "
+    "fruit instead, it fails the rubric.\n\n"
+    '{"value": false, "evidence": "the image shows a crate of apples, not a tree", '
+    '"suggestion": "twenty apples arranged in a grid"}'
+)
+
+_REAL_SENTENCE_COMPLETION = (
+    "This sentence uses the target word naturally, in a common everyday context, "
+    "and the English gloss offered with it is accurate without over- or "
+    "under-translating any part of it.\n\n"
+    '{"value": true, "evidence": "natural use of the target word with an accurate '
+    'gloss", "suggestion": null}'
+)
+
+
+def test_the_fit_parser_takes_its_verdict_from_the_last_json_object_after_real_prose():
+    from thai_syllabus.assessor import _generic_value_parser
+    raw = _generic_value_parser(_REAL_FIT_COMPLETION)
+    assert raw.value is False
+    assert raw.suggestion == "twenty apples arranged in a grid"
+
+
+def test_the_sentence_parser_takes_its_verdict_from_the_last_json_object_after_real_prose():
+    from thai_syllabus.assessor import _generic_value_parser
+    raw = _generic_value_parser(_REAL_SENTENCE_COMPLETION)
+    assert raw.value is True
+    assert raw.suggestion is None
+
+
+def test_generic_parser_refuses_an_object_followed_by_trailing_prose():
+    # The verdict must END the answer -- an object earlier in the text,
+    # followed by more prose, is not accepted as the verdict.
+    from thai_syllabus.assessor import _generic_value_parser
+    text = '{"value": true, "evidence": "e"}\n\nActually, let me reconsider that.'
+    with pytest.raises(TransportError, match="without a verdict"):
+        _generic_value_parser(text)
+
+
+def test_preference_parser_accepts_a_ranking_with_prose_before_it():
+    text = ("Comparing the two candidates, the first picture is clearer and more "
+           "directly evocative of the word.\n\n"
+           '{"ranking": ["sha-b", "sha-a"], "evidence": "b is sharper and more central"}')
+    raw = parse_preference(text)
+    assert raw.value == ["sha-b", "sha-a"]
+
+
+def test_last_json_object_parses_the_whole_text_when_it_is_already_json():
+    assert last_json_object('{"value": true}') == {"value": True}
+
+
+def test_last_json_object_accepts_a_fenced_object_with_nothing_else():
+    fenced = '```json\n{"value": true}\n```'
+    assert last_json_object(fenced) == {"value": True}
+
+
+def test_last_json_object_refuses_prose_with_no_object_anywhere():
+    with pytest.raises(TransportError, match="without a verdict"):
+        last_json_object("I cannot evaluate this image.")
+
+
 def test_an_unparseable_inline_answer_caches_no_verdict(db):
     jb = JudgeBackend(model="m", transport="api",
                       complete=lambda prompt, attachments=(): Completion(text="I decline."))
@@ -398,6 +468,12 @@ def test_preference_question_key_and_attachments(tmp_path):
     assert raw.value == ["sha-b", "sha-a"] and seen["n"] == 2
 
 
+def test_picture_preference_prompt_asks_for_only_the_json_object():
+    q = AssessQuestion(subject="w", role="picture-preference", rubric="pref",
+                       params={"candidates": ["sha-a", "sha-b"]})
+    assert "Respond with only that JSON object and no other text." in picture_preference_prompt(q)
+
+
 def test_picture_fit_prompt_delimits_fields_and_names_the_rubric():
     q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s", rubric="RUBRIC",
                        params={"word": "ส้ม", "meaning": "orange", "gloss_shown": "orange",
@@ -405,6 +481,11 @@ def test_picture_fit_prompt_delimits_fields_and_names_the_rubric():
     p = picture_fit_prompt(q)
     assert "RUBRIC" in p and "<deck-field>ส้ม</deck-field>" in p and "oranges on a table" in p
     assert '"value"' in p
+
+
+def test_picture_fit_prompt_asks_for_only_the_json_object():
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s", rubric="R")
+    assert "Respond with only that JSON object and no other text." in picture_fit_prompt(q)
 
 
 def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
@@ -1092,6 +1173,13 @@ def test_the_sentence_prompt_says_so_when_no_gloss_was_offered():
         subject="s", role="sentence-for-target", rubric="R", kind="sentence",
         params={"text": "กินข้าว", "word": "กิน"}))   # กินข้าว: eat rice
     assert "(none given)" in prompt
+
+
+def test_sentence_prompt_asks_for_only_the_json_object():
+    prompt = sentence_prompt(AssessQuestion(
+        subject="s", role="sentence-for-target", rubric="R",
+        params={"text": "x", "word": "y"}))
+    assert "Respond with only that JSON object and no other text." in prompt
 
 
 # --- Assessor.inline: the transport, not the shape of one result -----------
