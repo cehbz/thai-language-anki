@@ -6,11 +6,11 @@ import dataclasses
 
 import pytest
 
-from thai_syllabus.entities import MinimalPair, SoundConfusion
-from thai_syllabus.ids import ConfusionId, PairId, WordId
+from thai_syllabus.entities import Category, MinimalPair, SoundConfusion
+from thai_syllabus.ids import CategoryName, ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
-from thai_syllabus.syllabus import Syllabus
+from thai_syllabus.syllabus import Syllabus, derive_productive_targets
 
 from .builders import sentence, syl, target, thai_of, word
 
@@ -220,3 +220,67 @@ def test_gaps_excludes_a_sentence_introduced_word_from_words_missing_pictures():
                         targets=(target("rice/r", "rice"),
                                  target("with/r", "with", introduction="sentence")))
     assert syllabus.gaps().words_missing_pictures == ("rice",)
+
+
+# --- derive_productive_targets (spec 1 r9) --------------------------------
+
+def _food(*word_ids: str) -> Category:
+    return Category(name=CategoryName("Food"), members=frozenset(word_ids))
+
+
+def test_derive_productive_targets_derives_for_a_categorized_word_at_the_cutoff():
+    rice = word("rice", "ข้าว")
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2000}, 2000)
+    assert [t.id for t in derived] == ["rice/productive"]
+    d = derived[0]
+    assert (d.word, d.skill, d.introduction) == (rice.id, "productive", "picture_card")
+
+
+def test_derive_productive_targets_excludes_a_word_ranked_past_the_cutoff():
+    rice = word("rice", "ข้าว")
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2001}, 2000)
+    assert derived == ()
+
+
+def test_derive_productive_targets_excludes_an_uncategorized_word():
+    rice = word("rice", "ข้าว")
+    derived = derive_productive_targets([rice], [], [], {rice.id: 1}, 2000)
+    assert derived == ()
+
+
+def test_derive_productive_targets_excludes_a_no_productive_word():
+    rice = dataclasses.replace(word("rice", "ข้าว"), no_productive=True)
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 1}, 2000)
+    assert derived == ()
+
+
+def test_derive_productive_targets_excludes_an_unranked_word():
+    rice = word("rice", "ข้าว")
+    derived = derive_productive_targets([rice], [], [_food("rice")], {}, 2000)
+    assert derived == ()
+
+
+def test_derive_productive_targets_keeps_a_listed_exception_below_cutoff():
+    rice = word("rice", "ข้าว")
+    listed = target("rice/productive", "rice", skill="productive")
+    derived = derive_productive_targets(
+        [rice], [listed], [_food("rice")], {rice.id: 5000}, 2000)
+    assert derived == ()
+
+
+def test_derive_productive_targets_raises_on_a_listed_target_for_an_eligible_word():
+    rice = word("rice", "ข้าว")
+    listed = target("rice/productive", "rice", skill="productive")
+    with pytest.raises(ValueError, match="rice/productive"):
+        derive_productive_targets([rice], [listed], [_food("rice")], {rice.id: 10}, 2000)
+
+
+def test_order_places_the_derived_productive_target_after_the_receptive_one():
+    rice = word("rice", "ข้าว")
+    receptive = target("rice/receptive", "rice")
+    derived = derive_productive_targets(
+        [rice], [receptive], [_food("rice")], {rice.id: 1}, 2000)
+    syllabus = Syllabus(words=(rice,), targets=(receptive,) + derived,
+                        categories=(_food("rice"),))
+    ids = [e.id for e in syllabus.order() if e.kind == "word_target"]
+    assert ids.index("rice/receptive") < ids.index("rice/productive")

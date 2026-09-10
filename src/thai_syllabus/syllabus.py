@@ -26,6 +26,39 @@ from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 
 
+def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
+                              categories: Sequence[Category],
+                              frequency: Mapping[WordId, int], cutoff: int
+                              ) -> tuple[Target, ...]:
+    """Spec 1 r9: one Target(id=f"{w.id}/productive", word=w.id,
+    skill="productive", introduction="picture_card") per Word that is a
+    member of some Category, is not no_productive, has a rank in
+    `frequency`, and ranks at or above `cutoff` (rank <= cutoff), in
+    `words` order. A listed productive Target on such a word raises
+    ValueError naming the row: targets.yaml lists exceptions only. A
+    listed productive Target on any other word stands as the exception.
+    """
+    categorized = {word_id for cat in categories for word_id in cat.members}
+    listed_productive = {t.word: t for t in targets if t.skill == "productive"}
+
+    derived: list[Target] = []
+    for w in words:
+        rank = frequency.get(w.id)
+        eligible = (w.id in categorized and not w.no_productive
+                   and rank is not None and rank <= cutoff)
+        if not eligible:
+            continue
+        derived_id = TargetId(f"{w.id}/productive")
+        if w.id in listed_productive:
+            raise ValueError(
+                f"targets.yaml lists productive target {listed_productive[w.id].id!r} "
+                f"for word {w.id!r}, which already derives {derived_id!r} "
+                "(spec 1 r9: targets.yaml lists exceptions only)")
+        derived.append(Target(id=derived_id, word=w.id, skill="productive",
+                              introduction="picture_card"))
+    return tuple(derived)
+
+
 @dataclass(frozen=True)
 class Syllabus:
     words: tuple[Word, ...] = ()

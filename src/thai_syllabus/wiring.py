@@ -62,7 +62,7 @@ from .provider import (
 from .rulebook import RULES, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay, rubrics_for, sentence_note_id
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
-from .syllabus import Syllabus
+from .syllabus import Syllabus, derive_productive_targets
 from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport
 from .tts import pick_voice
 
@@ -553,11 +553,14 @@ def load_syllabus(deck_root: str | Path, *,
     freq_map = load_frequency_map(freq_file)
     frequency = {w.id: rank for w in bundle.words
                 if (rank := freq_map.rank(w.thai)) is not None}
+    targets = tuple(bundle.targets) + derive_productive_targets(
+        bundle.words, bundle.targets, bundle.categories, frequency,
+        bundle.profile.productive_cutoff)
 
     rulebook_text = rulebook_file_text(root / "curated" / "rulebook.yaml")
 
     kwargs: dict[str, Any] = dict(
-        words=bundle.words, targets=bundle.targets, pairs=bundle.pairs,
+        words=bundle.words, targets=targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=resolved_sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
         media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)

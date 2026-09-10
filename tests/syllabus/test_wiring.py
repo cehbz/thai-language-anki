@@ -471,6 +471,34 @@ def test_load_syllabus_round_trips_words_and_targets(tmp_path):
     assert {t.id for t in syllabus.targets} == {"t-rice"}
 
 
+def test_load_syllabus_derives_a_productive_target_at_the_cutoff(tmp_path):
+    root = _write_curated_dir(tmp_path / "deck")
+    (root / "curated" / "frequency_th.txt").write_text("ข้าว\n", encoding="utf-8")
+    (root / "curated" / "profile.yaml").write_text(yaml.safe_dump(
+        {"register": "male_colloquial", "emphasis": {}, "productive_cutoff": 1}))
+    syllabus = load_syllabus(root)
+    assert "rice/productive" in {t.id for t in syllabus.targets}
+
+
+def test_load_syllabus_no_productive_suppresses_the_derived_target(tmp_path):
+    root = _write_curated_dir(tmp_path / "deck")
+    words = [
+        {"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",
+         "no_productive": True,
+         "pron": {"syllables": [{"segments": ["kh", "aa", ""], "vowel_length": "long",
+                                 "tone": "low"}], "corroboration": "engines_agree"}},
+        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives",
+         "pron": {"syllables": [{"segments": ["kl", "ai", ""], "vowel_length": "long",
+                                 "tone": "falling"}], "corroboration": "engines_agree"}},
+    ]
+    (root / "curated" / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
+    (root / "curated" / "frequency_th.txt").write_text("ข้าว\n", encoding="utf-8")
+    (root / "curated" / "profile.yaml").write_text(yaml.safe_dump(
+        {"register": "male_colloquial", "emphasis": {}, "productive_cutoff": 1}))
+    syllabus = load_syllabus(root)
+    assert "rice/productive" not in {t.id for t in syllabus.targets}
+
+
 def test_emphasis_from_profile_moves_a_word_earlier_through_load_syllabus(tmp_path):
     """Profile.emphasis reaches Syllabus.order() through load_syllabus's
     categories wiring: a lower-frequency word in an emphasized category
