@@ -11,7 +11,7 @@ import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable,
-                                    RawVerdict, RenditionBackend)
+                                    RawVerdict, RenditionBackend, _UNTRUSTED, _field)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, assess_first,
                                     attempt, current_best_of, sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
@@ -1363,6 +1363,31 @@ def test_a_picture_attempt_writes_transient_failure_then_reraises_when_the_re_as
                          "tried": ["https://x/rotted1.jpg", "https://x/rotted2.jpg"]}
 
 
+def test_a_picture_attempt_asks_openverse_afresh_once_its_nothing_aged_out(tmp_path):
+    """spec 3 r19 section 6a: an aged-out `nothing` re-offers the source
+    and the attempt makes a fresh search (the reask path) instead of
+    reading the cached empty answer, so a corpus that grew is seen."""
+    day = 86_400 * 1_000_000_000
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    # the cached empty search and the stale nothing row of an earlier attempt
+    ctx.db.append(port="provide", backend="openverse",
+                  key=ProvideKey(source="openverse", kind="", query="rice food"), subject="rice",
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"query": "rice food"}},
+                  answer={"items": []}, cost=1.0, ts=1 * day)
+    ctx.db.append(port="attempt", backend="openverse",
+                  key=AttemptOutcomeKey(subject="rice", kind="picture", source="openverse"),
+                  subject="rice", question={"kind": "picture", "subject_kind": "word",
+                                            "source": "openverse"},
+                  answer={"outcome": "nothing", "candidates": []}, cost=0.0, ts=1 * day)
+    ctx.nothing_ttl = {"openverse": 180}
+    ctx.now_ns = lambda: 201 * day
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["rice food"], "a fresh search, not the cached empty answer"
+    row = _outcome(ctx.db, "rice", "picture", "openverse")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 3
+
+
 # --- an attempt fetches only hits no earlier attempt fetched -----------
 
 def test_a_second_attempt_fetches_only_the_hits_the_first_did_not_try(tmp_path):
@@ -2095,7 +2120,8 @@ def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
     prompt = _sentence_prompt(syllabus, list(syllabus.targets),
                               refused=[("กินข้าว", "too formal")])   # กินข้าว: eat rice
     assert ("Do not propose these sentences; each failed review:\n"
-           "- กินข้าว — too formal") in prompt
+           f"{_UNTRUSTED}\n"
+           f"- กินข้าว — {_field('too formal')}") in prompt
     assert prompt.index("Do not propose these sentences") < prompt.index(
         "Write each sentence as clauses")
 
@@ -2104,7 +2130,7 @@ def test_sentence_prompt_lists_each_refused_text_and_omits_the_block_when_empty(
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets),
                               refused=[("กิน", "e1"), ("ข้าว", "e2")])   # กิน: eat, ข้าว: rice
-    assert "- กิน — e1" in prompt and "- ข้าว — e2" in prompt
+    assert f"- กิน — {_field('e1')}" in prompt and f"- ข้าว — {_field('e2')}" in prompt
     assert "Do not propose these sentences" not in _sentence_prompt(
         syllabus, list(syllabus.targets))
 

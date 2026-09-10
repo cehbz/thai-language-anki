@@ -382,7 +382,7 @@ def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
             glosses[one_text] = d.gloss
     for one_text in order:
         if one_text in conflicted:
-            _log.warning("merge_drafts: dropping a draft with conflicting glosses or clauses: %r",
+            _log.warning("merge_drafts: dropping a draft with conflicting clauses: %r",
                          one_text[:40])
     return [SentenceDraft(clauses=clauses[one_text], text=one_text, gloss=glosses[one_text])
             for one_text in order if one_text not in conflicted]

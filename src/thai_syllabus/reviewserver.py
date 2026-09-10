@@ -213,13 +213,28 @@ def _tried_candidates(d: "Derivations", subject: str, kind: str,
     return candidates
 
 
+def _sentence_tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
+    """A sentence need's "tried" list (spec 5 section 1 kind 2): the
+    drafting ask itself is recorded under record.DRAFT_SUBJECT, not the
+    word (attempts.sentence_attempt), so _tried_summary's source-ask rows
+    are never here. What the word's own `nothing` outcome rows state as
+    the drafter's reason for declining (attempts._append_no_fit) stands
+    in for it instead, newest first.
+    """
+    declined = [r for r in rows if r.port == "attempt"
+               and r.answer.get("outcome") == "nothing" and r.answer.get("reason")]
+    return [{"source": "llm", "reason": r.answer["reason"]}
+           for r in sorted(declined, key=lambda r: r.ts, reverse=True)]
+
+
 def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                         attempts: int) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
+    tried = _sentence_tried_summary(rows) if kind == "sentence" else _tried_summary(rows)
     return {
         "type": "direction", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject, subject_kind),
-        "tried": _tried_summary(rows), "candidates": _tried_candidates(d, subject, kind, rows),
+        "tried": tried, "candidates": _tried_candidates(d, subject, kind, rows),
         "attempts": attempts,
         # Why the source declined in its own words, where it stated one: a
         # sentence need's no-fit answer (spec 3 r19 section 5). Always

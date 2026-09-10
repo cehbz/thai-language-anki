@@ -374,6 +374,25 @@ def test_a_sentence_direction_question_carries_the_drafter_s_own_reason(derivati
     assert asked.get("reason") == "still no verb to use it with"
 
 
+def test_a_sentence_direction_questions_tried_lists_the_words_own_nothing_reasons(
+        derivations, db, w1):
+    """Spec 5 section 1 kind 2: a sentence need's drafting ask lives under
+    record.DRAFT_SUBJECT, not the word, so _tried_summary's source-ask rows
+    are never here -- "tried" is instead the word's own `nothing` outcome
+    rows' reasons, newest first, each named as the llm source."""
+    _no_fit(db, w1.id, reason="the vocabulary has no verb yet")
+    _no_fit(db, w1.id, reason="still no verb to use it with")
+    _no_fit(db, w1.id, reason="tried again, still nothing")
+    asked = next(i for i in rs.build_queue(derivations, budget=50)
+                 if i["type"] == "direction" and i["kind"] == "sentence"
+                 and i["subject"] == w1.id)
+    assert asked["tried"] == [
+        {"source": "llm", "reason": "tried again, still nothing"},
+        {"source": "llm", "reason": "still no verb to use it with"},
+        {"source": "llm", "reason": "the vocabulary has no verb yet"},
+    ]
+
+
 def test_a_picture_direction_question_carries_no_reason(derivations, db, w1):
     """A picture attempt's `nothing` outcome states none, so the field is
     None rather than absent -- the screen reads one shape."""

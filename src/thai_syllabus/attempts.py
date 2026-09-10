@@ -29,7 +29,7 @@ from datetime import date
 from typing import Any, Literal
 
 from . import record
-from .assessor import AssessQuestion, Assessor, Excluded, PreparedQuestion
+from .assessor import _UNTRUSTED, AssessQuestion, Assessor, Excluded, PreparedQuestion, _field
 from .authority import role_for
 from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
 from .derivations import (
@@ -139,6 +139,10 @@ class Sourcing:
     # `nothing` outcome stops counting as tried, so next_source offers
     # a growing corpus (Forvo) again. A source absent here never ages.
     nothing_ttl: Mapping[str, int] = field(default_factory=dict)
+    # The clock aged_out() reads. run() overrides this for the duration of
+    # a pass so every attempt reads the same instant the pass's queue was
+    # built against, restoring the original callable when the pass ends;
+    # the default reads the wall clock afresh for a caller outside a run.
     now_ns: Callable[[], int] = field(default=time.time_ns)
     # The `nothing` outcomes a word's sentence need may carry since its
     # last handed draft before the drafter stops being handed its Targets
@@ -342,8 +346,13 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     already = record.tried_urls(ctx.db, need.subject, need.kind, source)
     question = Question(subject=need.subject, provides="picture",
                         params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
+    # An aged-out `nothing` re-offers the source (spec 3 r19 section 6a):
+    # ask it afresh, never the cached empty answer.
+    fresh = aged_out(ctx.db, need.subject, need.kind, source,
+                     nothing_ttl=ctx.nothing_ttl, now_ns=ctx.now_ns())
+    ask = ctx.provider.reask if fresh else ctx.provider.ask
     try:
-        hits = ctx.provider.ask(source, question)
+        hits = ask(source, question)
     except QuotaExhausted:
         raise
     except TransportError:
@@ -879,7 +888,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). When `refused` (derivations.
     refused_drafts) is non-empty, a block lists those texts as sentences
-    not to propose again, each with the verdict's evidence, before the
+    not to propose again, each with the verdict's evidence delimited the
+    way the assessor prompts delimit deck fields (assessor._field, over
+    the untrusted-data notice given once before the block), before the
     output-format sentence (spec 3 r19 section 5).
     """
     vocabulary = _entry_vocabulary(syllabus, targets)
@@ -901,9 +912,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     if introducible_lines:
         sections += ("Introducible (at most one per sentence):\n"
                     + "\n".join(introducible_lines) + "\n")
-    refused_lines = (f"- {text} — {evidence}" if evidence else f"- {text}"
+    refused_lines = (f"- {text} — {_field(evidence)}" if evidence else f"- {text}"
                      for text, evidence in refused)
-    refused_block = ("Do not propose these sentences; each failed review:\n"
+    refused_block = (f"Do not propose these sentences; each failed review:\n{_UNTRUSTED}\n"
                      + "\n".join(refused_lines) + "\n"
                      if refused else "")
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "

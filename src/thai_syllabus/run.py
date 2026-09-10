@@ -418,8 +418,20 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     """
     # One clock read for the whole run (spec 3 r19 section 6a/9): every
     # queue build and the attempt loop's own next_source calls age a
-    # `nothing` row against this same instant, never re-read past here.
+    # `nothing` row against this same instant. The attempts read it back
+    # through `ctx.now_ns`, which this run overrides for its duration
+    # (restored in `finally`) instead of letting them re-read the clock.
     now_ns = time_ns()
+    original_now_ns = ctx.now_ns
+    ctx.now_ns = lambda: now_ns
+    try:
+        return _run_pass(ctx, budgets, now_ns, sentence_targets_per_run=sentence_targets_per_run)
+    finally:
+        ctx.now_ns = original_now_ns
+
+
+def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
+             sentence_targets_per_run: int) -> RunReport:
     tally = _Tally(spend={name: Spend() for name in budgets})
     # Read before any ask this run makes lands on the record -- the
     # sentence attempt's own llm-sentence row, once appended, would

@@ -867,6 +867,32 @@ def test_run_reads_its_own_clock_once_and_re_offers_forvo_after_its_nothing_aged
     assert calls == [] and report.exhausted == 1
 
 
+def test_run_threads_its_own_clock_read_to_every_attempt_via_ctx_now_ns(db, monkeypatch):
+    """spec 3 r19 section 6a/9: run() reads the clock once and threads it
+    through ctx.now_ns for the pass's duration (restoring the original
+    callable once the pass ends), so every attempt sees the same instant
+    instead of each re-reading the clock."""
+    seen = []
+
+    def fake_attempt(ctx, need, source):
+        seen.append(ctx.now_ns())
+        return AttemptResult(True, spend={source: Spend(1, 0.0)})
+
+    monkeypatch.setattr(run_mod, "attempt", fake_attempt)
+    monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: None)
+    monkeypatch.setattr(run_mod, "sentence_attempt",
+                        lambda ctx, max_targets=40: AttemptResult(attempted=False))
+    monkeypatch.setattr(run_mod, "preference_attempt",
+                        lambda ctx, subjects: AttemptResult(attempted=False))
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+    monkeypatch.setattr(run_mod, "time_ns", lambda: 12345)
+    ctx = _ctx(db, _Syl(_Gaps(pictures=("a", "b"))))
+    original_now_ns = ctx.now_ns
+    run(ctx, {})
+    assert seen == [12345, 12345]
+    assert ctx.now_ns is original_now_ns   # restored once the pass ends
+
+
 def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {"forvo": Budget(max_asks=1)})
