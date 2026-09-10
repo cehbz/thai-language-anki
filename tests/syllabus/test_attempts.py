@@ -24,6 +24,7 @@ from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
+from thai_syllabus.run import _Tally
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused,
@@ -452,6 +453,46 @@ def test_assess_first_under_batch_collects_the_fit_question(tmp_path):
 def test_assess_first_asks_nothing_for_a_kind_the_judge_does_not_rank(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     assert assess_first(ctx, Need("rice", "recording")) is None
+
+
+def test_assess_first_then_source_attempt_excludes_the_same_unpreparable_sha_once(tmp_path):
+    """spec 3 section 7 / run.py's _Tally.collect: a picture need whose
+    only candidate on record is unpreparable (a provide row naming a sha
+    with no media object -- same "bytes never stored" shape as
+    test_assess_first_returns_the_exclusion_when_every_waiting_candidate_is_excluded
+    above -- so the judge backend's resolve_path finds nothing to attach)
+    falls through assess_first to the source. The source attempt that
+    follows (_picture_attempt) ends by re-judging every candidate on
+    record, including the still-unpreparable one (PreparationError is
+    never cached), so the real assess_first and attempt calls this test
+    drives by hand -- no _patch, a real Sourcing ctx -- each produce an
+    Excluded naming the same (subject, artifact_sha). _Tally.collect must
+    fold those into exactly one RunReport.excluded / one excluded_items
+    entry for that sha, not two.
+    """
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
+    ghost_sha = "0" * 64
+    ctx.db.append(port="provide", backend="legacy-current",
+                  key=ProvideKey(source="legacy-current", kind="picture", query="rice"),
+                  subject="rice",
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"image": "images/pw-1.jpg"}},
+                  answer={"items": [{"sha": ghost_sha, "ext": "jpg"}]})  # bytes never stored
+
+    need = Need("rice", "picture")
+    first = assess_first(ctx, need)
+    assert first is not None and not first.attempted
+    assert [e.artifact_sha for e in first.excluded.values()] == [ghost_sha]
+
+    second = attempt(ctx, need, "openverse")
+    assert ghost_sha in [e.artifact_sha for e in second.excluded.values()]
+
+    tally = _Tally()
+    tally.collect(first)
+    tally.collect(second)
+
+    assert tally.excluded == 1
+    assert [item["artifact_sha"] for item in tally.excluded_items] == [ghost_sha]
 
 
 # --- scene picture: the same attempt, subject = text_sha --------------------

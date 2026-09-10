@@ -120,3 +120,6 @@ still run against them.
 - Exercise-latency measure; scene-picture prioritization budget.
 - Gallery note text: the row keeps answer["note"], but only its card-flag
   label is read (directed(), card_flags); surface the text on the screen.
+- The legacy thai_deck_gen GoogleTts (src/thai_deck_gen/media/tts.py) still
+  sends its API key as a `?key=` query parameter and interpolates wire
+  errors unredacted; the thai_syllabus backend was fixed 2026-09-10.

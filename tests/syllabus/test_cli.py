@@ -32,6 +32,7 @@ from thai_syllabus.cachekeys import JudgeKey, ProvideKey
 from thai_syllabus.compile import GateRefusal
 from thai_syllabus.rules import Compile, CompileReport, Finding, Report
 from thai_syllabus.run import RunReport, Spend
+from thai_syllabus.safety import HistoryError
 from thai_syllabus.store import SyllabusDb
 
 
@@ -465,7 +466,7 @@ def test_run_cycles_stops_at_a_spend_cap(deck, monkeypatch, capsys):
     rc = cli.main(["run", "--deck", str(deck), "--cycles", "5", "--spend-cap", "0"])
     assert rc == 0
     assert len(run_calls) == 1
-    assert "spend cap reached" in capsys.readouterr().out
+    assert "spend cap reached: 0.0000 of 0.0000 USD this invocation" in capsys.readouterr().out
 
 
 def test_run_default_cycles_is_one_and_prints_cycle_number(deck, monkeypatch, capsys):
@@ -505,12 +506,13 @@ def test_run_cycles_treats_an_unreachable_judge_during_the_wait_like_report_unre
     assert "run: the judge is unreachable; stopped early" in capsys.readouterr().err
 
 
-def test_run_spend_cap_counts_a_judge_verdicts_own_cost(deck, monkeypatch, capsys):
-    """The judge's own asks are appended at port "assess" (assessor.py's
-    _append_verdict), not "provide" -- record.spend_since (a Source-ask
-    fold, port="provide" only) always reads 0.0 for it. --spend-cap must
-    read the judge's real cost, so a $1.0 verdict already on record stops
-    a $0.5 cap on the very first cycle.
+def test_run_spend_cap_ignores_a_judge_verdict_written_before_the_invocation(
+        deck, monkeypatch, capsys):
+    """--spend-cap is THIS invocation's own budget (spec 3 section 7
+    governs a source's own daily budget instead): a $1.0 verdict already
+    on record from an earlier invocation must not count against a $0.5
+    cap here, so with no spend recorded during this run the loop goes
+    the full --cycles without ever reaching the cap.
     """
     SyllabusDb(deck / "syllabus.db").append(
         "assess", "judge",
@@ -526,8 +528,35 @@ def test_run_spend_cap_counts_a_judge_verdicts_own_cost(deck, monkeypatch, capsy
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
     rc = cli.main(["run", "--deck", str(deck), "--spend-cap", "0.5", "--cycles", "3"])
     assert rc == 0
+    assert len(run_calls) == 3
+    assert "spend cap reached" not in capsys.readouterr().out
+
+
+def test_run_spend_cap_counts_a_judge_verdict_written_during_the_invocation(
+        deck, monkeypatch, capsys):
+    """The judge's own asks are appended at port "assess" (assessor.py's
+    _append_verdict), not "provide" -- record.spend_since (a Source-ask
+    fold, port="provide" only) always reads 0.0 for it. A $1.0 verdict
+    written by the run itself (inside run_pipeline, through the ctx's own
+    db, so its ts falls after this invocation started) stops a $0.5 cap
+    on the very first cycle, and the printed line carries both the spent
+    amount and the cap.
+    """
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        ctx.db.append(
+            "assess", "judge",
+            JudgeKey(rubric_sha="r", subject="rice", identity="", role="picture-for-word"),
+            "rice", {"kind": "picture"}, {"value": True}, 1.0)
+        return RunReport(sentences_adopted=1)  # never "nothing left to do"
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--spend-cap", "0.5", "--cycles", "3"])
+    assert rc == 0
     assert len(run_calls) == 1
-    assert "spend cap reached" in capsys.readouterr().out
+    assert "spend cap reached: 1.0000 of 0.5000 USD this invocation" in capsys.readouterr().out
 
 
 def test_run_spend_cap_above_the_judges_cost_does_not_stop_the_run(deck, monkeypatch, capsys):
@@ -559,6 +588,37 @@ def test_run_rejects_poll_seconds_below_one(deck):
     with pytest.raises(SystemExit) as exc:
         cli.main(["run", "--deck", str(deck), "--poll-seconds", "0"])
     assert exc.value.code == 2
+
+
+def test_run_rejects_max_wait_seconds_below_one(deck):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["run", "--deck", str(deck), "--max-wait-seconds", "0"])
+    assert exc.value.code == 2
+
+
+def test_run_stops_waiting_once_max_wait_seconds_is_reached(deck, monkeypatch, capsys):
+    """A batch that never ends (a dead poll endpoint, a stuck backend)
+    must not wait forever between cycles: once the accumulated sleep for
+    one batch reaches --max-wait-seconds, the run gives up on that batch
+    and exits 1 rather than polling indefinitely.
+    """
+    from thai_syllabus import assessor as assessor_module
+
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(batch_id="b1", improved=1))
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status",
+                        lambda self, batch_id: "in_progress")
+
+    sleeps = []
+    rc = cli.main(
+        ["run", "--deck", str(deck), "--cycles", "3", "--poll-seconds", "1",
+         "--max-wait-seconds", "2"],
+        sleep=sleeps.append)
+
+    assert rc == 1
+    assert sleeps == [1, 1]
+    assert ("run: batch b1 did not end within 2 s; stopped"
+           in capsys.readouterr().err)
 
 
 def test_run_cycles_never_polls_after_the_last_cycle(deck, monkeypatch):
@@ -618,6 +678,26 @@ def test_run_exits_1_and_reports_a_safety_check_failure_when_the_body_deletes_a_
     err = capsys.readouterr().err
     assert "safety check failed:" in err
     assert "sentences" in err
+
+
+# --- git failures reported, not tracebacks (item 3) -------------------------
+
+def test_run_reports_a_history_error_from_writing_command_instead_of_a_traceback(
+        deck, monkeypatch, capsys):
+    """A git call under curated/'s history (safety.CuratedHistory._run) can
+    fail for reasons outside the pipeline's control -- git missing, a
+    corrupt repo. That must surface as a one-line message on stderr and
+    exit 1, not an uncaught HistoryError traceback out of main().
+    """
+    def raise_history_error(*args, **kwargs):
+        raise HistoryError("git: not found")
+
+    monkeypatch.setattr(cli, "writing_command", raise_history_error)
+
+    rc = cli.main(["run", "--deck", str(deck)])
+
+    assert rc == 1
+    assert "deck safety unavailable: git: not found" in capsys.readouterr().err
 
 
 # --- existing subcommands keep working -------------------------------------

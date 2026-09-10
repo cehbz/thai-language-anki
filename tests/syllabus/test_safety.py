@@ -434,6 +434,10 @@ def _fixed_later():
     return datetime(2026, 9, 10, 12, 5, 0)
 
 
+def _fixed_even_later():
+    return datetime(2026, 9, 10, 12, 10, 0)
+
+
 def test_restore_without_a_backup_raises_value_error_naming_the_path(tmp_path):
     deck = tmp_path / "deck"
     deck.mkdir()
@@ -572,3 +576,45 @@ def test_restore_parks_a_stale_wal_and_shm_and_leaves_none_behind(tmp_path):
     assert (deck / "syllabus.db").read_bytes() == b"backup-db"
     assert not (deck / "syllabus.db-wal").exists()
     assert not (deck / "syllabus.db-shm").exists()
+
+
+def test_restore_twice_targets_the_same_pre_command_commit_and_leaves_state_unchanged(
+        tmp_path):
+    """restore idempotency (spec 2 section 6): last_pre_commit's "pre "
+    prefix also matches restore's own "pre restore <stamp>" subject, so a
+    naive second restore would treat the first restore's own pre-restore
+    commit as its target -- rolling curated/ forward to the tree as it
+    stood just before the first restore, while the db goes back to the
+    same snapshot again, diverging the two stores. A second restore run
+    right after the first must report the same target commit as the
+    first and leave both curated/ and the db's cache count exactly as
+    the first restore left them.
+    """
+    deck = tmp_path / "deck"
+    curated = deck / "curated"
+    curated.mkdir(parents=True)
+    (curated / "words.yaml").write_text("- rice\n", encoding="utf-8")
+    db = SyllabusDb(deck / "syllabus.db")
+    _append_row(db, "k1")
+    db.close()
+
+    with writing_command(deck, "x", now=_fixed_now):
+        (curated / "words.yaml").write_text("- rice\n- fish\n", encoding="utf-8")
+        db = SyllabusDb(deck / "syllabus.db")
+        _append_row(db, "k2")
+        db.close()
+
+    # An out-of-band edit before the FIRST restore is what makes its own
+    # "pre restore" commit actually happen (commit() is a no-op when the
+    # tree already matches HEAD) -- without it the bug can't show up.
+    (curated / "words.yaml").write_text("- rice\n- fish\n- extra\n", encoding="utf-8")
+
+    first = restore(deck, now=_fixed_later)
+    words_after_first = (curated / "words.yaml").read_text(encoding="utf-8")
+    cache_after_first = deck_counts(deck).cache
+
+    second = restore(deck, now=_fixed_even_later)
+
+    assert second.commit == first.commit
+    assert (curated / "words.yaml").read_text(encoding="utf-8") == words_after_first
+    assert deck_counts(deck).cache == cache_after_first

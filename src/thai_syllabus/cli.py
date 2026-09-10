@@ -6,6 +6,7 @@
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
+                          [--max-wait-seconds S]
     thai-syllabus restore  --deck DIR
 
 Each command wires itself through wiring.py: load_syllabus() for the
@@ -30,7 +31,7 @@ from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
 from .run import Budget, RunReport
 from .run import run as run_pipeline
-from .safety import SafetyCheckFailed, restore, writing_command
+from .safety import HistoryError, SafetyCheckFailed, restore, writing_command
 from .wiring import build_sourcing, default_budgets, load_derivations
 
 
@@ -121,13 +122,20 @@ def _cmd_run(args: argparse.Namespace, *,
     two-run cycle -- at most one batch outstanding at a time). Between
     cycles this waits for the batch the cycle just submitted to end, so
     the next cycle's own resolve can see it; it never waits after the
-    last cycle requested. A cycle stops the loop early when the judge
-    was unreachable -- whether run_pipeline said so, or the wait between
-    cycles found the batch transport itself unreachable (exit 1, same as
-    a single run today) -- when the report says there is nothing left to
-    do (no batch out, nothing adopted or improved), or when --spend-cap
-    is set and the judge's and tts's own cost on record has reached it.
+    last cycle requested. The wait is bounded by --max-wait-seconds: once
+    the sleep accumulated for that one batch reaches it, the run gives up
+    (exit 1) rather than polling forever against a batch that never ends.
+    A cycle stops the loop early when the judge was unreachable --
+    whether run_pipeline said so, or the wait between cycles found the
+    batch transport itself unreachable (exit 1, same as a single run
+    today) -- when the report says there is nothing left to do (no batch
+    out, nothing adopted or improved), or when --spend-cap is set and the
+    judge's and tts's own cost recorded since this invocation started has
+    reached it (spec 3 section 7 governs a source's own daily budget;
+    --spend-cap is this invocation's own budget, so spend from an
+    earlier invocation never counts against it).
     """
+    start_ns = time.time_ns()
     with writing_command(args.deck, "run"):
         cfg = load_providers_config(_providers_config_path(args.deck))
         ctx = build_sourcing(args.deck, cfg)
@@ -149,15 +157,22 @@ def _cmd_run(args: argparse.Namespace, *,
                     and report.improved == 0):
                 return 0  # nothing left to do
             if args.spend_cap is not None:
-                spent = (record.cost_since(ctx.db, "assess", "judge", 0)
-                        + record.cost_since(ctx.db, "provide", "tts", 0))
+                spent = (record.cost_since(ctx.db, "assess", "judge", start_ns)
+                        + record.cost_since(ctx.db, "provide", "tts", start_ns))
                 if spent >= args.spend_cap:
-                    print("spend cap reached")
+                    print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
+                         f"USD this invocation")
                     return 0
             if cycle < args.cycles and report.batch_id is not None:
+                elapsed = 0
                 try:
                     while ctx.assessor.batch_status(report.batch_id) != "ended":
                         sleep(args.poll_seconds)
+                        elapsed += args.poll_seconds
+                        if elapsed >= args.max_wait_seconds:
+                            print(f"run: batch {report.batch_id} did not end within "
+                                 f"{args.max_wait_seconds} s; stopped", file=sys.stderr)
+                            return 1
                 except JudgeUnreachable:
                     print("run: the judge is unreachable; stopped early", file=sys.stderr)
                     return 1
@@ -208,10 +223,16 @@ def main(argv: list[str] | None = None, *,
                         "(spec 3 section 7); default 1, today's single-run behavior")
     p.add_argument("--spend-cap", type=float, default=None, metavar="USD",
                    help="stop cycling once the judge's own cost (port assess) "
-                        "plus tts's own cost (port provide) on record reaches this")
+                        "plus tts's own cost (port provide) recorded since THIS "
+                        "invocation started reaches this -- an earlier invocation's "
+                        "spend never counts against it")
     p.add_argument("--poll-seconds", type=_min_one("poll-seconds"), default=300,
                    help="how long to sleep between polls of an outstanding "
                         "batch's status")
+    p.add_argument("--max-wait-seconds", type=_min_one("max-wait-seconds"), default=43200,
+                   help="give up (exit 1) once the sleep accumulated waiting on one "
+                        "batch between cycles reaches this, rather than polling "
+                        "forever; default 43200 (12 hours)")
 
     p = sub.add_parser(
         "restore",
@@ -260,6 +281,14 @@ def main(argv: list[str] | None = None, *,
         print("safety check failed:", file=sys.stderr)
         for failure in e.failures:
             print(f"  {failure}", file=sys.stderr)
+        return 1
+    except (HistoryError, OSError) as e:
+        # A writing command's git call under curated/'s history (or the db
+        # snapshot/restore filesystem work around it) can fail for reasons
+        # outside the pipeline's control -- git missing, a corrupt repo, a
+        # permissions error. Report it in one line rather than let it
+        # surface as an uncaught traceback (spec 2 section 6).
+        print(f"deck safety unavailable: {e}", file=sys.stderr)
         return 1
 
 

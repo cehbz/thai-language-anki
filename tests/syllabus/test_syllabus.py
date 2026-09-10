@@ -261,11 +261,30 @@ def test_derive_productive_targets_excludes_an_unranked_word():
 
 
 def test_derive_productive_targets_keeps_a_listed_exception_below_cutoff():
+    """Spec 1 r9: a word ranked below the cutoff (rank 5000 against a
+    2000 cutoff, so NOT eligible on its own) is exactly the case
+    targets.yaml's own "exception" wording describes -- a listed
+    productive Target for a word that would not have earned a derived
+    one. `derived == ()` alone proves only that the function adds no
+    *second* row; it says nothing about whether the listed row itself
+    still reaches Syllabus.targets. Combined the way wiring.py's
+    load_syllabus actually combines them (`tuple(bundle.targets) +
+    derive_productive_targets(...)`), the listed Target must survive
+    into Syllabus.targets, and rice must carry exactly one
+    "rice/productive" -- not zero (dropped) and not two (re-derived on
+    top of it).
+    """
     rice = word("rice", "ข้าว")
     listed = target("rice/productive", "rice", skill="productive")
     derived = derive_productive_targets(
         [rice], [listed], [_food("rice")], {rice.id: 5000}, 2000)
     assert derived == ()
+
+    syllabus = Syllabus(words=(rice,), targets=(listed,) + derived,
+                        categories=(_food("rice"),))
+
+    productive = [t for t in syllabus.targets if t.skill == "productive"]
+    assert productive == [listed]
 
 
 def test_derive_productive_targets_raises_on_a_listed_target_for_an_eligible_word():

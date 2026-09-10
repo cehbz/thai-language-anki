@@ -86,6 +86,21 @@ class CuratedHistory:
         history is never silently treated as "no pre commit" (spec 2
         section 6).
         """
+        return self._last_pre_commit(skip_prefix=None)
+
+    def last_pre_command_commit(self) -> str | None:
+        """Like last_pre_commit, but skips a subject starting with "pre
+        restore " -- the newest commit made by an actual writing command
+        (run, migrate, review, import), never restore's own "pre restore
+        <stamp>" commit of itself (spec 2 section 6). restore() calls this,
+        not last_pre_commit, so a second restore run right after the first
+        targets the same writing-command commit as the first rather than
+        the first restore's own bookkeeping commit -- restore is
+        idempotent.
+        """
+        return self._last_pre_commit(skip_prefix="pre restore ")
+
+    def _last_pre_commit(self, *, skip_prefix: str | None) -> str | None:
         if not (self.root / ".git").exists():
             raise HistoryError(f"no curated history at {self.root}: .git is absent")
         probe = self._run("rev-parse", "--verify", "-q", "HEAD", check=False)
@@ -96,7 +111,8 @@ class CuratedHistory:
         log = self._run("log", "--format=%H %s").stdout.splitlines()
         for line in log:
             sha, _, subject = line.partition(" ")
-            if subject.startswith("pre "):
+            if subject.startswith("pre ") and not (
+                    skip_prefix is not None and subject.startswith(skip_prefix)):
                 return sha
         return None
 
@@ -268,10 +284,14 @@ def restore(deck: Path, *, now: Callable[[], datetime] = datetime.now) -> Restor
     """`thai-syllabus restore` (spec 2 section 6): a human act that puts
     the last snapshot and the pre-command curated state back. Raises
     ValueError naming the path when deck/backup/syllabus.db is absent --
-    there is nothing to restore to. The current tree is committed as
-    "pre restore <stamp>" before the target (the newest "pre " commit
-    from an earlier writing command) is read, so restore never restores
-    curated/ to the commit it is about to make of its own.
+    there is nothing to restore to. The target is read through
+    last_pre_command_commit, which skips restore's own "pre restore "
+    subjects, before the "pre restore <stamp>" commit of the current tree
+    is made -- both so restore never restores curated/ to the commit it
+    is about to make of its own, and so a second restore run right after
+    the first targets the same writing-command commit as the first
+    rather than the first restore's own bookkeeping commit (restore is
+    idempotent).
     """
     backup = deck / "backup" / "syllabus.db"
     if not backup.exists():
@@ -284,8 +304,10 @@ def restore(deck: Path, *, now: Callable[[], datetime] = datetime.now) -> Restor
     history.ensure()
     # Read BEFORE the pre-restore commit below: otherwise that commit
     # would itself be the newest "pre " commit and restore would restore
-    # curated/ to itself.
-    target = history.last_pre_commit()
+    # curated/ to itself. last_pre_command_commit also skips any earlier
+    # "pre restore " commit, so a second restore targets the same
+    # writing-command commit as the first.
+    target = history.last_pre_command_commit()
     history.commit(f"pre restore {stamp}")
 
     work = deck / "work"
