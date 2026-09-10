@@ -209,7 +209,8 @@ def _append_outcome(ctx: Sourcing, need: Need, source: str, outcome: Outcome,
                     candidates: Sequence[str], *, tried: Sequence[str] = ()) -> None:
     """One outcome row per (need, source) an attempt asks, after the ask
     and its fetches (spec 3 section 6): the row every derivation over
-    next_source/exhausted folds over. `tried` is every url a picture
+    next_source/exhausted folds over. `outcome` is "candidates" when at
+    least one artifact from it was stored. `tried` is every url a picture
     attempt handed to imgfetch this attempt, ingested or refused; empty
     for a recording or rendition attempt's row.
     """

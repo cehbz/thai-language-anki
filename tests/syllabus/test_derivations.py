@@ -831,6 +831,26 @@ def test_queue_entry_attempts_counts_tried_outcomes_not_transient_failures(cache
     assert entry.attempts == 1
 
 
+def test_queue_entry_attempts_counts_a_source_at_the_transient_cap_as_one(cache):
+    """spec 3 section 6: the queue counts attempts as exhausted() does -- a
+    source at the transient cap is one attempt, not zero. "pexels" is left
+    untried so the need stays queued (not excluded as exhausted) while its
+    attempts count still folds in the capped "openverse" source.
+    """
+    syllabus = _one_word_syllabus()
+    cache.rows.append(outcome_row("rice", "picture", source="wikimedia",
+                                  outcome="nothing", ts=_next_ts()))
+    cache.rows.append(outcome_row("rice", "picture", source="wikimedia",
+                                  outcome="nothing", ts=_next_ts()))
+    for _ in range(3):  # the transient cap (_queue's default transient_cap=3)
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="transient-failure", ts=_next_ts()))
+    entry = next(e for e in _queue(syllabus, cache) if e.subject == "rice")
+    status = exhausted(cache, "rice", "picture", sources=sources_for("picture"),
+                       attempt_cap=8, transient_cap=3)
+    assert entry.attempts == 3 == status.attempts
+
+
 def test_grapheme_keyword_needs_with_no_source_count_as_unserved(cache):
     """No Source serves "grapheme-keyword" (attempts.SOURCES) and no
     per-run pass covers it either -- unlike an unfilled sentence Target,

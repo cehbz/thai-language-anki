@@ -726,11 +726,13 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         is_vetoed = vetoed(cache, subject, role, best.artifact_sha)
         is_directed = directed(cache, subject)
         sources = sources_for(kind)
-        attempts = len(attempts_since_change(cache, subject, kind))
+        # attempts: the same count exhausted() reports -- a source at the
+        # transient cap is one attempt (spec 3 section 6).
+        status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
+                          transient_cap=transient_cap)
+        attempts = status.attempts
 
         if best.artifact_sha is None or is_vetoed:
-            status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
-                              transient_cap=transient_cap)
             awaiting = unjudged_candidates(cache, subject, kind, current_rubric=current_rubric)
             if status.exhausted and not is_directed and not awaiting:
                 out_of_options += 1
