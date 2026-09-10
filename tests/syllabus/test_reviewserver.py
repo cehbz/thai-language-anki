@@ -14,6 +14,7 @@ import http.client
 import io
 import json
 import threading
+import time
 from datetime import date
 from http.server import HTTPServer
 
@@ -165,6 +166,30 @@ def _learner(db, subject, kind, artifact_sha, rating):
 
 
 # --- build_queue: budget + F10 order ----------------------------------------
+
+def test_build_queue_threads_its_one_clock_read_so_an_aged_out_nothing_re_offers_forvo(
+        derivations, db, w1):
+    """spec 3 r19 section 6a/9 threading guard: build_queue reads the
+    clock once and hands it with nothing_ttl to queue() and exhausted();
+    a w1 recording need whose forvo `nothing` is 200 days old (ttl 180)
+    and whose tts `nothing` is fresh is queued (an unsearched source
+    remains), not listed as a direction question."""
+    day = 86_400 * 1_000_000_000
+    for source, age in (("forvo", 200), ("tts", 1)):
+        db.append(port="attempt", backend=source,
+                  key=AttemptOutcomeKey(subject=w1.id, kind="recording", source=source),
+                  subject=w1.id, question={"kind": "recording", "subject_kind": "word",
+                                           "source": source},
+                  answer={"outcome": "nothing", "candidates": []}, cost=0.0,
+                  ts=time.time_ns() - age * day)
+    aged = dataclasses.replace(derivations, nothing_ttl={"forvo": 180})
+    items = [i for i in rs.build_queue(aged, budget=50)
+             if i["subject"] == w1.id and i["kind"] == "recording"]
+    assert [i["type"] for i in items] == ["rate"]
+    items = [i for i in rs.build_queue(derivations, budget=50)
+             if i["subject"] == w1.id and i["kind"] == "recording"]
+    assert [i["type"] for i in items] == ["direction"]
+
 
 def test_build_queue_respects_budget(derivations, db):
     items = rs.build_queue(derivations, budget=1)

@@ -45,6 +45,7 @@ from thai_syllabus.wiring import (
     default_budgets,
     load_derivations,
     load_syllabus,
+    nothing_ttl_for,
 )
 
 from .builders import PROV, sentence, syl, pron, target, thai_of, word
@@ -452,6 +453,28 @@ def test_default_budgets_a_configured_forvo_entry_can_override_day_starts():
     budgets = default_budgets(cfg)
     assert budgets["forvo"].day_starts == "18:00+02:00"
     assert budgets["forvo"].max_asks == 450  # untouched by the override
+
+
+# --- nothing_ttl_for (spec 3 r19 section 6a/9) ----------------------------
+
+def test_nothing_ttl_for_layers_the_forvo_default_of_180_days():
+    assert nothing_ttl_for(ProvidersConfig()) == {"forvo": 180}
+
+
+def test_nothing_ttl_for_a_configured_value_overrides_the_forvo_default():
+    cfg = ProvidersConfig(quotas={"forvo": {"nothing_ttl_days": 30}})
+    assert nothing_ttl_for(cfg) == {"forvo": 30}
+
+
+def test_nothing_ttl_for_adds_ageing_for_a_source_with_no_default():
+    cfg = ProvidersConfig(quotas={"pexels": {"nothing_ttl_days": 60}})
+    ttl = nothing_ttl_for(cfg)
+    assert ttl["forvo"] == 180 and ttl["pexels"] == 60
+
+
+def test_nothing_ttl_for_leaves_an_unconfigured_source_unaged():
+    cfg = ProvidersConfig(quotas={"forvo": {"max_asks": 450}})
+    assert "wikimedia" not in nothing_ttl_for(cfg)
 
 
 # --- load_syllabus: round trip over a synthetic curated dir ---------------
@@ -923,6 +946,27 @@ def test_the_sentence_no_fit_cap_defaults_to_three(tmp_path):
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
         encoding="utf-8")
     assert build_sourcing(root).sentence_nothing_cap == DEFAULT_SENTENCE_NOTHING_CAP == 3
+
+
+def test_nothing_ttl_reaches_both_derivations_and_sourcing(tmp_path):
+    """Spec 3 r19 section 9: providers.yaml's own quotas.forvo.nothing_ttl_days
+    is the ageing map derivations.tried_sources folds over, in both the
+    run's Sourcing and the feedback screen's Derivations."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "quotas: {forvo: {nothing_ttl_days: 30}}\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    derivations = load_derivations(root)
+    ctx = build_sourcing(root)
+    assert derivations.nothing_ttl == ctx.nothing_ttl == {"forvo": 30}
+
+
+def test_nothing_ttl_defaults_to_the_forvo_180_day_entry(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert build_sourcing(root).nothing_ttl == {"forvo": 180}
 
 
 def test_build_sourcing_shares_one_db_handle_with_the_syllabus(tmp_path):

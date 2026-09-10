@@ -1492,6 +1492,34 @@ def test_a_forvo_download_counts_as_a_forvo_request_in_the_attempt_s_spend(tmp_p
     assert result.spend["audiofetch"].asks == 2
 
 
+def test_a_recording_attempt_asks_forvo_afresh_once_its_nothing_aged_out(tmp_path):
+    """spec 3 r19 section 6a: an aged-out `nothing` re-offers the source
+    and the attempt makes a fresh lookup (the reask path) instead of
+    reading the cached empty answer, so a corpus that grew is seen."""
+    day = 86_400 * 1_000_000_000
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    forvo = ctx.provider._backends["forvo"]
+    calls = []
+    original_fetch = forvo.fetch
+    forvo.fetch = lambda q: calls.append(q) or original_fetch(q)
+    # the cached empty lookup and the stale nothing row of an earlier attempt
+    ctx.db.append(port="provide", backend="forvo",
+                  key=ProvideKey(source="forvo", kind="", query="ข้าว"), subject="rice",
+                  question={"kind": "recording", "subject_kind": "word", "params": {"word": "ข้าว"}},
+                  answer={"items": []}, cost=1.0, ts=1 * day)
+    ctx.db.append(port="attempt", backend="forvo",
+                  key=AttemptOutcomeKey(subject="rice", kind="recording", source="forvo"),
+                  subject="rice", question={"kind": "recording", "subject_kind": "word", "source": "forvo"},
+                  answer={"outcome": "nothing", "candidates": []}, cost=0.0, ts=1 * day)
+    ctx.nothing_ttl = {"forvo": 180}
+    ctx.now_ns = lambda: 201 * day
+    attempt(ctx, Need("rice", "recording"), "forvo")
+    assert len(calls) == 1, "a fresh lookup, not the cached empty answer"
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "candidates" and len(row.answer["candidates"]) == 1
+
+
 def test_a_forvo_recording_attempt_writes_a_nothing_outcome_when_forvo_has_nothing(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
     attempt(ctx, Need("rice", "recording"), "forvo")

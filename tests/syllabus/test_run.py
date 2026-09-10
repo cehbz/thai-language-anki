@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -839,6 +840,31 @@ def test_run_counts_a_word_the_sentence_attempt_withheld_under_exhausted(db, mon
     assert report.exhausted == 1 and report.attempted == 0 and report.deferred == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_run_reads_its_own_clock_once_and_re_offers_forvo_after_its_nothing_aged_out(db, monkeypatch):
+    """spec 3 r19 section 6a/9 threading guard: run() reads the clock once
+    and hands it with the Sourcing's nothing_ttl to every fold, so a forvo
+    `nothing` row 200 days old (ttl 180) leaves forvo the next source
+    while a tts `nothing` row keeps tts tried."""
+    calls = _patch(monkeypatch, {})
+    day = 86_400 * 1_000_000_000
+    for source in ("forvo", "tts"):
+        db.append(port="attempt", backend=source,
+                  key=AttemptOutcomeKey(subject="a", kind="recording", source=source),
+                  subject="a", question={"kind": "recording", "subject_kind": "word",
+                                         "source": source},
+                  answer={"outcome": "nothing", "candidates": []}, cost=0.0,
+                  ts=time.time_ns() - 200 * day)
+    ctx = _ctx(db, _Syl(_Gaps(recordings=("a",))))
+    ctx.nothing_ttl = {"forvo": 180}
+    report = run(ctx, {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "forvo")]
+    assert report.exhausted == 0
+    ctx_no_ttl = _ctx(db, _Syl(_Gaps(recordings=("a",))))
+    calls.clear()
+    report = run(ctx_no_ttl, {})
+    assert calls == [] and report.exhausted == 1
 
 
 def test_run_skips_a_need_whose_source_budget_is_spent(db, monkeypatch):

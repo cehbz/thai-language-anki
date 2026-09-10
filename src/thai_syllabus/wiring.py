@@ -67,7 +67,13 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "Derivations", "load_derivations", "load_syllabus"]
+          "nothing_ttl_for", "Derivations", "load_derivations", "load_syllabus"]
+
+# nothing_ttl_for's own default (spec 3 r19 section 6a/9): a Forvo
+# `nothing` outcome stops counting as tried after this many days,
+# offering the source again to a corpus that may have grown since --
+# every other source never ages unless providers.yaml configures it.
+_DEFAULT_NOTHING_TTL: dict[str, int] = {"forvo": 180}
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -295,6 +301,21 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
     return budgets
 
 
+def nothing_ttl_for(cfg: ProvidersConfig) -> dict[str, int]:
+    """derivations.tried_sources' `nothing_ttl` mapping (spec 3 r19
+    section 6a/9): forvo ages a `nothing` outcome out after 180 days by
+    default, layered under whatever providers.yaml's own
+    `quotas.<source>.nothing_ttl_days` configures, source by source -- a
+    configured value overrides the default (or adds ageing for a source
+    with none), and a source named in neither never ages.
+    """
+    ttl = dict(_DEFAULT_NOTHING_TTL)
+    for source, quota in cfg.quotas.items():
+        if "nothing_ttl_days" in quota:
+            ttl[source] = quota["nothing_ttl_days"]
+    return ttl
+
+
 # --- load_derivations: the parameters every fold over the record takes ----
 
 @dataclass(frozen=True)
@@ -319,6 +340,10 @@ class Derivations:
     # sentence_exhausted()'s no-fit cap (spec 3 r19 section 5), the same
     # value build_sourcing hands the run's Sourcing.
     sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
+    # tried_sources()'s per-source ageing (spec 3 r19 section 6a/9,
+    # nothing_ttl_for), the same mapping build_sourcing hands the run's
+    # Sourcing.
+    nothing_ttl: Mapping[str, int] = field(default_factory=dict)
     # rulebook.yaml's thresholds overlay (curated.RulebookConfig.thresholds),
     # e.g. "reask/lapses" -- spec 5 section 1 kind 4's own lapse threshold.
     thresholds: Mapping[str, float] = field(default_factory=dict)
@@ -350,6 +375,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        sources_for=sources_for, attempt_cap=cfg.attempt_cap,
                        transient_cap=cfg.transient_cap,
                        sentence_nothing_cap=cfg.sentence_nothing_cap,
+                       nothing_ttl=nothing_ttl_for(cfg),
                        thresholds=dict(bundle.rulebook.thresholds),
                        budgets=default_budgets(cfg))
 
@@ -377,7 +403,8 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
         sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
         transient_cap=derivations.transient_cap,
-        sentence_nothing_cap=derivations.sentence_nothing_cap)
+        sentence_nothing_cap=derivations.sentence_nothing_cap,
+        nothing_ttl=derivations.nothing_ttl)
     return ctx
 
 

@@ -529,6 +529,34 @@ def test_a_well_formed_quotas_day_starts_loads(tmp_path):
     assert cfg.quotas["forvo"]["day_starts"] == "22:00Z"
 
 
+# --- quotas.<source>.nothing_ttl_days (spec 3 r19 section 6a/9) ------------
+
+def test_a_zero_nothing_ttl_days_refuses_naming_the_field(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"nothing_ttl_days": 0}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo\.nothing_ttl_days"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_non_integer_nothing_ttl_days_refuses(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"nothing_ttl_days": "180"}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.forvo\.nothing_ttl_days"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_an_absent_nothing_ttl_days_is_accepted(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"max_asks": 450}})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert "nothing_ttl_days" not in cfg.quotas["forvo"]
+
+
+def test_a_well_formed_nothing_ttl_days_loads(tmp_path):
+    write_providers(tmp_path, quotas={"forvo": {"nothing_ttl_days": 30}})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.quotas["forvo"]["nothing_ttl_days"] == 30
+
+
 def test_providers_config_round_trip(tmp_path):
     path = tmp_path / "providers.yaml"
     config = curated.ProvidersConfig(

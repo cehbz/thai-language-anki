@@ -21,6 +21,7 @@ import http.server
 import json
 import mimetypes
 import re
+import time
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -99,10 +100,16 @@ def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
                         provenance_source=d.provenance_source)
 
 
-def _exhausted(d: "Derivations", subject: str, kind: str) -> ExhaustedStatus:
+def _exhausted(d: "Derivations", subject: str, kind: str, *,
+               now_ns: int | None = None) -> ExhaustedStatus:
+    """exhausted() under `d`'s parameters; `now_ns` is the caller's one
+    clock read for the pass (spec 3 r19 section 6a/9), read here only for
+    a single stand-alone question."""
     return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
                      attempt_cap=d.attempt_cap, transient_cap=d.transient_cap,
-                     sentence_nothing_cap=d.sentence_nothing_cap)
+                     sentence_nothing_cap=d.sentence_nothing_cap,
+                     nothing_ttl=d.nothing_ttl,
+                     now_ns=time.time_ns() if now_ns is None else now_ns)
 
 
 def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
@@ -265,10 +272,12 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     requests, challenger comparisons and re-asks fill what is left. A
     kind with no derivation input yields no questions.
     """
+    now_ns = time.time_ns()   # one clock read per session build (spec 3 r19 section 6a/9)
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
                     transient_cap=d.transient_cap,
-                    provenance_source=d.provenance_source)
+                    provenance_source=d.provenance_source,
+                    nothing_ttl=d.nothing_ttl, now_ns=now_ns)
     items = [
         _rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
                        rank=e.rank, attempts=e.attempts)
@@ -284,7 +293,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
         for subject, kind, subject_kind in available_needs(d.syllabus):
             if (subject, kind) in queued:
                 continue
-            status = _exhausted(d, subject, kind)
+            status = _exhausted(d, subject, kind, now_ns=now_ns)
             if status.exhausted:
                 items.append(_direction_question(d, subject, kind, subject_kind,
                                                  status.attempts))
@@ -711,8 +720,9 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
         elif value is not None:
             ratings["unacceptable"] += 1
 
+    now_ns = time.time_ns()
     exhausted_count = sum(1 for subject, kind, _ in available_needs(d.syllabus)
-                         if _exhausted(d, subject, kind).exhausted)
+                         if _exhausted(d, subject, kind, now_ns=now_ns).exhausted)
 
     runreport = d.db.latest("run", "runreport", RunReportKey())
     runreport_answer = runreport.answer if runreport else {}
@@ -818,7 +828,8 @@ class ReviewContext:
         return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                      sources_for=d.sources_for, attempt_cap=d.attempt_cap,
                      transient_cap=d.transient_cap,
-                     provenance_source=d.provenance_source)
+                     provenance_source=d.provenance_source,
+                     nothing_ttl=d.nothing_ttl, now_ns=time.time_ns())
 
     def questions(self, budget: int | None = None) -> list[dict[str, Any]]:
         return build_queue(self.derivations, self.study,

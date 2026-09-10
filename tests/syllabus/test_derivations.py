@@ -17,6 +17,7 @@ from thai_syllabus.derivations import (
     CurrentBest,
     JudgeVerdict,
     adoptable_drafts,
+    aged_out,
     all_needs,
     available_needs,
     challengers,
@@ -35,6 +36,7 @@ from thai_syllabus.derivations import (
     reasks,
     refused_drafts,
     sentence_exhausted,
+    tried_sources,
     unjudged_candidates,
 )
 from thai_syllabus.derivations import _role_row
@@ -674,6 +676,100 @@ def test_a_migrated_forvo_answer_with_items_but_no_outcome_row_is_untried(cache)
     cache.rows.append(provide_row("rice", "recording", backend="forvo",
                                   items=[{"sha": "a" * 64}], ts=_next_ts()))
     assert next_source(cache, "rice", "recording", ("forvo", "tts"), transient_cap=3) == "forvo"
+
+
+# --- ageing: a growing source's empty answers age out (spec 3 r19 6a/9) ----
+
+_A_DAY_NS = 86_400 * 1_000_000_000
+
+
+def test_a_stale_forvo_nothing_row_leaves_it_untried(cache):
+    """200 days past a forvo `nothing` row, ttl 180: forvo is no longer
+    tried and next_source offers it again."""
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    now_ns = 200 * _A_DAY_NS
+    assert "forvo" not in tried_sources(cache, "rice", "recording", transient_cap=3,
+                                        nothing_ttl={"forvo": 180}, now_ns=now_ns)
+    assert next_source(cache, "rice", "recording", ("forvo", "tts"), transient_cap=3,
+                       nothing_ttl={"forvo": 180}, now_ns=now_ns) == "forvo"
+
+
+def test_a_forvo_nothing_row_inside_the_ttl_stays_tried(cache):
+    """100 days past the same row, ttl 180: forvo still counts as tried."""
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    now_ns = 100 * _A_DAY_NS
+    assert "forvo" in tried_sources(cache, "rice", "recording", transient_cap=3,
+                                    nothing_ttl={"forvo": 180}, now_ns=now_ns)
+    assert next_source(cache, "rice", "recording", ("forvo", "tts"), transient_cap=3,
+                       nothing_ttl={"forvo": 180}, now_ns=now_ns) == "tts"
+
+
+def test_a_source_with_no_ttl_never_ages(cache):
+    """tts carries no nothing_ttl entry: however old its `nothing` row,
+    it stays tried."""
+    cache.rows.append(outcome_row("rice", "recording", source="tts",
+                                  outcome="nothing", ts=0))
+    now_ns = 10_000 * _A_DAY_NS
+    assert "tts" in tried_sources(cache, "rice", "recording", transient_cap=3,
+                                  nothing_ttl={"forvo": 180}, now_ns=now_ns)
+    assert next_source(cache, "rice", "recording", ("tts",), transient_cap=3,
+                       nothing_ttl={"forvo": 180}, now_ns=now_ns) is None
+
+
+def test_a_candidates_row_never_ages(cache):
+    """A `candidates` outcome from an ageing source never ages out, even
+    arbitrarily far past its own ttl."""
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="candidates", candidates=("a" * 64,), ts=0))
+    now_ns = 10_000 * _A_DAY_NS
+    assert "forvo" in tried_sources(cache, "rice", "recording", transient_cap=3,
+                                    nothing_ttl={"forvo": 180}, now_ns=now_ns)
+    assert next_source(cache, "rice", "recording", ("forvo",), transient_cap=3,
+                       nothing_ttl={"forvo": 180}, now_ns=now_ns) is None
+
+
+def test_exhausted_reopens_once_a_nothing_row_ages_out(cache):
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    now_ns = 200 * _A_DAY_NS
+    status = exhausted(cache, "rice", "recording", sources=("forvo",), attempt_cap=8,
+                       transient_cap=3, nothing_ttl={"forvo": 180}, now_ns=now_ns)
+    assert status.exhausted is False
+
+
+def test_a_ttl_without_a_clock_is_refused(cache):
+    """The folds never read the clock (spec 3 r19 section 6a/9): a caller
+    that ages must say when now is."""
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    with pytest.raises(ValueError, match="now_ns"):
+        tried_sources(cache, "rice", "recording", transient_cap=3,
+                      nothing_ttl={"forvo": 180})
+
+
+def test_aged_out_names_a_source_whose_nothing_row_passed_its_ttl(cache):
+    """aged_out (spec 3 r19 section 6a): the attempt asks the source
+    afresh instead of reading its cached empty answer."""
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    ttl = {"forvo": 180}
+    assert aged_out(cache, "rice", "recording", "forvo", nothing_ttl=ttl,
+                    now_ns=200 * _A_DAY_NS) is True
+    assert aged_out(cache, "rice", "recording", "forvo", nothing_ttl=ttl,
+                    now_ns=100 * _A_DAY_NS) is False
+    assert aged_out(cache, "rice", "recording", "tts", nothing_ttl=ttl,
+                    now_ns=200 * _A_DAY_NS) is False
+
+
+def test_a_candidates_row_after_the_stale_nothing_is_not_aged_out(cache):
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="nothing", ts=0))
+    cache.rows.append(outcome_row("rice", "recording", source="forvo",
+                                  outcome="candidates", candidates=("a" * 64,), ts=1))
+    assert aged_out(cache, "rice", "recording", "forvo", nothing_ttl={"forvo": 180},
+                    now_ns=200 * _A_DAY_NS) is False
 
 
 # --- exhausted ---------------------------------------------------------

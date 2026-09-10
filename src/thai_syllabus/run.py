@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
+from time import time_ns
 
 from .assessor import JudgeUnreachable, PreparedQuestion
 from .cachekeys import RunReportKey
@@ -277,13 +278,19 @@ def _spent_on(source: str, carried: Mapping[str, Spend], tally: _Tally) -> Spend
     return Spend(asks=already.asks + mine.asks, cost=already.cost + mine.cost)
 
 
-def _needs(ctx: Sourcing,
-          collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
+def _needs(ctx: Sourcing, collected_this_run: frozenset[tuple[str, str]] = frozenset(),
+          *, now_ns: int) -> QueuedNeeds:
+    """One queue build (spec 3 r19 section 6a/9): `now_ns` is the run's own
+    single clock read (run()'s outermost caller), never re-read here or in
+    derivations.py, so every need this pass considers ages against the
+    same instant.
+    """
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
                   prior=ctx.provenance_prior, sources_for=ctx.sources_for,
                   attempt_cap=ctx.attempt_cap, transient_cap=ctx.transient_cap,
                   provenance_source=provenance_source_for(ctx.db),
-                  collected_this_run=collected_this_run)
+                  collected_this_run=collected_this_run,
+                  nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
 
 
 def _pending_needs(ctx: Sourcing, batch_needs: frozenset[tuple[str, str]]) -> int:
@@ -312,7 +319,7 @@ def _unconsidered(needs: QueuedNeeds, pending: int) -> int:
 
 
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
-                   carried: Mapping[str, Spend], tally: _Tally) -> int:
+                   carried: Mapping[str, Spend], tally: _Tally, *, now_ns: int) -> int:
     """Assess-first, then one Source per need: the fit questions a
     candidate on record is owed (spec 3 section 5), else the cheapest
     source not yet tried since current-best last changed. A Source that
@@ -323,7 +330,9 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     this one included, counts budgeted, not deferred -- the same bucket a
     spent day budget uses, and it is never a source_failures entry.
     Returns how many entries it never reached (zero unless a dead judge
-    stopped it), for run() to defer.
+    stopped it), for run() to defer. `now_ns` is run()'s own single clock
+    read (spec 3 r19 section 6a/9), passed straight to next_source rather
+    than re-read here.
     """
     dead_sources: set[str] = set()
     budgeted_sources: set[str] = set()
@@ -345,7 +354,8 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 tally.collect(result)
             sources = ctx.sources_for(need.kind)
             source = next_source(ctx.db, need.subject, need.kind, sources,
-                                transient_cap=ctx.transient_cap)
+                                transient_cap=ctx.transient_cap,
+                                nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
             if source is None:
                 tally.exhausted += 1
                 continue
@@ -406,6 +416,10 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     A drafter transport failure counts under source_failures["llm-sentence"]
     and defers every word with an open Target; the loop runs.
     """
+    # One clock read for the whole run (spec 3 r19 section 6a/9): every
+    # queue build and the attempt loop's own next_source calls age a
+    # `nothing` row against this same instant, never re-read past here.
+    now_ns = time_ns()
     tally = _Tally(spend={name: Spend() for name in budgets})
     # Read before any ask this run makes lands on the record -- the
     # sentence attempt's own llm-sentence row, once appended, would
@@ -419,7 +433,7 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             still_out = _resolve_previous_batch(ctx, tally, previous)
         except JudgeUnreachable:
             tally.unreachable = True
-            needs = _needs(ctx)
+            needs = _needs(ctx, now_ns=now_ns)
             pending = _pending_needs(ctx, previous[1])
             return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
                            extra_deferred=_unconsidered(needs, pending))
@@ -428,7 +442,7 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         # The run ended here, before it ever looked at a need: every
         # available need this run never considered (not even pending, in
         # a still-earlier batch) is deferred, not lost.
-        needs = _needs(ctx)
+        needs = _needs(ctx, now_ns=now_ns)
         pending = _pending_needs(ctx, still_out[1])
         return _finish(ctx, tally, needs, batch_id=still_out[0], pending=pending,
                        extra_deferred=_unconsidered(needs, pending))
@@ -459,7 +473,7 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
             tally.unreachable = True
             # The drafts were asked for; the judge died at the check.
             tally.attempted += len(open_words_before)
-            needs = _needs(ctx, collected_at_resolve)
+            needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
             _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
             # The judge died before the loop ran at all: every queued need
             # behind it was never looked at this run.
@@ -494,13 +508,13 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         # attempt's own hand-over and applies only when the attempt runs.
         tally.budgeted += len(open_words_before)
 
-    needs = _needs(ctx, collected_at_resolve)
+    needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
     # One snapshot of the need keys `available` counts, read here beside
     # the queue itself: `available`, `pending` and `preferences` are all
     # measured against the same list of needs, whatever the attempts
     # below then close.
     avail = available_need_keys(ctx.syllabus)
-    unreached = _try_each_need(ctx, needs.entries, budgets, carried, tally)
+    unreached = _try_each_need(ctx, needs.entries, budgets, carried, tally, now_ns=now_ns)
     if tally.unreachable:
         # The dead judge stopped the loop where it stood: every queued
         # need past that point was never looked at this run.

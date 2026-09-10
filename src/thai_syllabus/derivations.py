@@ -79,6 +79,10 @@ DEFAULT_ATTEMPT_CAP = 8
 # counts as tried.
 DEFAULT_TRANSIENT_CAP = 3
 
+# tried_sources()'s ageing window unit (spec 3 r19 section 6a/9): a
+# nothing_ttl day, in the ts's own nanosecond units.
+_NANOS_PER_DAY = 86_400 * 1_000_000_000
+
 # The no-fit cap sentence_exhausted() enforces (spec 3 r19 section 5): a
 # word whose sentence need has this many `nothing` outcome rows since its
 # last handed draft is not handed to the drafter again, and the feedback
@@ -483,14 +487,33 @@ def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[A
 
 
 def tried_sources(cache: CacheReader, subject: str, kind: str, *,
-                  transient_cap: int) -> frozenset[str]:
+                  transient_cap: int, nothing_ttl: Mapping[str, int] = {},
+                  now_ns: int | None = None) -> frozenset[str]:
     """The sources tried since current-best last changed: those with a
-    `candidates` or `nothing` outcome, and those with `transient_cap`
-    `transient-failure` outcomes (spec 3 section 6a)."""
+    `candidates` outcome, those with a `nothing` outcome not aged out, and
+    those with `transient_cap` `transient-failure` outcomes (spec 3
+    section 6a). Ageing (spec 3 r19 section 6a/9): a `nothing` row from a
+    source named in `nothing_ttl` (days, keyed by source) whose own `ts`
+    is older than `now_ns` minus that many days no longer counts as
+    tried on its own (the caller reads the clock once per pass; a ttl
+    without `now_ns` is refused, the folds never read it) -- a
+    growing corpus (Forvo) may have new hits by then. `candidates` rows
+    and the transient-failure count are never aged; a source absent from
+    `nothing_ttl` never ages either.
+    """
+    now_ns = _clock_for(nothing_ttl, now_ns)
     rows = record.rows_for(cache, subject, kind)
     since_ts = _anchor_ts(cache, subject, kind, rows)
     outcomes = [r for r in rows if r.port == "attempt" and r.ts > since_ts]
-    tried = {r.backend for r in outcomes if r.answer.get("outcome") in ("candidates", "nothing")}
+
+    def _fresh_nothing(r: Answer) -> bool:
+        days = nothing_ttl.get(r.backend)
+        if days is None:
+            return True
+        return r.ts >= now_ns - days * _NANOS_PER_DAY
+
+    tried = {r.backend for r in outcomes if r.answer.get("outcome") == "candidates"
+             or (r.answer.get("outcome") == "nothing" and _fresh_nothing(r))}
     transient: dict[str, int] = {}
     for r in outcomes:
         if r.answer.get("outcome") == "transient-failure":
@@ -499,12 +522,51 @@ def tried_sources(cache: CacheReader, subject: str, kind: str, *,
     return frozenset(tried)
 
 
-def next_source(cache: CacheReader, subject: str, kind: str,
-                sources: Sequence[str], *, transient_cap: int) -> str | None:
-    """The first of `sources` (cheapest first) not in tried_sources; None
-    once every source is tried since current-best last changed.
+def _clock_for(nothing_ttl: Mapping[str, int], now_ns: int | None) -> int:
+    """The instant an ageing fold measures against: the caller's own
+    `now_ns`, read once per pass (spec 3 r19 section 6a/9). A ttl with no
+    clock is refused rather than read here; with no ttl the value is
+    unused and 0 stands in."""
+    if nothing_ttl and now_ns is None:
+        raise ValueError("now_ns: a nothing_ttl needs the caller's clock (spec 3 section 6a)")
+    return 0 if now_ns is None else now_ns
+
+
+def aged_out(cache: CacheReader, subject: str, kind: str, source: str, *,
+             nothing_ttl: Mapping[str, int], now_ns: int | None) -> bool:
+    """Whether `source` is offered for (subject, kind) again only because
+    its `nothing` answer aged out (spec 3 r19 section 6a): the newest
+    outcome row from `source` since current-best last changed is a
+    `nothing` older than the source's ttl. The attempt then asks the
+    source afresh (Provider.reask) instead of reading its cached empty
+    answer, which is what "a fresh lookup appends a new row" means. False
+    when the source has no ttl, no row, a newer `candidates` or
+    `transient-failure` row, or a `nothing` still inside its ttl.
     """
-    tried = tried_sources(cache, subject, kind, transient_cap=transient_cap)
+    days = nothing_ttl.get(source)
+    if days is None:
+        return False
+    now_ns = _clock_for(nothing_ttl, now_ns)
+    rows = record.rows_for(cache, subject, kind)
+    since_ts = _anchor_ts(cache, subject, kind, rows)
+    mine = [r for r in rows if r.port == "attempt" and r.ts > since_ts and r.backend == source]
+    if not mine:
+        return False
+    newest = max(mine, key=lambda r: r.ts)
+    return newest.answer.get("outcome") == "nothing" and newest.ts < now_ns - days * _NANOS_PER_DAY
+
+
+def next_source(cache: CacheReader, subject: str, kind: str,
+                sources: Sequence[str], *, transient_cap: int,
+                nothing_ttl: Mapping[str, int] = {},
+                now_ns: int | None = None) -> str | None:
+    """The first of `sources` (cheapest first) not in tried_sources; None
+    once every source is tried since current-best last changed. A source
+    whose only `nothing` outcome has aged out of `nothing_ttl` (spec 3 r19
+    section 6a/9) is offered again here.
+    """
+    tried = tried_sources(cache, subject, kind, transient_cap=transient_cap,
+                          nothing_ttl=nothing_ttl, now_ns=now_ns)
     for source in sources:
         if source not in tried:
             return source
@@ -557,11 +619,17 @@ def sentence_exhausted(cache: CacheReader, word: str, *,
 
 def exhausted(cache: CacheReader, subject: str, kind: str, *,
               sources: Sequence[str], attempt_cap: int, transient_cap: int,
-              sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP) -> ExhaustedStatus:
+              sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP,
+              nothing_ttl: Mapping[str, int] = {},
+              now_ns: int | None = None) -> ExhaustedStatus:
     """Every source in `sources` is tried since current-best last changed,
     or the attempt count since then reached `attempt_cap`; a source at
-    the transient cap counts as one attempt. Reopened by a learner row or
-    a new source.
+    the transient cap counts as one attempt. Reopened by a learner row, a
+    new source, or -- spec 3 r19 section 6a/9, while attempts_since_change
+    stays below `attempt_cap` (ageing re-offers a source; it does not
+    forget the attempts already made) -- a `nothing` outcome
+    ageing out of `nothing_ttl` (both passed through to tried_sources and
+    next_source).
 
     Kind "sentence" has no Source roster of its own -- the run's own
     sentence attempt serves it -- so it is `sentence_exhausted` under
@@ -570,10 +638,12 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *,
     if kind == _RUN_SENTENCE_KIND:
         return sentence_exhausted(cache, subject, cap=sentence_nothing_cap)
     since = attempts_since_change(cache, subject, kind)
-    capped = tried_sources(cache, subject, kind, transient_cap=transient_cap) - {
+    capped = tried_sources(cache, subject, kind, transient_cap=transient_cap,
+                           nothing_ttl=nothing_ttl, now_ns=now_ns) - {
         r.backend for r in since}
     attempts = len(since) + len(capped)
-    is_exhausted = (next_source(cache, subject, kind, sources, transient_cap=transient_cap) is None
+    is_exhausted = (next_source(cache, subject, kind, sources, transient_cap=transient_cap,
+                                nothing_ttl=nothing_ttl, now_ns=now_ns) is None
                     or attempts >= attempt_cap)
     return ExhaustedStatus(exhausted=is_exhausted, attempts=attempts)
 
@@ -613,10 +683,13 @@ def directed(cache: CacheReader, subject: str) -> bool:
 
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
                        current_rubric: Mapping[str, str], sources: Sequence[str], *,
-                       transient_cap: int) -> bool:
+                       transient_cap: int, nothing_ttl: Mapping[str, int] = {},
+                       now_ns: int | None = None) -> bool:
     """A candidate has no verdict under the current rubric, a judge
     suggestion has not been followed by a new attempt, or an unasked
-    source remains (spec 3 section 6 bucket 2).
+    source remains (spec 3 section 6 bucket 2) -- including one a
+    `nothing` outcome aged back out of `nothing_ttl` (spec 3 r19 section
+    6a/9).
     """
     judge_rows = [r for r in rows if r.port == "assess" and r.backend == "judge"]
     if unjudged_candidates(cache, subject, kind, current_rubric=current_rubric):
@@ -624,7 +697,8 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
     provide_ts = max((r.ts for r in rows if r.port == "provide"), default=-1)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
         return True
-    return next_source(cache, subject, kind, sources, transient_cap=transient_cap) is not None
+    return next_source(cache, subject, kind, sources, transient_cap=transient_cap,
+                       nothing_ttl=nothing_ttl, now_ns=now_ns) is not None
 
 
 # --- queue: F10 order ----------------------------------------------------
@@ -734,22 +808,30 @@ def available_need_keys(syllabus) -> frozenset[tuple[str, str]]:
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
          attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
-         collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> list[QueueEntry]:
+         collected_this_run: frozenset[tuple[str, str]] = frozenset(),
+         nothing_ttl: Mapping[str, int] = {},
+         now_ns: int | None = None) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
                   transient_cap=transient_cap,
                   provenance_source=provenance_source,
-                  collected_this_run=collected_this_run).entries
+                  collected_this_run=collected_this_run,
+                  nothing_ttl=nothing_ttl, now_ns=now_ns).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
           attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
-          collected_this_run: frozenset[tuple[str, str]] = frozenset()) -> QueuedNeeds:
+          collected_this_run: frozenset[tuple[str, str]] = frozenset(),
+          nothing_ttl: Mapping[str, int] = {},
+          now_ns: int | None = None) -> QueuedNeeds:
     """queue()'s entries plus the counts the same pass left out.
     `collected_this_run` names the (subject, kind) needs this run already
     collected a question for; each is skipped like an already-pending
     need. It is keyed by kind, so a word's other open needs stay queued.
+    `nothing_ttl`/`now_ns` (spec 3 r19 section 6a/9) reach exhausted()'s
+    and _has_untried_lever()'s own next_source/tried_sources folds, so a
+    growing source's aged-out `nothing` reopens the need here too.
     """
     entries: list[QueueEntry] = []
     candidates = available_needs(syllabus)
@@ -781,7 +863,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         # Never kind "sentence": queued() skips it above, so exhausted()'s
         # own sentence_nothing_cap never decides anything from here.
         status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
-                          transient_cap=transient_cap)
+                          transient_cap=transient_cap, nothing_ttl=nothing_ttl, now_ns=now_ns)
         attempts = status.attempts
 
         if best.artifact_sha is None or is_vetoed:
@@ -792,7 +874,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
                           # candidate awaits a verdict -- excluded
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources,
-                                transient_cap=transient_cap):
+                                transient_cap=transient_cap, nothing_ttl=nothing_ttl,
+                                now_ns=now_ns):
             bucket = 2
         else:
             bucket = 3

@@ -742,19 +742,27 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                           "(max_asks, max_cost, day_starts)")
             continue
         day_starts = quota.get("day_starts")
-        if day_starts is None:
-            continue
-        if not isinstance(day_starts, str):
-            # An unquoted "22:00" parses as YAML sexagesimal (int 1320),
-            # not the HH:MM string parse_day_starts takes.
-            errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} does not "
-                          "parse as HH:MM plus Z or +/-HH:MM")
-            continue
-        try:
-            parse_day_starts(day_starts)
-        except ValueError:
-            errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} does not "
-                          "parse as HH:MM plus Z or +/-HH:MM")
+        if day_starts is not None:
+            if not isinstance(day_starts, str):
+                # An unquoted "22:00" parses as YAML sexagesimal (int
+                # 1320), not the HH:MM string parse_day_starts takes.
+                errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} does not "
+                              "parse as HH:MM plus Z or +/-HH:MM")
+            else:
+                try:
+                    parse_day_starts(day_starts)
+                except ValueError:
+                    errors.append(f"providers.quotas.{source}.day_starts: {day_starts!r} "
+                                  "does not parse as HH:MM plus Z or +/-HH:MM")
+        # nothing_ttl_days (spec 3 r19 section 6a/9): the days after which
+        # a `nothing` outcome from this source stops counting as tried
+        # (wiring.nothing_ttl_for); absent is accepted (the source keeps
+        # whatever ageing default applies, or never ages).
+        nothing_ttl_days = quota.get("nothing_ttl_days")
+        if nothing_ttl_days is not None and (
+                not isinstance(nothing_ttl_days, int) or nothing_ttl_days < 1):
+            errors.append(f"providers.quotas.{source}.nothing_ttl_days: "
+                          f"{nothing_ttl_days!r} must be a positive integer")
 
     if errors:
         raise CuratedValidationError(errors)

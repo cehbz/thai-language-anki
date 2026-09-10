@@ -21,6 +21,7 @@ JudgeUnreachable out of ask_many and stops the run.
 from __future__ import annotations
 
 import functools
+import time
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -36,6 +37,7 @@ from .derivations import (
     DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
     CurrentBest,
+    aged_out,
     current_best,
     passing_pictures,
     pictures_awaiting_preference,
@@ -133,6 +135,11 @@ class Sourcing:
     sources_for: Callable[[str], Sequence[str]] = field(default=sources_for)
     attempt_cap: int = DEFAULT_ATTEMPT_CAP
     transient_cap: int = DEFAULT_TRANSIENT_CAP
+    # Per-source ageing (spec 3 r19 section 6a/9): days after which a
+    # `nothing` outcome stops counting as tried, so next_source offers
+    # a growing corpus (Forvo) again. A source absent here never ages.
+    nothing_ttl: Mapping[str, int] = field(default_factory=dict)
+    now_ns: Callable[[], int] = field(default=time.time_ns)
     # The `nothing` outcomes a word's sentence need may carry since its
     # last handed draft before the drafter stops being handed its Targets
     # (spec 3 r19 section 5, derivations.sentence_exhausted).
@@ -661,9 +668,14 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     constraint = _voice_constraint(ctx, need)
     fetches = _Fetches()
     if source == "forvo":
+        # An aged-out `nothing` re-offers forvo (spec 3 r19 section 6a):
+        # ask it afresh, never the cached empty answer.
+        fresh = aged_out(ctx.db, need.subject, need.kind, "forvo",
+                         nothing_ttl=ctx.nothing_ttl, now_ns=ctx.now_ns())
         try:
             items = _forvo_lookup(ctx, need.subject, text, spend,
-                                  subject_kind=need.subject_kind, constraint=constraint)
+                                  subject_kind=need.subject_kind, constraint=constraint,
+                                  fresh=fresh)
             memo: dict[str, Sequence[Mapping]] = {}
             relookup = functools.partial(_relookup_once, ctx, need.subject, text, spend,
                                          subject_kind=need.subject_kind, constraint=constraint,
@@ -775,7 +787,10 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[st
     speaker who said every member. Every member's lookup runs before any
     download is attempted.
     """
-    by_member = {m: _forvo_lookup(ctx, m, words[m].thai, spend, constraint=constraint)
+    fresh = aged_out(ctx.db, pair.id, "rendition", "forvo",
+                     nothing_ttl=ctx.nothing_ttl, now_ns=ctx.now_ns())
+    by_member = {m: _forvo_lookup(ctx, m, words[m].thai, spend, constraint=constraint,
+                                  fresh=fresh)
                  for m in pair.members}
     memo: dict[str, Sequence[Mapping]] = {}
     shared = set.intersection(*[{i["username"] for i in items} for items in by_member.values()])
