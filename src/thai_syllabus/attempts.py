@@ -963,6 +963,23 @@ def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Wor
     return vocabulary
 
 
+def _has_digit_suffix(word_id: str) -> bool:
+    base, _, suffix = word_id.rpartition("-")
+    return bool(base) and suffix.isdigit()
+
+
+def _example_clause_ids(vocabulary: Sequence[Word]) -> tuple[str, str]:
+    """The ids the worked example draws from the prompt's own vocabulary
+    where possible (spec 3 r24 section 5): the repeated word takes the
+    first vocabulary id, else the literal `little`; the suffixed id
+    takes the first vocabulary id carrying a -<digit> suffix, else the
+    literal `delicious-2`.
+    """
+    repeated = vocabulary[0].id if vocabulary else "little"
+    suffixed = next((w.id for w in vocabulary if _has_digit_suffix(w.id)), "delicious-2")
+    return repeated, suffixed
+
+
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
                      *, sentence_max_clauses: int) -> str:
@@ -979,7 +996,11 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     again, each with the verdict's evidence delimited the way the
     assessor prompts delimit deck fields (assessor.deck_field, over the
     untrusted-data notice given once before the block), before the
-    output-format sentence (spec 3 r19 section 5).
+    output-format sentence (spec 3 r19 section 5), which requires
+    vocabulary ids exactly as listed, suffix included, and carries one
+    worked example item showing a suffixed id and a repeated word,
+    built from the prompt's own vocabulary where possible
+    (`_example_clause_ids`, spec 3 r24 section 5).
     """
     vocabulary = _entry_vocabulary(syllabus, targets)
     met_targets = syllabus.met_sentence_introduced_targets()
@@ -1005,6 +1026,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     refused_block = (f"Do not propose these sentences; each failed review:\n{UNTRUSTED}\n"
                      + "\n".join(refused_lines) + "\n"
                      if refused else "")
+    repeated_id, suffixed_id = _example_clause_ids(vocabulary)
+    example = json.dumps({"clauses": [["i-male-speaker", "eat", [repeated_id, "ๆ"], suffixed_id]],
+                          "text": "...", "gloss": "..."}, ensure_ascii=False)
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
             "Each JSON item is one sentence. Write the fewest natural sentences that together "
@@ -1019,7 +1043,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             + "Write each sentence as clauses of vocabulary ids in order; a clause renders as "
             "its words' Thai concatenated, clauses are separated by one space; write a repeated "
             'word as [id, "ๆ"]; standard spelling (ครับ, never คับ); numbers as number words; '
-            "no punctuation or digits. "
+            "no punctuation or digits. Use vocabulary ids exactly as listed, suffix included; "
+            f"for example: {example}. "
             'Output JSON only: {"sentences": [{"clauses": [["id", ...], ...], "text": "...", '
             '"gloss": "..."}]}')
 

@@ -2278,6 +2278,49 @@ def test_sentence_prompt_gives_the_clause_rendering_rule_and_json_shape_verbatim
            '"gloss": "..."}]}') in prompt
 
 
+def test_sentence_prompt_requires_ids_exactly_as_listed():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert "Use vocabulary ids exactly as listed, suffix included" in prompt
+
+
+def _repeated_word_syllabus():
+    # rice first in entry order, then eat; no word id carries a
+    # -<digit> suffix.
+    return Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),
+        targets=(target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+        frequency={"rice": 1, "eat": 2})
+
+
+def test_sentence_prompt_worked_example_picks_a_real_repeated_id_and_falls_back_to_the_literal_suffixed_id():
+    """Spec 3 r24 section 5: the worked example is built from ids in the
+    prompt's own vocabulary where possible -- the repeated word takes the
+    first vocabulary id; the suffixed id falls back to the literal
+    `delicious-2` when no vocabulary word carries a -<digit> suffix."""
+    syllabus = _repeated_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert ('{"clauses": [["i-male-speaker", "eat", ["rice", "ๆ"], "delicious-2"]], '
+           '"text": "...", "gloss": "..."}') in prompt
+
+
+def test_sentence_prompt_worked_example_picks_a_real_suffixed_id_from_vocabulary_when_one_exists():
+    syllabus = Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("tasty-2", "อร่อย", "tasty")),
+        targets=(target("rice/receptive", "rice"), target("tasty-2/receptive", "tasty-2")),
+        frequency={"rice": 1, "tasty-2": 2})
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert ('{"clauses": [["i-male-speaker", "eat", ["rice", "ๆ"], "tasty-2"]], '
+           '"text": "...", "gloss": "..."}') in prompt
+
+
+def test_sentence_prompt_worked_example_falls_back_to_the_literal_repeated_word_when_vocabulary_is_empty():
+    syllabus = Syllabus(words=(), targets=(), frequency={})
+    prompt = _sentence_prompt(syllabus, [], sentence_max_clauses=2)
+    assert ('{"clauses": [["i-male-speaker", "eat", ["little", "ๆ"], "delicious-2"]], '
+           '"text": "...", "gloss": "..."}') in prompt
+
+
 def test_sentence_prompt_states_the_clause_cap_from_the_given_value():
     """Spec 3 r23 section 5/8: the drafting prompt asks for at most
     `sentence_max_clauses` clauses, the value the ctx hands it."""
