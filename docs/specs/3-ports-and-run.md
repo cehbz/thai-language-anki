@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 23, proposed 2026-09-11 against principles r4 and architecture
+Revision 24, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -61,6 +61,16 @@ Revision log:
   recording unranked under its second subject; 27 download refusals with
   no limit row; 15 three-clause sentences with every recording over the
   5 s cap). User approval 2026-09-11.
+- r24 2026-09-11: the drafter is handed at most `sentence_introducible_per_ask`
+  (5) sentence-introduced targets per ask, the rest of the 40 being the
+  next non-introduced open Targets; every picture need's query is a
+  drafted search phrase (one ask per run on the drafter transport, the
+  `phrase` provide), the gloss only as a fallback; the drafting prompt
+  requires ids exactly as listed and shows a worked example. Evidence:
+  2026-09-11 cycles (an ask handing 36 classifier targets of 40 drafted 2
+  sentences; scene queries were whole glosses, 336 of 1,405 candidates
+  passing; 20 refusals for `ๆ` as an id and a guessed unsuffixed id).
+  User approval 2026-09-11.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -185,8 +195,17 @@ requires `judge.max_tokens` (at least 16000), which both transports send.
 
 ## 5. Attempts per need kind
 
-**Picture (Word).** Query = the word's image phrase if a human or judge
-drafted one, else gloss head term + category qualifier. Source order:
+**Picture (Word and scene).** Query, in precedence: the latest learner
+direction; a judge suggestion newer than the last Source ask on the need
+(the search that produced the judged candidate); the drafted phrase —
+one ask per run on the drafter transport drafts a short English
+image-search phrase for every open picture need, word or scene, that has
+none on record and no direction (the `phrase` provide, one row per
+subject; the ask is cached by prompt, and an answer phrasing none of the
+asked items is not an answer: nothing is appended and the ask is a
+source failure, re-asked next run); else the fallback, a word's gloss head term with its
+category qualifier or a sentence's gloss (the corpora index English
+metadata, so the query is English either way). Source order:
 openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
@@ -245,7 +264,10 @@ members and duration. Findings: none for native one-speaker;
 by construction of the rendition answer; spec 1 r10 retired the check).
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target.
+target. The handed targets are the next open Targets in order, at most
+`sentence_targets_per_run` (40), of which at most
+`sentence_introducible_per_ask` (§8, default 5) are sentence-introduced
+and unmet; the remainder are the next non-introduced open Targets.
 
 *Prompt.* The vocabulary met in the fill-set sense, once, as
 `id  thai  (meaning)` lines: the picture-introduced words in
@@ -260,7 +282,9 @@ that cover the handed targets, each of at most `sentence_max_clauses`
 clauses (§8, default 2: a longer sentence outruns the 5 s recording
 cap), and states the rendering rule (spec 1 §1:
 clauses of word ids, ๆ after a repeated word, clauses separated by one
-space, standard spelling, numbers as words, no punctuation).
+space, standard spelling, numbers as words, no punctuation), requiring
+vocabulary ids exactly as listed, suffix included, with one worked
+example item showing a suffixed id and a repeated word.
 
 *Answer and acceptance.* `{"sentences": [{"clauses": [["<word id>" |
 ["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
@@ -471,7 +495,7 @@ always. The remaining fields count events, not needs.
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
-| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; needs whose next source it is stay untouched and count under deferred; the failing need records a `transient-failure` outcome; a drafter transport failure counts under `llm-sentence` |
+| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; needs whose next source it is stay untouched and count under deferred; the failing need records a `transient-failure` outcome; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase` |
 | spend[source] | the source's asks and cost this run |
 
 Every ask appends; kill-safe anywhere. The run is transport-agnostic.
@@ -485,8 +509,9 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
-(forvo 180; absent = never), `sentence_nothing_cap` (3) and
-`sentence_max_clauses` (2). `search_proxy`
+(forvo 180; absent = never), `sentence_nothing_cap` (3),
+`sentence_max_clauses` (2) and `sentence_introducible_per_ask` (5).
+`search_proxy`
 is the HTTP forward proxy Openverse searches go through (Openverse
 refuses a Thai egress); no other request uses it. The provenance prior
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml

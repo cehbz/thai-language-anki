@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 11, proposed 2026-09-11 against principles r3 and architecture
+Revision 12, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -31,6 +31,9 @@ Revision log:
   merging spec 3 §8's rows, with the by-construction principle and the
   severity-override path stated once; transition-era text (§5, §6)
   rewritten in the present. No behavior changed.
+- r12 2026-09-11: `coverage/exercise-depth` (measure, F5) replaces the
+  parked exercise-latency entry: adopted sentences per word with a filled
+  Target. Evidence: 253 sentences use 669 words, 452 of them once.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -294,7 +297,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F1 | pair/exact-confusion (check, error); pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); one speaker per rendition by construction |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); front-gloss policy provisional |
-| F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it); exercise-latency (measure, parked) |
+| F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
 | F6 | grapheme/keyword-picture-required (check, error), grapheme/keyword-contains-symbol (check, error) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
 | F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive |
