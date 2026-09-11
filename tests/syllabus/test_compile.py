@@ -617,6 +617,51 @@ def test_word_spelling_dropped_for_missing_recording_when_productive(fx):
     assert reasons[("rice", "Spelling")] == "no current-best recording"
 
 
+def test_word_production_card_is_dropped_without_a_picture(fx):
+    # rice has a productive Target and a recording, but no current-best
+    # picture -- the Production front is {{Picture}} once
+    # {{#ProductiveTarget}} gates it open, so genanki's own required-field
+    # computation must not settle for ProductiveTarget alone: a missing
+    # current-best artifact drops the dependent card, never an empty
+    # front (spec 4 section 3; section 1: "productive Target and a
+    # current-best picture; no picture, no card"). Listening/Reading are
+    # unaffected -- their fronts don't reference Picture.
+    syllabus = _small_syllabus()
+    # Deliberately do NOT seed rice's picture.
+    fx.seed_recording("rice", "cooked rice")
+    fx.seed_recording("pom", "I")
+    fx.seed_recording("gin", "eat")
+    fx.seed_picture("chicken", "chicken")
+    fx.seed_recording("letter-name:ko", "gɔɔ")
+    fx.seed_recording("near", "near")
+    fx.seed_recording("far", "far")
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    models = pkg["models"]
+    word_model = next(m for m in models.values() if m["name"] == "word")
+    field_names = [f["name"] for f in word_model["flds"]]
+    rice_note = next(n for n in pkg["notes"] if str(n["mid"]) == word_model["id"]
+                     and dict(zip(field_names, n["flds"]))["Thai"] == "ข้าว")
+    fields = dict(zip(field_names, rice_note["flds"]))
+    tmpl_names = [t["name"] for t in word_model["tmpls"]]
+    rice_cards = [c for c in pkg["cards"] if c["nid"] == rice_note["id"]]
+    generated = {tmpl_names[c["ord"]] for c in rice_cards}
+
+    # The bug this pins: no compiled Production card ever has an empty
+    # Picture front (23 such cards in the live deck, e.g. นี่, อะไร).
+    assert not ("Production" in generated and fields["Picture"] == "")
+    assert "Production" not in generated
+    assert "Listening" in generated
+    assert "Reading" in generated
+
+    dropped_kinds = {(d.family, d.kind, d.subject) for d in compiled.report.dropped}
+    assert ("word", "Production", "rice") in dropped_kinds
+    reasons = {(d.subject, d.kind): d.reason for d in compiled.report.dropped}
+    assert reasons[("rice", "Production")] == "no current-best picture"
+
+
 def test_every_word_and_sentence_template_has_a_registered_drop_cause():
     # A renamed or added template with no entry must fail loudly (a
     # KeyError from _template_drop_reason), not silently report a

@@ -100,10 +100,21 @@ WORD_MODEL = _model(
                '<div class="thai">{{Thai}}</div><div class="ipa">{{Ipa}}</div>'
                '<div class="gloss">{{Meaning}}</div>',
     }, {
+        # Picture nests inside its own section, not just ProductiveTarget's
+        # (spec 4 section 1: "productive Target and a current-best
+        # picture; no picture, no card"): genanki's required-field
+        # computation (genanki.Model._req) treats a field as required when
+        # blanking it alone empties the rendered qfmt, so nesting Picture
+        # makes genanki compute this template's own requirement as "all
+        # of ProductiveTarget, Picture" -- the card-presence rule is
+        # explicit in the template, not left to genanki merely noticing
+        # ProductiveTarget on its own (which is all the un-nested section
+        # gave it, and how a Production card with an empty Picture front
+        # got compiled).
         "name": "Production",
-        "qfmt": '{{#ProductiveTarget}}{{Picture}}'
+        "qfmt": '{{#ProductiveTarget}}{{#Picture}}{{Picture}}'
                '{{#FrontGloss}}<div class="gloss">{{FrontGloss}}</div>{{/FrontGloss}}'
-               '{{/ProductiveTarget}}',
+               '{{/Picture}}{{/ProductiveTarget}}',
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
                '{{Audio}}<div class="ipa">{{Ipa}}</div>',
     }, {
@@ -630,7 +641,11 @@ class _DropCause:
 # before building theirs.
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Listening"): _DropCause(None, None, "recording"),
-    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "recording"),
+    # gate_field is ProductiveTarget (dropped for "gated: ..." when the
+    # word isn't productive); when it IS productive but the card still
+    # didn't generate, the front's other requirement -- a current-best
+    # picture (spec 4 section 1/3) -- is what's missing.
+    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "picture"),
     ("word", "Reading"): _DropCause(None, None, "recording"),
     ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested", "recording"),
     ("sentence", "Cloze"): _DropCause("Productive", "gated: no productive Target", "recording"),
