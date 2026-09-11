@@ -90,7 +90,7 @@ def test_registered_rules_match_the_spec_table():
     expected = {
         "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
         "coverage/confusions",
-        "coverage/categories", "picture/fit",
+        "coverage/categories", "coverage/exercise-depth", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
         "sentence/fills-novelty",
         "target/sentence-required", "grapheme/keyword-picture-required",
@@ -269,6 +269,48 @@ def test_coverage_categories_is_full_with_no_categories_at_all():
     syllabus = make_syllabus()
     metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/categories")
     assert metric.value == 1.0
+
+
+# --- coverage/exercise-depth (F5) --------------------------------------------
+
+def test_coverage_exercise_depth_measures_share_of_words_used_twice_or_more():
+    shared = word("shared", "ไป")  # go -- appears in two adopted sentences
+    lone = word("lone", "มา")  # come -- appears in one adopted sentence
+    t_shared = target("shared/receptive", "shared", "receptive")
+    t_lone = target("lone/receptive", "lone", "receptive")
+    to = thai_of(shared, lone)
+    # Two distinct sentences, each using only "shared" (two clauses so the
+    # rendered text differs and the sentences do not collide on text_sha).
+    s_shared_1 = sentence(((shared.id,),), to)
+    s_shared_2 = sentence(((shared.id,), (shared.id,)), to)
+    s_lone = sentence(((lone.id,),), to)
+    syllabus = make_syllabus(words=(shared, lone), targets=(t_shared, t_lone),
+                             sentences=(s_shared_1, s_shared_2, s_lone))
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/exercise-depth")
+    assert metric.value == 0.5
+    assert metric.detail == {"once": 1, "twice": 1, "three_plus": 0,
+                             "once_words": ["lone"]}
+
+
+def test_coverage_exercise_depth_is_zero_with_no_sentences_at_all():
+    syllabus = make_syllabus()
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/exercise-depth")
+    assert metric.value == 0.0
+    assert metric.detail == {"once": 0, "twice": 0, "three_plus": 0, "once_words": []}
+
+
+def test_coverage_exercise_depth_excludes_a_word_with_no_filled_target():
+    # "unmet" is named by the sentence but carries no Target at all, so the
+    # sentence-level gate empties the fill set -- neither word is counted.
+    met = word("met", "ไป")  # go
+    unmet = word("unmet", "มา")  # come, untargeted
+    t_met = target("met/receptive", "met", "receptive")
+    to = thai_of(met, unmet)
+    s = sentence(((met.id, unmet.id),), to)
+    syllabus = make_syllabus(words=(met, unmet), targets=(t_met,), sentences=(s,))
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/exercise-depth")
+    assert metric.value == 0.0
+    assert metric.detail == {"once": 0, "twice": 0, "three_plus": 0, "once_words": []}
 
 
 # --- coverage/confusions ------------------------------------------------

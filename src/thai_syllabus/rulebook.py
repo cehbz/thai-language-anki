@@ -131,6 +131,30 @@ COVERAGE_CATEGORIES = Rule(id="coverage/categories", principle="F2",
                            measure=_measure_coverage_categories)
 
 
+# --- coverage/exercise-depth -------------------------------------------------
+# F5 (spec 1 section 4, r12): adopted sentences per word with a filled
+# Target. value = the share of those words used (named among a sentence's
+# own words) in two or more adopted sentences.
+
+def _measure_exercise_depth(syllabus: "Syllabus") -> Metric:
+    filled_words = {t.word for s in syllabus.sentences for t in syllabus.fill_set(s)}
+    counts: dict["WordId", int] = {
+        w: sum(1 for s in syllabus.sentences if w in s.words) for w in filled_words}
+    once_words = sorted(w for w, n in counts.items() if n == 1)
+    once = len(once_words)
+    twice = sum(1 for n in counts.values() if n == 2)
+    three_plus = sum(1 for n in counts.values() if n >= 3)
+    value = (twice + three_plus) / len(counts) if counts else 0.0
+    return Metric(rule="coverage/exercise-depth", value=value,
+                 detail={"once": once, "twice": twice, "three_plus": three_plus,
+                        "once_words": once_words})
+
+
+COVERAGE_EXERCISE_DEPTH = Rule(id="coverage/exercise-depth", principle="F5",
+                               severity="info", shape="measure",
+                               measure=_measure_exercise_depth)
+
+
 # --- coverage/confusions --------------------------------------------------
 # F1: sound system first. Coverage per trained confusion = pairs x distinct
 # speakers.
@@ -539,6 +563,7 @@ RULES: list[Rule] = [
     GRAPHEME_KEYWORD_CONTAINS_SYMBOL,
     SENTENCE_FILLS_NOVELTY,
     COVERAGE_CATEGORIES,
+    COVERAGE_EXERCISE_DEPTH,
     COVERAGE_CONFUSIONS,
     SENTENCE_REGISTER_NATURAL,
     RULEBOOK_TRACEABILITY,
