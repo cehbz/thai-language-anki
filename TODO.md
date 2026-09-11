@@ -24,10 +24,6 @@ still run against them.
 - Forvo growth measurement for the ageing interval: re-look up 30 of the
   333 empty migrated lookups after the 22:00 UTC reset and count how
   many gained a recording since 2026-08-29.
-- Spec 3 §5 wording to align with the r19 code (a spec commit): the
-  no-fit rows and cap are per word (the sentence need's subject), the
-  count reopens on any learner row on the word, and the refused-texts
-  block lists unadopted failed texts, newest first, at most 20.
 - Escalation anchor tie: `_anchor_ts` takes current-best
   rubric-agnostically; a legacy pass and a fresh pass tie at 50 and the
   tie breaks by sha, so a word whose legacy sha sorts first anchors at
@@ -47,6 +43,12 @@ still run against them.
 
 ## Content decisions (user)
 
+- Study evidence awaited (principles' provisional marks): F1 minimal-pair
+  difficulty; F8 introduction-order feel; F3 gloss placement (below); TTS
+  acceptability on receptive sentences (09-02 notes: acceptable on two
+  voices).
+- Register research, not principles: the casual first-person pronoun's
+  neutrality (ฉัน chǎn), particle spelling; Kam Mueang under Parked.
 - Gloss placement (F3): picture-only fronts for every word by default;
   month and weekday names are the pre-decided exceptions; picture
   conventions (pointing figures, the two-position clock, object pairs,
@@ -104,7 +106,8 @@ still run against them.
   measured rank or not at all.
 - Meaning vs gloss on Word (a Word's meaning is the sense; the English
   gloss is its L1 rendering).
-- Exercise-latency measure; scene-picture prioritization budget.
+- Exercise-latency measure; scene-picture prioritization budget; batch
+  set-cover sentence generation; grapheme spoken-name recordings.
 - Gallery note text: the row keeps answer["note"], but only its card-flag
   label is read (directed(), card_flags); surface the text on the screen.
 - The legacy thai_deck_gen GoogleTts (src/thai_deck_gen/media/tts.py) still

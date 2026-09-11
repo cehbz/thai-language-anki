@@ -1,151 +1,59 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 21, proposed 2026-09-11 against principles r2 and architecture
-r2. Revision process as in docs/architecture.md: proposals on evidence,
-explicit approval per revision, numbered log.
+Revision 22, proposed 2026-09-11 against principles r3 and architecture
+r3. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
-- r2 2026-09-04: one Message Batch per run, one source per need per run
-  (§7); pending narrowed to an unresolved batch (§6); improved defined,
-  excluded and unreachable reported (§7); recording voice constraint and
-  speaker attributes, pools (E7, §5); coverage/speakers (§8); an attempt
-  appends under the need's own subject (§5); authority order as domain
-  data (§4); carry-over rewritten (§10); the 09-03 roster row for
-  audiofetch approved.
-- r3 2026-09-04: one key function per backend; the rendition answer is
-  the artifact set compile resolves; sentence drafts carry a judged
-  gloss; flags and re-verification requests make a subject directed.
-  Evidence: implementation review 2026-09-04.
-- r4 2026-09-05: keys are typed values; the encoding is a storage
-  identity, never parsed. User ruling 2026-09-05.
-- r5 2026-09-05: a Source transport failure skips the source for the
-  run and is counted, only the judge stops the run; RunReport accounts
-  for every need gaps() lists. Evidence: Task B3 and B4 reviews.
-- r6 2026-09-06: at most one batch outstanding; RunReport gains
-  unserved, budgeted, deferred and drafted with the accounting identity;
-  day budgets from the record. Evidence: Task B5 and B6 reviews.
+- r2 2026-09-04: one Message Batch per run, one source per need per run;
+  improved, excluded, unreachable reported; voice constraint and speaker
+  pools; coverage/speakers; authority order as domain data.
+- r3 2026-09-04: one key function per backend; the rendition answer is the
+  artifact set; drafts carry a judged gloss; flags make a subject directed.
+- r4 2026-09-05: keys are typed values; the encoding is never parsed.
+- r5 2026-09-05: a Source transport failure skips the source for the run;
+  only the judge stops the run; RunReport accounts for every need.
+- r6 2026-09-06: at most one batch outstanding; the accounting identity;
+  day budgets from the record.
 - r7 2026-09-06: source selection and exhaustion fold over attempt
-  outcomes; a transient failure never advances a need. Evidence:
-  audiofetch failures after a successful Forvo lookup advanced needs
-  to TTS (final review follow-up).
-- r8 2026-09-06: on recording and rendition roles the learner vetoes
-  and never ranks upward. Evidence: Task B8 found a learner "good" on
-  a rendition with no known speaker ranking above the coverage
-  measure; user ruling 2026-09-06 (the learner may be hearing two
-  speakers, not the contrast, but can tell an unintelligible
-  recording).
-- r9 2026-09-06: the drafter's transport is configured on its own
-  (`drafter.transport`, cli by default); a drafter transport failure is
-  a source failure; the drafting prompt lists the vocabulary once with a
-  cutoff per target; the api and batch transports send a thinking
-  setting (`judge.thinking`). Evidence: the first cutover run 2026-09-06
-  (the api drafter's 4096 output tokens all spent on adaptive thinking,
-  no text; 97K input tokens for 40 targets; the run died with no
-  report); user ruling 2026-09-06 (subscription quota over cash where
-  the CLI can do the job).
-- r10 2026-09-07: failure taxonomy (§6a): three states, the retryable
-  one bounded by `transient_cap`; a backend appends only an answer it
-  recognized; a served refusal of a url from a cached answer re-asks that
-  answer once (Forvo urls are time-limited); a missing artifact is
-  excluded, never fatal; a batch is outstanding until ended;
-  `judge.thinking: adaptive` needs `judge.max_tokens`; `search_proxy` is
-  the forward proxy for Openverse search; the fills key names its
-  curated and tokenizer version. Evidence: smoke run 2 (every migrated
-  Forvo url expired; the proxy answered 400 to a base-url request) and
-  the curable-failure audit, both 2026-09-07; user rulings 2026-09-07
-  (three states with a retry limit; a served non-audio body is curable).
-- r11 2026-09-07: assess-first (§5): a need with a candidate unjudged
-  under the current rubric is judged before any source is asked; the
-  queue's rubric lever is that same fold (§6). Evidence: smoke run 3 (65
-  picture words re-sourced, ~3,500 questions projected against ~650); a
-  stale legacy verdict on a non-candidate sha read as an untried lever.
-  User ruling 2026-09-07 (incremental over re-migration).
-- r12 2026-09-07: a judge key names its subject (§4); `legacy-current`
-  is a candidate's provenance, never a Source ask (§3); a current-best
-  tie among equals breaks by artifact sha (§6). Evidence: final review
-  of the assess-first arc 2026-09-07 (a fit verdict cached for one word
-  answered another word's question, an assess-first no-op; three
-  migrated word pairs share one picture; the feedback screen lost the
-  search phrase behind the migrated row; a tie broke by set order,
-  differing per process). User ruling 2026-09-07 (root cause over guard).
-- r13 2026-09-07: the newest verdict per backend and artifact ranks
-  (§6). Evidence: the judge-key arc's final review (a re-keyed verdict
-  re-asked once leaves two rows per artifact; the fold took the higher).
-- r14 2026-09-08: the sentence attempt drafts for coverage: one cutoff
-  per batch, fills against every open target the text contains, one
-  candidate per distinct text (§5). Evidence: 118 of 119 live drafts
-  claimed one target and 76 of 113 filled nothing, while the 8 adopted
-  sentences fill 5 to 7 targets each under fills(); research of
-  2026-09-08 (placement at the last unknown word).
+  outcomes; a transient failure never advances a need.
+- r8 2026-09-06: on recording and rendition roles the learner vetoes and
+  never ranks upward.
+- r9 2026-09-06: the drafter's transport configured on its own; a drafter
+  failure is a source failure; judge thinking setting.
+- r10 2026-09-07: failure taxonomy (§6a); a backend appends only an answer
+  it recognized; the re-ask rule; search_proxy.
+- r11 2026-09-07: assess-first.
+- r12 2026-09-07: a judge key names its subject; legacy-current is a
+  candidate's provenance; a current-best tie breaks by artifact sha.
+- r13 2026-09-07: the newest verdict per backend and artifact ranks.
+- r14 2026-09-08: the sentence attempt drafts for coverage, one candidate
+  per distinct text.
 - r15 2026-09-09: the prompt's vocabulary is met in the fill-set sense;
-  unmet sentence-introduced targets are introducible, one per sentence
-  (§5). Evidence: run 7, the drafter was told early-placed glue words
-  were available and used 2 to 6 per sentence; 11 of 12 drafts filled
-  nothing.
-- r16 2026-09-09: the drafter answers clauses of word ids with the text
-  and gloss; acceptance is the Sentence invariant; fills is membership,
-  the `fills` Assess backend and its key are gone; a parse ask for
-  existing text (§3, §4, §5, §6a). Evidence: spec 1 r8.
-- r17 2026-09-09: Wikimedia asks for bitmaps at a bounded width; an
-  attempt tries hits no earlier attempt tried, tried urls on the outcome
-  row; a source's own quota statement is budget exhaustion; a budget
-  window starts at a configured time (§3, §5, §6a, §7, §9). Evidence:
-  the 2026-09-09 cycles: imgfetch refused 45 to 108 Wikimedia hits per
-  cycle (PDF, DjVu, over 10 MB), the same file up to 6 times for one
-  need; Forvo's daily limit answers 400 `["Limit/day reached."]` and
-  resets at 22:00 UTC (api.forvo.com general information), so every
-  cycle after the first killed Forvo with a transient-failure on an
-  arbitrary need while the 450/day count ran from local midnight.
-- r18 2026-09-10: a Forvo mp3 download is a Forvo request: the per-day
-  budget sums the audiofetch rows attributed to forvo with the lookups,
-  and the attempt tallies each download under forvo (§4, §7);
-  `quotas.<source>.max_asks: null` lifts a default cap (§9). Evidence:
-  2026-09-10, a fresh Forvo window answered `Limit/day reached.` after
-  232 lookups and 268 downloads while the budget read 232 of 450.
-- r19 2026-09-10: a live search is not re-asked (§5); the judge's answer
-  is the last JSON object in its completion and the prompts ask for
-  that object alone (§2); `candidates` means stored, and outcome rows
-  never rank (§6); the queue counts attempts as exhausted() does (§6);
-  a draft text's first gloss stands and only differing clauses reject
-  it, the drafting prompt lists the texts the judge failed, and a
-  no-fit answer is recognized, cached, and escalates a target to the
-  learner after a cap (§5); `nothing` from a growing source ages out
-  (§6a, §9). Evidence: 2026-09-10 cycles: two of 164 judge answers
-  carried prose before a valid verdict and were refused; one text was
-  drafted twice with a paraphrased gloss after the judge failed it, and
-  merge dropped both every run; user rulings 2026-09-10.
-- r20 2026-09-11: §5's wording aligned with the r19 implementation: the
-  no-fit rows and the cap are per word (the sentence need's subject,
-  the target ids on the row), the count reopens on any learner row on
-  the word, the drafting prompt lists the unadopted failed texts newest
-  first (at most 20), and a no-fit served from cache is re-asked once so
-  the cap counts refusals. Evidence: the r19 reviews (word-keyed folds,
-  the no-fit cache replay measured at three runs to exhaustion).
-- r21 2026-09-11: §5's voice constraint derives from the speaker marking
-  (spec 1 r10): female → female, male → male, empty → male on a
-  productive back, else any; the same rule for word and sentence needs;
-  contradicting recordings vetoed once and re-sourced. Evidence: spec 1
-  r10 names §5 as the constraint's home while r20's text still read
-  productive-only; the live deck held ผม (pǒm, "I", male speaker) under a
-  female TTS voice and คะ (khá, female question particle) under a male
-  one. Also §4's mechanical key carries the subject
-  (mech:CHECK:PARAMS:SUBJECT:sha): a content-addressed artifact two
-  subjects share (ผม for i-male-speaker and hair-on-the-head) kept its
-  verdict under the first subject only, and current_best for the second
-  saw none. §5 and §8 drop `rendition/mixed-speakers`, retired by spec 1
-  r10. User approval 2026-09-11.
+  introducible targets one per sentence.
+- r16 2026-09-09: the drafter answers clauses of word ids; acceptance is
+  the Sentence invariant; the fills Assess backend is gone; the parse ask.
+- r17 2026-09-09: Wikimedia bitmaps at a bounded width; tried urls on the
+  outcome row; a source's quota statement is budget exhaustion; budget
+  windows start at a configured time.
+- r18 2026-09-10: a Forvo download is a Forvo request; `max_asks: null`.
+- r19 2026-09-10: a live search is not re-asked; the verdict is the last
+  JSON object; outcome rows never rank; a text's first gloss stands; the
+  no-fit answer, its cap and its ageing.
+- r20 2026-09-11: §5's no-fit wording aligned with the r19 implementation.
+- r21 2026-09-11: the voice constraint derives from the speaker marking;
+  the mechanical key carries the subject; rendition/mixed-speakers gone.
+- r22 2026-09-11: logs to one line each; the pre-r1 draft note, the
+  2026-09-03 Forvo measurement and implementation-status clauses removed;
+  §5 Sentence split into labeled parts; §7's buckets stated once as a
+  table; §8 merged into spec 1 §4, §10 into spec 2 §4, §11 into spec 1
+  §3; §12's "no retries" (contradicted by §6a) dropped. No behavior
+  changed.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
 (current-best, pending, exhausted, queue), Budget, and the run. Storage
 shapes are spec 2; domain consumers are spec 1; UI surfaces are spec 5.
-
-Revision 2026-09-03 (second): adds the attempt, candidates, pending,
-authority-driven current-best, cost on every answer, the sentence and
-rendition attempts, completeness rules, and the carry-over contract.
-Supersedes the first 2026-09-03 draft, whose run had no assess step and
-whose picture attempts stopped at search.
 
 ## 1. Vocabulary
 
@@ -222,18 +130,13 @@ one speaker answers empty.
 | openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key; re-asked once per attempt when every hit is refused by its server (§6a) |
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo; gsrsearch carries `filetype:bitmap`; imageinfo asks `iiurlwidth` = providers.yaml `image_width`, default 1600, and the hit's url is the scaled `thumburl`, origin the file page) | wikimedia:query | free HTTP | same |
 | imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
-| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one), 450/day from 22:00 UTC; 400 `["Limit/day reached."]` is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
+| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
 | llm | sentence (per run over open targets), parse (clauses for given texts), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
-
-Measured 2026-09-03: of 562 word lookups 333 returned nothing; of 40
-minimal-pair members 39 are on Forvo and 11 of 22 pairs have a same-speaker
-rendition by intersection; Forvo's per-speaker listing returns nothing, so
-speaker-directed search does not exist.
 
 ## 4. Assess backends and authority
 
@@ -306,18 +209,14 @@ sourcing: the Sentence invariant refuses it. No rulebook rule: the
 constraint holds at sourcing time; a recording on record that
 contradicts it is vetoed once through the learner path (an
 `unacceptable-none` rating on that sha, role recording-for-word or
-recording-for-sentence) and re-sourced under the constraint. Forvo attempt: lookup (cached;
-re-asked once within the attempt when a download of one of its urls is
-refused by the server, Forvo urls being time-limited, and the item retried
-by its Forvo id), download each item's mp3, mechanical duration/format on
-each;
-the item's sex and country are recorded on the speaker (spec 2);
-current-best by authority then provenance prior. TTS attempt: synthesize
-with a pool voice (pools per sex in providers.yaml; the roster's sex is
-recorded on the speaker), then mechanical. TTS supplies sex and timbre
-only; Forvo and commissions supply age and accent. Warn `recording/synthetic` when current-best is TTS (the
-native-audio principle is kept as the target; commission is tracked in
-TODO).
+recording-for-sentence) and re-sourced under the constraint. Forvo
+attempt: lookup (cached; the §6a re-ask rule on an expired url), download
+each item's mp3, mechanical duration/format on each; the item's sex and
+country are recorded on the speaker (spec 2); current-best by authority
+then provenance prior. TTS attempt: synthesize with a pool voice (the
+roster's sex is recorded on the speaker), then mechanical. TTS supplies
+sex and timbre only; Forvo and commissions supply age and accent.
+`recording/synthetic` warns when current-best is TTS.
 
 **Rendition (MinimalPair).** Source order: forvo (intersection of members'
 lookups by username; one lookup per member, shared with the recording
@@ -333,48 +232,50 @@ members and duration. Findings: none for native one-speaker;
 by construction of the rendition answer; spec 1 r10 retired the check).
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target: the prompt carries the vocabulary met in the fill-set sense,
-once, as `id  thai  (meaning)` lines: the picture-introduced words in
+target.
+
+*Prompt.* The vocabulary met in the fill-set sense, once, as
+`id  thai  (meaning)` lines: the picture-introduced words in
 entry-position order up to the furthest handed target, plus every
 sentence-introduced word an adopted sentence fills; the handed
-sentence-introduced targets not yet met are listed as introducible, at
-most one per sentence; one sentence per item; the profile register; and
-the existing sentence openings to avoid; it asks for the fewest natural
-sentences that cover the handed targets, and states the rendering rule
-(spec 1 §1: clauses of word ids, ๆ after a repeated word, clauses
-separated by one space, standard spelling, numbers as words, no
-punctuation). The answer item is
-`{"sentences": [{"clauses": [["<word id>" | ["<word id>", "ๆ"], ...], ...],
-"text": "...", "gloss": "..."}]}`. Acceptance is the Sentence invariant,
-local and mechanical: an unregistered id or a rendering that differs
-from text refuses the draft, logged with the reason, the provide row
-keeping it. Each distinct accepted text is a candidate: a text listed
-twice is one candidate; differing clauses reject it; differing glosses
-keep the first, since the verdict is keyed by the text and was given on
-that gloss (r19). The prompt also lists, as sentences not to propose,
-the unadopted texts the judge failed, newest first, at most 20, each
-with the verdict's evidence (whitespace-collapsed, 200 characters). A
-no-fit answer `{"sentences": [], "reason": "..."}` is recognized and
+sentence-introduced targets not yet met, listed as introducible, at most
+one per sentence; the profile register; the existing sentence openings
+to avoid; the unadopted texts the judge failed, newest first, at most 20,
+each with the verdict's evidence (whitespace-collapsed, 200 characters),
+as sentences not to propose. It asks for the fewest natural sentences
+that cover the handed targets and states the rendering rule (spec 1 §1:
+clauses of word ids, ๆ after a repeated word, clauses separated by one
+space, standard spelling, numbers as words, no punctuation).
+
+*Answer and acceptance.* `{"sentences": [{"clauses": [["<word id>" |
+["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
+Acceptance is the Sentence invariant, local and mechanical: an
+unregistered id or a rendering that differs from text refuses the draft,
+logged with the reason, the provide row keeping it. Each distinct
+accepted text is one candidate: a text listed twice is one candidate;
+differing clauses reject it; differing glosses keep the first, since the
+verdict is keyed by the text and was given on that gloss. A draft
+filling no open target is not judged.
+
+*No fit.* `{"sentences": [], "reason": "..."}` is recognized and
 cached: one `nothing` outcome row per handed word (the sentence need's
-subject; port attempt, backend llm, the handed target ids on the row);
-a no-fit served from the cache is re-asked once, so the rows count
-refusals, not runs. A word with `sentence_nothing_cap` (providers.yaml,
-default 3) such rows since its newest learner row is exhausted: its
-targets are not handed again, the run counts it exhausted, and the
-feedback screen asks the learner a direction question carrying the
-drafter's reason (supply a sentence, or retire the target); any learner
-row on the word reopens it (§6a). Fills is
-membership of an open target's word in the clauses; a draft filling no
-open target is not judged. The judge sees each candidate once
-(sentence-for-target: naturalness; register; the L1 gloss with the
-text, a gloss that misstates the sentence fails the candidate);
-adoption (`Syllabus.add_sentence` with provenance) fills every target
-`fills()` says it fills, chosen greedily by targets filled. Adoption
-creates needs: the sentence's recording (voice constraint from the
-marking as for a word, above; tts allowed for receptive-only, a
-productive fill wants native, warn otherwise) and an optional scene
-picture. A refused draft and a draft filling nothing are rejected
-drafts in the record.
+subject; port attempt, backend llm, the handed target ids on the row).
+A no-fit served from the cache is re-asked once, so the rows count
+refusals, not runs. A word with `sentence_nothing_cap` (§8, default 3)
+such rows since its newest learner row is exhausted: its targets are not
+handed again, the run counts it exhausted, and the feedback screen asks
+the learner a direction question carrying the drafter's reason (supply a
+sentence, or retire the target); any learner row on the word reopens it.
+
+*Judging and adoption.* The judge sees each candidate once
+(sentence-for-target: naturalness; register; the L1 gloss with the text,
+a gloss that misstates the sentence fails the candidate). Adoption
+(`Syllabus.add_sentence` with provenance) fills every target `fills()`
+says it fills, chosen greedily by targets filled, and creates needs: the
+sentence's recording (voice constraint from the marking as for a word,
+above; tts allowed for receptive-only, a productive fill wants native,
+warn otherwise) and an optional scene picture. A refused draft and a
+draft filling nothing are rejected drafts in the record.
 
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
@@ -385,11 +286,10 @@ Sentence invariant; a text whose parse fails is reported (spec 2 §4).
 **Grapheme keyword (Grapheme).** Source: llm proposal (concrete, picturable,
 containing the symbol); mechanical `grapheme/keyword-contains-symbol`; the
 learner adopts (curated data changes; a machine proposal never adopts
-itself). Implemented after cutover.
+itself).
 
 **Pair (SoundConfusion).** pair-search (dictionary + G2P); mechanical
 exact-confusion check; adoption into curated pairs is the learner's act.
-Implemented after cutover.
 
 ## 6. Derivations (folds; never stored)
 
@@ -458,7 +358,7 @@ Every ask and fetch ends in one of four states:
   other outcome.
 - **Ageing.** A `nothing` outcome from a source whose corpus grows
   (Forvo) stops counting as tried once older than
-  `quotas.<source>.nothing_ttl_days` (§9; forvo 180, other sources
+  `quotas.<source>.nothing_ttl_days` (§8; forvo 180, other sources
   never): next_source offers the source again and a fresh lookup
   appends a new row. r19.
 - **Quota.** The source itself says its allowance is spent (Forvo: 400
@@ -510,87 +410,44 @@ this run's spend.
 ```
 run(syllabus, budgets):
   resolve the previous run's batch, if any: append its verdicts, release
-      its marker (a batch ends with expired or errored results too; those
-      questions re-ask). Pending clears here.
+      its marker (expired or errored results carry no verdict; those
+      questions re-ask); pending clears here
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
   questions = []
   for need in queue(syllabus, budgets):        # pending excluded
-      if unjudged(need):                       # §5 assess-first: free of
-          questions += assess(need); continue  # any source budget, no
-                                               # outcome row
-      source = next_source(need)               # cheapest source not yet
-                                               # tried since current-best
-                                               # last changed; none ->
-                                               # exhausted, skip
-      if budget spent: continue
-      questions += attempt(need, source)       # provide; assess inline
-                                               # where the transport is
-                                               # inline, else collect
-  submit(questions) as one batch; append its marker  # no-op if empty
-  RunReport {attempted, improved, exhausted, pending, excluded,
-             unreachable, available, unserved, budgeted, deferred,
-             drafted, preferences, source_failures, spend per source}
-  # available = every need gaps() lists, and
-  # available == attempted + exhausted + pending + unserved + budgeted
-  #              + deferred, always:
-  #   exhausted  = needs with a Source whose next source is None
-  #   pending    = needs (subject, kind) with a question in this run's
-  #                batch or the earlier unresolved one; the loop never
-  #                attempts a need that already has a question collected
-  #                this run, so a need lands in exactly one bucket; a
-  #                preference question on a picture that already satisfies
-  #                its need is counted under preferences, outside the
-  #                identity; questions collected but never submitted
-  #                (the judge died) and needs the loop never reached count
-  #                under deferred
-  #   unserved   = needs whose kind has no Source and no per-run pass yet
-  #   budgeted   = needs skipped because their Source's day budget was
-  #                spent (every open Target within the drafting cap when
-  #                the sentence drafter's budget is spent)
-  #   deferred   = needs the run never considered: an earlier batch is
-  #                still outstanding, the judge was unreachable at
-  #                resolve, or open Targets beyond the per-run drafting cap
-  #   attempted  counts needs whose attempt finished this run (inline
-  #              verdicts, or no questions raised); a need whose questions
-  #              await this run's batch counts as pending, not attempted;
-  #              an assess-first need lands in the same two buckets and
-  #              its attempt count is unchanged;
-  #              plus the open Targets handed to the drafter (within the
-  #              cap) when the sentence attempt runs; drafted = the drafts
-  #              it produced
+      if unjudged(need): questions += assess(need); continue   # §5 assess-first
+      source = next_source(need)               # none -> exhausted, skip
+      if budget spent: continue                # -> budgeted
+      questions += attempt(need, source)       # provide; assess inline or collect
+  submit(questions) as one batch; append its marker   # no-op if empty
+  RunReport
 ```
 
-improved = the need's current-best artifact sha differs after the
-attempt; a re-ranking among unchanged artifacts is not improvement.
-excluded = questions that could not be prepared (missing or unreadable
-artifact), reported per need and skipped. unreachable = the judge could
-not be reached; the run stops at the first such attempt and exits
-non-zero (fail fast; nothing after it is attempted). A Source that
-cannot be reached does not stop the run: the source is skipped for the
-rest of the run, needs whose next source it is stay untouched and
-count under deferred, the need whose attempt failed records a
-`transient-failure` outcome and counts under deferred too, and the
-report counts the failure under source_failures[source]. A drafter
-transport failure is a source failure under source_failures["llm-sentence"]:
-every open Target's need counts under deferred and the loop runs. Every ask
-appends; kill-safe anywhere. The run is transport-agnostic.
+RunReport: `available` is every need gaps() lists, and every need lands
+in exactly one of the six buckets below, so
+`available == attempted + exhausted + pending + unserved + budgeted + deferred`
+always. The remaining fields count events, not needs.
 
-## 8. Rules added
+| field | counts |
+|---|---|
+| attempted | needs whose attempt finished this run (inline verdicts, or no questions raised), plus the open Targets handed to the drafter within the cap |
+| exhausted | needs whose next source is None |
+| pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
+| unserved | needs whose kind has no Source and no per-run pass |
+| budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent) |
+| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted |
+| improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
+| drafted | drafts the sentence attempt produced |
+| preferences | preference questions on a picture that already satisfies its need (outside the identity) |
+| excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
+| unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
+| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; needs whose next source it is stay untouched and count under deferred; the failing need records a `transient-failure` outcome; a drafter transport failure counts under `llm-sentence` |
+| spend[source] | the source's asks and cost this run |
 
-Error (completeness; compile refuses): `target/picture-required`,
-`target/recording-required`, `target/sentence-required` (an adopted
-sentence fills it), `pair/rendition-required`,
-`grapheme/keyword-picture-required`. Warn: `recording/synthetic`,
-`rendition/synthetic`, `sentence/synthetic-productive`. Judged: `picture/fit` (old texts),
-`picture/preference`, `sentence/register-natural`. Measure:
-`coverage/speakers` (E7): per audio corpus (word recordings, renditions,
-sentence recordings), distinct speakers per sex, age band, and region
-against rulebook targets; unknown attributes never count. Per-deck severity
-overrides live in rulebook.yaml severities; that is the only relaxation
-path besides compile --force.
+Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 
-## 9. Configuration
+## 8. Configuration
 
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
@@ -599,32 +456,14 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
-(forvo 180; absent = never) and `sentence_nothing_cap` (3) per r19. `search_proxy` is the HTTP
-forward proxy Openverse searches go through (media sourcing: Openverse
-refuses a Thai egress); no other request uses it. The provenance prior lives in rulebook.yaml (it is
-a judgement, not a route). rulebook.yaml `rubrics` carries the picture/fit,
-picture/preference, and sentence texts verbatim.
+(forvo 180; absent = never) and `sentence_nothing_cap` (3). `search_proxy`
+is the HTTP forward proxy Openverse searches go through (Openverse
+refuses a Thai egress); no other request uses it. The provenance prior
+lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
+`rubrics` and `severities` are spec 1 §4's.
 
-## 10. Carry-over
+## 9. Explicitly out
 
-Spec 2 §4 as revised (r8) is the contract: old candidate verdicts carry
-under a legacy rubric id, on the old key shape (LegacyVerdictKey, §4),
-and never rank; the current picture carries as a
-candidate (spec 2 §4 r7) and is judged under the current rubric by
-assess-first (§5) on the first run that queues its need; the old
-judge_cache.sqlite is retired (its keys are opaque hashes of prompts,
-recoverable only by replaying the old package); learner rows are keyed
-by word id; no marker of the old deck's choice exists. Audio and
-sentences regenerate.
-
-## 11. Report identity
-
-Unchanged: Report carries `rulebook_id` alongside `syllabus_state_id`;
-staleness = either differs.
-
-## 12. Explicitly out
-
-- No retries; a failed ask is not cached.
 - No listener implementation; calibration first.
 - No interactive judge.
 - No stored need status of any kind.

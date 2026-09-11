@@ -1,37 +1,30 @@
 # Spec 5: The feedback screen
 
-Revision 3, proposed 2026-09-04 against principles r2 and architecture
-r2 (r1 promoted 2026-09-04 as written on 2026-09-03 against the
-principles draft). Re-checked against principles r1 and architecture r1
-on 2026-09-04; the revisions that re-check proposed enter as r2 on
-approval. Revision process as in docs/architecture.md: proposals on
-evidence, explicit approval per revision, numbered log.
+Revision 4, proposed 2026-09-11 against principles r3 and architecture
+r3. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
-- r2 2026-09-04: excluded and unreachable in stats and on the subject
-  screen (spec 3 §7).
-- r3 2026-09-04: supply by kind through the ingest path with
-  provenance; directions recorded as directions; two endpoints added;
-  localStorage wording; flags on the subject screen; the screen consumes
-  the run's derivations. Evidence: implementation review 2026-09-04.
+- r2 2026-09-04: excluded and unreachable in stats and on the subject screen.
+- r3 2026-09-04: supply by kind through the ingest path; directions recorded
+  as directions; two endpoints added; flags on the subject screen; the
+  screen consumes the run's derivations.
+- r4 2026-09-11: the header's re-check narrative and the learner key
+  encoding (spec 3 §4 owns it) removed; no behavior changed.
 
 Scope: the learner-backend transport — the local web surface where the
-learner answers the system's questions and reviews the deck. Grows out of
-scripts/proof_gallery.py (kept patterns: local http.server, keyboard-first,
-inline single-page UI, read-only extraction, JSONL/db appends). Policy
-lives in spec 3's derivations; this surface only presents and records.
+learner answers the system's questions and reviews the deck. Policy lives
+in spec 3's derivations; this surface only presents and records.
 
 ## 1. Modes
 
-**Proof gallery** (exists, kept): every card rendered front/back in
-introduction order, sequential, no scheduling; per-card one-line notes;
-pair drill with per-confusion accuracy logging; gloss overlay; stats.
-Changes: reads the new Compile; notes append as learner assessment rows
-via RecordWriter (not proof_notes.jsonl); drill results append as
+**Proof gallery**: every card rendered front/back in introduction order,
+sequential, no scheduling; per-card one-line notes; pair drill with
+per-confusion accuracy logging; gloss overlay; stats. Notes append as
+learner assessment rows via RecordWriter; drill results append as
 study-adjacent evidence rows.
 
-**Question session** (new): serves the spec-3 queue, capped by the
+**Question session**: serves the spec-3 queue, capped by the
 learner-attention budget (default 20/session, configurable), highest
 expected gain first. Pull-based: the learner answers any number and
 stops; unanswered questions stay queued. Question kinds:
@@ -43,7 +36,7 @@ stops; unanswered questions stay queued. Question kinds:
    / 2 unacceptable-use-this (then pick a thumbnail) / 3 acceptable /
    4 good; optional one-line note (the Direction). Presentation at card
    size for the current artifact — the presentation is part of the
-   question (F9 role key includes it).
+   question (F4, F9).
 2. **Direction request** (exhausted subject): what was tried — phrases,
    sources, best candidates, judge reasons — plus two actions: type a
    direction, or supply an artifact (file path or URL; a URL is fetched
@@ -57,39 +50,37 @@ stops; unanswered questions stay queued. Question kinds:
 4. **Re-ask with evidence** (StudyRecord contradiction): the original
    answer, the lapse evidence, re-rate.
 
-Every answer appends one learner cache row keyed learner:sha(ARTIFACT):
-ROLE (or the finding identity for waivers); the session shows a running
-count against the budget and can be closed at any point with nothing
-lost.
+Every answer appends one learner row (spec 3 §4's key; the finding
+identity for waivers); the session shows a running count against the
+budget and can be closed at any point with nothing lost.
 
 ## 2. Server
 
-One process: `syllabus review --deck DIR [--port 8877]`. Reads Syllabus
-state, the cache (via AssessmentReader), and media/objects; writes only
-via RecordWriter appends. Port 8877 (8765 reserved for AnkiConnect).
-Endpoints: / (app), /api/queue, /api/cards, /api/answer (POST),
-/api/supply (POST), /api/note (POST), /api/drill (POST), /media/SHA,
-/stats. No external resources; inline
-CSS/JS; keyboard-first (1-4 rate, n note, arrows navigate, g gloss,
-s stats). localStorage for UI conveniences only (position, mode, gloss
-toggle); nothing of record lives in the browser.
+One process: `thai-syllabus review --deck DIR [--port 8877]`. Reads
+Syllabus state, the cache (via AssessmentReader), and media/objects;
+writes only via RecordWriter appends. Port 8877 (8765 reserved for
+AnkiConnect). Endpoints: / (app), /api/queue, /api/cards, /api/answer
+(POST), /api/supply (POST), /api/note (POST), /api/drill (POST),
+/media/SHA, /stats. No external resources; inline CSS/JS; keyboard-first
+(1-4 rate, n note, arrows navigate, g gloss, s stats). localStorage for
+UI conveniences only (position, mode, gloss toggle); nothing of record
+lives in the browser.
 
 ## 3. Stats
 
 Per-session: answered/queued, per-confusion drill accuracy, counts of
 exhausted subjects remaining. Per-deck: current-best coverage per need,
 learner-rated good/acceptable/unacceptable counts, RunReport history
-with every field of spec 3 §7 (excluded and unreachable included). The
-per-subject screen lists excluded candidates with the reason and the
-subject's card-level flags (spec 4 §4). Every derivation the screen shows
-(current-best, exhausted, queue, coverage) comes from the same wired
-media index and parameters the run uses; the screen computes none.
+with every field of spec 3 §7. The per-subject screen lists excluded
+candidates with the reason and the subject's card-level flags (spec 4
+§4). Every derivation the screen shows (current-best, exhausted, queue,
+coverage) comes from the same wired media index and parameters the run
+uses; the screen computes none.
 
 ## 4. Explicitly out
 
 - No editing of curated data (words, targets) — hand-edit the YAML.
-- No judge invocation from the screen (report/batch pays; the screen
-  reads).
+- No judge invocation from the screen (the run pays; the screen reads).
 - No auth; localhost only.
 - No mobile packaging; the phone surface is Anki itself (ReviewNote,
   flags), imported per spec 4.

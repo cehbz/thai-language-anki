@@ -1,38 +1,34 @@
 # Spec 4: The Anki boundary
 
-Revision 6, proposed 2026-09-09 against principles r2 and architecture
-r2. Revision process as in docs/architecture.md: proposals on evidence,
-explicit approval per revision, numbered log.
+Revision 7, proposed 2026-09-11 against principles r3 and architecture
+r3. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
-- r2 2026-09-04: the two mechanisms principles r2 moved out of A2 and A3
-  (fields append; first field is the note identity).
-- r3 2026-09-04: field lists as shipped (ProductiveTarget, Thai,
-  Productive gate); choice order on pair fronts; pair member notes
-  separated; NameThai one reading, no substitute audio; Gloss from the
-  Sentence; word:: tags with the Target derived; flag roles by (family,
-  kind), card-level flags direct the subject; harvest keyed by anchor.
-  Evidence: implementation review 2026-09-04.
-- r4 2026-09-06: pair notes compiled from the rendition with Choices in
-  member order; atomic tags; cumulative due blocks per order() entry;
-  flag roles per (family, kind) with Production rating the picture; the
-  typed FlagKey. Evidence: Tasks C1-C4.
+- r2 2026-09-04: fields append; the first field is the note identity.
+- r3 2026-09-04: field lists as shipped; pair member notes separated; Gloss
+  from the Sentence; flag roles by (family, kind); harvest keyed by anchor.
+- r4 2026-09-06: pair notes from the rendition, Choices in member order;
+  atomic tags; cumulative due blocks; the typed FlagKey.
 - r5 2026-09-08: one note per adopted Sentence, clozed on its last used
   word, a target tag per filled target, guid = text_sha; word notes for
-  picture-introduced words only. Evidence: compile emitted one Listening
-  note per (target, sentence), six identical cards for a sentence
-  filling six; the sibling-interference finding of the 2026-09-08
-  research.
-- r6 2026-09-09: ThaiCloze is the rendering with every element equal to
-  the last used word blanked; no tokenizer. Evidence: spec 1 r8.
+  picture-introduced words only.
+- r6 2026-09-09: ThaiCloze is the rendering with the last used word's
+  elements blanked; no tokenizer.
+- r7 2026-09-11: the card taxonomy (from principles r3) stated in §1; the
+  ReviewNote retraction aside reduced to the rule; no behavior changed.
 
-Scope: Syllabus.compile() — the translation of Syllabus state into Anki's
-domain — and the return path: revlog, flags, and ReviewNote harvests.
-Anki's domain is adopted unmodified (architecture §6); nothing here
-re-litigates it.
+Scope: compile — the translation of Syllabus state into Anki's domain —
+and the return path: revlog, flags, and ReviewNote harvests. Anki's
+domain is adopted unmodified (architecture §6); nothing here re-litigates
+it.
 
-## 1. Models and cards (the card taxonomy, principles draft)
+## 1. Models and cards
+
+The card taxonomy, by skill: discriminate (minimal_pair Recognition),
+hear → meaning (word Listening), picture → say (word Production), read →
+meaning (word Reading), symbol → sound (grapheme Reading), produce in
+context (sentence Cloze), understand in context (sentence Listening).
 
 Model ids: sha-derived from model name, stable; fields only ever
 append, so an existing collection updates in place (A2). A note's first
@@ -150,12 +146,9 @@ retains only final fit-to-viewport.
   (read-only, proven); each non-empty note appends a learner row on the
   note's anchor (from its tags) under key learner-note:ANCHOR:sha(TEXT) — re-harvesting the same text is an
   exact-key hit (no duplicate), edited text is a new key (reprocessed),
-  a cleared field appends nothing and retracts nothing (prior directions
-  remain history). No built-in retraction mechanism for a learner note
-  exists (YAGNI); a newer note on the same subject supersedes in
-  practice (newest-wins reads), and a true retraction is done
-  conversationally — the assistant appends a superseding row on request. Clearing the field in Anki requires AnkiConnect and
-  is a separate, optional step — harvest never writes to Anki.
+  a cleared field appends nothing and retracts nothing: a newer note on
+  the same subject supersedes on read, and a retraction is a superseding
+  row. Harvest never writes to Anki.
 - Import is one command; it reports rows imported per kind and rows
   skipped with reasons.
 

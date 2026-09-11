@@ -1,90 +1,41 @@
 # Spec 1: Domain core
 
-Revision 10, proposed 2026-09-10 against principles r2 and architecture
-r2. Revision process as in docs/architecture.md: proposals on evidence,
-explicit approval per revision, numbered log.
+Revision 11, proposed 2026-09-11 against principles r3 and architecture
+r3. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
-- r2 2026-09-04: Category as a curated collection (F2); Speaker
-  attributes (E7); Grapheme.name_word (spec 4); grapheme containment
-  re-checked by rule; authority order and role map as domain values;
-  initial rulebook enumerated against the locked principles.
-- r3 2026-09-04: sentence identity is the text sha; Sentence.gloss;
-  order() returns typed entries including sentences; gaps() derives from
-  the report and covers sentence recordings and scene pictures; compile
-  off the aggregate; frequency resolved by the loader. The r2 log
-  overstated grapheme containment: the rule was already registered.
-  Evidence: implementation review 2026-09-04.
-- r4 2026-09-05: scene/fit joins the F3 row (a scene picture is judged
-  against the sentence it illustrates). Evidence: Task B4 review found
-  no scene rubric existed outside test fixtures.
-- r5 2026-09-08: orthographic marks carry no vocabulary (§3 fills);
-  target/picture-required covers words with a picture-introduced target
-  (rule table, F3). Evidence: the live drafts' fills failures (ๆ counted
-  as an unregistered word); glue words registered as sentence-introduced
-  targets are abstract and get no picture.
+- r2 2026-09-04: Category as a curated collection; Speaker attributes;
+  Grapheme.name_word; authority order and role map as domain values; the
+  initial rulebook.
+- r3 2026-09-04: sentence identity is the text sha; Sentence.gloss; typed
+  order() entries; gaps() derives from the report; compile off the
+  aggregate; frequency resolved by the loader.
+- r4 2026-09-05: scene/fit on the F3 row.
+- r5 2026-09-08: orthographic marks carry no vocabulary;
+  target/picture-required over picture-introduced words.
 - r6 2026-09-08: fills' novelty is one unmet sentence-introduced target
-  per sentence, over the fill set (§3); a word whose targets are all
-  sentence-introduced carries no category (§2). Evidence: the final
-  review of the parsimonious-sentences arc (a registered glue word was
-  never "new", so two could enter in one sentence; the per-target
-  budget adopted a sentence the gate then refused).
-- r7 2026-09-09: mention is token identity or membership in a token's
-  decomposition into registered words (§3 clause 1). Evidence: run 7,
-  the prefix rule made "very" a mention of "come" and inflated the unmet
-  glue count of every draft.
-- r8 2026-09-09: a Sentence is clauses of registered Words; its text is
-  the rendering; fills is membership; the tokenizer leaves the domain
-  (§1, §3, §6); r5's mark rule and r7's decomposition rule are
-  superseded (a curated `components` field on Word is where
-  decomposition returns if wanted; TODO). Evidence: measurement
-  2026-09-09 over the 70 adopted sentences, 152 of 453 fills land on a
-  Thai form shared by several Words (ผม pŏm "I"/"hair"; คับ káp, the
-  spoken particle, filling "tight"; ที่ thîi "at" filling two "serving"
-  senses); form-to-sense is a disambiguation no rule over text can make.
-- r9 2026-09-10: productive Targets are derived by the loader from the
-  Profile's `productive_cutoff` (2000): a Word with a Category whose
-  frequency rank is at or above the cutoff carries one; targets.yaml
-  lists only exceptions (§1 Target, §2 Profile, §3 order). Evidence:
-  Nation's high-frequency line at the 2000 most frequent words, the
-  Lexical Frequency Profile (native speech is about 70% first-1000 and
-  10% second-1000; learners lean harder on the first 1000), subtitle
-  frequencies as the best spoken proxy (SUBTLEX), and the 2026-09-10
-  measurement: 429 of 822 targeted words rank at or above 2000 on the
-  deck's blend; user decision 2026-09-10 (frequency, introduced in
-  frequency order).
-- r10 2026-09-10: Word gains `speaker`, the sex a word marks its speaker
-  as; a sentence's marking is the union over its words, and a
-  recording's speaker must match it: spec 3 §5 derives the voice
-  constraint from the marking (female → female, male → male, empty →
-  any, or male on a productive back). No rulebook rule: the constraint
-  holds at sourcing time, and recordings on record that contradict it
-  are vetoed once (a learner unacceptable-none row each) and re-sourced
-  when r10 lands. A productive Target is filled only by a
-  sentence clozed on its word (the sentence's last used word) whose
-  marking admits the learner's voice (§3 fills clause 2). The Word
-  block also records `no_productive` (r9 omitted the line). Evidence:
-  2026-09-10 measurement on the live deck: 295 of 368 productive Targets
-  read as filled under clause 1 alone while only 24 sentences are clozed
-  on their word and compile emits 26 Cloze cards; user rulings
-  2026-09-10 (a production sentence must be one the learner would say;
-  the speaker and the sentence's register must match, for every card).
-  Seven rules that hold by construction are retired (§4): the four
-  order/* checks re-check what order() enforces, category/single-
-  membership what the loader's one category field enforces,
-  syllabus/closure what the loader's registration checks enforce (r8),
-  rendition/mixed-speakers what the rendition attempt's one-speaker
-  intersection enforces; none fired on the live deck and each can only
-  fire on a code defect the unit tests cover. Ruling 2026-09-10: no
-  rule for what a constraint already prevents.
+  per sentence over the fill set; a word with only sentence-introduced
+  targets carries no category.
+- r7 2026-09-09: mention by token identity or decomposition (superseded r8).
+- r8 2026-09-09: a Sentence is clauses of registered Words, its text the
+  rendering, fills membership; the tokenizer leaves the domain.
+- r9 2026-09-10: productive Targets derived from Profile.productive_cutoff;
+  targets.yaml lists exceptions; Word.no_productive.
+- r10 2026-09-10: Word.speaker and the sentence's marking; a productive
+  Target filled only by a sentence clozed on its word whose marking admits
+  the learner; seven by-construction rules retired.
+- r11 2026-09-11: logs reduced to one line each (evidence in the knowledge
+  base); entity comments reduced to fields and invariants, behavior in §3
+  (`marking` stated there); the rulebook table lists live rules only,
+  merging spec 3 §8's rows, with the by-construction principle and the
+  severity-override path stated once; transition-era text (§5, §6)
+  rewritten in the present. No behavior changed.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
-Anki translation spec 4; UI spec 5. Language: Python 3.12, one package
-(the two-package split does not survive; the evaluator/generator boundary
-is gone). Names below are the ubiquitous language — code uses them
-verbatim.
+Anki translation spec 4; UI spec 5. Python 3.12, one package. Names below
+are the ubiquitous language — code uses them verbatim.
 
 ## 1. Entities
 
@@ -102,19 +53,13 @@ Word                                # language model
   pron: Pronunciation               # spoken form
   meaning: str                      # today rendered as the English gloss
   classifier: WordId | None         # nouns: unmarked colloquial classifier
-  no_productive: bool = False       # r9: withholds the derived productive
+  no_productive: bool = False       # withholds the derived productive
                                     # Target
-  speaker: Literal[male, female] | None   # r10: the sex a word marks its
-                                    # speaker as (ครับ, ผม male; ค่ะ, คะ,
-                                    # ดิฉัน female); None for every other
-                                    # word. Curated. A sentence's marking
-                                    # is the union over its words (empty
-                                    # = any speaker; both = a defect the
-                                    # invariant refuses). It constrains
-                                    # the recording's speaker (spec 3 §5)
-                                    # and the productive fill (§3 clause 2);
-                                    # a female-marked sentence still
-                                    # fills receptive Targets (E7)
+  speaker: Literal[male, female] | None   # the sex a word marks its speaker
+                                    # as (ครับ kráp, ผม pǒm male; ค่ะ khâ,
+                                    # คะ khá, ดิฉัน dì-chǎn female); None
+                                    # otherwise. Curated. Consumed by §3
+                                    # marking()
 
 Pronunciation
   syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone
@@ -144,34 +89,26 @@ Target                              # curated learning list; the unit of
   skill: Literal[receptive, productive]
   introduction: Literal[picture_card, sentence]   # default picture_card
                                     # A receptive Target is listed in
-                                    # targets.yaml. A productive Target
-                                    # is derived: every Word with a
-                                    # Category whose frequency rank is at
-                                    # or above Profile.productive_cutoff
-                                    # carries one (id "<word>/productive",
-                                    # introduction picture_card); a
-                                    # targets.yaml row with skill
-                                    # productive adds one below the cutoff,
-                                    # and a Word's `no_productive: true`
-                                    # withholds one (r9). Closure words
-                                    # (classifiers, pair members, keyword
-                                    # words) and unranked words carry none
-                                    # unless listed. The loader refuses a
-                                    # targets.yaml row that duplicates a
-                                    # derived Target.
+                                    # targets.yaml. A productive Target is
+                                    # derived: every Word with a Category
+                                    # ranked at or above
+                                    # Profile.productive_cutoff carries one
+                                    # ("<word>/productive", picture_card);
+                                    # a targets.yaml row adds one below the
+                                    # cutoff, `no_productive: true` withholds
+                                    # one. Closure and unranked words carry
+                                    # none unless listed. The loader refuses
+                                    # a row that duplicates a derived Target.
 
 Category                            # curated learning list: a theme of
   name: str                         # the FF 625 list. identity
   members: frozenset[WordId]        # invariant: a word is in at most one
-                                    # category (rule category/single-
-                                    # membership); closure words (pair
+                                    # category (the loader builds the
+                                    # collections from each word row's one
+                                    # category field); closure words (pair
                                     # members, keywords) and words whose
                                     # only targets are sentence-introduced
-                                    # are in none.
-                                    # Consumers: coverage/categories (F2),
-                                    # emphasis (Profile), the picture query
-                                    # qualifier (derived reverse lookup;
-                                    # absent for closure words)
+                                    # are in none
 
 MinimalPair
   id: PairId                        # identity
@@ -232,15 +169,13 @@ speaker across members), sentence→recording.
 
 ```
 Profile
-  register: Literal[male_colloquial]      # shapes generation prompts,
+  register: Literal[male_colloquial]      # shapes generation prompts and
                                           # voice constraints; names the
                                           # learner's speaker sex (male)
-                                          # for §3 clause 2 (r10)
   emphasis: dict[CategoryName, float]     # order tie-breaking, drafting
-  productive_cutoff: int = 2000           # r9: the frequency rank at or
-                                          # above which a categorized Word
-                                          # carries a productive Target
-                                          # (Nation's high-frequency line)
+  productive_cutoff: int = 2000           # the frequency rank at or above
+                                          # which a categorized Word carries
+                                          # a productive Target
 ```
 
 Confusion training weights are NOT stored here: derived as
@@ -266,13 +201,20 @@ the studied past is not consulted (StudyRecords fix history, rules catch
 invalidated sentences). Consumers (compile, the screen) read positions;
 none re-derives placement.
 
+**marking(sentence) -> set** — the union of `speaker` over the
+sentence's words: empty (any speaker), {male}, or {female}. Both sexes at
+once is a defect the Sentence invariant refuses (`check_sentence`). The
+marking constrains the recording's speaker (spec 3 §5) and the productive
+fill (clause 2 below); a female-marked sentence still fills receptive
+Targets (E7).
+
 **fills(sentence, target) -> bool** — the single definition:
 1. target.word is in sentence.clauses (a repeated word counts once),
 2. sentence.voice satisfies target.skill (other_voice fills receptive
    only); a productive Target is filled only when the sentence's last
    used word is the target's word (the word the Cloze card is on, spec
    4) and the sentence's marking admits the learner's voice, i.e. is
-   empty or the Profile's own sex (r10),
+   empty or the Profile's own sex,
 3. at the sentence's entry position (after its last word's target):
    every word it uses has a Target, and at most one filled Target is
    sentence-introduced and unmet, no adopted sentence placed at or
@@ -284,10 +226,11 @@ is a rule over the fill set, applied once per sentence, by acceptance
 (the attempt), by adoption (the fold) and by the gate.
 
 **report() -> Report** — runs every check on every note and every
-measure on the aggregate. Report { syllabus_state_id, findings, metrics,
-gate }. syllabus_state_id = hash of the aggregate's content; a report
-whose state id differs from the live aggregate steers nothing (staleness
-is structural, not advisory). gate = no unwaived error findings.
+measure on the aggregate. Report { syllabus_state_id, rulebook_id,
+findings, metrics, gate }. syllabus_state_id = hash of the aggregate's
+content, rulebook_id = hash of the rulebook; a report whose ids differ
+from the live aggregate and rulebook steers nothing (staleness is
+structural, not advisory). gate = no unwaived error findings.
 
 **gaps() -> Gaps** — derived from the report's completeness findings
 and measures, never recomputed beside them: missing renditions per
@@ -327,46 +270,54 @@ Traceability is itself a measure: every rule names a live principle,
 every principle with enforcement intent names ≥1 rule; violations are
 info findings on the rulebook.
 
-Initial rulebook, against principles r2. "compile" = enforced by
-Syllabus.compile() (spec 4), not a rule; "structural" = cannot be
-violated by construction.
+No rule for what a constraint already prevents: an invariant a
+constructor or the loader enforces (order() constraints, one category
+per word, every id registered, one speaker per rendition) gets unit
+tests, not a rule. A constructor-enforced invariant is re-checked by a
+rule only where the loader does not construct through the checking path
+(pairs, grapheme keywords).
+
+Severity: error findings close the gate (compile refuses, spec 4 §2);
+warn and info ship as declared warnings. Per-deck severity overrides live
+in rulebook.yaml `severities`; that and `compile --force` are the only
+relaxation paths. Judged rules' rubric texts live in rulebook.yaml
+`rubrics`.
+
+The rulebook. "compile" = enforced by compile (spec 4), not a rule;
+"by construction" = cannot be violated on loaded data.
 
 | principle | rules |
 |---|---|
 | A2, A5, A6, A7, A8 | compile |
 | A3 | card/unique-front (check, error) |
 | A4 | compile (a missing artifact drops the card, counted) |
-| F1 | pair/exact-confusion, pair/rendition-required, rendition/synthetic, coverage/confusions (rendition/mixed-speakers retired r10: one speaker by construction) |
-| F2 | coverage/categories (measure) (syllabus/closure and category/single-membership retired r10: the loader enforces both) |
-| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (over words with a picture-introduced target); front-gloss policy provisional |
-| F5 | sentence/fills-novelty, target/sentence-required; exercise-latency (measure, parked) |
-| F6 | grapheme/keyword-picture-required, grapheme/keyword-contains-symbol |
-| F7, E2 | target/recording-required, sentence/recording-required, recording/synthetic, sentence/synthetic-productive |
-| F8 | order() enforces sounds-first, sentence-after-words and receptive-before-productive by construction (the three checks retired r10; unit tests cover order()) |
-| F11 | structural: current-best ranks judged candidates only |
-| E1 | order() enforces reading-after-graphemes by construction (check retired r10) |
-| E3 | sentence/register-natural (judged) |
+| F1 | pair/exact-confusion (check, error); pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); one speaker per rendition by construction |
+| F2 | coverage/categories (measure); one category per word and closure by construction |
+| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); front-gloss policy provisional |
+| F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it); exercise-latency (measure, parked) |
+| F6 | grapheme/keyword-picture-required (check, error), grapheme/keyword-contains-symbol (check, error) |
+| F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
+| F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive |
+| F11 | by construction: current-best ranks judged candidates only |
+| E1 | by construction: order() places reading after graphemes |
+| E3 | sentence/register-natural (judged); the speaker marking holds at sourcing (spec 3 §5) |
 | E4 | word/pronunciation-corroborated (check, error; blocks card emission) |
 | E5 | word/classifier-known (check, warn, nouns) |
-| E7 | coverage/speakers (measure) |
-| F4, F9, F10, F12, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection decision |
-| META-1 | rulebook/traceability |
+| E7 | coverage/speakers (measure: per audio corpus — word recordings, renditions, sentence recordings — distinct speakers per sex, age band and region against rulebook targets; unknown never counts) |
+| F4, F9, F10, F12, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule |
+| META-1 | rulebook/traceability (measure) |
 
 The set of principles with enforcement intent is every row above with a
 rule; the traceability measure reads this table.
 
 ## 5. Explicitly out
 
-- No Lexicon/Sequence/History classes (review decisions).
-- No producer/filler classes: sourcing is spec 3's port + loop.
-- No stored fills edges, weights, order, current-best, exhausted.
-- Waiver as a store: replaced by learner assessments on finding identity.
+- No stored fills edges, weights, order, current-best, or exhausted state.
+- No waiver store: a waiver is a learner assessment on a finding identity.
 
 ## 6. Testing
 
-Spec-level suite mirrors tests/spec today: doctrine tests written against
-Syllabus.report()/order()/fills() with fake ports and builder-made
-aggregates; entity invariants property-tested (pair construction,
-grapheme keyword containment); fills() table-tested over clauses
-(shared forms, the repetition mark, novelty). The existing tests/spec
-suite is the behavioral baseline to port, not to import.
+Doctrine tests against Syllabus.report()/order()/fills() with fake ports
+and builder-made aggregates; entity invariants property-tested (pair
+construction, grapheme keyword containment); fills() table-tested over
+clauses (shared forms, the repetition mark, novelty, the marking).

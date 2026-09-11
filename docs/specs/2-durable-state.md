@@ -1,58 +1,39 @@
 # Spec 2: Durable state
 
-Revision 11, proposed 2026-09-10 against principles r2 and architecture
-r2. Revision process as in docs/architecture.md: proposals on evidence,
-explicit approval per revision, numbered log.
+Revision 12, proposed 2026-09-11 against principles r3 and architecture
+r3. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
-- r2 2026-09-04: category on words.yaml rows; speakers table (E7);
-  migration joins pictures by (thai, category), carries old verdicts
-  under a legacy rubric id that never ranks, normalizes images at
-  ingest, and drops the machine-chosen marker; the 09-03 amendment
-  folded in.
-- r3 2026-09-04: sentences carry gloss; study keyed (card_key, ts) with
-  the anchor::kind convention; keys built by spec 3's functions; ranks
-  resolved by the loader; no layout version. Evidence: implementation
-  review 2026-09-04.
-- r4 2026-09-05: study rows carry family, anchor and card_kind as
-  columns written once at import; keys are typed values whose encoding
-  is a storage identity, never parsed. Evidence: Task A10 review (a
-  colon-bearing pair id broke a string parse); user ruling 2026-09-05.
-- r5 2026-09-06: study rows carry the entity id as anchor and a pair
-  card's member_index and speaker_id as columns. Evidence: Tasks A10,
-  C2, C4.
-- r6 2026-09-06: the cache table's port gains `attempt` for the attempt
-  outcome rows spec 3 section 6 defines. Evidence: spec 3 r7.
-- r7 2026-09-07: the current picture migrates as a candidate (a provide
-  row, no outcome row). Evidence: smoke run 3, every picture word
-  re-sourced five candidates while its picture sat unjudged.
-- r8 2026-09-07: a legacy verdict row keeps the old key shape
-  (LegacyVerdictKey). Evidence: spec 3 r12 (a judge key names its
-  subject; migrate's idempotency reads the legacy rows' own key).
-- r9 2026-09-08: the frequency corpus lives at curated/frequency_th.txt;
-  a deck without one is refused. Evidence: the live deck had none,
-  loaded an empty map silently, and was never frequency-ordered.
-- r10 2026-09-09: sentences rows carry `clauses`; a row that fails the
-  Sentence invariant refuses the load; migrate parses rows without
-  clauses through the parse ask. Evidence: spec 1 r8.
-- r11 2026-09-10: deck safety (§6): curated/ is a git repository every
-  writing command commits before and after; syllabus.db is snapshotted
-  through sqlite's backup API before a writing command; a completed
-  command checks the deck against the snapshot; `restore` is a human
-  act. Evidence: user request 2026-09-09, when the 32-sense merge and
-  the six sentence deletions ran against hand-made copies in work/.
+- r2 2026-09-04: category on words.yaml rows; speakers table; migration
+  joins pictures by (thai, category), legacy verdicts never rank.
+- r3 2026-09-04: sentences carry gloss; study keyed (card_key, ts); keys
+  built by spec 3's functions; no layout version.
+- r4 2026-09-05: study rows carry family, anchor, card_kind as columns;
+  typed keys, never parsed.
+- r5 2026-09-06: study anchor = entity id; pair member_index, speaker_id.
+- r6 2026-09-06: cache port `attempt`.
+- r7 2026-09-07: the current picture migrates as a candidate.
+- r8 2026-09-07: legacy verdict rows keep the old key shape.
+- r9 2026-09-08: curated/frequency_th.txt; a deck without one is refused.
+- r10 2026-09-09: sentences rows carry `clauses`; migrate parses rows
+  without them.
+- r11 2026-09-10: deck safety (§6).
+- r12 2026-09-11: logs to one line each; words.yaml and profile.yaml
+  fields as of spec 1 r10; the cache comment defers to spec 3 §1 for the
+  key rule; §4 reduced to the standing carry-over contract (spec 3 §10
+  merged here); §5 retired. No behavior changed.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
-consumes; migration of the carry-over assets. Port mechanics are spec 3;
-this spec only fixes what their caches look like at rest.
+consumes; the carry-over contract. Port mechanics are spec 3; this spec
+only fixes what their caches look like at rest.
 
 Ground rules (from the architecture): four durable stores and nothing
 else; derived state is never written; an append is a checkpoint; caches
-are never evicted; human-curated data is human-readable and
-hand-editable, machine state is not hand-edited. The frequency corpus
-under curated/ is generated reference data, versioned with the deck and
-never hand-edited.
+are never evicted and never updated (a re-ask appends a new row);
+human-curated data is human-readable and hand-editable, machine state is
+not hand-edited. The frequency corpus under curated/ is generated
+reference data, versioned with the deck and never hand-edited.
 
 ## 1. Layout
 
@@ -60,16 +41,17 @@ never hand-edited.
 <deck>/                        # the Syllabus's home directory
   curated/                     # store 1 — human-owned YAML
     words.yaml                 # Word facts: id, thai, pron (authored IPA),
-                               # meaning, classifier; category (the row
-                               # is where a human edits it; the loader
-                               # builds the Category collections, so
-                               # single membership holds by construction)
-    targets.yaml               # id, word, skill, introduction
+                               # meaning, classifier, category (one per
+                               # row; the loader builds the Category
+                               # collections), no_productive and speaker
+                               # (each written only when set)
+    targets.yaml               # id, word, skill, introduction (receptive
+                               # targets and productive exceptions)
     graphemes.yaml             # symbol, kind, sound, class, keyword
     confusions.yaml            # id, dimension, sounds + profile seed weight
     pairs.yaml                 # adopted MinimalPairs (machine-proposed,
                                # human-kept; small)
-    profile.yaml               # register, emphasis
+    profile.yaml               # register, emphasis, productive_cutoff
     rulebook.yaml              # rule config: severities, thresholds,
                                # judged-rule rubric text
     frequency_th.txt           # the frequency corpus, one word per line in
@@ -111,15 +93,13 @@ speakers(id PK, kind, sex, age_band, region)
 cache(port, backend, key_sha, subject, question, answer, cost, ts)
       -- PK (key_sha, ts); key_sha indexed. 
   -- store 3. port ∈ provide|assess|attempt; backend names the concrete
-  -- one (openverse, forvo, llm, judge, learner, ...). An attempt row's
-  -- question names source, kind and subject_kind; its answer carries
-  -- the outcome (candidates | nothing | transient-failure) and the
-  -- candidate shas; key = AttemptOutcomeKey(subject, kind, source). key_sha = the backend's
-  -- cache key (spec 3 defines each key function; the learner's contains
-  -- no rubric). question/answer are JSON. NEVER deleted or updated:
-  -- a re-ask appends a new row (newest-wins on read for the learner
-  -- backend; exact-key hit for memoized backends). subject indexes the
-  -- attempt record ("what was tried for X"), including empty answers.
+  -- one (openverse, forvo, llm, judge, learner, ...). key_sha = sha256 of
+  -- the backend's typed key encoding (spec 3 §1); question/answer are
+  -- JSON. An attempt row's question names source, kind and subject_kind;
+  -- its answer carries the outcome and the candidate shas (spec 3 §6).
+  -- Never deleted or updated: a re-ask appends a new row (newest wins on
+  -- read for the learner backend; exact-key hit for memoized backends).
+  -- subject indexes the attempt record, empty answers included.
 study(family, anchor, card_kind, member_index, speaker_id, compile_id,
       ts, grade, time_ms)  -- PK (family, anchor, card_kind, ts)
   -- store 4. The import reads a card's tags once and writes their parts
@@ -154,70 +134,39 @@ StudyReader        .records(card_key | confusion) -> list[StudyRecord]
 
 All implemented over syllabus.db + curated files; faked in domain tests.
 
-## 4. Migration (one script, run once, idempotent)
+## 4. Carry-over and migration
 
-Carry-over per the handoff's table; everything else regenerates.
+`migrate` is idempotent and reports counts per store, unmigratable rows
+with reasons, and rows passed over; zero silent drops. Into a live deck it
+finds sentences rows whose clauses are missing, asks the parse (spec 3
+§5) for their texts, writes the verified clauses, and deletes and reports
+the rest (their drafts stay in the record).
 
-Into a live deck: `migrate` finds sentences rows whose clauses are
-missing, asks the parse (spec 3 §5) for their texts, writes the verified
-clauses, and deletes and reports the rest (their drafts stay in the
-record).
+What the old deck's assets became, and how they rank:
 
-1. **Word list** (data/word_list_th.yaml, 766 rows with ids) →
-   curated/words.yaml (id, thai, pron from note ipa where present,
-   meaning=gloss, classifier) + curated/targets.yaml (one receptive
-   target per row, introduction=picture_card; productive targets NOT
-   auto-created — the selection rule is the user's open decision).
-   Dropped fields (picturable, emphasis, image_query*, split_of,
-   part_of_speech): image_query with source=human migrates as a learner
-   direction row in cache; the rest are dropped.
-2. **Judged images** (~650 in the deck + work/candidates/*/candidates.yaml
-   verdicts) → normalized at ingest like any picture (spec 4 §3) into
-   media/objects/ by sha of the normalized bytes, provenance from
-   media_manifest.yaml. Old picture notes join words by (thai, category)
-   (measured 2026-09-04: unambiguous for 38 of 39 homograph forms); an
-   ambiguous form is reported, never guessed. Each candidates.yaml
-   verdict → a judge-backend cache row under a legacy rubric id
-   ("legacy-picture-rules"), keyed LegacyVerdictKey(sha(rubric),
-   artifact sha, role), the verdict and failed rule ids as-is: the
-   old record does not say which rubric version judged, so under F9 the
-   row is evidence of what was seen and rejected, and it never ranks
-   (spec 3 §6). The deck's current picture is a candidate: one provide
-   row per joined word (backend `legacy-current`, key
-   ProvideKey(legacy-current, picture, word id), answer items = the
-   picture's sha and ext), no attempt-outcome row. It is judged under the
-   current rubric by spec 3 §5's assess-first step on the first run that
-   queues its need (654 pictures, 645 joined). The provide row makes it a
-   candidate, never a ranked choice: no rating or verdict marks it as the
-   old deck's pick.
-3. **Forvo answers** (work/forvo_lookups.jsonl) → provide/forvo cache
-   rows, hit and miss alike.
-4. **Proof-gallery notes + ReviewNote harvests + waivers.yaml** → learner
-   assessment rows (kind per content: rating, direction, waiver), keyed
-   by word id via the guid map, never by Anki guid.
-5. **The old judge_cache.sqlite is retired**, not migrated: its keys are
-   opaque hashes of rubric texts the redesign replaces; identical
-   questions will re-hit via candidates.yaml-derived rows, changed
-   questions must re-judge anyway.
-6. **StudyRecords**: none migrate (the current run predates ReviewNote
-   and is scheduling-disposable; its proof-gallery drill results DO
-   migrate as study-adjacent learner evidence rows in cache).
-
-Migration report: counts per store, unmigratable rows listed with
-reasons, rows passed over counted (audio, duplicates on re-run), zero
-silent drops (the SourcingLog lesson).
+- **Word list** → curated/words.yaml and targets.yaml (one receptive
+  target per row); a human-authored image query migrates as a learner
+  direction row in cache; other dropped fields are dropped.
+- **Judged images** → normalized at ingest like any picture (spec 4 §3)
+  into media/objects/ by sha of the normalized bytes. Each old verdict is
+  a judge row under a legacy rubric id, keyed LegacyVerdictKey(sha(rubric),
+  artifact sha, role) — the old key shape, built by migrate alone — and
+  never ranks (F9: evidence of what was seen and rejected). The old
+  deck's current picture is a candidate: one provide row per joined word
+  (backend `legacy-current`, a candidate's provenance and never a Source
+  ask), no attempt-outcome row, no rating or verdict marking it as the
+  old choice; it is judged under the current rubric by assess-first
+  (spec 3 §5) on the first run that queues its need. An ambiguous
+  homograph join is reported, never guessed.
+- **Forvo answers** → provide/forvo cache rows, hit and miss alike.
+- **Proof-gallery notes, ReviewNote harvests, waivers** → learner
+  assessment rows keyed by word id, never by Anki guid.
+- **The old judge cache** is retired, not migrated (opaque prompt hashes).
+- **StudyRecords**: none migrate; the old proof-gallery drill results
+  migrate as study-adjacent learner evidence rows.
 
 No layout version is recorded: the loader validates the shape it expects
 and refuses anything else, naming the file and field.
-
-## 5. Explicitly out
-
-- No memo files: forvo_lookups.jsonl, image_review.yaml,
-  image_query_proposals.yaml, candidates/, ipa_adjudication.yaml,
-  waivers.yaml all end here; their content lives in `cache` or dies.
-- No .last-report.json: reports are derived and identified by state hash.
-- No media_manifest.yaml: provenance is the media table.
-- No per-filler checkpoint code: sqlite transactions are the checkpoint.
 
 ## 6. Deck safety
 
@@ -267,6 +216,4 @@ refuses when no snapshot exists, and runs no other command afterwards.
 
 Neither the history nor the snapshot is a fifth store: each is a copy
 of store 1 or 3 at an earlier instant, never read by the domain core,
-and a deck loads without them. The interim procedure (copy curated/
-and a `.backup` of syllabus.db into work/ by hand before any edit)
-ends with this revision.
+and a deck loads without them.
