@@ -32,13 +32,14 @@ from typing import Any, Literal
 from . import record
 from .assessor import UNTRUSTED, AssessQuestion, Assessor, Excluded, PreparedQuestion, deck_field
 from .authority import role_for
-from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
+from .cachekeys import AttemptOutcomeKey, PhraseKey, RenditionAskKey, rendition_identity
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
     DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
     CurrentBest,
     aged_out,
+    available_needs,
     current_best,
     passing_pictures,
     pictures_awaiting_preference,
@@ -51,7 +52,7 @@ from .ids import PairId, WordId
 from .media import Speaker
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .query import QUERY_HINTS, picture_query
-from .record import DRAFT_SUBJECT
+from .record import DRAFT_SUBJECT, PHRASE_SUBJECT
 from .safety import Guard
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
@@ -62,6 +63,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
+           "phrase_attempt",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
 
 _log = logging.getLogger(__name__)
@@ -309,22 +311,6 @@ def current_best_of(ctx: Sourcing, subject: str, kind: str) -> CurrentBest:
                         provenance_source=provenance_source_for(ctx.db))
 
 
-def _phrase(ctx: Sourcing, subject: str) -> str | None:
-    """The image phrase a human or a judge drafted: the latest learner
-    direction, else a judge suggestion newer than the last provide row."""
-    rows = ctx.db.assessments_of(subject)
-    directions = [r for r in rows if r.port == "assess" and r.backend == "learner"
-                  and r.answer.get("direction")]
-    if directions:
-        return max(directions, key=lambda r: r.ts).answer["direction"]
-    last_provide = max((r.ts for r in rows if r.port == "provide"), default=-1)
-    suggestions = [r for r in rows if r.port == "assess" and r.backend == "judge"
-                   and r.answer.get("suggestion") and r.ts > last_provide]
-    if suggestions:
-        return max(suggestions, key=lambda r: r.ts).answer["suggestion"]
-    return None
-
-
 def _candidate_shas(ctx: Sourcing, need: Need) -> list[str]:
     return record.candidate_shas(record.rows_for(ctx.db, need.subject, need.kind))
 
@@ -343,11 +329,14 @@ def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:
 # --- pictures (Word) and scene pictures (Sentence) --------------------------
 
 def _picture_query_for(ctx: Sourcing, need: Need) -> str:
-    """A drafted phrase; else, for a scene, the sentence's own English
-    gloss, and for a word its gloss head term with the category qualifier.
-    The corpora index English metadata, so the query is English either way.
+    """The query, in precedence (spec 3 section 5): the latest learner
+    direction; a judge suggestion newer than the last provide row; the
+    drafted phrase (record.latest_phrase, appended by `phrase_attempt`);
+    else, for a scene, the sentence's own English gloss, and for a word
+    its gloss head term with the category qualifier. The corpora index
+    English metadata, so the query is English either way.
     """
-    phrase = _phrase(ctx, need.subject)
+    phrase = record.latest_phrase(ctx.db.assessments_of(need.subject))
     if phrase:
         return phrase
     if need.subject_kind == "sentence":
@@ -530,6 +519,106 @@ def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend)
+
+
+def _phrase_item(ctx: Sourcing, subject: str, subject_kind: str) -> tuple[str, str]:
+    """The Thai text and English gloss `_phrase_prompt` lists for one open
+    picture need's subject (spec 3 section 5): a sentence's own text and
+    gloss, or a word's Thai form and meaning.
+    """
+    if subject_kind == "sentence":
+        sentence = ctx.syllabus.sentence(subject)
+        return sentence.text, sentence.gloss
+    word = _word_of(ctx, subject)
+    return word.thai, word.meaning
+
+
+def _phrase_prompt(ctx: Sourcing, needs: Sequence[tuple[str, str]]) -> str:
+    """The phrase-drafting prompt (spec 3 section 5): one line per open
+    picture need lacking a drafted phrase -- its subject (a word id or a
+    sentence text_sha), Thai text and English gloss delimited as deck
+    data (assessor.UNTRUSTED/deck_field, as the sentence-drafting
+    prompt's own refused block delimits deck text). Asks for a short,
+    concrete, proper-noun-free image-search phrase per item.
+    """
+    lines = []
+    for subject, subject_kind in needs:
+        text, gloss = _phrase_item(ctx, subject, subject_kind)
+        lines.append(f"- subject: {subject}  text: {deck_field(text)}  "
+                     f"gloss: {deck_field(gloss)}")
+    return (
+        "For each item, write a short English image-search phrase (at most six words, "
+        "concrete, no proper nouns) that would find an illustrative photo.\n"
+        f"{UNTRUSTED}\n"
+        "Items:\n" + "\n".join(lines) + "\n"
+        'Output JSON only: {"phrases": [{"subject": "...", "phrase": "..."}]}')
+
+
+def phrase_attempt(ctx: Sourcing) -> AttemptResult:
+    """One drafting ask per run (spec 3 section 5) over every open picture
+    need -- word or scene -- with no drafted phrase on record
+    (record.drafted_phrase): a short English image-search phrase for
+    each, so `_picture_query_for` searches it ahead of the plain gloss
+    fallback. Skipped -- no ask made, `attempted=False` -- once every open
+    picture need already has one.
+
+    The batch prompt is asked once on the drafter transport (`llm-phrase`,
+    cachekeys.LlmPromptKey keyed by the prompt itself, appended under
+    record.PHRASE_SUBJECT). Its answer -- `{"phrases": [{"subject": "...",
+    "phrase": "..."}]}` (record.parse_phrases) -- then appends one
+    provide row per subject the answer actually names (backend llm,
+    provides "phrase", key cachekeys.PhraseKey), so `record.drafted_phrase`
+    finds it on this and every later run; an item naming a subject that
+    was not asked for is ignored, and an item the answer omits is simply
+    asked for again next run. A subject that already carries a learner
+    direction is never handed to the drafter: `record.latest_phrase`
+    always prefers the direction over a drafted phrase, so drafting one
+    would be dead weight.
+    """
+    spend: dict[str, Spend] = {}
+    needs = [(subject, subject_kind) for subject, kind, subject_kind
+            in available_needs(ctx.syllabus) if kind == "picture"]
+    lacking: dict[str, str] = {}
+    for subject, subject_kind in needs:
+        rows = ctx.db.assessments_of(subject)
+        if record.directions(rows):
+            continue   # the direction always wins (record.latest_phrase)
+        if record.drafted_phrase(rows) is None:
+            lacking[subject] = subject_kind
+    if not lacking:
+        return AttemptResult(attempted=False)
+    prompt = _phrase_prompt(ctx, sorted(lacking.items()))
+    # subject_kind "batch": the ask's own subject (PHRASE_SUBJECT) is a
+    # word and a scene need mixed together, neither one thing -- Question
+    # types it as plain str, and nothing folds over this row's own
+    # subject_kind (the per-subject phrase rows below carry the real one).
+    question = Question(subject=PHRASE_SUBJECT, provides="phrase", kind="picture",
+                        subject_kind="batch", params={"prompt": prompt})
+    try:
+        answer = ctx.provider.ask("llm-phrase", question)
+    except TransportError as e:
+        # spec 3 section 2: an answer phrasing none of these items is not
+        # positively recognized (wiring.build_provider's own llm-phrase
+        # recognizer, record.parse_phrases) -- LlmBackend.fetch already
+        # raised and cached nothing, so the next run re-asks the same
+        # lacking set instead of this becoming a permanent empty cache
+        # hit (fix round 2 finding 2). The caller (run._run_pass) counts
+        # this under source_failures["llm-phrase"] the same as any other
+        # drafter transport failure.
+        _log.warning("phrase drafter failed for %d asked item(s): %s", len(lacking), e)
+        raise
+    _count(spend, "llm-phrase", answer)
+    drafted = record.parse_phrases(str(answer.items[0])) if answer.items else {}
+    for subject, phrase in drafted.items():
+        subject_kind = lacking.get(subject)
+        if subject_kind is None:
+            continue
+        ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject=subject),
+                      subject=subject,
+                      question={"provides": "phrase", "kind": "picture",
+                                "subject_kind": subject_kind},
+                      answer={"phrase": phrase})
+    return AttemptResult(attempted=True, spend=spend)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

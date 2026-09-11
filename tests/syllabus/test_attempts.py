@@ -13,12 +13,13 @@ from PIL import Image as PILImage
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _pool, _sentence_prompt,
-                                    assess_first, attempt, current_best_of, sentence_attempt,
-                                    sources_for)
+                                    assess_first, attempt, current_best_of, phrase_attempt,
+                                    sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
-                                    MechanicalKey, ProvideKey, rendition_identity, sha)
+                                    MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
-from thai_syllabus.record import DRAFT_SUBJECT, drafts_in, rows_for, sentence_drafts
+from thai_syllabus.record import (DRAFT_SUBJECT, drafted_phrase, drafts_in, parse_phrases,
+                                  rows_for, sentence_drafts)
 from thai_syllabus.entities import Category, Clauses, MinimalPair, Sentence, SoundConfusion, text_sha
 from thai_syllabus.ids import WordId
 from thai_syllabus.media import Provenance, Speaker
@@ -280,6 +281,28 @@ def test_picture_attempt_searches_a_judge_suggestion_once_one_is_on_record(tmp_p
                   answer={"value": False, "suggestion": "a bowl of steamed jasmine rice"})
     attempt(ctx, Need("rice", "picture"), "openverse")
     assert search.queries == ["a bowl of steamed jasmine rice"]
+
+
+def test_picture_attempt_searches_the_drafted_phrase_when_one_is_on_record(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                  answer={"phrase": "a bowl of steamed rice"})
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["a bowl of steamed rice"]
+
+
+def test_a_learner_direction_still_outranks_the_drafted_phrase(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                  answer={"phrase": "a bowl of steamed rice"})
+    ctx.db.append(port="assess", backend="learner",
+                  key=DirectionKey(subject="rice", role="picture-for-word", text_sha=sha("try red")),
+                  subject="rice", question={"kind": "direction", "role": "picture-for-word"},
+                  answer={"direction": "try red"})
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["try red"]
 
 
 def test_picture_attempt_ingests_each_hit_with_its_provenance(tmp_path):
@@ -2446,3 +2469,174 @@ def test_sentence_prompt_renders_a_refused_text_with_no_evidence_with_no_danglin
                               sentence_max_clauses=2)   # กิน: eat
     assert "- กิน\n" in prompt
     assert "— " not in prompt and "—\n" not in prompt
+
+
+# --- phrase_attempt: one drafted image-search phrase per open picture need --
+
+class _LlmPhrase:
+    """The phrase drafter: `text` is the JSON its one answer carries;
+    every prompt it was asked is recorded."""
+
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="phrase-drafter", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.prompts.append(q.params["prompt"])
+        return RawAnswer(items=(self.text,))
+
+
+def _phrase_ctx(tmp_path, syllabus, text) -> Sourcing:
+    return _sourcing(tmp_path, syllabus, backends={"llm-phrase": _LlmPhrase(text)}, assess={})
+
+
+def _phrase_drafter(ctx: Sourcing) -> _LlmPhrase:
+    return ctx.provider._backends["llm-phrase"]
+
+
+class _FixedCompletionTransport:
+    """A drafter transport (LlmBackend's own `.complete(prompt)`
+    contract) answering one fixed completion; records every prompt it
+    was asked."""
+
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        return Completion(text=self.text)
+
+
+def _real_phrase_backend(text: str) -> LlmBackend:
+    """The production llm-phrase wiring (spec 3 section 2,
+    wiring.build_provider's own recognizer for producer "phrase-drafter",
+    fix round 2 finding 2): recognizes only a completion naming at least
+    one asked item's phrase -- an answer phrasing none of them (garbage,
+    or an empty `{"phrases": []}`) is not recognized, so LlmBackend.fetch
+    raises and caches nothing.
+    """
+    return LlmBackend(producer="phrase-drafter", model="m", transport=_FixedCompletionTransport(text),
+                      recognize=lambda t: bool(parse_phrases(t)))
+
+
+def test_phrase_attempt_drafts_one_phrase_each_for_a_word_and_a_sentence_need(tmp_path):
+    scene = _sentence()   # subject_kind "sentence", subject = its text_sha
+    syllabus = _word_syllabus().with_sentences([scene])
+    text = json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "bowl of steamed rice"},
+        {"subject": scene.text_sha, "phrase": "a family eating rice together"}]})
+    ctx = _phrase_ctx(tmp_path, syllabus, text)
+    res = phrase_attempt(ctx)
+    assert res.attempted
+    assert len(_phrase_drafter(ctx).prompts) == 1   # one ask for both needs
+    assert drafted_phrase(ctx.db.assessments_of("rice")) == "bowl of steamed rice"
+    assert drafted_phrase(ctx.db.assessments_of(scene.text_sha)) == "a family eating rice together"
+
+
+def test_phrase_attempt_does_not_reask_a_subject_that_already_has_a_phrase(tmp_path):
+    syllabus = _word_syllabus()
+    ctx = _phrase_ctx(tmp_path, syllabus,
+                      json.dumps({"phrases": [{"subject": "rice", "phrase": "should not be asked"}]}))
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                  answer={"phrase": "already drafted"})
+    res = phrase_attempt(ctx)
+    assert res.attempted is False
+    assert _phrase_drafter(ctx).prompts == []
+    assert drafted_phrase(ctx.db.assessments_of("rice")) == "already drafted"
+
+
+def test_phrase_attempt_skips_a_subject_that_already_carries_a_learner_direction(tmp_path):
+    """The direction always wins over a drafted phrase (record.latest_phrase),
+    so drafting one is dead weight -- minor fix, fix round 2."""
+    syllabus = _word_syllabus()
+    ctx = _phrase_ctx(tmp_path, syllabus,
+                      json.dumps({"phrases": [{"subject": "rice", "phrase": "should not be asked"}]}))
+    ctx.db.append(port="assess", backend="learner",
+                  key=DirectionKey(subject="rice", role="picture-for-word", text_sha=sha("try red")),
+                  subject="rice", question={"kind": "direction", "role": "picture-for-word"},
+                  answer={"direction": "try red"})
+    res = phrase_attempt(ctx)
+    assert res.attempted is False
+    assert _phrase_drafter(ctx).prompts == []
+    assert drafted_phrase(ctx.db.assessments_of("rice")) is None
+
+
+def test_phrase_attempt_is_skipped_when_nothing_lacks_a_phrase(tmp_path):
+    scene = _sentence()
+    syllabus = _word_syllabus().with_sentences([scene])
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
+    for subject in ("rice", scene.text_sha):
+        ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject=subject),
+                      subject=subject,
+                      question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                      answer={"phrase": "already drafted"})
+    res = phrase_attempt(ctx)
+    assert res.attempted is False and res.spend == {}
+    assert _phrase_drafter(ctx).prompts == []
+
+
+def test_phrase_attempt_records_spend_under_llm_phrase(tmp_path):
+    syllabus = _word_syllabus()
+    ctx = _phrase_ctx(tmp_path, syllabus,
+                      json.dumps({"phrases": [{"subject": "rice", "phrase": "bowl of rice"}]}))
+    res = phrase_attempt(ctx)
+    assert res.spend["llm-phrase"].asks == 1
+
+
+def test_phrase_attempt_raises_and_caches_nothing_for_an_answer_phrasing_no_asked_item(
+        tmp_path, caplog):
+    """Fix round 2 finding 2 (spec 3 section 2): an answer phrasing none
+    of the asked items is not a recognized answer -- the real llm-phrase
+    wiring (LlmBackend.recognize) raises, so no per-subject row is
+    appended and a warning names how many items were asked, rather than
+    the empty answer becoming a permanent cache hit for a stable lacking
+    set."""
+    syllabus = _word_syllabus()
+    backend = _real_phrase_backend(json.dumps({"phrases": []}))
+    ctx = _sourcing(tmp_path, syllabus, backends={"llm-phrase": backend}, assess={})
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(TransportError):
+            phrase_attempt(ctx)
+    assert drafted_phrase(ctx.db.assessments_of("rice")) is None
+    assert any("1" in r.message for r in caplog.records)   # names the count asked
+
+
+def test_phrase_attempt_caches_a_partial_answers_rows_and_leaves_the_rest_lacking(tmp_path):
+    """An answer phrasing SOME of the asked items is recognized and
+    cached as today; the omitted subject simply re-asks next run (a
+    shrunken lacking set)."""
+    scene = _sentence()
+    syllabus = _word_syllabus().with_sentences([scene])   # two open picture needs
+    backend = _real_phrase_backend(json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "bowl of rice"}]}))   # scene.text_sha omitted
+    ctx = _sourcing(tmp_path, syllabus, backends={"llm-phrase": backend}, assess={})
+    res = phrase_attempt(ctx)
+    assert res.attempted
+    assert drafted_phrase(ctx.db.assessments_of("rice")) == "bowl of rice"
+    assert drafted_phrase(ctx.db.assessments_of(scene.text_sha)) is None
+
+
+def test_phrase_prompt_delimits_each_need_as_deck_data(tmp_path):
+    scene = _sentence()
+    syllabus = _word_syllabus().with_sentences([scene])
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
+    phrase_attempt(ctx)
+    prompt = _phrase_drafter(ctx).prompts[0]
+    assert UNTRUSTED in prompt
+    assert "subject: rice" in prompt and deck_field("ข้าว") in prompt
+    assert deck_field("rice (cooked)") in prompt
+    assert f"subject: {scene.text_sha}" in prompt and deck_field(scene.text) in prompt
+    assert deck_field(scene.gloss) in prompt
+    assert 'Output JSON only: {"phrases":' in prompt
+
+
+def test_phrase_attempt_ignores_an_answer_naming_a_subject_it_never_asked_for(tmp_path):
+    syllabus = _word_syllabus()
+    ctx = _phrase_ctx(tmp_path, syllabus,
+                      json.dumps({"phrases": [{"subject": "not-asked", "phrase": "irrelevant"}]}))
+    phrase_attempt(ctx)
+    assert drafted_phrase(ctx.db.assessments_of("not-asked")) is None

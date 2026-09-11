@@ -243,11 +243,26 @@ def test_llm_backends_are_always_registered(cfg, db, media_store):
 
 def test_llm_sentence_recognizes_only_a_completion_drafts_in_reads(cfg, db, media_store):
     """Spec 3 r10 section 2: llm-sentence's LlmBackend.recognize rejects a
-    completion drafts_in cannot read as a draft; llm-phrase keeps
-    LlmBackend's own default, which recognizes any text."""
+    completion drafts_in cannot read as a draft."""
     backends = build_provider(cfg, db, media_store)._backends
     assert backends["llm-sentence"].recognize("no json here") is False
-    assert backends["llm-phrase"].recognize("no json here") is True
+
+
+def test_llm_phrase_recognizes_only_a_completion_naming_at_least_one_phrase(cfg, db, media_store):
+    """Fix round 2 finding 2 (spec 3 section 2): an answer phrasing none
+    of the asked items -- garbage, or an empty `{"phrases": []}` -- is
+    not a recognized answer, so LlmBackend.fetch raises and caches
+    nothing; a permanent empty-answer cache hit would otherwise silence
+    the drafter forever for a stable lacking set. A partial answer --
+    at least one item actually phrased -- is recognized, so its rows are
+    still cached (the omitted items simply re-ask next run)."""
+    import json
+
+    backends = build_provider(cfg, db, media_store)._backends
+    assert backends["llm-phrase"].recognize("no json here") is False
+    assert backends["llm-phrase"].recognize(json.dumps({"phrases": []})) is False
+    assert backends["llm-phrase"].recognize(
+        json.dumps({"phrases": [{"subject": "rice", "phrase": "bowl of rice"}]})) is True
 
 
 def test_llm_sentence_recognizes_a_no_fit_answer(cfg, db, media_store):

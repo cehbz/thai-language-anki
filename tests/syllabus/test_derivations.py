@@ -1200,6 +1200,24 @@ def test_bucket_2_when_a_judge_suggestion_is_unasked(cache):
     assert entry.bucket == 2
 
 
+def test_bucket_2_survives_a_phrase_row_drafted_after_the_suggestion(cache):
+    """Fix round 2 finding 1: _has_untried_lever's own provide_ts must be
+    the last Source ask (record.last_source_ask_ts), never
+    attempts.phrase_attempt's own per-subject phrase row (an answer, not
+    an ask) -- a phrase drafted after a pending suggestion must not hide
+    it from bucket 2."""
+    syllabus = _one_word_syllabus()
+    cache.rows.append(provide_row("rice", "picture", backend="openverse", ts=1))
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, True, ts=2, suggestion="a redder one"))
+    cache.rows.append(Answer(port="provide", backend="llm", key="phrase:rice", key_sha="x",
+                             subject="rice",
+                             question={"provides": "phrase", "kind": "picture",
+                                      "subject_kind": "word"},
+                             answer={"phrase": "a bowl of rice"}, cost=0.0, ts=3))
+    entry = next(e for e in _queue(syllabus, cache, sources_for=no_sources) if e.subject == "rice")
+    assert entry.bucket == 2
+
+
 # --- unjudged_candidates: spec 3 section 5 assess-first ----------------------
 
 def test_unjudged_candidates_names_a_candidate_with_no_verdict_under_the_current_rubric(cache):

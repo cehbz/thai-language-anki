@@ -27,8 +27,8 @@ from thai_syllabus import reviewserver as rs
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, FlagKey, JudgeKey,
-                                    LearnerKey, MechanicalKey, ProvideKey, RunReportKey,
-                                    preference_identity, sha)
+                                    LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
+                                    RunReportKey, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
 from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP, directed
 from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
@@ -433,6 +433,20 @@ def test_build_queue_direction_tried_lists_source_asks_only_never_fetch_rows(der
     assert all(t["source"] in ("openverse", "wikimedia", "pexels") for t in direction["tried"])
     assert {"source": "openverse", "query": "a bowl of rice"} in direction["tried"]
     assert not any("url" in t for t in direction["tried"])
+
+
+def test_tried_summary_lists_no_entry_for_a_drafted_phrase_row(db):
+    """spec 3 r24 section 5: attempts.phrase_attempt's per-subject phrase
+    row (backend "llm") is an answer, not a Source ask -- _tried_summary
+    (record.source_asks underneath) must not show it as a phantom
+    {"source": "llm", "query": None} entry on a phrased picture need's
+    "what was tried" list."""
+    _provide(db, "rice", "picture", backend="openverse", query="rice food", items=[])
+    db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+             question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+             answer={"phrase": "a bowl of steamed rice"})
+    tried = rs._tried_summary(record_mod.rows_for(db, "rice", "picture"))
+    assert tried == [{"source": "openverse", "query": "rice food"}]
 
 
 def test_build_queue_direction_candidates_carry_judge_verdicts(derivations, db, w1):

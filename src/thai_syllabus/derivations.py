@@ -689,12 +689,16 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
     suggestion has not been followed by a new attempt, or an unasked
     source remains (spec 3 section 6 bucket 2) -- including one a
     `nothing` outcome aged back out of `nothing_ttl` (spec 3 r19 section
-    6a/9).
+    6a/9). "Followed by a new attempt" is measured against the last
+    Source ask (record.last_source_ask_ts), never a provide row that is
+    an answer rather than an ask -- attempts.phrase_attempt's own
+    per-subject phrase row included (fix round 2 finding 1): a phrase
+    drafted after a pending suggestion must not hide it from bucket 2.
     """
     judge_rows = [r for r in rows if r.port == "assess" and r.backend == "judge"]
     if unjudged_candidates(cache, subject, kind, current_rubric=current_rubric):
         return True
-    provide_ts = max((r.ts for r in rows if r.port == "provide"), default=-1)
+    provide_ts = record.last_source_ask_ts(rows)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
         return True
     return next_source(cache, subject, kind, sources, transient_cap=transient_cap,

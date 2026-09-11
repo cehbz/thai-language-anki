@@ -186,11 +186,16 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     # {"sentences": [], "reason": ...}, record.parse_no_fit) -- both are
     # answers the drafting attempt acts on, so both are cached; llm-parse
     # recognizes only one parses_in can read (spec 3 r16 section 5);
-    # llm-phrase and llm-entry keep LlmBackend's default, which
-    # recognizes any text.
+    # llm-phrase recognizes only a completion naming at least one asked
+    # item's phrase (record.parse_phrases non-empty) -- an answer
+    # phrasing none of them (spec 3 section 5, fix round 2 finding 2) is
+    # not a cacheable answer, so a stable lacking set never turns into a
+    # permanent empty cache hit; llm-entry keeps LlmBackend's default,
+    # which recognizes any text.
     recognizers: dict[str, Callable[[str], bool]] = {
         "llm-sentence": _recognize_drafting_answer,
         "llm-parse": lambda text: bool(record.parses_in(text)),
+        "llm-phrase": lambda text: bool(record.parse_phrases(text)),
     }
     for producer, name in (("sentence-drafter", "llm-sentence"),
                            ("phrase-drafter", "llm-phrase"),

@@ -22,7 +22,7 @@ from PIL import Image as PILImage
 from thai_syllabus import run as run_mod
 from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, DirectionKey, JudgeKey,
-                                    LearnerKey, LlmPromptKey, MechanicalKey, ProvideKey,
+                                    LearnerKey, LlmPromptKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
@@ -36,8 +36,8 @@ from thai_syllabus.derivations import (
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.profile import Profile
-from thai_syllabus.provider import FetchBackend, RawAnswer, TtsBackend
-from thai_syllabus.record import rows_for
+from thai_syllabus.provider import FetchBackend, LlmBackend, RawAnswer, TtsBackend
+from thai_syllabus.record import drafted_phrase, parse_phrases, rows_for
 from thai_syllabus.safety import Guard
 from thai_syllabus.tts import pick_voice
 from thai_syllabus.run import (
@@ -146,6 +146,46 @@ class _Llm:
         return RawAnswer(items=(self.drafts,))
 
 
+class _LlmPhrase:
+    """The phrase drafter: `phrases` is the JSON its one answer carries --
+    empty by default, so a picture need still searches the gloss fallback
+    unless a test asks for drafted phrases specifically."""
+
+    def __init__(self, phrases: str = '{"phrases": []}'):
+        self.phrases = phrases
+        self.prompts: list[str] = []
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="phrase-drafter", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.prompts.append(q.params["prompt"])
+        return RawAnswer(items=(self.phrases,))
+
+
+class _FixedCompletionTransport:
+    """A drafter transport (LlmBackend's own `.complete(prompt)`
+    contract) answering one fixed completion; records every prompt it
+    was asked."""
+
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        return Completion(text=self.text)
+
+
+def _real_llm_phrase(text: str) -> LlmBackend:
+    """The production llm-phrase wiring (wiring.build_provider's own
+    recognizer for producer "phrase-drafter", fix round 2 finding 2):
+    recognizes only a completion naming at least one asked item's
+    phrase."""
+    return LlmBackend(producer="phrase-drafter", model="m", transport=_FixedCompletionTransport(text),
+                      recognize=lambda t: bool(parse_phrases(t)))
+
+
 class _BatchTransport:
     """The judge's batch transport: submit() records a batch and answers
     "in_progress" until complete_all() gives every question the same
@@ -187,7 +227,7 @@ def fake_batch():
     return _BatchTransport()
 
 
-def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None):
+def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None):
     """Replaces every backend that would touch the network."""
     ctx.provider._backends.update({
         "openverse": fake_search.backend("openverse"),
@@ -195,6 +235,7 @@ def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None):
         "pexels": fake_search.backend("pexels"),
         "forvo": _Silent("forvo"), "tts": _Silent("tts"),
         "llm-sentence": llm if llm is not None else _Llm(),
+        "llm-phrase": phrase if phrase is not None else _LlmPhrase(),
         "imgfetch": FetchBackend(media=ctx.media_store,
                                  fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
         "audiofetch": FetchBackend(media=ctx.media_store,
@@ -250,6 +291,65 @@ def _seed_no_fit(db, word_id, target_id, *, times):
                   question={"kind": "sentence", "source": "llm", "subject_kind": "word",
                            "targets": [target_id]},
                   answer={"outcome": "nothing", "candidates": [], "reason": "nothing fits"})
+
+
+# --- the phrase attempt: one drafted search phrase per open picture need ---
+# (spec 3 r24 section 5) ------------------------------------------------
+
+def test_run_drafts_a_phrase_for_every_open_picture_need_and_searches_it(
+        ctx_batch_two_needs, fake_search, fake_batch):
+    llm_phrase = _LlmPhrase(json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "a bowl of steamed rice"},
+        {"subject": "fish", "phrase": "a grilled whole fish"}]}))
+    ctx_batch_two_needs.provider._backends["llm-phrase"] = llm_phrase
+    report = run(ctx_batch_two_needs, budgets={})
+    assert len(llm_phrase.prompts) == 1        # one ask covers both open needs
+    assert report.spend["llm-phrase"].asks == 1
+
+    def query_of(subject):
+        return [r.question["params"]["query"] for r in rows_for(ctx_batch_two_needs.db, subject,
+                                                                 "picture")
+               if r.port == "provide" and r.backend == "openverse"]
+
+    assert query_of("rice") == ["a bowl of steamed rice"]
+    assert query_of("fish") == ["a grilled whole fish"]
+
+
+def test_run_skips_the_phrase_ask_when_every_picture_need_already_has_one(
+        ctx_batch_two_needs, fake_search, fake_batch):
+    for subject in ("rice", "fish"):
+        ctx_batch_two_needs.db.append(
+            port="provide", backend="llm", key=PhraseKey(subject=subject), subject=subject,
+            question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+            answer={"phrase": "already drafted"})
+    report = run(ctx_batch_two_needs, budgets={})
+    assert ctx_batch_two_needs.provider._backends["llm-phrase"].prompts == []
+    assert "llm-phrase" not in report.spend
+
+
+def test_run_treats_an_empty_phrases_answer_as_unrecognized_and_re_asks_next_run(
+        ctx_batch_two_needs, fake_search, fake_batch):
+    """Fix round 2 finding 2 (spec 3 section 2): an answer phrasing none
+    of the asked items is not a cacheable answer -- the real llm-phrase
+    wiring's own recognizer (wiring.build_provider) raises, so
+    phrase_attempt appends no per-subject row and the run counts a
+    source failure instead of a permanent empty cache hit for a stable
+    lacking set. Uses the real LlmBackend/recognize path (not the bare
+    _LlmPhrase fake), so this exercises the actual production contract."""
+    backend = _real_llm_phrase(json.dumps({"phrases": []}))
+    ctx_batch_two_needs.provider._backends["llm-phrase"] = backend
+    report = run(ctx_batch_two_needs, budgets={})
+    assert len(backend.transport.prompts) == 1
+    assert report.source_failures == {"llm-phrase": 1}
+    assert report.unreachable is False
+    assert drafted_phrase(ctx_batch_two_needs.db.assessments_of("rice")) is None
+    assert drafted_phrase(ctx_batch_two_needs.db.assessments_of("fish")) is None
+    # nothing cached -- a second run (its own batch resolved first, same
+    # as every other two-run test in this module) re-asks rather than
+    # getting a permanent empty cache hit for the same stable lacking set
+    fake_batch.complete_all(report.batch_id, passed=False)
+    run(ctx_batch_two_needs, budgets={})
+    assert len(backend.transport.prompts) == 2
 
 
 # --- one pass per source, one batch ---------------------------------------
@@ -721,11 +821,13 @@ class _Q:
 
 
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
-           preference=AttemptResult(attempted=False), assess=None):
-    """Replaces attempt/assess_first/sentence_attempt/preference_attempt/
-    adoptable_drafts. A `results` entry that is an exception class is
-    raised instead of returned. `assess` is assess_first's fixed return
-    for every need -- None keeps the fall-through to the source."""
+           preference=AttemptResult(attempted=False), assess=None,
+           phrase_result=AttemptResult(attempted=False)):
+    """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
+    preference_attempt/adoptable_drafts. A `results` entry that is an
+    exception class is raised instead of returned. `assess` is
+    assess_first's fixed return for every need -- None keeps the
+    fall-through to the source."""
     calls = []
 
     def fake_attempt(ctx, need, source):
@@ -741,9 +843,15 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
             raise sentence_result("no judge")
         return sentence_result
 
+    def fake_phrase_attempt(ctx):
+        if isinstance(phrase_result, type) and issubclass(phrase_result, Exception):
+            raise phrase_result("no drafter")
+        return phrase_result
+
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: assess)
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "phrase_attempt", fake_phrase_attempt)
     monkeypatch.setattr(run_mod, "preference_attempt", lambda ctx, subjects: preference)
     monkeypatch.setattr(run_mod, "adoptable_drafts",
                         lambda cache, syllabus, **kwargs: list(drafts))
@@ -955,6 +1063,7 @@ def test_run_threads_its_own_clock_read_to_every_attempt_via_ctx_now_ns(db, monk
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: None)
     monkeypatch.setattr(run_mod, "sentence_attempt",
                         lambda ctx, max_targets=40: AttemptResult(attempted=False))
+    monkeypatch.setattr(run_mod, "phrase_attempt", lambda ctx: AttemptResult(attempted=False))
     monkeypatch.setattr(run_mod, "preference_attempt",
                         lambda ctx, subjects: AttemptResult(attempted=False))
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
@@ -1637,6 +1746,23 @@ def test_a_drafter_transport_failure_defers_every_open_word_beyond_the_cap_too(d
     assert report.available == 45 and report.attempted == 0 and report.deferred == 45
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_phrase_drafter_transport_failure_is_a_source_failure_and_the_loop_runs(db, monkeypatch):
+    """spec 3 r24 section 5: the phrase drafter died on the wire -- its
+    failure is counted, but unlike the sentence drafter it owns no need
+    bucket of its own, so the queued picture need is still attempted
+    normally (on its plain gloss fallback) and nothing is deferred."""
+    calls = _patch(monkeypatch, {}, phrase_result=TransportError)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert [n.subject for n, _s in calls] == ["a"]
+    assert report.source_failures == {"llm-phrase": 1}
+    assert report.unreachable is False
+    assert report.available == 1 and report.attempted == 1 and report.deferred == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+    assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
+        "llm-phrase": 1}
 
 
 # --- adoption: the cover over what the judge passed ------------------------

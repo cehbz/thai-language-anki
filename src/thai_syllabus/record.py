@@ -25,16 +25,19 @@ from .transport import strip_fences
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner_ratings",
+__all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "candidate_shas",
+          "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls", "latest_nothing_reason",
+          "latest_phrase", "drafted_phrase", "parse_phrases",
           "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
           "subject_kind_of", "retired_texts",
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "parse_no_fit", "merge_drafts", "draft_sentence", "drafts_in",
           "sentence_drafts",
           "excluded_candidates", "card_flags",
-          "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in"]
+          "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in",
+          "PHRASE_SUBJECT"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
 # proposed for a run's open Targets as a set, not for one subject.
@@ -45,12 +48,25 @@ DRAFT_SUBJECT = "sentence-drafts"
 # clauses is one ask, not one subject per row.
 PARSE_SUBJECT = "sentence-parses"
 
+# The subject every phrase-drafting ask is appended under (spec 3 r24
+# section 5): one batch prompt drafts a phrase for every open picture
+# need lacking one, not one ask per subject. The drafted phrase itself is
+# appended separately, one provide row per subject (cachekeys.PhraseKey),
+# which is what `drafted_phrase`/`latest_phrase` read back.
+PHRASE_SUBJECT = "picture-phrases"
+
 # provide rows from these backends are not Source asks (spec 3 section 3
 # vocabulary: an attempt is one Source ask): imgfetch/audiofetch write the
 # candidate a Source ask already caused, and a learner row is a supply --
 # an answer, not an ask. a legacy-current row is a migrated candidate's
-# provenance (spec 2 section 4), an answer with no ask.
-_NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner", "legacy-current")
+# provenance (spec 2 section 4), an answer with no ask. an "llm" row is
+# attempts.phrase_attempt's own per-subject phrase row (spec 3 r24 section
+# 5): the phrase a Source ask already drafted, recorded under the picture
+# need's own subject so record.drafted_phrase/latest_phrase and
+# reviewserver's "what was tried" can read it back -- the ask itself is
+# the batch prompt, appended separately under backend "llm-phrase" (spec 3
+# roster), which stays a Source ask and is unaffected by this exclusion.
+_NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner", "legacy-current", "llm")
 
 # The learner rating vocabulary: every value a rating row's answer["value"]
 # is allowed to carry, ranked on the same numeric scale a judge verdict
@@ -90,6 +106,23 @@ def source_asks(rows: Sequence[Answer]) -> list[Answer]:
     return sorted((r for r in rows
                   if r.port == "provide" and r.backend not in _NOT_SOURCE_ASK_BACKENDS),
                  key=lambda r: r.ts)
+
+
+def last_source_ask_ts(rows: Sequence[Answer]) -> int:
+    """The newest Source ask's ts among `rows` (`source_asks`), or -1 when
+    none is on record -- what "the last provide row" means everywhere a
+    fold measures a judge suggestion's own freshness against it (spec 3
+    section 5's picture query precedence, `latest_phrase`;
+    derivations._has_untried_lever's bucket-2 check): the search that
+    produced the judged candidate, never a provide row that is an answer
+    rather than an ask -- attempts.phrase_attempt's own per-subject
+    phrase row (fix round 2 finding 1) included, the same rows
+    `source_asks` already excludes (imgfetch/audiofetch/learner/
+    legacy-current/llm). A phrase drafted after a pending suggestion must
+    not make that suggestion look stale.
+    """
+    asks = source_asks(rows)
+    return max((r.ts for r in asks), default=-1)
 
 
 def candidate_shas(rows: Sequence[Answer]) -> list[str]:
@@ -191,6 +224,40 @@ def latest_nothing_reason(rows: Sequence[Answer]) -> str | None:
     reasons = [r for r in rows if r.port == "attempt"
               and r.answer.get("outcome") == "nothing" and r.answer.get("reason")]
     return str(max(reasons, key=lambda r: r.ts).answer["reason"]) if reasons else None
+
+
+def drafted_phrase(rows: Sequence[Answer]) -> str | None:
+    """The newest drafted image-search phrase on record for one subject
+    (spec 3 section 5): a provide row the phrase drafter appended
+    (backend "llm", question["provides"] == "phrase") whose answer
+    carries a `phrase`, or None when none is on record -- what
+    `attempts.phrase_attempt` tests to decide whether a picture need
+    still lacks one.
+    """
+    drafts = [r for r in rows if r.port == "provide" and r.backend == "llm"
+             and r.question.get("provides") == "phrase" and r.answer.get("phrase")]
+    return str(max(drafts, key=lambda r: r.ts).answer["phrase"]) if drafts else None
+
+
+def latest_phrase(rows: Sequence[Answer]) -> str | None:
+    """The image-search phrase a picture attempt's query prefers (spec 3
+    section 5), in precedence: the latest learner direction; else a judge
+    suggestion newer than the last Source ask (`last_source_ask_ts` --
+    the search that produced the judged candidate, never
+    attempts.phrase_attempt's own per-subject phrase row, fix round 2
+    finding 1); else the newest drafted phrase on record
+    (`drafted_phrase`); else None -- the caller's own fallback, a word's
+    gloss head term with its category qualifier or a sentence's gloss.
+    """
+    directed = directions(rows)
+    if directed:
+        return str(directed[-1].answer["direction"])
+    last_provide = last_source_ask_ts(rows)
+    suggestions = [r for r in rows if r.port == "assess" and r.backend == "judge"
+                  and r.answer.get("suggestion") and r.ts > last_provide]
+    if suggestions:
+        return str(max(suggestions, key=lambda r: r.ts).answer["suggestion"])
+    return drafted_phrase(rows)
 
 
 def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
@@ -378,6 +445,30 @@ def parse_no_fit(text: str) -> str | None:
     if not isinstance(reason, str) or not reason.strip():
         return None
     return reason.strip()
+
+
+def parse_phrases(text: str) -> dict[str, str]:
+    """The subject -> phrase map one phrase-drafting answer's JSON
+    carries (spec 3 section 5, attempts._phrase_prompt's own {"phrases":
+    [{"subject": "...", "phrase": "..."}]} shape): an item lacking a
+    `subject` or a non-empty string `phrase` is skipped. Empty when
+    `text` is not that JSON. A subject listed twice keeps the last one
+    listed.
+    """
+    try:
+        data = json.loads(strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    items = (data.get("phrases") if isinstance(data, Mapping) else None) or []
+    out: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        subject, phrase = item.get("subject"), item.get("phrase")
+        if not subject or not isinstance(phrase, str) or not phrase.strip():
+            continue
+        out[str(subject)] = phrase.strip()
+    return out
 
 
 def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:

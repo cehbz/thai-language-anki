@@ -250,6 +250,20 @@ class RenditionAskKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class PhraseKey(CacheKey):
+    """provide:llm:phrase:SUBJECT -- one drafted image-search phrase
+    (spec 3 section 5) appended under its own subject (a word id or a
+    sentence text_sha), even though the batch prompt that drafted it is
+    asked under record.PHRASE_SUBJECT, keyed by its own prompt
+    (LlmPromptKey).
+    """
+    subject: str
+
+    def encode(self) -> str:
+        return f"provide:llm:phrase:{self.subject}"
+
+
+@dataclass(frozen=True)
 class AttemptOutcomeKey(CacheKey):
     """attempt:SUBJECT:KIND:SOURCE -- one attempt outcome row (spec 3
     section 6): what one Source produced for one need. Every field is

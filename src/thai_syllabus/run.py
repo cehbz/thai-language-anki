@@ -1,7 +1,8 @@
 """The batch run (spec 3 section 7): the previous run's judge batch
 resolved and what it passed adopted, one sentence attempt over the open
-Targets, one Source per queued need, and every question collected on the
-way submitted as one batch.
+Targets, one phrase attempt drafting a search phrase for every open
+picture need lacking one (spec 3 r24 section 5), one Source per queued
+need, and every question collected on the way submitted as one batch.
 
 Iteration only: every policy (queue/current_best/exhausted/next_source,
 what a picture still owes a preference question, what an attempt is for a
@@ -29,6 +30,7 @@ from .attempts import (
     assess_first,
     attempt,
     current_best_of,
+    phrase_attempt,
     preference_attempt,
     provenance_source_for,
     sentence_attempt,
@@ -539,13 +541,17 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
 
 def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         sentence_targets_per_run: int = 40) -> RunReport:
-    """One pass: resolve, adopt, draft sentences once, try each queued
-    need at its next source, submit everything collected as one batch.
-    An unreachable judge -- at the resolve, in an attempt, or at the
-    submit -- ends the pass there, reported and persisted; a batch still
-    unanswered ends it before any attempt, so at most one batch is out.
-    A drafter transport failure counts under source_failures["llm-sentence"]
-    and defers every word with an open Target; the loop runs.
+    """One pass: resolve, adopt, draft sentences once, draft an image
+    phrase once for every open picture need lacking one (spec 3 r24
+    section 5), try each queued need at its next source, submit
+    everything collected as one batch. An unreachable judge -- at the
+    resolve, in an attempt, or at the submit -- ends the pass there,
+    reported and persisted; a batch still unanswered ends it before any
+    attempt, so at most one batch is out. A drafter transport failure
+    counts under source_failures["llm-sentence"] and defers every word
+    with an open Target; one under source_failures["llm-phrase"] leaves
+    every picture need on its plain gloss fallback for this pass. Either
+    way the loop runs.
     """
     # One clock read for the whole run (spec 3 r19 section 6a/9): every
     # queue build and the attempt loop's own next_source calls age a
@@ -650,6 +656,21 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         # per-need Source skip below. The per-Target cap bounds one
         # attempt's own hand-over and applies only when the attempt runs.
         tally.budgeted += len(open_words_before)
+
+    # One drafting ask per run (spec 3 r24 section 5), after sentence
+    # drafting and before the need loop: every open picture need -- word
+    # or scene, this pass's newly adopted sentences included -- lacking a
+    # drafted phrase gets one, so _picture_query_for finds it below
+    # instead of falling back to the plain gloss. No need bucket of its
+    # own: a picture need this drafts nothing for is still tried at its
+    # next source, on the gloss fallback, the same as before this ask
+    # existed. A drafter transport failure counts under
+    # source_failures["llm-phrase"] and otherwise never breaks the run.
+    try:
+        tally.collect(phrase_attempt(ctx))
+    except TransportError as e:
+        tally.source_failures["llm-phrase"] = tally.source_failures.get("llm-phrase", 0) + 1
+        _log.warning("drafter llm-phrase failed: %s", e)
 
     needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
     # One snapshot of the need keys `available` counts, read here beside

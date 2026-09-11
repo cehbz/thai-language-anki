@@ -9,11 +9,12 @@ from datetime import date
 import pytest
 
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LearnerKey,
-                                     ProvideKey, RetirementKey, sha)
+                                     PhraseKey, ProvideKey, RetirementKey, sha)
 from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
     DRAFT_SUBJECT,
     PARSE_SUBJECT,
+    PHRASE_SUBJECT,
     SentenceDraft,
     asks_since,
     cost_since,
@@ -21,14 +22,18 @@ from thai_syllabus.record import (
     candidate_shas,
     directions,
     draft_sentence,
+    drafted_phrase,
     drafts_in,
     judge_verdicts,
+    latest_phrase,
+    last_source_ask_ts,
     latest_query,
     latest_rating,
     learner_ratings,
     merge_drafts,
     parse_drafts,
     parse_no_fit,
+    parse_phrases,
     parse_prompt,
     parses_in,
     ratings_for_role,
@@ -102,6 +107,20 @@ def test_source_asks_excludes_a_legacy_current_row(cache):
     rows = rows_for(cache, "w", "picture")
     assert [r.backend for r in source_asks(rows)] == ["openverse"]
     assert candidate_shas(rows) == ["c" * 64]
+
+
+def test_source_asks_excludes_a_drafted_phrase_row_too(cache):
+    """spec 3 r24 section 5: attempts.phrase_attempt's per-subject phrase
+    row (backend "llm") records the phrase a Source ask already drafted
+    (the batch prompt, backend "llm-phrase") -- it is an answer, not an
+    ask of its own, the same rationale as imgfetch/audiofetch."""
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="k1"),
+                "rice", {"kind": "picture", "params": {"query": "rice food"}}, {"items": []}, 0)
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "a bowl of steamed rice"}, 0)
+    rows = rows_for(cache, "rice", "picture")
+    assert [r.backend for r in source_asks(rows)] == ["openverse"]
 
 
 def test_latest_query_ignores_a_newer_legacy_current_row(cache):
@@ -285,6 +304,109 @@ def test_judge_verdicts_selects_by_role(cache):
     rows = cache.assessments_of("w")
     fit = judge_verdicts(rows, "picture-for-word")
     assert [r.question["role"] for r in fit] == ["picture-for-word"]
+
+
+# --- latest_phrase / drafted_phrase (spec 3 section 5's picture query) -----
+
+def test_drafted_phrase_reads_the_newest_phrase_provide_row(cache):
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0)
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "steamed jasmine rice"}, 0)
+    assert drafted_phrase(cache.assessments_of("rice")) == "steamed jasmine rice"
+
+
+def test_drafted_phrase_is_none_with_no_phrase_row_on_record(cache):
+    assert drafted_phrase(cache.assessments_of("rice")) is None
+
+
+def test_drafted_phrase_ignores_a_row_of_a_different_provides(cache):
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="rice"),
+                "rice", {"provides": "picture", "kind": "picture"}, {"items": []}, 0)
+    assert drafted_phrase(cache.assessments_of("rice")) is None
+
+
+def test_latest_phrase_prefers_the_latest_learner_direction(cache):
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0)
+    cache.append("assess", "learner",
+                DirectionKey(subject="rice", role="picture-for-word", text_sha=sha("try red")),
+                "rice", {"kind": "direction", "role": "picture-for-word"},
+                {"direction": "try red"}, 0)
+    assert latest_phrase(cache.assessments_of("rice")) == "try red"
+
+
+def test_latest_phrase_prefers_a_suggestion_newer_than_the_last_provide(cache):
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0)
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
+                "rice", {"role": "picture-for-word", "kind": "picture"},
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0)
+    assert latest_phrase(cache.assessments_of("rice")) == "a bowl of steamed jasmine rice"
+
+
+def test_latest_phrase_prefers_a_suggestion_older_than_a_later_phrase_row(cache):
+    """Fix round 2 finding 1: "the last provide row" means the last
+    Source ask -- the search that produced the judged candidate -- never
+    attempts.phrase_attempt's own per-subject phrase row (an answer, not
+    an ask). A phrase drafted after a pending suggestion must not make
+    that suggestion look stale."""
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="rice"),
+                "rice", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0)
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
+                "rice", {"role": "picture-for-word", "kind": "picture"},
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0)
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0)
+    assert latest_phrase(cache.assessments_of("rice")) == "a bowl of steamed jasmine rice"
+
+
+def test_last_source_ask_ts_ignores_a_phrase_row(cache):
+    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="rice"),
+                "rice", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0, ts=1)
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0, ts=2)
+    assert last_source_ask_ts(cache.assessments_of("rice")) == 1
+
+
+def test_last_source_ask_ts_is_minus_one_with_no_source_ask(cache):
+    assert last_source_ask_ts([]) == -1
+
+
+def test_latest_phrase_falls_back_to_the_drafted_phrase(cache):
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0)
+    assert latest_phrase(cache.assessments_of("rice")) == "bowl of rice"
+
+
+def test_latest_phrase_is_none_with_nothing_on_record(cache):
+    assert latest_phrase(cache.assessments_of("rice")) is None
+
+
+# --- parse_phrases: the phrase drafter's own answer shape (spec 3 s5) ------
+
+def test_parse_phrases_reads_the_subject_to_phrase_map():
+    text = json.dumps({"phrases": [{"subject": "rice", "phrase": "bowl of rice"},
+                                   {"subject": "s1", "phrase": "a busy street market"}]})
+    assert parse_phrases(text) == {"rice": "bowl of rice", "s1": "a busy street market"}
+
+
+def test_parse_phrases_skips_an_item_lacking_a_subject_or_a_phrase():
+    text = json.dumps({"phrases": [{"phrase": "no subject"}, {"subject": "rice", "phrase": ""},
+                                   {"subject": "eat"}]})
+    assert parse_phrases(text) == {}
+
+
+def test_parse_phrases_is_empty_for_text_that_is_not_the_phrase_json():
+    assert parse_phrases("not json") == {}
+    assert parse_phrases(json.dumps({"sentences": []})) == {}
 
 
 def test_latest_query_reads_the_newest_source_asks_params(cache):
