@@ -263,15 +263,43 @@ class Syllabus:
     # --- fills() -----------------------------------------------------------
 
     def _target_satisfies_clauses_1_and_2(self, words: frozenset[WordId], voice: str,
-                                          target: Target) -> bool:
+                                          target: Target, last_used_word: WordId,
+                                          admits_learner: bool) -> bool:
         """Clauses 1 and 2 alone: the target's word among `words` (a
         sentence's own words as a set), the voice satisfying the skill --
         the "contains" test a fill set is built from, distinct from
-        membership in one (spec 1 section 3).
+        membership in one (spec 1 section 3). Clause 2 (r10): a
+        productive Target also needs the sentence's last used word to be
+        the target's own word (the word the Cloze card is on, spec 4)
+        and the sentence's marking to admit the learner's voice, i.e. be
+        empty or the Profile's own sex -- `last_used_word` and
+        `admits_learner` are the caller's own sentence, computed once
+        per `candidate_targets` call rather than per candidate.
         """
         if target.word not in words:
             return False
-        return not (target.skill == "productive" and voice != "learner_voice")
+        if target.skill != "productive":
+            return True
+        return voice == "learner_voice" and target.word == last_used_word and admits_learner
+
+    def candidate_targets(self, sentence: Sentence) -> tuple[Target, ...]:
+        """The Targets passing clauses 1 and 2 alone (spec 1 section 3,
+        clauses 1-2), in target-id order -- distinct from clause 3's
+        fill set (`fill_set`), which the novelty rule (F5) compares
+        this against rather than re-deriving. () when the sentence uses
+        no targeted word at all (`last_used_word` would raise).
+        """
+        try:
+            last_used_word = self.last_used_word(sentence)
+        except ValueError:
+            return ()
+        used = frozenset(sentence.words)
+        admits_learner = self.marking(sentence) <= {self.profile.learner_speaker}
+        return tuple(sorted(
+            (t for t in self.targets
+            if self._target_satisfies_clauses_1_and_2(
+                used, sentence.voice, t, last_used_word, admits_learner)),
+            key=lambda t: t.id))
 
     def _sentence_order_key(self, sentence: Sentence) -> tuple[int, str] | None:
         """(last_used_word's order() position, text_sha): the key
@@ -355,10 +383,7 @@ class Syllabus:
         if not used <= self._word_target_positions.keys():
             return ()
 
-        candidates = tuple(sorted(
-            (t for t in self.targets
-            if self._target_satisfies_clauses_1_and_2(used, sentence.voice, t)),
-            key=lambda t: t.id))
+        candidates = self.candidate_targets(sentence)
         if not candidates:
             return ()
 

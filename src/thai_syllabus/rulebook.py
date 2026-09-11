@@ -96,12 +96,7 @@ def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []
     for s in syllabus.sentences:
         filled = syllabus.fill_set(s)
-        used = frozenset(s.words)
-        for t in syllabus.targets:
-            if t.word not in used:
-                continue
-            if t.skill == "productive" and s.voice != "learner_voice":
-                continue
+        for t in syllabus.candidate_targets(s):
             if t not in filled:
                 findings.append(Finding(
                     rule="sentence/fills-novelty", note_id=sentence_note_id(s),
