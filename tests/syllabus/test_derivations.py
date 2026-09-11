@@ -1651,7 +1651,7 @@ _KIND_BY_ROLE = {"picture-for-word": "picture", "recording-for-word": "recording
 
 def _verdict(db, subject, backend, role, sha, value, rubric="r"):
     if backend == "mechanical":
-        key = MechanicalKey(check=role, params=rubric or "", artifact_sha=sha)
+        key = MechanicalKey(check=role, params=rubric or "", subject=subject, artifact_sha=sha)
     else:
         key = JudgeKey.for_rule(rubric, sha, subject, role)
     db.append(port="assess", backend=backend, key=key,
@@ -1688,6 +1688,27 @@ def test_mechanical_never_ranks_a_picture(db):
     best = current_best(db, "w", "picture", current_rubric={}, prior=(),
                         provenance_source=_no_provenance)
     assert best.artifact_sha is None
+
+
+def test_current_best_for_one_subject_ignores_a_verdict_row_filed_under_another(db):
+    """A verdict row under subject "a" alone (a homograph pair sharing one
+    content-addressed artifact sha) does not make that artifact
+    current-best for subject "b": current_best resolves it only once "b"
+    has its own verdict row (regression pin -- record.rows_for is already
+    subject-scoped through cache.assessments_of(subject), independent of
+    task 6's MechanicalKey.subject field).
+    """
+    _provide(db, "a", "recording", "forvo", ["shared"])
+    _verdict(db, "a", "mechanical", "recording-for-word", "shared", True, rubric=None)
+    best_for_b = current_best(db, "b", "recording", current_rubric={}, prior=(),
+                              provenance_source=_no_provenance)
+    assert best_for_b.artifact_sha is None
+
+    _provide(db, "b", "recording", "forvo", ["shared"])
+    _verdict(db, "b", "mechanical", "recording-for-word", "shared", True, rubric=None)
+    best_for_b = current_best(db, "b", "recording", current_rubric={}, prior=(),
+                              provenance_source=_no_provenance)
+    assert best_for_b.artifact_sha == "shared" and best_for_b.source == "mechanical"
 
 
 def test_preference_orders_passing_pictures(db):

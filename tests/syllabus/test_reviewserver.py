@@ -804,7 +804,8 @@ def test_append_supply_url_fetch_is_cache_first(derivations, db, media_store, w1
 
 def _mechanical_pass(db, subject, sha):
     db.append(port="assess", backend="mechanical",
-             key=MechanicalKey(check="recording-for-word", params="", artifact_sha=sha),
+             key=MechanicalKey(check="recording-for-word", params="", subject=subject,
+                               artifact_sha=sha),
              subject=subject,
              question={"role": "recording-for-word", "artifact_sha": sha, "rubric": None,
                       "kind": "recording"},
@@ -991,7 +992,7 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id=speaker)
         shas[member] = sha
-    rendition_key = MechanicalKey(check="rendition", params=str(pair.id),
+    rendition_key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
                                   artifact_sha=rendition_identity(shas))
     db.append(port="assess", backend="rendition", key=rendition_key, subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),

@@ -147,7 +147,8 @@ class _Mechanical:
         self.ok, self.failing_subject = ok, failing_subject
 
     def cache_key(self, q):
-        return MechanicalKey(check="duration", params="0.2-5.0", artifact_sha=q.artifact_sha)
+        return MechanicalKey(check="duration", params="0.2-5.0", subject=q.subject,
+                             artifact_sha=q.artifact_sha)
 
     def fetch(self, q):
         passes = self.ok and q.subject != self.failing_subject
@@ -1947,7 +1948,8 @@ def test_a_rendition_tts_attempt_stops_at_the_first_member_the_service_refuses(t
 
 class _DeadMechanical:
     def cache_key(self, q):
-        return MechanicalKey(check="duration", params="0.2-5.0", artifact_sha=q.artifact_sha or "-")
+        return MechanicalKey(check="duration", params="0.2-5.0", subject=q.subject,
+                             artifact_sha=q.artifact_sha or "-")
 
     def fetch(self, q):
         raise TransportError("mechanical check unreachable")

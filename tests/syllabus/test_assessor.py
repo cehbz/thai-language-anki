@@ -304,7 +304,7 @@ def test_duration_mechanical_key_is_parameter_explicit():
     backend = DurationBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
-    assert key.encode() == "mech:duration:0.2-5.0:deadbeef"
+    assert key.encode() == "mech:duration:0.2-5.0:s:deadbeef"
 
 
 def test_duration_mechanical_passes_within_range(tmp_path):
@@ -334,7 +334,7 @@ def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
                             resolve_ext=lambda sha: "mp3")
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
-    assert key.encode() == "mech:format:v2:deadbeef"
+    assert key.encode() == "mech:format:v2:s:deadbeef"
 
 
 def test_format_mechanical_evaluates_extension_match():
@@ -358,6 +358,26 @@ def test_duration_check_excludes_a_missing_artifact_instead_of_failing_the_run(d
     q = AssessQuestion(subject="w", role="recording-for-word", artifact_sha="s1", kind="recording")
     res = a.ask_many("mechanical", [q])
     assert res.excluded and res.resolved == {}
+
+
+def test_a_mechanical_verdict_is_keyed_by_subject_as_well_as_artifact(db, tmp_path):
+    """Two subjects sharing one artifact sha (a homograph pair fetched the
+    same audio) each get their own mechanical verdict row: the second
+    subject's ask is not a cache hit off the first subject's row (spec 3
+    section 3: the subject is its own part of a verdict's key).
+    """
+    f = tmp_path / "shared.mp3"
+    f.write_bytes(b"x")
+    backend = DurationBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
+                              duration_of=lambda path: 1.0)
+    assessor = Assessor(record=db, cache=db, backends={"mechanical": backend})
+    q_a = AssessQuestion(subject="a", role="recording-for-word", artifact_sha="shared")
+    q_b = AssessQuestion(subject="b", role="recording-for-word", artifact_sha="shared")
+    assessor.ask("mechanical", q_a)
+    assessor.ask("mechanical", q_b)
+    rows_b = db.assessments_of("b")
+    assert len(rows_b) == 1
+    assert rows_b[0].question["artifact_sha"] == "shared"
 
 
 def test_ffprobe_failing_on_an_existing_file_is_a_preparation_error(tmp_path):
@@ -1150,7 +1170,7 @@ def test_the_rendition_key_identifies_the_member_set_not_its_order():
     other = backend.cache_key(_rendition_question({"far": "b", "near": "a"}))
     assert one == other
     assert one.artifact_sha == rendition_identity({"near": "a", "far": "b"})
-    assert one.params == "p1"
+    assert one.subject == "p1"
 
 
 def test_a_rendition_with_no_members_cannot_be_prepared():
@@ -1201,10 +1221,10 @@ def test_an_assessor_with_no_judge_at_all_is_not_inline(tmp_path):
 # --- a verdict row carries the params its question was asked with ----------
 
 class _StubMechanical:
-    """A mechanical backend that passes everything, under one fixed key."""
+    """A mechanical backend that passes everything; its key varies only by subject."""
 
     def cache_key(self, question):
-        return MechanicalKey(check="c", params="v1", artifact_sha="a")
+        return MechanicalKey(check="c", params="v1", subject=question.subject, artifact_sha="a")
 
     def fetch(self, question):
         return RawVerdict(value=True)

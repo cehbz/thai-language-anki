@@ -740,7 +740,8 @@ def test_db_media_index_rendition_provenance_prefers_the_pair_level_rendition_ro
 
     # the "rendition" mechanical backend's own row shape.
     db.append(port="assess", backend="rendition",
-             key=MechanicalKey(check="rendition", params=str(pair.id), artifact_sha="joined"),
+             key=MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
+                               artifact_sha="joined"),
              subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
@@ -805,7 +806,8 @@ def test_speakers_of_rendition_returns_the_pairs_rendition_speaker_once(db):
     # best rendition rows resolve to the SAME speaker, so speakers_of must
     # report it once, not twice.
     db.append(port="assess", backend="rendition",
-             key=MechanicalKey(check="rendition", params=str(pair.id), artifact_sha="joined"),
+             key=MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
+                               artifact_sha="joined"),
              subject=pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",
@@ -828,7 +830,8 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
     _seed_member_recording(db, "near", "sha-near-own", "somchai")
     _seed_member_recording(db, "far", "sha-far-own", "somchai")
     db.append(port="assess", backend="rendition",
-             key=MechanicalKey(check="rendition", params=str(real_pair.id), artifact_sha="joined"),
+             key=MechanicalKey(check="rendition", params="v1", subject=str(real_pair.id),
+                               artifact_sha="joined"),
              subject=real_pair.id,
              question={"role": "rendition-for-pair", "artifact_sha": "joined-sha",
                       "rubric": None, "kind": "rendition",

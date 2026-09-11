@@ -296,7 +296,8 @@ def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once
                  question={"kind": "recording", "subject_kind": "word"},
                  answer={"items": [{"sha": "rice-rec"}]})
     ctx.db.append(port="assess", backend="mechanical",
-                 key=MechanicalKey(check="duration", params="0.2-5.0", artifact_sha="rice-rec"),
+                 key=MechanicalKey(check="duration", params="0.2-5.0", subject="rice",
+                                   artifact_sha="rice-rec"),
                  subject="rice",
                  question={"role": "recording-for-word", "artifact_sha": "rice-rec",
                           "kind": "recording", "subject_kind": "word"},
@@ -386,7 +387,7 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
                  question={"kind": "recording", "subject_kind": "sentence"},
                  answer={"items": [{"sha": "sentence-rec-seed"}]})
     ctx.db.append(port="assess", backend="mechanical",
-                 key=MechanicalKey(check="duration", params="seed",
+                 key=MechanicalKey(check="duration", params="seed", subject=sentence_sha,
                                    artifact_sha="sentence-rec-seed"),
                  subject=sentence_sha,
                  question={"role": "recording-for-sentence", "artifact_sha": "sentence-rec-seed",

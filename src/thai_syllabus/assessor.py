@@ -726,10 +726,10 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 @dataclass
 class DurationBackend:
     """A recording's duration lies within [lo, hi] seconds. Keyed
-    mech:duration:LO-HI:ARTIFACT_SHA. `duration_of`, when given, replaces
-    the ffprobe lookup. `fetch` requires a readable artifact file (a
-    missing or unreadable one is a PreparationError) before `duration_of`
-    or ffprobe runs.
+    mech:duration:LO-HI:SUBJECT:ARTIFACT_SHA. `duration_of`, when given,
+    replaces the ffprobe lookup. `fetch` requires a readable artifact
+    file (a missing or unreadable one is a PreparationError) before
+    `duration_of` or ffprobe runs.
     """
     resolve_path: Callable[[str | None], str | Path | None]
     lo: float = 0.2
@@ -739,6 +739,7 @@ class DurationBackend:
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         return MechanicalKey(check="duration", params=f"{self.lo}-{self.hi}",
+                             subject=question.subject,
                              artifact_sha=question.artifact_sha or "-")
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
@@ -755,7 +756,7 @@ class DurationBackend:
 @dataclass
 class FormatBackend:
     """An artifact's stored extension equals `expected_ext`. Keyed
-    mech:format:CODE_VERSION:ARTIFACT_SHA.
+    mech:format:CODE_VERSION:SUBJECT:ARTIFACT_SHA.
     """
     expected_ext: str
     resolve_ext: Callable[[str | None], str]
@@ -763,6 +764,7 @@ class FormatBackend:
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         return MechanicalKey(check="format", params=self.code_version,
+                             subject=question.subject,
                              artifact_sha=question.artifact_sha or "-")
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
@@ -779,12 +781,16 @@ class RenditionBackend:
     every one of those members passing its own mechanical checks, whose
     verdicts the asker hands over in `params["member_checks"]` (member ->
     bool). The artifact they form is the member set, identified by
-    cachekeys.rendition_identity.
+    cachekeys.rendition_identity. Keyed
+    mech:rendition:CODE_VERSION:SUBJECT:ARTIFACT_SHA -- SUBJECT is the
+    pair id (question.subject).
     """
     speaker_of: Callable[[str], str | None]
+    code_version: str = "v1"
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="rendition", params=question.subject,
+        return MechanicalKey(check="rendition", params=self.code_version,
+                             subject=question.subject,
                              artifact_sha=rendition_identity(question.params["members"]))
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:

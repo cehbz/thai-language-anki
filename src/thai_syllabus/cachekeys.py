@@ -178,16 +178,19 @@ class WaiverKey(CacheKey):
 
 @dataclass(frozen=True)
 class MechanicalKey(CacheKey):
-    """mech:CHECK:PARAMS:ARTIFACT_SHA, parameter-explicit: the checked
-    thresholds (or the code version, where no parameter expresses the
-    check) go in PARAMS, so a parameter change is a new key.
+    """mech:CHECK:PARAMS:SUBJECT:ARTIFACT_SHA, parameter-explicit: the
+    checked thresholds (or the code version, where no parameter expresses
+    the check) go in PARAMS, so a parameter change is a new key; SUBJECT
+    is the question's own subject (spec 3 section 4: one verdict per
+    (subject, artifact)).
     """
     check: str
     params: str
+    subject: str
     artifact_sha: str
 
     def encode(self) -> str:
-        return f"mech:{self.check}:{self.params}:{self.artifact_sha}"
+        return f"mech:{self.check}:{self.params}:{self.subject}:{self.artifact_sha}"
 
 
 @dataclass(frozen=True)

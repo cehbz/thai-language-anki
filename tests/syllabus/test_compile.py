@@ -147,7 +147,7 @@ class Fixture:
                               acquired=date(2026, 1, 1), speaker_id=speaker)
             shas[member] = sha
         self.db.append(port="assess", backend="rendition",
-                       key=MechanicalKey(check="rendition", params=str(pair.id),
+                       key=MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
                                         artifact_sha=rendition_identity(shas)),
                        subject=pair.id,
                        question={"role": "rendition-for-pair",

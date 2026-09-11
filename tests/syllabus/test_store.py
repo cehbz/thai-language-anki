@@ -159,7 +159,7 @@ def test_rows_since_returns_that_port_and_backend_from_the_window_onward(db):
               key=ProvideKey(source="tts", kind="", query="k3"), subject="rice",
               question={"kind": "recording"}, answer={"items": []}, cost=0.0, ts=300)
     db.append(port="assess", backend="forvo",
-              key=MechanicalKey(check="k4", params="", artifact_sha=""), subject="rice",
+              key=MechanicalKey(check="k4", params="", subject="rice", artifact_sha=""), subject="rice",
               question={"kind": "recording"}, answer={"value": True}, cost=0.0, ts=300)
     rows = db.rows_since("provide", "forvo", 200)
     assert [(r.subject, r.cost) for r in rows] == [("fish", 2.0)]

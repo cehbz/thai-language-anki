@@ -114,8 +114,18 @@ def test_waiver_key_falls_back_to_dash_with_no_artifact():
 
 
 def test_mechanical_key_is_parameter_explicit():
-    key = MechanicalKey(check="duration", params="0.2-5.0", artifact_sha="deadbeef")
-    assert key.encode() == "mech:duration:0.2-5.0:deadbeef"
+    key = MechanicalKey(check="duration", params="0.2-5.0", subject="rice",
+                        artifact_sha="deadbeef")
+    assert key.encode() == "mech:duration:0.2-5.0:rice:deadbeef"
+
+
+def test_mechanical_key_differing_only_in_subject_is_a_different_key():
+    one = MechanicalKey(check="duration", params="0.2-5.0", subject="rice",
+                        artifact_sha="deadbeef")
+    other = MechanicalKey(check="duration", params="0.2-5.0", subject="fish",
+                          artifact_sha="deadbeef")
+    assert one != other
+    assert one.encode() != other.encode()
 
 
 def test_batch_marker_key_encodes_the_batch_id():

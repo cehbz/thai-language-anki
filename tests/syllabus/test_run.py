@@ -526,7 +526,7 @@ class _PassingMechanical:
     """Passes every recording it is asked about -- stands in for ffprobe
     over the real recording attempt pipeline."""
     def cache_key(self, q):
-        return MechanicalKey(check="duration", params="0.2-5.0",
+        return MechanicalKey(check="duration", params="0.2-5.0", subject=q.subject,
                              artifact_sha=q.artifact_sha or "-")
 
     def fetch(self, q):
