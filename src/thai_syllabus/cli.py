@@ -253,8 +253,11 @@ def main(argv: list[str] | None = None, *,
             print(report.summary() if hasattr(report, "summary") else report)
             return 0
         if args.command == "review":
-            with writing_command(args.deck, "review"):
-                return reviewserver.main(["--deck", str(args.deck), "--port", str(args.port)])
+            # Not wrapped in writing_command: review appends learner rows
+            # only and writes no curated file, so it takes no snapshot,
+            # makes no commit, and runs alongside a writing command --
+            # an append never shrinks a count (spec 2 section 6 r13).
+            return reviewserver.main(["--deck", str(args.deck), "--port", str(args.port)])
         if args.command == "import":
             with writing_command(args.deck, "import"):
                 derivations = load_derivations(args.deck)

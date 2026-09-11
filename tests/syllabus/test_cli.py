@@ -700,6 +700,34 @@ def test_run_reports_a_history_error_from_writing_command_instead_of_a_traceback
     assert "deck safety unavailable: git: not found" in capsys.readouterr().err
 
 
+# --- review: not a writing command (spec 2 section 6 r13) ------------------
+
+def test_review_subcommand_makes_no_curated_commit_and_no_snapshot(deck, monkeypatch):
+    """review appends learner rows and writes no curated file: unlike run,
+    migrate and import, it must not take a pre/post commit of curated/'s
+    history or a syllabus.db snapshot -- those would block it from running
+    alongside a writing command (spec 2 section 6 r13).
+    """
+    calls = []
+    monkeypatch.setattr(cli.reviewserver, "main",
+                        lambda argv: calls.append(argv) or 0)
+
+    rc = cli.main(["review", "--deck", str(deck), "--port", "8899"])
+
+    assert rc == 0
+    assert calls == [["--deck", str(deck), "--port", "8899"]]
+    assert not (deck / "curated" / ".git").exists()
+    assert not (deck / "backup" / "syllabus.db").exists()
+
+
+def test_review_subcommand_returns_reviewserver_mains_exit_code(deck, monkeypatch):
+    monkeypatch.setattr(cli.reviewserver, "main", lambda argv: 1)
+
+    rc = cli.main(["review", "--deck", str(deck), "--port", "8899"])
+
+    assert rc == 1
+
+
 # --- existing subcommands keep working -------------------------------------
 
 # --- restore (spec 2 section 6) --------------------------------------------

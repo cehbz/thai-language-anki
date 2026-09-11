@@ -9,7 +9,7 @@ from datetime import date, datetime
 
 import pytest
 
-from thai_syllabus.cachekeys import ProvideKey
+from thai_syllabus.cachekeys import LearnerKey, ProvideKey
 from thai_syllabus.safety import (
     Counts,
     CuratedHistory,
@@ -373,6 +373,37 @@ def test_writing_command_accepts_a_deletion_the_guard_reports_as_a_removal(tmp_p
     with writing_command(deck, "x", now=_fixed_now) as guard:
         _delete_sentence(deck, "s1")
         guard.removed("sentences", ["s1"])
+
+
+def test_writing_command_post_check_passes_when_learner_rows_are_appended_during_it(tmp_path):
+    """review is not a writing command and takes no lock: it can append
+    learner rows to syllabus.db while a writing command's body is still
+    running -- through RecordWriter.append (append_answer,
+    append_gallery_note, append_drill_result all land in the `cache`
+    table under backend "learner") and, for supply, add_media. An append
+    never shrinks any tracked count, so the post-check must pass without
+    the body reporting anything to the guard (spec 2 section 6 r13).
+    Simulates review's concurrent appends by doing them inside this
+    writing_command's own body, and proves the test actually exercises
+    something by checking cache and media each grew by one across the
+    body.
+    """
+    deck = tmp_path / "deck"
+    _seed_sentence(deck)
+    before = deck_counts(deck)
+
+    with writing_command(deck, "x", now=_fixed_now):
+        db = SyllabusDb(deck / "syllabus.db")
+        db.append(port="assess", backend="learner",
+                  key=LearnerKey(artifact_sha="a1", role="note"),
+                  subject="rice", question="rate this gallery note", answer=3)
+        db.add_media(sha="m1", kind="audio", ext="mp3", source="learner",
+                    origin="supply", licence="n/a", acquired=date(2026, 1, 1))
+        db.close()
+
+    after = deck_counts(deck)
+    assert after.cache == before.cache + 1
+    assert after.media == before.media + 1
 
 
 def test_writing_command_snapshots_the_db_when_the_deck_has_one(tmp_path):

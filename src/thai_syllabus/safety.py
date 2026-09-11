@@ -2,7 +2,7 @@
 that every writing command commits before and after, the syllabus.db
 snapshot a writing command copies before it writes, the sanity check that
 compares the deck's row counts to that snapshot, and writing_command --
-the context manager every writing command (run, migrate, review, import)
+the context manager every writing command (run, migrate, import)
 runs under to get all three for free.
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ class CuratedHistory:
     def last_pre_command_commit(self) -> str | None:
         """Like last_pre_commit, but skips a subject starting with "pre
         restore " -- the newest commit made by an actual writing command
-        (run, migrate, review, import), never restore's own "pre restore
+        (run, migrate, import), never restore's own "pre restore
         <stamp>" commit of itself (spec 2 section 6). restore() calls this,
         not last_pre_commit, so a second restore run right after the first
         targets the same writing-command commit as the first rather than
@@ -232,7 +232,7 @@ class Guard:
 @contextmanager
 def writing_command(deck: Path, name: str, *,
                     now: Callable[[], datetime] = datetime.now) -> Iterator[Guard]:
-    """The context every writing command (run, migrate, review, import)
+    """The context every writing command (run, migrate, import)
     runs its body under (spec 2 section 6): a "pre {name} {stamp}" commit
     of curated/'s history, a snapshot of syllabus.db when one exists, then
     the body runs with a Guard it can report deliberate removals to. A
