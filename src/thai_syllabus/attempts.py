@@ -62,7 +62,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
-           "DEFAULT_SENTENCE_MAX_CLAUSES"]
+           "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
 
 _log = logging.getLogger(__name__)
 
@@ -71,6 +71,13 @@ _log = logging.getLogger(__name__)
 # so the cure is at drafting -- Sourcing.sentence_max_clauses, wired from
 # providers.yaml's own sentence_max_clauses (wiring.build_sourcing).
 DEFAULT_SENTENCE_MAX_CLAUSES = 2
+
+# sentence_attempt's own cap default (spec 3 r24 section 5/8) on how many
+# sentence-introduced, unmet Targets one drafting ask is handed -- a batch
+# dominated by introducible targets (e.g. 36 of 40) starved the drafter of
+# room for the receptive backlog and yielded almost nothing adopted. Wired
+# from providers.yaml's own sentence_introducible_per_ask (wiring.build_sourcing).
+DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK = 5
 
 # Cheapest source first, per ARTIFACT kind (spec 3 section 5). A sentence's
 # own recording and scene picture are the same artifact kinds a word's are;
@@ -167,6 +174,10 @@ class Sourcing:
     # draft over this many clauses is refused like an invariant failure
     # (sentence_attempt's acceptance loop), never adopted.
     sentence_max_clauses: int = DEFAULT_SENTENCE_MAX_CLAUSES
+    # sentence_attempt's own cap (spec 3 r24 section 5/8) on how many
+    # sentence-introduced, unmet Targets one drafting ask is handed; the
+    # rest of the handed batch is the next non-introduced open Targets.
+    sentence_introducible_per_ask: int = DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK
     # The writing command's own account of deliberate removals (spec 2
     # section 6, safety.writing_command): threaded onto ctx the same way
     # cli._cmd_run sets it, so run()'s own retirement of an exhausted
@@ -1016,7 +1027,17 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
 def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
-    many, and subjects_handed which words they belong to). Each merged
+    many, and subjects_handed which words they belong to). The handed
+    targets are the next open Targets in order, of which at most
+    `ctx.sentence_introducible_per_ask` (spec 3 r24 section 5/8) are
+    introducible -- sentence-introduced (`introduction == "sentence"`)
+    and not yet met (`Syllabus.met_sentence_introduced_targets`); an
+    introducible Target beyond that cap is skipped rather than handed,
+    and does not count against `max_targets`, so the remainder of the
+    handed batch is the next non-introduced open Targets in order. This
+    keeps a run dominated by introducible targets (e.g. 36 of 40) from
+    starving the handed batch of the receptive backlog the drafter can
+    actually place several of per sentence. Each merged
     draft becomes a Sentence (record.draft_sentence); acceptance is the
     Sentence invariant (Syllabus.check_sentence) -- a refused draft is
     logged ("draft refused: %s") and skipped, nothing else. A draft
@@ -1053,7 +1074,22 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         w for w in {word_of[t] for t in unfilled if t in word_of}
         if sentence_exhausted(ctx.db, w, cap=ctx.sentence_nothing_cap).exhausted)
     handable = [t for t in unfilled if word_of.get(t) not in withheld]
-    open_ids = set(handable[:max_targets])
+    target_of = {t.id: t for t in syllabus.targets}
+    met_targets = syllabus.met_sentence_introduced_targets()
+    selected: list[str] = []
+    introducible_handed = 0
+    for tid in handable:
+        if len(selected) >= max_targets:
+            break
+        candidate = target_of.get(tid)
+        introducible = (candidate is not None and candidate.introduction == "sentence"
+                       and tid not in met_targets)
+        if introducible:
+            if introducible_handed >= ctx.sentence_introducible_per_ask:
+                continue   # over the introducible cap -- skipped, not counted against max_targets
+            introducible_handed += 1
+        selected.append(tid)
+    open_ids = set(selected)
     targets = [t for t in syllabus.targets if t.id in open_ids]
     if not targets:
         return AttemptResult(attempted=False, subjects_exhausted=withheld)

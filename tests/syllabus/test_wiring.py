@@ -19,7 +19,7 @@ import yaml
 
 from thai_syllabus import secrets as secrets_mod
 from thai_syllabus.assessor import Assessor, Price
-from thai_syllabus.attempts import DEFAULT_SENTENCE_MAX_CLAUSES
+from thai_syllabus.attempts import DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK, DEFAULT_SENTENCE_MAX_CLAUSES
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
@@ -970,6 +970,25 @@ def test_the_sentence_clause_cap_defaults_to_two(tmp_path):
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
         encoding="utf-8")
     assert build_sourcing(root).sentence_max_clauses == DEFAULT_SENTENCE_MAX_CLAUSES == 2
+
+
+def test_the_sentence_introducible_cap_reaches_sourcing(tmp_path):
+    """Spec 3 r24 section 5/8: providers.yaml's own sentence_introducible_per_ask
+    is the cap sentence_attempt's own target selection reads off Sourcing."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "sentence_introducible_per_ask: 3\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    assert build_sourcing(root).sentence_introducible_per_ask == 3
+
+
+def test_the_sentence_introducible_cap_defaults_to_five(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert (build_sourcing(root).sentence_introducible_per_ask
+           == DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK == 5)
 
 
 def test_nothing_ttl_reaches_both_derivations_and_sourcing(tmp_path):

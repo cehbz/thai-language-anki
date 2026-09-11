@@ -979,6 +979,54 @@ def test_sentence_attempt_reports_the_words_it_was_handed_targets_for(tmp_path):
     assert result.targets_handed == 2 and result.subjects_handed == frozenset({"rice"})
 
 
+def _introducible_and_receptive_syllabus(n_introducible: int, n_receptive: int) -> Syllabus:
+    """`n_introducible` words with a sentence-introduced, unmet Target
+    (order: intro0 .. introN-1), followed by `n_receptive` words with a
+    picture_card Target (recept0 .. receptN-1) -- syllabus.targets order
+    is what gaps().unfilled_targets follows (rulebook._check_target_sentence
+    walks syllabus.targets in order)."""
+    introducible_words = tuple(word(f"intro{i}", f"อ{i}", f"intro {i}")
+                               for i in range(n_introducible))
+    receptive_words = tuple(word(f"recept{i}", f"ร{i}", f"recept {i}")
+                            for i in range(n_receptive))
+    introducible_targets = tuple(target(f"intro{i}/t", f"intro{i}", introduction="sentence")
+                                 for i in range(n_introducible))
+    receptive_targets = tuple(target(f"recept{i}/t", f"recept{i}") for i in range(n_receptive))
+    return Syllabus(words=introducible_words + receptive_words,
+                    targets=introducible_targets + receptive_targets)
+
+
+def test_sentence_attempt_hands_at_most_the_introducible_cap(tmp_path):
+    """Spec 3 r24 section 5: the handed targets are the next open Targets
+    in order, at most `max_targets`, of which at most
+    `ctx.sentence_introducible_per_ask` are sentence-introduced and unmet
+    (introducible) -- the remainder are the next non-introduced open
+    Targets in order. 36 introducible targets then 10 receptive ones,
+    default cap 5: the ask hands 5 introducible + 10 receptive (15,
+    under the 40 max_targets cap), skipping the other 31 introducible
+    ones (they do not count against max_targets)."""
+    syllabus = _introducible_and_receptive_syllabus(36, 10)
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}', syllabus=syllabus)
+    assert ctx.sentence_introducible_per_ask == 5
+    res = sentence_attempt(ctx)
+    assert res.targets_handed == 15
+    assert res.subjects_handed == (frozenset(f"intro{i}" for i in range(5))
+                                   | frozenset(f"recept{i}" for i in range(10)))
+
+
+def test_sentence_attempt_honors_a_lowered_introducible_cap(tmp_path):
+    """`ctx.sentence_introducible_per_ask` is Sourcing's own knob, read
+    fresh each attempt -- lowering it hands fewer introducible targets
+    without touching the non-introduced ones."""
+    syllabus = _introducible_and_receptive_syllabus(36, 10)
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}', syllabus=syllabus)
+    ctx.sentence_introducible_per_ask = 2
+    res = sentence_attempt(ctx)
+    assert res.targets_handed == 12
+    assert res.subjects_handed == (frozenset(f"intro{i}" for i in range(2))
+                                   | frozenset(f"recept{i}" for i in range(10)))
+
+
 # --- the no-fit answer (spec 3 r19 section 5) -------------------------------
 
 _NO_FIT = json.dumps({"sentences": [], "reason": "no natural sentence covers both"})

@@ -631,6 +631,10 @@ class ProvidersConfig:
     # the drafting prompt's own clause cap default (spec 3 r23 section 5/8):
     # a longer sentence outruns the 5 s recording cap
     sentence_max_clauses: int = 2
+    # sentence_attempt's own cap default (spec 3 r24 section 5/8) on how
+    # many sentence-introduced, unmet Targets one drafting ask is handed;
+    # the rest of the handed batch is the next non-introduced open Targets
+    sentence_introducible_per_ask: int = 5
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -758,6 +762,12 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_max_clauses: {sentence_max_clauses!r} "
                       "must be a positive integer")
 
+    sentence_introducible_per_ask = data.get("sentence_introducible_per_ask", 5)
+    if (not isinstance(sentence_introducible_per_ask, int)
+            or sentence_introducible_per_ask < 1):
+        errors.append(f"providers.sentence_introducible_per_ask: "
+                      f"{sentence_introducible_per_ask!r} must be a positive integer")
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -800,7 +810,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
         attempt_cap=attempt_cap, transient_cap=transient_cap,
         sentence_nothing_cap=sentence_nothing_cap,
-        sentence_max_clauses=sentence_max_clauses)
+        sentence_max_clauses=sentence_max_clauses,
+        sentence_introducible_per_ask=sentence_introducible_per_ask)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -828,6 +839,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "transient_cap": config.transient_cap,
         "sentence_nothing_cap": config.sentence_nothing_cap,
         "sentence_max_clauses": config.sentence_max_clauses,
+        "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
     })
 
 
