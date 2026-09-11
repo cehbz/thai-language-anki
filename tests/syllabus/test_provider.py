@@ -23,6 +23,7 @@ from thai_syllabus.provider import (
     Question,
     RawAnswer,
     _redact,
+    forvo_limit_body,
     openverse_backend,
     pexels_backend,
     tool_fetcher,
@@ -447,6 +448,39 @@ def test_tool_fetcher_raises_a_typed_refusal_from_the_tools_json_line():
     assert "application/json" in err.value.detail
 
 
+def test_tool_fetcher_parses_the_body_field_off_the_refusal_line():
+    """Task 7 brief: a content-type refusal's body (Forvo's own daily
+    limit statement served at an expired mp3 url) rides the tool's JSON
+    refusal line as "body" so attempts.py can recognize it (spec 3
+    section 6a)."""
+    import subprocess as sp
+    from thai_syllabus.transport import FetchRefused
+
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(
+            cmd, 1,
+            '{"refused":"content-type","detail":"content-type \\"application/json\\" is not allowed",'
+            '"body":"[\\"Limit\\/day reached.\\"]"}\n',
+            "audiofetch: refused ...")
+
+    fetcher = tool_fetcher("audiofetch", runner=runner)
+    with pytest.raises(FetchRefused) as err:
+        fetcher("https://x/expired.mp3")
+    assert err.value.body == '["Limit/day reached."]'
+
+
+def test_tool_fetcher_defaults_body_to_empty_when_absent():
+    import subprocess as sp
+    from thai_syllabus.transport import FetchRefused
+
+    def runner(cmd, **kwargs):
+        return sp.CompletedProcess(cmd, 1, '{"refused":"http","detail":"http 404"}\n', "")
+
+    with pytest.raises(FetchRefused) as err:
+        tool_fetcher("imgfetch", runner=runner)("https://x/y.jpg")
+    assert err.value.body == ""
+
+
 def test_tool_fetcher_wire_refusal_is_not_served():
     import subprocess as sp
     from thai_syllabus.transport import FetchRefused
@@ -538,6 +572,24 @@ def test_forvo_400_with_another_body_stays_a_plain_transport_error(payload):
     with pytest.raises(TransportError) as err:
         backend.fetch(Question(subject="ไก่", provides="recording"))   # ไก่: chicken
     assert not isinstance(err.value, QuotaExhausted)
+
+
+# --- forvo_limit_body: the predicate factored for attempts.py's use on a
+# fetch refusal's parsed body (task 7 brief, spec 3 section 6a) ------------
+
+def test_forvo_limit_body_recognizes_the_lookup_and_download_bodies_alike():
+    assert forvo_limit_body(["Limit/day reached."]) is True
+
+
+@pytest.mark.parametrize("payload", [
+    ["Limit/day reached.", "another entry"],
+    ["some other message"],
+    {"error": "bad request"},
+    "Limit/day reached.",
+    None,
+])
+def test_forvo_limit_body_rejects_every_other_shape(payload):
+    assert forvo_limit_body(payload) is False
 
 
 def test_forvo_wire_failure_redacts_the_api_key_from_the_message():

@@ -34,7 +34,7 @@ __all__ = [
     "HttpImageSearchBackend", "openverse_backend", "wikimedia_backend",
     "pexels_backend", "IMAGE_SEARCH_USER_AGENT",
     "FetchBackend", "tool_fetcher",
-    "ForvoBackend", "TtsBackend", "LlmBackend",
+    "ForvoBackend", "forvo_limit_body", "TtsBackend", "LlmBackend",
     "DictionaryG2P", "PairSearchBackend",
 ]
 
@@ -275,7 +275,8 @@ def tool_fetcher(binary: str, runner: Callable[..., Any] | None = None
                 refusal = _refusal_line(proc.stdout or "")
                 if refusal is not None:
                     raise FetchRefused(reason=str(refusal.get("refused") or "io"),
-                                       detail=str(refusal.get("detail") or ""))
+                                       detail=str(refusal.get("detail") or ""),
+                                       body=str(refusal.get("body") or ""))
                 raise TransportError(f"{binary} refused {url!r}: {(proc.stderr or '').strip()}")
             try:
                 fmt = json.loads((proc.stdout or "{}").splitlines()[-1]).get("format", "")
@@ -343,6 +344,15 @@ def _redact(text: str, secret: str) -> str:
 # --- forvo: recording lookups (450/day quota; re-asked once per attempt
 # when a url has expired, spec 3 section 6a) --------------------------------
 
+def forvo_limit_body(body: Any) -> bool:
+    """Forvo's own statement that today's allowance is spent (spec 3
+    section 6a): a body that is a list of exactly one element, the
+    string "Limit/day reached." -- the shape of both the lookup's 400
+    body (`_forvo_quota_exhausted`) and a download's refused body
+    (attempts._fetch_forvo_item), so both call this one predicate."""
+    return isinstance(body, list) and len(body) == 1 and body[0] == "Limit/day reached."
+
+
 def _forvo_quota_exhausted(resp: Any) -> bool:
     """Forvo's own statement that today's allowance is spent (spec 3
     section 6a): a 400 body that is a list of exactly one element, the
@@ -352,7 +362,7 @@ def _forvo_quota_exhausted(resp: Any) -> bool:
         body = resp.json()
     except ValueError:
         return False
-    return isinstance(body, list) and len(body) == 1 and body[0] == "Limit/day reached."
+    return forvo_limit_body(body)
 
 
 @dataclass

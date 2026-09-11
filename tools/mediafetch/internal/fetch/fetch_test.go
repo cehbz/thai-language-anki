@@ -207,6 +207,67 @@ func TestDownloadRefusalIsTypedContentType(t *testing.T) {
 	}
 }
 
+// TestDownloadContentTypeRefusalCarriesBody covers Forvo's daily-limit
+// defect (task 7 brief): its mp3 urls serve a JSON body
+// `["Limit/day reached."]` as application/json, refused as content-type.
+// Without the body on the Refusal, attempts.py cannot tell that refusal
+// apart from any other content-type refusal and treats a spent quota as
+// a transient failure (spec 3 section 6a).
+func TestDownloadContentTypeRefusalCarriesBody(t *testing.T) {
+	body := []byte(`["Limit/day reached."]`)
+	srv := serve(t, "application/json; charset=utf-8", body, nil)
+	defer srv.Close()
+	dir := t.TempDir()
+	_, _, _, err := Download(srv.URL, imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Kind != "content-type" {
+		t.Fatalf("Kind = %q, want %q", r.Kind, "content-type")
+	}
+	if r.Body != string(body) {
+		t.Fatalf("Body = %q, want %q", r.Body, string(body))
+	}
+}
+
+// TestDownloadContentTypeRefusalBodyIsTruncatedTo512Bytes covers the
+// brief's "first 512 bytes" bound: an oversized refusal body must not
+// grow the refusal line without limit.
+func TestDownloadContentTypeRefusalBodyIsTruncatedTo512Bytes(t *testing.T) {
+	big := bytes.Repeat([]byte("a"), 600)
+	srv := serve(t, "application/json", big, nil)
+	defer srv.Close()
+	dir := t.TempDir()
+	_, _, _, err := Download(srv.URL, imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if len(r.Body) != 512 {
+		t.Fatalf("len(Body) = %d, want 512", len(r.Body))
+	}
+}
+
+// TestDownloadOtherRefusalKindsCarryNoBody covers the brief's "a
+// content-type Refusal carries ... a new field Body": every other kind
+// leaves Body empty.
+func TestDownloadOtherRefusalKindsCarryNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	_, _, _, err := Download(srv.URL, imageOpts(dir))
+	var r *Refusal
+	if !errors.As(err, &r) {
+		t.Fatalf("expected a *Refusal, got %v (%T)", err, err)
+	}
+	if r.Body != "" {
+		t.Fatalf("Body = %q, want empty", r.Body)
+	}
+}
+
 func TestDownloadRefusalIsTypedTooLarge(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")

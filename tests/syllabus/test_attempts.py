@@ -812,6 +812,38 @@ class _RefusesOneMembersFirstUrl:
                                  "speaker_kind": "native", "source": "forvo"},), cost=0.0)
 
 
+class _ForvoLimitOnMembersFirstUrl:
+    """Forvo's daily allowance is spent partway through a rendition's
+    per-member downloads: the first member's url serves the limit JSON
+    body (task 7 brief, spec 3 section 6a). Propagates through
+    _forvo_rendition exactly as _download_forvo's own contract requires
+    -- no relookup, no fetches.failed()."""
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise FetchRefused(reason="content-type",
+                           detail='content-type "application/json; charset=utf-8" is not allowed',
+                           body='["Limit/day reached."]')
+
+
+def test_a_rendition_attempt_raises_quota_exhausted_on_a_members_download(tmp_path):
+    """_forvo_rendition (unlike _recording_attempt's forvo branch) calls
+    _download_forvo from inside a loop over pair.members with no try of
+    its own; this confirms QuotaExhausted still propagates unchanged
+    through _rendition_attempt's outer catch."""
+    forvo = _PairForvo({"white": "ขาว", "news": "ข่าว"})   # ขาว: white, ข่าว: news
+    media = MediaStore(tmp_path / "media")
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    ctx = _sourcing(tmp_path, _pair_syllabus(),
+                    backends={"forvo": forvo, "audiofetch": _ForvoLimitOnMembersFirstUrl()},
+                    assess={"mechanical": _mechanical(), "rendition": _rendition_backend(db)},
+                    media=media)
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("p1", "rendition", "pair"), "forvo")
+    assert not [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "attempt"]
+
+
 def test_a_served_refusal_in_a_rendition_re_asks_once_for_that_member_only(tmp_path):
     forvo = _PairForvo({"white": "ขาว", "news": "ข่าว"})   # ขาว: white, ข่าว: news
     media = MediaStore(tmp_path / "media")
@@ -1599,6 +1631,55 @@ def test_a_forvo_recording_attempt_writes_transient_failure_when_the_lookup_rais
         attempt(ctx, Need("rice", "recording"), "forvo")
     row = _outcome(ctx.db, "rice", "recording", "forvo")
     assert row.answer == {"outcome": "transient-failure", "candidates": [], "tried": []}
+
+
+class _ForvoLimitAtDownloadAudiofetch:
+    """Forvo's daily allowance is spent: its mp3 url serves the limit
+    JSON body `["Limit/day reached."]` as application/json, refused by
+    audiofetch as content-type (task 7 brief, spec 3 section 6a)."""
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise FetchRefused(reason="content-type",
+                           detail='content-type "application/json; charset=utf-8" is not allowed',
+                           body='["Limit/day reached."]')
+
+
+def test_a_recording_attempt_raises_quota_exhausted_on_forvos_limit_body_at_download(tmp_path):
+    """Compare to a plain content-type refusal (transient-failure, no
+    raise): a content-type refusal whose body is Forvo's own daily-limit
+    statement is Quota, not a served refusal (spec 3 section 6a) --
+    reraises without a fetches.failed() and without an outcome row."""
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    ctx.provider._backends["audiofetch"] = _ForvoLimitAtDownloadAudiofetch()
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("rice", "recording"), "forvo")
+    assert not [r for r in rows_for(ctx.db, "rice", "recording") if r.port == "attempt"]
+
+
+class _ContentTypeRefusalWithAnotherBodyAudiofetch:
+    """A served content-type refusal whose body is not Forvo's limit
+    statement: stays a plain served refusal (transient-failure), not
+    Quota."""
+    def cache_key(self, q):
+        return ProvideKey(source="", kind="", query=q.params["url"])
+
+    def fetch(self, q):
+        raise FetchRefused(reason="content-type",
+                           detail='content-type "text/html" is not allowed',
+                           body='["some other message"]')
+
+
+def test_a_content_type_refusal_with_another_body_stays_a_served_refusal(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
+        "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3"}]})   # ข้าว: rice
+    ctx.provider._backends["audiofetch"] = _ContentTypeRefusalWithAnotherBodyAudiofetch()
+    result = attempt(ctx, Need("rice", "recording"), "forvo")
+    assert result.attempted
+    row = _outcome(ctx.db, "rice", "recording", "forvo")
+    assert row.answer["outcome"] == "transient-failure"
 
 
 def test_a_forvo_recording_attempt_writes_transient_failure_when_every_download_fails(tmp_path):

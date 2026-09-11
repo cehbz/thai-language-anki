@@ -33,7 +33,11 @@ func main() {
 		if errors.As(err, &r) {
 			kind = r.Kind
 		}
-		json.NewEncoder(os.Stdout).Encode(map[string]string{"refused": kind, "detail": err.Error()})
+		line := map[string]string{"refused": kind, "detail": err.Error()}
+		if r != nil && r.Body != "" {
+			line["body"] = r.Body
+		}
+		json.NewEncoder(os.Stdout).Encode(line)
 		fmt.Fprintf(os.Stderr, "imgfetch: refused %s: %v\n", flag.Arg(0), err)
 		os.Exit(1)
 	}

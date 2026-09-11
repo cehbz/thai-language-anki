@@ -17,10 +17,15 @@ import (
 )
 
 // Refusal is why a fetch was refused: Kind names the class (wire, http,
-// content-type, too-large, format, io) and Err the detail.
+// content-type, too-large, format, io) and Err the detail. A
+// content-type Refusal also carries Body: the response's first 512
+// bytes (decoded as UTF-8, lossy) -- e.g. Forvo's own daily-limit
+// statement, `["Limit/day reached."]`, served at an expired mp3 url
+// (spec 3 section 6a) -- empty for every other kind.
 type Refusal struct {
 	Kind string
 	Err  error
+	Body string
 }
 
 func (r *Refusal) Error() string { return r.Err.Error() }
@@ -46,6 +51,9 @@ const (
 	maxRedirects = 5
 	// Wikimedia (and others) refuse anonymous default agents; identify the tool and a contact.
 	userAgent = "mediafetch/1.0 (https://github.com/cehbz/thai-language-anki; deck media fetcher)"
+	// bodyPeekBytes bounds how much of a refused response's body a
+	// content-type Refusal carries (task 7 brief).
+	bodyPeekBytes = 512
 )
 
 // Download fetches url, enforcing opts.ContentTypes and opts.MaxBytes, and
@@ -78,7 +86,10 @@ func Download(url string, opts Options) (path string, contentType string, size i
 	}
 	ct := resp.Header.Get("Content-Type")
 	if !contentTypeAllowed(ct, opts.ContentTypes) {
-		return "", "", 0, Refuse("content-type", fmt.Errorf("content-type %q is not allowed", ct))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, bodyPeekBytes))
+		return "", "", 0, &Refusal{Kind: "content-type",
+			Err:  fmt.Errorf("content-type %q is not allowed", ct),
+			Body: strings.ToValidUTF8(string(raw), "�")}
 	}
 	if resp.ContentLength > opts.MaxBytes {
 		return "", "", 0, Refuse("too-large", fmt.Errorf("too large: content-length %d > %d", resp.ContentLength, opts.MaxBytes))

@@ -21,6 +21,7 @@ JudgeUnreachable out of ask_many and stops the run.
 from __future__ import annotations
 
 import functools
+import json
 import time
 import logging
 from collections.abc import Callable, Mapping, Sequence
@@ -48,7 +49,7 @@ from .derivations import (
 from .entities import Target, Word
 from .ids import PairId, WordId
 from .media import Speaker
-from .provider import Provider, ProviderAnswer, Question
+from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT
 from .store import MediaStore, SyllabusDb
@@ -630,6 +631,12 @@ def _download_forvo(ctx: Sourcing, subject: str, item: Mapping, spend: dict[str,
 
 def _fetch_forvo_item(ctx: Sourcing, subject: str, item: Mapping, fetches: _Fetches, *,
                       subject_kind: SubjectKind) -> ProviderAnswer | None:
+    """One item's mp3 through audiofetch. A content-type refusal whose
+    body is Forvo's own daily-limit statement is Quota, not a served
+    refusal (spec 3 section 6a): audiofetch refuses Forvo's JSON error
+    body the same way it refuses any unexpected content-type, so this is
+    where that body is told apart from every other served refusal and
+    raised typed instead of counted and logged."""
     url = item["pathmp3"]
     try:
         return ctx.provider.ask("audiofetch", Question(
@@ -637,6 +644,8 @@ def _fetch_forvo_item(ctx: Sourcing, subject: str, item: Mapping, fetches: _Fetc
             params={"url": url, "speaker": item["username"], "speaker_kind": "native",
                     "source": "forvo"}, kind="recording", subject_kind=subject_kind))
     except FetchRefused as e:
+        if e.reason == "content-type" and _forvo_limit_refusal(e):
+            raise QuotaExhausted("forvo") from e
         _log.warning("audiofetch refused %s for %s: %s", url, subject, e)
         fetches.failed(served=e.served)
         return None
@@ -644,6 +653,20 @@ def _fetch_forvo_item(ctx: Sourcing, subject: str, item: Mapping, fetches: _Fetc
         _log.warning("audiofetch failed on %s for %s: %s", url, subject, e)
         fetches.failed()
         return None
+
+
+def _forvo_limit_refusal(e: FetchRefused) -> bool:
+    """Whether a content-type FetchRefused's body is Forvo's own
+    daily-limit statement (spec 3 section 6a): the body parsed as json
+    and handed to the same predicate the lookup's 400 body uses
+    (provider.forvo_limit_body). A body that is not json, or json of any
+    other shape, is not Forvo's quota -- it stays a plain served
+    refusal."""
+    try:
+        parsed = json.loads(e.body)
+    except json.JSONDecodeError:
+        return False
+    return forvo_limit_body(parsed)
 
 
 def _relookup_once(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend], *,

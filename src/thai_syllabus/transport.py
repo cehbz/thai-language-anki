@@ -45,12 +45,17 @@ class TransportError(RuntimeError):
 class FetchRefused(TransportError):
     """A fetcher refused a url: `reason` is the tool's typed kind (wire,
     http, content-type, too-large, format, io); `served` is whether a
-    server answered (every kind but wire)."""
+    server answered (every kind but wire). `body` is the response body a
+    content-type refusal carries (empty for every other reason) -- e.g.
+    Forvo's own daily-limit statement served at an expired mp3 url (spec
+    3 section 6a); attempts.py inspects it to tell that apart from any
+    other content-type refusal."""
 
-    def __init__(self, reason: str, detail: str):
+    def __init__(self, reason: str, detail: str, body: str = ""):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+        self.body = body
 
     @property
     def served(self) -> bool:
