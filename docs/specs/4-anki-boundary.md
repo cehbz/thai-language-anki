@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 7, proposed 2026-09-11 against principles r3 and architecture
+Revision 8, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -17,6 +17,11 @@ Revision log:
   elements blanked; no tokenizer.
 - r7 2026-09-11: the card taxonomy (from principles r3) stated in §1; the
   ReviewNote retraction aside reduced to the rule; no behavior changed.
+- r8 2026-09-11: the import reads Anki's current collection schema as
+  well as the legacy one; a harvested note records the compile id it was
+  written against; a Production card needs the picture (§1). Evidence:
+  the live collection (schema 18) failed the import before a note was
+  read; 23 Production cards compiled with an empty front.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -43,7 +48,8 @@ TestSpelling, ProductiveTarget, ReviewNote, CompileId. ProductiveTarget
 gates the Production card (non-empty iff the word has a productive
 Target). Ipa renders the Pronunciation value with tone and length.
 - Listening (receptive): front audio; back picture, Thai, IPA, meaning.
-- Production (productive Target only): front picture
+- Production (productive Target and a current-best picture; no picture,
+  no card): front picture
   {{#FrontGloss}}gloss chip{{/FrontGloss}}; back Thai, native audio, IPA.
 - Reading (staged: due after the graphemes its spelling uses): front
   Thai script; back picture, audio, meaning.
@@ -128,7 +134,9 @@ retains only final fit-to-viewport.
 
 ## 4. Return path
 
-- **Revlog import**: read collection.anki2 read-only (proven pattern);
+- **Revlog import**: read collection.anki2 read-only — the live
+  collection (Anki's current schema keeps notetypes in tables) or an
+  .apkg's own (the legacy schema keeps them in `col.models`), both read;
   map card -> (card_key, compile id) via tags/CompileId; append study
   rows. Idempotent by (card_key, ts).
 - **Flag import**: flags become learner assessments (cache rows) on the
@@ -138,13 +146,15 @@ retains only final fit-to-viewport.
   never an override); word Production flags the current picture (a
   learner picture-for-word rating on its sha); a card with no artifact
   role (Reading, Spelling, Recognition, Cloze, grapheme Reading, or a
-  Production card whose word has no picture) is a card-level flag, which
+  Production card whose word has no picture, which only a deck compiled
+  before r8 can hold) is a card-level flag, which
   makes the subject directed in the queue (spec 3 §6) and appears on the
   subject screen (spec 5). The idempotence key is the typed
   FlagKey(family, anchor, card_kind, flags); no marker rows.
 - **ReviewNote harvest**: read fields directly from the collection
-  (read-only, proven); each non-empty note appends a learner row on the
-  note's anchor (from its tags) under key learner-note:ANCHOR:sha(TEXT) — re-harvesting the same text is an
+  (read-only); each non-empty note appends a learner row on the
+  note's anchor (from its tags) under key learner-note:ANCHOR:sha(TEXT),
+  recording the CompileId the note was written against — re-harvesting the same text is an
   exact-key hit (no duplicate), edited text is a new key (reprocessed),
   a cleared field appends nothing and retracts nothing: a newer note on
   the same subject supersedes on read, and a retraction is a superseding

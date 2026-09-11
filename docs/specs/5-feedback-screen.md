@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 4, proposed 2026-09-11 against principles r3 and architecture
+Revision 5, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -11,6 +11,11 @@ Revision log:
   screen consumes the run's derivations.
 - r4 2026-09-11: the header's re-check narrative and the learner key
   encoding (spec 3 §4 owns it) removed; no behavior changed.
+- r5 2026-09-11: a gallery note records the card as shown and is listed
+  under the card, marked stale once the card no longer shows what it
+  named; a note that fails to save stays in the box and says so.
+  Evidence: notes typed while the server was down vanished silently; a
+  note on a card carried no trace of which rendering it was about.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -20,8 +25,13 @@ in spec 3's derivations; this surface only presents and records.
 
 **Proof gallery**: every card rendered front/back in introduction order,
 sequential, no scheduling; per-card one-line notes; pair drill with
-per-confusion accuracy logging; gloss overlay; stats. Notes append as
-learner assessment rows via RecordWriter; drill results append as
+per-confusion accuracy logging; gloss overlay; stats. A note appends as
+a learner assessment row via RecordWriter, recording the card as shown:
+the artifact shas it displayed, the sentence text for a sentence card,
+and the syllabus state id. The card lists its notes thereafter, each
+marked stale once the card no longer shows what the note named (F9: an
+answer is about the thing shown). A note that fails to save stays in the
+box with a visible failure and retries on Enter. Drill results append as
 study-adjacent evidence rows.
 
 **Question session**: serves the spec-3 queue, capped by the

@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 12, proposed 2026-09-11 against principles r3 and architecture
+Revision 13, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -23,6 +23,11 @@ Revision log:
   fields as of spec 1 r10; the cache comment defers to spec 3 §1 for the
   key rule; §4 reduced to the standing carry-over contract (spec 3 §10
   merged here); §5 retired. No behavior changed.
+- r13 2026-09-11: review is not a writing command (§6): it appends
+  learner rows only and runs alongside a writing command. Evidence: the
+  screen was stopped three times in one day to make way for a run and an
+  import while the user was reviewing; every image and audio on the open
+  page broke and the notes typed meanwhile were lost.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -171,9 +176,11 @@ and refuses anything else, naming the file and field.
 ## 6. Deck safety
 
 A **writing command** is one that writes a store: migrate, run, import,
-review (its supply, rating and direction rows), and restore. compile
-reads the deck and writes its .apkg elsewhere. One writer at a time is
-assumed, as today.
+and restore. compile reads the deck and writes its .apkg elsewhere.
+review appends learner rows (notes, ratings, directions, supply) and
+writes no curated file: it takes no snapshot, makes no commit, and runs
+alongside a writing command (an append never shrinks a count). One
+writing command at a time is assumed.
 
 **Curated history.** `<deck>/curated/` is a git repository. The first
 writing command that finds none initializes it with the current content
