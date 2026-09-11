@@ -1177,14 +1177,19 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
     logged and skipped), that fills at least one still-open Target
     (Syllabus.fill_set, spec 1 section 3) and whose sentence-for-target
     assessment passes (authority order deciding), with those Targets.
-    `model` and `today` go on the Sentence's provenance.
+    `model` and `today` go on the Sentence's provenance. A text F13 has
+    retired (spec 3 section 5, record.retired_texts) is never re-adopted,
+    even once its own Targets reopen and it is the passing draft on
+    file -- its own recording proved unsourceable, and that does not
+    change just because the sentences row was deleted.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
+    retired = record.retired_texts(cache)
     provenance = Provenance(source="llm", origin=model, licence="generated", acquired=today())
     unfilled = set(syllabus.gaps().unfilled_targets)
     out: list[tuple[Sentence, tuple[Target, ...]]] = []
     for draft in record.sentence_drafts(cache):
-        if draft.text_sha in adopted:
+        if draft.text_sha in adopted or draft.text_sha in retired:
             continue
         if not draft.gloss:
             continue
@@ -1223,10 +1228,23 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
     listed. `(text, evidence)`, evidence the deciding row's own
     `answer["evidence"]`, whitespace collapsed and cut to 200 characters
     (empty when it named none).
+
+    A text F13 has retired (spec 3 section 5, record.retired_texts) is
+    listed too, evidence "retired: recording exhausted", whatever its own
+    sentence-for-target verdict was (it passed -- that is why it was
+    adopted in the first place; retirement is about its recording, never
+    its quality) -- combined with the failing-verdict texts above into
+    the one newest-first list `limit` caps together.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
+    retired = record.retired_texts(cache)
     out: list[tuple[str, str]] = []
     for draft in reversed(record.sentence_drafts(cache)):
+        if draft.text_sha in retired:
+            out.append((draft.text, "retired: recording exhausted"))
+            if len(out) >= limit:
+                break
+            continue
         if draft.text_sha in adopted:
             continue
         rows = cache.assessments_of(draft.text_sha)

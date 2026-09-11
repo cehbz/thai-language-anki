@@ -29,7 +29,7 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "candidate_shas", "learner
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls", "latest_nothing_reason",
           "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
-          "subject_kind_of",
+          "subject_kind_of", "retired_texts",
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "parse_no_fit", "merge_drafts", "draft_sentence", "drafts_in",
           "sentence_drafts",
@@ -230,6 +230,20 @@ def cost_since(cache: CacheReader, port: str, backend: str, since_ts: int) -> fl
     spend_since never looks.
     """
     return sum(r.cost for r in cache.rows_since(port, backend, since_ts))
+
+
+def retired_texts(cache: CacheReader) -> frozenset[str]:
+    """Every sentence text_sha the run has ever retired (F13, spec 3
+    section 5): the subject of every port "attempt" backend "run" kind
+    "retirement" row on record (cachekeys.RetirementKey,
+    run._retire_exhausted_sentence). A retirement row outlives the
+    sentences row it accompanied (deleted right after), so this still
+    finds it once the sentence itself is gone -- derivations.adoptable_drafts
+    reads it to never re-adopt the same text, and refused_drafts reads it
+    to keep telling the drafter not to propose it again.
+    """
+    return frozenset(r.subject for r in cache.rows_since("attempt", "run", 0)
+                     if r.question.get("kind") == "retirement")
 
 
 def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str | None]]:

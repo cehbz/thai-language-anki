@@ -21,6 +21,7 @@ from thai_syllabus.cachekeys import (
     PairSearchKey,
     ProvideKey,
     RenditionAskKey,
+    RetirementKey,
     ReverifyKey,
     WaiverKey,
     preference_identity,
@@ -217,6 +218,12 @@ def test_an_attempt_outcome_key_refuses_an_empty_field():
         AttemptOutcomeKey(subject="rice", kind="", source="forvo")
     with pytest.raises(ValueError):
         AttemptOutcomeKey(subject="rice", kind="recording", source="")
+
+
+def test_a_retirement_key_encodes_the_text_sha():
+    key = RetirementKey("e" * 64)
+    assert key.encode() == f"retired:{'e' * 64}"
+    assert isinstance(key, CacheKey)
 
 
 def test_a_rendition_identity_is_its_member_set_whatever_the_order():

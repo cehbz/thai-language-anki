@@ -268,6 +268,22 @@ class AttemptOutcomeKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class RetirementKey(CacheKey):
+    """retired:TEXT_SHA -- the durable trace F13 (spec 3 section 5)
+    leaves when the run retires an adopted Sentence whose recording is
+    exhausted: appended under the sentence's own text_sha before
+    delete_sentence (an append is a checkpoint), so record.retired_texts
+    can fold over it even once the sentences row itself is gone --
+    adoptable_drafts never re-adopts the same text, and refused_drafts
+    tells the drafter not to propose it again.
+    """
+    text_sha: str
+
+    def encode(self) -> str:
+        return f"retired:{self.text_sha}"
+
+
+@dataclass(frozen=True)
 class BatchMarkerKey(CacheKey):
     """batch-marker:BATCH_ID -- one marker row per run's judge batch
     (spec 3 section 4), released when the batch resolves, expires, or

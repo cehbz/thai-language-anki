@@ -11,6 +11,7 @@ appended its own checkpoint before this loop saw it (spec 2).
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -19,7 +20,7 @@ from datetime import datetime, time, timedelta, timezone
 from time import time_ns
 
 from .assessor import JudgeUnreachable, PreparedQuestion
-from .cachekeys import RunReportKey
+from .cachekeys import RetirementKey, RunReportKey
 from .attempts import (
     AttemptResult,
     Need,
@@ -37,14 +38,23 @@ from .derivations import (
     QueueEntry,
     adoptable_drafts,
     available_need_keys,
+    directed,
     improved,
     next_source,
     open_words,
     queued,
+    role_of,
 )
 from .entities import Sentence
 from .ports import RecordWriter
-from .record import asks_since, fetches_since, spend_since
+from .record import (
+    asks_since,
+    candidate_shas,
+    fetches_since,
+    ratings_for_role,
+    rows_for,
+    spend_since,
+)
 from .transport import QuotaExhausted, TransportError
 
 __all__ = ["Budget", "Spend", "RunReport", "run"]
@@ -97,6 +107,10 @@ class RunReport:
     pending: int = 0
     sentences_adopted: int = 0  # drafts this run covered open Targets with
     drafted: int = 0            # drafts the sentence attempt produced
+    # adopted Sentences the run deleted because their recording need was
+    # exhausted with no passing candidate (F13, spec 3 section 5); a
+    # learner row that outlives the rule (F9) keeps the sentence instead
+    retired: int = 0
     excluded: int = 0           # questions the judge could not prepare
     # one {subject, artifact_sha, reason} per exclusion, for a screen to
     # read back per subject (record.excluded_candidates)
@@ -108,7 +122,11 @@ class RunReport:
     spend: dict[str, Spend] = field(default_factory=dict)
     unserved: int = 0          # needs whose kind has no Source and no per-run pass
     budgeted: int = 0          # needs whose Source's day budget was already spent
-    deferred: int = 0          # available needs this run never considered
+    # available needs this run never considered; also a queued need whose
+    # own sentence this same pass already retired (F13) -- the queue was
+    # built before the retirement, so its remaining entries (e.g. the
+    # retired sentence's scene picture) are skipped rather than attempted
+    deferred: int = 0
     # questions ranking a word's passing pictures once their fits resolved
     preferences: int = 0
 
@@ -124,6 +142,11 @@ class _Tally:
     excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     sentences_adopted: int = 0
     drafted: int = 0
+    retired: int = 0
+    # subjects (text_shas) of sentences this pass retired -- a later
+    # queue entry naming one of these is skipped, never attempted
+    # (run._try_each_need)
+    retired_subjects: set[str] = field(default_factory=set)
     budgeted: int = 0
     deferred: int = 0
     unreachable: bool = False
@@ -318,6 +341,104 @@ def _unconsidered(needs: QueuedNeeds, pending: int) -> int:
     return needs.available - claimed
 
 
+def _learner_outlives_the_rule(ctx: Sourcing, need: Need) -> bool:
+    """F9: a learner row on this need outlives a rule change (spec 3
+    section 5's retirement carve-out), so the sentence is kept: a rating
+    row under the need's own role naming "unacceptable-use-this"
+    (record.ratings_for_role -- a nomination, never a veto, spec 3
+    section 4 r8), a provide row the learner supplied directly
+    (reviewserver.append_supply's local-path shape, backend "learner"),
+    or the sentence being directed (derivations.directed -- a learner
+    direction row, an unconsumed reverify row, or a card-flag row): a
+    directed exhausted sentence is kept, not retired, so the feedback
+    screen can still show it. A URL supply's own provide row carries
+    whatever backend fetched it, not "learner", so its nominating rating
+    row is what this reads there; the provide-row check catches a
+    local-path supply's row too, on its own, before append_supply's
+    rating row is even considered.
+    """
+    rows = rows_for(ctx.db, need.subject, need.kind)
+    role = role_of(ctx.db, need.subject, need.kind, rows)
+    if any(r.answer.get("value") == "unacceptable-use-this"
+           for r in ratings_for_role(ctx.db.assessments_of(need.subject), role)):
+        return True
+    if any(r.port == "provide" and r.backend == "learner" for r in rows):
+        return True
+    return directed(ctx.db, need.subject)
+
+
+def _retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -> None:
+    """F13 (spec 3 section 5, docs/principles.md): `need` is a sentence's
+    recording need already known exhausted (no source left,
+    derivations.next_source). Retires the sentence unless a candidate
+    still holds a passing verdict (derivations.current_best is not None)
+    or a learner row outlives the rule (_learner_outlives_the_rule, F9):
+    deletes the sentences row (store.SyllabusDb.delete_sentence -- its
+    drafts stay in the record), reports the removal to the writing
+    command's Guard when run() was threaded one (safety.writing_command),
+    logs it, and counts it in RunReport.retired -- an event outside the
+    run's needs-partition identity (spec 3 section 7): the need itself
+    still landed in whichever bucket found it exhausted, and the sentence's
+    own needs leave `available` only on the next run, once it is gone.
+
+    `ctx.syllabus` is replaced with a copy holding every sentence but this
+    one (spec 3 section 5: a retired sentence's Targets reopen), the same
+    way run() already mutates `ctx.now_ns` on ctx for the pass -- without
+    this, the rest of THIS pass (and every later cycle over the same ctx,
+    cli._cmd_run's own `--cycles`) would keep reading the deleted sentence
+    off a stale in-memory snapshot: `need.subject` is added to
+    `tally.retired_subjects` so `_try_each_need` can skip that sentence's
+    other still-queued needs (its scene picture) rather than attempt them
+    against gone data.
+
+    Before any of that, one retirement row (port "attempt", backend
+    "run", key cachekeys.RetirementKey(need.subject)) is appended under
+    the sentence's own text_sha -- an append is a checkpoint, so it lands
+    even if the process dies before delete_sentence runs. It is the
+    durable trace derivations.adoptable_drafts and refused_drafts both
+    read (record.retired_texts) once the sentences row itself is gone:
+    without it a retired text's still-passing draft and verdict would
+    get the same sentence re-adopted on the very next pass (spec 3
+    section 5: a retired text is not re-adopted, and is listed among the
+    texts not to propose).
+    """
+    if current_best_of(ctx, need.subject, need.kind).artifact_sha is not None:
+        return
+    if _learner_outlives_the_rule(ctx, need):
+        return
+    n_candidates = len(candidate_shas(rows_for(ctx.db, need.subject, need.kind)))
+    ctx.db.append(port="attempt", backend="run", key=RetirementKey(need.subject),
+                 subject=need.subject,
+                 question={"kind": "retirement", "subject_kind": "sentence",
+                          "reason": "recording exhausted", "candidates": n_candidates},
+                 answer={"retired": True})
+    ctx.db.delete_sentence(need.subject)
+    ctx.syllabus = dataclasses.replace(
+        ctx.syllabus,
+        sentences=tuple(s for s in ctx.syllabus.sentences if s.text_sha != need.subject))
+    tally.retired_subjects.add(need.subject)
+    if ctx.guard is not None:
+        ctx.guard.removed("sentences", [need.subject])
+    tally.retired += 1
+    _log.info("retired sentence %s: recording exhausted (%d candidates, none passing)",
+              need.subject, n_candidates)
+
+
+def _maybe_retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -> None:
+    """Whether `need` (just tried, or already known exhausted before any
+    attempt this run) is a sentence's recording need with no source left
+    -- the trigger _retire_exhausted_sentence's own F13 check applies to.
+    Every other need is untouched.
+    """
+    if need.kind != "recording" or need.subject_kind != "sentence":
+        return
+    sources = ctx.sources_for(need.kind)
+    if next_source(ctx.db, need.subject, need.kind, sources, transient_cap=ctx.transient_cap,
+                   nothing_ttl=ctx.nothing_ttl, now_ns=ctx.now_ns()) is not None:
+        return
+    _retire_exhausted_sentence(ctx, need, tally)
+
+
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally, *, now_ns: int) -> int:
     """Assess-first, then one Source per need: the fit questions a
@@ -332,12 +453,19 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     Returns how many entries it never reached (zero unless a dead judge
     stopped it), for run() to defer. `now_ns` is run()'s own single clock
     read (spec 3 r19 section 6a/9), passed straight to next_source rather
-    than re-read here.
+    than re-read here. A remaining entry naming a sentence this same pass
+    already retired (F13, tally.retired_subjects) is skipped, counted
+    `deferred` -- the queue was built before the retirement, so a still-
+    queued sibling need (e.g. the retired sentence's scene picture) is
+    never attempted against the now-deleted sentence.
     """
     dead_sources: set[str] = set()
     budgeted_sources: set[str] = set()
     for index, entry in enumerate(entries):
         need = Need(entry.subject, entry.kind, entry.subject_kind)
+        if need.subject_kind == "sentence" and need.subject in tally.retired_subjects:
+            tally.deferred += 1
+            continue
         before = current_best_of(ctx, need.subject, need.kind)
         try:
             result = assess_first(ctx, need)
@@ -358,6 +486,8 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                                 nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
             if source is None:
                 tally.exhausted += 1
+                if need.kind == "recording" and need.subject_kind == "sentence":
+                    _retire_exhausted_sentence(ctx, need, tally)
                 continue
             if source in dead_sources:
                 # No row was written for this need: the next run asks the
@@ -403,6 +533,7 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
             tally.attempted += int(result.attempted)
         if improved(before, current_best_of(ctx, need.subject, need.kind)):
             tally.improved += 1
+        _maybe_retire_exhausted_sentence(ctx, need, tally)
     return 0
 
 
@@ -589,7 +720,8 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
-        drafted=tally.drafted, excluded=tally.excluded, excluded_items=tally.excluded_items,
+        drafted=tally.drafted, retired=tally.retired,
+        excluded=tally.excluded, excluded_items=tally.excluded_items,
         unreachable=tally.unreachable,
         batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend,
         unserved=needs.unserved, budgeted=tally.budgeted,
@@ -610,7 +742,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
-                "drafted": report.drafted,
+                "drafted": report.drafted, "retired": report.retired,
                 "excluded": report.excluded,
                 "excluded_items": [dict(item) for item in report.excluded_items],
                 "unreachable": report.unreachable,

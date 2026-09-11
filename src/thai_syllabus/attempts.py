@@ -52,6 +52,7 @@ from .media import Speaker
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT
+from .safety import Guard
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
 from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError
@@ -166,6 +167,14 @@ class Sourcing:
     # draft over this many clauses is refused like an invariant failure
     # (sentence_attempt's acceptance loop), never adopted.
     sentence_max_clauses: int = DEFAULT_SENTENCE_MAX_CLAUSES
+    # The writing command's own account of deliberate removals (spec 2
+    # section 6, safety.writing_command): threaded onto ctx the same way
+    # cli._cmd_run sets it, so run()'s own retirement of an exhausted
+    # sentence (F13, spec 3 section 5) can report it. None outside a
+    # writing command (e.g. a caller that never wraps run() in one), in
+    # which case a retirement is still counted and logged, just not
+    # guarded.
+    guard: Guard | None = None
 
 
 @dataclass(frozen=True)

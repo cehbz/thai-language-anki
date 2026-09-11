@@ -102,7 +102,7 @@ def _print_run_report(cycle: int, report: RunReport) -> None:
     print(f"cycle={cycle} attempted={report.attempted} improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
-         f"drafted={report.drafted} excluded={report.excluded} "
+         f"drafted={report.drafted} retired={report.retired} excluded={report.excluded} "
          f"unserved={report.unserved} budgeted={report.budgeted} "
          f"deferred={report.deferred} preferences={report.preferences} "
          f"unreachable={report.unreachable} "
@@ -136,9 +136,10 @@ def _cmd_run(args: argparse.Namespace, *,
     earlier invocation never counts against it).
     """
     start_ns = time.time_ns()
-    with writing_command(args.deck, "run"):
+    with writing_command(args.deck, "run") as guard:
         cfg = load_providers_config(_providers_config_path(args.deck))
         ctx = build_sourcing(args.deck, cfg)
+        ctx.guard = guard
         budgets = dict(default_budgets(cfg))
         for raw in args.backend_cap:
             name, max_asks = _parse_backend_cap(raw)

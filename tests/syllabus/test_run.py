@@ -26,12 +26,20 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, Directio
                                     RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
-from thai_syllabus.derivations import available_need_keys, current_best, next_source, open_words
+from thai_syllabus.derivations import (
+    available_need_keys,
+    available_needs,
+    current_best,
+    next_source,
+    open_words,
+)
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.profile import Profile
-from thai_syllabus.provider import FetchBackend, RawAnswer
+from thai_syllabus.provider import FetchBackend, RawAnswer, TtsBackend
 from thai_syllabus.record import rows_for
+from thai_syllabus.safety import Guard
+from thai_syllabus.tts import pick_voice
 from thai_syllabus.run import (
     FORVO_DEFAULT_DAILY_BUDGET,
     LEARNER_DEFAULT_SESSION_BUDGET,
@@ -533,6 +541,17 @@ class _PassingMechanical:
         return RawVerdict(value=True, evidence="ok")
 
 
+class _FailingMechanical:
+    """Fails every recording it is asked about -- stands in for ffprobe
+    rejecting a candidate over the real recording attempt pipeline."""
+    def cache_key(self, q):
+        return MechanicalKey(check="duration", params="0.2-5.0", subject=q.subject,
+                             artifact_sha=q.artifact_sha or "-")
+
+    def fetch(self, q):
+        return RawVerdict(value=False, evidence="too long")
+
+
 def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tmp_path):
     """r8 fix round 2, ruling 1(b): two runs exhaust "rice"'s recording
     sources (forvo, tts, both empty). A learner supply nominates a sha
@@ -635,16 +654,23 @@ def db(tmp_path):
 
 
 class _Gaps:
-    def __init__(self, pictures=(), recordings=(), sentences=(), graphemes=()):
+    def __init__(self, pictures=(), recordings=(), sentences=(), graphemes=(),
+                sentence_recordings=()):
         self.words_missing_pictures, self.words_missing_recordings = pictures, recordings
         self.unfilled_targets, self.missing_renditions = sentences, ()
         self.graphemes_missing_keyword_data = graphemes
-        self.sentence_recordings, self.scene_pictures = (), ()
+        self.sentence_recordings, self.scene_pictures = sentence_recordings, ()
 
 
+@dataclasses.dataclass
 class _Syl:
-    def __init__(self, gaps):
-        self._gaps, self.targets, self.sentences, self.pairs = gaps, [], (), ()
+    """A dataclass (not just a plain class) so run._retire_exhausted_sentence's
+    own `dataclasses.replace(ctx.syllabus, sentences=...)` (F13 fix round 1)
+    works over this fake the same way it does over the real Syllabus."""
+    _gaps: object
+    targets: list = dataclasses.field(default_factory=list)
+    sentences: tuple = ()
+    pairs: tuple = ()
 
     def gaps(self):
         return self._gaps
@@ -1670,6 +1696,267 @@ def test_learner_default_session_budget_is_20_questions():
     assert LEARNER_DEFAULT_SESSION_BUDGET.max_asks == 20
 
 
+# --- F13: the run retires an adopted sentence whose recording is
+# exhausted (spec 3 section 5) ----------------------------------------------
+
+_RETIRED_TEXT = "กินข้าว"
+_RETIRED_SHA = text_sha(_RETIRED_TEXT)
+_RETIRED_CANDIDATE = "c" * 64
+
+
+def _seed_retired_sentence_row(db):
+    db.add_sentence(text_sha=_RETIRED_SHA, text=_RETIRED_TEXT, clauses=((WordId("eat"),),),
+                    gloss="eat rice", voice="learner_voice", source="llm", origin="m",
+                    licence="generated", acquired=datetime.now().date())
+
+
+def _seed_forvo_nothing(db):
+    """forvo's own attempt, an earlier run's: nothing usable (the shape
+    attempts._recording_attempt's own outcome row leaves on record)."""
+    db.append(port="attempt", backend="forvo",
+             key=AttemptOutcomeKey(subject=_RETIRED_SHA, kind="recording", source="forvo"),
+             subject=_RETIRED_SHA,
+             question={"kind": "recording", "subject_kind": "sentence", "source": "forvo"},
+             answer={"outcome": "nothing", "candidates": [], "tried": []})
+
+
+def _seed_tts_candidate(db, *, passed: bool):
+    """tts's own outcome row and mechanical verdict -- the shape a real
+    attempt(ctx, need, "tts") leaves on record, minus the media/speaker
+    rows this test never reads."""
+    db.append(port="attempt", backend="tts",
+             key=AttemptOutcomeKey(subject=_RETIRED_SHA, kind="recording", source="tts"),
+             subject=_RETIRED_SHA,
+             question={"kind": "recording", "subject_kind": "sentence", "source": "tts"},
+             answer={"outcome": "candidates", "candidates": [_RETIRED_CANDIDATE], "tried": []})
+    db.append(port="assess", backend="mechanical",
+             key=MechanicalKey(check="duration", params="0.2-5.0", subject=_RETIRED_SHA,
+                               artifact_sha=_RETIRED_CANDIDATE),
+             subject=_RETIRED_SHA,
+             question={"role": "recording-for-sentence", "artifact_sha": _RETIRED_CANDIDATE,
+                      "rubric": None, "kind": "recording", "subject_kind": "sentence",
+                      "params": {}},
+             answer={"value": passed, "evidence": "ok" if passed else "too long"})
+
+
+def _fake_tts_attempt(db, *, passed: bool):
+    """Stands in for attempts.attempt(): when this run's own next_source
+    picks tts (forvo already tried, seeded nothing), writes the same
+    outcome/verdict rows a real attempt would have, inline -- the run's
+    own post-attempt check (run._maybe_retire_exhausted_sentence) then
+    reads them back for real, over the real db.
+    """
+    def fake_attempt(ctx, need, source):
+        if source == "tts":
+            _seed_tts_candidate(db, passed=passed)
+        return AttemptResult(attempted=True)
+    return fake_attempt
+
+
+def _retirable_ctx(db):
+    ctx = _ctx(db, _Syl(_Gaps(sentence_recordings=(_RETIRED_SHA,))))
+    ctx.guard = Guard()
+    return ctx
+
+
+def test_run_retires_an_adopted_sentence_whose_recording_is_exhausted(db, monkeypatch):
+    """forvo already answered nothing (an earlier run's own attempt,
+    seeded directly); this run's own tts attempt stores the one
+    remaining candidate and it fails mechanical -- next_source is None
+    afterwards, current_best is None, and no learner row outlives the
+    rule: the run deletes the sentence, reports it retired, and the
+    writing command's Guard sees the removal.
+    """
+    _seed_retired_sentence_row(db)
+    _seed_forvo_nothing(db)
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "attempt", _fake_tts_attempt(db, passed=False))
+    ctx = _retirable_ctx(db)
+
+    report = run(ctx, {})
+
+    assert report.retired == 1
+    assert _RETIRED_SHA not in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {"sentences": 1}
+    assert report.attempted == 1 and report.exhausted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_sentence_with_a_passing_candidate_is_untouched(db, monkeypatch):
+    """Every source is now tried, but this run's tts candidate passed
+    mechanical: current_best is not None, so F13 never applies."""
+    _seed_retired_sentence_row(db)
+    _seed_forvo_nothing(db)
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "attempt", _fake_tts_attempt(db, passed=True))
+    ctx = _retirable_ctx(db)
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert report.improved == 1   # current_best landed on the passing candidate
+    assert _RETIRED_SHA in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+def test_a_sentence_with_a_learner_use_this_row_is_untouched(db, monkeypatch):
+    """F9: every source now tried, nothing passing, but a learner row
+    nominates a recording (LearnerKey/value "unacceptable-use-this",
+    reviewserver.append_supply's own rating shape, role
+    recording-for-sentence) -- the sentence outlives the rule change
+    instead of being retired.
+    """
+    _seed_retired_sentence_row(db)
+    _seed_forvo_nothing(db)
+    db.append(port="assess", backend="learner",
+             key=LearnerKey(artifact_sha=_RETIRED_CANDIDATE, role="recording-for-sentence"),
+             subject=_RETIRED_SHA,
+             question={"role": "recording-for-sentence", "artifact_sha": _RETIRED_CANDIDATE,
+                      "rubric": None, "kind": "rating", "subject_kind": "sentence"},
+             answer={"value": "unacceptable-use-this"})
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "attempt", _fake_tts_attempt(db, passed=False))
+    ctx = _retirable_ctx(db)
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert _RETIRED_SHA in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+def test_a_sentence_with_a_learner_supplied_recording_provide_row_is_untouched(db, monkeypatch):
+    """F9's other shape (spec 3 section 5): a provide row the learner
+    supplied directly (backend "learner", reviewserver.append_supply's
+    local-path shape) also keeps the sentence, on its own -- no rating
+    row names it here.
+    """
+    _seed_retired_sentence_row(db)
+    _seed_forvo_nothing(db)
+    db.append(port="provide", backend="learner",
+             key=ProvideKey(source="learner", kind="", query="supplied.mp3"),
+             subject=_RETIRED_SHA,
+             question={"provides": "recording-bytes", "kind": "recording",
+                      "subject_kind": "sentence", "params": {"path": "supplied.mp3"}},
+             answer={"items": [{"sha": "s" * 64, "ext": "mp3"}]})
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "attempt", _fake_tts_attempt(db, passed=False))
+    ctx = _retirable_ctx(db)
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert _RETIRED_SHA in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+def test_a_directed_sentence_with_no_passing_candidate_is_untouched(db, monkeypatch):
+    """I1 (F9, fix round 2): a directed sentence (derivations.directed --
+    here a learner direction row) is the learner's, even exhausted and
+    with nothing passing -- the feedback screen still shows it, so it is
+    kept, not retired.
+    """
+    _seed_retired_sentence_row(db)
+    _seed_forvo_nothing(db)
+    db.append(port="assess", backend="learner",
+             key=DirectionKey(subject=_RETIRED_SHA, role="recording-for-sentence",
+                              text_sha=sha("supply a recording")),
+             subject=_RETIRED_SHA,
+             question={"kind": "direction", "role": "recording-for-sentence",
+                      "subject_kind": "sentence"},
+             answer={"direction": "supply a recording"})
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "attempt", _fake_tts_attempt(db, passed=False))
+    ctx = _retirable_ctx(db)
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert _RETIRED_SHA in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+# --- F13 fix round 1: a same-pass retirement replaces ctx.syllabus, so a
+# later need for the same sentence is skipped, not attempted against
+# stale, already-deleted data (build_sourcing builds Sourcing.syllabus once
+# per CLI invocation; --cycles reuses the same ctx across every cycle) ------
+
+class _FakeTtsEngine:
+    def synthesize(self, text, voice):
+        return f"{text}-{voice}".encode()
+
+
+def test_a_same_pass_retirement_skips_the_sentences_other_still_queued_needs(
+        ctx_batch_sentences, fake_batch):
+    """The sentence's recording need retires it mid-pass (forvo already
+    nothing from r2's own attempt; this run's tts attempt is the one that
+    exhausts it and fails mechanical); its scene picture need -- given one
+    extra `nothing` outcome directly on record so it sorts after the
+    recording need in this run's own queue (derivations.queue's bucket/
+    attempts tie-break) -- is still queued when the retirement happens.
+    ctx.syllabus is replaced in place (run._retire_exhausted_sentence,
+    dataclasses.replace) so the picture need is skipped rather than
+    attempted against the now-deleted sentence: no new attempt-outcome row
+    under it, and the run still reports retired=1. A later cycle over the
+    SAME ctx (run._run_pass directly, standing in for cli._cmd_run's own
+    --cycles loop, which never rebuilds Sourcing) lists no needs for it
+    either -- the retirement row (record.retired_texts) keeps
+    adoptable_drafts from re-adopting the same still-passing draft now
+    that its Targets have reopened (C1 fix round 2).
+    """
+    ctx = ctx_batch_sentences
+    ctx.guard = Guard()
+    r1 = run(ctx, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True)
+    r2 = run(ctx, budgets={})   # adopts; forvo (recording) and openverse
+                                 # (scene picture) each get one silent,
+                                 # "nothing" attempt.
+    assert r2.sentences_adopted == 1
+    sentence_sha = text_sha(EAT_RICE)
+
+    # One more picture attempt directly on record, standing in for a run
+    # this test does not otherwise need: the picture need's own attempt
+    # count now outranks the recording need's, so it sorts after it in
+    # r3's own queue.
+    ctx.db.append(port="attempt", backend="wikimedia",
+                 key=AttemptOutcomeKey(subject=sentence_sha, kind="picture", source="wikimedia"),
+                 subject=sentence_sha,
+                 question={"kind": "picture", "subject_kind": "sentence", "source": "wikimedia"},
+                 answer={"outcome": "nothing", "candidates": [], "tried": []})
+
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=_FakeTtsEngine(), voices=["m1"], media=ctx.media_store, pick_voice=pick_voice)
+    ctx.assessor._backends["mechanical"] = _FailingMechanical()
+    picture_attempts_before = len([r for r in rows_for(ctx.db, sentence_sha, "picture")
+                                   if r.port == "attempt"])
+
+    r3 = run(ctx, budgets={})
+
+    assert r3.retired == 1
+    assert sentence_sha not in {s.text_sha for s in ctx.db.all_sentences()}
+    picture_attempts_after = len([r for r in rows_for(ctx.db, sentence_sha, "picture")
+                                  if r.port == "attempt"])
+    assert picture_attempts_after == picture_attempts_before   # never attempted this pass
+    assert not [n for n in available_needs(ctx.syllabus) if n[0] == sentence_sha]
+    assert (r3.available == r3.attempted + r3.exhausted + r3.pending
+           + r3.unserved + r3.budgeted + r3.deferred)
+
+    # A later cycle over the same ctx (cli._cmd_run's own --cycles: one
+    # Sourcing built once, run_pipeline called again): the still-passing
+    # draft's Targets reopened, so without the retirement row it would be
+    # readopted right back (derivations.adoptable_drafts) -- it is not.
+    attempt_rows_before = len([r for r in ctx.db.assessments_of(sentence_sha)
+                               if r.port == "attempt"])
+    r4 = run_mod._run_pass(ctx, {}, time.time_ns(), sentence_targets_per_run=40)
+    assert r4.sentences_adopted == 0
+    assert sentence_sha not in {s.text_sha for s in ctx.db.all_sentences()}
+    attempt_rows_after = len([r for r in ctx.db.assessments_of(sentence_sha)
+                              if r.port == "attempt"])
+    assert attempt_rows_after == attempt_rows_before
+    assert not [n for n in available_needs(ctx.syllabus) if n[0] == sentence_sha]
+
+
 # --- RunReport persistence: /stats history needs a source ----------------
 
 def test_a_run_that_does_almost_nothing_still_appends_a_row(db, monkeypatch):
@@ -1694,9 +1981,9 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
-                           "sentences_adopted", "drafted", "excluded", "excluded_items",
-                           "unreachable", "batch_id", "source_failures", "spend", "unserved",
-                           "budgeted", "deferred", "preferences"}
+                           "sentences_adopted", "drafted", "retired", "excluded",
+                           "excluded_items", "unreachable", "batch_id", "source_failures",
+                           "spend", "unserved", "budgeted", "deferred", "preferences"}
 
 
 # --- Spend ------------------------------------------------------------

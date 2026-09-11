@@ -9,7 +9,7 @@ from datetime import date
 import pytest
 
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LearnerKey,
-                                     ProvideKey, sha)
+                                     ProvideKey, RetirementKey, sha)
 from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
     DRAFT_SUBJECT,
@@ -32,6 +32,7 @@ from thai_syllabus.record import (
     parse_prompt,
     parses_in,
     ratings_for_role,
+    retired_texts,
     rows_for,
     sentence_drafts,
     source_asks,
@@ -628,3 +629,26 @@ def test_parses_in_skips_an_entry_whose_clauses_are_an_empty_list_and_warns(capl
 def test_parses_in_is_empty_for_text_that_is_not_the_parsing_json():
     assert parses_in("not json") == {}
     assert parses_in(json.dumps({"sentences": []})) == {}
+
+
+# --- retired_texts (F13, spec 3 section 5) ----------------------------------
+
+def test_retired_texts_names_every_subject_with_a_retirement_row(cache):
+    sha1, sha2 = "e" * 64, "f" * 64
+    cache.append("attempt", "run", RetirementKey(sha1), sha1,
+                {"kind": "retirement", "subject_kind": "sentence",
+                 "reason": "recording exhausted", "candidates": 2},
+                {"retired": True}, 0)
+    assert retired_texts(cache) == frozenset({sha1})
+    cache.append("attempt", "run", RetirementKey(sha2), sha2,
+                {"kind": "retirement", "subject_kind": "sentence",
+                 "reason": "recording exhausted", "candidates": 0},
+                {"retired": True}, 0)
+    assert retired_texts(cache) == frozenset({sha1, sha2})
+
+
+def test_retired_texts_ignores_an_attempt_run_row_of_a_different_kind(cache):
+    cache.append("attempt", "run", RetirementKey("e" * 64), "e" * 64,
+                {"kind": "something-else", "subject_kind": "sentence"},
+                {"retired": True}, 0)
+    assert retired_texts(cache) == frozenset()

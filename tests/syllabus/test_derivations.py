@@ -70,6 +70,10 @@ class FakeCache:
     def assessments_of(self, subject):
         return sorted((r for r in self.rows if r.subject == subject), key=lambda r: r.ts)
 
+    def rows_since(self, port, backend, since_ts):
+        return sorted((r for r in self.rows if r.port == port and r.backend == backend
+                      and r.ts >= since_ts), key=lambda r: r.ts)
+
 
 @pytest.fixture
 def cache():
@@ -2026,6 +2030,28 @@ def test_adoptable_drafts_drops_a_draft_with_an_empty_gloss(cache):
     assert adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
+
+def _retirement_row(sha_, ts=None):
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="attempt", backend="run", key=f"run:{ts}", key_sha="x", subject=sha_,
+                 question={"kind": "retirement", "subject_kind": "sentence",
+                          "reason": "recording exhausted", "candidates": 1},
+                 answer={"retired": True}, cost=0.0, ts=ts)
+
+
+def test_adoptable_drafts_never_re_adopts_a_retired_text(cache):
+    """F13 (spec 3 section 5): a still-passing draft whose sentence F13
+    already retired -- its Targets reopened, so it is otherwise
+    adoptable again -- stays out; record.retired_texts is durable even
+    once the sentences row itself is long gone.
+    """
+    _drafted(cache)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R")]
+    cache.rows.append(_retirement_row(_DRAFT_SHA))
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
 # --- refused_drafts: the texts the judge failed since the last adoption ----
 
 def _refused_draft_row(text, ts=None):
@@ -2062,6 +2088,37 @@ def test_refused_drafts_excludes_an_already_adopted_text(cache):
     assert adopted.text == text
     assert refused_drafts(cache, _draft_syllabus([adopted]),
                           current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_lists_a_retired_text_with_its_own_evidence(cache):
+    """F13 (spec 3 section 5): a retired text is listed among the texts
+    not to propose again -- evidence "retired: recording exhausted",
+    whatever its own sentence-for-target verdict was (it passed; that is
+    why it was adopted before its recording proved unsourceable)."""
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(text)))
+    cache.rows.append(_retirement_row(text_sha(text)))
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(text, "retired: recording exhausted")]
+
+
+def test_refused_drafts_combines_retired_and_failed_texts_under_one_cap(cache):
+    """"the newest-20 cap applies to the combined list" -- one retired
+    text and one judge-failed text, both counted against the same
+    `limit`, newest first."""
+    early, late = "กิน", "ข้าว"   # กิน: eat, ข้าว: rice
+    cache.rows.append(_refused_draft_row(early))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(early),
+                                        evidence="too formal"))
+    cache.rows.append(_refused_draft_row(late))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(late)))
+    cache.rows.append(_retirement_row(text_sha(late)))
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(late, "retired: recording exhausted"), (early, "too formal")]
+    limited = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"},
+                             limit=1)
+    assert limited == [(late, "retired: recording exhausted")]
 
 
 def test_refused_drafts_orders_newest_draft_first_and_respects_limit(cache):
