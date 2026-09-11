@@ -580,6 +580,53 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tm
            + report.unserved + report.budgeted + report.deferred)
 
 
+def test_a_recording_needs_unjudged_candidate_is_assessed_before_any_source_over_a_real_run(
+        tmp_path):
+    """spec 3 r23 section 5: assess-first now covers recording needs too
+    (attempts._assess_recordings). A migrated candidate (spec 2 section 4
+    r7's legacy-current provide row) on record with no mechanical verdict
+    is checked before forvo/tts is ever asked; the run counts the need
+    `attempted` (assess-first's own AttemptResult.attempted, resolved
+    inline -- the same run.py accounting an inline picture assess-first
+    result already uses, run._try_each_need) and `improved` once
+    current_best lands on it.
+    """
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = build_sourcing(root)
+    forvo, tts = _EmptyForvo(), _EmptyTts()
+    ctx.provider._backends.update({
+        "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
+        "pexels": _Silent("pexels"), "forvo": forvo, "tts": tts,
+        "llm-sentence": _Llm(),
+    })
+    ctx.assessor._backends["mechanical"] = _PassingMechanical()
+
+    candidate_sha = "c" * 64
+    ctx.db.append(port="provide", backend="legacy-current",
+                 key=ProvideKey(source="legacy-current", kind="recording", query="rice"),
+                 subject="rice",
+                 question={"provides": "recording", "kind": "recording", "subject_kind": "word",
+                          "params": {"audio": "audio/rice.mp3"}},
+                 answer={"items": [{"sha": candidate_sha, "ext": "mp3"}]})
+
+    before = current_best(ctx.db, "rice", "recording", current_rubric={}, prior=(),
+                          provenance_source=lambda artifact_sha: None)
+    assert before.artifact_sha is None
+
+    report = run(ctx, budgets={})
+
+    assert forvo.calls == 0   # assess-first resolved it; no source was ever asked
+    assert not [r for r in rows_for(ctx.db, "rice", "recording") if r.port == "attempt"]
+    best = current_best(ctx.db, "rice", "recording", current_rubric={}, prior=(),
+                        provenance_source=lambda artifact_sha: None)
+    assert best.artifact_sha == candidate_sha and best.source == "mechanical"
+    assert report.improved == 1
+    assert report.exhausted == 0 and report.pending == 0 and report.budgeted == 0
+    assert report.deferred == 0 and report.unserved == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
 # --- the report, one field at a time ---------------------------------------
 
 @pytest.fixture

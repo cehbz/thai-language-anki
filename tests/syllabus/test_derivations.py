@@ -1228,11 +1228,46 @@ def test_a_verdict_on_a_sha_that_is_not_a_candidate_leaves_nothing_unjudged(cach
                                current_rubric={"picture-for-word": R}) == ()
 
 
-def test_unjudged_candidates_is_empty_for_a_role_the_judge_does_not_rank(cache):
+def test_unjudged_candidates_names_a_mechanical_candidate_with_no_verdict_under_this_subject(cache):
+    """r23: recording-for-word's deciding backend is mechanical
+    (authority.AUTHORITY_ORDER["recording-for-word"][0] == "mechanical"),
+    so a candidate awaits assessment even though no judge rubric ever
+    names the role -- unlike a judge-decided role, absent from
+    current_rubric is not "never assessed" here."""
     cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
                                   items=[{"sha": "a" * 64}], ts=1))
     assert unjudged_candidates(cache, "rice", "recording",
-                               current_rubric={"picture-for-word": R}) == ()
+                               current_rubric={"picture-for-word": R}) == ("a" * 64,)
+
+
+def test_unjudged_candidates_excludes_a_recording_candidate_with_a_mechanical_verdict_under_this_subject(
+        cache):
+    cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True, ts=2))
+    assert unjudged_candidates(cache, "rice", "recording", current_rubric={}) == ()
+
+
+def test_unjudged_candidates_ignores_a_mechanical_verdict_under_another_subject(cache):
+    """Two subjects can share one artifact sha (spec 3 r23: a url-keyed
+    fetch shared by two words appends a provide row under the first
+    only). A mechanical verdict recorded under one subject never resolves
+    the other subject's own candidate -- unjudged_candidates reads rows
+    scoped to `subject` alone (record.rows_for)."""
+    cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
+                                  items=[{"sha": "a" * 64}], ts=1))
+    cache.rows.append(mechanical_row("fish", "recording-for-word", "a" * 64, True, ts=2))
+    assert unjudged_candidates(cache, "rice", "recording", current_rubric={}) == ("a" * 64,)
+
+
+def test_unjudged_candidates_for_a_picture_need_is_unaffected_by_the_mechanical_branch(cache):
+    """picture-for-word's deciding backend is "learner"
+    (AUTHORITY_ORDER), not mechanical, so it keeps the old
+    current_rubric-gated behavior: absent from current_rubric, the judge
+    ranks nothing there and no candidate ever awaits."""
+    cache.rows.append(provide_row("rice", "picture", backend="legacy-current",
+                                  items=[{"sha": "a" * 64, "ext": "jpg"}], ts=1))
+    assert unjudged_candidates(cache, "rice", "picture", current_rubric={}) == ()
 
 
 def test_judge_passed_unrated_picture_queues_in_bucket_3(cache):

@@ -93,17 +93,30 @@ def source_asks(rows: Sequence[Answer]) -> list[Answer]:
 
 
 def candidate_shas(rows: Sequence[Answer]) -> list[str]:
-    """Every artifact sha any provide row in `rows` produced, first-seen order."""
+    """Every artifact sha any provide row in `rows` produced, plus every
+    sha an attempt outcome row (port "attempt") names under
+    answer["candidates"], first-seen order across both row kinds, no
+    duplicates (spec 3 section 6): an outcome row names the artifacts its
+    own attempt stored for this need -- a url-keyed fetch shared by two
+    subjects appends a provide row under the first subject only (spec 3
+    section 2), so the second subject's own outcome row is where its
+    stored sha is named. Either way the sha is a candidate of the need;
+    it ranks only by its own verdicts, never by appearing here.
+    """
     shas: list[str] = []
     seen: set[str] = set()
     for r in rows:
-        if r.port != "provide":
-            continue
-        for item in r.answer.get("items", []):
-            sha = item.get("sha") if isinstance(item, Mapping) else None
-            if sha and sha not in seen:
-                seen.add(sha)
-                shas.append(sha)
+        if r.port == "provide":
+            for item in r.answer.get("items", []):
+                sha = item.get("sha") if isinstance(item, Mapping) else None
+                if sha and sha not in seen:
+                    seen.add(sha)
+                    shas.append(sha)
+        elif r.port == "attempt":
+            for sha in r.answer.get("candidates", []):
+                if sha and sha not in seen:
+                    seen.add(sha)
+                    shas.append(sha)
     return shas
 
 

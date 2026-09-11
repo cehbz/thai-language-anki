@@ -452,8 +452,46 @@ def test_assess_first_under_batch_collects_the_fit_question(tmp_path):
     assert {q.question.role for q in res.questions} == {"picture-for-word"}
 
 
-def test_assess_first_asks_nothing_for_a_kind_the_judge_does_not_rank(tmp_path):
+def test_assess_first_is_none_for_a_recording_need_with_no_candidate_on_record(tmp_path):
+    """Not "the judge does not rank it" (r23 makes mechanical
+    assess-first cover recording regardless of the judge's own rubric) --
+    empty because unjudged_candidates has no candidate sha to offer."""
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    assert assess_first(ctx, Need("rice", "recording")) is None
+
+
+# --- assess-first: recording (mechanical, spec 3 r23 section 5) -------------
+
+def _seed_current_recording(ctx, subject, sha="c" * 64):
+    """A candidate on record with no mechanical verdict: the row spec 2
+    section 4 r7 writes for the old deck's current recording, and its
+    media row -- the same shape _seed_current_picture uses for pictures."""
+    ctx.db.append(port="provide", backend="legacy-current",
+                  key=ProvideKey(source="legacy-current", kind="recording", query=subject),
+                  subject=subject,
+                  question={"provides": "recording", "kind": "recording", "subject_kind": "word",
+                            "params": {"audio": "audio/pw-1.mp3"}},
+                  answer={"items": [{"sha": sha, "ext": "mp3"}]})
+    return sha
+
+
+def test_assess_first_asks_mechanical_for_an_unjudged_recording_candidate_and_no_source(tmp_path):
+    mech = _mechanical()
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), mechanical=mech)
+    sha = _seed_current_recording(ctx, "rice")
+    res = assess_first(ctx, Need("rice", "recording"))
+    assert res is not None and res.attempted and res.questions == []
+    verdicts = [r for r in rows_for(ctx.db, "rice", "recording")
+               if r.port == "assess" and r.backend == "mechanical"]
+    assert [r.question.get("artifact_sha") for r in verdicts] == [sha]
+    assert all(r.port != "attempt" for r in rows_for(ctx.db, "rice", "recording"))
+    assert current_best_of(ctx, "rice", "recording").artifact_sha == sha
+
+
+def test_assess_first_is_none_once_every_recording_candidate_is_judged(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    _seed_current_recording(ctx, "rice")
+    assert assess_first(ctx, Need("rice", "recording")) is not None
     assert assess_first(ctx, Need("rice", "recording")) is None
 
 

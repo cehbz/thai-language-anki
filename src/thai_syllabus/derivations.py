@@ -893,13 +893,27 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
 
 def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
                         current_rubric: Mapping[str, str]) -> tuple[str, ...]:
-    """`subject`'s candidates of `kind` with no judge verdict under
-    `current_rubric` for the need's own role, in record.candidate_shas
-    order (spec 3 section 5 assess-first). Empty for a role absent from
-    `current_rubric`: the judge ranks nothing there.
+    """`subject`'s candidates of `kind` with no verdict deciding them yet,
+    in record.candidate_shas order (spec 3 section 5 assess-first).
+
+    For a role whose deciding backend is mechanical
+    (authority.AUTHORITY_ORDER[role][0] == "mechanical":
+    recording-for-word, recording-for-sentence, r23) a candidate awaits
+    when no mechanical verdict row under this subject names its sha --
+    mechanical asks about the artifact itself, not a rubric, so a role
+    absent from `current_rubric` still gets assessed here, and a params
+    change is its own cache miss (re-asks by itself, nothing to track).
+
+    Every other role is judge-decided: empty for a role absent from
+    `current_rubric` (the judge ranks nothing there); else a candidate
+    awaits when no judge verdict under the current rubric names its sha.
     """
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
+    if AUTHORITY_ORDER.get(role, ("judge",))[0] == "mechanical":
+        judged = {r.question.get("artifact_sha") for r in rows
+                 if r.port == "assess" and r.backend == "mechanical"}
+        return tuple(s for s in record.candidate_shas(rows) if s not in judged)
     if role not in current_rubric:
         return ()
     judged = {r.question.get("artifact_sha") for r in record.judge_verdicts(rows, role)

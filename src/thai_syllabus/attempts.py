@@ -1111,11 +1111,31 @@ def _assess_pictures(ctx: Sourcing, need: Need) -> AttemptResult:
     return _judge_pictures(ctx, need, _picture_query_for(ctx, need), {})
 
 
-# The assessment a kind's assess-first step runs: the fit questions on
-# every candidate on record, cache-first (_judge_pictures asks nothing
-# for a candidate already judged under the current rubric).
+def _assess_recordings(ctx: Sourcing, need: Need) -> AttemptResult:
+    """Spec 3 r23 section 5: the mechanical duration/format check on the
+    need's candidates with no mechanical verdict under this subject
+    (derivations.unjudged_candidates), the same AssessQuestion shape
+    _recording_attempt builds at the end of its own attempt. Mechanical
+    is inline and free -- no batch transport -- so every question
+    resolves within the call and `questions` always comes back empty.
+    """
+    spend: dict[str, Spend] = {}
+    shas = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
+    questions = [AssessQuestion(subject=need.subject, role=need.role, artifact_sha=sha,
+                                kind=need.kind, subject_kind=need.subject_kind)
+                for sha in shas]
+    result = _check(ctx, questions, spend)
+    return AttemptResult(attempted=True, questions=list(result.collected),
+                         excluded=dict(result.excluded), spend=spend)
+
+
+# The assessment a kind's assess-first step runs: the fit/check questions
+# on every candidate on record, cache-first (_judge_pictures/_check asks
+# nothing for a candidate already judged under the current rubric or
+# already mechanically checked under this subject).
 _ASSESS_FIRST: dict[str, Callable[[Sourcing, Need], AttemptResult]] = {
     "picture": _assess_pictures,
+    "recording": _assess_recordings,
 }
 
 

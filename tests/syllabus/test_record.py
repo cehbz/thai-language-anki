@@ -127,6 +127,31 @@ def test_candidate_shas_is_first_seen_order_across_rows(cache):
     assert candidate_shas(rows) == ["s1", "s2", "s3"]
 
 
+def test_candidate_shas_includes_an_attempt_outcome_rows_candidates(cache):
+    """spec 3 section 6 (r23): an outcome row names the artifacts its own
+    attempt stored for this need -- a url-keyed fetch shared by two
+    subjects appends a provide row under the first only (spec 3 section
+    2), so the second subject's own outcome row is where its stored sha
+    is named, and it is a candidate of the need on that account alone."""
+    cache.append("attempt", "forvo",
+                AttemptOutcomeKey(subject="w", kind="recording", source="forvo"),
+                "w", {"kind": "recording", "subject_kind": "word", "source": "forvo"},
+                {"outcome": "candidates", "candidates": ["d" * 64], "tried": []}, 0)
+    rows = rows_for(cache, "w", "recording")
+    assert candidate_shas(rows) == ["d" * 64]
+
+
+def test_candidate_shas_lists_a_sha_in_both_a_provide_and_an_outcome_row_once(cache):
+    cache.append("provide", "imgfetch", ProvideKey(source="", kind="", query="k1"),
+                "w", {"kind": "picture"}, {"items": [{"sha": "e" * 64}]}, 0)
+    cache.append("attempt", "openverse",
+                AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
+                "w", {"kind": "picture", "subject_kind": "word", "source": "openverse"},
+                {"outcome": "candidates", "candidates": ["e" * 64], "tried": []}, 0)
+    rows = rows_for(cache, "w", "picture")
+    assert candidate_shas(rows) == ["e" * 64]
+
+
 def test_tried_urls_unions_the_tried_lists_of_every_matching_attempt_row(cache):
     cache.append("attempt", "openverse",
                 AttemptOutcomeKey(subject="w", kind="picture", source="openverse"),
