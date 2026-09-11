@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 22, proposed 2026-09-11 against principles r3 and architecture
+Revision 23, proposed 2026-09-11 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -49,6 +49,18 @@ Revision log:
   table; §8 merged into spec 1 §4, §10 into spec 2 §4, §11 into spec 1
   §3; §12's "no retries" (contradicted by §6a) dropped. No behavior
   changed.
+- r23 2026-09-11: assess-first covers recording needs (a candidate with no
+  mechanical verdict under its subject is checked before any source is
+  asked); an outcome row's `candidates` are candidates of the need (a
+  url-keyed fetch shared by two subjects appends a provide row under the
+  first only); Forvo's limit body served at a download url is Quota; the
+  drafting prompt asks for at most `sentence_max_clauses` clauses (2) and
+  acceptance refuses longer drafts; the run retires an adopted Sentence
+  whose recording is exhausted with no passing candidate (F13), leaving
+  a retirement row so the text is never re-adopted or re-drafted. Evidence: 2026-09-11 cycles (ผม's male Forvo
+  recording unranked under its second subject; 27 download refusals with
+  no limit row; 15 three-clause sentences with every recording over the
+  5 s cap). User approval 2026-09-11.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -193,8 +205,9 @@ current rubric, the attempt is the fit questions on those candidates; no
 source is asked and no outcome row is written. A source is asked only
 once every candidate is judged. If every such question is excluded
 (unpreparable), the source is asked in the same attempt. Scene pictures
-follow the same rule. Kinds ranked by a mechanical check re-check inside
-their own attempt at no cost and are unchanged.
+follow the same rule. Recording needs follow it too: a candidate on
+record with no mechanical verdict under this subject is checked before
+any source is asked, at no cost.
 
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
@@ -243,15 +256,18 @@ one per sentence; the profile register; the existing sentence openings
 to avoid; the unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for the fewest natural sentences
-that cover the handed targets and states the rendering rule (spec 1 §1:
+that cover the handed targets, each of at most `sentence_max_clauses`
+clauses (§8, default 2: a longer sentence outruns the 5 s recording
+cap), and states the rendering rule (spec 1 §1:
 clauses of word ids, ๆ after a repeated word, clauses separated by one
 space, standard spelling, numbers as words, no punctuation).
 
 *Answer and acceptance.* `{"sentences": [{"clauses": [["<word id>" |
 ["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
 Acceptance is the Sentence invariant, local and mechanical: an
-unregistered id or a rendering that differs from text refuses the draft,
-logged with the reason, the provide row keeping it. Each distinct
+unregistered id, a rendering that differs from text, or more clauses than
+the cap refuses the draft, logged with the reason, the provide row
+keeping it. Each distinct
 accepted text is one candidate: a text listed twice is one candidate;
 differing clauses reject it; differing glosses keep the first, since the
 verdict is keyed by the text and was given on that gloss. A draft
@@ -275,7 +291,16 @@ says it fills, chosen greedily by targets filled, and creates needs: the
 sentence's recording (voice constraint from the marking as for a word,
 above; tts allowed for receptive-only, a productive fill wants native,
 warn otherwise) and an optional scene picture. A refused draft and a
-draft filling nothing are rejected drafts in the record.
+draft filling nothing are rejected drafts in the record. An adopted
+Sentence whose recording need is exhausted with no passing candidate is
+retired by the run (F13: nothing is grandfathered): a retirement row is
+appended under the sentence (typed key, port attempt, backend run), the
+row is deleted and reported by id (spec 2 §6), its drafts stay in the
+record, and its Targets reopen. A retired text is never re-adopted and
+the drafting prompt lists it among the sentences not to propose. A
+learner-supplied or learner-nominated recording, or a learner direction
+on the sentence, keeps the sentence (F9); the screen shows it as
+exhausted.
 
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
@@ -308,9 +333,11 @@ exact-confusion check; adoption into curated pairs is the learner's act.
   run. A pending need gets no new attempt.
 - **outcome(subject, kind, source)**: what one attempt of a need at a
   source produced: `candidates` (at least one artifact from it was
-  stored; the check's own verdict rows decide whether it ranks, and an
-  outcome row's candidates never rank: current_best reads assessments
-  only, r19), `nothing` (the source answered and nothing
+  stored; the shas the row names are candidates of the need whether or
+  not a provide row under the subject names them — a url-keyed fetch
+  shared by two subjects appends a row under the first only — and they
+  rank only by their own verdicts: current_best reads assessments only),
+  `nothing` (the source answered and nothing
   usable came of it), or `transient-failure` (the ask or any fetch it
   needed failed on the wire; retry). The attempt appends one outcome
   row per source it asks (port `attempt`, backend = the source, key
@@ -362,8 +389,9 @@ Every ask and fetch ends in one of four states:
   never): next_source offers the source again and a fresh lookup
   appends a new row. r19.
 - **Quota.** The source itself says its allowance is spent (Forvo: 400
-  with body `["Limit/day reached."]`, recognized by the backend and
-  raised typed, never matched downstream). No row is appended, the need
+  with body `["Limit/day reached."]` on a lookup, or the same body served
+  at one of its download urls, which the fetcher reports and the attempt
+  raises typed; never matched downstream). No row is appended, the need
   counts under budgeted, the source is budgeted for the rest of the
   run, and source_failures does not count it.
 
@@ -436,9 +464,10 @@ always. The remaining fields count events, not needs.
 | pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
 | unserved | needs whose kind has no Source and no per-run pass |
 | budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent) |
-| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted |
+| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted, a retired sentence's other needs still in this pass's queue |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
+| retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
@@ -456,7 +485,8 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
-(forvo 180; absent = never) and `sentence_nothing_cap` (3). `search_proxy`
+(forvo 180; absent = never), `sentence_nothing_cap` (3) and
+`sentence_max_clauses` (2). `search_proxy`
 is the HTTP forward proxy Openverse searches go through (Openverse
 refuses a Thai egress); no other request uses it. The provenance prior
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml

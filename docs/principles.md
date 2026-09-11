@@ -1,6 +1,6 @@
 # Principles
 
-Revision 3, proposed 2026-09-11 (r2 approved 2026-09-04). The architecture
+Revision 4, proposed 2026-09-11 (r3 approved 2026-09-11). The architecture
 (docs/architecture.md) and the specs (docs/specs/) are the companions.
 
 Three meta-rules from the charter; every principle traces to one; every
@@ -46,6 +46,9 @@ Revision log:
   r10); the `word_form` target kind, which no spec defines, removed from
   F5 and E5; the card taxonomy table moved to spec 4 §1; the open-items
   section moved to TODO.md. No other principle's meaning changed.
+- r4 2026-09-11: F13, nothing is grandfathered. Evidence: 15 adopted
+  sentences whose every recording exceeded the duration cap sat in the
+  deck with no path to a recording; user ruling 2026-09-11.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
@@ -149,6 +152,10 @@ Revision log:
   productive new-card rate capped. [evidence: research 2026-09-02,
   practice pays in its direction and production is the burnout driver;
   user decision 2026-09-10 on the selection rule]
+- **F13.** **Nothing is grandfathered.** The deck is what the current
+  rulebook says it is. An artifact, sentence or verdict that fails a
+  current rule is a gap to re-source or a candidate to retire. Only a
+  learner's answer outlives a rule change (F9).
 
 ## Lens 3 — "Does it teach Thai, to this learner?"
 

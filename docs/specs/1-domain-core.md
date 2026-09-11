@@ -304,7 +304,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | E4 | word/pronunciation-corroborated (check, error; blocks card emission) |
 | E5 | word/classifier-known (check, warn, nouns) |
 | E7 | coverage/speakers (measure: per audio corpus — word recordings, renditions, sentence recordings — distinct speakers per sex, age band and region against rulebook targets; unknown never counts) |
-| F4, F9, F10, F12, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule |
+| F4, F9, F10, F12, F13, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule; F13's retirement is the run's (spec 3 §5) |
 | META-1 | rulebook/traceability (measure) |
 
 The set of principles with enforcement intent is every row above with a
