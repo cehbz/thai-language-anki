@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 20, proposed 2026-09-11 against principles r2 and architecture
+Revision 21, proposed 2026-09-11 against principles r2 and architecture
 r2. Revision process as in docs/architecture.md: proposals on evidence,
 explicit approval per revision, numbered log.
 
@@ -122,6 +122,19 @@ Revision log:
   first (at most 20), and a no-fit served from cache is re-asked once so
   the cap counts refusals. Evidence: the r19 reviews (word-keyed folds,
   the no-fit cache replay measured at three runs to exhaustion).
+- r21 2026-09-11: §5's voice constraint derives from the speaker marking
+  (spec 1 r10): female → female, male → male, empty → male on a
+  productive back, else any; the same rule for word and sentence needs;
+  contradicting recordings vetoed once and re-sourced. Evidence: spec 1
+  r10 names §5 as the constraint's home while r20's text still read
+  productive-only; the live deck held ผม (pǒm, "I", male speaker) under a
+  female TTS voice and คะ (khá, female question particle) under a male
+  one. Also §4's mechanical key carries the subject
+  (mech:CHECK:PARAMS:SUBJECT:sha): a content-addressed artifact two
+  subjects share (ผม for i-male-speaker and hair-on-the-head) kept its
+  verdict under the first subject only, and current_best for the second
+  saw none. §5 and §8 drop `rendition/mixed-speakers`, retired by spec 1
+  r10. User approval 2026-09-11.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -227,7 +240,7 @@ speaker-directed search does not exist.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording duration/format; media resolvable; provenance rules | parameter-explicit, e.g. mech:duration:0.2-5.0:sha | ground truth for what it checks |
+| mechanical | recording duration/format; media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:duration:0.2-5.0:SUBJECT:sha | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -281,9 +294,19 @@ follow the same rule. Kinds ranked by a mechanical check re-check inside
 their own attempt at no cost and are unchanged.
 
 **Recording (Word).** Source order: forvo, tts, commission. Voice
-constraint (E2, E7): male if the word has a productive Target (the
-recording plays on the productive back), any sex otherwise; within the
-constraint the pick spreads over the pool. Forvo attempt: lookup (cached;
+constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
+word need's marking is its Word's `speaker`; a sentence need's marking is
+`Syllabus.marking(sentence)`. Marking female → female; male → male;
+empty → male when the recording plays on a productive back (a productive
+Target on the word, or a productive Target in the sentence's fill set),
+any sex otherwise. Within the constraint the pick spreads over the pool
+(TTS pools per sex in providers.yaml; a Forvo item is admitted only when
+the sex Forvo states matches). A marking holding both sexes never reaches
+sourcing: the Sentence invariant refuses it. No rulebook rule: the
+constraint holds at sourcing time; a recording on record that
+contradicts it is vetoed once through the learner path (an
+`unacceptable-none` rating on that sha, role recording-for-word or
+recording-for-sentence) and re-sourced under the constraint. Forvo attempt: lookup (cached;
 re-asked once within the attempt when a download of one of its urls is
 refused by the server, Forvo urls being time-limited, and the item retried
 by its Forvo id), download each item's mp3, mechanical duration/format on
@@ -306,9 +329,8 @@ per-member shas and the speaker; a rendition is that artifact set, and
 compile resolves the pair's current-best rendition from it (a pair with
 none does not compile). Mechanical checks one speaker across
 members and duration. Findings: none for native one-speaker;
-`rendition/synthetic` (warn) for TTS; `rendition/mixed-speakers` (warn)
-when the members' current-best recordings differ in speaker and no
-rendition exists.
+`rendition/synthetic` (warn) for TTS (one speaker across members holds
+by construction of the rendition answer; spec 1 r10 retired the check).
 
 **Sentence (per run over open Targets).** One attempt per run, not per
 target: the prompt carries the vocabulary met in the fill-set sense,
@@ -348,8 +370,9 @@ open target is not judged. The judge sees each candidate once
 text, a gloss that misstates the sentence fails the candidate);
 adoption (`Syllabus.add_sentence` with provenance) fills every target
 `fills()` says it fills, chosen greedily by targets filled. Adoption
-creates needs: the sentence's recording (tts allowed for receptive-only;
-a productive fill wants native, warn otherwise) and an optional scene
+creates needs: the sentence's recording (voice constraint from the
+marking as for a word, above; tts allowed for receptive-only, a
+productive fill wants native, warn otherwise) and an optional scene
 picture. A refused draft and a draft filling nothing are rejected
 drafts in the record.
 
@@ -559,8 +582,7 @@ Error (completeness; compile refuses): `target/picture-required`,
 `target/recording-required`, `target/sentence-required` (an adopted
 sentence fills it), `pair/rendition-required`,
 `grapheme/keyword-picture-required`. Warn: `recording/synthetic`,
-`rendition/synthetic`, `rendition/mixed-speakers`,
-`sentence/synthetic-productive`. Judged: `picture/fit` (old texts),
+`rendition/synthetic`, `sentence/synthetic-productive`. Judged: `picture/fit` (old texts),
 `picture/preference`, `sentence/register-natural`. Measure:
 `coverage/speakers` (E7): per audio corpus (word recordings, renditions,
 sentence recordings), distinct speakers per sex, age band, and region
