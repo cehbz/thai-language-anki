@@ -8,9 +8,6 @@ still run against them.
 
 ## Sentences: after the parsimonious-sentences arc
 
-- Spec 1 §3: a productive target is filled only by a sentence whose last
-  used word is the target's word (a productive target filled by a
-  sentence clozed on another word yields no card).
 - `Word.components` (curated): a compound's registered parts, so a
   sentence using โรงพยาบาล ("hospital") also mentions โรง ("building")
   where the curator says so; fills clause 1 then reads "in the clauses
@@ -56,9 +53,6 @@ still run against them.
   the 10×10 square) belong in the picture query hints; a word whose
   pictures keep failing escalates through the screen, where gloss-on for
   that word is one answer (user, 2026-09-10). Study impression pending.
-- Classifier fix table (2026-09-10, from the judge triage): about 26
-  words.yaml edits, unapplied; rainbow keeps ตัว (casual), live music
-  keeps วง, menu keeps เล่ม; apply on the user's word.
 - 62 classifier placeholder Words from migration need real facts
   (pronunciation, meaning).
 
