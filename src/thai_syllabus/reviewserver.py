@@ -58,6 +58,7 @@ from .provider import FetchBackend, Provider, Question, tool_fetcher
 from .record import (
     candidate_shas,
     card_flags,
+    card_notes,
     excluded_candidates,
     latest_nothing_reason,
     latest_query,
@@ -348,6 +349,63 @@ def _resolve_media_for_web(html: str) -> str:
     return html
 
 
+# --- gallery notes: shown/stale (spec 5 section 1 r5) -----------------------
+
+_SHOWN_PICTURE_RE = re.compile(r'<img src="/media/([^"]+)">')
+_SHOWN_RECORDING_RE = re.compile(r'<audio controls src="/media/([^"]+)"></audio>')
+
+
+def _shown_of(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The artifacts one compiled_cards entry actually displayed: its
+    own resolved front/back HTML's media refs -- the same bytes the
+    learner saw, never re-derived from current_best (a gallery note
+    names what rendered, not whatever ranks highest right now). A
+    sentence card's own entity subject IS its text_sha already
+    (compile.py tags the sentence family by text_sha), carried straight
+    through as `text_sha`.
+
+    `recordings` is a LIST, front to back, not a single sha: a
+    minimal_pair Recognition card plays two -- its own member's, on
+    `{{Audio}}` (front), and the other member's, on `{{OtherAudio}}`
+    (back) -- and a note against that card must be able to go stale on
+    either one, not just the first found. A list (rather than numbered
+    "recording"/"recording_2" keys) is the shape `_is_stale` compares
+    most simply: direct list equality, order and count both meaningful,
+    no prefix-scanning of dynamic key names.
+
+    Deduplicated, first-seen order: every model's own afmt opens with
+    `{{FrontSide}}` (compile.py's convention -- the back replays the
+    front, then adds its own content), so `back_html` already repeats
+    whatever `front_html` shows; scanning the concatenation raw would
+    double-count a front recording as if it were a second one.
+    """
+    html = entry["front_html"] + entry["back_html"]
+    picture = _SHOWN_PICTURE_RE.search(html)
+    recordings = list(dict.fromkeys(_SHOWN_RECORDING_RE.findall(html)))
+    return {
+        "picture": picture.group(1) if picture else None,
+        "recordings": recordings,
+        "text_sha": entry["subject"] if entry["family"] == "sentence" else None,
+    }
+
+
+def _is_stale(recorded: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """True once `recorded` (a note's own `shown`) names an artifact or
+    sentence text the card no longer shows (F9: an answer is about the
+    thing shown). A note that named nothing -- a pre-r5 row, or one
+    whose card carries no artifact at all -- never goes stale on this
+    account; it made no claim to check.
+    """
+    recorded_recordings = recorded.get("recordings") or []
+    named = (recorded.get("picture") is not None or bool(recorded_recordings)
+            or recorded.get("text_sha") is not None)
+    if not named:
+        return False
+    return (recorded.get("picture") != current.get("picture")
+           or recorded.get("text_sha") != current.get("text_sha")
+           or recorded_recordings != (current.get("recordings") or []))
+
+
 # Each family's entity-identity tag prefix (spec 4 section 2): the card
 # dict's "subject" reads from this, so a minimal_pair card's subject is
 # the pair id, where Built.subject is one member's MemberKey.
@@ -360,20 +418,38 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
     """Every card compile.build_deck would compile, in its due order
     (spec 5 section 1). One entry per card: its kind (the template name),
     front/back HTML rendered through the note's own model template, the
-    model's CSS, and metadata read from the note's fields and tags --
+    model's CSS, metadata read from the note's fields and tags --
     `family`, `subject` (the entity id), `gloss`, and for a minimal_pair
     note `confusion` and `stimulus_member`, which the gallery's pair
-    drill logs against.
+    drill logs against -- plus, spec 5 section 1 r5: `shown` (the
+    artifacts/text this exact card displays right now, and the syllabus
+    state id -- what a note saved against this card must echo back
+    verbatim on /api/note, never have the server recompute at save time,
+    which would silently record whatever is current-best *then* instead
+    of what the learner actually saw) and `notes` (this card's own
+    notes, oldest first, each marked stale once the card no longer shows
+    what it named).
     """
     built_deck = build_deck(d.syllabus, d.db, d.media_store, current_rubric=d.current_rubric,
                             prior=d.prior, provenance_source=d.provenance_source)
     ordered = sorted(built_deck.built, key=lambda item: item.base_due)
+
+    # Hoisted out of the per-card (and per-note) loop below: state_id()
+    # canonicalizes and JSON-dumps the whole syllabus uncached, and is
+    # the same value for every card on this one call -- computing it
+    # per card cost a full aggregate serialization per card (spec 5
+    # section 1 r5's own performance floor: /api/cards is re-fetched
+    # after every saved note).
+    syllabus_state_id = d.syllabus.state_id()
 
     cards: list[dict[str, Any]] = []
     for item in ordered:
         values = field_values(item.model, item.note)
         gloss = values.get("Meaning") or values.get("Gloss") or None
         entity_subject = tag_value(item.note, _ENTITY_TAG_PREFIX[item.family])
+        # One read per note, reused by every one of its cards (a word
+        # note has up to four) -- not one assessments_of call per card.
+        subject_rows = d.db.assessments_of(entity_subject)
         for card in item.note.cards:
             template_name = item.model.templates[card.ord]["name"]
             kind = card_kind_of(template_name)
@@ -385,6 +461,22 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
                 "back_html": _resolve_media_for_web(back),
                 "css": item.model.css, "gloss": gloss,
             }
+            # spec 5 section 1 r5: `shown` is this exact card's own
+            # artifacts/state, for the client to echo back on /api/note
+            # (C1 fix -- never recomputed server-side at save time,
+            # which would record whatever is current-best *then*, not
+            # what the learner actually saw). `notes` is this card's
+            # own notes, oldest first, each marked stale once the card
+            # no longer shows what it named (F9) -- scoped by this
+            # card's own anchor (entry["id"]) AND kind (C2 fix): a
+            # minimal-pair note's two member cards share a subject and
+            # a card_kind but never an anchor.
+            shown_now = _shown_of(entry)
+            entry["shown"] = {**shown_now, "syllabus_state_id": syllabus_state_id}
+            entry["notes"] = [
+                {"text": n["text"], "ts": n["ts"], "stale": _is_stale(n["shown"], shown_now)}
+                for n in card_notes(subject_rows, entry["id"], kind)
+            ]
             if item.family == "minimal_pair":
                 member = tag_value(item.note, "member")
                 entry["confusion"] = tag_value(item.note, "confusion")
@@ -396,18 +488,26 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
 # --- writes: notes, drills, answers, supply ---------------------------------
 
 def append_gallery_note(record: RecordWriter, *, subject: str, card_id: str, kind: str,
-                        text: str) -> int:
+                        text: str, shown: Mapping[str, Any] | None = None) -> int:
     """One gallery note as a card-level flag row (spec 4 section 4's
     shape; spec 5 section 1), under role "card-flag" (AUTHORITY_ORDER's
     learner-only role). `subject` is the card's own entity subject
     (card.subject: a word/pair/grapheme/sentence id); `card_id` is the
     row's own per-card anchor, `kind` its card_kind.
+
+    `shown` records the card as shown (spec 5 section 1 r5): the
+    artifact shas it displayed, the sentence text_sha for a sentence
+    card, and the syllabus state id -- carried in the question (never
+    the answer, which stays the plain {kind, rating, note} shape every
+    other reader already expects). {} when omitted -- a note naming
+    nothing, record.card_notes' own default for a pre-r5 row.
     """
     role = "card-flag"
     key = LearnerKey(artifact_sha=str(card_id), role=role)
     return record.append(port="assess", backend="learner", key=key, subject=str(subject),
                          question={"role": role, "kind": "card-flag",
-                                  "anchor": str(card_id), "card_kind": kind},
+                                  "anchor": str(card_id), "card_kind": kind,
+                                  "shown": dict(shown) if shown is not None else {}},
                          answer={"kind": "rating", "rating": None, "note": text})
 
 
@@ -857,6 +957,57 @@ class ReviewContext:
         return compute_stats(self.derivations, self.study, session=self.session)
 
 
+_SHA_RE = re.compile(r'^[0-9a-f]{64}$')
+
+
+def _validated_shown(value: Any) -> dict[str, Any]:
+    """The client's own echoed `shown` (spec 5 section 1 r5, C1 fix):
+    the server never recomputes `shown` at save time -- a recompute
+    would record whatever is current-best *then*, silently substituting
+    it for what the learner actually looked at when they wrote the note
+    (reproduced: picture A shown, B rated good before the save, a
+    recompute recorded B). The handler instead trusts the exact `shown`
+    compiled_cards attached to the card the gallery rendered, echoed
+    back in the POST body.
+
+    ABSENT (no `shown` key at all, or JSON null -- an old client, or a
+    card with no media) is the one lenient case: {}, a note naming
+    nothing. A *present* `shown` must be a plain mapping of string keys
+    to values that are each either None, a 64-char lowercase hex sha
+    (current_best's/text_sha's/state_id's own shape), or a LIST of such
+    shas (`_shown_of`'s own "recordings", a minimal_pair card's two
+    recordings) -- anything else (wrong shape, a nested object, a
+    string that isn't a real sha, a list containing one) is a bad
+    request: raises ValueError so the handler's existing except clause
+    answers 400 naming the field and appends no row (fix round 2's
+    ruling -- a malformed `shown` must never be silently stored or
+    silently emptied while the client is told it saved).
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("shown must be a mapping")
+    for k, v in value.items():
+        if not isinstance(k, str):
+            raise ValueError(f"shown has a non-string key: {k!r}")
+        if not _valid_shown_value(v):
+            raise ValueError(f"shown[{k!r}] is not a hex sha or a list of them: {v!r}")
+    return dict(value)
+
+
+def _valid_shown_value(v: Any) -> bool:
+    """One `shown` field's value: None, a 64-char lowercase hex sha, or
+    a list of them (`_validated_shown`'s own vocabulary).
+    """
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return bool(_SHA_RE.match(v))
+    if isinstance(v, list):
+        return all(isinstance(x, str) and _SHA_RE.match(x) for x in v)
+    return False
+
+
 def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "ReviewServer/1.0"
@@ -929,12 +1080,13 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                     ctx.session.answered += 1
                     self._send_json(result)
                 elif parsed.path == "/api/note":
-                    card_id = payload.get("card_id", payload.get("id"))
+                    card_id = str(payload.get("card_id", payload.get("id")))
                     subject = payload.get("subject") or card_id
+                    kind = payload.get("kind", "note")
+                    shown = _validated_shown(payload.get("shown"))
                     ts = append_gallery_note(ctx.record, subject=str(subject),
-                                             card_id=str(card_id),
-                                             kind=payload.get("kind", "note"),
-                                             text=payload.get("text", ""))
+                                             card_id=card_id, kind=kind,
+                                             text=payload.get("text", ""), shown=shown)
                     self._send_json({"ok": True, "ts": ts})
                 elif parsed.path == "/api/drill":
                     ts = append_drill_result(ctx.record, confusion=payload["confusion"],
@@ -1063,6 +1215,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .side-by-side img { max-width: 320px; max-height: 320px; border-radius: 6px; }
   .tried { text-align: left; max-width: 640px; margin: 0 auto; font-size: 14px; color: #b9c2cd; }
   .tried h4 { margin: 8px 0 2px; color: #e8e8e8; }
+  .notes { text-align: left; max-width: 640px; margin: 0 auto; font-size: 14px; }
+  .note { padding: 4px 0; border-bottom: 1px solid #2a2f36; color: #b9c2cd; }
+  .note.stale { color: #c98a3d; }
   #noteInput, #directionInput, #supplyInput {
     position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
     background: #1b1f24; border: 1px solid #3a4048; border-radius: 8px;
@@ -1072,6 +1227,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     width: 420px; background: #0e1114; color: #e8e8e8; border: 1px solid #333;
     border-radius: 4px; padding: 6px 10px; font-size: 15px;
   }
+  #noteError { color: #d9534f; font-size: 13px; }
   #overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex;
     align-items: center; justify-content: center; z-index: 10; cursor: zoom-out;
@@ -1100,7 +1256,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     </div>
   </div>
   <div id="main"></div>
-  <div id="noteInput" hidden><input id="noteText" placeholder="note (Enter to save, Esc to cancel)"></div>
+  <div id="noteInput" hidden>
+    <input id="noteText" placeholder="note (Enter to save, Esc to cancel)">
+    <span id="noteError" hidden></span>
+  </div>
   <div id="directionInput" hidden><input id="directionText" placeholder="direction (Enter to save, Esc to cancel)"></div>
   <div id="supplyInput" hidden>
     <input id="supplyValue" placeholder="file path or URL (Enter to save, Esc to cancel)">
@@ -1379,11 +1538,25 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     face.innerHTML = card.front_html;
     box.appendChild(face);
     if (card.family === "minimal_pair") { renderPairDrill(card, box); }
+    renderCardNotes(card, box);
     box.appendChild(el("div", { "class": "verdict" }, "space to reveal"));
     main.appendChild(box);
     saveProgress();
     var audio = face.querySelector("audio");
     if (audio) { audio.play().catch(function () {}); }
+  }
+
+  // The card's own notes (spec 5 section 1 r5), oldest first, under the
+  // card; stale once the card no longer shows what the note named (F9).
+  // el()'s textContent escapes the note's own text -- never innerHTML.
+  function renderCardNotes(card, box) {
+    if (!card.notes || !card.notes.length) { return; }
+    var notes = el("div", { "class": "notes" });
+    card.notes.forEach(function (n) {
+      var cls = n.stale ? "note stale" : "note";
+      notes.appendChild(el("div", { "class": cls }, n.text + (n.stale ? " (stale)" : "")));
+    });
+    box.appendChild(notes);
   }
 
   // Per-confusion accuracy logging (spec 5 section 1): a forced two-way
@@ -1444,12 +1617,51 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     };
   }
 
+  // The note box does not use openBox: spec 5 section 1 r5 requires it
+  // to stay open on a failed save, keep the typed text, show why, and
+  // retry on Enter -- openBox's own unconditional hide-on-Enter (shared
+  // by direction/supply, out of this task's scope) can't express that.
   function openNoteBox() {
     if (mode !== "gallery" || !galleryCards.length) { return; }
     var card = galleryCards[gIdx];
-    openBox("noteInput", "noteText", function (text) {
-      postJson("/api/note", { subject: card.subject, card_id: card.id, kind: card.kind, text: text });
-    });
+    var box = document.getElementById("noteInput");
+    var input = document.getElementById("noteText");
+    var err = document.getElementById("noteError");
+    if (box.hidden) { input.value = ""; }
+    box.hidden = false;
+    err.hidden = true;
+    input.focus();
+    input.onkeydown = function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var text = input.value;
+        // card.shown is this exact card's own artifacts/state, echoed
+        // back verbatim (spec 5 section 1 r5, C1 fix) -- never asked
+        // of the server again at save time, which could by then be
+        // showing a different current-best than what's on screen.
+        postJson("/api/note", { subject: card.subject, card_id: card.id, kind: card.kind,
+                               text: text, shown: card.shown })
+          .then(function (result) {
+            if (result && result.ok) {
+              box.hidden = true;
+              err.hidden = true;
+              loadGallery();
+            } else {
+              // ok === false is a real server response (e.g. a 400 on
+              // a malformed `shown`) -- show its own error; postJson's
+              // catch synthesizes {ok: false} with no `error` for an
+              // actually unreachable server. Either way the box stays
+              // open with the text and Enter retries.
+              err.hidden = false;
+              err.textContent = (result && result.error) || "not saved -- server unreachable";
+            }
+          });
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        box.hidden = true;
+        err.hidden = true;
+      }
+    };
   }
 
   function openDirectionBox(q) {

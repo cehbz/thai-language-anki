@@ -976,10 +976,16 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
 
     # no bespoke card shape: only the compile's own front/back/css plus
     # the note's own field/tag metadata, never structured fields like
-    # "thai"/"picture" composed by the gallery itself.
+    # "thai"/"picture" composed by the gallery itself -- "shown"/"notes"
+    # are the exception (spec 5 section 1 r5): what this card displays
+    # right now (for the client to echo back on /api/note, C1 fix) and
+    # this card's own notes list.
     for card in cards:
         assert set(card) == {"index", "id", "family", "kind", "subject",
-                             "front_html", "back_html", "css", "gloss"}
+                             "front_html", "back_html", "css", "gloss",
+                             "shown", "notes"}
+        assert card["notes"] == []  # no notes on record yet
+        assert set(card["shown"]) == {"picture", "recordings", "text_sha", "syllabus_state_id"}
 
 
 def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
@@ -1030,6 +1036,212 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
     assert {c["stimulus_member"] for c in pair_cards} == {0, 1}
 
 
+def test_compiled_cards_notes_are_scoped_by_anchor_not_just_subject_and_kind(
+        db, media_store, w1, w2, pair, confusion):
+    """spec 5 section 1 r5 (C2 fix): a minimal-pair note's two member
+    cards share both a subject (the pair id) and a card_kind
+    ("recognition") -- a note written against member 0's card must not
+    also be listed under member 1's, and vice versa. record.card_notes
+    is scoped by (anchor, card_kind); compiled_cards passes each card's
+    own id (its anchor) through.
+    """
+    from datetime import date
+
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+    from thai_syllabus.wiring import _DbMediaIndex
+
+    speaker = "somchai"
+    db.add_speaker(Speaker(id=speaker, kind="native"))
+    shas = {}
+    for member in pair.members:
+        sha = media_store.write(f"rendition:{pair.id}:{member}".encode(), ext="mp3")
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id=speaker)
+        shas[member] = sha
+    rendition_key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
+                                  artifact_sha=rendition_identity(shas))
+    db.append(port="assess", backend="rendition", key=rendition_key, subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),
+                      "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                      "params": {"members": shas}},
+             answer={"value": True})
+
+    syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
+                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
+    pair_derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                                   current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                                   sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                                   transient_cap=DEFAULT_TRANSIENT_CAP)
+
+    pair_cards = [c for c in rs.compiled_cards(pair_derivations) if c["family"] == "minimal_pair"]
+    assert len(pair_cards) == 2
+    member0 = next(c for c in pair_cards if c["stimulus_member"] == 0)
+    member1 = next(c for c in pair_cards if c["stimulus_member"] == 1)
+    assert member0["id"] != member1["id"]  # distinct anchors, same subject and kind
+
+    rs.append_gallery_note(db, subject=pair.id, card_id=member0["id"], kind="recognition",
+                           text="static on this one", shown=member0["shown"])
+
+    pair_cards = [c for c in rs.compiled_cards(pair_derivations) if c["family"] == "minimal_pair"]
+    member0 = next(c for c in pair_cards if c["stimulus_member"] == 0)
+    member1 = next(c for c in pair_cards if c["stimulus_member"] == 1)
+    assert [n["text"] for n in member0["notes"]] == ["static on this one"]
+    assert member1["notes"] == []  # never bleeds into the other member's card
+
+
+def test_compiled_cards_pair_card_names_both_recordings_and_stales_on_the_second(
+        db, media_store, w1, w2, pair, confusion):
+    """spec 5 section 1 r5 (minor fix): a minimal-pair Recognition card
+    plays two recordings -- this member's own, on `{{Audio}}` (front),
+    and the other member's, on `{{OtherAudio}}` (back). `shown` must
+    name both, and a note must go stale when EITHER changes, not just
+    the first (the bug: only the first `<audio>` match was kept, so
+    the second member's recording changing never staled a note).
+    """
+    from datetime import date
+
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+    from thai_syllabus.wiring import _DbMediaIndex
+
+    speaker = "somchai"
+    db.add_speaker(Speaker(id=speaker, kind="native"))
+    shas = {}
+    for member in pair.members:
+        sha = media_store.write(f"rendition:{pair.id}:{member}".encode(), ext="mp3")
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id=speaker)
+        shas[member] = sha
+
+    def _write_rendition(members_shas):
+        key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
+                            artifact_sha=rendition_identity(members_shas))
+        db.append(port="assess", backend="rendition", key=key, subject=pair.id,
+                 question={"role": "rendition-for-pair",
+                          "artifact_sha": rendition_identity(members_shas),
+                          "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                          "params": {"members": members_shas}},
+                 answer={"value": True})
+
+    _write_rendition(shas)
+
+    syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
+                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
+    pair_derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                                   current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                                   sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                                   transient_cap=DEFAULT_TRANSIENT_CAP)
+
+    pair_cards = [c for c in rs.compiled_cards(pair_derivations) if c["family"] == "minimal_pair"]
+    member0 = next(c for c in pair_cards if c["stimulus_member"] == 0)
+    assert member0["shown"]["recordings"] == [shas[w1.id], shas[w2.id]]
+
+    rs.append_gallery_note(db, subject=pair.id, card_id=member0["id"], kind="recognition",
+                           text="clear both voices", shown=member0["shown"])
+
+    # only the SECOND member's recording changes -- member 0's own sha
+    # (the first, on Audio) is untouched.
+    new_other_sha = media_store.write(f"rendition:{pair.id}:{w2.id}:v2".encode(), ext="mp3")
+    db.add_media(sha=new_other_sha, kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by",
+                acquired=date(2026, 1, 1), speaker_id=speaker)
+    _write_rendition({w1.id: shas[w1.id], w2.id: new_other_sha})
+
+    pair_cards = [c for c in rs.compiled_cards(pair_derivations) if c["family"] == "minimal_pair"]
+    member0 = next(c for c in pair_cards if c["stimulus_member"] == 0)
+    assert member0["shown"]["recordings"] == [shas[w1.id], new_other_sha]
+    assert member0["notes"][0]["stale"] is True
+
+
+def _seed_picture(db, media_store, subject, payload=b"pic"):
+    sha = media_store.write(payload, ext="jpg")
+    db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
+                origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
+    return sha
+
+
+def test_compiled_cards_lists_a_cards_notes_oldest_first_not_stale_while_matching(
+        derivations, db, media_store, w1):
+    """spec 5 section 1 r5 (b): the gallery card payload lists the
+    card's existing notes, oldest first, each with its text and time --
+    not stale while its own `shown` still matches what the card shows.
+    """
+    sha = _seed_picture(db, media_store, w1.id)
+    _judge(db, w1.id, "picture", sha, True)
+    reading_card = next(c for c in rs.compiled_cards(derivations)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    shown = reading_card["shown"]  # the exact value the client would echo back
+    assert shown["picture"] == sha
+
+    ts1 = rs.append_gallery_note(db, subject=w1.id, card_id=reading_card["id"], kind="reading",
+                                 text="clear picture", shown=shown)
+    ts2 = rs.append_gallery_note(db, subject=w1.id, card_id=reading_card["id"], kind="reading",
+                                 text="still good", shown=shown)
+
+    reading_card = next(c for c in rs.compiled_cards(derivations)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    assert reading_card["notes"] == [
+        {"text": "clear picture", "ts": ts1, "stale": False},
+        {"text": "still good", "ts": ts2, "stale": False},
+    ]
+
+
+def test_compiled_cards_marks_a_note_stale_once_a_different_picture_becomes_current_best(
+        derivations, db, media_store, w1):
+    """spec 5 section 1 r5: the note reads stale once the card no
+    longer shows what it named (F9) -- here, a learner "good" rating on
+    a second picture displaces the judged one the note was written
+    against.
+    """
+    sha_a = _seed_picture(db, media_store, w1.id, b"picture-a")
+    _judge(db, w1.id, "picture", sha_a, True)
+    reading_card = next(c for c in rs.compiled_cards(derivations)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    shown = reading_card["shown"]
+    assert shown["picture"] == sha_a
+    rs.append_gallery_note(db, subject=w1.id, card_id=reading_card["id"], kind="reading",
+                           text="looks right", shown=shown)
+
+    sha_b = _seed_picture(db, media_store, w1.id, b"picture-b")
+    _learner(db, w1.id, "picture", sha_b, "good")
+
+    reading_card = next(c for c in rs.compiled_cards(derivations)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    assert reading_card["shown"]["picture"] == sha_b
+    assert reading_card["notes"][0]["stale"] is True
+
+
+def test_compiled_cards_note_with_a_legacy_singular_recording_is_not_stale_when_unchanged(
+        derivations, db, media_store, w1):
+    """fix round 4, end to end through compiled_cards: a note whose row
+    carries the earlier singular `recording` key (round 1's own shape,
+    before round 3 switched to a `recordings` list) reads NOT stale
+    against a card still showing that same recording under the current
+    shape -- card_notes' own normalize_shown makes the comparison shape-
+    blind.
+    """
+    sha = media_store.write(b"w1-listening", ext="mp3")
+    db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1))
+    _judge(db, w1.id, "recording", sha, True)
+    listening_card = next(c for c in rs.compiled_cards(derivations)
+                          if c["kind"] == "listening" and c["id"] == w1.id)
+    assert listening_card["shown"]["recordings"] == [sha]
+
+    # append_gallery_note stores whatever `shown` mapping it's given
+    # verbatim -- this simulates a row an earlier server version wrote.
+    rs.append_gallery_note(db, subject=w1.id, card_id=listening_card["id"], kind="listening",
+                           text="clear audio", shown={"picture": None, "recording": sha,
+                                                       "text_sha": None})
+
+    listening_card = next(c for c in rs.compiled_cards(derivations)
+                          if c["kind"] == "listening" and c["id"] == w1.id)
+    assert listening_card["notes"][0]["stale"] is False
+
+
 def test_resolve_media_for_web_rewrites_img_and_sound_to_the_media_route():
     html = ('<img src="deadbeef.jpg">'
            '<div>[sound:cafef00d.mp3]</div>')
@@ -1038,6 +1250,127 @@ def test_resolve_media_for_web_rewrites_img_and_sound_to_the_media_route():
     assert '<audio controls src="/media/cafef00d"></audio>' in resolved
     assert ".jpg" not in resolved
     assert ".mp3" not in resolved
+
+
+def test_shown_of_reads_picture_and_recording_shas_off_the_resolved_html():
+    """spec 5 section 1 r5: `shown` is read off the card's own resolved
+    front/back media refs -- the same bytes the learner saw -- never
+    re-derived from current_best (a note names what rendered, not what
+    ranks highest right now).
+    """
+    entry = {"front_html": '<div class="thai">rice</div>',
+             "back_html": ('<img src="/media/pic123">'
+                          '<audio controls src="/media/rec456"></audio>'),
+             "family": "word", "subject": "rice"}
+    assert rs._shown_of(entry) == {"picture": "pic123", "recordings": ["rec456"], "text_sha": None}
+
+
+def test_shown_of_collects_every_recording_in_document_order():
+    """spec 5 section 1 r5 (minor fix): a minimal_pair Recognition card
+    plays two recordings -- its own member's on `{{Audio}}` (front) and
+    the other member's on `{{OtherAudio}}` (back) -- both must be named,
+    front to back, not just the first found.
+    """
+    entry = {"front_html": '<audio controls src="/media/own-rec"></audio>',
+             "back_html": '<audio controls src="/media/other-rec"></audio>',
+             "family": "minimal_pair", "subject": "pair-id"}
+    assert rs._shown_of(entry)["recordings"] == ["own-rec", "other-rec"]
+
+
+def test_shown_of_has_no_artifacts_when_the_card_shows_neither():
+    entry = {"front_html": "<div>x</div>", "back_html": "<div>y</div>",
+             "family": "grapheme", "subject": "k"}
+    assert rs._shown_of(entry) == {"picture": None, "recordings": [], "text_sha": None}
+
+
+def test_shown_of_carries_text_sha_for_a_sentence_card():
+    """A sentence family's entry["subject"] IS its text_sha already
+    (compile.py tags the sentence family by text_sha) -- carried straight
+    through, no recomputation.
+    """
+    entry = {"front_html": "", "back_html": "", "family": "sentence", "subject": "sentence-sha"}
+    assert rs._shown_of(entry)["text_sha"] == "sentence-sha"
+
+
+def test_is_stale_false_when_the_note_named_nothing():
+    # a pre-r5 row (card_notes' own {} default) made no claim -- nothing
+    # to check it against, so it never goes stale on this account.
+    assert rs._is_stale({}, {"picture": "p1", "recordings": [], "text_sha": None}) is False
+
+
+def test_is_stale_true_once_a_different_picture_is_shown():
+    recorded = {"picture": "p1", "recordings": [], "text_sha": None}
+    current = {"picture": "p2", "recordings": [], "text_sha": None}
+    assert rs._is_stale(recorded, current) is True
+
+
+def test_is_stale_false_while_the_shown_artifacts_still_match():
+    shown = {"picture": "p1", "recordings": ["r1", "r2"], "text_sha": None}
+    assert rs._is_stale(shown, dict(shown)) is False
+
+
+def test_is_stale_true_once_only_the_second_recording_changes():
+    """spec 5 section 1 r5 (minor fix): the first recording is
+    unchanged -- only the second (a minimal_pair card's OtherAudio)
+    differs -- and that alone must still mark the note stale.
+    """
+    recorded = {"picture": None, "recordings": ["own-rec", "other-rec"], "text_sha": None}
+    current = {"picture": None, "recordings": ["own-rec", "a-new-other-rec"], "text_sha": None}
+    assert rs._is_stale(recorded, current) is True
+
+
+def test_is_stale_treats_a_normalized_legacy_recording_as_unchanged():
+    """fix round 4, the reviewer's exact reproduction: a legacy `shown`
+    naming a picture and a singular `recording` must not read stale
+    against a current `shown` naming the same picture and the same
+    recording under the current `recordings`-list shape -- once
+    record.normalize_shown has run (card_notes' own contract; _is_stale
+    itself only ever compares already-normalized shapes).
+    """
+    recorded = record_mod.normalize_shown({"picture": "p", "recording": "r"})
+    current = {"picture": "p", "recordings": ["r"], "text_sha": None}
+    assert rs._is_stale(recorded, current) is False
+
+
+def test_is_stale_true_when_a_legacy_recording_actually_changed():
+    recorded = record_mod.normalize_shown({"picture": "p", "recording": "r"})
+    current = {"picture": "p", "recordings": ["r2"], "text_sha": None}
+    assert rs._is_stale(recorded, current) is True
+
+
+def test_validated_shown_accepts_a_mapping_of_hex_shas_and_nones():
+    shown = {"picture": "a" * 64, "recordings": [], "text_sha": None,
+            "syllabus_state_id": "b" * 64}
+    assert rs._validated_shown(shown) == shown
+
+
+def test_validated_shown_accepts_a_list_of_hex_shas():
+    shown = {"recordings": ["a" * 64, "b" * 64]}
+    assert rs._validated_shown(shown) == shown
+
+
+def test_validated_shown_is_empty_when_absent():
+    assert rs._validated_shown(None) == {}
+
+
+def test_validated_shown_raises_on_a_non_hex_string():
+    with pytest.raises(ValueError):
+        rs._validated_shown({"picture": "not-a-64-hex-sha"})
+
+
+def test_validated_shown_raises_on_a_list_containing_a_non_hex_value():
+    with pytest.raises(ValueError):
+        rs._validated_shown({"recordings": ["a" * 64, "not-a-64-hex-sha"]})
+
+
+def test_validated_shown_raises_on_a_nested_value():
+    with pytest.raises(ValueError):
+        rs._validated_shown({"picture": {"nested": "object"}})
+
+
+def test_validated_shown_raises_on_a_non_mapping():
+    with pytest.raises(ValueError):
+        rs._validated_shown(["not", "a", "mapping"])
 
 
 def test_append_gallery_note_appends_learner_row_not_a_file(db):
@@ -1049,6 +1382,23 @@ def test_append_gallery_note_appends_learner_row_not_a_file(db):
     assert rows[0].answer == {"kind": "rating", "rating": None, "note": "lovely bowl of rice"}
     assert rows[0].key == "learner:t-rice:card-flag"
     assert rows[0].question["kind"] == "card-flag"  # derivations.directed()'s own test
+    assert rows[0].question["shown"] == {}  # no `shown` passed -- names nothing (spec 5 r5)
+
+
+def test_append_gallery_note_question_carries_shown(db):
+    """spec 5 section 1 r5: a gallery note records the card as shown --
+    the artifact shas it displayed, the sentence text_sha for a sentence
+    card, and the syllabus state id -- in its own question, never the
+    answer (the answer stays the plain {kind, rating, note} shape every
+    other reader of a card-flag row already expects).
+    """
+    shown = {"picture": "sha-w1", "recordings": [], "text_sha": None,
+            "syllabus_state_id": "state-1"}
+    rs.append_gallery_note(db, subject="rice", card_id="rice", kind="reading",
+                           text="nice picture", shown=shown)
+    rows = db.assessments_of("rice")
+    assert rows[0].question["shown"] == shown
+    assert rows[0].answer == {"kind": "rating", "rating": None, "note": "nice picture"}
 
 
 def test_a_gallery_note_on_a_pair_member_card_directs_the_pair_not_the_member(db, pair):
@@ -1355,6 +1705,157 @@ def test_http_stats_endpoint(live_server):
     assert status == 200
     stats = json.loads(body)
     assert "session" in stats and "coverage" in stats
+
+
+def test_http_api_cards_lists_shown_per_card(live_server, media_store, w1):
+    """spec 5 section 1 r5: the gallery card payload carries `shown` --
+    this exact card's own artifacts/state -- for the client to echo
+    back verbatim on /api/note.
+    """
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    sha = media_store.write(b"w1-picture", ext="jpg")
+    verify_db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
+                        origin="https://example.com/x.jpg", licence="cc0",
+                        acquired=date(2026, 1, 1))
+    _judge(verify_db, w1.id, "picture", sha, True)
+
+    _status, body = _get(port, "/api/cards")
+    reading_card = next(c for c in json.loads(body)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    assert reading_card["shown"]["picture"] == sha
+    assert isinstance(reading_card["shown"]["syllabus_state_id"], str)
+    assert reading_card["shown"]["syllabus_state_id"]
+
+
+def test_http_note_records_the_posted_shown_verbatim_and_lists_it_not_stale(
+        live_server, media_store, w1):
+    """spec 5 section 1 r5 end to end through the handler: /api/note
+    records the client's own posted `shown` (the C1 fix -- never a
+    server-side recompute), then /api/cards lists the note back, not
+    stale, since nothing has changed.
+    """
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    sha = media_store.write(b"w1-picture", ext="jpg")
+    verify_db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
+                        origin="https://example.com/x.jpg", licence="cc0",
+                        acquired=date(2026, 1, 1))
+    _judge(verify_db, w1.id, "picture", sha, True)
+
+    _status, body = _get(port, "/api/cards")
+    reading_card = next(c for c in json.loads(body)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+
+    status, body = _post(port, "/api/note",
+                         {"subject": reading_card["subject"], "card_id": reading_card["id"],
+                          "kind": "reading", "text": "clear picture",
+                          "shown": reading_card["shown"]})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+
+    saved = verify_db.assessments_of(w1.id)[-1]
+    assert saved.question["shown"] == reading_card["shown"]
+
+    _status, body = _get(port, "/api/cards")
+    reading_card = next(c for c in json.loads(body)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    assert reading_card["notes"] == [{"text": "clear picture", "ts": saved.ts, "stale": False}]
+
+
+def test_http_note_records_the_shown_the_page_rendered_not_a_later_current_best(
+        live_server, media_store, w1):
+    """C1 regression: reproduced as picture A shown, B rated good before
+    the save, and a server-side recompute recording B -- /api/note must
+    record the `shown` the client echoes back from the page it actually
+    rendered, never recompute against current_best at save time.
+    """
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    sha_a = media_store.write(b"picture-a", ext="jpg")
+    verify_db.add_media(sha=sha_a, kind="picture", ext="jpg", source="openverse",
+                        origin="https://example.com/a.jpg", licence="cc0",
+                        acquired=date(2026, 1, 1))
+    _judge(verify_db, w1.id, "picture", sha_a, True)
+
+    _status, body = _get(port, "/api/cards")
+    reading_card = next(c for c in json.loads(body)
+                        if c["kind"] == "reading" and c["id"] == w1.id)
+    assert reading_card["shown"]["picture"] == sha_a
+    rendered_shown = reading_card["shown"]
+
+    # a second picture becomes current-best BEFORE the note is saved --
+    # the page the learner is looking at still shows sha_a.
+    sha_b = media_store.write(b"picture-b", ext="jpg")
+    verify_db.add_media(sha=sha_b, kind="picture", ext="jpg", source="openverse",
+                        origin="https://example.com/b.jpg", licence="cc0",
+                        acquired=date(2026, 1, 1))
+    _learner(verify_db, w1.id, "picture", sha_b, "good")
+
+    status, body = _post(port, "/api/note",
+                         {"subject": reading_card["subject"], "card_id": reading_card["id"],
+                          "kind": "reading", "text": "clear picture", "shown": rendered_shown})
+    assert status == 200
+    saved = verify_db.assessments_of(w1.id)[-1]
+    assert saved.question["shown"]["picture"] == sha_a  # what the page showed, not sha_b
+
+
+def test_http_note_refuses_a_shown_value_that_is_not_a_hex_sha(live_server, w1):
+    """fix round 2 ruling: a *present* but malformed `shown` is a bad
+    request -- refused with 400 and no row appended -- never silently
+    stored or emptied (round 1's leniency let a garbage claim through
+    while telling the client it had saved).
+    """
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading",
+                          "text": "hmm", "shown": {"picture": "not-a-64-hex-sha"}})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    assert json.loads(body)["error"]
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []  # no row appended
+
+
+def test_http_note_refuses_a_nested_object_in_shown(live_server, w1):
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading",
+                          "text": "hmm", "shown": {"picture": {"nested": "object"}}})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []  # no row appended
+
+
+def test_http_note_records_empty_shown_when_the_field_is_absent(live_server, w1):
+    """The one lenient case: no `shown` in the POST body at all (an old
+    client, or a card with no media) -- {}, a note naming nothing, not
+    a 400.
+    """
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading", "text": "hmm"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    verify_db = SyllabusDb(db_path)
+    saved = verify_db.assessments_of(w1.id)[-1]
+    assert saved.question["shown"] == {}
+
+
+def test_http_note_records_a_valid_shown_mapping_verbatim(live_server, w1):
+    port, db_path = live_server
+    sha_a, sha_b, sha_c = "a" * 64, "b" * 64, "c" * 64
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading", "text": "hmm",
+                          "shown": {"picture": sha_a, "recordings": [sha_b, sha_c],
+                                   "text_sha": None, "syllabus_state_id": "d" * 64}})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    verify_db = SyllabusDb(db_path)
+    saved = verify_db.assessments_of(w1.id)[-1]
+    assert saved.question["shown"] == {"picture": sha_a, "recordings": [sha_b, sha_c],
+                                       "text_sha": None, "syllabus_state_id": "d" * 64}
 
 
 # --- the screen derives what the run derives (spec 5 section 3) ------------

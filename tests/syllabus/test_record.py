@@ -17,6 +17,7 @@ from thai_syllabus.record import (
     PHRASE_SUBJECT,
     SentenceDraft,
     asks_since,
+    card_notes,
     cost_since,
     fetches_since,
     candidate_shas,
@@ -31,6 +32,7 @@ from thai_syllabus.record import (
     latest_rating,
     learner_ratings,
     merge_drafts,
+    normalize_shown,
     parse_drafts,
     parse_no_fit,
     parse_phrases,
@@ -72,6 +74,88 @@ def test_rows_for_ignores_a_row_with_no_matching_kind(cache):
     cache.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="k1"),
                 "rice", {"kind": "recording"}, {"items": []}, 0)
     assert rows_for(cache, "rice", "picture") == []
+
+
+def test_card_notes_selects_by_anchor_and_card_kind_oldest_first(cache):
+    """spec 5 section 1 r5 (C2 fix): a card's notes are its own
+    card-flag rows, scoped to one (anchor, card_kind) pair -- a word
+    note's several card kinds (reading, production) share one subject
+    and must not bleed into each other, and a minimal-pair note's two
+    member cards share both subject AND card_kind ("recognition") but
+    carry distinct anchors (compile.py's MemberKey) that must not bleed
+    into each other either. Oldest first, each carrying its own `shown`
+    back for staleness.
+    """
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1",
+                 "card_kind": "reading", "shown": {"picture": "sha-a"}},
+                {"kind": "rating", "rating": None, "note": "first note"}, 0)
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1",
+                 "card_kind": "production", "shown": {"picture": "sha-a"}},
+                {"kind": "rating", "rating": None, "note": "wrong card kind"}, 0)
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c2", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c2",
+                 "card_kind": "reading", "shown": {"picture": "sha-a"}},
+                {"kind": "rating", "rating": None, "note": "wrong anchor"}, 0)
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1",
+                 "card_kind": "reading", "shown": {"picture": "sha-b"}},
+                {"kind": "rating", "rating": None, "note": "second note"}, 0)
+    rows = cache.assessments_of("rice")
+    notes = card_notes(rows, "c1", "reading")
+    assert [n["text"] for n in notes] == ["first note", "second note"]
+    assert notes[0]["shown"] == {"picture": "sha-a"}
+    assert notes[0]["ts"] < notes[1]["ts"]
+
+
+def test_card_notes_normalizes_a_legacy_singular_recording_into_a_recordings_list(cache):
+    """fix round 4: a row written under the earlier singular `recording`
+    key must not be compared against the current `recordings`-list
+    shape as if the two were different claims -- record.card_notes
+    normalizes it on the way out: `recording` becomes `recordings:
+    [value]`, and the legacy key is dropped, so every caller (reviewserver.
+    py's `_is_stale` included) only ever sees one shape.
+    """
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1", "card_kind": "reading",
+                 "shown": {"picture": "p1", "recording": "r1"}},
+                {"kind": "rating", "rating": None, "note": "legacy note"}, 0)
+    notes = card_notes(cache.assessments_of("rice"), "c1", "reading")
+    assert notes[0]["shown"] == {"picture": "p1", "recordings": ["r1"]}
+
+
+def test_card_notes_normalizes_a_legacy_recording_of_none_to_an_empty_list(cache):
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1", "card_kind": "reading",
+                 "shown": {"picture": "p1", "recording": None}},
+                {"kind": "rating", "rating": None, "note": "legacy note"}, 0)
+    notes = card_notes(cache.assessments_of("rice"), "c1", "reading")
+    assert notes[0]["shown"] == {"picture": "p1", "recordings": []}
+
+
+def test_normalize_shown_leaves_the_current_shape_unchanged(cache):
+    shown = {"picture": "p1", "recordings": ["r1", "r2"], "text_sha": None}
+    assert normalize_shown(shown) == shown
+
+
+def test_normalize_shown_prefers_an_existing_recordings_list_over_a_stray_recording_key(cache):
+    # both present is not a shape any writer produces, but normalize_shown
+    # never silently drops information it can't reconcile -- it keeps the
+    # explicit `recordings` list and still discards the legacy key.
+    assert normalize_shown({"recording": "r1", "recordings": ["r2"]}) == {"recordings": ["r2"]}
+
+
+def test_card_notes_defaults_shown_to_empty_mapping_when_absent(cache):
+    """A card-flag row written before spec 5 r5 (no `shown` field at
+    all) folds to {}, not a KeyError -- it named nothing, so nothing to
+    check it against later.
+    """
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1", "card_kind": "reading"},
+                {"kind": "rating", "rating": None, "note": "a pre-r5 note"}, 0)
+    notes = card_notes(cache.assessments_of("rice"), "c1", "reading")
+    assert notes == [{"text": "a pre-r5 note", "ts": notes[0]["ts"], "shown": {}}]
 
 
 def test_source_asks_excludes_audiofetch_too(cache):

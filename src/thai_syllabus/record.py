@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from .cachekeys import RunReportKey
 from .entities import Clauses, Sentence, Word, clauses_from_json, text_sha
@@ -35,7 +36,7 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "can
           "DRAFT_SUBJECT", "SentenceDraft",
           "parse_drafts", "parse_no_fit", "merge_drafts", "draft_sentence", "drafts_in",
           "sentence_drafts",
-          "excluded_candidates", "card_flags",
+          "excluded_candidates", "card_flags", "card_notes", "normalize_shown",
           "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in",
           "PHRASE_SUBJECT"]
 
@@ -343,6 +344,61 @@ def card_flags(rows: Sequence[Answer]) -> list[str]:
         if label not in seen:
             seen.add(label)
             out.append(label)
+    return out
+
+
+def normalize_shown(shown: Mapping[str, Any]) -> dict[str, Any]:
+    """A gallery note's own `shown`, in the current shape (spec 5
+    section 1 r5, fix round 4): a legacy singular `recording` value
+    (the shape round 1 wrote, before round 3 switched a card's own
+    recordings to a list) becomes `recordings: [value]` (`[]` for a
+    `recording` of None), and the legacy key is always dropped -- an
+    already-list `recordings`, present alongside a stray `recording`,
+    is kept as-is rather than overwritten. Without this, comparing a
+    `recording`-shaped row against a `recordings`-shaped "what the card
+    shows now" reads every field different on the recording account
+    alone, even when nothing about the recording actually changed --
+    `card_notes` applies this to every row's `shown` on the way out, so
+    every caller (reviewserver.py's `_is_stale` included) only ever
+    sees the one shape.
+    """
+    if not isinstance(shown, Mapping):
+        return {}
+    result = dict(shown)
+    if "recording" in result:
+        legacy = result.pop("recording")
+        if "recordings" not in result:
+            result["recordings"] = [legacy] if legacy is not None else []
+    return result
+
+
+def card_notes(rows: Sequence[Answer], anchor: str, card_kind: str) -> list[dict[str, Any]]:
+    """One card's own notes (spec 5 section 1 r5): every card-flag row
+    among `rows` whose question["anchor"] == `anchor` AND
+    question["card_kind"] == `card_kind`, oldest first, each as
+    {"text", "ts", "shown"} -- `shown` is the artifacts (and sentence
+    text_sha, syllabus state id) that row's own append named the card
+    as displaying, {} for a row written before that field existed (it
+    named nothing, so reviewserver.py's staleness check has nothing to
+    compare and never flags it), run through `normalize_shown` so a
+    legacy row's singular `recording` never reads different from the
+    current `recordings`-list shape on that account alone.
+
+    Both `anchor` and `card_kind` are required: a subject alone does
+    not identify one card -- a word note's several card kinds (reading,
+    production) share a subject, and a minimal-pair note's two member
+    cards share BOTH a subject and a card_kind ("recognition"), told
+    apart only by their own per-card anchor (compile.py's MemberKey,
+    the same `card_id` append_gallery_note already records).
+    """
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if (r.question.get("kind") != "card-flag" or r.question.get("card_kind") != card_kind
+                or r.question.get("anchor") != anchor):
+            continue
+        answer = r.answer if isinstance(r.answer, Mapping) else {}
+        out.append({"text": answer.get("note") or "", "ts": r.ts,
+                    "shown": normalize_shown(r.question.get("shown") or {})})
     return out
 
 
