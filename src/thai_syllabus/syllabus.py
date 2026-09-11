@@ -10,7 +10,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .cachekeys import JudgeKey
 from .entities import (
@@ -24,6 +24,9 @@ from .ports import (
 from .profile import Profile
 from .rulebook import RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
+
+if TYPE_CHECKING:
+    from .attempts import VoiceConstraint
 
 
 def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
@@ -138,7 +141,7 @@ class Syllabus:
         """
         return any(t.skill == "productive" for t in self.fill_set(sentence))
 
-    def pair_voice_constraint(self, pair_id: PairId) -> str:
+    def pair_voice_constraint(self, pair_id: PairId) -> "VoiceConstraint":
         """The strictest of the members' voice constraints, a rendition
         speaking for every member at once: "male" if any member serves a
         productive Target, else "any".
@@ -289,11 +292,19 @@ class Syllabus:
         this against rather than re-deriving. () when the sentence uses
         no targeted word at all (`last_used_word` would raise).
         """
+        return self._candidate_targets_over(sentence, frozenset(sentence.words))
+
+    def _candidate_targets_over(self, sentence: Sentence, used: frozenset[WordId]
+                                ) -> tuple[Target, ...]:
+        """`candidate_targets`'s own body, over a `used` (frozenset(
+        sentence.words)) the caller already built -- `_compute_fill_set`
+        needs that same set for its own sentence-level gate and passes
+        it straight through instead of building it twice.
+        """
         try:
             last_used_word = self.last_used_word(sentence)
         except ValueError:
             return ()
-        used = frozenset(sentence.words)
         admits_learner = self.marking(sentence) <= {self.profile.learner_speaker}
         return tuple(sorted(
             (t for t in self.targets
@@ -383,7 +394,7 @@ class Syllabus:
         if not used <= self._word_target_positions.keys():
             return ()
 
-        candidates = self.candidate_targets(sentence)
+        candidates = self._candidate_targets_over(sentence, used)
         if not candidates:
             return ()
 

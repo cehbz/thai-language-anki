@@ -1173,6 +1173,13 @@ def test_the_rendition_key_identifies_the_member_set_not_its_order():
     assert one.subject == "p1"
 
 
+def test_the_rendition_key_encodes_check_version_subject_and_identity():
+    backend = _rendition({})
+    members = {"near": "a", "far": "b"}
+    key = backend.cache_key(_rendition_question(members))
+    assert key.encode() == f"mech:rendition:v1:p1:{rendition_identity(members)}"
+
+
 def test_a_rendition_with_no_members_cannot_be_prepared():
     with pytest.raises(PreparationError):
         _rendition({}).fetch(_rendition_question({}))

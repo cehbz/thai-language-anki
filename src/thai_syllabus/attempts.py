@@ -30,7 +30,7 @@ from datetime import date
 from typing import Any, Literal
 
 from . import record
-from .assessor import _UNTRUSTED, AssessQuestion, Assessor, Excluded, PreparedQuestion, _field
+from .assessor import UNTRUSTED, AssessQuestion, Assessor, Excluded, PreparedQuestion, deck_field
 from .authority import role_for
 from .cachekeys import AttemptOutcomeKey, RenditionAskKey, rendition_identity
 from .derivations import (
@@ -58,6 +58,7 @@ from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, Transport
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
+           "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "DEFAULT_SENTENCE_MAX_CLAUSES"]
@@ -88,6 +89,11 @@ def sources_for(kind: str) -> tuple[str, ...]:
 
 
 SubjectKind = Literal["word", "pair", "grapheme", "sentence"]
+
+# A recording's or rendition's voice constraint (spec 1 section 1 (r10);
+# spec 3 section 5): "male"/"female" admit that sex's own pool alone,
+# "any" admits both.
+VoiceConstraint = Literal["male", "female", "any"]
 
 # The three outcome values an attempt-outcome row's answer["outcome"] carries.
 Outcome = Literal["candidates", "nothing", "transient-failure"]
@@ -508,31 +514,37 @@ def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
 
 # --- recordings (Word) and sentence recordings ------------------------------
 
-def _voice_constraint(ctx: Sourcing, need: Need) -> Literal["male", "female", "any"]:
+def _voice_constraint(ctx: Sourcing, need: Need) -> VoiceConstraint:
     """The recording's voice constraint follows the sentence's speaker
     marking (spec 1 section 1 (r10)): "female" when the marking is
     `{"female"}`, "male" when it is `{"male"}`, else "male" where the
     recording plays on a productive back (E2, spec 3 section 5) -- the
     aggregate decides what serves a productive Target -- and "any"
     otherwise. A marking holding both sexes cannot reach here:
-    Syllabus.check_sentence refuses such a sentence.
+    Syllabus.check_sentence refuses such a sentence. `serves` (whether the
+    recording plays on a productive back) is read only once the marking
+    itself does not decide -- the marking checks first.
     """
     if need.subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(need.subject)
         marking = ctx.syllabus.marking(sentence)
-        serves = ctx.syllabus.sentence_serves_productive(sentence)
+
+        def serves() -> bool:
+            return ctx.syllabus.sentence_serves_productive(sentence)
     else:
         word = _word_of(ctx, need.subject)
         marking = frozenset({word.speaker}) - {None}
-        serves = ctx.syllabus.serves_productive(word.id)
+
+        def serves() -> bool:
+            return ctx.syllabus.serves_productive(word.id)
     if marking == frozenset({"female"}):
         return "female"
     if marking == frozenset({"male"}):
         return "male"
-    return "male" if serves else "any"
+    return "male" if serves() else "any"
 
 
-def _pool(ctx: Sourcing, constraint: str) -> list[str]:
+def _pool(ctx: Sourcing, constraint: VoiceConstraint) -> list[str]:
     """The voices a constraint admits: one sex's pool under "male" or
     "female", both under "any" (spec 3 section 5)."""
     voices = (list(ctx.voices.get("male", ())) + list(ctx.voices.get("female", ()))
@@ -565,7 +577,7 @@ def _forvo_speaker(item: Mapping) -> Speaker:
 
 def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend],
                   *, subject_kind: SubjectKind = "word",
-                  constraint: str = "any", fresh: bool = False) -> list[Mapping]:
+                  constraint: VoiceConstraint = "any", fresh: bool = False) -> list[Mapping]:
     """One lookup, cached forever, appended under `subject`. Under a
     "male" or "female" constraint only speakers Forvo states are that
     sex are admitted (spec 1 section 1 (r10); E2: a productive back
@@ -681,7 +693,7 @@ def _forvo_limit_refusal(e: FetchRefused) -> bool:
 
 
 def _relookup_once(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend], *,
-                   subject_kind: SubjectKind, constraint: str,
+                   subject_kind: SubjectKind, constraint: VoiceConstraint,
                    memo: dict[str, Sequence[Mapping]]) -> Sequence[Mapping]:
     """One fresh lookup per subject within an attempt, memoized in `memo`."""
     if subject not in memo:
@@ -841,7 +853,8 @@ def _check_members(ctx: Sourcing, members: Mapping[str, tuple[str, Speaker]],
             if (v := result.resolved.get(ctx.assessor.key_of("mechanical", q))) is not None}
 
 
-def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
+def _forvo_rendition(ctx: Sourcing, pair, words, constraint: VoiceConstraint,
+                     spend: dict[str, Spend],
                      fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
     """The intersection of the members' lookups by username: the first
     speaker who said every member. Every member's lookup runs before any
@@ -869,7 +882,8 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[st
     return {}
 
 
-def _tts_rendition(ctx: Sourcing, pair, words, constraint: str, spend: dict[str, Spend],
+def _tts_rendition(ctx: Sourcing, pair, words, constraint: VoiceConstraint,
+                   spend: dict[str, Spend],
                    fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
     """One voice across the members. A member's synthesis that fails on
     the wire raises out of the loop; a member's synthesis the service
@@ -943,7 +957,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     the 5 s recording cap). When `refused` (derivations.refused_drafts) is
     non-empty, a block lists those texts as sentences not to propose
     again, each with the verdict's evidence delimited the way the
-    assessor prompts delimit deck fields (assessor._field, over the
+    assessor prompts delimit deck fields (assessor.deck_field, over the
     untrusted-data notice given once before the block), before the
     output-format sentence (spec 3 r19 section 5).
     """
@@ -966,9 +980,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     if introducible_lines:
         sections += ("Introducible (at most one per sentence):\n"
                     + "\n".join(introducible_lines) + "\n")
-    refused_lines = (f"- {text} — {_field(evidence)}" if evidence else f"- {text}"
+    refused_lines = (f"- {text} — {deck_field(evidence)}" if evidence else f"- {text}"
                      for text, evidence in refused)
-    refused_block = (f"Do not propose these sentences; each failed review:\n{_UNTRUSTED}\n"
+    refused_block = (f"Do not propose these sentences; each failed review:\n{UNTRUSTED}\n"
                      + "\n".join(refused_lines) + "\n"
                      if refused else "")
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "

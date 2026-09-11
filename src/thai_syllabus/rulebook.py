@@ -91,6 +91,12 @@ GRAPHEME_KEYWORD_CONTAINS_SYMBOL = Rule(id="grapheme/keyword-contains-symbol",
 # adopted sentence already contains. Flags every (sentence, target) where
 # the sentence uses the target's word (its clauses name it) in the right
 # voice but the target is not in the sentence's fill set (Syllabus.fill_set).
+#
+# Clauses 1-2 (Syllabus.candidate_targets) decide which Targets are
+# candidates at all, before clause 3 (above) ever runs: the target's word
+# among the sentence's own words, and -- for a productive Target -- r10's
+# own conditions (spec 1 section 1): the sentence's last used word must be
+# the target's own word, and its marking must admit the learner's voice.
 
 def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []

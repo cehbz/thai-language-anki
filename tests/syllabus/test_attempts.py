@@ -10,10 +10,11 @@ from datetime import date
 import pytest
 from PIL import Image as PILImage
 
-from thai_syllabus.assessor import (Assessor, JudgeBackend, JudgeUnreachable,
-                                    RawVerdict, RenditionBackend, _UNTRUSTED, _field)
-from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _sentence_prompt, assess_first,
-                                    attempt, current_best_of, sentence_attempt, sources_for)
+from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
+                                    RawVerdict, RenditionBackend, deck_field)
+from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _pool, _sentence_prompt,
+                                    assess_first, attempt, current_best_of, sentence_attempt,
+                                    sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
@@ -697,6 +698,13 @@ def test_an_unmarked_receptive_only_sentence_stays_any(tmp_path):
     ctx, tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]))
     attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
     assert tts.voices == [pick_voice(sentence.text_sha, list(_MALE) + list(_FEMALE))]
+
+
+def test_pool_raises_on_an_empty_pool(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx.voices = {"male": _MALE, "female": ()}
+    with pytest.raises(ValueError, match="female"):
+        _pool(ctx, "female")
 
 
 # --- rendition: one answer under the pair, one speaker across the members ---
@@ -2324,8 +2332,8 @@ def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
     prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กินข้าว", "too formal")],
                               sentence_max_clauses=2)   # กินข้าว: eat rice
     assert ("Do not propose these sentences; each failed review:\n"
-           f"{_UNTRUSTED}\n"
-           f"- กินข้าว — {_field('too formal')}") in prompt
+           f"{UNTRUSTED}\n"
+           f"- กินข้าว — {deck_field('too formal')}") in prompt
     assert prompt.index("Do not propose these sentences") < prompt.index(
         "Write each sentence as clauses")
 
@@ -2334,7 +2342,7 @@ def test_sentence_prompt_lists_each_refused_text_and_omits_the_block_when_empty(
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กิน", "e1"), ("ข้าว", "e2")],
                               sentence_max_clauses=2)   # กิน: eat, ข้าว: rice
-    assert f"- กิน — {_field('e1')}" in prompt and f"- ข้าว — {_field('e2')}" in prompt
+    assert f"- กิน — {deck_field('e1')}" in prompt and f"- ข้าว — {deck_field('e2')}" in prompt
     assert "Do not propose these sentences" not in _sentence_prompt(
         syllabus, list(syllabus.targets), sentence_max_clauses=2)
 
