@@ -30,6 +30,16 @@ ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
 LearnerNoteKey(anchor, sha(text)) -- re-harvesting unchanged text is a
 key hit, edited text is a new key, a cleared field appends nothing.
+
+`_connect_readonly` registers a no-op stand-in for Anki's own `unicase`
+collation on every connection it opens. None of this module's own queries
+order or filter on a collated text column, so nothing here needs
+`unicase` to mean anything in particular -- the registration is plain
+insurance against Python's sqlite3 (unlike Anki's own Rust backend, which
+registers `unicase` itself) raising "no such collation sequence" the
+moment a query's WHERE or ORDER BY touches a column an index on
+`notes`/`cards` declares `collate unicase` over, which today's queries
+happen not to do, but nothing enforces that they never will.
 """
 from __future__ import annotations
 
@@ -78,9 +88,29 @@ class ImportReport:
     # (kind, identity, reason) -- kind in {"revlog", "flag", "review_note"}
 
 
+def _unicase_nocase(a: str, b: str) -> int:
+    """No-op stand-in (task 1 brief) for Anki's own `unicase` collation:
+    a plain case-insensitive ordering. Registered on every read-only
+    connection so preparing a statement over the live collection's own
+    tables -- several of Anki's own indexes declare `collate unicase` --
+    doesn't raise "no such collation sequence" under Python's sqlite3,
+    which (unlike Anki's Rust backend) never registers it itself. Import
+    never sorts or filters through this collation, so the ordering it
+    implements doesn't matter, only that one is registered; a no-op
+    lambda registered here is simpler and doesn't need write access,
+    unlike copying the file (and its -wal/-shm siblings) into a temp dir
+    first, and it keeps every existing (schema-11 fixture) test green
+    since those never declare the collation at all.
+    """
+    la, lb = a.lower(), b.lower()
+    return (la > lb) - (la < lb)
+
+
 def _connect_readonly(path: str | Path) -> sqlite3.Connection:
     resolved = Path(path).resolve()
-    return sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+    conn.create_collation("unicase", _unicase_nocase)
+    return conn
 
 
 def _tag_value(tags: list[str], prefix: str) -> str | None:
@@ -190,9 +220,48 @@ class _Collection:
     cards: dict[int, dict[str, Any]]     # card id -> {nid, ord, flags}
 
 
+def _load_models_from_tables(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Notetypes from schema 18's own notetypes/fields/templates tables
+    (task 1 brief), reshaped into the same {mid: {"flds": [...], "tmpls":
+    [...]}} structure `col.models` JSON gave the legacy (schema <18)
+    branch below -- so every downstream reader (_field_index,
+    _identify_card) is a single implementation over either shape.
+    """
+    models: dict[str, Any] = {}
+    for ntid, name in conn.execute("select id, name from notetypes"):
+        models[str(ntid)] = {"name": name, "flds": [], "tmpls": []}
+    for ntid, ord_, name in conn.execute(
+            "select ntid, ord, name from fields order by ntid, ord"):
+        models[str(ntid)]["flds"].append({"name": name, "ord": ord_})
+    for ntid, ord_, name in conn.execute(
+            "select ntid, ord, name from templates order by ntid, ord"):
+        models[str(ntid)]["tmpls"].append({"name": name})
+    return models
+
+
+def _load_models(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Anki's current collection schema (task 1 brief, verified against a
+    live collection.anki2) moved notetypes out of col.models JSON into
+    their own notetypes/fields/templates tables as of schema 18; col.ver
+    is that live collection's own schema-version marker, and col.models
+    is '' there. Branch on `ver`: >=18 (or unset -- a schema-18 collection
+    that, unlike this codebase's own synthetic fixtures, leaves it null)
+    reads the tables; any other ver reads col.models as JSON, unchanged,
+    the .apkg-export shape the existing tests build. A ver<18 collection
+    whose own col.models is somehow empty (round-1 review: routing that
+    to the tables path instead raised a confusing "no such table:
+    notetypes") is left to fall through to json.loads('') and its own
+    JSONDecodeError -- a real but out-of-scope malformed-collection case,
+    not one this task's schema-18 support needs to diagnose.
+    """
+    ver, models_json = conn.execute("select ver, models from col").fetchone()
+    if ver is None or ver >= 18:
+        return _load_models_from_tables(conn)
+    return json.loads(models_json)
+
+
 def _load_collection(conn: sqlite3.Connection) -> _Collection:
-    (models_json,) = conn.execute("select models from col").fetchone()
-    models = json.loads(models_json)
+    models = _load_models(conn)
     notes: dict[int, dict[str, Any]] = {}
     for nid, mid, flds, tags in conn.execute("select id, mid, flds, tags from notes"):
         notes[nid] = {"mid": mid, "flds": flds.split("\x1f"),
@@ -397,8 +466,14 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
             skipped += 1
             skips.append(("review_note", f"note {note_id}", "already harvested (unchanged text)"))
             continue
+        # spec 4 r8 section 4: the harvested row records the CompileId the
+        # note was written against -- a fact of the row, not of its
+        # LearnerNoteKey identity (anchor, text_sha alone). "" when the
+        # model has no such field, matching _identify_card's own fallback.
+        compile_idx = _field_index(model, "CompileId")
+        compile_id = note["flds"][compile_idx] if compile_idx is not None else ""
         db.append(port="assess", backend="learner-note", key=key, subject=subject,
-                 question={"note_id": note_id, "text_sha": text_sha},
+                 question={"note_id": note_id, "text_sha": text_sha, "compile_id": compile_id},
                  answer={"text": text})
         imported += 1
     return imported, skipped

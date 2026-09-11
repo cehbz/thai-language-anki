@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from thai_syllabus.anki_import import card_identities, import_collection
+from thai_syllabus.anki_import import _connect_readonly, card_identities, import_collection
 from thai_syllabus.cachekeys import sha
 from thai_syllabus.compile import compile_syllabus
 from thai_syllabus.wiring import _DbMediaIndex
@@ -694,3 +694,227 @@ def test_import_takes_the_collection_path_as_a_parameter_not_hardcoded():
     import inspect
     sig = inspect.signature(import_collection)
     assert "collection_path" in sig.parameters
+
+
+# --- schema 18 (task 1 brief) ------------------------------------------
+#
+# Anki's current collection shape (verified against a live collection.anki2,
+# ver=18): notetypes live in their own notetypes/fields/templates tables,
+# not col.models JSON -- col.models is '' there. Built synthetically here,
+# never by opening or copying the user's real collection.
+
+_SCHEMA18_DDL = """
+create table col (
+    id integer primary key, crt integer, mod integer, scm integer,
+    ver integer, dty integer, usn integer, ls integer, conf text,
+    models text, decks text, dconf text, tags text
+);
+create table notetypes (id integer primary key, name text);
+create table fields (ntid integer, ord integer, name text);
+create table templates (ntid integer, ord integer, name text);
+create table decks (id integer primary key, name text);
+create table notes (
+    id integer primary key, guid text, mid integer, mod integer,
+    usn integer, tags text, flds text, sfld text, csum integer,
+    flags integer, data text
+);
+create table cards (
+    id integer primary key, nid integer, did integer, ord integer,
+    mod integer, usn integer, type integer, queue integer,
+    due integer, ivl integer, factor integer, reps integer,
+    lapses integer, left integer, odue integer, odid integer,
+    flags integer, data text
+);
+create table revlog (
+    id integer primary key, cid integer, usn integer, ease integer,
+    ivl integer, lastIvl integer, factor integer, time integer,
+    type integer
+);
+"""
+
+
+_SCHEMA18_FIELD_VALUES = {"Thai": "ข้าว", "CompileId": "compile-rice-1"}
+
+
+def _build_schema18_collection(path: Path, *, review_note_text: str = "",
+                               fields: tuple[str, ...] = ("Thai", "CompileId", "ReviewNote"),
+                               ver: int | None = 18) -> dict:
+    """A synthetic Anki schema-18 collection.anki2 (task 1 brief): one
+    "word" notetype (by default Thai/CompileId/ReviewNote fields, a
+    Listening template) read from notetypes/fields/templates, col.models=''
+    -- the shape _load_collection must branch on. `ver` defaults to 18
+    (the verified live collection's own value); pass None to leave it
+    unset, the other signal _load_models branches on (round 2 review).
+    One word note tagged family::word/word::rice, one Listening card on
+    it; `fields` lets a caller omit CompileId to exercise the "model has
+    no such field" -> "" fallback (round 2 review).
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript(_SCHEMA18_DDL)
+    if ver is None:
+        conn.execute("insert into col (id, models) values (1, '')")
+    else:
+        conn.execute("insert into col (id, ver, models) values (1, ?, '')", (ver,))
+
+    ntid = 1
+    conn.execute("insert into notetypes (id, name) values (?, 'word')", (ntid,))
+    for ord_, name in enumerate(fields):
+        conn.execute("insert into fields (ntid, ord, name) values (?, ?, ?)",
+                    (ntid, ord_, name))
+    for ord_, name in enumerate(["Listening"]):
+        conn.execute("insert into templates (ntid, ord, name) values (?, ?, ?)",
+                    (ntid, ord_, name))
+    conn.execute("insert into decks (id, name) values (1, 'Default')")
+
+    nid = 1
+    values = {**_SCHEMA18_FIELD_VALUES, "ReviewNote": review_note_text}
+    flds = "\x1f".join(values.get(name, "") for name in fields)
+    conn.execute("insert into notes (id, mid, flds, tags) values (?, ?, ?, ?)",
+                (nid, ntid, flds, " family::word word::rice "))
+    card_id = 1
+    conn.execute("insert into cards (id, nid, did, ord, flags) values (?, ?, 1, 0, 0)",
+                (card_id, nid))
+    conn.commit()
+    conn.close()
+    return {"note_id": nid, "card_id": card_id}
+
+
+@pytest.fixture
+def schema18(tmp_path):
+    path = tmp_path / "collection.anki2"
+    ids = _build_schema18_collection(path, review_note_text="the tones sound off")
+    return path, ids
+
+
+def test_schema18_card_identity_reads_the_notetypes_fields_templates_tables(schema18):
+    path, ids = schema18
+    identities = card_identities(path)
+    assert len(identities) == 1
+    identity = identities[0]
+    assert identity.family == "word"
+    assert identity.anchor == "rice"
+    assert identity.kind_slug == "listening"
+    assert identity.compile_id == "compile-rice-1"
+
+
+def test_schema18_revlog_import_appends_a_study_row(fx, schema18):
+    path, ids = schema18
+    conn = sqlite3.connect(str(path))
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                (1_700_000_000_000, ids["card_id"], 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.revlog_imported == 1
+
+    records = fx.db.records("word", "rice", "listening")
+    assert len(records) == 1
+    assert records[0].ts == 1_700_000_000_000
+    assert records[0].grade == 3
+    assert records[0].time_ms == 4200
+    assert records[0].compile_id == "compile-rice-1"
+
+
+def test_schema18_review_note_harvest_appends_a_learner_row(fx, schema18):
+    path, ids = schema18
+    report = import_collection(path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.notes_harvested == 1
+
+    rows = [r for r in fx.db.assessments_of("rice") if r.backend == "learner-note"]
+    assert len(rows) == 1
+    assert rows[0].answer["text"] == "the tones sound off"
+
+
+# --- unicase collation (round-1 review) ---------------------------------
+
+def test_connect_readonly_registers_unicase_so_a_collated_query_does_not_raise(tmp_path):
+    """Demonstrates the need for _connect_readonly's `unicase` collation
+    registration: Anki's own collection.anki2 declares some notes/cards
+    indexes `collate unicase`, and a query whose WHERE/ORDER BY touches
+    such a column raises OperationalError under Python's sqlite3 the
+    moment the collation isn't registered on that connection -- true even
+    read-only, even though nothing here writes anything or opens the
+    user's real collection.
+    """
+    path = tmp_path / "unicase.db"
+    # Build the fixture through a connection that DOES register a
+    # `unicase` collation (sqlite3 requires it be resolvable to create an
+    # index that declares it), mirroring Anki's own Rust backend, which
+    # registers it before ever touching the file.
+    setup = sqlite3.connect(str(path))
+    setup.create_collation("unicase", lambda a, b: (a > b) - (a < b))
+    setup.execute("create table t (name text collate unicase)")
+    setup.execute("create index t_name on t(name)")
+    setup.execute("insert into t values ('x')")
+    setup.commit()
+    setup.close()
+
+    # Reopened read-only WITHOUT registering the collation -- what plain
+    # sqlite3.connect(f"file:{path}?mode=ro", uri=True) gives -- a query
+    # comparing the collated column fails.
+    bare = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    with pytest.raises(sqlite3.OperationalError, match="unicase"):
+        bare.execute("select name from t where name = 'x'").fetchall()
+    bare.close()
+
+    # The same query through _connect_readonly succeeds: it registers the
+    # (no-op) stand-in collation first.
+    conn = _connect_readonly(path)
+    assert conn.execute("select name from t where name = 'x'").fetchall() == [("x",)]
+    conn.close()
+
+
+# --- _load_models ver-is-None branch (round-2 review) -------------------
+
+def test_schema18_with_ver_unset_still_reads_the_notetypes_tables(fx, tmp_path):
+    # _load_models treats a null col.ver the same as ver>=18 (belt and
+    # suspenders alongside the empty-col.models signal) -- this is the
+    # one branch of that condition the existing schema18 fixture (which
+    # always sets ver=18) never exercised.
+    path = tmp_path / "collection.anki2"
+    ids = _build_schema18_collection(path, review_note_text="", ver=None)
+
+    identities = card_identities(path)
+    assert len(identities) == 1
+    assert identities[0].family == "word"
+    assert identities[0].anchor == "rice"
+    assert identities[0].kind_slug == "listening"
+
+
+# --- ReviewNote harvest records CompileId (spec 4 r8 section 4, round-2
+# review) -------------------------------------------------------------
+
+def test_review_note_harvest_records_the_notes_compile_id(compiled):
+    fx, compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    idx = _review_note_field_index(conn)
+    _, note_id = _find_word_card(conn, "ข้าว", "Listening")
+    _set_review_note(conn, note_id, idx, "the picture looks off")
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.notes_harvested == 1
+
+    rows = fx.db.assessments_of("rice")
+    harvest_rows = [r for r in rows if r.backend == "learner-note"]
+    assert len(harvest_rows) == 1
+    assert harvest_rows[0].question["compile_id"] == compile_result.compile_id
+
+
+def test_review_note_harvest_records_empty_compile_id_when_the_model_lacks_the_field(fx, tmp_path):
+    path = tmp_path / "collection.anki2"
+    _build_schema18_collection(path, review_note_text="no compile id field here",
+                               fields=("Thai", "ReviewNote"))
+
+    report = import_collection(path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.notes_harvested == 1
+
+    rows = [r for r in fx.db.assessments_of("rice") if r.backend == "learner-note"]
+    assert len(rows) == 1
+    assert rows[0].question["compile_id"] == ""
