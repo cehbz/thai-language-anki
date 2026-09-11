@@ -628,6 +628,9 @@ class ProvidersConfig:
     transient_cap: int = 3     # tried_sources()'s transient-outcome cap default
     # sentence_exhausted()'s no-fit cap default (spec 3 r19 section 5)
     sentence_nothing_cap: int = 3
+    # the drafting prompt's own clause cap default (spec 3 r23 section 5/8):
+    # a longer sentence outruns the 5 s recording cap
+    sentence_max_clauses: int = 2
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -750,6 +753,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_nothing_cap: {sentence_nothing_cap!r} "
                       "must be a positive integer")
 
+    sentence_max_clauses = data.get("sentence_max_clauses", 2)
+    if not isinstance(sentence_max_clauses, int) or sentence_max_clauses < 1:
+        errors.append(f"providers.sentence_max_clauses: {sentence_max_clauses!r} "
+                      "must be a positive integer")
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -791,7 +799,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
         attempt_cap=attempt_cap, transient_cap=transient_cap,
-        sentence_nothing_cap=sentence_nothing_cap)
+        sentence_nothing_cap=sentence_nothing_cap,
+        sentence_max_clauses=sentence_max_clauses)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -818,6 +827,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "attempt_cap": config.attempt_cap,
         "transient_cap": config.transient_cap,
         "sentence_nothing_cap": config.sentence_nothing_cap,
+        "sentence_max_clauses": config.sentence_max_clauses,
     })
 
 

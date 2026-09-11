@@ -19,6 +19,7 @@ import yaml
 
 from thai_syllabus import secrets as secrets_mod
 from thai_syllabus.assessor import Assessor, Price
+from thai_syllabus.attempts import DEFAULT_SENTENCE_MAX_CLAUSES
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
@@ -949,6 +950,26 @@ def test_the_sentence_no_fit_cap_defaults_to_three(tmp_path):
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
         encoding="utf-8")
     assert build_sourcing(root).sentence_nothing_cap == DEFAULT_SENTENCE_NOTHING_CAP == 3
+
+
+def test_the_sentence_clause_cap_reaches_sourcing(tmp_path):
+    """Spec 3 r23 section 5/8: providers.yaml's own sentence_max_clauses
+    is the cap the drafting prompt and the acceptance loop both read off
+    Sourcing. The feedback screen has no fold over it, so load_derivations
+    does not carry it (unlike sentence_nothing_cap)."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "sentence_max_clauses: 4\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    assert build_sourcing(root).sentence_max_clauses == 4
+
+
+def test_the_sentence_clause_cap_defaults_to_two(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert build_sourcing(root).sentence_max_clauses == DEFAULT_SENTENCE_MAX_CLAUSES == 2
 
 
 def test_nothing_ttl_reaches_both_derivations_and_sourcing(tmp_path):

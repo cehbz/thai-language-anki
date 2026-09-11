@@ -1088,6 +1088,32 @@ def test_providers_sentence_nothing_cap_rejects_a_non_integer(tmp_path):
         curated.load_providers_config(path)
 
 
+def test_providers_sentence_max_clauses_defaults_to_two_and_round_trips(tmp_path):
+    """Spec 3 r23 section 5/8: the drafting prompt's own clause cap -- a
+    longer sentence outruns the 5 s recording cap."""
+    assert curated.ProvidersConfig().sentence_max_clauses == 2
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_clauses=3)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.sentence_max_clauses == 3
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path).sentence_max_clauses == 3
+
+
+def test_providers_sentence_max_clauses_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_clauses=0)))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_max_clauses"):
+        curated.load_providers_config(path)
+
+
+def test_providers_sentence_max_clauses_rejects_a_non_integer(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_clauses="2")))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_max_clauses"):
+        curated.load_providers_config(path)
+
+
 def test_providers_transient_cap_rejects_zero(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(transient_cap=0)))

@@ -1254,6 +1254,40 @@ def test_sentence_attempt_refuses_a_draft_whose_text_does_not_match_its_clauses(
     assert "draft refused" in caplog.text
 
 
+def _clauses_draft_json(clause_word_ids, text, gloss) -> str:
+    """One drafting-answer item with one clause per element of
+    `clause_word_ids` (each a single-word clause)."""
+    return json.dumps({"sentences": [
+        {"clauses": [[w] for w in clause_word_ids], "text": text, "gloss": gloss}]})
+
+
+def test_sentence_attempt_refuses_a_draft_over_the_clause_cap(tmp_path, caplog):
+    """Spec 3 section 5: a draft with more clauses than
+    `ctx.sentence_max_clauses` is refused like the Sentence invariant --
+    logged and skipped, never reaching the judge -- though it is
+    otherwise a valid, target-filling draft."""
+    syllabus = _three_word_syllabus()   # eat, rice, tasty each carry an open Target
+    text = _clauses_draft_json(("eat", "rice", "tasty"), "กิน ข้าว อร่อย", "eats tasty rice")
+    ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
+    assert ctx.sentence_max_clauses == 2
+    with caplog.at_level(logging.WARNING):
+        res = sentence_attempt(ctx)
+    assert res.questions == [] and res.drafted == 0
+    assert ctx.db.all_sentences() == []
+    assert "draft refused" in caplog.text and "3 clauses" in caplog.text and "cap 2" in caplog.text
+
+
+def test_sentence_attempt_accepts_a_draft_at_a_raised_clause_cap(tmp_path):
+    """The very same three-clause draft, judged and drafted once
+    `ctx.sentence_max_clauses` is raised to admit it."""
+    syllabus = _three_word_syllabus()
+    text = _clauses_draft_json(("eat", "rice", "tasty"), "กิน ข้าว อร่อย", "eats tasty rice")
+    ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
+    ctx.sentence_max_clauses = 3
+    res = sentence_attempt(ctx)
+    assert res.drafted == 1
+
+
 def test_sentence_attempt_is_not_attempted_when_no_target_is_open(tmp_path):
     ctx = _sentence_ctx(tmp_path, '{"sentences": []}')
     ctx.syllabus = ctx.syllabus.with_sentences([_sentence(   # กินข้าว: eat rice
@@ -2153,7 +2187,7 @@ def _three_word_syllabus():
 
 def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert vocabulary.splitlines() == ["- eat  กิน  (eat)", "- rice  ข้าว  (rice)",
                                        "- tasty  อร่อย  (tasty)"]
@@ -2162,7 +2196,7 @@ def test_sentence_prompt_lists_each_vocabulary_word_once_in_entry_order():
 
 def test_sentence_prompt_lists_a_targets_line_per_handed_target():
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
     assert "- target eat/receptive: eat  กิน  (eat)" in prompt
     assert "- target rice/receptive: rice  ข้าว  (rice)" in prompt
     assert "- target tasty/receptive: tasty  อร่อย  (tasty)" in prompt
@@ -2170,7 +2204,7 @@ def test_sentence_prompt_lists_a_targets_line_per_handed_target():
 
 def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
     assert ("Each JSON item is one sentence. Write the fewest natural sentences that together "
            "cover the targets below; a sentence may cover several targets. A sentence may "
            "introduce at most one word from the Introducible list and must otherwise use only "
@@ -2179,13 +2213,23 @@ def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
 
 def test_sentence_prompt_gives_the_clause_rendering_rule_and_json_shape_verbatim():
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets))
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
     assert ("Write each sentence as clauses of vocabulary ids in order; a clause renders as "
            "its words' Thai concatenated, clauses are separated by one space; write a repeated "
            'word as [id, "ๆ"]; standard spelling (ครับ, never คับ); numbers as number words; '
            "no punctuation or digits.") in prompt
     assert ('Output JSON only: {"sentences": [{"clauses": [["id", ...], ...], "text": "...", '
            '"gloss": "..."}]}') in prompt
+
+
+def test_sentence_prompt_states_the_clause_cap_from_the_given_value():
+    """Spec 3 r23 section 5/8: the drafting prompt asks for at most
+    `sentence_max_clauses` clauses, the value the ctx hands it."""
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert "Each sentence has at most 2 clauses." in prompt
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=3)
+    assert "Each sentence has at most 3 clauses." in prompt
 
 
 def _glue_word_syllabus():
@@ -2208,7 +2252,7 @@ def _glue_word_syllabus():
 def test_sentence_prompt_omits_an_unmet_glue_word_from_vocabulary_and_lists_it_introducible():
     syllabus = _glue_word_syllabus()
     glue1, glue2 = (t for t in syllabus.targets if t.id in ("glue1/receptive", "glue2/receptive"))
-    prompt = _sentence_prompt(syllabus, [glue1, glue2])
+    prompt = _sentence_prompt(syllabus, [glue1, glue2], sentence_max_clauses=2)
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nIntroducible")[0]
     assert "แล้ว" not in vocabulary   # แล้ว: already -- unmet, left out of vocabulary
     introducible = prompt.split("Introducible (at most one per sentence):\n")[1]
@@ -2223,7 +2267,7 @@ def test_sentence_prompt_shows_a_target_an_adopted_sentence_fills_as_a_targets_l
     not dropped, and not Introducible."""
     syllabus = _glue_word_syllabus()
     glue2 = next(t for t in syllabus.targets if t.id == "glue2/receptive")
-    prompt = _sentence_prompt(syllabus, [glue2])
+    prompt = _sentence_prompt(syllabus, [glue2], sentence_max_clauses=2)
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert "ก็" in vocabulary   # ก็: also -- met by the adopted sentence
     assert "- target glue2/receptive: glue2  ก็  (also)" in prompt
@@ -2237,7 +2281,7 @@ def test_sentence_prompt_appends_a_met_glue_word_whose_target_lies_beyond_the_ha
     sentence-introduced word wherever its own entry falls."""
     syllabus = _glue_word_syllabus()
     glue1 = next(t for t in syllabus.targets if t.id == "glue1/receptive")
-    prompt = _sentence_prompt(syllabus, [glue1])
+    prompt = _sentence_prompt(syllabus, [glue1], sentence_max_clauses=2)
     vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nIntroducible")[0]
     assert "ก็" in vocabulary   # ก็: also -- appended though its own entry is beyond the batch
 
@@ -2257,14 +2301,14 @@ def test_sentence_prompt_shows_a_picture_introduced_target_though_its_word_is_al
         frequency={"help": 1},
         sentences=(met_sentence,))
     productive = next(t for t in syllabus.targets if t.id == "help/productive")
-    prompt = _sentence_prompt(syllabus, [productive])
+    prompt = _sentence_prompt(syllabus, [productive], sentence_max_clauses=2)
     assert "- target help/productive: help  ช่วย  (help)" in prompt
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
     syllabus = _three_word_syllabus()
     first_only = [t for t in syllabus.targets if t.id == "eat/receptive"]
-    vocabulary = _sentence_prompt(syllabus, first_only).split(
+    vocabulary = _sentence_prompt(syllabus, first_only, sentence_max_clauses=2).split(
         "Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert vocabulary.splitlines() == ["- eat  กิน  (eat)"]
 
@@ -2277,8 +2321,8 @@ def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
     selected) -- each with the verdict's evidence, before the
     output-format sentence."""
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
-                              refused=[("กินข้าว", "too formal")])   # กินข้าว: eat rice
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กินข้าว", "too formal")],
+                              sentence_max_clauses=2)   # กินข้าว: eat rice
     assert ("Do not propose these sentences; each failed review:\n"
            f"{_UNTRUSTED}\n"
            f"- กินข้าว — {_field('too formal')}") in prompt
@@ -2288,18 +2332,18 @@ def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
 
 def test_sentence_prompt_lists_each_refused_text_and_omits_the_block_when_empty():
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
-                              refused=[("กิน", "e1"), ("ข้าว", "e2")])   # กิน: eat, ข้าว: rice
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กิน", "e1"), ("ข้าว", "e2")],
+                              sentence_max_clauses=2)   # กิน: eat, ข้าว: rice
     assert f"- กิน — {_field('e1')}" in prompt and f"- ข้าว — {_field('e2')}" in prompt
     assert "Do not propose these sentences" not in _sentence_prompt(
-        syllabus, list(syllabus.targets))
+        syllabus, list(syllabus.targets), sentence_max_clauses=2)
 
 
 def test_sentence_prompt_renders_a_refused_text_with_no_evidence_with_no_dangling_separator():
     """An empty evidence string renders `- <text>` alone -- no trailing
     ' — ' with nothing after it."""
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
-                              refused=[("กิน", "")])   # กิน: eat
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กิน", "")],
+                              sentence_max_clauses=2)   # กิน: eat
     assert "- กิน\n" in prompt
     assert "— " not in prompt and "—\n" not in prompt

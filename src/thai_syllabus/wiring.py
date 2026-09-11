@@ -404,6 +404,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
         transient_cap=derivations.transient_cap,
         sentence_nothing_cap=derivations.sentence_nothing_cap,
+        sentence_max_clauses=cfg.sentence_max_clauses,
         nothing_ttl=derivations.nothing_ttl)
     return ctx
 

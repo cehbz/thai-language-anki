@@ -59,9 +59,16 @@ from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
            "sources_for", "provenance_source_for", "current_best_of",
-           "attempt", "assess_first", "sentence_attempt", "preference_attempt"]
+           "attempt", "assess_first", "sentence_attempt", "preference_attempt",
+           "DEFAULT_SENTENCE_MAX_CLAUSES"]
 
 _log = logging.getLogger(__name__)
+
+# The drafting prompt's own clause cap default (spec 3 r23 section 5/8): a
+# sentence over this many clauses outruns the 5 s recording duration cap,
+# so the cure is at drafting -- Sourcing.sentence_max_clauses, wired from
+# providers.yaml's own sentence_max_clauses (wiring.build_sourcing).
+DEFAULT_SENTENCE_MAX_CLAUSES = 2
 
 # Cheapest source first, per ARTIFACT kind (spec 3 section 5). A sentence's
 # own recording and scene picture are the same artifact kinds a word's are;
@@ -149,6 +156,10 @@ class Sourcing:
     # last handed draft before the drafter stops being handed its Targets
     # (spec 3 r19 section 5, derivations.sentence_exhausted).
     sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
+    # The drafting prompt's own clause cap (spec 3 r23 section 5/8): a
+    # draft over this many clauses is refused like an invariant failure
+    # (sentence_attempt's acceptance loop), never adopted.
+    sentence_max_clauses: int = DEFAULT_SENTENCE_MAX_CLAUSES
 
 
 @dataclass(frozen=True)
@@ -919,18 +930,21 @@ def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Wor
 
 
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
-                     refused: Sequence[tuple[str, str]] = ()) -> str:
+                     refused: Sequence[tuple[str, str]] = (),
+                     *, sentence_max_clauses: int) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary once as
     id/thai/meaning lines, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
     sentence already fills, an Introducible line per handed
     sentence-introduced target no adopted sentence fills, the profile
     register, the existing sentence openings to avoid, and the clause
-    rendering rule (spec 1 section 1). When `refused` (derivations.
-    refused_drafts) is non-empty, a block lists those texts as sentences
-    not to propose again, each with the verdict's evidence delimited the
-    way the assessor prompts delimit deck fields (assessor._field, over
-    the untrusted-data notice given once before the block), before the
+    rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
+    clauses per sentence (spec 3 r23 section 5/8: a longer sentence outruns
+    the 5 s recording cap). When `refused` (derivations.refused_drafts) is
+    non-empty, a block lists those texts as sentences not to propose
+    again, each with the verdict's evidence delimited the way the
+    assessor prompts delimit deck fields (assessor._field, over the
+    untrusted-data notice given once before the block), before the
     output-format sentence (spec 3 r19 section 5).
     """
     vocabulary = _entry_vocabulary(syllabus, targets)
@@ -963,6 +977,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             "cover the targets below; a sentence may cover several targets. A sentence may "
             "introduce at most one word from the Introducible list and must otherwise use only "
             "the vocabulary below.\n"
+            f"Each sentence has at most {sentence_max_clauses} clauses.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
             + sections
@@ -981,8 +996,12 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     many, and subjects_handed which words they belong to). Each merged
     draft becomes a Sentence (record.draft_sentence); acceptance is the
     Sentence invariant (Syllabus.check_sentence) -- a refused draft is
-    logged ("draft refused: %s") and skipped, nothing else. Of the
-    Targets it fills (Syllabus.fill_set), only those still open go to
+    logged ("draft refused: %s") and skipped, nothing else. A draft
+    whose own clause count exceeds `ctx.sentence_max_clauses` is refused
+    the same way (spec 3 section 5: "more clauses than the cap refuses
+    the draft"), logged ("draft refused: %d clauses (cap %d): %s") and
+    skipped; the drafting prompt itself already asks for at most that
+    many. Of the Targets it fills (Syllabus.fill_set), only those still open go to
     the judge; a draft filling none of them is skipped. The judge
     question carries the text, gloss, and the sentence's own last used
     word (Syllabus.last_used_word). Adoption is the run's, after the
@@ -1020,7 +1039,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     refused = refused_drafts(ctx.db, syllabus, current_rubric=ctx.rubrics)
     question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
-        params={"prompt": _sentence_prompt(syllabus, targets, refused)})
+        params={"prompt": _sentence_prompt(syllabus, targets, refused,
+                                           sentence_max_clauses=ctx.sentence_max_clauses)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
 
@@ -1053,6 +1073,13 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
             syllabus.check_sentence(sentence)
         except ValueError as e:
             _log.warning("draft refused: %s", e)
+            continue
+        if len(sentence.clauses) > ctx.sentence_max_clauses:
+            # spec 3 section 5: more clauses than the cap refuses the
+            # draft like the Sentence invariant above -- local and
+            # mechanical, the provide row keeping it.
+            _log.warning("draft refused: %d clauses (cap %d): %s",
+                         len(sentence.clauses), ctx.sentence_max_clauses, draft.text)
             continue
         fills = syllabus.fill_set(sentence)
         filled = [t for t in open_targets if t in fills]
