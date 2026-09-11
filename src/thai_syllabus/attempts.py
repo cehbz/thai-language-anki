@@ -496,20 +496,36 @@ def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
 
 # --- recordings (Word) and sentence recordings ------------------------------
 
-def _voice_constraint(ctx: Sourcing, need: Need) -> str:
-    """"male" where the recording plays on a productive back (E2), "any"
-    otherwise -- the aggregate decides what serves a productive Target."""
+def _voice_constraint(ctx: Sourcing, need: Need) -> Literal["male", "female", "any"]:
+    """The recording's voice constraint follows the sentence's speaker
+    marking (spec 1 section 1 (r10)): "female" when the marking is
+    `{"female"}`, "male" when it is `{"male"}`, else "male" where the
+    recording plays on a productive back (E2, spec 3 section 5) -- the
+    aggregate decides what serves a productive Target -- and "any"
+    otherwise. A marking holding both sexes cannot reach here:
+    Syllabus.check_sentence refuses such a sentence.
+    """
     if need.subject_kind == "sentence":
-        serves = ctx.syllabus.sentence_serves_productive(ctx.syllabus.sentence(need.subject))
+        sentence = ctx.syllabus.sentence(need.subject)
+        marking = ctx.syllabus.marking(sentence)
+        serves = ctx.syllabus.sentence_serves_productive(sentence)
     else:
-        serves = ctx.syllabus.serves_productive(_word_of(ctx, need.subject).id)
+        word = _word_of(ctx, need.subject)
+        marking = frozenset({word.speaker}) - {None}
+        serves = ctx.syllabus.serves_productive(word.id)
+    if marking == frozenset({"female"}):
+        return "female"
+    if marking == frozenset({"male"}):
+        return "male"
     return "male" if serves else "any"
 
 
 def _pool(ctx: Sourcing, constraint: str) -> list[str]:
-    voices = (list(ctx.voices.get("male", ()))
-              if constraint == "male"
-              else list(ctx.voices.get("male", ())) + list(ctx.voices.get("female", ())))
+    """The voices a constraint admits: one sex's pool under "male" or
+    "female", both under "any" (spec 3 section 5)."""
+    voices = (list(ctx.voices.get("male", ())) + list(ctx.voices.get("female", ()))
+              if constraint == "any"
+              else list(ctx.voices.get(constraint, ())))
     if not voices:
         raise ValueError(f"no {constraint!r} voice pool is configured for a tts recording")
     return voices
@@ -539,8 +555,9 @@ def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend
                   *, subject_kind: SubjectKind = "word",
                   constraint: str = "any", fresh: bool = False) -> list[Mapping]:
     """One lookup, cached forever, appended under `subject`. Under a
-    "male" constraint only speakers Forvo states are male are admitted
-    (E2: a productive back plays in the learner's register). `fresh`
+    "male" or "female" constraint only speakers Forvo states are that
+    sex are admitted (spec 1 section 1 (r10); E2: a productive back
+    plays in the learner's register); "any" admits every item. `fresh`
     re-asks over the cached answer (spec 3 section 6a's re-ask rule)."""
     ask = ctx.provider.reask if fresh else ctx.provider.ask
     answer = ask("forvo", Question(subject=subject, provides="recording",
@@ -549,9 +566,9 @@ def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend
     _count(spend, "forvo", answer)
     items = [i for i in answer.items
              if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
-    if constraint != "male":
+    if constraint == "any":
         return items
-    return [i for i in items if _forvo_speaker(i).sex == "male"]
+    return [i for i in items if _forvo_speaker(i).sex == constraint]
 
 
 def _store(ctx: Sourcing, got: ProviderAnswer, *, source: str, origin: str, licence: str,

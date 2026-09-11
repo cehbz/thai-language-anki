@@ -31,7 +31,8 @@ from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, S
                                      TransportError)
 from thai_syllabus.tts import pick_voice
 
-from .builders import target, word
+from .builders import sentence as compose_sentence
+from .builders import target, thai_of, word
 
 # This fixture's own role -> rubric map (rulebook.rubrics_for covers only
 # roles a judged Rule registers).
@@ -543,6 +544,16 @@ def test_recording_attempt_draws_a_male_voice_for_a_productive_target(tmp_path):
         id=f"tts:{tts.last_voice}", kind="synthetic", sex="male")
 
 
+def test_a_word_marked_male_draws_a_male_voice_without_a_productive_target(tmp_path):
+    """The marking decides the constraint before the productive-back
+    fallback is even consulted (spec 1 section 1 (r10))."""
+    phom = word("phom", "ผม", "I (male speaker)", speaker="male")
+    syllabus = Syllabus(words=(phom,), targets=(target("phom/receptive", "phom"),))
+    ctx, tts = _recording_ctx(tmp_path, syllabus)
+    attempt(ctx, Need("phom", "recording"), "tts")
+    assert tts.last_voice in _MALE
+
+
 def test_forvo_attempt_records_sex_and_country(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), {
         "ข้าว": [{"username": "somchai", "pathmp3": "https://f/u.mp3", "sex": "m",
@@ -619,6 +630,34 @@ def test_a_sentence_filling_a_productive_target_draws_a_male_voice(tmp_path):
     ctx, tts = _recording_ctx(tmp_path, syllabus)
     attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
     assert tts.last_voice in _MALE
+
+
+def test_a_sentence_marked_female_draws_a_female_voice_and_forvo_admits_only_female(tmp_path):
+    """The marking outranks the productive-back fallback: rice carries
+    no productive Target here, yet ค่ะ's own female marking still picks
+    the voice (spec 1 section 1 (r10))."""
+    rice = word("rice", "ข้าว", "rice")   # ข้าว: rice
+    kha = word("kha", "ค่ะ", "female politeness particle", speaker="female")
+    draft = compose_sentence(((WordId("rice"), WordId("kha")),), thai_of(rice, kha),
+                             gloss="the rice is good, politely")
+    syllabus = Syllabus(words=(rice, kha), targets=(target("rice/receptive", "rice"),)
+                        ).with_sentences([draft])
+    ctx, tts = _recording_ctx(tmp_path, syllabus, {
+        draft.text: [{"username": "malee", "pathmp3": "https://f/1.mp3", "sex": "f"},
+                     {"username": "somchai", "pathmp3": "https://f/2.mp3", "sex": "m"}]})
+    attempt(ctx, Need(draft.text_sha, "recording", "sentence"), "tts")
+    assert tts.last_voice in _FEMALE
+
+    attempt(ctx, Need(draft.text_sha, "recording", "sentence"), "forvo")
+    assert ctx.db.speaker("forvo:malee").sex == "female"
+    assert ctx.db.speaker("forvo:somchai") is None
+
+
+def test_an_unmarked_receptive_only_sentence_stays_any(tmp_path):
+    sentence = _sentence()
+    ctx, tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]))
+    attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
+    assert tts.voices == [pick_voice(sentence.text_sha, list(_MALE) + list(_FEMALE))]
 
 
 # --- rendition: one answer under the pair, one speaker across the members ---
