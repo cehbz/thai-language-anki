@@ -23,6 +23,7 @@ from thai_syllabus.derivations import (
     challengers,
     confusion_weights,
     current_best,
+    deciding_verdict,
     directed,
     exhausted,
     improved,
@@ -2209,3 +2210,25 @@ def test_passing_pictures_are_the_candidates_the_current_fit_rubric_passed(db):
     _verdict(db, "w", "judge", "picture-for-word", "b", False, rubric="fit")
     _verdict(db, "w", "judge", "picture-for-word", "c", True, rubric="stale fit")
     assert passing_pictures(db, "w", current_rubric=_FIT) == ("a",)
+
+
+def test_deciding_verdict_is_the_mechanical_row_on_a_recording(cache):
+    cache.rows.append(Answer(port="assess", backend="mechanical",
+        key=MechanicalKey(check="duration", params="", subject="rice", artifact_sha="a" * 64),
+        key_sha="x", subject="rice",
+        question={"role": "recording-for-word", "artifact_sha": "a" * 64, "kind": "recording",
+                  "subject_kind": "word"},
+        answer={"value": False, "evidence": "duration=6.2s"}, cost=0.0, ts=5))
+    v = deciding_verdict(cache, "rice", "recording", "a" * 64, current_rubric={})
+    assert v is not None and v.passed is False and v.evidence == "duration=6.2s"
+    assert v.backend == "mechanical"
+
+
+def test_deciding_verdict_is_the_judge_row_on_a_picture(cache):
+    seed_artifact(cache, "rice", "b" * 64, ts=1, judge_pass=True)
+    v = deciding_verdict(cache, "rice", "picture", "b" * 64, current_rubric={})
+    assert v is not None and v.passed is True and v.backend == "judge"
+
+
+def test_deciding_verdict_is_none_with_no_row(cache):
+    assert deciding_verdict(cache, "rice", "picture", "c" * 64, current_rubric={}) is None

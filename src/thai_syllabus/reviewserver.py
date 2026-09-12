@@ -44,6 +44,7 @@ from .derivations import (
     available_needs,
     challengers,
     current_best,
+    deciding_verdict,
     exhausted,
     judge_verdict,
     learner_ranks,
@@ -135,17 +136,34 @@ def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> 
 
 
 def _verdict_line(verdict: JudgeVerdict | None) -> str | None:
-    """The one line spec 5 section 1 kind 1 shows beside the current
-    artifact, or None when derivations.judge_verdict has nothing fresh.
+    """The one line spec 5 section 1 kind 1 shows beside an artifact, or
+    None when derivations.deciding_verdict has nothing fresh.
     """
     if verdict is None:
         return None
-    line = f"judge: {'pass' if verdict.passed else 'fail'}"
+    line = f"{verdict.backend}: {'pass' if verdict.passed else 'fail'}"
     return f"{line} — {verdict.evidence}" if verdict.evidence else line
 
 
 def _artifact(sha: str | None) -> dict[str, str] | None:
     return {"sha": sha, "url": f"/media/{sha}"} if sha else None
+
+
+def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
+             best_sha: str | None) -> list[dict]:
+    """Every candidate but `best_sha`, each carrying the verdict that
+    rejected it (spec 5 r7 section 1) -- the same deciding-backend rule
+    current_best ranks by.
+    """
+    out = []
+    for sha in candidate_shas(rows):
+        if sha == best_sha:
+            continue
+        art = _artifact(sha)
+        art["verdict"] = _verdict_line(
+            deciding_verdict(d.db, subject, kind, sha, current_rubric=d.current_rubric))
+        out.append(art)
+    return out
 
 
 # --- question session (spec 5 section 1) -----------------------------------
@@ -159,10 +177,10 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
     current = _artifact(best.artifact_sha)
     if current is not None:
         current["verdict"] = _verdict_line(
-            judge_verdict(d.db, subject, kind, best.artifact_sha,
-                          current_rubric=d.current_rubric))
+            deciding_verdict(d.db, subject, kind, best.artifact_sha,
+                             current_rubric=d.current_rubric))
         current["source"] = best.source
-    rejected = [_artifact(s) for s in candidate_shas(rows) if s != best.artifact_sha]
+    rejected = _rejected(d, subject, kind, rows, best.artifact_sha)
     return {
         "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role,
@@ -294,16 +312,23 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                     transient_cap=d.transient_cap,
                     provenance_source=d.provenance_source,
                     nothing_ttl=d.nothing_ttl, now_ns=now_ns)
-    items = [
-        _rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
-                       rank=e.rank, attempts=e.attempts)
-        for e in entries
-    ][:budget]
+    items: list[dict[str, Any]] = []
+    for e in entries:
+        rows = rows_for(d.db, e.subject, e.kind)
+        if not candidate_shas(rows):
+            # Spec 5 r7 section 1: nothing to rate. The need reaches the
+            # learner only as a direction request once its sources are
+            # exhausted (below); with a source left it is the machine's.
+            continue
+        items.append(_rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
+                                    rank=e.rank, attempts=e.attempts))
+        if len(items) >= budget:
+            break
     # A need kept queued for a candidate awaiting a verdict under the
     # current rubric (derivations.queue's bucket 2) can also be exhausted
     # on attempts -- already rated above, it is skipped here so the
     # screen lists it once (spec 5 section 1).
-    queued = {(e.subject, e.kind) for e in entries}
+    queued = {(i["subject"], i["kind"]) for i in items}
 
     if len(items) < budget:
         for subject, kind, subject_kind in available_needs(d.syllabus):
@@ -1202,7 +1227,18 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .subject-cards .face-label { color: #6b7480; font-size: 12px; margin-bottom: 4px; }
   .query { color: #6b7480; font-size: 13px; font-family: monospace; }
   .thumbs { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-  .thumbs img {
+  .artifact { display: inline-block; text-align: center; }
+  .artifact audio { width: 220px; }
+  /* Spec 5 r7: the cap binds on the element itself (img), not the
+     inline-block wrapper -- a wrapper's max-width does not constrain a
+     replaced element with no width/max-width of its own. Specificity
+     (two classes + type), not source order, decides against any
+     looser container rule (e.g. .side-by-side img's 320px); the
+     .thumbs-scoped rule below is three classes + type, so it always
+     wins over this one where both apply (the rejected-candidates
+     loop), keeping that context's tighter 120px cap. */
+  .artifact.artifact-thumb img { max-width: 220px; }
+  .thumbs .artifact.artifact-thumb img {
     max-width: 120px; max-height: 120px; border-radius: 4px; cursor: zoom-in;
     border: 1px solid #3a4048;
   }
@@ -1353,10 +1389,24 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
          3: "3 acceptable (note)", 4: "4 good (note)" };
   }
 
-  function thumb(art, cls) {
-    var img = el("img", { src: art.url, "data-sha": art.sha });
-    img.addEventListener("click", function () { openOverlay(art.url); });
-    return img;
+  // Spec 5 r7: an artifact renders by its kind -- a recording is a player,
+  // a picture a thumbnail; a caption under either shows its verdict. `thumb`
+  // caps a picture at judgeable-thumbnail size; the current artifact (F4:
+  // judged at card size) omits it and keeps its pre-r7 sizing. An audio
+  // player is 220px wide either way.
+  function artifactView(kind, art, caption, thumb) {
+    var wrap = el("div", { "class": thumb ? "artifact artifact-thumb" : "artifact" });
+    if (kind === "recording") {
+      var audio = el("audio", { controls: "controls", src: art.url, "data-sha": art.sha });
+      audio.addEventListener("play", function () { window.__lastThumbClick = art; });
+      wrap.appendChild(audio);
+    } else {
+      var img = el("img", { src: art.url, "data-sha": art.sha });
+      img.addEventListener("click", function () { window.__lastThumbClick = art; openOverlay(art.url); });
+      wrap.appendChild(img);
+    }
+    if (caption) { wrap.appendChild(el("div", { "class": "verdict" }, caption)); }
+    return wrap;
   }
 
   // Spec 5 r6 section 1 kind 1: a question shows every compiled card of
@@ -1409,20 +1459,20 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       // "card" carries compile.CARD_CSS's own sizing (F4: judge the
       // artifact at the size the card will actually show it).
       var cur = el("div", { "class": "current-artifact card" });
-      cur.appendChild(thumb(q.current));
+      cur.appendChild(artifactView(q.kind, q.current, null));
       box.appendChild(cur);
       if (q.current.verdict) { box.appendChild(el("div", { "class": "verdict" }, q.current.verdict)); }
     } else {
-      // Spec 5 r6: with nothing current there is nothing to rate 3 or 4;
+      // Spec 5 r7: with nothing current there is nothing to rate 3 or 4;
       // the question is pick one of the rejected candidates, or none.
       box.appendChild(el("div", { "class": "empty" },
-        "no current " + q.kind + ": every candidate below failed the judge -- "
-        + "click one to enlarge it, then 2 to use it, or 1 for none of these "
-        + "(n gives the next search a direction)"));
+        "no current " + q.kind + ": each candidate below failed its check (the reason is under it) -- "
+        + "pick one (click or play it, then 2) to use it anyway, or 1 for none of these; "
+        + "n gives the next search a direction"));
     }
     if (q.rejected && q.rejected.length) {
       var thumbs = el("div", { "class": "thumbs" });
-      q.rejected.forEach(function (art) { thumbs.appendChild(thumb(art)); });
+      q.rejected.forEach(function (art) { thumbs.appendChild(artifactView(q.kind, art, art.verdict || "no verdict yet", true)); });
       box.appendChild(thumbs);
     }
     var actions = el("div", { "class": "actions" });
@@ -1482,7 +1532,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
         var verdictText = c.verdict
           ? (c.verdict.passed ? "pass" : "fail") + (c.verdict.evidence ? " -- " + c.verdict.evidence : "")
           : "no verdict";
-        tried.appendChild(el("div", {}, c.sha + ": " + verdictText));
+        tried.appendChild(artifactView(q.kind, { sha: c.sha, url: "/media/" + c.sha }, verdictText, true));
       });
     } else {
       tried.appendChild(el("div", {}, "none"));
@@ -1502,10 +1552,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- a new candidate outranks your pick"));
     var side = el("div", { "class": "side-by-side" });
     var cur = el("figure");
-    cur.appendChild(thumb(q.current));
+    cur.appendChild(artifactView(q.kind, q.current, null, true));
     cur.appendChild(el("figcaption", {}, "current"));
     var chal = el("figure");
-    chal.appendChild(thumb(q.challenger));
+    chal.appendChild(artifactView(q.kind, q.challenger, null, true));
     chal.appendChild(el("figcaption", {}, "challenger"));
     side.appendChild(cur);
     side.appendChild(chal);
@@ -1535,7 +1585,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     box.appendChild(el("div", { "class": "verdict" }, "original answer: " + q.original_answer));
     if (q.current) {
       var cur = el("div", { "class": "current-artifact" });
-      cur.appendChild(thumb(q.current));
+      cur.appendChild(artifactView(q.kind, q.current, null, true));
       box.appendChild(cur);
     }
     var ev = el("div", { "class": "tried" });

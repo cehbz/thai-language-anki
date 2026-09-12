@@ -38,7 +38,7 @@ _log = logging.getLogger(__name__)
 __all__ = [
     "CurrentBest", "current_best", "learner_ranks", "vetoed",
     "role_of", "adoptable_drafts", "refused_drafts",
-    "JudgeVerdict", "judge_verdict",
+    "JudgeVerdict", "judge_verdict", "deciding_verdict",
     "pending",
     "attempts_since_change", "tried_sources", "next_source",
     "ExhaustedStatus", "exhausted", "sentence_exhausted",
@@ -399,6 +399,7 @@ class JudgeVerdict:
     artifact_sha: str
     passed: bool
     evidence: str | None = None
+    backend: str = "judge"
 
 
 def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str, *,
@@ -417,6 +418,31 @@ def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str
     return JudgeVerdict(artifact_sha=artifact_sha,
                         passed=_judge_rank(latest.answer.get("value")) > _JUDGE_FAIL_RANK,
                         evidence=latest.answer.get("evidence"))
+
+
+def deciding_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str, *,
+                     current_rubric: Mapping[str, str]) -> JudgeVerdict | None:
+    """The newest fresh verdict on `artifact_sha` by the backend that
+    decides (subject, kind)'s role -- the first non-learner entry of
+    AUTHORITY_ORDER[role] (spec 5 r7 section 1: what a rejected candidate
+    shows the learner as its reason). None when that backend has none.
+    """
+    rows = record.rows_for(cache, subject, kind)
+    role = role_of(cache, subject, kind, rows)
+    order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
+    if not order:
+        return None
+    backend = order[0]
+    mine = [r for r in rows if r.port == "assess" and r.backend == backend
+            and r.question.get("role") == role
+            and r.question.get("artifact_sha") == artifact_sha
+            and not _stale(r, current_rubric)]
+    if not mine:
+        return None
+    latest = max(mine, key=lambda r: r.ts)
+    return JudgeVerdict(artifact_sha=artifact_sha,
+                        passed=_judge_rank(latest.answer.get("value")) > _JUDGE_FAIL_RANK,
+                        evidence=latest.answer.get("evidence"), backend=backend)
 
 
 # --- pending -----------------------------------------------------------

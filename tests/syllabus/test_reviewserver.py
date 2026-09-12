@@ -172,8 +172,10 @@ def test_build_queue_threads_its_one_clock_read_so_an_aged_out_nothing_re_offers
     """spec 3 r19 section 6a/9 threading guard: build_queue reads the
     clock once and hands it with nothing_ttl to queue() and exhausted();
     a w1 recording need whose forvo `nothing` is 200 days old (ttl 180)
-    and whose tts `nothing` is fresh is queued (an unsearched source
-    remains), not listed as a direction question."""
+    and whose tts `nothing` is fresh has no candidate, so an unsearched
+    source (forvo, aged out) leaves it queued for neither a rate nor a
+    direction question (spec 5 r7 F4) -- only once every source is
+    exhausted (the un-aged case below) does it surface as direction."""
     day = 86_400 * 1_000_000_000
     for source, age in (("forvo", 200), ("tts", 1)):
         db.append(port="attempt", backend=source,
@@ -185,7 +187,7 @@ def test_build_queue_threads_its_one_clock_read_so_an_aged_out_nothing_re_offers
     aged = dataclasses.replace(derivations, nothing_ttl={"forvo": 180})
     items = [i for i in rs.build_queue(aged, budget=50)
              if i["subject"] == w1.id and i["kind"] == "recording"]
-    assert [i["type"] for i in items] == ["rate"]
+    assert items == []
     items = [i for i in rs.build_queue(derivations, budget=50)
              if i["subject"] == w1.id and i["kind"] == "recording"]
     assert [i["type"] for i in items] == ["direction"]
@@ -200,6 +202,13 @@ def test_build_queue_rate_order_matches_derivations_queue(derivations, syllabus,
     from thai_syllabus.attempts import sources_for
     from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP
     from thai_syllabus.derivations import queue as derive_queue
+    # Every queued need gets a candidate so none is skipped for having
+    # nothing to rate (spec 5 r7 F4) -- this test is only about F10 order.
+    for w in syllabus.words:
+        _provide(db, w.id, "picture", items=[{"sha": f"p-{w.id}"}])
+        _provide(db, w.id, "recording", items=[{"sha": f"r-{w.id}"}])
+    for p in syllabus.pairs:
+        _provide(db, p.id, "rendition", items=[{"sha": f"v-{p.id}"}])
     entries = derive_queue(syllabus, db, current_rubric={}, prior=(), sources_for=sources_for,
                            attempt_cap=DEFAULT_ATTEMPT_CAP, transient_cap=DEFAULT_TRANSIENT_CAP,
                            provenance_source=lambda s: None)
@@ -219,7 +228,7 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(deriva
     assert rated["query"] == "rice photo"
     assert rated["current"]["sha"] == "sA"
     assert "judge: pass" in rated["current"]["verdict"]
-    assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB"}]
+    assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB", "verdict": None}]
 
 
 def test_rate_question_marks_learner_ranks_false_for_a_recording(derivations, db, w1):
@@ -227,6 +236,7 @@ def test_rate_question_marks_learner_ranks_false_for_a_recording(derivations, db
     rate question tells the client so it can label the buttons a veto,
     not a rank.
     """
+    _provide(db, w1.id, "recording", items=[{"sha": "r1"}])
     items = rs.build_queue(derivations, budget=50)
     rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
                 and i["kind"] == "recording")
@@ -234,6 +244,7 @@ def test_rate_question_marks_learner_ranks_false_for_a_recording(derivations, db
 
 
 def test_rate_question_marks_learner_ranks_true_for_a_picture(derivations, db, w1):
+    _provide(db, w1.id, "picture", items=[{"sha": "p1"}])
     items = rs.build_queue(derivations, budget=50)
     rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
                 and i["kind"] == "picture")
@@ -247,6 +258,8 @@ def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations
     on a learner-ranking role (a picture's, learner_ranks True) they keep
     their original vocabulary.
     """
+    _provide(db, w1.id, "recording", items=[{"sha": "r1"}])
+    _provide(db, w1.id, "picture", items=[{"sha": "p1"}])
     items = rs.build_queue(derivations, budget=50)
     recording = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
                      and i["kind"] == "recording")
@@ -1617,7 +1630,15 @@ def test_http_index_serves_html(live_server):
 
 
 def test_http_api_queue_returns_json_list(live_server, w1):
-    port, _db_path = live_server
+    port, db_path = live_server
+    # w1's needs otherwise have no candidate at all, and so no rate
+    # question (spec 5 r7 F4) -- seed one so the queue names w1 (the
+    # server thread owns the db connection; write through a second one
+    # to the same WAL file, as test_http_answer_post_appends_row does in
+    # reverse).
+    seed_db = SyllabusDb(db_path)
+    _provide(seed_db, w1.id, "picture", items=[{"sha": "p1"}])
+    seed_db.close()
     status, body = _get(port, "/api/queue")
     assert status == 200
     items = json.loads(body)
@@ -2058,7 +2079,39 @@ def test_load_context_session_cap_comes_from_providers_yaml_learner_quota(tmp_pa
         "quotas:\n  learner: {max_asks: 3}\n", encoding="utf-8")
 
     ctx = rs.load_context(root)
+    # Each word's needs otherwise have no candidate, so none is a rate
+    # question yet (spec 5 r7 F4) -- give every word a picture candidate
+    # so the session cap, not a lack of anything to ask, is what limits
+    # questions() to 3.
+    for i in range(5):
+        _provide(ctx.derivations.db, f"w{i}", "picture", items=[{"sha": f"p{i}"}])
 
     assert ctx.learner_budget == 3
     assert len(ctx.questions()) == 3
     assert ctx.syllabus.assessments is ctx.cache
+
+
+def test_rejected_candidates_carry_the_deciding_verdict(derivations, db, w1):
+    _provide(db, w1.id, "picture", query="rice photo", items=[{"sha": "sA"}, {"sha": "sB"}])
+    _judge(db, w1.id, "picture", "sA", True, evidence="clear rice bowl")
+    _judge(db, w1.id, "picture", "sB", False, evidence="a cat")
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
+                and i["kind"] == "picture")
+    assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB", "verdict": "judge: fail — a cat"}]
+
+
+def test_a_need_with_no_candidate_and_a_source_left_is_not_a_rate_question(derivations, db, w1):
+    """Spec 5 r7 section 1: nothing to rate -- the machine has sources
+    left, so the learner is not asked yet (F4)."""
+    _provide(db, w1.id, "picture", query="rice photo", items=[])   # one `nothing` outcome
+    items = rs.build_queue(derivations, budget=50)
+    assert not [i for i in items if i["subject"] == w1.id and i["kind"] == "picture"]
+
+
+def test_a_need_with_no_candidate_and_no_source_left_is_a_direction_question(derivations, db, w1):
+    for source in ("openverse", "wikimedia", "pexels"):
+        _provide(db, w1.id, "picture", backend=source, query="rice photo", items=[])
+    items = rs.build_queue(derivations, budget=50)
+    mine = [i for i in items if i["subject"] == w1.id and i["kind"] == "picture"]
+    assert [i["type"] for i in mine] == ["direction"]

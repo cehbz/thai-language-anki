@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 6, proposed 2026-09-12 against principles r4 and architecture
+Revision 7, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -24,6 +24,15 @@ Revision log:
   rejected thumbnails, a 1 to 4 scale and no Thai anywhere; the learner
   could not tell what was being asked. User ruling 2026-09-12: the
   screen shows at least what the Anki cards show, formatted like them.
+- r7 2026-09-12: a rate question requires a candidate (a need with none
+  waits for the machine while a source is left, and arrives as a
+  direction request once exhausted); a recording renders as a player; a
+  rejected candidate shows its deciding verdict (mechanical on a
+  recording, judge on a picture); the empty-artifact text names the
+  check. Evidence: 2026-09-12, a sentence recording need with one
+  Forvo `nothing` and TTS untried reached the learner as a 1 to 4
+  question with nothing shown; the learner could not tell what was
+  asked. User approval 2026-09-12.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -52,13 +61,17 @@ stops; unanswered questions stay queued. Question kinds:
    front and back through the model's own template and CSS (what
    `/api/cards` serves the gallery; r6), the current artifact WITH the
    judge's verdict line, rejected candidates as thumbnails at judgeable
-   size (click to enlarge), the query read-only. Actions: 1
+   size (click to enlarge), each captioned with its deciding verdict
+   (r7); a recording renders as a player wherever a picture would be a
+   thumbnail, the query read-only. Actions: 1
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
    3 acceptable / 4 good; optional one-line note (the Direction). With
    no current artifact only 1 (none of these) and 2 (use the picked
    candidate) are offered, and the block says so (r6). Presentation at
    card size for the current artifact — the presentation is part of the
-   question (F4, F9).
+   question (F4, F9). A need with no candidate on record is not a rate
+   question: while it has a source left it is the machine's; exhausted,
+   it is kind 2 (r7).
 2. **Direction request** (exhausted subject): what was tried — phrases,
    sources, best candidates, judge reasons — plus two actions: type a
    direction, or supply an artifact (file path or URL; a URL is fetched
