@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 5, proposed 2026-09-11 against principles r4 and architecture
+Revision 6, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -16,6 +16,14 @@ Revision log:
   named; a note that fails to save stays in the box and says so.
   Evidence: notes typed while the server was down vanished silently; a
   note on a card carried no trace of which rendering it was about.
+- r6 2026-09-12: a rate question shows every compiled card of its
+  subject, front and back, through the model's own template and CSS,
+  above the artifact block; with no current artifact it offers only
+  "none of these" and "use the picked candidate" and says so. Evidence:
+  the first queue question (a scene need, no current picture) showed ten
+  rejected thumbnails, a 1 to 4 scale and no Thai anywhere; the learner
+  could not tell what was being asked. User ruling 2026-09-12: the
+  screen shows at least what the Anki cards show, formatted like them.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -40,12 +48,16 @@ expected gain first. Pull-based: the learner answers any number and
 stops; unanswered questions stay queued. Question kinds:
 
 1. **Rate a picture** (word or scene role): shows the English gloss (and
-   for scenes the sentence gloss), the current artifact WITH the judge's
-   verdict line, rejected candidates as thumbnails at judgeable size
-   (click to enlarge), the query read-only. Actions: 1 unacceptable-none
-   / 2 unacceptable-use-this (then pick a thumbnail) / 3 acceptable /
-   4 good; optional one-line note (the Direction). Presentation at card
-   size for the current artifact — the presentation is part of the
+   for scenes the sentence gloss), every compiled card of the subject
+   front and back through the model's own template and CSS (what
+   `/api/cards` serves the gallery; r6), the current artifact WITH the
+   judge's verdict line, rejected candidates as thumbnails at judgeable
+   size (click to enlarge), the query read-only. Actions: 1
+   unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
+   3 acceptable / 4 good; optional one-line note (the Direction). With
+   no current artifact only 1 (none of these) and 2 (use the picked
+   candidate) are offered, and the block says so (r6). Presentation at
+   card size for the current artifact — the presentation is part of the
    question (F4, F9).
 2. **Direction request** (exhausted subject): what was tried — phrases,
    sources, best candidates, judge reasons — plus two actions: type a

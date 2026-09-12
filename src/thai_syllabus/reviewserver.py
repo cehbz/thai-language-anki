@@ -1196,6 +1196,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
   .current-artifact { max-width: min(90vw, 640px); }
   .verdict { color: #9aa4b1; font-size: 14px; }
+  .subject-cards { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+  .subject-cards .kind { color: #6b7480; font-size: 12px; text-transform: uppercase; }
+  .subject-cards .face { border: 1px solid #2a2f36; border-radius: 8px; padding: 10px; }
+  .subject-cards .face-label { color: #6b7480; font-size: 12px; margin-bottom: 4px; }
   .query { color: #6b7480; font-size: 13px; font-family: monospace; }
   .thumbs { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
   .thumbs img {
@@ -1355,9 +1359,52 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     return img;
   }
 
+  // Spec 5 r6 section 1 kind 1: a question shows every compiled card of
+  // its subject, front and back, through the model's own template and
+  // CSS -- the same HTML /api/cards serves the gallery, nothing
+  // recomposed here. The cards are fetched once per page and reused.
+  function ensureCards(cb) {
+    if (galleryCards.length) { cb(); return; }
+    fetch("/api/cards").then(function (r) { return r.json(); }).then(function (cards) {
+      galleryCards = cards;
+      cb();
+    });
+  }
+
+  function fillSubjectCards(container, subject) {
+    container.innerHTML = "";
+    var mine = galleryCards.filter(function (c) { return c.subject === subject; });
+    if (!mine.length) {
+      container.appendChild(el("div", { "class": "empty" }, "no card compiles for this subject yet"));
+      return;
+    }
+    mine.forEach(function (card) {
+      var style = document.createElement("style");
+      style.textContent = card.css;
+      container.appendChild(style);
+      container.appendChild(el("div", { "class": "kind" }, card.family + " / " + card.kind));
+      var front = el("div", { "class": "face" });
+      front.appendChild(el("div", { "class": "face-label" }, "front"));
+      var frontFace = el("div", { "class": "card" });
+      frontFace.innerHTML = card.front_html;
+      front.appendChild(frontFace);
+      container.appendChild(front);
+      var back = el("div", { "class": "face" });
+      back.appendChild(el("div", { "class": "face-label" }, "back"));
+      var backFace = el("div", { "class": "card" });
+      backFace.innerHTML = card.back_html;
+      back.appendChild(backFace);
+      container.appendChild(back);
+    });
+  }
+
   function renderRate(q, box) {
     box.appendChild(el("div", {}, q.subject + " (" + q.kind + ")"));
     if (q.query) { box.appendChild(el("div", { "class": "query" }, "query: " + q.query)); }
+    var cards = el("div", { "class": "subject-cards" });
+    cards.appendChild(el("div", { "class": "empty" }, "loading the subject's cards"));
+    box.appendChild(cards);
+    ensureCards(function () { fillSubjectCards(cards, q.subject); });
     if (q.current) {
       // "card" carries compile.CARD_CSS's own sizing (F4: judge the
       // artifact at the size the card will actually show it).
@@ -1366,7 +1413,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       box.appendChild(cur);
       if (q.current.verdict) { box.appendChild(el("div", { "class": "verdict" }, q.current.verdict)); }
     } else {
-      box.appendChild(el("div", { "class": "empty" }, "no current artifact"));
+      // Spec 5 r6: with nothing current there is nothing to rate 3 or 4;
+      // the question is pick one of the rejected candidates, or none.
+      box.appendChild(el("div", { "class": "empty" },
+        "no current " + q.kind + ": every candidate below failed the judge -- "
+        + "click one to enlarge it, then 2 to use it, or 1 for none of these "
+        + "(n gives the next search a direction)"));
     }
     if (q.rejected && q.rejected.length) {
       var thumbs = el("div", { "class": "thumbs" });
@@ -1375,7 +1427,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     }
     var actions = el("div", { "class": "actions" });
     var labels = rateLabels(q.learner_ranks);
-    [1, 2, 3, 4].forEach(function (n) {
+    var offered = q.current ? [1, 2, 3, 4] : [1, 2];
+    if (!q.current) { labels = { 1: "1 none of these", 2: "2 use the picked candidate" }; }
+    offered.forEach(function (n) {
       var btn = el("button", { "class": n >= 3 ? "good" : "bad" }, labels[n]);
       btn.addEventListener("click", function () { answerRate(q, n); });
       actions.appendChild(btn);
