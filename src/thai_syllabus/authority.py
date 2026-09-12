@@ -21,6 +21,7 @@ AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
     "recording-for-word": ("mechanical", "judge"),  # learner may flag, never outrank
     "recording-for-sentence": ("mechanical", "judge"),
     "rendition-for-pair": ("rendition",),   # the one-speaker check
+    "pronunciation-for-word": ("judge",),
 }
 
 
@@ -33,6 +34,7 @@ ROLE_FOR_KIND: dict[str, str] = {
     "rendition": "rendition-for-pair",
     "sentence": "sentence-for-target",
     "grapheme-keyword": "grapheme-keyword-for-grapheme",
+    "pronunciation": "pronunciation-for-word",
 }
 
 

@@ -158,6 +158,11 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
         except (KeyError, TypeError) as e:
             errors.append(f"words[{i}]: malformed row ({e})")
             continue
+        if w.pron.corroboration not in ("engines_agree", "curated_exception", "adjudicated",
+                                        "disputed"):
+            errors.append(f"words[{i}] ({w.id!r}): unknown corroboration "
+                          f"{w.pron.corroboration!r}")
+            continue
         if w.id in seen:
             errors.append(f"words[{i}]: duplicate id {w.id!r}")
             continue

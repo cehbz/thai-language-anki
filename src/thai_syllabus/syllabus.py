@@ -462,6 +462,15 @@ class Syllabus:
             self.check_sentence(s)
         return dataclasses.replace(self, sentences=self.sentences + tuple(new))
 
+    def with_words(self, words: Sequence[Word]) -> "Syllabus":
+        """This Syllabus over `words` in place of its own -- the whole
+        list, in its own order, not an addition (run._materialize_adjudications
+        writes back every row, the changed ones replaced). A fresh
+        instance, so `_word_index` and every other cached_property is
+        recomputed rather than carried over stale.
+        """
+        return dataclasses.replace(self, words=tuple(words))
+
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
               ) -> list[tuple[Sentence, tuple[Target, ...]]]:
         """The drafts worth adopting, greedily: the one filling the most

@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, Directio
                                     LearnerKey, LlmPromptKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
-from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
+from thai_syllabus.curated import CuratedBundle, RulebookConfig, load_words, save_curated
 from thai_syllabus.derivations import (
     available_need_keys,
     available_needs,
@@ -36,6 +37,7 @@ from thai_syllabus.derivations import (
 )
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId, WordId
+from thai_syllabus.phonology import Engines
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import FetchBackend, LlmBackend, RawAnswer, TtsBackend
 from thai_syllabus.record import drafted_phrase, parse_phrases, rows_for
@@ -220,11 +222,22 @@ class _BatchTransport:
     def results(self, batch_id):
         return self._results.get(batch_id, {})
 
-    def complete_all(self, batch_id, *, passed: bool):
+    def complete_all(self, batch_id, *, passed: bool, value_for=None):
+        """Every question in the batch answered. `value_for` is applied to
+        the request's own prompt text when given, so one batch can mix
+        answer shapes: a Mapping it returns is the judge's JSON body
+        itself (the pronunciation role's `{"syllables": [...], "gloss":
+        ...}`, assessor.parse_pronunciation), anything else is the generic
+        `{"value": ...}` verdict `passed` produces.
+        """
         self._status[batch_id] = "ended"
-        self._results[batch_id] = {
-            custom_id: Completion(text=json.dumps({"value": passed, "evidence": "ok"}))
-            for custom_id in self._requests[batch_id]}
+        results = {}
+        for custom_id, (prompt, _attachments) in self._requests[batch_id].items():
+            value = passed if value_for is None else value_for(prompt)
+            body = ({**value, "evidence": "ok"} if isinstance(value, dict)
+                    else {"value": value, "evidence": "ok"})
+            results[custom_id] = Completion(text=json.dumps(body, ensure_ascii=False))
+        self._results[batch_id] = results
 
 
 @pytest.fixture
@@ -515,6 +528,76 @@ def test_a_word_whose_targets_this_run_adopted_leaves_available_and_every_bucket
            + report.unserved + report.budgeted + report.deferred)
 
 
+# --- adjudication: the judge's pronunciation written to words.yaml ---------
+
+def _adjudication_value(prompt):
+    """The judge's answer per prompt: the pronunciation body for the
+    adjudication ask (assessor.pronunciation_prompt's own opening line),
+    a plain pass for every other question in the same batch."""
+    if "adjudicating the pronunciation" in prompt:
+        return {"syllables": [{"segments": ["kʰ", "a", "w"], "vowel_length": "long",
+                               "tone": "falling"}], "gloss": "rice"}
+    return True
+
+
+def _spy_on_the_adjudication_ask(monkeypatch) -> list[list[str]]:
+    """Per adjudication_attempt call, the words still disputed on the
+    ctx it was handed -- what the ask itself would be about."""
+    seen: list[list[str]] = []
+    real = run_mod.adjudication_attempt
+
+    def spy(ctx):
+        seen.append([str(w.id) for w in ctx.syllabus.words
+                     if w.pron.corroboration == "disputed"])
+        return real(ctx)
+
+    monkeypatch.setattr(run_mod, "adjudication_attempt", spy)
+    return seen
+
+
+def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_words_yaml(
+        tmp_path, fake_search, fake_batch, monkeypatch):
+    disputed = word("rice", "ข้าว", "rice", corroboration="disputed",
+                    syllables=(syl(onset="k", vowel="a", coda="w", length="short", tone="mid"),))
+    root = _deck(tmp_path, (disputed, FISH),
+                 (target("rice/receptive", "rice"), target("fish/receptive", "fish")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    judged = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="falling"),)
+    ctx.engines = Engines(g2p=lambda w: judged, tone=lambda w: "falling")
+    seen = _spy_on_the_adjudication_ask(monkeypatch)
+    r1 = run(ctx, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
+    r2 = run(ctx, budgets={})
+    assert r2.adjudicated == 1
+    rows = load_words(root / "curated" / "words.yaml")
+    assert [w.id for w, _c in rows] == ["rice", "fish"]   # no row lost, no row moved
+    rice = next(w for w, _c in rows if w.id == "rice")
+    assert rice.pron.corroboration == "adjudicated" and rice.pron.syllables == judged
+    # The ordering _run_pass depends on: r2's resolve materialized "rice"
+    # and `with_words` put the written Word on ctx.syllabus BEFORE the
+    # adjudication ask ran, so the same run never asks about it again.
+    assert seen == [["rice"], []]
+    assert ctx.syllabus.word(WordId("rice")).pron.corroboration == "adjudicated"
+
+
+def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
+        tmp_path, fake_search, fake_batch, caplog):
+    """Spec 3 r28 section 5: the judge alone is not corroboration --
+    words.yaml is untouched and the word is logged and left disputed."""
+    disputed = word("rice", "ข้าว", "rice", corroboration="disputed")
+    root = _deck(tmp_path, (disputed,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    ctx.engines = Engines(g2p=lambda w: None, tone=lambda w: None)
+    r1 = run(ctx, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
+    with caplog.at_level(logging.INFO, logger="thai_syllabus.run"):
+        r2 = run(ctx, budgets={})
+    assert r2.adjudicated == 0
+    assert "not corroborated" in caplog.text
+    rice = next(w for w, _c in load_words(root / "curated" / "words.yaml") if w.id == "rice")
+    assert rice.pron.corroboration == "disputed"
+
+
 # --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
 
 def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_batch):
@@ -781,6 +864,10 @@ class _Syl:
     targets: list = dataclasses.field(default_factory=list)
     sentences: tuple = ()
     pairs: tuple = ()
+    # the real Syllabus's own field, read by attempts.adjudication_attempt
+    # and derivations.adjudications: no word here is uncorroborated, so
+    # neither pass does anything over this fake
+    words: tuple = ()
 
     def gaps(self):
         return self._gaps
@@ -832,9 +919,11 @@ class _Q:
 
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
            preference=AttemptResult(attempted=False), assess=None,
-           phrase_result=AttemptResult(attempted=False), query="q"):
+           phrase_result=AttemptResult(attempted=False), query="q",
+           adjudication_result=AttemptResult(attempted=False)):
     """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
-    preference_attempt/adoptable_drafts/picture_query_for. A `results`
+    adjudication_attempt/preference_attempt/adoptable_drafts/
+    picture_query_for. A `results`
     entry that is an exception class is raised instead of returned.
     `assess` is assess_first's fixed return for every need -- None keeps
     the fall-through to the source. `query` is every picture need's
@@ -860,6 +949,12 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
             raise phrase_result("no drafter")
         return phrase_result
 
+    def fake_adjudication_attempt(ctx):
+        if isinstance(adjudication_result, type) and issubclass(adjudication_result, Exception):
+            raise adjudication_result("no judge")
+        return adjudication_result
+
+    monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
     monkeypatch.setattr(run_mod, "picture_query_for", lambda ctx, need: query)
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: assess)
@@ -869,6 +964,41 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
     monkeypatch.setattr(run_mod, "adoptable_drafts",
                         lambda cache, syllabus, **kwargs: list(drafts))
     return calls
+
+
+def test_a_pronunciation_question_rides_the_batch_and_is_not_a_pending_need(db, monkeypatch):
+    """Spec 3 r28: the adjudication pass owns no need bucket; its question
+    is submitted with the run's batch, and `pending` still counts needs
+    only, so the identity holds with pending 0."""
+    _patch(monkeypatch, {}, adjudication_result=AttemptResult(
+        True, questions=[_Q("rice", "pronunciation")]))
+    assessor = _Assessor()                       # the module's fake; records submit()
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",))), assessor=assessor), {})
+    assert assessor.submitted and any(q.question.kind == "pronunciation"
+                                      for q in assessor.submitted[0])
+    assert report.pending == 0 and report.attempted == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_pronunciation_question_in_the_resolved_batch_opens_no_preference_question(
+        db, monkeypatch):
+    """Spec 3 r28: a word rides the batch for its pronunciation, which is
+    no need of its own -- resolving that batch must not fold
+    pictures_awaiting_preference over the word and raise a picture
+    preference question nothing asked for. Only a picture key in the
+    resolved batch hands its subject to preference_attempt."""
+    handed = []
+
+    def fake_preference_attempt(ctx, subjects):
+        handed.append(list(subjects))
+        return AttemptResult(True, questions=[_Q(s, "picture") for s in subjects])
+
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "preference_attempt", fake_preference_attempt)
+    assessor = _Assessor(outstanding=("batch-0", frozenset({("rice", "pronunciation")})))
+    report = run(_ctx(db, _Syl(_Gaps()), assessor), {})
+    assert handed == [[]] and assessor.submitted == [] and report.preferences == 0
 
 
 def test_run_asks_one_source_per_need_and_leaves_escalation_to_the_next_run(db, monkeypatch):
@@ -1573,6 +1703,20 @@ def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
     assert assessor.submitted == []                  # nothing goes out after that
 
 
+def test_an_unreachable_adjudication_attempt_stops_the_run_with_the_identity_intact(
+        db, monkeypatch):
+    """Spec 3 r28: the adjudication ask is the last one before the need
+    loop, so a judge that dies there defers every queued need -- and the
+    pass owns no bucket of its own, so the identity still holds."""
+    assessor = _Assessor()
+    calls = _patch(monkeypatch, {}, adjudication_result=JudgeUnreachable)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
+    assert calls == [] and report.unreachable is True and assessor.submitted == []
+    assert report.deferred == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
 def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch):
     assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {})
@@ -1810,7 +1954,7 @@ class _AdoptingSyl:
     closes those Targets."""
 
     def __init__(self, unfilled_targets):
-        self.targets, self.sentences, self.pairs = [], (), ()
+        self.targets, self.sentences, self.pairs, self.words = [], (), (), ()
         self._unfilled = tuple(unfilled_targets)
         self._covered: tuple[str, ...] = ()
 
@@ -2144,7 +2288,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
-                           "sentences_adopted", "drafted", "retired", "excluded",
+                           "sentences_adopted", "adjudicated", "drafted", "retired", "excluded",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences"}
 

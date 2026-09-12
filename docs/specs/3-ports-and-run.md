@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 27, proposed 2026-09-12 against principles r4 and architecture
+Revision 28, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -106,6 +106,14 @@ Revision log:
   sentences filled a median of 5 targets, 83 of 318 seven or more ("my
   wife bought a dress, a skirt, a bra, and underwear; I bought a
   shirt" filled six). User ruling and approval 2026-09-12.
+- r28 2026-09-12: one adjudication ask per run over every Word whose
+  pronunciation is not corroborated (role pronunciation-for-word); a
+  verdict two engines corroborate is written to words.yaml as
+  `adjudicated` (spec 1 r13), the rest stay `disputed`; the pass owns no
+  need bucket and `RunReport.adjudicated` counts the words written.
+  Evidence: 246 of 824 words disputed on 2026-09-12; E4 blocks their
+  cards; the pair search needs corroborated members. User approval
+  2026-09-12.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -367,6 +375,17 @@ learner-supplied or learner-nominated recording, or a learner direction
 on the sentence, keeps the sentence (F9); the screen shows it as
 exhausted.
 
+**Adjudication (Word).** One judge ask per run over every Word whose
+pronunciation is not corroborated: role pronunciation-for-word, text
+only, the deck's IPA convention; the verdict is syllables and a gloss.
+Next run, after resolve, each verdict is checked against two engines
+(thaig2p; the rule tone engine): equal to thaig2p on every syllable, or
+equal on segments and length with the tone settled by the tone engine on
+a monosyllable, corroborates the word as `adjudicated` and the run
+writes the pronunciation to words.yaml; otherwise the word stays
+`disputed`, logged and counted. RunReport.adjudicated counts the words
+written. Words are not needs: the pass owns no bucket.
+
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
 (`id  thai  (meaning)` lines); the answer is
@@ -538,6 +557,7 @@ always. The remaining fields count events, not needs.
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |
+| adjudicated | words whose pronunciation this run wrote as adjudicated |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |

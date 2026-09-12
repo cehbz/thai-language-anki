@@ -31,21 +31,38 @@ from thai_syllabus.assessor import (
     _custom_id,
     last_json_object,
     parse_preference,
+    parse_pronunciation,
     picture_fit_prompt,
     picture_preference_prompt,
+    pronunciation_prompt,
     sentence_prompt,
 )
 from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
 from thai_syllabus.cachekeys import BatchMarkerKey, JudgeKey, MechanicalKey, rendition_identity, sha
+from thai_syllabus.rulebook import PRONUNCIATION_RUBRIC
 from thai_syllabus.store import SyllabusDb
 from thai_syllabus.transport import Completion, TransportError
 
 
 def test_no_module_imports_the_old_packages():
+    """phonology.py is the one sanctioned exception (spec 3 r28; the plan's
+    Tech Stack line): it reaches thaig2p and the tone engine in
+    thai_deck_eval.lang, but only inside default_engines() -- so every
+    thai_deck_eval reference in its source must be an indented line (inside
+    a function body), never a top-level (column 0) import; torch/pythainlp
+    then never load at module-import time and unit tests never need them
+    installed. It still carries no thai_deck_gen reference at all, same as
+    every other module.
+    """
     for m in pkgutil.iter_modules(thai_syllabus.__path__):
         src = Path(importlib.import_module(f"thai_syllabus.{m.name}").__file__).read_text()
-        assert "from thai_deck_eval" not in src and "import thai_deck_eval" not in src, m.name
         assert "from thai_deck_gen" not in src and "import thai_deck_gen" not in src, m.name
+        if m.name == "phonology":
+            for line in src.splitlines():
+                if "thai_deck_eval" in line:
+                    assert line[:1] in (" ", "\t"), f"{m.name}: top-level thai_deck_eval reference: {line!r}"
+            continue
+        assert "from thai_deck_eval" not in src and "import thai_deck_eval" not in src, m.name
 
 
 def test_assessor_has_no_authority_data():
@@ -1207,6 +1224,75 @@ def test_sentence_prompt_asks_for_only_the_json_object():
         subject="s", role="sentence-for-target", rubric="R",
         params={"text": "x", "word": "y"}))
     assert "Respond with only that JSON object and no other text." in prompt
+
+
+# --- pronunciation-for-word (spec 3 r28) ------------------------------------
+
+def _pronunciation_question():
+    return AssessQuestion(subject="rice", role="pronunciation-for-word", artifact_sha=None,
+                          rubric=PRONUNCIATION_RUBRIC, params={"thai": "ข้าว", "meaning": "rice (cooked)"},
+                          kind="pronunciation", subject_kind="word")
+
+
+def test_pronunciation_prompt_names_the_word_the_convention_and_the_shape():
+    p = pronunciation_prompt(_pronunciation_question())
+    assert "<deck-field>ข้าว</deck-field>" in p and "rice (cooked)" in p
+    assert "Chao" in p and '"segments"' in p and '"vowel_length"' in p and '"tone"' in p
+    assert "mid, low, falling, high, rising" in p
+
+
+def test_parse_pronunciation_accepts_the_shape():
+    v = parse_pronunciation('{"syllables": [{"segments": ["kʰ", "a", "w"], "vowel_length": "long", '
+                            '"tone": "falling"}], "gloss": "rice"}')
+    assert v.value["syllables"][0]["tone"] == "falling" and v.value["gloss"] == "rice"
+
+
+def test_parse_pronunciation_refuses_a_bad_tone_or_missing_syllables():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": [{"segments": ["k", "a", ""], "vowel_length": "long", '
+                            '"tone": "flat"}]}')
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"gloss": "rice"}')
+
+
+def test_parse_pronunciation_refuses_non_list_segments():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": [{"segments": "kaw", "vowel_length": "long", '
+                            '"tone": "falling"}]}')
+
+
+def test_parse_pronunciation_refuses_the_wrong_segment_count():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": [{"segments": ["k", "a"], "vowel_length": "long", '
+                            '"tone": "falling"}]}')
+
+
+def test_parse_pronunciation_refuses_a_bad_vowel_length():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": [{"segments": ["k", "a", "w"], "vowel_length": "medium", '
+                            '"tone": "falling"}]}')
+
+
+def test_parse_pronunciation_refuses_a_non_mapping_syllable_entry():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": ["kaw"]}')
+
+
+def test_parse_pronunciation_refuses_an_empty_syllables_list():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": []}')
+
+
+def test_parse_pronunciation_refuses_a_non_string_segment():
+    with pytest.raises(TransportError):
+        parse_pronunciation('{"syllables": [{"segments": ["k", 1, "w"], "vowel_length": "long", '
+                            '"tone": "falling"}]}')
+
+
+def test_parse_pronunciation_normalises_a_null_coda_to_empty_string():
+    v = parse_pronunciation('{"syllables": [{"segments": ["k", "a", null], "vowel_length": "long", '
+                            '"tone": "falling"}], "gloss": "g"}')
+    assert v.value["syllables"][0]["segments"] == ["k", "a", ""]
 
 
 # --- Assessor.inline: the transport, not the shape of one result -----------

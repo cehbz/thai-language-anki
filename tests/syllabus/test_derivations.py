@@ -16,6 +16,7 @@ from thai_syllabus.derivations import (
     Challenger,
     CurrentBest,
     JudgeVerdict,
+    adjudications,
     adoptable_drafts,
     aged_out,
     all_needs,
@@ -2232,3 +2233,34 @@ def test_deciding_verdict_is_the_judge_row_on_a_picture(cache):
 
 def test_deciding_verdict_is_none_with_no_row(cache):
     assert deciding_verdict(cache, "rice", "picture", "c" * 64, current_rubric={}) is None
+
+
+# --- adjudications: the newest fresh pronunciation verdict per disputed word -
+
+def _pronunciation_row(subject, tone, *, ts, rubric="R"):
+    """One pronunciation-for-word verdict row, in the shape
+    assessor.parse_pronunciation's value takes."""
+    key = JudgeKey.for_rule(rubric, "", subject, "pronunciation-for-word")
+    return Answer(port="assess", backend="judge", key=key.encode(), key_sha="k", subject=subject,
+                  question={"role": "pronunciation-for-word", "kind": "pronunciation",
+                            "rubric": rubric, "artifact_sha": None, "subject_kind": "word"},
+                  answer={"value": {"syllables": [{"segments": ["kʰ", "a", "w"],
+                                                   "vowel_length": "long", "tone": tone}],
+                                    "gloss": "rice"}}, cost=0.0, ts=ts)
+
+
+def test_adjudications_returns_the_newest_fresh_verdict_per_disputed_word(cache):
+    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),
+                               word("eat", "กิน", "eat")), targets=())
+    cache.rows.append(_pronunciation_row("rice", "low", ts=1))
+    cache.rows.append(_pronunciation_row("rice", "falling", ts=3))
+    out = adjudications(cache, syllabus, current_rubric={"pronunciation-for-word": "R"})
+    assert list(out) == ["rice"] and out["rice"][0].tone == "falling"
+
+
+def test_adjudications_ignores_a_verdict_under_a_superseded_rubric(cache):
+    """A stale verdict is not a fresh one (derivations._stale): the word
+    stays absent and its question is asked again."""
+    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),), targets=())
+    cache.rows.append(_pronunciation_row("rice", "falling", ts=1, rubric="old"))
+    assert adjudications(cache, syllabus, current_rubric={"pronunciation-for-word": "R"}) == {}

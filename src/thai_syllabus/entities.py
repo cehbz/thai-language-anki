@@ -21,9 +21,10 @@ Voice = Literal["learner_voice", "other_voice"]
 Tone = Literal["mid", "low", "falling", "high", "rising"]
 VowelLength = Literal["short", "long"]
 
-# How a word's pronunciation was adjudicated. Only "disputed" blocks card
-# emission (rule word/pronunciation-corroborated).
-Corroboration = Literal["engines_agree", "curated_exception", "disputed"]
+# How a word's pronunciation was corroborated (spec 1 r13): both engines
+# agree; a curated exception; the judge plus one engine (the adjudication
+# pass, spec 3 r28). Only "disputed" blocks card emission.
+Corroboration = Literal["engines_agree", "curated_exception", "adjudicated", "disputed"]
 
 
 def is_corroborated(c: Corroboration) -> bool:

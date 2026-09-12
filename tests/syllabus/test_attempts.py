@@ -13,8 +13,9 @@ from PIL import Image as PILImage
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _pool, _sentence_prompt,
-                                    assess_first, attempt, current_best_of, phrase_attempt,
-                                    picture_query_for, sentence_attempt, sources_for)
+                                    adjudication_attempt, assess_first, attempt, current_best_of,
+                                    phrase_attempt, picture_query_for, sentence_attempt,
+                                    sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
@@ -41,7 +42,8 @@ from .builders import target, thai_of, word
 _RUBRICS = {"picture-for-word": PICTURE_FIT_RUBRIC,
             "picture-preference": PICTURE_PREFERENCE_RUBRIC,
             "scene-for-sentence": PICTURE_FIT_RUBRIC,
-            "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
+            "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC,
+            "pronunciation-for-word": "R"}
 
 _MALE = ("th-M-a", "th-M-b")
 _FEMALE = ("th-F-a", "th-F-b")
@@ -2733,3 +2735,22 @@ def test_phrase_attempt_ignores_an_answer_naming_a_subject_it_never_asked_for(tm
                       json.dumps({"phrases": [{"subject": "not-asked", "phrase": "irrelevant"}]}))
     phrase_attempt(ctx)
     assert drafted_phrase(ctx.db.assessments_of("not-asked")) is None
+
+
+# --- adjudication_attempt: one pronunciation ask per uncorroborated word ----
+
+def test_adjudication_attempt_collects_one_question_per_disputed_word(tmp_path):
+    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),
+                               word("eat", "กิน", "eat")),
+                        targets=(target("rice/receptive", "rice"),))
+    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={"judge": _batch_judge()})
+    res = adjudication_attempt(ctx)
+    assert res.attempted and [q.question.subject for q in res.questions] == ["rice"]
+    q = res.questions[0].question
+    assert q.role == "pronunciation-for-word" and q.kind == "pronunciation"
+    assert q.params == {"thai": "ข้าว", "meaning": "rice"}
+
+
+def test_adjudication_attempt_is_not_attempted_when_every_word_is_corroborated(tmp_path):
+    ctx = _sourcing(tmp_path, _word_syllabus(), backends={}, assess={"judge": _batch_judge()})
+    assert adjudication_attempt(ctx).attempted is False

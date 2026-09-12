@@ -27,8 +27,10 @@ from datetime import date
 
 from . import record
 from .authority import AUTHORITY_ORDER, role_for
-from .entities import Sentence, Target
+from .entities import Sentence, Syllable, Target, is_corroborated
+from .ids import WordId
 from .media import Provenance, Speaker
+from .phonology import syllables_from_verdict
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
@@ -39,7 +41,7 @@ __all__ = [
     "CurrentBest", "current_best", "learner_ranks", "vetoed",
     "role_of", "adoptable_drafts", "refused_drafts",
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
-    "pending",
+    "pending", "adjudications",
     "attempts_since_change", "tried_sources", "next_source",
     "ExhaustedStatus", "exhausted", "sentence_exhausted",
     "improved",
@@ -460,6 +462,36 @@ def pending(cache: CacheReader, subject: str, kind: str) -> bool:
         return False
     _batch_id, subjects, _roles, kinds = found
     return (subject, kind) in zip(subjects, kinds, strict=True)
+
+
+# --- adjudications ------------------------------------------------------
+
+def adjudications(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str]
+                  ) -> dict[WordId, tuple[Syllable, ...]]:
+    """Per word still lacking a corroborated pronunciation, the newest
+    fresh pronunciation-for-word verdict's syllables (spec 3 r28); a
+    word with none is absent. A verdict under a superseded rubric is not
+    fresh (`stale`), so the word waits for the re-ask instead.
+
+    What the run then does with the answer -- check it against the
+    engines, write the corroborated ones to words.yaml -- is
+    run._materialize_adjudications; this is the fold that says which
+    verdicts are on offer.
+    """
+    out: dict[WordId, tuple[Syllable, ...]] = {}
+    for w in syllabus.words:
+        if is_corroborated(w.pron.corroboration):
+            continue
+        rows = [r for r in cache.assessments_of(str(w.id))
+                if r.port == "assess" and r.backend == "judge"
+                and r.question.get("role") == "pronunciation-for-word"
+                and not _stale(r, current_rubric)]
+        if not rows:
+            continue
+        value = max(rows, key=lambda r: r.ts).answer.get("value")
+        if isinstance(value, Mapping) and value.get("syllables"):
+            out[w.id] = syllables_from_verdict(value)
+    return out
 
 
 # --- next_source / attempts_since_change --------------------------------

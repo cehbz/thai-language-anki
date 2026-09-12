@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 12, proposed 2026-09-11 against principles r4 and architecture
+Revision 13, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -34,6 +34,8 @@ Revision log:
 - r12 2026-09-11: `coverage/exercise-depth` (measure, F5) replaces the
   parked exercise-latency entry: adopted sentences per word with a filled
   Target. Evidence: 253 sentences use 669 words, 452 of them once.
+- r13 2026-09-12: Corroboration gains "adjudicated" (the judge plus one
+  engine, spec 3 r28). User approval 2026-09-12.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -66,8 +68,11 @@ Word                                # language model
 
 Pronunciation
   syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone
-  corroboration: Corroboration      # see rules R-PRON; uncorroborated
-                                    # words exist but block card emission
+  corroboration: Corroboration      # engines_agree | curated_exception |
+                                    # adjudicated (r13: the judge plus one
+                                    # engine, spec 3 r28) | disputed; see
+                                    # rules R-PRON; a disputed word exists
+                                    # but blocks card emission
 
 SoundConfusion                      # language model
   id: ConfusionId                   # e.g. "tone:mid-low"

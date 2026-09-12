@@ -29,7 +29,7 @@ __all__ = [
     "Price", "JudgeBackend",
     "UNTRUSTED", "deck_field",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
-    "parse_preference", "last_json_object",
+    "pronunciation_prompt", "parse_preference", "parse_pronunciation", "last_json_object",
     "DurationBackend", "FormatBackend", "RenditionBackend",
     "ffprobe_duration_seconds",
 ]
@@ -538,6 +538,53 @@ def sentence_prompt(q: AssessQuestion) -> str:
            'text.')
 
 
+def pronunciation_prompt(q: AssessQuestion) -> str:
+    p = q.params
+    return (f"You are adjudicating the pronunciation of one Thai word for a flashcard deck.\n"
+           f"{UNTRUSTED}\n"
+           f"Word: {deck_field(p.get('thai', ''))}\n"
+           f"Meaning: {deck_field(p.get('meaning') or '(none given)')}\n\n"
+           f"Rubric:\n{q.rubric or ''}\n\n"
+           'Respond with a JSON object: {"syllables": [{"segments": [<onset>, <vowel>, <coda>], '
+           '"vowel_length": "short"|"long", "tone": "mid"|"low"|"falling"|"high"|"rising"}, ...], '
+           '"gloss": <short English gloss>, "evidence": <one sentence: the spelling rule or '
+           'source>}. Respond with only that JSON object and no other text.')
+
+
+_PRONUNCIATION_TONES = ("mid", "low", "falling", "high", "rising")
+
+
+def parse_pronunciation(text: str, question: "AssessQuestion | None" = None) -> RawVerdict:
+    """Parses a pronunciation_prompt response: `value` is
+    {"syllables": [{"segments": [onset, vowel, coda], "vowel_length", "tone"}, ...], "gloss"}.
+    A `null` coda normalises to "" (Syllable's invariant: coda is "" for an
+    open syllable); onset, vowel, and a non-null coda must each already be
+    a string -- validated, not coerced, so a numeric or other non-string
+    segment refuses rather than silently stringifying. Raises TransportError
+    for any other shape, which caches nothing (spec 3 section 6a).
+    `question` is unused -- see parse_preference's docstring.
+    """
+    data = last_json_object(text)
+    if not isinstance(data, Mapping) or not isinstance(data.get("syllables"), list) \
+            or not data["syllables"]:
+        raise _not_a_verdict(text)
+    syllables = []
+    for s in data["syllables"]:
+        segs = s.get("segments") if isinstance(s, Mapping) else None
+        if (not isinstance(segs, list) or len(segs) != 3 or s.get("vowel_length") not in ("short", "long")
+                or s.get("tone") not in _PRONUNCIATION_TONES):
+            raise _not_a_verdict(text)
+        onset, vowel, coda = segs
+        if coda is None:
+            coda = ""
+        if not all(isinstance(x, str) for x in (onset, vowel, coda)):
+            raise _not_a_verdict(text)
+        syllables.append({"segments": [onset, vowel, coda], "vowel_length": s["vowel_length"],
+                          "tone": s["tone"]})
+    return RawVerdict(value={"syllables": syllables, "gloss": str(data.get("gloss") or "")},
+                      evidence=data.get("evidence"))
+
+
 def _not_a_verdict(text: str) -> TransportError:
     return TransportError(f"judge answered without a verdict: {text.strip()[:80]!r}")
 
@@ -636,6 +683,7 @@ _DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
     "picture-for-word": (picture_fit_prompt, _generic_value_parser),
     "sentence-for-target": (sentence_prompt, _generic_value_parser),
     "picture-preference": (picture_preference_prompt, parse_preference),
+    "pronunciation-for-word": (pronunciation_prompt, parse_pronunciation),
 }
 
 

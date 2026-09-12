@@ -23,6 +23,7 @@ from thai_syllabus.entities import (
     clauses_from_json,
     clauses_to_json,
     element_word,
+    is_corroborated,
     render,
 )
 from thai_syllabus.media import Provenance
@@ -76,6 +77,12 @@ def test_word_classifier_references_another_word_id():
     w = Word(id=WordId("rice"), thai="ข้าว", pron=pron(syl("kh", "aː", "w")),
               meaning="cooked rice", classifier=plate)
     assert w.classifier == plate
+
+
+def test_adjudicated_is_corroborated_and_disputed_is_not():
+    assert is_corroborated("adjudicated") is True
+    assert is_corroborated("engines_agree") is True
+    assert is_corroborated("disputed") is False
 
 
 # --- SoundConfusion --------------------------------------------------------

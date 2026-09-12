@@ -27,6 +27,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
+from pathlib import Path
 from typing import Any, Literal
 
 from . import record
@@ -47,9 +48,10 @@ from .derivations import (
     sentence_exhausted,
     unjudged_candidates,
 )
-from .entities import Target, Word
+from .entities import Target, Word, is_corroborated
 from .ids import PairId, WordId
 from .media import Speaker
+from .phonology import Engines
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .record import DRAFT_SUBJECT, PHRASE_SUBJECT
 from .safety import Guard
@@ -62,7 +64,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
-           "phrase_attempt", "picture_query_for",
+           "phrase_attempt", "picture_query_for", "adjudication_attempt",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
 
@@ -194,6 +196,17 @@ class Sourcing:
     # which case a retirement is still counted and logged, just not
     # guarded.
     guard: Guard | None = None
+    # The deck's curated/ directory (spec 2 section 1), so the run can
+    # write back the one curated file it owns a change to: words.yaml,
+    # the adjudicated pronunciations (spec 3 r28 section 5,
+    # run._materialize_adjudications). None outside a wired deck, in
+    # which case an adjudication is derived and nothing is written.
+    curated_dir: Path | None = None
+    # The pronunciation engines the adjudication check runs against
+    # (phonology.Engines). None means the real ones, resolved lazily on
+    # the first verdict there is to check -- pythainlp/torch never load
+    # for a run with nothing to materialize, and a test injects fakes.
+    engines: Engines | None = None
 
 
 @dataclass(frozen=True)
@@ -618,6 +631,34 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
                                 "subject_kind": subject_kind},
                       answer={"phrase": phrase})
     return AttemptResult(attempted=True, spend=spend)
+
+
+# --- adjudication (Word): the pronunciation ask ------------------------------
+
+def adjudication_attempt(ctx: Sourcing) -> AttemptResult:
+    """One judge question per Word whose pronunciation is not corroborated
+    (spec 3 r28 section 5): the pronunciation-for-word role, text only,
+    cache-first through the assessor -- a word answered under the current
+    rubric collects nothing new. The verdicts land with the run's batch;
+    run._materialize_adjudications reads them back next run.
+
+    A Word is not a need (it is curated data, not a gap gaps() lists), so
+    this pass owns no RunReport bucket: its questions ride the run's one
+    batch and `pending` never counts them.
+    """
+    words = [w for w in ctx.syllabus.words if not is_corroborated(w.pron.corroboration)]
+    if not words:
+        return AttemptResult(attempted=False)
+    role = role_for("pronunciation")
+    questions = [AssessQuestion(subject=str(w.id), role=role, artifact_sha=None,
+                                rubric=ctx.rubrics[role],
+                                params={"thai": w.thai, "meaning": w.meaning},
+                                kind="pronunciation", subject_kind="word") for w in words]
+    spend: dict[str, Spend] = {}
+    result = ctx.assessor.ask_many("judge", questions)
+    _count_verdicts(spend, "judge", result)
+    return AttemptResult(attempted=True, questions=list(result.collected),
+                         excluded=dict(result.excluded), spend=spend)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

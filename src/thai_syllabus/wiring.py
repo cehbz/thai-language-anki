@@ -59,7 +59,8 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import RULES, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay, rubrics_for, sentence_note_id
+from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
+                       rubrics_for, sentence_note_id)
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus, derive_productive_targets
@@ -421,8 +422,10 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
     bundle = load_curated(root / "curated")
     syllabus = load_syllabus(root, db=db, bundle=bundle)
     # rubrics_for covers registered judged Rules only; "sentence-for-target"
-    # (attempts.py) is a judge role with no Rule, added here directly.
-    rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC}
+    # (attempts.py) and "pronunciation-for-word" (the adjudication pass,
+    # spec 3 r28) are judge roles with no Rule, added here directly.
+    rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC,
+              "pronunciation-for-word": PRONUNCIATION_RUBRIC}
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric=rubrics,
                        prior=bundle.rulebook.provenance_prior,
@@ -462,7 +465,13 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sentence_max_clauses=cfg.sentence_max_clauses,
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,
         sentence_targets_per_sentence=cfg.sentence_targets_per_sentence,
-        nothing_ttl=derivations.nothing_ttl)
+        nothing_ttl=derivations.nothing_ttl,
+        # The deck's own curated store, so run._materialize_adjudications
+        # can write words.yaml back (spec 2 r14 section 1; spec 3 r28
+        # section 5). `engines` stays None: the run resolves
+        # phonology.default_engines() itself, on the first verdict there
+        # is to check, so wiring a deck never loads pythainlp/torch.
+        curated_dir=root / "curated", engines=None)
     return ctx
 
 

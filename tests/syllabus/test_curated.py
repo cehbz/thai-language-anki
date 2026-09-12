@@ -113,6 +113,17 @@ def _pron_dict():
                           "tone": "falling"}], "corroboration": "engines_agree"}
 
 
+def test_load_words_refuses_an_unknown_corroboration_value_naming_the_row(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
+            "pron": {"syllables": [{"segments": ["d", "ɛː", "ŋ"], "vowel_length": "long",
+                                    "tone": "mid"}], "corroboration": "guessed"}}]  # แดง = red
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
+        curated.load_words(tmp_path / "words.yaml")
+    with pytest.raises(curated.CuratedValidationError, match="guessed"):
+        curated.load_words(tmp_path / "words.yaml")
+
+
 def test_load_words_a_row_with_no_productive_true_loads_with_the_flag(tmp_path):
     rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
             "no_productive": True}]  # แดง = red

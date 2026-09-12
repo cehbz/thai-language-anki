@@ -27,6 +27,7 @@ from .attempts import (
     Need,
     Sourcing,
     Spend,
+    adjudication_attempt,
     assess_first,
     attempt,
     current_best_of,
@@ -39,6 +40,7 @@ from .attempts import (
 from .derivations import (
     QueuedNeeds,
     QueueEntry,
+    adjudications,
     adoptable_drafts,
     available_need_keys,
     directed,
@@ -48,7 +50,9 @@ from .derivations import (
     queued,
     role_of,
 )
-from .entities import Sentence
+from .entities import Pronunciation, Sentence, Word
+from .ids import WordId
+from .phonology import corroborates, default_engines
 from .ports import RecordWriter
 from .record import (
     asks_since,
@@ -109,6 +113,10 @@ class RunReport:
     # included, narrowed to needs `available` still counts
     pending: int = 0
     sentences_adopted: int = 0  # drafts this run covered open Targets with
+    # words whose adjudicated pronunciation this run wrote to words.yaml
+    # (spec 3 r28 section 5) -- an event, not a need: a Word is curated
+    # data, so it sits outside the identity above
+    adjudicated: int = 0
     drafted: int = 0            # drafts the sentence attempt produced
     # adopted Sentences the run deleted because their recording need was
     # exhausted with no passing candidate (F13, spec 3 section 5); a
@@ -144,6 +152,7 @@ class _Tally:
     excluded: int = 0
     excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     sentences_adopted: int = 0
+    adjudicated: int = 0
     drafted: int = 0
     retired: int = 0
     # subjects (text_shas) of sentences this pass retired -- a later
@@ -220,6 +229,44 @@ def _adopt_sentences(ctx: Sourcing) -> int:
     return len(adopted)
 
 
+def _materialize_adjudications(ctx: Sourcing) -> int:
+    """Spec 3 r28 section 5: every adjudicated pronunciation the engines
+    corroborate becomes the Word's, corroboration `adjudicated`, written
+    to curated words.yaml under this writing command; the rest stay
+    disputed and are logged. Engines load lazily, only when there is a
+    verdict to check, so a run with nothing to materialize never pulls in
+    pythainlp/torch.
+
+    words.yaml is rewritten whole, from the same (Word, category) rows
+    the loader produced, in their own order -- only the adjudicated
+    Words' `pron` differs, so no row is added, dropped or moved (spec 2
+    section 6's Guard counts the rows).
+    """
+    found = adjudications(ctx.db, ctx.syllabus, current_rubric=ctx.rubrics)
+    if not found or ctx.curated_dir is None:
+        return 0
+    engines = ctx.engines or default_engines()
+    updated: dict[WordId, Word] = {}
+    for word_id, syllables in found.items():
+        w = ctx.syllabus.word(word_id)
+        if corroborates(syllables, w.thai, engines):
+            updated[word_id] = dataclasses.replace(
+                w, pron=Pronunciation(syllables=syllables, corroboration="adjudicated"))
+        else:
+            _log.info("adjudication of %s (%s) not corroborated by an engine; stays disputed",
+                      word_id, w.thai)
+    if not updated:
+        return 0
+    # Deferred: curated.py reads parse_day_starts from this module, so a
+    # top-level import here would be a cycle.
+    from .curated import save_words
+
+    rows = [(updated.get(w.id, w), ctx.syllabus.category_of(w.id)) for w in ctx.syllabus.words]
+    save_words(ctx.curated_dir / "words.yaml", rows)
+    ctx.syllabus = ctx.syllabus.with_words(tuple(w for w, _c in rows))
+    return len(updated)
+
+
 def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
                             outstanding: tuple[str, frozenset[tuple[str, str]]]
                             ) -> tuple[str, frozenset[tuple[str, str]]] | None:
@@ -233,7 +280,17 @@ def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
     still_out = ctx.assessor.unresolved_batch()
     if still_out is not None:
         return still_out[0], frozenset(still_out[1])
-    preference = preference_attempt(ctx, sorted({subject for subject, _kind in batch_needs}))
+    # Picture keys only: preference_attempt ranks a word's passing
+    # PICTURES (derivations.pictures_awaiting_preference), so only a
+    # subject whose picture the batch just judged can have opened one.
+    # Availability is not the filter -- the whole point of the
+    # `preferences` bucket is a picture need that has since left
+    # `available` -- the artifact kind is. Without this, every word the
+    # adjudication ask put in the batch for its pronunciation (spec 3
+    # r28: not a need at all) would be folded over here and could raise
+    # a preference question nothing asked for.
+    preference = preference_attempt(ctx, sorted(
+        {subject for subject, kind in batch_needs if kind == "picture"}))
     tally.collect(preference)
     # Whether each of these ranks a need that has since left `available`
     # (-> `preferences`) or one a learner rejection with no acceptable
@@ -603,6 +660,7 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
                            extra_deferred=_unconsidered(needs, pending))
     tally.sentences_adopted += _adopt_sentences(ctx)
+    tally.adjudicated += _materialize_adjudications(ctx)
     if still_out is not None:
         # The run ended here, before it ever looked at a need: every
         # available need this run never considered (not even pending, in
@@ -687,6 +745,19 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         tally.source_failures["llm-phrase"] = tally.source_failures.get("llm-phrase", 0) + 1
         _log.warning("drafter llm-phrase failed: %s", e)
 
+    # One adjudication ask per run (spec 3 r28 section 5): every word
+    # still lacking a corroborated pronunciation. No need bucket: words
+    # are not needs; the questions ride this run's batch and
+    # _materialize_adjudications reads the verdicts back next run.
+    try:
+        tally.collect(adjudication_attempt(ctx))
+    except JudgeUnreachable:
+        tally.unreachable = True
+        needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
+        _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
+        tally.deferred += len(needs.entries)
+        return _finish(ctx, tally, needs, batch_id=None, pending=0)
+
     needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
     # One snapshot of the need keys `available` counts, read here beside
     # the queue itself: `available`, `pending` and `preferences` are all
@@ -756,6 +827,7 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
+        adjudicated=tally.adjudicated,
         drafted=tally.drafted, retired=tally.retired,
         excluded=tally.excluded, excluded_items=tally.excluded_items,
         unreachable=tally.unreachable,
@@ -778,6 +850,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
+                "adjudicated": report.adjudicated,
                 "drafted": report.drafted, "retired": report.retired,
                 "excluded": report.excluded,
                 "excluded_items": [dict(item) for item in report.excluded_items],

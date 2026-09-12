@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 13, proposed 2026-09-11 against principles r4 and architecture
+Revision 14, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -28,6 +28,9 @@ Revision log:
   screen was stopped three times in one day to make way for a run and an
   import while the user was reviewing; every image and audio on the open
   page broke and the notes typed meanwhile were lost.
+- r14 2026-09-12: words.yaml is learner-owned; the run writes adjudicated
+  pronunciations and adopted rows under its writing command (spec 3 r28).
+  User approval 2026-09-12.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -49,7 +52,10 @@ reference data, versioned with the deck and never hand-edited.
                                # meaning, classifier, category (one per
                                # row; the loader builds the Category
                                # collections), no_productive and speaker
-                               # (each written only when set)
+                               # (each written only when set). Learner-
+                               # owned; the run writes adjudicated
+                               # pronunciations and adopted rows under its
+                               # writing command (r14, spec 3 r28)
     targets.yaml               # id, word, skill, introduction (receptive
                                # targets and productive exceptions)
     graphemes.yaml             # symbol, kind, sound, class, keyword

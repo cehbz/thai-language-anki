@@ -232,6 +232,14 @@ SENTENCE_FOR_TARGET_RUBRIC = (
     + " actually says? A gloss that misstates the sentence fails the"
     + " candidate, however good the Thai is.")
 
+PRONUNCIATION_RUBRIC = (
+    "Give the standard Central Thai pronunciation of the word as it is said in isolation, "
+    "syllable by syllable: onset consonant(s), vowel, coda (empty for an open syllable), "
+    "vowel length, and tone. Use the deck's convention: IPA segments (kʰ tɕ tɕʰ ŋ ʔ j w; "
+    "vowels a e ɛ i ɯ o ɔ u ɤ, diphthongs ia ɯa ua), lengths short|long, tones as the Chao "
+    "names mid, low, falling, high, rising. Apply the tone rules to the spelling and prefer "
+    "the dictionary form over a colloquial reduction. Give a two- or three-word English gloss.")
+
 SCENE_FIT_RUBRIC = (
     "Does this picture depict the scene the sentence describes? The card "
     "shows the picture beside the sentence, so the picture has to fit what "
