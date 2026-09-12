@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 26, proposed 2026-09-12 against principles r4 and architecture
+Revision 27, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -97,6 +97,15 @@ Revision log:
   each from Openverse, 495 of 575 needs deferred behind it; 168
   anonymous requests in the 09:00 hour, 28 in the minute before the
   first challenge. User approval 2026-09-12.
+- r27 2026-09-12: a drafted sentence fills at most
+  `sentence_targets_per_sentence` (3) open Targets, refused at acceptance
+  beyond that; met words beyond them are filler; the prompt asks for as
+  many natural sentences as it takes, no longer the fewest. A list
+  sentence hands each target no context that cues it: it is a word list
+  in disguise, the thing sentences exist to avoid. Evidence: adopted
+  sentences filled a median of 5 targets, 83 of 318 seven or more ("my
+  wife bought a dress, a skirt, a bra, and underwear; I bought a
+  shirt" filled six). User ruling and approval 2026-09-12.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -305,8 +314,11 @@ sentence-introduced targets not yet met, listed as introducible, at most
 one per sentence; the profile register; the existing sentence openings
 to avoid; the unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
-as sentences not to propose. It asks for the fewest natural sentences
-that cover the handed targets, each of at most `sentence_max_clauses`
+as sentences not to propose. It asks for as many natural sentences as it
+takes to cover the handed targets, each filling at most
+`sentence_targets_per_sentence` of them (§8, default 3; r27: a sentence
+that fills more is a word list in disguise) and free to use any other
+listed vocabulary as filler, each of at most `sentence_max_clauses`
 clauses (§8, default 2: a longer sentence outruns the 5 s recording
 cap), and states the rendering rule (spec 1 §1:
 clauses of word ids, ๆ after a repeated word, clauses separated by one
@@ -317,9 +329,10 @@ example item showing a suffixed id and a repeated word.
 *Answer and acceptance.* `{"sentences": [{"clauses": [["<word id>" |
 ["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
 Acceptance is the Sentence invariant, local and mechanical: an
-unregistered id, a rendering that differs from text, or more clauses than
-the cap refuses the draft, logged with the reason, the provide row
-keeping it. Each distinct
+unregistered id, a rendering that differs from text, more clauses than
+the cap, or more open Targets filled than `sentence_targets_per_sentence`
+(r27; met words do not count) refuses the draft, logged with the reason,
+the provide row keeping it. Each distinct
 accepted text is one candidate: a text listed twice is one candidate;
 differing clauses reject it; differing glosses keep the first, since the
 verdict is keyed by the text and was given on that gloss. A draft
@@ -548,7 +561,8 @@ openverse 1, others 0) and `quotas.<source>.challenge_wait_seconds`
 (the one wait before the single retry of a challenge page, §6a;
 openverse 60, others 0: a challenge is a plain transport failure),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
-`sentence_introducible_per_ask` (5). `secrets.openverse` names a
+`sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
+(3). `secrets.openverse` names a
 reference to one line `client_id:client_secret` from Openverse's
 application registration; when set, the backend fetches an OAuth2
 client-credentials access token once per process, through

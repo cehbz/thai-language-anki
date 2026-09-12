@@ -635,6 +635,7 @@ class ProvidersConfig:
     # many sentence-introduced, unmet Targets one drafting ask is handed;
     # the rest of the handed batch is the next non-introduced open Targets
     sentence_introducible_per_ask: int = 5
+    sentence_targets_per_sentence: int = 3
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -768,6 +769,15 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_introducible_per_ask: "
                       f"{sentence_introducible_per_ask!r} must be a positive integer")
 
+    # spec 3 r27 section 5/8: the most open Targets one drafted sentence
+    # may fill
+    sentence_targets_per_sentence = data.get("sentence_targets_per_sentence", 3)
+    if (isinstance(sentence_targets_per_sentence, bool)
+            or not isinstance(sentence_targets_per_sentence, int)
+            or sentence_targets_per_sentence < 1):
+        errors.append(f"providers.sentence_targets_per_sentence: "
+                      f"{sentence_targets_per_sentence!r} must be a positive integer")
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -820,7 +830,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         attempt_cap=attempt_cap, transient_cap=transient_cap,
         sentence_nothing_cap=sentence_nothing_cap,
         sentence_max_clauses=sentence_max_clauses,
-        sentence_introducible_per_ask=sentence_introducible_per_ask)
+        sentence_introducible_per_ask=sentence_introducible_per_ask,
+        sentence_targets_per_sentence=sentence_targets_per_sentence)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -849,6 +860,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "sentence_nothing_cap": config.sentence_nothing_cap,
         "sentence_max_clauses": config.sentence_max_clauses,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
+        "sentence_targets_per_sentence": config.sentence_targets_per_sentence,
     })
 
 

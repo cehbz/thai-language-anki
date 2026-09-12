@@ -1149,6 +1149,27 @@ def test_providers_sentence_introducible_per_ask_defaults_to_five_and_round_trip
     assert curated.load_providers_config(path).sentence_introducible_per_ask == 3
 
 
+def test_providers_sentence_targets_per_sentence_defaults_to_three_and_round_trips(tmp_path):
+    """Spec 3 r27 section 5/8: the most open Targets one drafted sentence
+    may fill."""
+    assert curated.ProvidersConfig().sentence_targets_per_sentence == 3
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_targets_per_sentence=2)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.sentence_targets_per_sentence == 2
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path).sentence_targets_per_sentence == 2
+
+
+def test_providers_sentence_targets_per_sentence_rejects_zero_and_a_non_integer(tmp_path):
+    path = tmp_path / "providers.yaml"
+    for bad in (0, "3"):
+        path.write_text(yaml.safe_dump(_providers(sentence_targets_per_sentence=bad)))
+        with pytest.raises(curated.CuratedValidationError,
+                           match="providers.sentence_targets_per_sentence"):
+            curated.load_providers_config(path)
+
+
 def test_providers_sentence_introducible_per_ask_rejects_zero(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(sentence_introducible_per_ask=0)))

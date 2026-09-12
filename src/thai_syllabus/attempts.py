@@ -63,7 +63,8 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "phrase_attempt", "picture_query_for",
-           "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
+           "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
+           "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
 
 _log = logging.getLogger(__name__)
 
@@ -79,6 +80,10 @@ DEFAULT_SENTENCE_MAX_CLAUSES = 2
 # room for the receptive backlog and yielded almost nothing adopted. Wired
 # from providers.yaml's own sentence_introducible_per_ask (wiring.build_sourcing).
 DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK = 5
+# spec 3 r27 section 5/8: the most open Targets one drafted sentence may
+# fill -- more is a word list in disguise, the thing sentences exist to
+# avoid; met words beyond that are filler and free.
+DEFAULT_SENTENCE_TARGETS_PER_SENTENCE = 3
 
 # Cheapest source first, per ARTIFACT kind (spec 3 section 5). A sentence's
 # own recording and scene picture are the same artifact kinds a word's are;
@@ -180,6 +185,7 @@ class Sourcing:
     # sentence-introduced, unmet Targets one drafting ask is handed; the
     # rest of the handed batch is the next non-introduced open Targets.
     sentence_introducible_per_ask: int = DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK
+    sentence_targets_per_sentence: int = DEFAULT_SENTENCE_TARGETS_PER_SENTENCE
     # The writing command's own account of deliberate removals (spec 2
     # section 6, safety.writing_command): threaded onto ctx the same way
     # cli._cmd_run sets it, so run()'s own retirement of an exhausted
@@ -1064,7 +1070,8 @@ def _example_clause_ids(vocabulary: Sequence[Word]) -> tuple[str, str]:
 
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
-                     *, sentence_max_clauses: int) -> str:
+                     *, sentence_max_clauses: int,
+                     sentence_targets_per_sentence: int = DEFAULT_SENTENCE_TARGETS_PER_SENTENCE) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary once as
     id/thai/meaning lines, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
@@ -1113,8 +1120,10 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                           "text": "...", "gloss": "..."}, ensure_ascii=False)
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
-            "Each JSON item is one sentence. Write the fewest natural sentences that together "
-            "cover the targets below; a sentence may cover several targets. A sentence may "
+            "Each JSON item is one sentence. Write as many natural sentences as it takes to "
+            f"cover the targets below; a sentence fills at most {sentence_targets_per_sentence} "
+            "of the targets (two or three is right) and may use any other listed vocabulary "
+            "besides. A sentence may "
             "introduce at most one word from the Introducible list and must otherwise use only "
             "the vocabulary below.\n"
             f"Each sentence has at most {sentence_max_clauses} clauses.\n"
@@ -1205,8 +1214,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     refused = refused_drafts(ctx.db, syllabus, current_rubric=ctx.rubrics)
     question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
-        params={"prompt": _sentence_prompt(syllabus, targets, refused,
-                                           sentence_max_clauses=ctx.sentence_max_clauses)})
+        params={"prompt": _sentence_prompt(
+            syllabus, targets, refused, sentence_max_clauses=ctx.sentence_max_clauses,
+            sentence_targets_per_sentence=ctx.sentence_targets_per_sentence)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
 
@@ -1250,6 +1260,13 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         fills = syllabus.fill_set(sentence)
         filled = [t for t in open_targets if t in fills]
         if not filled:
+            continue
+        if len(filled) > ctx.sentence_targets_per_sentence:
+            # spec 3 r27 section 5: more open Targets than the cap is a
+            # word list in disguise -- refused like the clause cap; met
+            # words beyond the filled ones are filler and free.
+            _log.warning("draft refused: %d targets (cap %d): %s",
+                         len(filled), ctx.sentence_targets_per_sentence, draft.text)
             continue
         last_word = syllabus.word(syllabus.last_used_word(sentence)).thai
         questions.append(AssessQuestion(

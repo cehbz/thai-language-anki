@@ -461,6 +461,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sentence_nothing_cap=derivations.sentence_nothing_cap,
         sentence_max_clauses=cfg.sentence_max_clauses,
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,
+        sentence_targets_per_sentence=cfg.sentence_targets_per_sentence,
         nothing_ttl=derivations.nothing_ttl)
     return ctx
 
