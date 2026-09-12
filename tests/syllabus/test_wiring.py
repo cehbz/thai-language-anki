@@ -174,6 +174,60 @@ def test_search_proxy_reaches_only_openverse(cfg, db, media_store):
     assert provider._backends["pexels"]._resolve().search_proxy is None
 
 
+def test_openverse_is_anonymous_and_paced_by_default(cfg, db, media_store):
+    """Spec 3 r26 section 8: no `secrets.openverse` -- no auth callable;
+    the default pacing is 1 s between requests and one 60 s wait on a
+    challenge page; the other corpora are unpaced."""
+    provider = build_provider(cfg, db, media_store)
+    openverse = provider._backends["openverse"]
+    assert openverse.auth is None
+    assert (openverse.min_interval_s, openverse.challenge_wait_s) == (1.0, 60.0)
+    wikimedia = provider._backends["wikimedia"]
+    assert (wikimedia.min_interval_s, wikimedia.challenge_wait_s) == (0.0, 0.0)
+
+
+def test_quotas_pacing_fields_override_the_defaults(db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          imgfetch_path="curl", audiofetch_path="curl",
+                          quotas={"openverse": {"min_interval_seconds": 4},
+                                  "wikimedia": {"challenge_wait_seconds": 30}})
+    provider = build_provider(cfg, db, media_store)
+    openverse, wikimedia = provider._backends["openverse"], provider._backends["wikimedia"]
+    assert (openverse.min_interval_s, openverse.challenge_wait_s) == (4.0, 60.0)
+    assert (wikimedia.min_interval_s, wikimedia.challenge_wait_s) == (0.0, 30.0)
+
+
+def test_a_configured_openverse_secret_becomes_a_bearer_token_read_at_first_use(
+        db, media_store, secret_paths, tmp_path, monkeypatch):
+    """`secrets.openverse` holds client_id:client_secret; the wiring
+    reads it only when the first search asks for a token, and the token
+    endpoint is posted through the search proxy."""
+    key = tmp_path / "openverse.key"
+    key.write_text("cid:sec\n")
+    key.chmod(0o600)
+    cfg = ProvidersConfig(secrets={**{n: str(p) for n, p in secret_paths.items()},
+                                   "openverse": str(key)},
+                          imgfetch_path="curl", audiofetch_path="curl",
+                          search_proxy="https://proxy.example")
+    posts = []
+
+    def fake_post(url, data=None, headers=None, timeout=None, proxies=None):
+        posts.append((url, data["client_id"], data["client_secret"], proxies["https"]))
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"access_token": "tok", "expires_in": 3600}
+        return _Resp()
+
+    monkeypatch.setattr("thai_syllabus.provider.requests.post", fake_post)
+    provider = build_provider(cfg, db, media_store)
+    openverse = provider._backends["openverse"]
+    assert callable(openverse.auth) and posts == []
+    assert openverse.auth() == "tok"
+    assert posts == [("https://api.openverse.org/v1/auth_tokens/token/", "cid", "sec",
+                      "https://proxy.example")]
+
+
 def test_wikimedia_image_width_reaches_the_backend(db, media_store, secret_paths):
     cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
                           imgfetch_path="curl", audiofetch_path="curl",

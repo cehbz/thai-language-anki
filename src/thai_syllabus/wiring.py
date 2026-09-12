@@ -53,6 +53,7 @@ from .provider import (
     LlmBackend,
     Provider,
     TtsBackend,
+    OpenverseAuth,
     openverse_backend,
     pexels_backend,
     tool_fetcher,
@@ -62,17 +63,26 @@ from .rulebook import RULES, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay, rubrics_
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus, derive_productive_targets
-from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport
+from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport, TransportError
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "nothing_ttl_for", "Derivations", "load_derivations", "load_syllabus"]
+          "nothing_ttl_for", "pacing_for", "Derivations", "load_derivations",
+          "load_syllabus"]
 
 # nothing_ttl_for's own default (spec 3 r19 section 6a/9): a Forvo
 # `nothing` outcome stops counting as tried after this many days,
 # offering the source again to a corpus that may have grown since --
 # every other source never ages unless providers.yaml configures it.
 _DEFAULT_NOTHING_TTL: dict[str, int] = {"forvo": 180}
+
+# pacing_for's own defaults (spec 3 r26 sections 6a/8): seconds between
+# two requests to a source, and the one wait on a challenge page before
+# the single retry. Openverse's registered tier allows 100 requests a
+# minute; 1 s keeps a run at 60. Every other source is unpaced and
+# treats a challenge page as a plain transport failure unless
+# providers.yaml's quotas.<source> configures otherwise.
+_DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0)}
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -161,10 +171,16 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
 
+    def paced(source: str) -> dict[str, float]:
+        interval, wait = pacing_for(cfg, source)
+        return {"min_interval_s": interval, "challenge_wait_s": wait}
+
     backends: dict[str, Backend] = {
-        "openverse": openverse_backend(search_proxy=cfg.search_proxy),
-        "wikimedia": wikimedia_backend(image_width=cfg.image_width),
-        "pexels": _Lazy(lambda: pexels_backend(api_key=secrets.get("pexels") or "")),
+        "openverse": openverse_backend(search_proxy=cfg.search_proxy,
+                                       auth=_openverse_auth(cfg, secrets), **paced("openverse")),
+        "wikimedia": wikimedia_backend(image_width=cfg.image_width, **paced("wikimedia")),
+        "pexels": _Lazy(lambda: pexels_backend(api_key=secrets.get("pexels") or "",
+                                               **paced("pexels"))),
         "forvo": _Lazy(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
         "tts": _Lazy(lambda: TtsBackend(
             tts=_lazy_google_tts(secrets),
@@ -303,6 +319,41 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
             max_cost=quota.get("max_cost", base.max_cost),
             day_starts=quota.get("day_starts", base.day_starts))
     return budgets
+
+
+def pacing_for(cfg: ProvidersConfig, source: str) -> tuple[float, float]:
+    """(min_interval_s, challenge_wait_s) for `source` (spec 3 r26
+    section 8): the default above, layered field by field under
+    providers.yaml's `quotas.<source>.{min_interval_seconds,
+    challenge_wait_seconds}`.
+    """
+    interval, wait = _DEFAULT_PACING.get(source, (0.0, 0.0))
+    quota = cfg.quotas.get(source, {})
+    return (float(quota.get("min_interval_seconds", interval)),
+            float(quota.get("challenge_wait_seconds", wait)))
+
+
+def _openverse_auth(cfg: ProvidersConfig, secrets) -> Callable[[], str | None] | None:
+    """The bearer-token callable for Openverse when `secrets.openverse`
+    is configured (`client_id:client_secret`, spec 3 r26 section 8),
+    else None (anonymous). The secret is read at the first search, the
+    token fetched then and reused for the process."""
+    if not secrets.configured("openverse"):
+        return None
+    holder: list[OpenverseAuth] = []
+
+    def token() -> str | None:
+        if not holder:
+            value = secrets.get("openverse") or ""
+            client_id, sep, client_secret = value.strip().partition(":")
+            if not sep or not client_id or not client_secret:
+                raise TransportError(
+                    "secrets.openverse must hold one line client_id:client_secret")
+            holder.append(OpenverseAuth(client_id=client_id, client_secret=client_secret,
+                                        search_proxy=cfg.search_proxy))
+        return holder[0].token()
+
+    return token
 
 
 def nothing_ttl_for(cfg: ProvidersConfig) -> dict[str, int]:

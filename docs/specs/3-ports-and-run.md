@@ -427,10 +427,15 @@ Every ask and fetch ends in one of four states:
   check. Outcome `nothing`; the need advances to the next source; the
   attempt counts toward the cap.
 - **Failed; a retry may succeed.** A wire failure (timeout, connection,
-  DNS, a fetcher that cannot run), a 5xx or 429, a served refusal of a
+  DNS, a fetcher that cannot run), a 5xx, a served refusal of a
   url (a non-200, a body of the wrong type, undecodable bytes), a batch
-  not yet ended. Nothing is appended for the ask; the attempt's outcome
-  is `transient-failure`. Bounded: once a source has `transient_cap`
+  not yet ended. A challenge page in front of a corpus (a 403 that is
+  Cloudflare's managed challenge, by its `cf-mitigated: challenge`
+  header or its page) is retried once by the backend after
+  `quotas.<source>.challenge_wait_seconds`; a second challenge is the
+  transport failure (r26). An image corpus's 429 is its own throttle
+  statement and is the Quota state above, not this one (r26). Nothing
+  is appended for the ask; the attempt's outcome is `transient-failure`. Bounded: once a source has `transient_cap`
   (providers.yaml, default 3) transient outcomes since the escalation
   anchor, it counts as tried: next_source advances past it and exhausted
   counts it as one attempt. Learner input resets the anchor as for every
@@ -537,11 +542,22 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
-(forvo 180; absent = never), `sentence_nothing_cap` (3),
-`sentence_max_clauses` (2) and `sentence_introducible_per_ask` (5).
-`search_proxy`
-is the HTTP forward proxy Openverse searches go through (Openverse
-refuses a Thai egress); no other request uses it. The provenance prior
+(forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
+(seconds between two requests to the source within one process;
+openverse 1, others 0) and `quotas.<source>.challenge_wait_seconds`
+(the one wait before the single retry of a challenge page, §6a;
+openverse 60, others 0: a challenge is a plain transport failure),
+`sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
+`sentence_introducible_per_ask` (5). `secrets.openverse` names a
+reference to one line `client_id:client_secret` from Openverse's
+application registration; when set, the backend fetches an OAuth2
+client-credentials access token once per process, through
+`search_proxy`, and sends it as a bearer on every search (Openverse's
+registered tier: 100 requests a minute, 10,000 a day, against 20 and
+200 anonymous, per its throttling documentation); unset, searches are
+anonymous. `search_proxy`
+is the HTTP forward proxy Openverse searches and its token request go
+through (Openverse refuses a Thai egress); no other request uses it. The provenance prior
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
 `rubrics` and `severities` are spec 1 §4's.
 

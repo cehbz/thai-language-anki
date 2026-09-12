@@ -12,6 +12,7 @@ import requests
 from thai_syllabus.assessor import Price
 from thai_syllabus.cachekeys import ProvideKey, sha
 from thai_syllabus.provider import (
+    OpenverseAuth,
     FetchBackend,
     ForvoBackend,
     HttpImageSearchBackend,
@@ -216,6 +217,140 @@ def test_openverse_a_200_body_without_results_is_a_transport_error():
     backend = openverse_backend(get=lambda url, **kwargs: _FakeResponse(json_data={"detail": "throttled"}))
     with pytest.raises(TransportError):
         backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+
+
+# --- spec 3 r26: pacing, the Cloudflare challenge, 429 as Quota, the bearer token
+
+class _Clock:
+    def __init__(self, *readings):
+        self.readings = list(readings)
+
+    def __call__(self):
+        return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+
+
+def _results(*urls):
+    return _FakeResponse(json_data={"results": [{"url": u, "license": "cc0"} for u in urls]})
+
+
+def test_a_paced_backend_sleeps_the_remainder_of_the_interval_between_two_fetches():
+    slept = []
+    backend = openverse_backend(get=lambda *a, **k: _results("https://x/a.jpg"),
+                                min_interval_s=4.0, sleep=slept.append,
+                                clock=_Clock(10.0, 10.5, 11.0, 15.0))
+    q = Question(subject="rice", provides="picture", params={"query": "q"})
+    backend.fetch(q)          # first ask: no wait; last call stamped at 10.5
+    backend.fetch(q)          # 11.0 now: 3.5 s of the 4 s interval remain
+    assert slept == [3.5]
+
+
+def test_an_unpaced_backend_never_sleeps():
+    slept = []
+    backend = openverse_backend(get=lambda *a, **k: _results("https://x/a.jpg"), sleep=slept.append)
+    q = Question(subject="rice", provides="picture", params={"query": "q"})
+    backend.fetch(q)
+    backend.fetch(q)
+    assert slept == []
+
+
+_CHALLENGE = _FakeResponse(status_code=403,
+                           text="<!DOCTYPE html><html><head><title>Just a moment...</title>")
+
+
+def test_a_challenge_page_is_retried_once_after_the_wait():
+    answers = [_CHALLENGE, _results("https://x/a.jpg")]
+    slept = []
+    backend = openverse_backend(get=lambda *a, **k: answers.pop(0), challenge_wait_s=60.0,
+                                sleep=slept.append)
+    answer = backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert slept == [60.0]
+    assert [i["url"] for i in answer.items] == ["https://x/a.jpg"]
+
+
+def test_two_challenge_pages_are_a_transport_error_naming_the_challenge():
+    answers = [_CHALLENGE, _CHALLENGE]
+    backend = openverse_backend(get=lambda *a, **k: answers.pop(0), challenge_wait_s=60.0,
+                                sleep=lambda s: None)
+    with pytest.raises(TransportError, match="challenge"):
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert answers == []
+
+
+def test_a_challenge_page_with_no_wait_configured_is_a_transport_error_at_once():
+    backend = openverse_backend(get=lambda *a, **k: _CHALLENGE, sleep=lambda s: None)
+    with pytest.raises(TransportError, match="challenge"):
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+
+
+def test_a_429_is_the_quota_state_not_a_source_failure():
+    backend = openverse_backend(get=lambda *a, **k: _FakeResponse(status_code=429, text="throttled"))
+    with pytest.raises(QuotaExhausted) as e:
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert e.value.source == "openverse"
+
+
+def test_a_bearer_token_is_sent_when_the_auth_callable_gives_one():
+    headers_seen = []
+
+    def get(url, params=None, headers=None, timeout=None, proxies=None):
+        headers_seen.append(dict(headers))
+        return _results()
+
+    openverse_backend(get=get, auth=lambda: "tok123").fetch(
+        Question(subject="w", provides="picture", params={"query": "q"}))
+    assert headers_seen[0]["Authorization"] == "Bearer tok123"
+    assert "thai-syllabus" in headers_seen[0]["User-Agent"]
+
+
+def test_no_authorization_header_without_an_auth_callable():
+    headers_seen = []
+
+    def get(url, params=None, headers=None, timeout=None, proxies=None):
+        headers_seen.append(dict(headers))
+        return _results()
+
+    openverse_backend(get=get).fetch(Question(subject="w", provides="picture", params={"query": "q"}))
+    assert "Authorization" not in headers_seen[0]
+
+
+def test_openverse_auth_posts_form_encoded_client_credentials_through_the_proxy_and_caches():
+    posts = []
+
+    def post(url, data=None, headers=None, timeout=None, proxies=None):
+        posts.append((url, dict(data), proxies))
+        return _FakeResponse(json_data={"access_token": "tok123", "expires_in": 36000,
+                                        "token_type": "Bearer", "scope": "read write"})
+
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post,
+                         search_proxy="http://10.112.227.2:8888", clock=_Clock(100.0))
+    assert auth.token() == "tok123"
+    assert auth.token() == "tok123"
+    assert posts == [("https://api.openverse.org/v1/auth_tokens/token/",
+                      {"client_id": "cid", "client_secret": "sec",
+                       "grant_type": "client_credentials"},
+                      {"http": "http://10.112.227.2:8888", "https": "http://10.112.227.2:8888"})]
+
+
+def test_openverse_auth_refreshes_an_expired_token():
+    posts = []
+
+    def post(url, data=None, headers=None, timeout=None, proxies=None):
+        posts.append(url)
+        return _FakeResponse(json_data={"access_token": f"tok{len(posts)}", "expires_in": 100})
+
+    clock = _Clock(0.0, 0.0, 50.0, 200.0, 200.0)
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post, clock=clock)
+    assert auth.token() == "tok1"
+    assert auth.token() == "tok1"     # 50 s in: still valid
+    assert auth.token() == "tok2"     # 200 s in: past expires_in, fetched again
+    assert len(posts) == 2
+
+
+def test_openverse_auth_failure_is_a_transport_error():
+    auth = OpenverseAuth(client_id="cid", client_secret="sec",
+                         post=lambda *a, **k: _FakeResponse(status_code=401, text="bad"))
+    with pytest.raises(TransportError, match="openverse"):
+        auth.token()
 
 
 def test_wikimedia_a_200_body_without_batchcomplete_is_a_transport_error():

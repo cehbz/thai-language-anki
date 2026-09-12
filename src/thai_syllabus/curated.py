@@ -796,6 +796,15 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                 not isinstance(nothing_ttl_days, int) or nothing_ttl_days < 1):
             errors.append(f"providers.quotas.{source}.nothing_ttl_days: "
                           f"{nothing_ttl_days!r} must be a positive integer")
+        # min_interval_seconds / challenge_wait_seconds (spec 3 r26
+        # sections 6a/8): the source's request spacing and its one wait
+        # on a challenge page; absent keeps the wiring default.
+        for pacing_field in ("min_interval_seconds", "challenge_wait_seconds"):
+            value = quota.get(pacing_field)
+            if value is not None and (isinstance(value, bool)
+                                      or not isinstance(value, (int, float)) or value < 0):
+                errors.append(f"providers.quotas.{source}.{pacing_field}: "
+                              f"{value!r} must be a non-negative number of seconds")
 
     if errors:
         raise CuratedValidationError(errors)

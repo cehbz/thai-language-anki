@@ -597,6 +597,29 @@ def test_a_well_formed_nothing_ttl_days_loads(tmp_path):
     assert cfg.quotas["forvo"]["nothing_ttl_days"] == 30
 
 
+# --- quotas.<source>.{min_interval_seconds, challenge_wait_seconds} (spec 3 r26 section 8)
+
+def test_a_negative_min_interval_seconds_refuses_naming_the_field(tmp_path):
+    write_providers(tmp_path, quotas={"openverse": {"min_interval_seconds": -1}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.openverse\.min_interval_seconds"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_non_numeric_challenge_wait_seconds_refuses_naming_the_field(tmp_path):
+    write_providers(tmp_path, quotas={"openverse": {"challenge_wait_seconds": "60"}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.openverse\.challenge_wait_seconds"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_well_formed_pacing_fields_load(tmp_path):
+    write_providers(tmp_path, quotas={"openverse": {"min_interval_seconds": 1.5,
+                                                    "challenge_wait_seconds": 60}})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.quotas["openverse"] == {"min_interval_seconds": 1.5, "challenge_wait_seconds": 60}
+
+
 def test_providers_config_round_trip(tmp_path):
     path = tmp_path / "providers.yaml"
     config = curated.ProvidersConfig(

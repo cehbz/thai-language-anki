@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +34,7 @@ __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
     "Provider", "LearnerAskNotSupported",
     "HttpImageSearchBackend", "openverse_backend", "wikimedia_backend",
-    "pexels_backend", "IMAGE_SEARCH_USER_AGENT",
+    "pexels_backend", "OpenverseAuth", "IMAGE_SEARCH_USER_AGENT",
     "FetchBackend", "tool_fetcher",
     "ForvoBackend", "forvo_limit_body", "TtsBackend", "LlmBackend",
     "DictionaryG2P", "PairSearchBackend",
@@ -40,6 +42,9 @@ __all__ = [
 
 
 # --- the port contract (spec 3 section 1) -----------------------------------
+
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Question:
@@ -144,6 +149,74 @@ IMAGE_SEARCH_USER_AGENT = (
 )
 
 
+OPENVERSE_TOKEN_URL = "https://api.openverse.org/v1/auth_tokens/token/"
+
+
+@dataclass
+class OpenverseAuth:
+    """Openverse's OAuth2 client-credentials flow (spec 3 r26 section 8:
+    `secrets.openverse` is `client_id:client_secret`). `token()` posts
+    the credentials form-encoded to the token endpoint -- through the
+    same forward proxy the searches use -- once, then serves the cached
+    access token until `expires_in` has passed (a 60 s margin), then
+    fetches again. A refused or malformed token answer is a
+    TransportError: the source is unreachable for the run, nothing is
+    cached.
+    """
+    client_id: str
+    client_secret: str
+    # resolved per instance, not at import: a test's patched requests.post
+    # is what an auth built later uses
+    post: Callable[..., Any] = field(default_factory=lambda: requests.post)
+    search_proxy: str | None = None
+    clock: Callable[[], float] = time.monotonic
+    _token: str | None = field(default=None, init=False, repr=False)
+    _expires_at: float = field(default=0.0, init=False, repr=False)
+
+    def token(self) -> str:
+        now = self.clock()
+        if self._token is not None and now < self._expires_at:
+            return self._token
+        proxies = ({"http": self.search_proxy, "https": self.search_proxy}
+                  if self.search_proxy else None)
+        try:
+            resp = self.post(OPENVERSE_TOKEN_URL,
+                             data={"client_id": self.client_id,
+                                   "client_secret": self.client_secret,
+                                   "grant_type": "client_credentials"},
+                             headers={"User-Agent": IMAGE_SEARCH_USER_AGENT},
+                             timeout=30, proxies=proxies)
+        except requests.RequestException as e:
+            raise TransportError(f"openverse token request failed: {e}") from e
+        if resp.status_code != 200:
+            raise TransportError(
+                f"openverse token request returned {resp.status_code}: {resp.text[:200]}")
+        try:
+            body = resp.json()
+        except ValueError as e:
+            raise TransportError(f"openverse token answer is not json: {e}") from e
+        token = body.get("access_token") if isinstance(body, Mapping) else None
+        if not token:
+            raise TransportError(f"openverse token answer carries no access_token: {str(body)[:120]}")
+        expires_in = body.get("expires_in")
+        lifetime = float(expires_in) if isinstance(expires_in, (int, float)) else 3600.0
+        self._token, self._expires_at = str(token), now + max(lifetime - 60.0, 0.0)
+        return self._token
+
+
+def _is_challenge(resp: Any) -> bool:
+    """Whether a 403 answer is Cloudflare's managed challenge page rather
+    than the API's own refusal: the `cf-mitigated: challenge` header, or
+    the challenge page's title."""
+    if resp.status_code != 403:
+        return False
+    headers = getattr(resp, "headers", None) or {}
+    if str(headers.get("cf-mitigated", "")).lower() == "challenge":
+        return True
+    text = getattr(resp, "text", "") or ""
+    return "Just a moment" in text or "challenge-platform" in text
+
+
 @dataclass
 class HttpImageSearchBackend:
     """Generic HTTP image-corpus search: one GET, JSON response, a
@@ -156,20 +229,58 @@ class HttpImageSearchBackend:
     parse_items: Callable[[Any], list[dict]]
     get: Callable[..., Any] = field(default=requests.get)
     search_proxy: str | None = None
+    min_interval_s: float = 0.0
+    challenge_wait_s: float = 0.0
+    auth: Callable[[], str | None] | None = None
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.monotonic
 
     def cache_key(self, question: Question) -> ProvideKey:
         return ProvideKey(source=self.name, kind="", query=question.params["query"])
 
+    _last_call: float | None = field(default=None, init=False, repr=False)
+
+    def _pace(self) -> None:
+        """Spec 3 r26 section 8: at least `min_interval_s` between two of
+        this backend's requests within one process."""
+        if self.min_interval_s > 0 and self._last_call is not None:
+            remaining = self._last_call + self.min_interval_s - self.clock()
+            if remaining > 0:
+                self.sleep(remaining)
+
+    def _request(self, url: str, params: Mapping, headers: Mapping, proxies: Mapping | None):
+        self._pace()
+        try:
+            return self.get(url, params=params, headers=headers, timeout=30, proxies=proxies)
+        except requests.RequestException as e:
+            raise TransportError(f"{self.name} search failed: {e}") from e
+        finally:
+            self._last_call = self.clock()
+
     def fetch(self, question: Question) -> RawAnswer:
         query = question.params["query"]
         url, params, headers, expect = self.build_request(query)
+        headers = dict(headers)
+        if self.auth is not None:
+            token = self.auth()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
         proxies = ({"http": self.search_proxy, "https": self.search_proxy}
                   if self.search_proxy else None)
-        try:
-            resp = self.get(url, params=params, headers=headers, timeout=30,
-                            proxies=proxies)
-        except requests.RequestException as e:
-            raise TransportError(f"{self.name} search failed: {e}") from e
+        resp = self._request(url, params, headers, proxies)
+        if _is_challenge(resp) and self.challenge_wait_s > 0:
+            # Spec 3 r26 section 6a: one wait, one retry; a second
+            # challenge is the transport failure.
+            _log.warning("%s: challenge page; waiting %.0f s before one retry",
+                         self.name, self.challenge_wait_s)
+            self.sleep(self.challenge_wait_s)
+            resp = self._request(url, params, headers, proxies)
+        if _is_challenge(resp):
+            raise TransportError(f"{self.name} search answered a challenge page (403)")
+        if resp.status_code == 429:
+            # Spec 3 r26 section 6a: the source's own throttle is the
+            # Quota state, budgeted for the run, never a source failure.
+            raise QuotaExhausted(self.name)
         if resp.status_code != 200:
             raise TransportError(
                 f"{self.name} search returned {resp.status_code}: {resp.text[:200]}")
@@ -186,7 +297,7 @@ class HttpImageSearchBackend:
 
 
 def openverse_backend(get: Callable[..., Any] = requests.get,
-                      search_proxy: str | None = None) -> HttpImageSearchBackend:
+                      search_proxy: str | None = None, **pacing: Any) -> HttpImageSearchBackend:
     def build(query: str) -> tuple[str, dict, dict, str]:
         return ("https://api.openverse.org/v1/images/",
                {"q": query, "license_type": "commercial,modification"},
@@ -199,11 +310,12 @@ def openverse_backend(get: Callable[..., Any] = requests.get,
                for r in data.get("results", [])]
 
     return HttpImageSearchBackend(name="openverse", build_request=build,
-                                  parse_items=parse, get=get, search_proxy=search_proxy)
+                                  parse_items=parse, get=get, search_proxy=search_proxy,
+                                  **pacing)
 
 
 def wikimedia_backend(get: Callable[..., Any] = requests.get, *,
-                      image_width: int) -> HttpImageSearchBackend:
+                      image_width: int, **pacing: Any) -> HttpImageSearchBackend:
     def build(query: str) -> tuple[str, dict, dict, str]:
         # "batchcomplete" is on every MediaWiki action-API search reply,
         # zero hits included (zero hits omits "query" entirely); an
@@ -228,11 +340,11 @@ def wikimedia_backend(get: Callable[..., Any] = requests.get, *,
         return out
 
     return HttpImageSearchBackend(name="wikimedia", build_request=build,
-                                  parse_items=parse, get=get)
+                                  parse_items=parse, get=get, **pacing)
 
 
-def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get
-                   ) -> HttpImageSearchBackend:
+def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
+                   **pacing: Any) -> HttpImageSearchBackend:
     def build(query: str) -> tuple[str, dict, dict, str]:
         return ("https://api.pexels.com/v1/search", {"query": query},
                {"User-Agent": IMAGE_SEARCH_USER_AGENT, "Authorization": api_key}, "photos")
@@ -243,7 +355,7 @@ def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get
                for p in data.get("photos", [])]
 
     return HttpImageSearchBackend(name="pexels", build_request=build,
-                                  parse_items=parse, get=get)
+                                  parse_items=parse, get=get, **pacing)
 
 
 # --- imgfetch/audiofetch: fetch a candidate's bytes by url ------------------
