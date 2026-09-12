@@ -427,6 +427,22 @@ def test_assess_first_is_none_with_no_candidate_on_record(tmp_path):
     assert judge.calls == []
 
 
+def test_assess_first_hands_the_judge_no_search_phrase(tmp_path):
+    """A candidate already on record was not found by this attempt's
+    query, so its fit question names no phrase -- even with a drafted
+    phrase on record (the rubric's "pass if no phrase is given" applies)."""
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    _seed_current_picture(ctx, "rice")
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                  answer={"phrase": "a bowl of steamed rice"})
+    assess_first(ctx, Need("rice", "picture"))
+    verdicts = [r for r in rows_for(ctx.db, "rice", "picture")
+                if r.port == "assess" and r.backend == "judge"]
+    assert len(verdicts) == 1
+    assert verdicts[0].question["params"]["phrase"] is None
+
+
 def test_assess_first_returns_the_exclusion_when_every_waiting_candidate_is_excluded(tmp_path):
     ctx, _search, judge = _picture_ctx(tmp_path)
     ctx.db.append(port="provide", backend="legacy-current",

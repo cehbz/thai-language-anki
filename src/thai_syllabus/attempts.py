@@ -349,9 +349,10 @@ def _picture_query_for(ctx: Sourcing, need: Need) -> str:
     return picture_query(word, ctx.syllabus.category_of(word.id), None, ctx.query_hints)
 
 
-def _picture_params(ctx: Sourcing, need: Need, query: str) -> dict[str, Any]:
+def _picture_params(ctx: Sourcing, need: Need, query: str | None) -> dict[str, Any]:
     """What the judge's fit prompt reads back: the thing the picture is for,
-    its gloss, and the phrase it was searched for."""
+    its gloss, and the phrase it was searched for (None for a candidate
+    already on record, assess-first)."""
     if need.subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(need.subject)
         thing, gloss = sentence.text, sentence.gloss
@@ -457,7 +458,7 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
         fetches.missed()
 
 
-def _judge_pictures(ctx: Sourcing, need: Need, query: str,
+def _judge_pictures(ctx: Sourcing, need: Need, query: str | None,
                     spend: dict[str, Spend]) -> AttemptResult:
     """One fit question per candidate on record, cache-first; and, under
     an inline transport with more than one passing picture, one
@@ -1308,7 +1309,12 @@ _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {
 
 
 def _assess_pictures(ctx: Sourcing, need: Need) -> AttemptResult:
-    return _judge_pictures(ctx, need, _picture_query_for(ctx, need), {})
+    """The fit questions on a picture need's candidates already on record
+    (spec 3 section 5 assess-first): no phrase -- the search that
+    produced such a candidate is not this attempt's, so the question
+    names none and the rubric's "pass if no phrase is given" applies.
+    """
+    return _judge_pictures(ctx, need, None, {})
 
 
 def _assess_recordings(ctx: Sourcing, need: Need) -> AttemptResult:
