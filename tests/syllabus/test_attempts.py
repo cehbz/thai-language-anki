@@ -14,7 +14,7 @@ from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnre
                                     RawVerdict, RenditionBackend, deck_field)
 from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _pool, _sentence_prompt,
                                     assess_first, attempt, current_best_of, phrase_attempt,
-                                    sentence_attempt, sources_for)
+                                    picture_query_for, sentence_attempt, sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
@@ -184,8 +184,7 @@ def _sourcing(tmp_path, syllabus, *, backends, assess, media=None) -> Sourcing:
                     media_store=media or MediaStore(tmp_path / "media"), rubrics=dict(_RUBRICS),
                     provenance_prior=("commission", "forvo", "tts"), image_candidates=3,
                     today=lambda: date(2026, 9, 3),
-                    voices={"male": _MALE, "female": _FEMALE},
-                    query_hints={"Food": "food", "Colors": "color swatch"})
+                    voices={"male": _MALE, "female": _FEMALE})
 
 
 def _word_syllabus(*, productive=False) -> Syllabus:
@@ -197,7 +196,11 @@ def _word_syllabus(*, productive=False) -> Syllabus:
 
 def _picture_ctx(tmp_path, syllabus=None, *, judge=None, urls=("https://x/bad.jpg",
                                                                "https://x/good.jpg",
-                                                               "https://x/good2.jpg")):
+                                                               "https://x/good2.jpg"),
+                 phrase="rice food"):
+    """A picture-sourcing ctx over one word, rice, with `phrase` on record
+    as its drafted search phrase (spec 3 r25 section 5: a need with no
+    query on record is not searched) -- None seeds no phrase."""
     media = MediaStore(tmp_path / "media")
     search = _Search(urls)
     complete = _Judge() if judge is None else judge
@@ -214,7 +217,15 @@ def _picture_ctx(tmp_path, syllabus=None, *, judge=None, urls=("https://x/bad.jp
         assess={"judge": JudgeBackend(model="m", transport="api", complete=complete,
                                       resolve_path=resolve)})
     holder.append(ctx)
+    if phrase is not None:
+        _seed_phrase(ctx, "rice", phrase)
     return ctx, search, complete
+
+
+def _seed_phrase(ctx, subject, phrase, subject_kind="word"):
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject=subject), subject=subject,
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": subject_kind},
+                  answer={"phrase": phrase})
 
 
 def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None):
@@ -267,10 +278,19 @@ def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
 
 # --- picture: the query, the ingest, the fit questions ----------------------
 
-def test_picture_attempt_searches_the_gloss_head_term_with_the_category_qualifier(tmp_path):
-    ctx, search, _judge = _picture_ctx(tmp_path)
-    attempt(ctx, Need("rice", "picture"), "openverse")
-    assert search.queries == ["rice food"]
+def test_a_picture_need_with_nothing_on_record_has_no_query(tmp_path):
+    """Spec 3 r25 section 5: no direction, no suggestion, no drafted
+    phrase -- no query. The gloss is the drafter's input, never a
+    search."""
+    ctx, _search, _judge = _picture_ctx(tmp_path, phrase=None)
+    assert picture_query_for(ctx, Need("rice", "picture")) is None
+
+
+def test_a_picture_attempt_refuses_a_need_with_no_query(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path, phrase=None)
+    with pytest.raises(ValueError, match="rice"):
+        attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == []
 
 
 def test_picture_attempt_searches_a_judge_suggestion_once_one_is_on_record(tmp_path):
@@ -309,7 +329,7 @@ def test_picture_attempt_ingests_each_hit_with_its_provenance(tmp_path):
     ctx, _search, _judge = _picture_ctx(tmp_path)
     res = attempt(ctx, Need("rice", "picture"), "openverse")
     shas = [i["sha"] for r in rows_for(ctx.db, "rice", "picture") if r.port == "provide"
-            for i in r.answer["items"] if "sha" in i]
+            for i in r.answer.get("items", ()) if "sha" in i]
     assert res.attempted and len(shas) == 3
     for sha in shas:
         prov = ctx.db.media_provenance(sha)
@@ -584,26 +604,29 @@ def _sentence(text="ข้าว", gloss="the rice is tasty",   # ข้าว: 
                                           acquired=date(2026, 9, 3)))
 
 
-def test_scene_picture_attempt_searches_the_sentence_gloss_not_its_thai(tmp_path):
-    """Both image corpora index English metadata, so a Thai query matches
-    only the handful of Thai-captioned items they hold."""
+def test_scene_picture_attempt_searches_the_scene_s_drafted_phrase(tmp_path):
+    """A scene need's query is its own drafted phrase, under the
+    sentence's subject and the scene role."""
     sentence = _sentence()
     ctx, search, _judge = _picture_ctx(
         tmp_path, _word_syllabus().with_sentences([sentence]), urls=("https://x/good.jpg",))
+    _seed_phrase(ctx, sentence.text_sha, "a family enjoying a rice meal", "sentence")
     res = attempt(ctx, Need(sentence.text_sha, "picture", "sentence"), "openverse")
-    assert search.queries == ["the rice is tasty"]
+    assert search.queries == ["a family enjoying a rice meal"]
     assert res.attempted and rows_for(ctx.db, sentence.text_sha, "picture")
     verdicts = [r for r in ctx.db.assessments_of(sentence.text_sha) if r.port == "assess"]
     assert {r.question["role"] for r in verdicts} == {"scene-for-sentence"}
     assert {r.question["subject_kind"] for r in verdicts} == {"sentence"}
 
 
-def test_a_scene_picture_attempt_refuses_a_sentence_with_no_gloss(tmp_path):
-    sentence = _sentence(gloss="")
-    ctx, _search, _judge = _picture_ctx(
+def test_a_scene_picture_attempt_refuses_a_sentence_with_no_phrase_on_record(tmp_path):
+    """The sentence's gloss is the drafter's input, never a search (r25)."""
+    sentence = _sentence()
+    ctx, search, _judge = _picture_ctx(
         tmp_path, _word_syllabus().with_sentences([sentence]), urls=("https://x/good.jpg",))
-    with pytest.raises(ValueError, match="gloss"):
+    with pytest.raises(ValueError, match="no query"):
         attempt(ctx, Need(sentence.text_sha, "picture", "sentence"), "openverse")
+    assert search.queries == []
 
 
 # --- recording: the voice constraint and the speaker attributes -------------
@@ -1607,7 +1630,7 @@ def test_a_picture_attempt_asks_openverse_afresh_once_its_nothing_aged_out(tmp_p
     and the attempt makes a fresh search (the reask path) instead of
     reading the cached empty answer, so a corpus that grew is seen."""
     day = 86_400 * 1_000_000_000
-    ctx, search, _judge = _picture_ctx(tmp_path)
+    ctx, search, _judge = _picture_ctx(tmp_path, phrase=None)
     # the cached empty search and the stale nothing row of an earlier attempt
     ctx.db.append(port="provide", backend="openverse",
                   key=ProvideKey(source="openverse", kind="", query="rice food"), subject="rice",
@@ -1619,6 +1642,9 @@ def test_a_picture_attempt_asks_openverse_afresh_once_its_nothing_aged_out(tmp_p
                   subject="rice", question={"kind": "picture", "subject_kind": "word",
                                             "source": "openverse"},
                   answer={"outcome": "nothing", "candidates": []}, cost=0.0, ts=1 * day)
+    # the phrase row last: the store keeps ts monotonic, so seeding it
+    # first would drag the "old" rows above forward past the ttl
+    _seed_phrase(ctx, "rice", "rice food")
     ctx.nothing_ttl = {"openverse": 180}
     ctx.now_ns = lambda: 201 * day
     attempt(ctx, Need("rice", "picture"), "openverse")
@@ -1646,7 +1672,7 @@ def test_a_second_attempt_fetches_only_the_hits_the_first_did_not_try(tmp_path):
     assert search.queries == ["rice food"]           # the search itself was a cache hit both times
 
     shas = [i["sha"] for r in rows_for(ctx.db, "rice", "picture") if r.port == "provide"
-           for i in r.answer["items"] if "sha" in i]
+           for i in r.answer.get("items", ()) if "sha" in i]
     assert len(shas) == 4                             # every hit ingested, none refetched
 
 

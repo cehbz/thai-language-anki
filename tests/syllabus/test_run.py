@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -146,12 +147,16 @@ class _Llm:
         return RawAnswer(items=(self.drafts,))
 
 
-class _LlmPhrase:
-    """The phrase drafter: `phrases` is the JSON its one answer carries --
-    empty by default, so a picture need still searches the gloss fallback
-    unless a test asks for drafted phrases specifically."""
+_PHRASE_ITEM = re.compile(r"^- subject: (\S+)  text:", re.MULTILINE)
 
-    def __init__(self, phrases: str = '{"phrases": []}'):
+
+class _LlmPhrase:
+    """The phrase drafter: `phrases` is the JSON its one answer carries.
+    None (the default) answers "<subject> photo" for every subject the
+    prompt lists, so a run's picture needs get their phrase and are
+    searched (spec 3 r25 section 5: a need with none waits)."""
+
+    def __init__(self, phrases: str | None = None):
         self.phrases = phrases
         self.prompts: list[str] = []
 
@@ -160,8 +165,13 @@ class _LlmPhrase:
                             prompt_sha=sha(q.params["prompt"]))
 
     def fetch(self, q):
-        self.prompts.append(q.params["prompt"])
-        return RawAnswer(items=(self.phrases,))
+        prompt = q.params["prompt"]
+        self.prompts.append(prompt)
+        if self.phrases is not None:
+            return RawAnswer(items=(self.phrases,))
+        drafted = [{"subject": subject, "phrase": f"{subject} photo"}
+                   for subject in _PHRASE_ITEM.findall(prompt)]
+        return RawAnswer(items=(json.dumps({"phrases": drafted}),))
 
 
 class _FixedCompletionTransport:
@@ -344,10 +354,10 @@ def test_run_treats_an_empty_phrases_answer_as_unrecognized_and_re_asks_next_run
     assert report.unreachable is False
     assert drafted_phrase(ctx_batch_two_needs.db.assessments_of("rice")) is None
     assert drafted_phrase(ctx_batch_two_needs.db.assessments_of("fish")) is None
-    # nothing cached -- a second run (its own batch resolved first, same
-    # as every other two-run test in this module) re-asks rather than
-    # getting a permanent empty cache hit for the same stable lacking set
-    fake_batch.complete_all(report.batch_id, passed=False)
+    # both needs waited (r25: no query on record), so no batch is out
+    assert report.deferred == 2 and report.batch_id is None
+    # nothing cached -- a second run re-asks rather than getting a
+    # permanent empty cache hit for the same stable lacking set
     run(ctx_batch_two_needs, budgets={})
     assert len(backend.transport.prompts) == 2
 
@@ -822,12 +832,14 @@ class _Q:
 
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
            preference=AttemptResult(attempted=False), assess=None,
-           phrase_result=AttemptResult(attempted=False)):
+           phrase_result=AttemptResult(attempted=False), query="q"):
     """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
-    preference_attempt/adoptable_drafts. A `results` entry that is an
-    exception class is raised instead of returned. `assess` is
-    assess_first's fixed return for every need -- None keeps the
-    fall-through to the source."""
+    preference_attempt/adoptable_drafts/picture_query_for. A `results`
+    entry that is an exception class is raised instead of returned.
+    `assess` is assess_first's fixed return for every need -- None keeps
+    the fall-through to the source. `query` is every picture need's
+    query on record -- None means none (spec 3 r25 section 5: the need
+    waits)."""
     calls = []
 
     def fake_attempt(ctx, need, source):
@@ -849,6 +861,7 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
         return phrase_result
 
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
+    monkeypatch.setattr(run_mod, "picture_query_for", lambda ctx, need: query)
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: assess)
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "phrase_attempt", fake_phrase_attempt)
@@ -1061,6 +1074,7 @@ def test_run_threads_its_own_clock_read_to_every_attempt_via_ctx_now_ns(db, monk
 
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: None)
+    monkeypatch.setattr(run_mod, "picture_query_for", lambda ctx, need: "q")
     monkeypatch.setattr(run_mod, "sentence_attempt",
                         lambda ctx, max_targets=40: AttemptResult(attempted=False))
     monkeypatch.setattr(run_mod, "phrase_attempt", lambda ctx: AttemptResult(attempted=False))
@@ -1748,17 +1762,28 @@ def test_a_drafter_transport_failure_defers_every_open_word_beyond_the_cap_too(d
            + report.unserved + report.budgeted + report.deferred)
 
 
+def test_a_picture_need_with_no_query_on_record_waits(db, monkeypatch):
+    """Spec 3 r25 section 5: no direction, suggestion or drafted phrase
+    on record -- the need is not attempted this run and counts deferred;
+    a recording need beside it is untouched."""
+    calls = _patch(monkeypatch, {}, query=None)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",), recordings=("a",)))), {})
+    assert [(n.subject, n.kind) for n, _s in calls] == [("a", "recording")]
+    assert report.available == 2 and report.attempted == 1 and report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
 def test_a_phrase_drafter_transport_failure_is_a_source_failure_and_the_loop_runs(db, monkeypatch):
-    """spec 3 r24 section 5: the phrase drafter died on the wire -- its
-    failure is counted, but unlike the sentence drafter it owns no need
-    bucket of its own, so the queued picture need is still attempted
-    normally (on its plain gloss fallback) and nothing is deferred."""
-    calls = _patch(monkeypatch, {}, phrase_result=TransportError)
+    """spec 3 r24/r25 section 5: the phrase drafter died on the wire --
+    its failure is counted, the loop still runs, and a picture need
+    left with no query waits (deferred) rather than searching a gloss."""
+    calls = _patch(monkeypatch, {}, phrase_result=TransportError, query=None)
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert [n.subject for n, _s in calls] == ["a"]
+    assert calls == []
     assert report.source_failures == {"llm-phrase": 1}
     assert report.unreachable is False
-    assert report.available == 1 and report.attempted == 1 and report.deferred == 0
+    assert report.available == 1 and report.attempted == 0 and report.deferred == 1
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
     assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {

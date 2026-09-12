@@ -45,7 +45,6 @@ from .derivations import DEFAULT_SENTENCE_NOTHING_CAP, current_best
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
-from .query import QUERY_HINTS
 from . import record
 from .provider import (
     Backend,
@@ -390,7 +389,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
 def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Sourcing:
     """One deck's Sourcing ctx (attempts.py): its Derivations, the
     db-backed provider/assessor rosters, and the values that reach a
-    cache key (image_candidates, voices, query_hints, judge_model), all
+    cache key (image_candidates, voices, judge_model), all
     from the deck's own curated/providers.yaml and rulebook.yaml.
     """
     root = Path(deck_root)
@@ -405,7 +404,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
-        query_hints=QUERY_HINTS, judge_model=cfg.judge.model,
+        judge_model=cfg.judge.model,
         sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
         transient_cap=derivations.transient_cap,
         sentence_nothing_cap=derivations.sentence_nothing_cap,

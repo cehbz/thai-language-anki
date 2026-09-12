@@ -247,8 +247,8 @@ def latest_phrase(rows: Sequence[Answer]) -> str | None:
     the search that produced the judged candidate, never
     attempts.phrase_attempt's own per-subject phrase row, fix round 2
     finding 1); else the newest drafted phrase on record
-    (`drafted_phrase`); else None -- the caller's own fallback, a word's
-    gloss head term with its category qualifier or a sentence's gloss.
+    (`drafted_phrase`); else None -- no query on record, and the need
+    waits (spec 3 r25 section 5).
     """
     directed = directions(rows)
     if directed:

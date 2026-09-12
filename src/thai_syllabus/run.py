@@ -31,6 +31,7 @@ from .attempts import (
     attempt,
     current_best_of,
     phrase_attempt,
+    picture_query_for,
     preference_attempt,
     provenance_source_for,
     sentence_attempt,
@@ -482,6 +483,13 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 # still reach the report (section 7) even though the
                 # attempt falls through to a source below.
                 tally.collect(result)
+            if need.kind == "picture" and picture_query_for(ctx, need) is None:
+                # Spec 3 r25 section 5: no direction, suggestion or
+                # drafted phrase on record -- nothing to search. The
+                # need waits for the phrase ask (this run's failed, or
+                # its answer omitted this subject) and counts deferred.
+                tally.deferred += 1
+                continue
             sources = ctx.sources_for(need.kind)
             source = next_source(ctx.db, need.subject, need.kind, sources,
                                 transient_cap=ctx.transient_cap,
@@ -550,8 +558,8 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     attempt, so at most one batch is out. A drafter transport failure
     counts under source_failures["llm-sentence"] and defers every word
     with an open Target; one under source_failures["llm-phrase"] leaves
-    every picture need on its plain gloss fallback for this pass. Either
-    way the loop runs.
+    every picture need still lacking a phrase waiting (deferred) for
+    this pass. Either way the loop runs.
     """
     # One clock read for the whole run (spec 3 r19 section 6a/9): every
     # queue build and the attempt loop's own next_source calls age a
@@ -660,12 +668,11 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # One drafting ask per run (spec 3 r24 section 5), after sentence
     # drafting and before the need loop: every open picture need -- word
     # or scene, this pass's newly adopted sentences included -- lacking a
-    # drafted phrase gets one, so _picture_query_for finds it below
-    # instead of falling back to the plain gloss. No need bucket of its
-    # own: a picture need this drafts nothing for is still tried at its
-    # next source, on the gloss fallback, the same as before this ask
-    # existed. A drafter transport failure counts under
-    # source_failures["llm-phrase"] and otherwise never breaks the run.
+    # drafted phrase gets one, so picture_query_for finds it below. No
+    # need bucket of its own: a picture need this drafts nothing for
+    # waits in the loop (r25: no query on record, deferred). A drafter
+    # transport failure counts under source_failures["llm-phrase"] and
+    # otherwise never breaks the run.
     try:
         tally.collect(phrase_attempt(ctx))
     except TransportError as e:

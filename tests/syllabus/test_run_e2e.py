@@ -396,8 +396,7 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
     ctx.db.add_media(sha="sentence-pic-seed", kind="picture", ext="jpg", source="openverse",
                      origin="https://x/rice.jpg", licence="by", acquired=date(2026, 1, 1))
     ctx.db.append(port="provide", backend="openverse",
-                 # "rice": the sentence's own gloss -- _picture_query_for's
-                 # fallback query for a scene picture with no drafted phrase.
+                 # "rice": the query this seeded search was asked with.
                  key=ProvideKey(source="openverse", kind="", query="rice"),
                  subject=sentence_sha,
                  question={"kind": "picture", "subject_kind": "sentence"},

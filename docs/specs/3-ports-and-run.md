@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 24, proposed 2026-09-11 against principles r4 and architecture
+Revision 25, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -71,6 +71,18 @@ Revision log:
   sentences; scene queries were whole glosses, 336 of 1,405 candidates
   passing; 20 refusals for `ๆ` as an id and a guessed unsuffixed id).
   User approval 2026-09-11.
+- r25 2026-09-12: the gloss fallback is gone -- a picture need with no
+  query on record (no direction, no fresh suggestion, no drafted phrase)
+  is not attempted and counts deferred; the drafter is handed the gloss
+  and may answer with it; assess-first's fit question carries no
+  phrase. Evidence: 2026-09-11 22:22 resolve (101 fit verdicts on 21
+  exhausted words judged against phrases they were not searched for, 1
+  pass; all 45 open word-picture needs exhausted under gloss queries
+  with an unsearched phrase; the r24 and r24b cycles attempted picture
+  needs on the fallback because no phrase ask had answered yet).
+  Bringing the record into line (phrases for every need, the pre-phrase
+  attempt rows removed) is a one-off outside this spec. User approval
+  2026-09-12.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -203,10 +215,10 @@ image-search phrase for every open picture need, word or scene, that has
 none on record and no direction (the `phrase` provide, one row per
 subject; the ask is cached by prompt, and an answer phrasing none of the
 asked items is not an answer: nothing is appended and the ask is a
-source failure, re-asked next run); else the fallback, a word's gloss head term with its
-category qualifier or a sentence's gloss (the corpora index English
-metadata, so the query is English either way). Source order:
-openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
+source failure, re-asked next run). A need with no query on record is
+not attempted this run and counts `deferred` (r25): the gloss is the
+drafter's input, never a search (the corpora index English metadata, so
+the phrase is English). Source order: openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row
@@ -220,7 +232,9 @@ judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
 
 Assess-first: when a candidate on record has no fit verdict under the
-current rubric, the attempt is the fit questions on those candidates; no
+current rubric, the attempt is the fit questions on those candidates,
+asked with no phrase (the search that produced them is not this
+attempt's; the rubric's "pass if no phrase is given" applies, r25); no
 source is asked and no outcome row is written. A source is asked only
 once every candidate is judged. If every such question is excluded
 (unpreparable), the source is asked in the same attempt. Scene pictures
@@ -488,7 +502,7 @@ always. The remaining fields count events, not needs.
 | pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
 | unserved | needs whose kind has no Source and no per-run pass |
 | budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent) |
-| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted, a retired sentence's other needs still in this pass's queue |
+| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |

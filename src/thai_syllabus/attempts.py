@@ -51,7 +51,6 @@ from .entities import Target, Word
 from .ids import PairId, WordId
 from .media import Speaker
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
-from .query import QUERY_HINTS, picture_query
 from .record import DRAFT_SUBJECT, PHRASE_SUBJECT
 from .safety import Guard
 from .store import MediaStore, SyllabusDb
@@ -63,7 +62,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
-           "phrase_attempt",
+           "phrase_attempt", "picture_query_for",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
 
 _log = logging.getLogger(__name__)
@@ -152,7 +151,6 @@ class Sourcing:
     # constraint allows (E2, E7).
     voices: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: {
         "male": tuple(MALE_VOICES), "female": tuple(FEMALE_VOICES)})
-    query_hints: Mapping[str, str] = field(default_factory=lambda: dict(QUERY_HINTS))
     judge_model: str = "llm"
     # The Sources each artifact kind may be asked for, cheapest first, and
     # the attempt count exhausted() stops at.
@@ -328,25 +326,14 @@ def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:
 
 # --- pictures (Word) and scene pictures (Sentence) --------------------------
 
-def _picture_query_for(ctx: Sourcing, need: Need) -> str:
-    """The query, in precedence (spec 3 section 5): the latest learner
-    direction; a judge suggestion newer than the last provide row; the
-    drafted phrase (record.latest_phrase, appended by `phrase_attempt`);
-    else, for a scene, the sentence's own English gloss, and for a word
-    its gloss head term with the category qualifier. The corpora index
-    English metadata, so the query is English either way.
+def picture_query_for(ctx: Sourcing, need: Need) -> str | None:
+    """The query on record, in precedence (spec 3 section 5): the latest
+    learner direction; a judge suggestion newer than the last Source
+    ask; the drafted phrase (record.latest_phrase, appended by
+    `phrase_attempt`). None when none is on record (r25): the need
+    waits -- the gloss is the drafter's input, never a search.
     """
-    phrase = record.latest_phrase(ctx.db.assessments_of(need.subject))
-    if phrase:
-        return phrase
-    if need.subject_kind == "sentence":
-        gloss = ctx.syllabus.sentence(need.subject).gloss.strip()
-        if not gloss:
-            raise ValueError(
-                f"sentence {need.subject!r} has no gloss to search a scene picture for")
-        return gloss
-    word = _word_of(ctx, need.subject)
-    return picture_query(word, ctx.syllabus.category_of(word.id), None, ctx.query_hints)
+    return record.latest_phrase(ctx.db.assessments_of(need.subject)) or None
 
 
 def _picture_params(ctx: Sourcing, need: Need, query: str | None) -> dict[str, Any]:
@@ -369,7 +356,10 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     in this attempt is not re-asked, its hits having just been served
     (spec 3 section 6a's re-ask rule)."""
     spend: dict[str, Spend] = {}
-    query = _picture_query_for(ctx, need)
+    query = picture_query_for(ctx, need)
+    if query is None:
+        raise ValueError(f"picture need {need.subject!r} has no query on record: "
+                         "no direction, suggestion or drafted phrase (spec 3 section 5)")
     fetches = _Fetches()
     already = record.tried_urls(ctx.db, need.subject, need.kind, source)
     question = Question(subject=need.subject, provides="picture",
@@ -559,8 +549,8 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
     """One drafting ask per run (spec 3 section 5) over every open picture
     need -- word or scene -- with no drafted phrase on record
     (record.drafted_phrase): a short English image-search phrase for
-    each, so `_picture_query_for` searches it ahead of the plain gloss
-    fallback. Skipped -- no ask made, `attempted=False` -- once every open
+    each, so `picture_query_for` finds one and the need is searched
+    (r25: without one it waits). Skipped -- no ask made, `attempted=False` -- once every open
     picture need already has one.
 
     The batch prompt is asked once on the drafter transport (`llm-phrase`,
