@@ -500,10 +500,18 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                     _retire_exhausted_sentence(ctx, need, tally)
                 continue
             if source in dead_sources:
-                # No row was written for this need: the next run asks the
-                # same source again.
-                tally.deferred += 1
-                continue
+                # Spec 3 r26 section 7: a source dead for the run counts
+                # as tried for this pass only -- the need takes its next
+                # live source now, and nothing about the dead one reaches
+                # the record. No live source left: deferred (no row was
+                # written for this need; the next run starts over).
+                live = [s for s in sources if s not in dead_sources]
+                source = next_source(ctx.db, need.subject, need.kind, live,
+                                    transient_cap=ctx.transient_cap,
+                                    nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
+                if source is None:
+                    tally.deferred += 1
+                    continue
             if source in budgeted_sources:
                 # Same reasoning as a spent day budget below: the source
                 # said its own allowance is gone, so this need is

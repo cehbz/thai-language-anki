@@ -1695,28 +1695,40 @@ def test_an_unreachable_sentence_attempt_attempts_every_open_word_uncapped(db, m
            + report.unserved + report.budgeted + report.deferred)
 
 
-def test_a_dead_source_defers_the_needs_it_left_untouched(db, monkeypatch):
-    """The first of three needs on one Source failed on the wire and the
-    Source is skipped for the rest of the run: none of the three wrote a
-    row, so all three are deferred and retried next run, while the need
-    on a live Source is attempted."""
+def test_a_need_whose_next_source_is_dead_moves_on_to_its_next_source(db, monkeypatch):
+    """Spec 3 r26 section 7: the first need's source died on the wire and
+    is skipped for the rest of the run; a later need whose next source
+    it is takes its next live source in the same run instead of waiting,
+    and nothing about the dead source reaches the record."""
     calls = _patch(monkeypatch, {("a", "openverse"): TransportError})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), recordings=("r",)))), {})
-    assert [n.subject for n, _s in calls] == ["a", "r"]
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"), recordings=("r",)))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "openverse"), ("b", "wikimedia"),
+                                                  ("r", "forvo")]
     assert report.source_failures == {"openverse": 1}
-    assert report.available == 4 and report.attempted == 1 and report.deferred == 3
+    assert report.available == 3 and report.attempted == 2 and report.deferred == 1
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
-
-
-def test_a_dead_source_is_counted_and_skipped_for_the_rest_of_the_run(db, monkeypatch):
-    calls = _patch(monkeypatch, {("a", "openverse"): TransportError})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
-    assert [n.subject for n, _s in calls] == ["a"]   # b's next source is the dead one
-    assert report.source_failures == {"openverse": 1}
-    assert report.unreachable is False
     assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
         "openverse": 1}
+
+
+def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
+    """Spec 3 r26 section 7: one source per need per run still holds --
+    a need whose ask failed is deferred, not moved on -- and once every
+    picture source has died under some need, a later picture need has
+    no live source left and counts deferred, not exhausted (nothing was
+    written for it)."""
+    calls = _patch(monkeypatch, {("a", "openverse"): TransportError,
+                                 ("b", "wikimedia"): TransportError,
+                                 ("c", "pexels"): TransportError})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d")))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "openverse"), ("b", "wikimedia"),
+                                                  ("c", "pexels")]
+    assert report.source_failures == {"openverse": 1, "wikimedia": 1, "pexels": 1}
+    assert report.available == 4 and report.attempted == 0 and report.deferred == 4
+    assert report.exhausted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_quota_exhausted_source_budgets_the_need_and_every_later_one_on_it(db, monkeypatch):

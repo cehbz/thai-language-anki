@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 25, proposed 2026-09-12 against principles r4 and architecture
+Revision 26, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -83,6 +83,20 @@ Revision log:
   Bringing the record into line (phrases for every need, the pre-phrase
   attempt rows removed) is a one-off outside this spec. User approval
   2026-09-12.
+- r26 2026-09-12: a need whose next source is dead for the run takes
+  its next live source in the same run (the dead source counts as tried
+  for this pass only; deferred only when no live source is left); a
+  Cloudflare challenge page is retried once after
+  `quotas.<source>.challenge_wait_seconds`; a source's requests are
+  spaced `quotas.<source>.min_interval_seconds` apart; Openverse is
+  asked as a registered client (`secrets.openverse`, OAuth2 client
+  credentials; anonymous 20/minute and 200/day, registered 100/minute
+  and 10,000/day per Openverse's throttling documentation) and its
+  429 is the Quota state; picture source order pexels, openverse,
+  wikimedia. Evidence: 2026-09-12 cycles 2 and 3, one challenge page
+  each from Openverse, 495 of 575 needs deferred behind it; 168
+  anonymous requests in the 09:00 hour, 28 in the minute before the
+  first challenge. User approval 2026-09-12.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -502,14 +516,14 @@ always. The remaining fields count events, not needs.
 | pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
 | unserved | needs whose kind has no Source and no per-run pass |
 | budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent) |
-| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose next source failed for the run, questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
+| deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose ask failed on the wire or whose every untried source is dead for the run (r26), questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
-| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; needs whose next source it is stay untouched and count under deferred; the failing need records a `transient-failure` outcome; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase` |
+| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase` |
 | spend[source] | the source's asks and cost this run |
 
 Every ask appends; kill-safe anywhere. The run is transport-agnostic.
