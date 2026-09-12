@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 13, proposed 2026-09-12 against principles r4 and architecture
+Revision 14, proposed 2026-09-12 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -36,6 +36,10 @@ Revision log:
   Target. Evidence: 253 sentences use 669 words, 452 of them once.
 - r13 2026-09-12: Corroboration gains "adjudicated" (the judge plus one
   engine, spec 3 r28). User approval 2026-09-12.
+- r14 2026-09-12: SoundConfusion.weight, the F1 seed; pair_count
+  (5 → 4 pairs, 4 → 3, 3 → 2, else 1). Evidence: sound-stage design
+  2026-09-12 ruling 2 (about 55 pairs over 24 confusions,
+  weight-proportional). User approval 2026-09-12.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -78,6 +82,8 @@ SoundConfusion                      # language model
   id: ConfusionId                   # e.g. "tone:mid-low"
   dimension: Literal[tone, length, aspiration, vowel_quality, consonant]
   sounds: tuple[str, str]           # the two opposed values
+  weight: int = 1                   # F1 seed; pairs per confusion 5→4,
+                                    # 4→3, 3→2, else 1
 
 Grapheme                            # language model
   symbol: str                       # identity

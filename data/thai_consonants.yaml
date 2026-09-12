@@ -1,0 +1,49 @@
+# The 44 Thai consonants (spec 1 r14; sound-stage design 2026-09-12 §1):
+# class, onset sound, the recited name Thai speakers spell with, and the
+# acrophonic keyword with its gloss. Pronunciations are corroborated by
+# the adjudication pass; nothing here is proposed per symbol. ฃ and ฅ are
+# obsolete letters kept for completeness of the recited alphabet.
+- {symbol: ก, class: mid,  sound: k,   name: กอ ไก่,     keyword: ไก่,     gloss: chicken}
+- {symbol: ข, class: high, sound: kʰ,  name: ขอ ไข่,     keyword: ไข่,     gloss: egg}
+- {symbol: ฃ, class: high, sound: kʰ,  name: ฃอ ขวด,     keyword: ขวด,     gloss: bottle}
+- {symbol: ค, class: low,  sound: kʰ,  name: คอ ควาย,    keyword: ควาย,    gloss: water buffalo}
+- {symbol: ฅ, class: low,  sound: kʰ,  name: ฅอ คน,      keyword: คน,      gloss: person}
+- {symbol: ฆ, class: low,  sound: kʰ,  name: ฆอ ระฆัง,   keyword: ระฆัง,   gloss: bell}
+- {symbol: ง, class: low,  sound: ŋ,   name: งอ งู,      keyword: งู,      gloss: snake}
+- {symbol: จ, class: mid,  sound: tɕ,  name: จอ จาน,     keyword: จาน,     gloss: plate}
+- {symbol: ฉ, class: high, sound: tɕʰ, name: ฉอ ฉิ่ง,    keyword: ฉิ่ง,    gloss: small cymbals}
+- {symbol: ช, class: low,  sound: tɕʰ, name: ชอ ช้าง,    keyword: ช้าง,    gloss: elephant}
+- {symbol: ซ, class: low,  sound: s,   name: ซอ โซ่,     keyword: โซ่,     gloss: chain}
+- {symbol: ฌ, class: low,  sound: tɕʰ, name: ฌอ เฌอ,     keyword: เฌอ,     gloss: tree}
+- {symbol: ญ, class: low,  sound: j,   name: ญอ หญิง,    keyword: หญิง,    gloss: woman}
+- {symbol: ฎ, class: mid,  sound: d,   name: ฎอ ชฎา,     keyword: ชฎา,     gloss: headdress}
+- {symbol: ฏ, class: mid,  sound: t,   name: ฏอ ปฏัก,    keyword: ปฏัก,    gloss: goad}
+- {symbol: ฐ, class: high, sound: tʰ,  name: ฐอ ฐาน,     keyword: ฐาน,     gloss: pedestal}
+- {symbol: ฑ, class: low,  sound: tʰ,  name: ฑอ มณโฑ,    keyword: มณโฑ,    gloss: Montho (a character)}
+- {symbol: ฒ, class: low,  sound: tʰ,  name: ฒอ ผู้เฒ่า,  keyword: ผู้เฒ่า,  gloss: elder}
+- {symbol: ณ, class: low,  sound: n,   name: ณอ เณร,     keyword: เณร,     gloss: novice monk}
+- {symbol: ด, class: mid,  sound: d,   name: ดอ เด็ก,    keyword: เด็ก,    gloss: child}
+- {symbol: ต, class: mid,  sound: t,   name: ตอ เต่า,    keyword: เต่า,    gloss: turtle}
+- {symbol: ถ, class: high, sound: tʰ,  name: ถอ ถุง,     keyword: ถุง,     gloss: bag}
+- {symbol: ท, class: low,  sound: tʰ,  name: ทอ ทหาร,    keyword: ทหาร,    gloss: soldier}
+- {symbol: ธ, class: low,  sound: tʰ,  name: ธอ ธง,      keyword: ธง,      gloss: flag}
+- {symbol: น, class: low,  sound: n,   name: นอ หนู,     keyword: หนู,     gloss: mouse}
+- {symbol: บ, class: mid,  sound: b,   name: บอ ใบไม้,   keyword: ใบไม้,   gloss: leaf}
+- {symbol: ป, class: mid,  sound: p,   name: ปอ ปลา,     keyword: ปลา,     gloss: fish}
+- {symbol: ผ, class: high, sound: pʰ,  name: ผอ ผึ้ง,    keyword: ผึ้ง,    gloss: bee}
+- {symbol: ฝ, class: high, sound: f,   name: ฝอ ฝา,      keyword: ฝา,      gloss: lid}
+- {symbol: พ, class: low,  sound: pʰ,  name: พอ พาน,     keyword: พาน,     gloss: pedestal tray}
+- {symbol: ฟ, class: low,  sound: f,   name: ฟอ ฟัน,     keyword: ฟัน,     gloss: teeth}
+- {symbol: ภ, class: low,  sound: pʰ,  name: ภอ สำเภา,   keyword: สำเภา,   gloss: junk boat}
+- {symbol: ม, class: low,  sound: m,   name: มอ ม้า,     keyword: ม้า,     gloss: horse}
+- {symbol: ย, class: low,  sound: j,   name: ยอ ยักษ์,   keyword: ยักษ์,   gloss: giant}
+- {symbol: ร, class: low,  sound: r,   name: รอ เรือ,    keyword: เรือ,    gloss: boat}
+- {symbol: ล, class: low,  sound: l,   name: ลอ ลิง,     keyword: ลิง,     gloss: monkey}
+- {symbol: ว, class: low,  sound: w,   name: วอ แหวน,    keyword: แหวน,    gloss: ring}
+- {symbol: ศ, class: high, sound: s,   name: ศอ ศาลา,    keyword: ศาลา,    gloss: pavilion}
+- {symbol: ษ, class: high, sound: s,   name: ษอ ฤๅษี,    keyword: ฤๅษี,    gloss: hermit}
+- {symbol: ส, class: high, sound: s,   name: สอ เสือ,    keyword: เสือ,    gloss: tiger}
+- {symbol: ห, class: high, sound: h,   name: หอ หีบ,     keyword: หีบ,     gloss: chest (box)}
+- {symbol: ฬ, class: low,  sound: l,   name: ฬอ จุฬา,    keyword: จุฬา,    gloss: kite}
+- {symbol: อ, class: mid,  sound: ʔ,   name: ออ อ่าง,    keyword: อ่าง,    gloss: basin}
+- {symbol: ฮ, class: low,  sound: h,   name: ฮอ นกฮูก,   keyword: นกฮูก,   gloss: owl}

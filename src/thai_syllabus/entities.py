@@ -82,10 +82,17 @@ class Word:
 
 @dataclass(frozen=True)
 class SoundConfusion:
-    """Two Thai sounds liable to be mistaken for each other. Identity: id."""
+    """Two Thai sounds liable to be mistaken for each other. Identity: id.
+    `weight` (spec 1 r14) is the F1 seed: how many pairs train it, before
+    study evidence (weight-proportional: 5 → 4 pairs, 4 → 3, 3 → 2, else 1)."""
     id: ConfusionId
     dimension: Dimension
     sounds: tuple[str, str]
+    weight: int = 1
+
+    @property
+    def pair_count(self) -> int:
+        return {5: 4, 4: 3, 3: 2}.get(self.weight, 1)
 
 
 def _dimension_value(syllable: Syllable, dimension: Dimension) -> str:

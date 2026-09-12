@@ -299,6 +299,45 @@ def test_confusions_round_trip(tmp_path):
     assert curated.load_confusions(path) == confusions
 
 
+def test_confusions_round_trip_their_weight(tmp_path):
+    # weight is the F1 seed (spec 1 r14): how many pairs train the confusion.
+    path = tmp_path / "confusions.yaml"
+    path.write_text(yaml.safe_dump([{"id": "tone:mid-low", "dimension": "tone",
+                                     "sounds": ["mid", "low"], "weight": 5}]))
+    (c,) = curated.load_confusions(path)
+    assert c.weight == 5
+    curated.save_confusions(path, [c])
+    assert yaml.safe_load(path.read_text())[0]["weight"] == 5
+
+
+def test_a_confusion_without_a_weight_defaults_to_one(tmp_path):
+    path = tmp_path / "confusions.yaml"
+    path.write_text(yaml.safe_dump([{"id": "tone:mid-low", "dimension": "tone", "sounds": ["mid", "low"]}]))
+    assert curated.load_confusions(path)[0].weight == 1
+
+
+def test_a_non_positive_weight_refuses(tmp_path):
+    path = tmp_path / "confusions.yaml"
+    path.write_text(yaml.safe_dump([{"id": "x", "dimension": "tone", "sounds": ["mid", "low"], "weight": 0}]))
+    with pytest.raises(curated.CuratedValidationError, match=r"confusions\[0\]"):
+        curated.load_confusions(path)
+
+
+def test_a_boolean_weight_refuses(tmp_path):
+    # bool is a subclass of int in Python; guard against True/False sneaking in as 1/0.
+    path = tmp_path / "confusions.yaml"
+    path.write_text(yaml.safe_dump([{"id": "x", "dimension": "tone", "sounds": ["mid", "low"], "weight": True}]))
+    with pytest.raises(curated.CuratedValidationError, match=r"confusions\[0\]"):
+        curated.load_confusions(path)
+
+
+def test_a_string_weight_refuses(tmp_path):
+    path = tmp_path / "confusions.yaml"
+    path.write_text(yaml.safe_dump([{"id": "x", "dimension": "tone", "sounds": ["mid", "low"], "weight": "5"}]))
+    with pytest.raises(curated.CuratedValidationError, match=r"confusions\[0\]"):
+        curated.load_confusions(path)
+
+
 # --- pairs -----------------------------------------------------------------
 
 def test_pairs_round_trip_with_resolution(tmp_path):

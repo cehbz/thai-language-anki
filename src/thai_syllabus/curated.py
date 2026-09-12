@@ -296,12 +296,15 @@ def load_graphemes(path: str | Path, words_by_id: Mapping[str, Word]) -> list[Gr
 # --- confusions --------------------------------------------------------
 
 def _confusion_to_dict(c: SoundConfusion) -> dict:
-    return {"id": c.id, "dimension": c.dimension, "sounds": list(c.sounds)}
+    return {"id": c.id, "dimension": c.dimension, "sounds": list(c.sounds), "weight": c.weight}
 
 
 def _confusion_from_dict(d: dict) -> SoundConfusion:
+    weight = d.get("weight", 1)
+    if isinstance(weight, bool) or not isinstance(weight, int) or weight < 1:
+        raise ValueError(f"weight {weight!r} must be a positive integer")
     return SoundConfusion(id=ConfusionId(d["id"]), dimension=d["dimension"],
-                          sounds=tuple(d["sounds"]))
+                          sounds=tuple(d["sounds"]), weight=weight)
 
 
 def save_confusions(path: str | Path, confusions: list[SoundConfusion]) -> None:
@@ -315,7 +318,7 @@ def load_confusions(path: str | Path) -> list[SoundConfusion]:
     for i, row in enumerate(rows):
         try:
             confusions.append(_confusion_from_dict(row))
-        except (KeyError, TypeError) as e:
+        except (KeyError, TypeError, ValueError) as e:
             errors.append(f"confusions[{i}]: malformed row ({e})")
     if errors:
         raise CuratedValidationError(errors)

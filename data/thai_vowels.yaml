@@ -1,0 +1,26 @@
+# Vowel signs, tone marks and diacritics with the recited names Thai
+# speakers spell with (sound-stage design 2026-09-12 §1). `sound` is the
+# vowel or the mark's effect in the deck's convention. Keywords are
+# adopted by the keyword search (design §2), not listed here.
+- {symbol: ะ, kind: vowel_sign, sound: a,    name: สระ อะ}
+- {symbol: ั, kind: vowel_sign, sound: a,    name: ไม้หันอากาศ}
+- {symbol: า, kind: vowel_sign, sound: aː,   name: สระ อา}
+- {symbol: ิ, kind: vowel_sign, sound: i,    name: สระ อิ}
+- {symbol: ี, kind: vowel_sign, sound: iː,   name: สระ อี}
+- {symbol: ึ, kind: vowel_sign, sound: ɯ,    name: สระ อึ}
+- {symbol: ื, kind: vowel_sign, sound: ɯː,   name: สระ อือ}
+- {symbol: ุ, kind: vowel_sign, sound: u,    name: สระ อุ}
+- {symbol: ู, kind: vowel_sign, sound: uː,   name: สระ อู}
+- {symbol: เ, kind: vowel_sign, sound: eː,   name: สระ เอ}
+- {symbol: แ, kind: vowel_sign, sound: ɛː,   name: สระ แอ}
+- {symbol: โ, kind: vowel_sign, sound: oː,   name: สระ โอ}
+- {symbol: ใ, kind: vowel_sign, sound: aj,   name: สระ ใอ ไม้ม้วน}
+- {symbol: ไ, kind: vowel_sign, sound: aj,   name: สระ ไอ ไม้มลาย}
+- {symbol: ำ, kind: vowel_sign, sound: am,   name: สระ อำ}
+- {symbol: ฤ, kind: vowel_sign, sound: rɯ,   name: ตัว ฤ}
+- {symbol: ็, kind: diacritic,  sound: short, name: ไม้ไต่คู้}
+- {symbol: ์, kind: diacritic,  sound: silent, name: ทัณฑฆาต}
+- {symbol: ่, kind: tone_mark,  sound: mai-ek,     name: ไม้เอก}
+- {symbol: ้, kind: tone_mark,  sound: mai-tho,    name: ไม้โท}
+- {symbol: ๊, kind: tone_mark,  sound: mai-tri,    name: ไม้ตรี}
+- {symbol: ๋, kind: tone_mark,  sound: mai-chattawa, name: ไม้จัตวา}

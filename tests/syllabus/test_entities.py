@@ -95,6 +95,18 @@ def test_sound_confusion_holds_the_two_opposed_values():
         c.dimension = "length"
 
 
+def test_pair_count_is_weight_proportional_5to4_4to3_3to2_else_1():
+    def confusion(weight):
+        return SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                              sounds=("mid", "low"), weight=weight)
+
+    assert confusion(5).pair_count == 4
+    assert confusion(4).pair_count == 3
+    assert confusion(3).pair_count == 2
+    assert confusion(2).pair_count == 1
+    assert confusion(1).pair_count == 1
+
+
 # --- Grapheme: keyword-containment invariant -------------------------------
 
 def test_grapheme_create_accepts_a_keyword_word_whose_spelling_contains_the_symbol():
