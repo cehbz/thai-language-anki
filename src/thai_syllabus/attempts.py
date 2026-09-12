@@ -84,7 +84,9 @@ DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK = 5
 # own recording and scene picture are the same artifact kinds a word's are;
 # only the subject differs.
 SOURCES: dict[str, tuple[str, ...]] = {
-    "picture": ("openverse", "wikimedia", "pexels"),
+    # spec 3 r26 section 5: the keyed corpus first, the challenge-prone
+    # anonymous-tier corpus second
+    "picture": ("pexels", "openverse", "wikimedia"),
     "recording": ("forvo", "tts"),
     "rendition": ("forvo", "tts"),
 }

@@ -232,7 +232,7 @@ asked items is not an answer: nothing is appended and the ask is a
 source failure, re-asked next run). A need with no query on record is
 not attempted this run and counts `deferred` (r25): the gloss is the
 drafter's input, never a search (the corpora index English metadata, so
-the phrase is English). Source order: openverse, wikimedia, pexels. One attempt: search, imgfetch the first N
+the phrase is English). Source order: pexels, openverse, wikimedia (r26). One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row

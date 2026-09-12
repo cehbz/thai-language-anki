@@ -319,7 +319,7 @@ def test_run_drafts_a_phrase_for_every_open_picture_need_and_searches_it(
     def query_of(subject):
         return [r.question["params"]["query"] for r in rows_for(ctx_batch_two_needs.db, subject,
                                                                  "picture")
-               if r.port == "provide" and r.backend == "openverse"]
+               if r.port == "provide" and r.backend == "pexels"]
 
     assert query_of("rice") == ["a bowl of steamed rice"]
     assert query_of("fish") == ["a grilled whole fish"]
@@ -368,7 +368,7 @@ def test_run_tries_one_source_per_need_and_submits_one_batch(
         ctx_batch_two_needs, fake_search, fake_batch):
     report = run(ctx_batch_two_needs, budgets={})
     # queue() orders equal-rank needs by subject, so fish precedes rice.
-    assert fake_search.asks == [("fish", "openverse"), ("rice", "openverse")]
+    assert fake_search.asks == [("fish", "pexels"), ("rice", "pexels")]
     assert fake_batch.submitted == 1
     assert report.pending == 2 and report.batch_id
 
@@ -377,7 +377,7 @@ def test_second_run_resolves_then_escalates(ctx_batch_two_needs, fake_search, fa
     r1 = run(ctx_batch_two_needs, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=False)   # every candidate failed fit
     r2 = run(ctx_batch_two_needs, budgets={})
-    assert fake_search.asks[-2:] == [("fish", "wikimedia"), ("rice", "wikimedia")]
+    assert fake_search.asks[-2:] == [("fish", "openverse"), ("rice", "openverse")]
     assert r2.pending == 2 and r2.improved == 0
 
 
@@ -473,7 +473,7 @@ def test_an_adopted_sentence_reaches_its_recording_and_picture_needs_this_run(
     recording_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "recording")
     picture_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "picture")
     assert any(r.port == "provide" and r.backend == "forvo" for r in recording_rows)
-    assert any(r.port == "provide" and r.backend == "openverse" for r in picture_rows)
+    assert any(r.port == "provide" and r.backend == "pexels" for r in picture_rows)
 
     assert (r2.available == r2.attempted + r2.exhausted + r2.pending
            + r2.unserved + r2.budgeted + r2.deferred)
@@ -874,7 +874,7 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
 def test_run_asks_one_source_per_need_and_leaves_escalation_to_the_next_run(db, monkeypatch):
     calls = _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("w",)))), {})
-    assert [s for _need, s in calls] == ["openverse"]
+    assert [s for _need, s in calls] == ["pexels"]
     assert report.attempted == 1
 
 
@@ -959,7 +959,7 @@ def test_an_assess_first_need_answered_inline_counts_as_attempted(db, monkeypatc
 def test_assess_first_returning_none_falls_through_to_the_source(db, monkeypatch):
     calls = _patch(monkeypatch, {}, assess=None)
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels")]
 
 
 def test_assess_first_exclusions_reach_the_report_on_fall_through(db, monkeypatch):
@@ -972,7 +972,7 @@ def test_assess_first_exclusions_reach_the_report_on_fall_through(db, monkeypatc
     calls = _patch(monkeypatch, {}, assess=AttemptResult(
         attempted=False, excluded={"k": Excluded(subject="a", artifact_sha="s", reason="gone")}))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels")]
     assert report.excluded == 1
     assert report.available == (report.attempted + report.exhausted + report.pending
                                 + report.unserved + report.budgeted + report.deferred)
@@ -1108,9 +1108,9 @@ def test_a_spent_learner_budget_never_counts_toward_the_run_s_budgeted_bucket(db
 
 def test_run_sums_excluded_candidates_across_attempts(db, monkeypatch):
     _patch(monkeypatch, {
-        ("a", "openverse"): AttemptResult(True, excluded={
+        ("a", "pexels"): AttemptResult(True, excluded={
             "k1": Excluded(subject="a", artifact_sha="s1", reason="gone")}),
-        ("b", "openverse"): AttemptResult(True, excluded={
+        ("b", "pexels"): AttemptResult(True, excluded={
             "k2": Excluded(subject="b", artifact_sha="s2", reason="gone"),
             "k3": Excluded(subject="b", artifact_sha="s3", reason="gone")})},
         sentence_result=AttemptResult(False, excluded={
@@ -1133,10 +1133,10 @@ def test_run_counts_the_same_excluded_candidate_once_across_assess_first_and_the
     """
     same_exclusion = {"k": Excluded(subject="a", artifact_sha="s", reason="gone")}
     calls = _patch(monkeypatch, {
-        ("a", "openverse"): AttemptResult(True, excluded=same_exclusion)},
+        ("a", "pexels"): AttemptResult(True, excluded=same_exclusion)},
         assess=AttemptResult(attempted=False, excluded=same_exclusion))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
-    assert [(n.subject, s) for n, s in calls] == [("a", "openverse")]
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels")]
     assert report.excluded == 1
     assert report.excluded_items == ({"subject": "a", "artifact_sha": "s", "reason": "gone"},)
 
@@ -1149,7 +1149,7 @@ def test_run_keeps_two_no_artifact_exclusions_on_one_subject_distinct(db, monkey
     question's own typed CacheKey, not by subject/artifact_sha).
     """
     _patch(monkeypatch, {
-        ("a", "openverse"): AttemptResult(True, excluded={
+        ("a", "pexels"): AttemptResult(True, excluded={
             "key-1": Excluded(subject="a", artifact_sha=None, reason="no target t1"),
             "key-2": Excluded(subject="a", artifact_sha=None, reason="no target t2")})})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
@@ -1189,13 +1189,13 @@ def test_run_counts_a_need_whose_current_best_changed_as_improved(db, monkeypatc
 def test_run_records_the_spend_each_attempt_incurred(db, monkeypatch):
     _patch(monkeypatch, {})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
-    assert report.spend["openverse"].asks == 2
+    assert report.spend["pexels"].asks == 2
 
 
 def test_run_submits_every_collected_question_as_one_batch(db, monkeypatch):
     assessor = _Assessor()
-    _patch(monkeypatch, {("a", "openverse"): AttemptResult(True, questions=[_Q("a")]),
-                         ("b", "openverse"): AttemptResult(True, questions=[_Q("b")])})
+    _patch(monkeypatch, {("a", "pexels"): AttemptResult(True, questions=[_Q("a")]),
+                         ("b", "pexels"): AttemptResult(True, questions=[_Q("b")])})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
     assert len(assessor.submitted) == 1 and len(assessor.submitted[0]) == 2
     assert report.batch_id == "batch-1" and report.pending == 2
@@ -1207,7 +1207,7 @@ def test_pending_counts_one_words_two_kinds_as_two_needs(db, monkeypatch):
     needs, so the identity still holds."""
     assessor = _Assessor()
     _patch(monkeypatch, {
-        ("a", "openverse"): AttemptResult(True, questions=[_Q("a", "picture")]),
+        ("a", "pexels"): AttemptResult(True, questions=[_Q("a", "picture")]),
         ("a", "forvo"): AttemptResult(True, questions=[_Q("a", "recording")])})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a",), recordings=("a",))), assessor), {})
     assert report.available == 2 and report.pending == 2
@@ -1554,7 +1554,7 @@ def test_run_stops_the_loop_at_the_first_unreachable_judge(db, monkeypatch):
     remaining need would fail the same way -- and the queued needs the
     loop never reached because of it are `deferred`, never looked at this
     run."""
-    calls = _patch(monkeypatch, {("a", "openverse"): JudgeUnreachable})
+    calls = _patch(monkeypatch, {("a", "pexels"): JudgeUnreachable})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c")))), {})
     assert [n.subject for n, _s in calls] == ["a"]   # no second need
     assert report.unreachable is True and report.attempted == 1
@@ -1658,9 +1658,9 @@ def test_an_unreachable_judge_in_the_loop_defers_what_the_resolve_collected(db, 
     question that never went out either) and "c" (whose attempt met the
     dead judge) were both asked (`attempted`)."""
     assessor = _Assessor(outstanding=("batch-0", frozenset({("a", "picture")})))
-    calls = _patch(monkeypatch, {("b", "openverse"): AttemptResult(True,
+    calls = _patch(monkeypatch, {("b", "pexels"): AttemptResult(True,
                                                                   questions=[_Q("b")]),
-                                 ("c", "openverse"): JudgeUnreachable},
+                                 ("c", "pexels"): JudgeUnreachable},
                    preference=AttemptResult(True, questions=[_Q("a", "picture")]))
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"))), assessor), {})
     assert [n.subject for n, _s in calls] == ["b", "c"]   # "a" is never re-attempted
@@ -1700,16 +1700,16 @@ def test_a_need_whose_next_source_is_dead_moves_on_to_its_next_source(db, monkey
     is skipped for the rest of the run; a later need whose next source
     it is takes its next live source in the same run instead of waiting,
     and nothing about the dead source reaches the record."""
-    calls = _patch(monkeypatch, {("a", "openverse"): TransportError})
+    calls = _patch(monkeypatch, {("a", "pexels"): TransportError})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"), recordings=("r",)))), {})
-    assert [(n.subject, s) for n, s in calls] == [("a", "openverse"), ("b", "wikimedia"),
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
                                                   ("r", "forvo")]
-    assert report.source_failures == {"openverse": 1}
+    assert report.source_failures == {"pexels": 1}
     assert report.available == 3 and report.attempted == 2 and report.deferred == 1
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
     assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {
-        "openverse": 1}
+        "pexels": 1}
 
 
 def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
@@ -1718,13 +1718,13 @@ def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
     picture source has died under some need, a later picture need has
     no live source left and counts deferred, not exhausted (nothing was
     written for it)."""
-    calls = _patch(monkeypatch, {("a", "openverse"): TransportError,
-                                 ("b", "wikimedia"): TransportError,
-                                 ("c", "pexels"): TransportError})
+    calls = _patch(monkeypatch, {("a", "pexels"): TransportError,
+                                 ("b", "openverse"): TransportError,
+                                 ("c", "wikimedia"): TransportError})
     report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d")))), {})
-    assert [(n.subject, s) for n, s in calls] == [("a", "openverse"), ("b", "wikimedia"),
-                                                  ("c", "pexels")]
-    assert report.source_failures == {"openverse": 1, "wikimedia": 1, "pexels": 1}
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
+                                                  ("c", "wikimedia")]
+    assert report.source_failures == {"pexels": 1, "openverse": 1, "wikimedia": 1}
     assert report.available == 4 and report.attempted == 0 and report.deferred == 4
     assert report.exhausted == 0
     assert (report.available == report.attempted + report.exhausted + report.pending

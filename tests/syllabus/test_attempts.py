@@ -253,10 +253,6 @@ def _pair_syllabus() -> Syllabus:
 
 # --- the source roster ------------------------------------------------------
 
-def test_sources_for_picture_is_cost_ordered():
-    assert sources_for("picture") == ("openverse", "wikimedia", "pexels")
-
-
 def test_a_sentence_and_a_word_share_the_recording_source_roster():
     # the artifact kind is the same; only the subject differs
     assert sources_for("recording") == ("forvo", "tts")
@@ -277,6 +273,12 @@ def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
 
 
 # --- picture: the query, the ingest, the fit questions ----------------------
+
+def test_picture_sources_are_asked_pexels_first(tmp_path):
+    """Spec 3 r26 section 5: pexels, openverse, wikimedia -- the keyed
+    corpus first, the challenge-prone anonymous-tier corpus second."""
+    assert sources_for("picture") == ("pexels", "openverse", "wikimedia")
+
 
 def test_a_picture_need_with_nothing_on_record_has_no_query(tmp_path):
     """Spec 3 r25 section 5: no direction, no suggestion, no drafted
