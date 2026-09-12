@@ -16,8 +16,6 @@ still run against them.
 - Fill-set memo keyed by text_sha ignores voice; `met_by` scans every
   adopted sentence per candidate (2 s at 400 sentences); `check_sentence`
   rebuilds the registered-id set per call.
-- Glue-word pronunciations are disputed placeholders; they join the
-  adjudication pass with the 221 migrated words.
 
 ## Deferred
 
@@ -58,22 +56,36 @@ still run against them.
 - 62 classifier placeholder Words from migration need real facts
   (pronunciation, meaning).
 
-## Content work (machine, once cutover done)
+## Sound stage (design approved 2026-09-12)
 
-- Grapheme data: 44 consonant name-words (recited names, e.g. กอ ไก่
-  "gɔɔ gài") + keywords; vowel/tone-mark keywords chosen (concrete,
-  picturable); first Forvo lookups answer whether letter names exist
-  there.
-- 221 migrated words with placeholder `disputed` pronunciations →
-  knowledge-adjudication judge pass (evidence hierarchy in
-  docs/superpowers/review/2026-09-01-domain-language.md).
-- Sentence corpus: 234 of 822 targets unfilled on 2026-09-10; the
-  run's sentence attempt (spec 3 section 5: one draft pass per run over
-  the open targets, fills() + judge, then adopt) produces them. Sentence
-  recordings and scene pictures follow adoption.
-- Pair search and grapheme-keyword attempts (spec 3 section 5): shapes
-  defined, implemented after the cutover; the old deck's 22 pairs did not
-  migrate, so renditions are moot until pairs exist.
+Design: docs/superpowers/specs/2026-09-12-sound-stage-design.md
+(gitignored; rulings, sections, sequencing). Next act: the implementation
+plan for step 1, then execution in order.
+
+1. Spec 5 r7, the screen fixes: a rate question requires a candidate
+   (else the need waits, or arrives as a direction request once
+   exhausted); recordings render as audio players; rejected candidates
+   show their deciding verdict; the empty-artifact text names the check.
+2. Adjudication pass (spec 3): one judge batch over `disputed` words,
+   cross-checked by thaig2p and the tone engine; `adjudicated` joins
+   Corroboration; pronunciations written to words.yaml. Unblocks the 246
+   disputed vocabulary words (glue words included).
+3. Inventories: data/thai_consonants.yaml, data/thai_vowels.yaml;
+   confusions.yaml from data/contrasts.yaml with weights (spec 1:
+   SoundConfusion.weight; aspiration triples split; final:unreleased
+   dropped).
+4. Consonant graphemes: rows, acrophonic keyword Words, name Words with
+   both Targets ordered after their grapheme, the `glyph` backend's
+   chart cell (spec 1, spec 3).
+5. Keyword search for vowel signs and tone marks (spec 3).
+6. Pair search (weight-proportional, vocabulary first, recordability
+   through Forvo), the retire key, coverage/sound-stage (spec 3, spec 5).
+7. Principles F6: the recited names are learned as speech.
+
+## Content work (machine)
+
+- Sentence corpus: the run's sentence attempt fills open Targets; since
+  spec 3 r27 a sentence fills at most three of them.
 - Batch judge granularity: the run submits one Message Batch per need;
   before the whole-syllabus batch pass, gather every judge question of a
   run into one batch and resolve on the next run (the pending derivation
