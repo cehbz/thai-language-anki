@@ -24,6 +24,7 @@ from thai_syllabus.entities import (
     clauses_to_json,
     element_word,
     is_corroborated,
+    pronunciation_diff,
     render,
 )
 from thai_syllabus.media import Provenance
@@ -105,6 +106,43 @@ def test_pair_count_is_weight_proportional_5to4_4to3_3to2_else_1():
     assert confusion(3).pair_count == 2
     assert confusion(2).pair_count == 1
     assert confusion(1).pair_count == 1
+
+
+# --- onset diff classification: aspiration marker moves with cluster onsets
+# A cluster onset (e.g. "kʰw", the fix in engines.py that makes these
+# reachable) carries the aspiration marker ʰ mid-string, not trailing --
+# classification must strip ʰ wherever it sits, and must not treat plain
+# "h" (the ห/ฮ onset) as an aspiration marker.
+
+def test_onset_diff_cluster_aspirated_vs_unaspirated_is_aspiration():
+    a = pron(syl("kʰw", "a", "j"))
+    b = pron(syl("kw", "a", "j"))
+    assert pronunciation_diff(a, b) == {"aspiration"}
+
+
+def test_onset_diff_cluster_pl_aspirated_vs_unaspirated_is_aspiration():
+    a = pron(syl("pʰl", "a", ""))
+    b = pron(syl("pl", "a", ""))
+    assert pronunciation_diff(a, b) == {"aspiration"}
+
+
+def test_onset_diff_plain_aspirated_vs_unaspirated_is_still_aspiration():
+    a = pron(syl("kʰ", "a", ""))
+    b = pron(syl("k", "a", ""))
+    assert pronunciation_diff(a, b) == {"aspiration"}
+
+
+def test_onset_diff_h_onset_vs_glottal_stop_is_consonant_not_aspiration():
+    # ห/ฮ ("h") is a distinct onset consonant, not an aspiration marker.
+    a = pron(syl("h", "a", ""))
+    b = pron(syl("ʔ", "a", ""))
+    assert pronunciation_diff(a, b) == {"consonant"}
+
+
+def test_onset_diff_different_clusters_is_consonant():
+    a = pron(syl("kʰw", "a", ""))
+    b = pron(syl("kl", "a", ""))
+    assert pronunciation_diff(a, b) == {"consonant"}
 
 
 # --- Grapheme: keyword-containment invariant -------------------------------

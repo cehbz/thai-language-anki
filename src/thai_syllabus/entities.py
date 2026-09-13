@@ -115,7 +115,15 @@ def _segment_diff(a: Syllable, b: Syllable) -> set[Dimension]:
     if a.vowel_length != b.vowel_length:
         diffs.add("length")
     if a.onset != b.onset:
-        bare_a, bare_b = a.onset.rstrip("hʰ"), b.onset.rstrip("hʰ")
+        # The aspiration marker (ʰ, U+02B0) doesn't always sit at the end of
+        # the onset string any more -- a cluster onset like "kʰw" carries it
+        # mid-string -- so it's removed wherever it occurs, not stripped
+        # from the right. Plain "h" is not touched: it's the ห/ฮ onset
+        # (glottal fricative), a distinct consonant, not an aspiration
+        # marker (the deck's convention writes aspiration as ʰ only; see
+        # engines.py's _ONSETS, which lists both "h" and the "*ʰ" onsets
+        # separately).
+        bare_a, bare_b = a.onset.replace("ʰ", ""), b.onset.replace("ʰ", "")
         diffs.add("aspiration" if bare_a == bare_b else "consonant")
     if a.vowel != b.vowel:
         diffs.add("vowel_quality")

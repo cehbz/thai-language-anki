@@ -45,24 +45,10 @@ from thai_syllabus.transport import Completion, TransportError
 
 
 def test_no_module_imports_the_old_packages():
-    """phonology.py is the one sanctioned exception (spec 3 r28; the plan's
-    Tech Stack line): it reaches thaig2p and the tone engine in
-    thai_deck_eval.lang, but only inside default_engines() -- so every
-    thai_deck_eval reference in its source must be an indented line (inside
-    a function body), never a top-level (column 0) import; torch/pythainlp
-    then never load at module-import time and unit tests never need them
-    installed. It still carries no thai_deck_gen reference at all, same as
-    every other module.
-    """
     for m in pkgutil.iter_modules(thai_syllabus.__path__):
         src = Path(importlib.import_module(f"thai_syllabus.{m.name}").__file__).read_text()
-        assert "from thai_deck_gen" not in src and "import thai_deck_gen" not in src, m.name
-        if m.name == "phonology":
-            for line in src.splitlines():
-                if "thai_deck_eval" in line:
-                    assert line[:1] in (" ", "\t"), f"{m.name}: top-level thai_deck_eval reference: {line!r}"
-            continue
         assert "from thai_deck_eval" not in src and "import thai_deck_eval" not in src, m.name
+        assert "from thai_deck_gen" not in src and "import thai_deck_gen" not in src, m.name
 
 
 def test_assessor_has_no_authority_data():
