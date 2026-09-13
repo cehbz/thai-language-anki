@@ -59,21 +59,10 @@ still run against them.
 ## Sound stage (design approved 2026-09-12)
 
 Design: docs/superpowers/specs/2026-09-12-sound-stage-design.md
-(gitignored; rulings, sections, sequencing). Next act: the implementation
-plan for step 1, then execution in order.
+(gitignored; rulings, sections, sequencing). Steps 1 to 3 are in (spec 5
+r7; spec 3 r28 with spec 1 r13 and spec 2 r14; spec 1 r14 with the
+inventories). Next act: the part 2 plan for steps 4 to 7.
 
-1. Spec 5 r7, the screen fixes: a rate question requires a candidate
-   (else the need waits, or arrives as a direction request once
-   exhausted); recordings render as audio players; rejected candidates
-   show their deciding verdict; the empty-artifact text names the check.
-2. Adjudication pass (spec 3): one judge batch over `disputed` words,
-   cross-checked by thaig2p and the tone engine; `adjudicated` joins
-   Corroboration; pronunciations written to words.yaml. Unblocks the 246
-   disputed vocabulary words (glue words included).
-3. Inventories: data/thai_consonants.yaml, data/thai_vowels.yaml;
-   confusions.yaml from data/contrasts.yaml with weights (spec 1:
-   SoundConfusion.weight; aspiration triples split; final:unreleased
-   dropped).
 4. Consonant graphemes: rows, acrophonic keyword Words, name Words with
    both Targets ordered after their grapheme, the `glyph` backend's
    chart cell (spec 1, spec 3).
@@ -81,6 +70,29 @@ plan for step 1, then execution in order.
 6. Pair search (weight-proportional, vocabulary first, recordability
    through Forvo), the retire key, coverage/sound-stage (spec 3, spec 5).
 7. Principles F6: the recited names are learned as speech.
+
+Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
+words corroborated, 205 stay disputed):
+- thaig2p model defects leave 28 deck words with no analysis (loops or
+  truncates on long compounds, an `a̯` offglide in coda position, the
+  tone letters `˩˩`); those words stay disputed unless a curated
+  exception names their pronunciation.
+- 29 of 246 judge answers were refused by `parse_pronunciation` (one
+  carried `vowel_length: mid`); they re-ask next run. Pull the batch
+  results (msgbatch_01Ls9edB6cgm1hVDXp2HS9aM) to see the refused shapes
+  before widening the parser.
+- Length (32) and segment (29) disagreements between judge and thaig2p
+  are unresolved by design (no third oracle). Weekday and month names
+  dominate the segment set (วันอังคาร Tuesday: thaig2p assimilates the
+  coda; กุมภาพันธ์ February: syllabification). A per-word curated
+  exception stays the learner's path.
+- `artifactView` renders a rendition as an image (bites in step 6).
+  `derivations.confusion_weights(seed)` is a second home for
+  `SoundConfusion.weight` and has no caller. `curated.py` imports
+  `run.parse_day_starts` (move it out so `run.py` can import
+  `save_words` at the top). `pair_count` above weight 5 yields one pair.
+  The stats history normalises only `adjudicated`/`stayed_disputed` for
+  old rows; a future report field needs the same or a column union.
 
 ## Content work (machine)
 
