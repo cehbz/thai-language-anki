@@ -55,6 +55,7 @@ from .provider import (
     Provider,
     TtsBackend,
     OpenverseAuth,
+    brave_backend,
     openverse_backend,
     pexels_backend,
     tool_fetcher,
@@ -83,8 +84,19 @@ _DEFAULT_NOTHING_TTL: dict[str, int] = {"forvo": 180}
 # the single retry. Openverse's registered tier allows 100 requests a
 # minute; 1 s keeps a run at 60. Every other source is unpaced and
 # treats a challenge page as a plain transport failure unless
-# providers.yaml's quotas.<source> configures otherwise.
-_DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0)}
+# providers.yaml's quotas.<source> configures otherwise. Brave is
+# metered against a small monthly credit: 1 s between requests, and no
+# challenge wait (it answers 402/429, never a challenge page).
+_DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0),
+                                                   "brave": (1.0, 0.0)}
+
+
+# Brave's own default cap (spec 3 section 8, `quotas.<source>`): the $5
+# monthly free credit is about 1000 image searches and the account is
+# capped at $0, so 30 asks a day stays inside it without providers.yaml
+# having to say so. No `day_starts`: Brave's credit is monthly, so the
+# cap is a self-imposed pace, counted over the local day.
+BRAVE_DEFAULT_DAILY_BUDGET = Budget(max_asks=30)
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -183,6 +195,8 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
         "wikimedia": wikimedia_backend(image_width=cfg.image_width, **paced("wikimedia")),
         "pexels": _Lazy(lambda: pexels_backend(api_key=secrets.get("pexels") or "",
                                                **paced("pexels"))),
+        "brave": _Lazy(lambda: brave_backend(api_key=secrets.get("brave") or "",
+                                             count=cfg.image_candidates, **paced("brave"))),
         "forvo": _Lazy(lambda: ForvoBackend(api_key=secrets.get("forvo") or "")),
         "tts": _Lazy(lambda: TtsBackend(
             tts=_lazy_google_tts(secrets),
@@ -315,8 +329,8 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
 # --- budgets -------------------------------------------------------------
 
 def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
-    """Budget per backend (spec 3 section 4): the two documented defaults
-    (forvo 450/day from 22:00Z, learner 20/session) layered under
+    """Budget per backend (spec 3 section 4): the three documented defaults
+    (forvo 450/day from 22:00Z, brave 30/day, learner 20/session) layered under
     whatever providers.yaml's `quotas` section configures, field by
     field -- a configured entry that names only `max_asks` still keeps
     the matching default's `day_starts` (and vice versa); every other
@@ -324,6 +338,7 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
     """
     budgets: dict[str, Budget] = {
         "forvo": FORVO_DEFAULT_DAILY_BUDGET,
+        "brave": BRAVE_DEFAULT_DAILY_BUDGET,
         "learner": LEARNER_DEFAULT_SESSION_BUDGET,
     }
     for backend, quota in cfg.quotas.items():

@@ -75,6 +75,7 @@ def _secret_file(tmp_path, name, value="s3cret\n"):
 def secret_paths(tmp_path):
     return {
         "pexels": _secret_file(tmp_path, "pexels", "pexels-key\n"),
+        "brave": _secret_file(tmp_path, "brave", "brave-key\n"),
         "forvo": _secret_file(tmp_path, "forvo", "forvo-key\n"),
         "google_tts": _secret_file(tmp_path, "google_tts", "tts-key\n"),
         "anthropic": _secret_file(tmp_path, "anthropic", "anthropic-key\n"),
@@ -126,8 +127,24 @@ def test_build_provider_registers_the_free_backends(cfg, db, media_store):
 
 def test_build_provider_registers_secret_backed_backends(cfg, db, media_store):
     provider = build_provider(cfg, db, media_store)
-    for name in ("pexels", "forvo", "tts"):
+    for name in ("pexels", "brave", "forvo", "tts"):
         assert name in provider._backends
+
+
+def test_resolving_the_brave_backend_reads_only_the_brave_secret(
+        cfg, db, media_store, monkeypatch):
+    calls = _track_reads(monkeypatch)
+    provider = build_provider(cfg, db, media_store)
+    resolved = provider._backends["brave"]._resolve()
+    assert calls == ["brave"]
+    assert resolved.cache_key(Question(subject="s", provides="picture",
+                                       params={"query": "cat"})).encode() == "brave::cat"
+
+
+def test_the_brave_backend_asks_for_image_candidates_results(cfg, db, media_store):
+    provider = build_provider(cfg, db, media_store)
+    _, params, _, _ = provider._backends["brave"]._resolve().build_request("cat")
+    assert params["count"] == cfg.image_candidates
 
 
 # --- laziness: constructing the roster must not touch secret files ------
@@ -184,6 +201,13 @@ def test_openverse_is_anonymous_and_paced_by_default(cfg, db, media_store):
     assert (openverse.min_interval_s, openverse.challenge_wait_s) == (1.0, 60.0)
     wikimedia = provider._backends["wikimedia"]
     assert (wikimedia.min_interval_s, wikimedia.challenge_wait_s) == (0.0, 0.0)
+
+
+def test_brave_is_paced_at_one_second_by_default(cfg, db, media_store):
+    """A metered source on a $5 monthly credit: one request a second, no
+    challenge wait (Brave answers 402/429, never a challenge page)."""
+    brave = build_provider(cfg, db, media_store)._backends["brave"]._resolve()
+    assert (brave.min_interval_s, brave.challenge_wait_s) == (1.0, 0.0)
 
 
 def test_quotas_pacing_fields_override_the_defaults(db, media_store, secret_paths):
@@ -500,6 +524,19 @@ def test_default_budgets_includes_forvo_and_learner_defaults(cfg):
     budgets = default_budgets(cfg)
     assert budgets["forvo"].max_asks == 450
     assert budgets["learner"].max_asks == 20
+
+
+def test_default_budgets_includes_the_brave_daily_default(cfg):
+    """Brave's $5 monthly free credit is about 1000 requests; 30 asks a
+    day keeps the run inside it without providers.yaml saying so."""
+    assert default_budgets(cfg)["brave"].max_asks == 30
+
+
+def test_default_budgets_a_configured_brave_entry_layers_over_the_default():
+    cfg = ProvidersConfig(quotas={"brave": {"min_interval_seconds": 2}})
+    assert default_budgets(cfg)["brave"].max_asks == 30
+    cfg = ProvidersConfig(quotas={"brave": {"max_asks": 5}})
+    assert default_budgets(cfg)["brave"].max_asks == 5
 
 
 def test_default_budgets_forvo_default_carries_its_22_00z_reset(cfg):

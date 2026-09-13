@@ -1400,7 +1400,7 @@ def _exhaust(db, subject):
     6); the provide row alongside it is the ask itself, on the record
     like any real attempt's.
     """
-    for source in ("openverse", "wikimedia", "pexels"):
+    for source in ("openverse", "wikimedia", "pexels", "brave"):
         db.append(port="provide", backend=source,
                   key=ProvideKey(source=source, kind="", query=subject), subject=subject,
                   question={"kind": "picture", "subject_kind": "word"},
@@ -1889,12 +1889,14 @@ def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
     written for it)."""
     calls = _patch(monkeypatch, {("a", "pexels"): TransportError,
                                  ("b", "openverse"): TransportError,
-                                 ("c", "wikimedia"): TransportError})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d")))), {})
+                                 ("c", "wikimedia"): TransportError,
+                                 ("d", "brave"): TransportError})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d", "e")))), {})
     assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
-                                                  ("c", "wikimedia")]
-    assert report.source_failures == {"pexels": 1, "openverse": 1, "wikimedia": 1}
-    assert report.available == 4 and report.attempted == 0 and report.deferred == 4
+                                                  ("c", "wikimedia"), ("d", "brave")]
+    assert report.source_failures == {"pexels": 1, "openverse": 1, "wikimedia": 1,
+                                      "brave": 1}
+    assert report.available == 5 and report.attempted == 0 and report.deferred == 5
     assert report.exhausted == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)

@@ -24,6 +24,7 @@ from thai_syllabus.provider import (
     Question,
     RawAnswer,
     _redact,
+    brave_backend,
     forvo_limit_body,
     openverse_backend,
     pexels_backend,
@@ -470,6 +471,103 @@ def test_pexels_fetch_sends_the_api_key_as_authorization_header():
                                     params={"query": "cat"}))
     assert calls[0]["Authorization"] == "SECRET"
     assert answer.items[0]["url"] == "https://x/p.jpg"
+
+
+# --- brave: the last picture source, a paid search API --------------------
+
+def _brave_results():
+    return _FakeResponse(json_data={"results": [
+        {"title": "A live crab on sand",
+         "url": "https://x/page",
+         "thumbnail": {"src": "https://thumb/c.jpg"},
+         "properties": {"url": "https://x/full.jpg", "placeholder": "https://p/c.jpg"}}]})
+
+
+def test_brave_builds_the_image_search_request():
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None, proxies=None):
+        calls.append((url, dict(params), dict(headers)))
+        return _brave_results()
+
+    backend = brave_backend(api_key="SECRET", get=fake_get, count=5)
+    backend.fetch(Question(subject="ปู", provides="picture", params={"query": "live crab"}))
+    url, params, headers = calls[0]
+    assert url == "https://api.search.brave.com/res/v1/images/search"
+    assert params == {"q": "live crab", "count": 5, "safesearch": "strict"}
+    assert headers["X-Subscription-Token"] == "SECRET"
+    assert headers["Accept"] == "application/json"
+    assert "thai-syllabus" in headers["User-Agent"]
+
+
+def test_brave_count_is_the_deck_image_candidates():
+    backend = brave_backend(api_key="k", count=3)
+    _, params, _, _ = backend.build_request("live crab")
+    assert params["count"] == 3
+
+
+def test_brave_parses_results_into_the_shared_candidate_item_shape():
+    backend = brave_backend(api_key="k", get=lambda *a, **k: _brave_results())
+    answer = backend.fetch(Question(subject="ปู", provides="picture",
+                                    params={"query": "live crab"}))
+    assert answer.items == ({"url": "https://x/full.jpg", "licence": None,
+                             "source": "brave", "origin": "https://x/page"},)
+
+
+def test_brave_falls_back_to_the_thumbnail_when_properties_carries_no_url():
+    data = {"results": [{"title": "t", "url": "https://x/page",
+                         "thumbnail": {"src": "https://thumb/c.jpg"}, "properties": {}}]}
+    backend = brave_backend(api_key="k")
+    assert backend.parse_items(data)[0]["url"] == "https://thumb/c.jpg"
+
+
+def test_brave_keys_by_backend_name():
+    q = Question(subject="s", provides="picture", params={"query": "cat"})
+    assert brave_backend(api_key="k").cache_key(q).encode() == "brave::cat"
+
+
+def test_brave_a_200_body_without_results_is_a_transport_error():
+    backend = brave_backend(api_key="k",
+                            get=lambda url, **kwargs: _FakeResponse(json_data={"error": "x"}))
+    with pytest.raises(TransportError):
+        backend.fetch(Question(subject="w", provides="picture", params={"query": "orange"}))
+
+
+def test_brave_empty_result_is_still_a_valid_answer(db):
+    backend = brave_backend(api_key="k",
+                            get=lambda url, **kwargs: _FakeResponse(json_data={"results": []}))
+    provider = Provider(record=db, cache=db, backends={"brave": backend})
+    provider.ask("brave", Question(subject="rice", provides="picture", params={"query": "q"}))
+    hit = db.latest("provide", "brave", ProvideKey(source="brave", kind="", query="q"))
+    assert hit is not None
+    assert hit.answer == {"items": []}
+
+
+def test_brave_over_its_credit_answers_402_which_is_the_quota_state():
+    """Brave answers 402 Payment Required once the month's free credit is
+    spent: the source is out of budget, not broken, so it is the Quota
+    state 429 already is (spec 3 section 6a)."""
+    backend = brave_backend(api_key="k",
+                            get=lambda *a, **k: _FakeResponse(status_code=402, text="no credit"))
+    with pytest.raises(QuotaExhausted) as e:
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert e.value.source == "brave"
+
+
+def test_a_402_is_the_quota_state_for_every_http_image_source():
+    # the rule lives on the shared backend, not on brave alone
+    backend = openverse_backend(get=lambda *a, **k: _FakeResponse(status_code=402, text="pay"))
+    with pytest.raises(QuotaExhausted) as e:
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert e.value.source == "openverse"
+
+
+def test_brave_a_429_is_still_the_quota_state():
+    backend = brave_backend(api_key="k",
+                            get=lambda *a, **k: _FakeResponse(status_code=429, text="throttled"))
+    with pytest.raises(QuotaExhausted) as e:
+        backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
+    assert e.value.source == "brave"
 
 
 # --- FetchBackend: url -> bytes -> media store, pictures and recordings ---

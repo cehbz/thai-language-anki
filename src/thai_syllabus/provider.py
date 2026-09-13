@@ -34,7 +34,7 @@ __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
     "Provider", "LearnerAskNotSupported",
     "HttpImageSearchBackend", "openverse_backend", "wikimedia_backend",
-    "pexels_backend", "OpenverseAuth", "IMAGE_SEARCH_USER_AGENT",
+    "pexels_backend", "brave_backend", "OpenverseAuth", "IMAGE_SEARCH_USER_AGENT",
     "FetchBackend", "tool_fetcher",
     "ForvoBackend", "forvo_limit_body", "TtsBackend", "LlmBackend",
     "DictionaryG2P", "PairSearchBackend",
@@ -277,9 +277,12 @@ class HttpImageSearchBackend:
             resp = self._request(url, params, headers, proxies)
         if _is_challenge(resp):
             raise TransportError(f"{self.name} search answered a challenge page (403)")
-        if resp.status_code == 429:
+        if resp.status_code in (429, 402):
             # Spec 3 r26 section 6a: the source's own throttle is the
             # Quota state, budgeted for the run, never a source failure.
+            # 402 Payment Required is the same state on a metered source
+            # (Brave, once the month's free credit is spent): out of
+            # budget, not broken.
             raise QuotaExhausted(self.name)
         if resp.status_code != 200:
             raise TransportError(
@@ -355,6 +358,38 @@ def pexels_backend(api_key: str, get: Callable[..., Any] = requests.get,
                for p in data.get("photos", [])]
 
     return HttpImageSearchBackend(name="pexels", build_request=build,
+                                  parse_items=parse, get=get, **pacing)
+
+
+def brave_backend(api_key: str, get: Callable[..., Any] = requests.get, *,
+                  count: int = 5, **pacing: Any) -> HttpImageSearchBackend:
+    """Brave's image search: the last picture source (spec 3 section 5), a
+    metered web index asked only for the needs the free corpora failed.
+    `count` is the deck's image_candidates -- the attempt fetches no more
+    than that many hits, so asking for more spends credit on hits nothing
+    reads. A search carries no licence: the item's `licence` is None, the
+    unknown the media row records.
+    """
+    def build(query: str) -> tuple[str, dict, dict, str]:
+        return ("https://api.search.brave.com/res/v1/images/search",
+               {"q": query, "count": count, "safesearch": "strict"},
+               {"X-Subscription-Token": api_key, "Accept": "application/json",
+                "User-Agent": IMAGE_SEARCH_USER_AGENT}, "results")
+
+    def parse(data: Any) -> list[dict]:
+        out = []
+        for r in data.get("results", []):
+            # `properties.url` is the full-size image; `thumbnail.src` is
+            # Brave's own cached rendition, the fallback when the result
+            # carries no full-size url.
+            url = (r.get("properties") or {}).get("url") or (r.get("thumbnail") or {}).get("src")
+            if not url:
+                continue
+            out.append({"url": url, "licence": None, "source": "brave",
+                       "origin": r.get("url")})
+        return out
+
+    return HttpImageSearchBackend(name="brave", build_request=build,
                                   parse_items=parse, get=get, **pacing)
 
 

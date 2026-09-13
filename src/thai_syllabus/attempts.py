@@ -106,8 +106,10 @@ COMMENTS_PER_ASK = 40
 # only the subject differs.
 SOURCES: dict[str, tuple[str, ...]] = {
     # spec 3 r26 section 5: the keyed corpus first, the challenge-prone
-    # anonymous-tier corpus second
-    "picture": ("pexels", "openverse", "wikimedia"),
+    # anonymous-tier corpus second, and the metered web index (brave)
+    # last -- one source per need per run, so a need reaches it only
+    # after the free corpora have all been tried and failed.
+    "picture": ("pexels", "openverse", "wikimedia", "brave"),
     "recording": ("forvo", "tts"),
     "rendition": ("forvo", "tts"),
 }

@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 31, proposed 2026-09-13 against principles r4 and architecture
+Revision 32, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -143,6 +143,12 @@ Revision log:
   across five sources passed 7, the failures citing a missing clause (a
   sugar lump not shown while hot water is poured; a scabbed cut not
   "bright red"). User approval 2026-09-13.
+- r32 2026-09-13: Brave is the last picture source, for needs the free
+  corpora left uncovered; default quota 30 asks a day (inside the $5
+  monthly free credit, account capped at $0); a metered source's 402 is
+  the Quota state like 429. Evidence: on eight scene phrases from open
+  needs Brave passed 5 of 36 fit verdicts where Pexels passed 2 of 40
+  and Pixabay, Unsplash and Flickr none. User approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -278,7 +284,7 @@ asked items is not an answer: nothing is appended and the ask is a
 source failure, re-asked next run). A need with no query on record is
 not attempted this run and counts `deferred` (r25): the gloss is the
 drafter's input, never a search (the corpora index English metadata, so
-the phrase is English). Source order: pexels, openverse, wikimedia (r26). One attempt: search, imgfetch the first N
+the phrase is English). Source order: pexels, openverse, wikimedia, brave (r26, r32). One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row
@@ -564,7 +570,10 @@ Every ask and fetch ends in one of four states:
 - **Quota.** The source itself says its allowance is spent (Forvo: 400
   with body `["Limit/day reached."]` on a lookup, or the same body served
   at one of its download urls, which the fetcher reports and the attempt
-  raises typed; never matched downstream). No row is appended, the need
+  raises typed; never matched downstream). A metered source's
+  over-credit answer is the same state: a 402 from an image corpus says
+  the paid allowance is spent, not that the source is broken, and is
+  the Quota state exactly as its 429 is (r32). No row is appended, the need
   counts under budgeted, the source is budgeted for the rest of the
   run, and source_failures does not count it.
 
@@ -666,17 +675,22 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3) and
-`quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`),
+`quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`;
+brave 30 a day, and `min_interval_seconds` 1: Brave's $5 monthly free
+credit is about 1000 requests and the account is capped at $0, so a day
+cap is the pace that stays inside it, r32),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
 (forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
 (seconds between two requests to the source within one process;
-openverse 1, others 0) and `quotas.<source>.challenge_wait_seconds`
+openverse 1, brave 1, others 0) and `quotas.<source>.challenge_wait_seconds`
 (the one wait before the single retry of a challenge page, §6a;
-openverse 60, others 0: a challenge is a plain transport failure),
+openverse 60, others 0: a challenge is a plain transport failure, and
+brave answers 402/429 rather than a challenge page),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
 `sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
-(3). `secrets.openverse` names a
+(3). `secrets.brave` names a reference to the Brave Search API subscription
+key, sent as `X-Subscription-Token` on every search. `secrets.openverse` names a
 reference to one line `client_id:client_secret` from Openverse's
 application registration; when set, the backend fetches an OAuth2
 client-credentials access token once per process, through

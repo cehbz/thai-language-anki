@@ -504,16 +504,17 @@ def test_build_queue_rate_item_lists_excluded_candidates_and_card_flags(derivati
 
 def test_build_queue_direction_kind_for_exhausted_subject(derivations, db, w1):
     # No candidate ever passes and every source in the roster (spec 3's
-    # openverse/wikimedia/pexels) has been asked -- next_source has
+    # pexels/openverse/wikimedia/brave) has been asked -- next_source has
     # nothing left, so the subject is exhausted (spec 3 section 6).
     _provide(db, w1.id, "picture", backend="openverse", items=[])
     _provide(db, w1.id, "picture", backend="wikimedia", items=[])
     _provide(db, w1.id, "picture", backend="pexels", items=[])
+    _provide(db, w1.id, "picture", backend="brave", items=[])
     items = rs.build_queue(derivations, budget=50)
     direction = [i for i in items if i["type"] == "direction" and i["subject"] == w1.id
                 and i["kind"] == "picture"]
     assert len(direction) == 1
-    assert direction[0]["attempts"] == 3
+    assert direction[0]["attempts"] == 4
     assert "openverse" in {t["source"] for t in direction[0]["tried"]}
 
 
@@ -582,7 +583,7 @@ def test_a_sentence_direction_questions_tried_lists_the_words_own_nothing_reason
 def test_a_picture_direction_question_carries_no_reason(derivations, db, w1):
     """A picture attempt's `nothing` outcome states none, so the field is
     None rather than absent -- the screen reads one shape."""
-    for backend in ("openverse", "wikimedia", "pexels"):
+    for backend in ("openverse", "wikimedia", "pexels", "brave"):
         _provide(db, w1.id, "picture", backend=backend, items=[])
     asked = next(i for i in rs.build_queue(derivations, budget=50)
                  if i["type"] == "direction" and i["kind"] == "picture"
@@ -614,9 +615,11 @@ def test_build_queue_direction_tried_lists_source_asks_only_never_fetch_rows(der
             items=[{"sha": "sA"}])
     _provide(db, w1.id, "picture", backend="wikimedia", items=[])
     _provide(db, w1.id, "picture", backend="pexels", items=[])
+    _provide(db, w1.id, "picture", backend="brave", items=[])
     items = rs.build_queue(derivations, budget=50)
     direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
-    assert all(t["source"] in ("openverse", "wikimedia", "pexels") for t in direction["tried"])
+    assert all(t["source"] in ("openverse", "wikimedia", "pexels", "brave")
+               for t in direction["tried"])
     assert {"source": "openverse", "query": "a bowl of rice"} in direction["tried"]
     assert not any("url" in t for t in direction["tried"])
 
@@ -644,6 +647,7 @@ def test_build_queue_direction_candidates_carry_judge_verdicts(derivations, db, 
     _judge(db, w1.id, "picture", "sA", False, evidence="no rice visible")
     _provide(db, w1.id, "picture", backend="wikimedia", items=[])
     _provide(db, w1.id, "picture", backend="pexels", items=[])
+    _provide(db, w1.id, "picture", backend="brave", items=[])
     items = rs.build_queue(derivations, budget=50)
     direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
     by_sha = {c["sha"]: c for c in direction["candidates"]}
@@ -2511,7 +2515,7 @@ def test_a_need_with_no_candidate_and_a_source_left_is_not_a_rate_question(deriv
 
 
 def test_a_need_with_no_candidate_and_no_source_left_is_a_direction_question(derivations, db, w1):
-    for source in ("openverse", "wikimedia", "pexels"):
+    for source in ("openverse", "wikimedia", "pexels", "brave"):
         _provide(db, w1.id, "picture", backend=source, query="rice photo", items=[])
     items = rs.build_queue(derivations, budget=50)
     mine = [i for i in items if i["subject"] == w1.id and i["kind"] == "picture"]
@@ -2627,7 +2631,7 @@ def test_a_note_whose_identity_was_never_read_stays_unread(derivations, db, medi
 
 
 def test_direction_challenger_and_reask_items_carry_the_label(derivations, db, w1):
-    for source in ("pexels", "openverse", "wikimedia"):
+    for source in ("pexels", "openverse", "wikimedia", "brave"):
         _provide(db, w1.id, "picture", backend=source, query="rice photo", items=[])
     (item,) = [i for i in rs.build_queue(derivations, budget=50)
                if i["type"] == "direction" and i["subject"] == w1.id and i["kind"] == "picture"]

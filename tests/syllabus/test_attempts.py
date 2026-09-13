@@ -284,8 +284,16 @@ def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
 
 def test_picture_sources_are_asked_pexels_first(tmp_path):
     """Spec 3 r26 section 5: pexels, openverse, wikimedia -- the keyed
-    corpus first, the challenge-prone anonymous-tier corpus second."""
-    assert sources_for("picture") == ("pexels", "openverse", "wikimedia")
+    corpus first, the challenge-prone anonymous-tier corpus second; brave,
+    the metered paid search, last, so a need reaches it only after the
+    free corpora have been tried."""
+    assert sources_for("picture") == ("pexels", "openverse", "wikimedia", "brave")
+
+
+def test_brave_is_the_last_picture_source(tmp_path):
+    """One source per need per run (spec 3 r26 `next_source`): brave is
+    asked only for a need the three free corpora have all failed."""
+    assert sources_for("picture")[-1] == "brave"
 
 
 def test_a_picture_need_with_nothing_on_record_has_no_query(tmp_path):
