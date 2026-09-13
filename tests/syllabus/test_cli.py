@@ -559,6 +559,30 @@ def test_run_spend_cap_counts_a_judge_verdict_written_during_the_invocation(
     assert "spend cap reached: 1.0000 of 0.5000 USD this invocation" in capsys.readouterr().out
 
 
+def test_run_spend_cap_counts_the_illustrators_drawings(deck, monkeypatch, capsys):
+    """Spec 3 r34: a drawing is cash, appended at port "provide" backend
+    "illustrator" with `price_per_image` on the row. --spend-cap is the
+    invocation's whole cash budget, so illustrator rows alone must reach
+    it -- the judge and tts terms would otherwise let an uncapped
+    illustrator draw all night.
+    """
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        ctx.db.append("provide", "illustrator",
+                      ProvideKey(source="illustrator", kind="picture", query="a bowl of rice"),
+                      "rice", {"kind": "picture", "params": {"query": "a bowl of rice"}},
+                      {"items": [{"sha": "a" * 64, "ext": "png"}]}, 0.4)
+        return RunReport(sentences_adopted=1)  # never "nothing left to do"
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    rc = cli.main(["run", "--deck", str(deck), "--spend-cap", "0.5", "--cycles", "5"])
+    assert rc == 0
+    assert len(run_calls) == 2      # 0.4 is under the cap, 0.8 is over it
+    assert "spend cap reached: 0.8000 of 0.5000 USD this invocation" in capsys.readouterr().out
+
+
 def test_run_spend_cap_above_the_judges_cost_does_not_stop_the_run(deck, monkeypatch, capsys):
     SyllabusDb(deck / "syllabus.db").append(
         "assess", "judge",

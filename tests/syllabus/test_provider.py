@@ -6,6 +6,7 @@ cache-first behavior; fake backends and fake transports everywhere else
 """
 import base64
 import io
+import logging
 from pathlib import Path
 
 import pytest
@@ -708,6 +709,33 @@ def test_illustrator_backend_refuses_an_unknown_mime_or_undecodable_bytes(tmp_pa
                                      price_per_image=0.067)
         with pytest.raises(TransportError):
             backend.fetch(Question(subject="s", provides="picture", params={"query": "q"}))
+
+
+def test_illustrator_backend_logs_the_spend_an_unusable_generation_burned(tmp_path, caplog):
+    """A generation that cannot be ingested is cash already spent that
+    buys nothing and caches nothing -- the next run draws the same query
+    again. The warning names the query, the reason and the price so the
+    log accounts for money the record never will; never the cache key,
+    never the response body.
+    """
+    media = MediaStore(tmp_path / "m")
+    for image, reason in ((GeneratedImage(data=_png_bytes(), mime="image/svg+xml"),
+                           "unknown image type 'image/svg+xml'"),
+                          (GeneratedImage(data=b"not an image", mime="image/png"),
+                           "cannot decode image")):
+        backend = IllustratorBackend(generator=_StubGenerator(image), media=media, model="m",
+                                     price_per_image=0.067)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="thai_syllabus.provider"):
+            with pytest.raises(TransportError):
+                backend.fetch(Question(subject="s", provides="picture",
+                                       params={"query": "a live crab on wet sand"}))
+        (logged,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        message = logged.getMessage()
+        assert message.startswith("illustrator: generated image for 'a live crab on wet sand' "
+                                  "not ingestable (")
+        assert reason in message
+        assert message.endswith("); 0.0670 USD spent, nothing cached")
 
 
 def test_illustrator_same_query_is_a_cache_hit_never_regenerated(db, tmp_path):

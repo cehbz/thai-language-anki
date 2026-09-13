@@ -395,12 +395,12 @@ def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:
 
 def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> str | None:
     """The query on record, in precedence (spec 3 section 5): the latest
-    learner direction; a judge suggestion newer than the last Source
-    ask; the drafted query (record.latest_phrase, appended by
-    `phrase_attempt`) in the form `source` consumes (record.query_form,
-    r36: every current source the phrase; a keywords source the head
-    terms). None when none is on record (r25): the need waits -- the
-    gloss is the drafter's input, never a search.
+    learner direction; else the newer by ts of the newest judge
+    suggestion and the newest drafted query (record.latest_phrase, the
+    query appended by `phrase_attempt`), in the form `source` consumes
+    (record.query_form, r36: every current source the phrase; a keywords
+    source the head terms). None when none is on record (r25): the need
+    waits -- the gloss is the drafter's input, never a search.
     """
     return record.latest_phrase(ctx.db.assessments_of(need.subject),
                                 form=record.query_form(source)) or None

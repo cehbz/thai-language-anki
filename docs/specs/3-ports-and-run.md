@@ -195,7 +195,10 @@ Revision log:
   stays per need and so bounds the requeries too (a deck raises
   `attempt_cap` to `requery_cap` times its picture roster to let every
   query run its course); the transient cap counts per source under the
-  current query (§6a); RunReport.requeried (§7). Evidence: of the 157
+  current query (§6a); RunReport.requeried (§7); a suggestion stays the
+  query until a newer suggestion, direction or drafted query replaces it
+  (the earlier "newer than the last Source ask" rule made r35 re-open
+  one source, not the roster). Evidence: of the 157
   uncovered scenes, 129 held a judge suggestion newer than their last
   search and 70 had every free source tried, so the loop judge → better
   phrase → search broke exactly when the judge had learned what to look
@@ -345,8 +348,10 @@ requires `judge.max_tokens` (at least 16000), which both transports send.
 ## 5. Attempts per need kind
 
 **Picture (Word and scene).** Query, in precedence: the latest learner
-direction; a judge suggestion newer than the last Source ask on the need
-(the search that produced the judged candidate); the drafted phrase —
+direction; else the newer by ts of the newest judge suggestion and the
+newest drafted query (r35: a suggestion stays the query while the roster
+is searched under it, until a newer suggestion, a direction or a
+re-drafted query replaces it); the drafted phrase —
 one ask per run on the drafter transport drafts, for every open picture
 need, word or scene, that has none on record and no direction, an
 English image query in two forms (r36): `phrase`, a description of the
@@ -677,9 +682,9 @@ Every ask and fetch ends in one of four states:
   statement and is the Quota state above, not this one (r26). Nothing
   is appended for the ask; the attempt's outcome is `transient-failure`. Bounded: once a source has `transient_cap`
   (providers.yaml, default 3) transient outcomes since the escalation
-  anchor -- for a picture need, under the need's current query (r35) --
-  it counts as tried: next_source advances past it and exhausted
-  counts it as one attempt. Learner input resets the anchor as for every
+  anchor, it counts as tried: next_source advances past it (for a
+  picture need, under the need's current query, r35) and exhausted
+  counts it as one attempt whatever the query (§6). Learner input resets the anchor as for every
   other outcome.
 - **Ageing.** A `nothing` outcome from a source whose corpus grows
   (Forvo) stops counting as tried once older than

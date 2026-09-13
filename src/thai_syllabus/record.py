@@ -170,16 +170,20 @@ def source_asks(rows: Sequence[Answer]) -> list[Answer]:
 
 def last_source_ask_ts(rows: Sequence[Answer]) -> int:
     """The newest Source ask's ts among `rows` (`source_asks`), or -1 when
-    none is on record -- what "the last provide row" means everywhere a
-    fold measures a judge suggestion's own freshness against it (spec 3
-    section 5's picture query precedence, `latest_phrase`;
-    derivations._has_untried_lever's bucket-2 check): the search that
-    produced the judged candidate, never a provide row that is an answer
-    rather than an ask -- attempts.phrase_attempt's own per-subject
-    phrase row (fix round 2 finding 1) included, the same rows
-    `source_asks` already excludes (imgfetch/audiofetch/learner/
+    none is on record -- what "the last provide row" means where a fold
+    asks whether a judge suggestion has been followed by a new attempt
+    (derivations._has_untried_lever's bucket-2 check, its only reader):
+    the search that produced the judged candidate, never a provide row
+    that is an answer rather than an ask -- attempts.phrase_attempt's own
+    per-subject phrase row (fix round 2 finding 1) included, the same
+    rows `source_asks` already excludes (imgfetch/audiofetch/learner/
     legacy-current/llm). A phrase drafted after a pending suggestion must
     not make that suggestion look stale.
+
+    `latest_phrase` does NOT read this: which query a picture attempt
+    searches under is a different question from whether a suggestion is
+    still unasked, and answering the first one this way re-opened a
+    single source per suggestion (spec 3 r35's own correction).
     """
     asks = source_asks(rows)
     return max((r.ts for r in asks), default=-1)
@@ -290,6 +294,17 @@ def latest_nothing_reason(rows: Sequence[Answer]) -> str | None:
     return str(max(reasons, key=lambda r: r.ts).answer["reason"]) if reasons else None
 
 
+def _newest_drafted_query_row(rows: Sequence[Answer]) -> Answer | None:
+    """The newest row the phrase drafter appended for one subject
+    (backend "llm", question["provides"] == "phrase", an answer carrying
+    a `phrase`), or None when the subject has none. `latest_phrase`
+    reads it for its `ts`; `drafted_queries` for its two forms.
+    """
+    drafts = [r for r in rows if r.port == "provide" and r.backend == "llm"
+             and r.question.get("provides") == "phrase" and r.answer.get("phrase")]
+    return max(drafts, key=lambda r: r.ts) if drafts else None
+
+
 def drafted_queries(rows: Sequence[Answer]) -> DraftedQuery | None:
     """The newest drafted image query on record for one subject (spec 3
     section 5): a provide row the phrase drafter appended (backend "llm",
@@ -298,11 +313,9 @@ def drafted_queries(rows: Sequence[Answer]) -> DraftedQuery | None:
     record -- what `attempts.phrase_attempt` tests to decide whether a
     picture need still lacks one.
     """
-    drafts = [r for r in rows if r.port == "provide" and r.backend == "llm"
-             and r.question.get("provides") == "phrase" and r.answer.get("phrase")]
-    if not drafts:
+    newest = _newest_drafted_query_row(rows)
+    if newest is None:
         return None
-    newest = max(drafts, key=lambda r: r.ts)
     keywords = newest.answer.get("keywords")
     return DraftedQuery(phrase=str(newest.answer["phrase"]),
                         keywords=str(keywords) if keywords else None)
@@ -315,24 +328,37 @@ def drafted_phrase(rows: Sequence[Answer]) -> str | None:
 
 
 def latest_phrase(rows: Sequence[Answer], form: str = "phrase") -> str | None:
-    """The image query a picture attempt prefers (spec 3 section 5), in
-    precedence: the latest learner direction; else a judge suggestion
-    newer than the last Source ask (`last_source_ask_ts` -- the search
-    that produced the judged candidate, never attempts.phrase_attempt's
-    own per-subject phrase row); else the newest drafted query
-    (`drafted_queries`) in `form` -- its keywords under "keywords" when
-    it has them, else its phrase (r36); else None -- no query on record,
-    and the need waits (spec 3 r25 section 5). A direction and a
-    suggestion are one text and serve every form.
+    """The image query a picture attempt prefers (spec 3 section 5): the
+    newest of the three things that can name one -- the latest learner
+    direction, which always wins when the subject carries one; else the
+    newer by ts of the newest judge suggestion and the newest drafted
+    query (`drafted_queries`), the suggestion winning a tie; else None --
+    no query on record, and the need waits (spec 3 r25 section 5). The
+    drafted query is served in `form` -- its keywords under "keywords"
+    when it has them, else its phrase (r36); a direction and a suggestion
+    are one text and serve every form.
+
+    A suggestion is measured against the drafted query, not against the
+    last Source ask (r35's own correction): the re-search a suggestion
+    opens appends a Source-ask provide row of its own, so measuring
+    against that row reverted the query to the drafted phrase after one
+    ask and re-opened one source per suggestion instead of the roster.
+    A suggestion stays the query until a newer suggestion, a direction or
+    a re-drafted query replaces it. `last_source_ask_ts` still measures
+    the freshness of an *unasked* suggestion for the queue's bucket 2
+    (derivations._has_untried_lever), which is a different question.
     """
     directed = directions(rows)
     if directed:
         return str(directed[-1].answer["direction"])
-    last_provide = last_source_ask_ts(rows)
+    # a picture-kind judge row only: a sentence subject's sentence-for-target
+    # verdicts suggest a rewrite of the sentence, never a picture
     suggestions = [r for r in rows if r.port == "assess" and r.backend == "judge"
-                  and r.answer.get("suggestion") and r.ts > last_provide]
-    if suggestions:
-        return str(max(suggestions, key=lambda r: r.ts).answer["suggestion"])
+                  and r.question.get("kind") == "picture" and r.answer.get("suggestion")]
+    suggested = max(suggestions, key=lambda r: r.ts) if suggestions else None
+    newest_draft = _newest_drafted_query_row(rows)
+    if suggested is not None and (newest_draft is None or suggested.ts >= newest_draft.ts):
+        return str(suggested.answer["suggestion"])
     drafted = drafted_queries(rows)
     if drafted is None:
         return None

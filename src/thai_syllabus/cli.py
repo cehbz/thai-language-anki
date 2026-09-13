@@ -138,7 +138,8 @@ def _cmd_run(args: argparse.Namespace, *,
     batch transport itself unreachable (exit 1, same as a single run
     today) -- when the report says there is nothing left to do (no batch
     out, nothing adopted or improved), or when --spend-cap is set and the
-    judge's and tts's own cost recorded since this invocation started has
+    cash cost recorded since this invocation started -- the judge, tts
+    and the illustrator's drawings (r34) -- has
     reached it (spec 3 section 7 governs a source's own daily budget;
     --spend-cap is this invocation's own budget, so spend from an
     earlier invocation never counts against it).
@@ -166,8 +167,12 @@ def _cmd_run(args: argparse.Namespace, *,
                     and report.improved == 0):
                 return 0  # nothing left to do
             if args.spend_cap is not None:
+                # The metered cash backends: the judge, tts and the
+                # illustrator's drawings (spec 3 r34, `price_per_image`); a
+                # drafter on the api transport spends outside this cap.
                 spent = (record.cost_since(ctx.db, "assess", "judge", start_ns)
-                        + record.cost_since(ctx.db, "provide", "tts", start_ns))
+                        + record.cost_since(ctx.db, "provide", "tts", start_ns)
+                        + record.cost_since(ctx.db, "provide", "illustrator", start_ns))
                 if spent >= args.spend_cap:
                     print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
                          f"USD this invocation")
@@ -232,9 +237,10 @@ def main(argv: list[str] | None = None, *,
                         "(spec 3 section 7); default 1, today's single-run behavior")
     p.add_argument("--spend-cap", type=float, default=None, metavar="USD",
                    help="stop cycling once the judge's own cost (port assess) "
-                        "plus tts's own cost (port provide) recorded since THIS "
-                        "invocation started reaches this -- an earlier invocation's "
-                        "spend never counts against it")
+                        "plus tts's and the illustrator's own cost (port provide) "
+                        "recorded since THIS invocation started reaches this -- an "
+                        "earlier invocation's spend never counts against it; a "
+                        "drafter on the api transport is not counted")
     p.add_argument("--poll-seconds", type=_min_one("poll-seconds"), default=300,
                    help="how long to sleep between polls of an outstanding "
                         "batch's status")

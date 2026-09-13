@@ -669,8 +669,8 @@ def test_a_source_at_the_transient_cap_counts_as_tried(cache):
 
 def test_a_source_counts_as_tried_only_under_the_needs_current_query(cache):
     """Design section 1: every source tried under the drafted phrase; a
-    judge suggestion newer than the last ask becomes the current query
-    and re-enables every source, cheapest first."""
+    judge suggestion newer than the drafted query becomes the current
+    query and re-enables every source, cheapest first."""
     cache.rows.append(phrase_row("rice", "bowl of rice", ts=1))
     for ts, source in ((2, "openverse"), (3, "wikimedia"), (4, "pexels")):
         seed_ask(cache, "rice", "picture", source=source, ts=ts, query="bowl of rice")
@@ -679,6 +679,34 @@ def test_a_source_counts_as_tried_only_under_the_needs_current_query(cache):
                                 suggestion="a heap of rice grains"))
     assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset()
     assert next_source(cache, "rice", "picture", sources_for("picture"), transient_cap=3) == "openverse"
+
+
+_PICTURE_ROSTER = ("pexels", "openverse", "wikimedia", "brave", "illustrator")
+
+
+def test_one_suggestion_re_opens_the_whole_roster_not_one_source(cache):
+    """Spec 3 r35's own intent, corrected: the suggestion stays the
+    current query while the roster is searched under it. Measuring the
+    suggestion against the last Source ask reverted the query to the
+    drafted phrase as soon as the first re-search appended its provide
+    row, so exactly one source re-opened."""
+    cache.rows.append(phrase_row("rice", "bowl of rice", ts=1))
+    for ts, source in enumerate(_PICTURE_ROSTER, start=2):
+        seed_ask(cache, "rice", "picture", source=source, ts=ts, query="bowl of rice")
+    assert next_source(cache, "rice", "picture", _PICTURE_ROSTER, transient_cap=3) is None
+    suggestion = "a heap of rice grains"
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, False, ts=7, suggestion=suggestion))
+    assert next_source(cache, "rice", "picture", _PICTURE_ROSTER,
+                       transient_cap=3) == "pexels"
+    seed_ask(cache, "rice", "picture", source="pexels", ts=8, query=suggestion)
+    assert next_source(cache, "rice", "picture", _PICTURE_ROSTER,
+                       transient_cap=3) == "openverse"
+    seed_ask(cache, "rice", "picture", source="openverse", ts=9, query=suggestion)
+    assert tried_sources(cache, "rice", "picture",
+                         transient_cap=3) == frozenset({"pexels", "openverse"})
+    for ts, source in ((10, "wikimedia"), (11, "brave"), (12, "illustrator")):
+        seed_ask(cache, "rice", "picture", source=source, ts=ts, query=suggestion)
+    assert next_source(cache, "rice", "picture", _PICTURE_ROSTER, transient_cap=3) is None
 
 
 def test_a_row_written_before_queries_were_recorded_counts_only_while_the_need_has_no_query(cache):
@@ -756,6 +784,24 @@ def test_a_capped_source_counts_as_one_attempt_toward_exhaustion(cache):
     status = exhausted(cache, "rice", "picture", sources=("openverse",),
                        attempt_cap=8, transient_cap=3)
     assert status.exhausted is True and status.attempts == 1
+
+
+def test_a_source_at_the_transient_cap_under_an_old_query_still_counts_one_attempt(cache):
+    """Decision 16: the attempt cap is the per-need spend bound, so
+    `attempts` counts every outcome row since the anchor whatever its
+    query. The transient-cap term was derived from the query-filtered
+    tried_sources, so three wire failures under q1 stopped counting the
+    moment a newer query arrived -- and the spend they cost went with
+    them."""
+    for ts in (1, 2, 3):
+        cache.rows.append(outcome_row("rice", "picture", source="openverse",
+                                      outcome="transient-failure", ts=ts, query="q1"))
+    cache.rows.append(phrase_row("rice", "q2", ts=4))
+    status = exhausted(cache, "rice", "picture", sources=("openverse",),
+                       attempt_cap=8, transient_cap=3)
+    assert status.attempts == 1 and status.exhausted is False
+    # the source itself is untried under q2 and is asked again there
+    assert next_source(cache, "rice", "picture", ("openverse",), transient_cap=3) == "openverse"
 
 
 def test_transient_outcomes_before_the_anchor_do_not_count_toward_the_cap(cache):

@@ -94,17 +94,20 @@ def _jpeg_bytes(seed: str) -> bytes:
 
 class _Search:
     """One image-search backend, recording its asks as (subject, source)
-    in a list shared with every other source in the roster. Two hits per
-    query: one picture alone can never need a preference question."""
+    in a list shared with every other source in the roster, and as
+    (subject, source, query) in a second such list -- what an ask was
+    searched for is the thing spec 3 r35's precedence decides. Two hits
+    per query: one picture alone can never need a preference question."""
 
-    def __init__(self, name: str, asks: list):
-        self.name, self.asks = name, asks
+    def __init__(self, name: str, asks: list, queried: list):
+        self.name, self.asks, self.queried = name, asks, queried
 
     def cache_key(self, q):
         return ProvideKey(source=self.name, kind="", query=q.params["query"])
 
     def fetch(self, q):
         self.asks.append((q.subject, self.name))
+        self.queried.append((q.subject, self.name, q.params["query"]))
         return RawAnswer(items=(
             {"url": f"https://{self.name}/{q.subject}-1.jpg", "source": self.name,
              "licence": "by"},
@@ -117,9 +120,10 @@ class _Searches:
 
     def __init__(self):
         self.asks: list[tuple[str, str]] = []
+        self.queried: list[tuple[str, str, str]] = []
 
     def backend(self, name: str) -> _Search:
-        return _Search(name, self.asks)
+        return _Search(name, self.asks, self.queried)
 
 
 class _Silent:
@@ -431,6 +435,26 @@ def test_a_fresh_suggestion_re_enables_the_first_source_under_the_new_query(
            + r2.unserved + r2.budgeted + r2.deferred)
     row = ctx_batch_two_needs.db.latest("run", "runreport", RunReportKey())
     assert row.answer["requeried"] == 2
+    assert [q for s, b, q in fake_search.queried[-2:]] == ["a fish on ice", "a heap of grains"]
+
+    # Run 3: no new suggestion. The standing one is still the newest
+    # query on record, so the roster carries on under it -- openverse
+    # searched for the suggestion, not the drafted phrase. Measuring the
+    # suggestion against the last Source ask reverted the query here, so
+    # r35 re-opened one source per suggestion instead of the roster.
+    if r2.batch_id:
+        fake_batch.complete_all(r2.batch_id, passed=False,
+                                value_for=lambda prompt: {"value": False})
+    r3 = run(ctx_batch_two_needs, budgets={})
+    assert fake_search.asks[-2:] == [("fish", "openverse"), ("rice", "openverse")]
+    assert [(s, q) for s, b, q in fake_search.queried[-2:]] == [("fish", "a fish on ice"),
+                                                                ("rice", "a heap of grains")]
+    # `requeried` counts an ask at a source ALREADY asked under another
+    # query, so run 2's pexels counts and run 3's openverse -- searched
+    # for the first time, under the suggestion -- does not.
+    assert r3.requeried == 0
+    assert (r3.available == r3.attempted + r3.exhausted + r3.pending
+           + r3.unserved + r3.budgeted + r3.deferred)
 
 
 def test_run_asks_the_preference_question_once_the_fits_resolve(

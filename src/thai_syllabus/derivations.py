@@ -650,12 +650,28 @@ def tried_sources(cache: CacheReader, subject: str, kind: str, *,
 
     tried = {r.backend for r in outcomes if r.answer.get("outcome") == "candidates"
              or (r.answer.get("outcome") == "nothing" and _fresh_nothing(r))}
+    tried.update(_capped_sources(outcomes, transient_cap=transient_cap))
+    return frozenset(tried)
+
+
+def _capped_sources(outcomes: Sequence[Answer], *, transient_cap: int) -> frozenset[str]:
+    """The sources with `transient_cap` or more `transient-failure`
+    outcomes among `outcomes` (spec 3 section 6a): at the cap a source
+    counts as tried, and as one attempt.
+
+    The caller chooses the row set, and the two callers choose
+    differently. `tried_sources` hands it the rows under the need's
+    current query, because being tried is a per-query question (r35).
+    `exhausted`'s attempt count hands it every row since the anchor,
+    because the attempt cap is the per-need spend bound whatever the
+    query (decision 16): a source capped under an earlier query cost
+    those asks, and they still count.
+    """
     transient: dict[str, int] = {}
     for r in outcomes:
         if r.answer.get("outcome") == "transient-failure":
             transient[r.backend] = transient.get(r.backend, 0) + 1
-    tried.update(s for s, n in transient.items() if n >= transient_cap)
-    return frozenset(tried)
+    return frozenset(s for s, n in transient.items() if n >= transient_cap)
 
 
 def _clock_for(nothing_ttl: Mapping[str, int], now_ns: int | None) -> int:
@@ -776,14 +792,18 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *,
 
     `attempts` counts every outcome row since the anchor, whatever its
     query: the attempt cap is the per-need spend bound (decision 16).
+    The transient-cap term counts the same way (`_capped_sources` over the
+    unfiltered rows since the anchor): a source at the cap under an
+    earlier query spent those asks, so it still counts as its one
+    attempt.
     """
     if kind == _RUN_SENTENCE_KIND:
         return sentence_exhausted(cache, subject, cap=sentence_nothing_cap)
     since = attempts_since_change(cache, subject, kind)
-    capped = tried_sources(cache, subject, kind, transient_cap=transient_cap,
-                           nothing_ttl=nothing_ttl, now_ns=now_ns,
-                           requery_cap=requery_cap) - {
-        r.backend for r in since}
+    rows = record.rows_for(cache, subject, kind)
+    anchor_ts = _anchor_ts(cache, subject, kind, rows)
+    capped = _capped_sources([r for r in rows if r.port == "attempt" and r.ts > anchor_ts],
+                            transient_cap=transient_cap) - {r.backend for r in since}
     attempts = len(since) + len(capped)
     is_exhausted = (next_source(cache, subject, kind, sources, transient_cap=transient_cap,
                                 nothing_ttl=nothing_ttl, now_ns=now_ns,

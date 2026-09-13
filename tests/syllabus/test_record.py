@@ -448,31 +448,61 @@ def test_latest_phrase_prefers_the_latest_learner_direction(cache):
     assert latest_phrase(cache.assessments_of("rice")) == "try red"
 
 
-def test_latest_phrase_prefers_a_suggestion_newer_than_the_last_provide(cache):
+def test_latest_phrase_prefers_a_suggestion_newer_than_the_drafted_query(cache):
     cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
                 {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
-                {"phrase": "bowl of rice"}, 0)
+                {"phrase": "bowl of rice"}, 0, ts=1)
     cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
                 "rice", {"role": "picture-for-word", "kind": "picture"},
-                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0)
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0, ts=2)
     assert latest_phrase(cache.assessments_of("rice")) == "a bowl of steamed jasmine rice"
 
 
-def test_latest_phrase_prefers_a_suggestion_older_than_a_later_phrase_row(cache):
-    """Fix round 2 finding 1: "the last provide row" means the last
-    Source ask -- the search that produced the judged candidate -- never
-    attempts.phrase_attempt's own per-subject phrase row (an answer, not
-    an ask). A phrase drafted after a pending suggestion must not make
-    that suggestion look stale."""
-    cache.append("provide", "openverse", ProvideKey(source="openverse", kind="", query="rice"),
-                "rice", {"kind": "picture", "params": {"query": "rice"}}, {"items": []}, 0)
+def test_a_suggestion_older_than_the_newest_drafted_query_loses_to_it(cache):
+    """Spec 3 r35, corrected: the query is the newer by ts of the newest
+    suggestion and the newest drafted query -- a re-drafted query
+    replaces a suggestion that came before it."""
     cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
                 "rice", {"role": "picture-for-word", "kind": "picture"},
-                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0)
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0, ts=1)
     cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
                 {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
-                {"phrase": "bowl of rice"}, 0)
+                {"phrase": "bowl of rice"}, 0, ts=2)
+    assert latest_phrase(cache.assessments_of("rice")) == "bowl of rice"
+
+
+def test_a_suggestion_stays_the_query_after_the_source_ask_it_re_opened(cache):
+    """Spec 3 r35's own case: a suggestion is the query while the roster
+    is searched under it. Measuring its freshness against the last Source
+    ask (the old rule) reverted the query to the drafted phrase after one
+    re-search, so r35 re-opened one source instead of the roster."""
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0, ts=1)
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
+                "rice", {"role": "picture-for-word", "kind": "picture"},
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0, ts=2)
+    cache.append("provide", "pexels", ProvideKey(source="pexels", kind="", query="rice"),
+                "rice", {"kind": "picture",
+                        "params": {"query": "a bowl of steamed jasmine rice"}}, {"items": []},
+                0, ts=3)
     assert latest_phrase(cache.assessments_of("rice")) == "a bowl of steamed jasmine rice"
+
+
+def test_a_direction_beats_both_a_newer_suggestion_and_a_newer_drafted_query(cache):
+    """The latest learner direction always wins when present, however
+    much came after it."""
+    cache.append("assess", "learner",
+                DirectionKey(subject="rice", role="picture-for-word", text_sha=sha("try red")),
+                "rice", {"kind": "direction", "role": "picture-for-word"},
+                {"direction": "try red"}, 0, ts=1)
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
+                "rice", {"role": "picture-for-word", "kind": "picture"},
+                {"value": False, "suggestion": "a bowl of steamed jasmine rice"}, 0, ts=2)
+    cache.append("provide", "llm", PhraseKey(subject="rice"), "rice",
+                {"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                {"phrase": "bowl of rice"}, 0, ts=3)
+    assert latest_phrase(cache.assessments_of("rice")) == "try red"
 
 
 def test_last_source_ask_ts_ignores_a_phrase_row(cache):
@@ -1327,3 +1357,21 @@ def test_parse_queries_refuses_a_keywords_list_that_is_not_all_strings():
     out = parse_queries(text)
     assert out["rice"].keywords is None and out["fish"].keywords is None
     assert out["egg"].keywords == "egg shell"
+
+
+def test_latest_phrase_ignores_a_suggestion_from_a_non_picture_judge_role(cache):
+    """A sentence subject carries sentence-for-target verdicts too, and
+    those suggest a rewrite of the sentence, never a picture: only a
+    picture-kind judge row's suggestion can be the image query."""
+    sha = "b" * 64
+    cache.append("provide", "llm", PhraseKey(subject=sha), sha,
+                {"provides": "phrase", "kind": "picture", "subject_kind": "sentence"},
+                {"phrase": "hot tea poured into a cup"}, 0, ts=1)
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, sha, "sentence-for-target"),
+                sha, {"role": "sentence-for-target", "kind": "sentence"},
+                {"value": False, "suggestion": "use the word in a shorter clause"}, 0, ts=2)
+    assert latest_phrase(cache.assessments_of(sha)) == "hot tea poured into a cup"
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, sha, "scene-for-sentence"),
+                sha, {"role": "scene-for-sentence", "kind": "picture"},
+                {"value": False, "suggestion": "a single sugar lump beside a teacup"}, 0, ts=3)
+    assert latest_phrase(cache.assessments_of(sha)) == "a single sugar lump beside a teacup"

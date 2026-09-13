@@ -963,10 +963,11 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
     and the comment pass's three counts -- `comments_read`,
     `comment_actions`, `comment_unactionable` (spec 3 r30) -- and
-    `covered_new` (spec 3 r34) -- whether or not the row itself recorded
-    them: a row written before any of them reads 0 for its fields, so all
-    six are columns of every run in the history and not only of the runs
-    since (the page takes the history's columns from its oldest row).
+    `covered_new` (spec 3 r34) and `requeried` (spec 3 r35) -- whether or
+    not the row itself recorded them: a row written before any of them
+    reads 0 for its fields, so all seven are columns of every run in the
+    history and not only of the runs since (the page takes the history's
+    columns from its oldest row).
     Each row also carries `spend_per_covered_new`, derived not stored
     (spec 5 r11): the run's judge and illustrator dollars over
     `covered_new`, None when nothing was newly covered.

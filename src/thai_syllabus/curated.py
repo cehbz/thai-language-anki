@@ -891,7 +891,13 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         # (wiring.nothing_ttl_for); absent is accepted (the source keeps
         # whatever ageing default applies, or never ages).
         nothing_ttl_days = quota.get("nothing_ttl_days")
-        if nothing_ttl_days is not None and (
+        if nothing_ttl_days is not None and source == "illustrator":
+            # Ageing exists because a growing corpus may have new hits by
+            # now; the illustrator has no corpus (spec 3 r34).
+            errors.append("providers.quotas.illustrator.nothing_ttl_days: the illustrator "
+                          "never ages a nothing (an aged-out nothing would buy the same "
+                          "drawing again)")
+        elif nothing_ttl_days is not None and (
                 not isinstance(nothing_ttl_days, int) or nothing_ttl_days < 1):
             errors.append(f"providers.quotas.{source}.nothing_ttl_days: "
                           f"{nothing_ttl_days!r} must be a positive integer")

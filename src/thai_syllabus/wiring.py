@@ -214,9 +214,11 @@ def _illustrator_backend(illustrator: IllustratorConfig, secrets,
     failing at the first drawing; the generator itself -- and so the
     secret read -- is deferred to that first drawing, while the backend's
     own shape (cache key, price) is known now, because Provider asks for
-    a cache key before it decides to fetch. The key is named after the
-    provider (providers.yaml `secrets.<provider>`), the same name
-    load_providers_config requires.
+    a cache key before it decides to fetch. The key is read from
+    providers.yaml `secrets.<provider>`; load_providers_config requires
+    that entry for provider `gemini` alone (the one registered
+    generator), so another provider's missing key surfaces at its first
+    drawing, not at load.
     """
     require_image_generator(illustrator.provider)
     return IllustratorBackend(

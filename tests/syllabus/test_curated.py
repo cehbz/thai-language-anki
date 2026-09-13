@@ -649,6 +649,18 @@ def test_a_well_formed_nothing_ttl_days_loads(tmp_path):
     assert cfg.quotas["forvo"]["nothing_ttl_days"] == 30
 
 
+def test_the_illustrator_may_not_age_a_nothing(tmp_path):
+    """Ageing re-offers a source because a growing corpus may have new
+    hits by now (spec 3 r19 section 6a/9). The illustrator has no corpus:
+    an aged-out `nothing` would buy the same drawing again, at the same
+    price, from the same model under the same query. The loader refuses
+    the field rather than letting a providers.yaml spend on it."""
+    write_providers(tmp_path, quotas={"illustrator": {"nothing_ttl_days": 30}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.illustrator\.nothing_ttl_days"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
 # --- quotas.<source>.{min_interval_seconds, challenge_wait_seconds} (spec 3 r26 section 8)
 
 def test_a_negative_min_interval_seconds_refuses_naming_the_field(tmp_path):

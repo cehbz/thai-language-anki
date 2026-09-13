@@ -522,14 +522,28 @@ class IllustratorBackend:
             return RawAnswer(items=(), cost=0.0)
         ext = _MIME_EXT.get(got.mime.split(";")[0].strip().lower())
         if ext is None:
+            self._log_unusable(question, f"unknown image type {got.mime[:64]!r}")
             raise TransportError(f"illustrator answered an image of type {got.mime!r}")
         try:
             ingest = self.media.add_image(got.data, ext)
         except ValueError as e:
+            self._log_unusable(question, str(e))
             raise TransportError(f"illustrator answered undecodable image bytes: {e}") from None
         return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext, "source": "generated",
                                  "origin": self.model, "licence": "generated"},),
                          cost=self.price_per_image)
+
+    def _log_unusable(self, question: Question, reason: str) -> None:
+        """A drawing that was paid for and cannot be ingested (spec 3 r34):
+        the ask raises, so no row is appended and nothing is cached --
+        the price is spent and the next run draws the same query again.
+        The record cannot account for it, so the log does: the query, the
+        reason and the price, never the cache key and never the
+        generator's response body.
+        """
+        _log.warning("illustrator: generated image for %r not ingestable (%s); "
+                     "%.4f USD spent, nothing cached",
+                     question.params["query"], reason, self.price_per_image)
 
 
 # provider name (providers.yaml illustrator.provider) -> the adapter that
