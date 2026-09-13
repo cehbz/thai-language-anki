@@ -39,6 +39,14 @@ still run against them.
   action writes its row, FrontGloss still compiles empty (F3).
 - The sentence Listening template now labels the target word; the Anki
   notetype updates on the next import (cutover pending).
+- Illustrator: batch submission of generations (Gemini Batch API, half
+  price; the run's one-generation-per-query shape fits a batch as the
+  judge does); Flickr as a keywords-form source (`record.QUERY_FORMS`,
+  spec 3 r36). The pre-r36 phrases: run `work/phrase-redraft.py` on the
+  deck (dry run counted 1188 needs; about eight drafter asks).
+- `exhausted().capped` is query-scoped while its attempt count is per
+  need (spec 3 r35): a source at the transient cap under an old query
+  counts no attempt; an under-count of at most one per such source.
 
 ## Cutover
 
