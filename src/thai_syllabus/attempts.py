@@ -108,8 +108,10 @@ SOURCES: dict[str, tuple[str, ...]] = {
     # spec 3 r26 section 5: the keyed corpus first, the challenge-prone
     # anonymous-tier corpus second, and the metered web index (brave)
     # last -- one source per need per run, so a need reaches it only
-    # after the free corpora have all been tried and failed.
-    "picture": ("pexels", "openverse", "wikimedia", "brave"),
+    # after the free corpora have all been tried and failed; and the
+    # illustrator (spec 3 r34) after brave: a drawn picture is the answer
+    # of last resort, reached only once every corpus is tried.
+    "picture": ("pexels", "openverse", "wikimedia", "brave", "illustrator"),
     "recording": ("forvo", "tts"),
     "rendition": ("forvo", "tts"),
 }
@@ -413,7 +415,10 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     A served refusal of every hit of a *cached* answer re-asks the search
     once within the attempt and ingests what is new; a search asked live
     in this attempt is not re-asked, its hits having just been served
-    (spec 3 section 6a's re-ask rule)."""
+    (spec 3 section 6a's re-ask rule).
+
+    A source whose items already carry their sha (the illustrator) is
+    ingested by `_ingest_stored`, never through imgfetch."""
     spend: dict[str, Spend] = {}
     query = picture_query_for(ctx, need)
     if query is None:
@@ -438,8 +443,12 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                         tried=fetches.tried)
         raise
     _count(spend, source, hits)
-    hit_items = [i for i in hits.items if isinstance(i, Mapping) and i.get("url")]
-    fresh_hits = [i for i in hit_items if i["url"] not in already]
+    hit_items = [i for i in hits.items if isinstance(i, Mapping)]
+    for item in hit_items:
+        if item.get("sha"):
+            _ingest_stored(ctx, need, item, source, fetches)
+    url_items = [i for i in hit_items if i.get("url") and not i.get("sha")]
+    fresh_hits = [i for i in url_items if i["url"] not in already]
     tried_items = fresh_hits[:ctx.image_candidates]
     for item in tried_items:
         _ingest_picture(ctx, need, item, source, spend, fetches)
@@ -505,6 +514,26 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
         fetches.stored(stored)
     else:
         fetches.missed()
+
+
+def _ingest_stored(ctx: Sourcing, need: Need, item: Mapping, source: str,
+                   fetches: _Fetches) -> None:
+    """A hit whose bytes the source already wrote into the media store
+    (the illustrator, spec 3 r34 section 5: its item carries `sha`, not a
+    url): the media row with the item's own provenance -- source
+    `generated`, licence `generated`, origin the model (spec 2 r16) --
+    and the candidate counted stored. No imgfetch, nothing in `tried`.
+
+    Re-ingest is safe: `add_media` is idempotent on sha (store.add_media
+    inserts or ignores), so a cached answer re-read on a later attempt
+    re-counts the same candidate without a second provenance row.
+    """
+    sha = item["sha"]
+    ctx.db.add_media(sha=sha, kind=need.kind, ext=str(item.get("ext", "png")),
+                     source=str(item.get("source", source)),
+                     origin=str(item.get("origin") or source),
+                     licence=str(item.get("licence") or "unknown"), acquired=ctx.today())
+    fetches.stored(sha)
 
 
 def _judge_pictures(ctx: Sourcing, need: Need, query: str | None,

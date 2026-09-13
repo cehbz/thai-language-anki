@@ -1958,6 +1958,45 @@ def test_provenance_prior_breaks_ties_below_one_rank_point(db):
     assert best.artifact_sha == "f" and 50.0 < best.rank < 51.0
 
 
+def test_a_generated_picture_ranks_below_a_photograph_of_equal_verdict_under_the_default_prior(db):
+    """Spec 3 r34 section 4: the prior orders eligible candidates where
+    no assessor has spoken between them -- a judged photo beats a judged
+    drawing at equal rank, whichever sha sorts first."""
+    from thai_syllabus.curated import RulebookConfig
+    prior = RulebookConfig().provenance_prior
+    assert prior.index("generated") > prior.index("brave") > prior.index("pexels")
+    _provide(db, "w", "picture", "imgfetch", ["a" * 64])          # the photo, lower sha
+    _provide(db, "w", "picture", "illustrator", ["b" * 64])       # the drawing
+    _verdict(db, "w", "judge", "picture-for-word", "a" * 64, True)
+    _verdict(db, "w", "judge", "picture-for-word", "b" * 64, True)
+    source_of = {"a" * 64: "pexels", "b" * 64: "generated"}
+    best = current_best(db, "w", "picture", current_rubric={"picture-for-word": "r"}, prior=prior,
+                        provenance_source=source_of.get)
+    assert best.artifact_sha == "a" * 64
+    # and the drawing wins only when it is the one that passed
+    _verdict(db, "w", "judge", "picture-for-word", "a" * 64, False)
+    best = current_best(db, "w", "picture", current_rubric={"picture-for-word": "r"}, prior=prior,
+                        provenance_source=source_of.get)
+    assert best.artifact_sha == "b" * 64
+
+
+def test_a_generated_picture_ranks_below_a_photograph_even_when_its_sha_sorts_first(db):
+    """The photo/drawing pin above trivially passes on sha order alone
+    ("a" * 64 < "b" * 64) even without provenance breaking the tie.
+    Swap which sha belongs to which source so the prior itself is what
+    must decide it."""
+    from thai_syllabus.curated import RulebookConfig
+    prior = RulebookConfig().provenance_prior
+    _provide(db, "w", "picture", "imgfetch", ["a" * 64])
+    _provide(db, "w", "picture", "illustrator", ["b" * 64])
+    _verdict(db, "w", "judge", "picture-for-word", "a" * 64, True)
+    _verdict(db, "w", "judge", "picture-for-word", "b" * 64, True)
+    source_of = {"a" * 64: "generated", "b" * 64: "pexels"}
+    best = current_best(db, "w", "picture", current_rubric={"picture-for-word": "r"}, prior=prior,
+                        provenance_source=source_of.get)
+    assert best.artifact_sha == "b" * 64
+
+
 def test_role_scoped_rubric_mapping_marks_only_that_role_stale(db):
     _provide(db, "w", "picture", "openverse", ["a"])
     _verdict(db, "w", "judge", "picture-for-word", "a", True, rubric="old")

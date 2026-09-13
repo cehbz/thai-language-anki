@@ -258,6 +258,11 @@ def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None,
         "openverse": fake_search.backend("openverse"),
         "wikimedia": fake_search.backend("wikimedia"),
         "pexels": fake_search.backend("pexels"),
+        # brave (spec 3 r32) and the illustrator (spec 3 r34): the last
+        # two picture sources, with nothing to offer unless a test wires
+        # them itself -- the real backends would reach the network
+        "brave": _Silent("brave"),
+        "illustrator": _Silent("illustrator"),
         "forvo": _Silent("forvo"), "tts": _Silent("tts"),
         "llm-sentence": llm if llm is not None else _Llm(),
         "llm-phrase": phrase if phrase is not None else _LlmPhrase(),
@@ -404,6 +409,44 @@ def test_run_asks_the_preference_question_once_the_fits_resolve(
     marker = ctx_batch_two_needs.db.latest(
         "assess", "judge", BatchMarkerKey(r2.batch_id))
     assert "picture-preference" in marker.question["roles"]
+
+
+def test_covered_new_counts_the_picture_needs_the_resolved_batch_covered(
+        ctx_batch_two_needs, fake_batch):
+    """Spec 3 r34 section 7 (decision 11): under a batch judge the verdict
+    lands at the next run's resolve, so that run is the one that counts
+    the need covered. Both events, outside the identity."""
+    r1 = run(ctx_batch_two_needs, budgets={})
+    assert r1.covered_new == 0
+    fake_batch.complete_all(r1.batch_id, passed=True)
+    r2 = run(ctx_batch_two_needs, budgets={})
+    assert r2.covered_new == 2
+    assert (r2.available == r2.attempted + r2.exhausted + r2.pending
+           + r2.unserved + r2.budgeted + r2.deferred)
+    row = ctx_batch_two_needs.db.latest("run", "runreport", RunReportKey())
+    assert row.answer["covered_new"] == 2
+    r3 = run(ctx_batch_two_needs, budgets={})
+    assert r3.covered_new == 0
+
+
+def test_a_retired_sentences_scene_need_is_not_a_newly_covered_one(
+        ctx_batch_sentences, fake_batch):
+    """A scene need that leaves gaps() because its sentence was retired
+    gained no picture."""
+    r1 = run(ctx_batch_sentences, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True)          # the draft is adopted next run
+    r2 = run(ctx_batch_sentences, budgets={})
+    assert r2.sentences_adopted == 1 and r2.covered_new == 0
+    # forvo and tts are _Silent: the recording need exhausts and F13 retires the sentence
+    r3 = run(ctx_batch_sentences, budgets={})
+    r4 = run(ctx_batch_sentences, budgets={})
+    # r3 is the pass that retires it: its scene picture need was open at
+    # the pass's start and is gone by its end, and is still no gain
+    assert (r3.retired, r4.retired) == (1, 0)
+    assert r3.covered_new == 0 and r4.covered_new == 0
+    for r in (r3, r4):
+        assert (r.available == r.attempted + r.exhausted + r.pending
+               + r.unserved + r.budgeted + r.deferred)
 
 
 def test_a_batch_still_in_progress_holds_the_next_run_back(
@@ -880,6 +923,10 @@ class _Syl:
     targets: list = dataclasses.field(default_factory=list)
     sentences: tuple = ()
     pairs: tuple = ()
+    # the real Syllabus's own field, read by derivations.all_needs, which
+    # run._picture_needs folds over to keep a retired sentence's scene
+    # need out of `covered_new` (spec 3 r34 section 7)
+    graphemes: tuple = ()
     # the real Syllabus's own field, read by attempts.adjudication_attempt
     # and derivations.adjudications: no word here is uncorroborated, so
     # neither pass does anything over this fake
@@ -1400,7 +1447,7 @@ def _exhaust(db, subject):
     6); the provide row alongside it is the ask itself, on the record
     like any real attempt's.
     """
-    for source in ("openverse", "wikimedia", "pexels", "brave"):
+    for source in ("openverse", "wikimedia", "pexels", "brave", "illustrator"):
         db.append(port="provide", backend=source,
                   key=ProvideKey(source=source, kind="", query=subject), subject=subject,
                   question={"kind": "picture", "subject_kind": "word"},
@@ -1890,13 +1937,15 @@ def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
     calls = _patch(monkeypatch, {("a", "pexels"): TransportError,
                                  ("b", "openverse"): TransportError,
                                  ("c", "wikimedia"): TransportError,
-                                 ("d", "brave"): TransportError})
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d", "e")))), {})
+                                 ("d", "brave"): TransportError,
+                                 ("e", "illustrator"): TransportError})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d", "e", "f")))), {})
     assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
-                                                  ("c", "wikimedia"), ("d", "brave")]
+                                                  ("c", "wikimedia"), ("d", "brave"),
+                                                  ("e", "illustrator")]
     assert report.source_failures == {"pexels": 1, "openverse": 1, "wikimedia": 1,
-                                      "brave": 1}
-    assert report.available == 5 and report.attempted == 0 and report.deferred == 5
+                                      "brave": 1, "illustrator": 1}
+    assert report.available == 6 and report.attempted == 0 and report.deferred == 6
     assert report.exhausted == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
@@ -1982,6 +2031,7 @@ class _AdoptingSyl:
 
     def __init__(self, unfilled_targets):
         self.targets, self.sentences, self.pairs, self.words = [], (), (), ()
+        self.graphemes = ()          # run._picture_needs folds over all_needs
         self._unfilled = tuple(unfilled_targets)
         self._covered: tuple[str, ...] = ()
 
@@ -2318,7 +2368,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
                            "sentences_adopted", "adjudicated", "stayed_disputed",
-                           "drafted", "retired", "excluded",
+                           "drafted", "retired", "covered_new", "excluded",
                            "comments_read", "comment_actions", "comment_unactionable",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences"}

@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 33, proposed 2026-09-13 against principles r4 and architecture
+Revision 34, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -164,6 +164,25 @@ Revision log:
   scene candidate pairs, all stale under a new rubric; and scene fit
   questions had no prompt of their own, so they were asked through the
   generic params dump. User approval 2026-09-13.
+- r34 2026-09-13: the illustrator (§3, §5): a Provide backend of kind
+  picture, last in the source order after brave, rendering the need's
+  current query as one image through the configured image generator
+  (Gemini gemini-3.1-flash-image over the Interactions API, inline;
+  SynthID-watermarked) under a fixed style prefix; ingested through the
+  media path with provenance `generated`, licence `generated` (spec 2
+  r16), judged, ranked, vetoed or preferred like any candidate, below a
+  photograph of equal verdict in the provenance prior; metered
+  (`quotas.illustrator`, 20 asks a day by default, `price_per_image` on
+  every row; 429/402 is the Quota state); never refined by the run -- a
+  failed drawing is drawn again only under a new query; a deck without
+  `illustrator` in providers.yaml has no such source (§8);
+  `coverage/pictures` (spec 1 r15) and RunReport.covered_new (§7), the
+  spend per newly covered need shown per run (spec 5 r11). Evidence:
+  word pictures cover 751 of 766 judged subjects and scenes 220 of 377;
+  on the eight hardest scene queries the corpora passed 5 to 14 percent
+  per candidate; some cues (pointing into the distance, a calendar with
+  two days back marked) live in no stock corpus. User approval
+  2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -252,6 +271,7 @@ one speaker answers empty.
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
+| illustrator | picture (one generated image per query through the configured image generator, `illustrator.provider`; bytes into the media store; the item carries its sha, provenance `generated`, licence `generated`, origin the model) | illustrator:MODEL:query | cash per image (`illustrator.price_per_image`, on the row); 429/402 is Quota (§6a) | never: the same query at the same model is the same image; a declined prompt is a cached empty answer |
 
 ## 4. Assess backends and authority
 
@@ -272,6 +292,9 @@ artifact ranks again only when the learner re-rates it.
 **Provenance prior** (rulebook data, an ordered list of provenance kinds,
 e.g. commission > forvo > tts): orders eligible candidates only where no
 assessor has spoken. It never fails a candidate and any verdict outranks it.
+The default prior lists the audio sources, then the picture corpora in
+source order, then `learner`, then `generated`: a generated picture ranks
+below a photograph of equal verdict and above nothing (r34).
 
 **Judge transports**: cli / api / batch, selected in providers.yaml; the
 run does not know which (section 7). Batch state is one marker row per
@@ -299,7 +322,7 @@ asked items is not an answer: nothing is appended and the ask is a
 source failure, re-asked next run). A need with no query on record is
 not attempted this run and counts `deferred` (r25): the gloss is the
 drafter's input, never a search (the corpora index English metadata, so
-the phrase is English). Source order: pexels, openverse, wikimedia, brave (r26, r32). One attempt: search, imgfetch the first N
+the phrase is English). Source order: pexels, openverse, wikimedia, brave, illustrator (r26, r32, r34). One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row
@@ -313,7 +336,16 @@ and the phrase searched for, and for a sentence also `target` and
 `target_gloss`, the word its production card blanks, r33),
 and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
-`suggestion` becomes the next attempt's phrase.
+`suggestion` becomes the next attempt's phrase. The illustrator (r34) is
+reached only once every corpus is tried: it renders the need's current
+query under the fixed style prefix (`Simple flat illustration for a
+language flashcard, few elements, a Thai setting, no text or letters: `)
+as one image, ingested without imgfetch, judged by the same fit question;
+a candidate whose picture contains text fails the embedded-text rule like
+any other. The run never sends a failed drawing back for an edit: a need
+is drawn again only when its query changes (a new suggestion or
+direction), and a learner comment or direction is the way to say what the
+drawing got wrong.
 
 Assess-first: when a candidate on record has no fit verdict under the
 current rubric, the attempt is the fit questions on those candidates,
@@ -598,7 +630,8 @@ Every ask and fetch ends in one of four states:
   raises typed; never matched downstream). A metered source's
   over-credit answer is the same state: a 402 from an image corpus says
   the paid allowance is spent, not that the source is broken, and is
-  the Quota state exactly as its 429 is (r32). No row is appended, the need
+  the Quota state exactly as its 429 is (r32); the illustrator's 429 or
+  402 is the same state (r34). No row is appended, the need
   counts under budgeted, the source is budgeted for the rest of the
   run, and source_failures does not count it.
 
@@ -628,7 +661,8 @@ pair-search carries the dictionary version.
 ## 7. Budget and the run
 
 Budget per source in its currency: {max_asks?, max_cost?, day_starts?};
-forvo 450/day from 22:00 UTC, learner 20/session. Spend is summed from
+forvo 450/day from 22:00 UTC, brave 30/day, illustrator 20/day, learner
+20/session. Spend is summed from
 the record since the most recent `day_starts` instant (HH:MM with a
 zone; default local midnight): the source's asks plus the bytes fetches
 attributed to it (§4's forvo row).
@@ -681,6 +715,7 @@ always. The remaining fields count events, not needs.
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted: recording exhausted with no passing candidate (F13), or retired by a learner comment (r30) |
+| covered_new | picture needs that gained a current-best picture this run: open before the run's resolve, covered by its end (r34); the spend per newly covered need (spec 5 §3) is the run's judge plus illustrator spend over it |
 | comments_read | learner comments this run read (one reading row each) |
 | comment_actions | actions those readings took (`none` writes no row) |
 | comment_unactionable | requests in those readings the deck could not act on, refused actions included |
@@ -704,6 +739,10 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 brave 30 a day, and `min_interval_seconds` 1: Brave's $5 monthly free
 credit is about 1000 requests and the account is capped at $0, so a day
 cap is the pace that stays inside it, r32),
+`illustrator: {provider, model, price_per_image}` (gemini,
+gemini-3.1-flash-image, 0.067 at list, inline; a deck without the section
+has no illustrator source) with its key at
+`secrets.<provider>` (`secrets.gemini`); `quotas.illustrator.{max_asks (20), max_cost}` (r34),
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
 (forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
@@ -733,3 +772,5 @@ lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
 - No listener implementation; calibration first.
 - No interactive judge.
 - No stored need status of any kind.
+- No automatic refinement of a generated picture: no `refine` action; a
+  failed drawing is re-drawn only under a new query (r34).

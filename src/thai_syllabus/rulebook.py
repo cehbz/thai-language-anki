@@ -454,6 +454,29 @@ PICTURE_PREFERENCE = Rule(id="picture/preference", principle="F3", severity="inf
                           role="picture-preference", judged_subjects=_no_judged_subjects)
 
 
+# --- coverage/pictures --------------------------------------------------------
+# F3 (spec 1 section 4, r15): needs with a current-best picture over picture
+# needs, by subject kind -- the picture-introduced words with a
+# current-best picture and the sentences with a scene picture. The
+# design's metric (2026-09-13 ruling 5): coverage, not the per-candidate
+# pass rate.
+
+def _measure_coverage_pictures(syllabus: "Syllabus") -> Metric:
+    words = _picture_introduced_words(syllabus)
+    word_covered = sum(1 for w in words if syllabus.media.has_picture(w))
+    scenes = [sentence_note_id(s) for s in syllabus.sentences]
+    scene_covered = sum(1 for s in scenes if syllabus.media.picture_sha(s) is not None)
+    total = len(words) + len(scenes)
+    value = (word_covered + scene_covered) / total if total else 1.0
+    return Metric(rule="coverage/pictures", value=value,
+                  detail={"word": {"covered": word_covered, "total": len(words)},
+                          "sentence": {"covered": scene_covered, "total": len(scenes)}})
+
+
+COVERAGE_PICTURES = Rule(id="coverage/pictures", principle="F3", severity="info",
+                         shape="measure", measure=_measure_coverage_pictures)
+
+
 # --- coverage/speakers (E7) --------------------------------------------------
 # Speaker diversity per audio corpus: distinct speakers, and how many of them
 # carry each known sex/age_band/region -- unknown attributes never count.
@@ -598,6 +621,7 @@ RULES: list[Rule] = [
     SENTENCE_SYNTHETIC_PRODUCTIVE,
     PICTURE_FIT,
     SCENE_FIT,
+    COVERAGE_PICTURES,
     PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
     WORD_PRONUNCIATION_CORROBORATED,

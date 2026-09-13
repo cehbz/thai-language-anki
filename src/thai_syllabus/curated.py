@@ -22,6 +22,11 @@ import yaml
 from .entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
+# The illustrator's provider name is validated against the same registry
+# wiring builds the backend from, so a name that can never be asked is
+# refused at load -- load_derivations (the review screen, the stats
+# folds) reads a config without ever building a roster.
+from .provider import require_image_generator
 from .run import parse_day_starts
 from .secrets import SecretStore
 from .tts import FEMALE_VOICES, MALE_VOICES
@@ -411,8 +416,12 @@ class RulebookConfig:
     severities: dict[str, str] = field(default_factory=dict)
     thresholds: dict[str, float] = field(default_factory=dict)
     rubrics: dict[str, str] = field(default_factory=dict)
-    # provenance's preference order (spec 3): earlier sources win ties.
-    provenance_prior: tuple[str, ...] = ("commission", "forvo", "tts")
+    # provenance's preference order (spec 3 section 4): earlier sources win
+    # ties. Audio first as before; the picture corpora in source order
+    # (licensed first); a generated picture (spec 3 r34) below every
+    # photograph, above nothing.
+    provenance_prior: tuple[str, ...] = ("commission", "forvo", "tts", "pexels", "openverse",
+                                         "wikimedia", "brave", "learner", "generated")
 
 
 def save_rulebook_config(path: str | Path, config: RulebookConfig) -> None:
@@ -597,7 +606,11 @@ def rulebook_file_text(path: str | Path) -> str:
 # judge.max_tokens under 16000 with thinking: adaptive, an unknown
 # drafter.transport, an api drafter with no anthropic secret or no
 # price_per_mtok, an empty male_voices or female_voices pool, a
-# quotas.<source>.day_starts that does not parse (run.parse_day_starts).
+# quotas.<source>.day_starts that does not parse (run.parse_day_starts), an
+# `illustrator` section that is not a mapping or that names no provider,
+# a provider no image generator is registered for, no model, or no
+# non-negative price_per_image, and a gemini illustrator with no
+# `secrets.gemini`.
 # An absent file refuses, naming the path.
 
 DEFAULT_IMAGE_WIDTH = 1600   # iiurlwidth bound on a wikimedia thumburl (spec 3 section 9)
@@ -618,6 +631,16 @@ class DrafterConfig:
 
 
 @dataclass(frozen=True)
+class IllustratorConfig:
+    """providers.yaml `illustrator` (spec 3 r34 section 8): the image
+    generator behind the illustrator source, its model and the cash
+    price of one image (the cost every provide row carries)."""
+    provider: str
+    model: str
+    price_per_image: float
+
+
+@dataclass(frozen=True)
 class ProvidersConfig:
     secrets: dict[str, str | None] = field(default_factory=dict)
     search_proxy: str | None = None
@@ -628,6 +651,10 @@ class ProvidersConfig:
     tts_cost_per_char: float = 0.0   # $ per synthesized character (spec 3's cost contract)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     drafter: DrafterConfig = field(default_factory=DrafterConfig)
+    # The generated-picture source (spec 3 r34 section 5): None -- no
+    # `illustrator` section -- leaves the source off the deck's roster
+    # entirely, so a picture need exhausts exactly as it did before.
+    illustrator: IllustratorConfig | None = None
     image_candidates: int = 5  # candidate images fetched per target word
     image_width: int = DEFAULT_IMAGE_WIDTH
     batch: dict[str, Any] = field(default_factory=dict)
@@ -743,6 +770,55 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                           "transport, which spends cash per token on the judge's account")
     drafter = DrafterConfig(transport=drafter_transport)
 
+    # The illustrator (spec 3 r34 section 8). Absent is the default: no
+    # generated-picture source at all. Present, it must name a provider
+    # and the cash price of one image, since every generation is recorded
+    # at that price and a budget binds it.
+    illustrator = None
+    if "illustrator" in data:
+        # A key that is present but not a mapping (`illustrator:` with
+        # nothing under it included) is a half-written section, not a deck
+        # that asked for no illustrator: only an absent key is that.
+        illustrator_cfg = data["illustrator"]
+        if not isinstance(illustrator_cfg, Mapping):
+            errors.append(f"providers.illustrator: {illustrator_cfg!r} must be a mapping "
+                          "(provider, model, price_per_image)")
+        else:
+            illustrator_provider = illustrator_cfg.get("provider")
+            named = isinstance(illustrator_provider, str) and bool(illustrator_provider.strip())
+            if not named:
+                errors.append("providers.illustrator.provider: required, the image "
+                              "generator's name")
+            else:
+                try:
+                    require_image_generator(illustrator_provider.strip())
+                except ValueError as e:
+                    # Refused here, not only when build_provider wires the
+                    # roster: every fold that reads a config without a
+                    # roster (load_derivations, the review screen, the
+                    # stats) would otherwise count a source nothing can ask.
+                    named = False
+                    errors.append(f"providers.illustrator.provider: {e}")
+            model = illustrator_cfg.get("model")
+            modelled = isinstance(model, str) and bool(model.strip())
+            if not modelled:
+                # The model names the image in its cache key and is sent
+                # verbatim in the request body: an empty one is neither.
+                errors.append(f"providers.illustrator.model: {model!r} must be a non-empty "
+                              "string (the generator's model name)")
+            price = illustrator_cfg.get("price_per_image")
+            priced = _is_number(price) and float(price) >= 0
+            if not priced:
+                errors.append(f"providers.illustrator.price_per_image: {price!r} must be a "
+                              "non-negative number (the cash cost of one image)")
+            if illustrator_provider == "gemini" and "gemini" not in secrets_cfg:
+                errors.append("providers.secrets.gemini: required for illustrator.provider "
+                              "gemini")
+            if named and modelled and priced:
+                illustrator = IllustratorConfig(provider=illustrator_provider.strip(),
+                                                model=model.strip(),
+                                                price_per_image=float(price))
+
     image_candidates = data.get("image_candidates", 5)
     if not isinstance(image_candidates, int) or image_candidates < 1:
         errors.append(f"providers.image_candidates: {image_candidates!r} must be "
@@ -832,7 +908,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         imgfetch_path=imgfetch_path,
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
-        judge=judge, drafter=drafter, image_candidates=image_candidates,
+        judge=judge, drafter=drafter, illustrator=illustrator,
+        image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
         attempt_cap=attempt_cap, transient_cap=transient_cap,
@@ -859,6 +936,10 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
                "cost_per_char": config.tts_cost_per_char},
         "judge": judge,
         "drafter": {"transport": config.drafter.transport},
+        **({"illustrator": {"provider": config.illustrator.provider,
+                            "model": config.illustrator.model,
+                            "price_per_image": config.illustrator.price_per_image}}
+           if config.illustrator is not None else {}),
         "image_candidates": config.image_candidates,
         "image_width": config.image_width,
         "batch": dict(config.batch),

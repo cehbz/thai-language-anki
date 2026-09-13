@@ -3,7 +3,8 @@ curated/providers.yaml (spec 3 section 5), and a Syllabus assembled from
 a deck directory's curated files plus db-backed ports (spec 1/2).
 
 Secrets resolve lazily (spec 3 section 5): each secret-backed backend
-(pexels, forvo, tts, the judge's and the drafter's api transports) is wrapped in `_Lazy`,
+(pexels, forvo, tts, the illustrator's generator, the judge's and the
+drafter's api transports) is wrapped in `_Lazy`,
 which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
@@ -36,6 +37,7 @@ from .assessor import AssessBackend, Assessor, DurationBackend, JudgeBackend, Pr
 from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
+    IllustratorConfig,
     ProvidersConfig,
     load_curated,
     load_frequency_map,
@@ -51,13 +53,16 @@ from .provider import (
     Backend,
     FetchBackend,
     ForvoBackend,
+    IllustratorBackend,
     LlmBackend,
     Provider,
     TtsBackend,
     OpenverseAuth,
     brave_backend,
+    image_generator,
     openverse_backend,
     pexels_backend,
+    require_image_generator,
     tool_fetcher,
     wikimedia_backend,
 )
@@ -70,7 +75,8 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "nothing_ttl_for", "pacing_for", "Derivations", "load_derivations",
+          "nothing_ttl_for", "pacing_for", "sources_for_config",
+          "ILLUSTRATOR_DEFAULT_DAILY_BUDGET", "Derivations", "load_derivations",
           "load_syllabus"]
 
 # nothing_ttl_for's own default (spec 3 r19 section 6a/9): a Forvo
@@ -97,6 +103,13 @@ _DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0),
 # having to say so. No `day_starts`: Brave's credit is monthly, so the
 # cap is a self-imposed pace, counted over the local day.
 BRAVE_DEFAULT_DAILY_BUDGET = Budget(max_asks=30)
+
+
+# The illustrator's own default cap (spec 3 r34 section 8): 20 images a
+# day at `illustrator.price_per_image` each, so a deck that configures
+# one spends a bounded amount without providers.yaml having to say so.
+# `max_cost` layers over it from quotas.illustrator when it does.
+ILLUSTRATOR_DEFAULT_DAILY_BUDGET = Budget(max_asks=20)
 
 
 # --- laziness helpers -------------------------------------------------------
@@ -176,6 +189,44 @@ def _recognize_drafting_answer(text: str) -> bool:
     return bool(record.drafts_in(text)) or record.parse_no_fit(text) is not None
 
 
+def _sources_without_illustrator(kind: str) -> tuple[str, ...]:
+    """attempts.sources_for with the generated-picture source removed --
+    one module-level function, not a per-call closure, so two callers
+    handed the same unconfigured deck get the identical `sources_for`
+    (load_derivations and build_sourcing are compared by identity).
+    """
+    return tuple(source for source in sources_for(kind) if source != "illustrator")
+
+
+def sources_for_config(cfg: ProvidersConfig) -> Callable[[str], Sequence[str]]:
+    """attempts.sources_for as this deck runs it: the illustrator is on
+    the picture roster only when providers.yaml configures one (spec 3
+    r34 section 5); a deck without it exhausts exactly as before.
+    """
+    return sources_for if cfg.illustrator is not None else _sources_without_illustrator
+
+
+def _illustrator_backend(illustrator: IllustratorConfig, secrets,
+                         media_store: MediaStore) -> IllustratorBackend:
+    """The illustrator roster entry (spec 3 r34 section 3/5). The
+    provider name is checked here, when the roster is built, so a
+    providers.yaml naming no known generator refuses the run rather than
+    failing at the first drawing; the generator itself -- and so the
+    secret read -- is deferred to that first drawing, while the backend's
+    own shape (cache key, price) is known now, because Provider asks for
+    a cache key before it decides to fetch. The key is named after the
+    provider (providers.yaml `secrets.<provider>`), the same name
+    load_providers_config requires.
+    """
+    require_image_generator(illustrator.provider)
+    return IllustratorBackend(
+        generator=_Lazy(lambda: image_generator(
+            illustrator.provider, api_key=secrets.get(illustrator.provider) or "",
+            model=illustrator.model)),
+        media=media_store, model=illustrator.model,
+        price_per_image=illustrator.price_per_image)
+
+
 def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, secret_store=None) -> Provider:
     """The Provide port's backend roster (spec 3 section 2), wired from
@@ -204,6 +255,13 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
             media=media_store, pick_voice=pick_voice,
             cost_per_char=cfg.tts_cost_per_char)),
     }
+    # Registered only when providers.yaml configures one (spec 3 r34
+    # section 5): a deck with no `illustrator` section has no generated-
+    # picture source at all, and sources_for_config keeps it off that
+    # deck's picture order to match.
+    if cfg.illustrator is not None:
+        backends["illustrator"] = _illustrator_backend(cfg.illustrator, secrets, media_store)
+
     # Always registered: load_providers_config refuses a providers.yaml
     # without both paths.
     backends["imgfetch"] = FetchBackend(media=media_store,
@@ -329,8 +387,9 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
 # --- budgets -------------------------------------------------------------
 
 def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
-    """Budget per backend (spec 3 section 4): the three documented defaults
-    (forvo 450/day from 22:00Z, brave 30/day, learner 20/session) layered under
+    """Budget per backend (spec 3 section 4): the four documented defaults
+    (forvo 450/day from 22:00Z, brave 30/day, illustrator 20/day, learner
+    20/session) layered under
     whatever providers.yaml's `quotas` section configures, field by
     field -- a configured entry that names only `max_asks` still keeps
     the matching default's `day_starts` (and vice versa); every other
@@ -339,6 +398,7 @@ def default_budgets(cfg: ProvidersConfig) -> dict[str, Budget]:
     budgets: dict[str, Budget] = {
         "forvo": FORVO_DEFAULT_DAILY_BUDGET,
         "brave": BRAVE_DEFAULT_DAILY_BUDGET,
+        "illustrator": ILLUSTRATOR_DEFAULT_DAILY_BUDGET,
         "learner": LEARNER_DEFAULT_SESSION_BUDGET,
     }
     for backend, quota in cfg.quotas.items():
@@ -458,7 +518,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        current_rubric=rubrics,
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
-                       sources_for=sources_for, attempt_cap=cfg.attempt_cap,
+                       sources_for=sources_for_config(cfg), attempt_cap=cfg.attempt_cap,
                        transient_cap=cfg.transient_cap,
                        sentence_nothing_cap=cfg.sentence_nothing_cap,
                        nothing_ttl=nothing_ttl_for(cfg),

@@ -49,6 +49,7 @@ from .derivations import (
     QueueEntry,
     adjudications,
     adoptable_drafts,
+    all_needs,
     available_need_keys,
     directed,
     improved,
@@ -136,6 +137,11 @@ class RunReport:
     # (F13, spec 3 section 5) -- a learner row that outlives the rule (F9)
     # keeps the sentence instead -- or a learner comment's retire_sentence
     retired: int = 0
+    # picture needs that gained a first accepted picture this run (spec 3
+    # r34 section 7): open before the run's resolve, covered by its end
+    # -- an event count outside the identity; with a batch judge the
+    # verdict lands at the next run's resolve, and that run counts it
+    covered_new: int = 0
     # the comment pass (spec 3 r30 section 5): comments read this run,
     # actions taken, requests the deck could not act on -- events, not
     # needs, outside the identity above
@@ -176,6 +182,10 @@ class _Tally:
     stayed_disputed: int = 0
     drafted: int = 0
     retired: int = 0
+    covered_new: int = 0
+    # the picture needs gaps() listed before this run's resolve -- what
+    # _finish measures `covered_new` against (spec 3 r34 section 7)
+    open_pictures_before: frozenset[tuple[str, str]] = frozenset()
     comments_read: int = 0
     comment_actions: int = 0
     comment_unactionable: int = 0
@@ -493,6 +503,17 @@ def _pending_needs(ctx: Sourcing, batch_needs: frozenset[tuple[str, str]]) -> in
     return len(frozenset(batch_needs) & available_need_keys(ctx.syllabus))
 
 
+def _open_pictures(syllabus) -> frozenset[tuple[str, str]]:
+    """The picture needs gaps() lists now -- word and scene alike."""
+    return frozenset(n for n in available_need_keys(syllabus) if n[1] == "picture")
+
+
+def _picture_needs(syllabus) -> frozenset[tuple[str, str]]:
+    """Every picture need the deck has, satisfied or not (derivations.all_needs)."""
+    return frozenset((subject, kind) for subject, kind, _sk in all_needs(syllabus)
+                     if kind == "picture")
+
+
 def _unconsidered(needs: QueuedNeeds, pending: int) -> int:
     """The available needs left over once the outstanding batch's pending
     ones and the queue's own exhausted and unserved counts are taken out:
@@ -733,7 +754,8 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
 
 def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
              sentence_targets_per_run: int) -> RunReport:
-    tally = _Tally(spend={name: Spend() for name in budgets})
+    tally = _Tally(spend={name: Spend() for name in budgets},
+                   open_pictures_before=_open_pictures(ctx.syllabus))
     # Read before any ask this run makes lands on the record -- the
     # sentence attempt's own llm-sentence row, once appended, would
     # otherwise count twice against its day budget: once read back here,
@@ -999,12 +1021,16 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
     `deferred` is `tally.deferred` plus `extra_deferred`, the latter
     nonzero only when the run ended before looking at any need.
     """
+    # decision 11: a need open at the start and not open now, still a
+    # need of the deck (a retired sentence's scene need is no gain)
+    tally.covered_new = len((tally.open_pictures_before - _open_pictures(ctx.syllabus))
+                            & _picture_needs(ctx.syllabus))
     report = RunReport(
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
         adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
-        drafted=tally.drafted, retired=tally.retired,
+        drafted=tally.drafted, retired=tally.retired, covered_new=tally.covered_new,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
         comment_unactionable=tally.comment_unactionable,
         excluded=tally.excluded, excluded_items=tally.excluded_items,
@@ -1031,6 +1057,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adjudicated": report.adjudicated,
                 "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
+                "covered_new": report.covered_new,
                 "comments_read": report.comments_read,
                 "comment_actions": report.comment_actions,
                 "comment_unactionable": report.comment_unactionable,

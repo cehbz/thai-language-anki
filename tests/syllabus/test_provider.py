@@ -4,10 +4,13 @@ contract. Real SyllabusDb (tmp_path sqlite) as the cache/record for the
 cache-first behavior; fake backends and fake transports everywhere else
 -- no network, no subprocess, no anthropic import.
 """
+import base64
+import io
 from pathlib import Path
 
 import pytest
 import requests
+from PIL import Image as PILImage
 
 from thai_syllabus.assessor import Price
 from thai_syllabus.cachekeys import ProvideKey, sha
@@ -15,7 +18,12 @@ from thai_syllabus.provider import (
     OpenverseAuth,
     FetchBackend,
     ForvoBackend,
+    GEMINI_INTERACTIONS_URL,
+    GeneratedImage,
+    HttpImageGenerator,
     HttpImageSearchBackend,
+    IllustratorBackend,
+    IMAGE_GENERATORS,
     LearnerAskNotSupported,
     LlmBackend,
     PairSearchBackend,
@@ -23,11 +31,15 @@ from thai_syllabus.provider import (
     ProviderAnswer,
     Question,
     RawAnswer,
+    STYLE_PREFIX,
     _redact,
     brave_backend,
     forvo_limit_body,
+    gemini_generator,
+    image_generator,
     openverse_backend,
     pexels_backend,
+    require_image_generator,
     tool_fetcher,
     wikimedia_backend,
 )
@@ -105,6 +117,17 @@ def test_a_transport_error_is_not_cached_and_propagates(db):
     with pytest.raises(TransportError):
         provider.ask("x", Question(subject="s1", provides="picture"))
     assert backend.fetch_calls == 2
+
+
+def test_an_unregistered_backend_is_a_source_failure_naming_it(db):
+    """A source order naming a backend this deck did not configure (spec 3
+    r34 section 5's unconfigured illustrator) fails that one ask, with the
+    name in the message -- not a bare KeyError out of the run."""
+    provider = Provider(record=db, cache=db, backends={})
+    for call in (provider.ask, provider.reask):
+        with pytest.raises(TransportError, match="illustrator"):
+            call("illustrator", Question(subject="s1", provides="picture"))
+    assert db.assessments_of("s1") == []
 
 
 def test_learner_backend_raises_without_touching_cache_or_record(db):
@@ -568,6 +591,240 @@ def test_brave_a_429_is_still_the_quota_state():
     with pytest.raises(QuotaExhausted) as e:
         backend.fetch(Question(subject="rice", provides="picture", params={"query": "q"}))
     assert e.value.source == "brave"
+
+
+# --- the illustrator: a generated picture as the last picture source ---------
+
+def _png_bytes(colour=(10, 200, 10)) -> bytes:
+    buf = io.BytesIO()
+    PILImage.new("RGB", (4, 4), colour).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _generator_request(prompt, api_key):
+    return ("https://gen.example/v1/images", {"x-api-key": api_key},
+            {"model": "m", "input": [{"type": "text", "text": prompt}]})
+
+
+def _generator_parse(body):
+    if not isinstance(body, dict) or "kind" not in body:
+        raise ValueError("not a generation body")
+    if body["kind"] == "declined":
+        return None
+    return body["data"], body["mime"]
+
+
+def _generator(post, api_key="SECRET"):
+    return HttpImageGenerator(name="fake", api_key=api_key, build_request=_generator_request,
+                              parse_image=_generator_parse, post=post)
+
+
+def test_http_image_generator_posts_the_built_request_and_decodes_the_image():
+    calls = []
+    png = _png_bytes()
+
+    def post(url, json=None, headers=None, timeout=None):
+        calls.append((url, json, headers, timeout))
+        return _FakeResponse(json_data={"kind": "image", "mime": "image/png",
+                                        "data": base64.b64encode(png).decode()})
+
+    got = _generator(post).generate("a crab on sand")
+    assert got == GeneratedImage(data=png, mime="image/png")
+    url, body, headers, timeout = calls[0]
+    assert url == "https://gen.example/v1/images" and headers == {"x-api-key": "SECRET"}
+    assert body["input"] == [{"type": "text", "text": "a crab on sand"}] and timeout == 120.0
+
+
+def test_http_image_generator_a_declined_prompt_is_none():
+    gen = _generator(lambda *a, **k: _FakeResponse(json_data={"kind": "declined"}))
+    assert gen.generate("x") is None
+
+
+def test_http_image_generator_429_and_402_are_the_quota_state():
+    for status in (429, 402):
+        gen = _generator(lambda *a, **k: _FakeResponse(status_code=status, text="no"))
+        with pytest.raises(QuotaExhausted) as e:
+            gen.generate("x")
+        assert e.value.source == "illustrator"
+
+
+def test_http_image_generator_other_failures_are_transport_errors_with_the_key_redacted():
+    gen = _generator(lambda *a, **k: _FakeResponse(status_code=403, text="key SECRET blocked"))
+    with pytest.raises(TransportError) as e:
+        gen.generate("x")
+    assert "SECRET" not in str(e.value) and "403" in str(e.value)
+    gen = _generator(lambda *a, **k: _FakeResponse(json_data={"unexpected": 1}))
+    with pytest.raises(TransportError):
+        gen.generate("x")
+    gen = _generator(lambda *a, **k: _FakeResponse(json_data={"kind": "image", "mime": "image/png",
+                                                               "data": "%%not-base64%%"}))
+    with pytest.raises(TransportError):
+        gen.generate("x")
+
+    def down(*a, **k):
+        raise requests.ConnectionError("dns SECRET")
+
+    with pytest.raises(TransportError) as e:
+        _generator(down).generate("x")
+    assert "SECRET" not in str(e.value)
+
+
+class _StubGenerator:
+    def __init__(self, image):
+        self.image, self.prompts = image, []
+
+    def generate(self, prompt):
+        self.prompts.append(prompt)
+        return self.image
+
+
+def test_illustrator_backend_ingests_the_image_and_answers_a_generated_candidate(tmp_path):
+    media = MediaStore(tmp_path / "media")
+    gen = _StubGenerator(GeneratedImage(data=_png_bytes(), mime="image/png"))
+    backend = IllustratorBackend(generator=gen, media=media, model="m", price_per_image=0.067)
+    q = Question(subject="ปู", provides="picture", params={"query": "live crab on sand"})   # ปู: crab
+    assert backend.cache_key(q).encode() == "illustrator:m:live crab on sand"
+    answer = backend.fetch(q)
+    assert gen.prompts == [STYLE_PREFIX + "live crab on sand"]
+    assert STYLE_PREFIX == ("Simple flat illustration for a language flashcard, few elements, "
+                            "a Thai setting, no text or letters: ")
+    (item,) = answer.items
+    assert item["source"] == "generated" and item["licence"] == "generated" and item["origin"] == "m"
+    assert media.has(item["sha"], item["ext"]) and answer.cost == 0.067
+
+
+def test_illustrator_backend_a_declined_prompt_is_an_empty_answer_at_no_cost(tmp_path):
+    backend = IllustratorBackend(generator=_StubGenerator(None), media=MediaStore(tmp_path / "m"),
+                                 model="m", price_per_image=0.067)
+    answer = backend.fetch(Question(subject="s", provides="picture", params={"query": "q"}))
+    assert answer.items == () and answer.cost == 0.0
+
+
+def test_illustrator_backend_refuses_an_unknown_mime_or_undecodable_bytes(tmp_path):
+    media = MediaStore(tmp_path / "m")
+    for image in (GeneratedImage(data=_png_bytes(), mime="image/svg+xml"),
+                  GeneratedImage(data=b"not an image", mime="image/png")):
+        backend = IllustratorBackend(generator=_StubGenerator(image), media=media, model="m",
+                                     price_per_image=0.067)
+        with pytest.raises(TransportError):
+            backend.fetch(Question(subject="s", provides="picture", params={"query": "q"}))
+
+
+def test_illustrator_same_query_is_a_cache_hit_never_regenerated(db, tmp_path):
+    gen = _StubGenerator(GeneratedImage(data=_png_bytes(), mime="image/png"))
+    backend = IllustratorBackend(generator=gen, media=MediaStore(tmp_path / "m"), model="m",
+                                 price_per_image=0.067)
+    provider = Provider(record=db, cache=db, backends={"illustrator": backend})
+    q = Question(subject="s", provides="picture", params={"query": "q"})
+    first, second = provider.ask("illustrator", q), provider.ask("illustrator", q)
+    assert len(gen.prompts) == 1 and second.hit and second.cost == 0.0
+    assert first.items[0]["sha"] == second.items[0]["sha"]
+
+
+def test_image_generator_refuses_an_unknown_provider_by_name():
+    with pytest.raises(ValueError, match="no-such-provider"):
+        image_generator("no-such-provider", api_key="k", model="m")
+    assert isinstance(IMAGE_GENERATORS, dict)
+
+
+# --- gemini: the Interactions API (spec 3 r34 section 3; shapes confirmed
+# against a spike run 2026-09-13 -- the image is a `type: "image"` content
+# block found by scanning every step, not at a fixed index: a thinking
+# model's first step is its `thought`, the image lands in a later
+# `model_output` step) ---------------------------------------------------
+
+_GEMINI_RESPONSE_FORMAT = {"type": "image", "aspect_ratio": "4:3", "image_size": "1K"}
+
+
+def _gemini_body(png: bytes, *, mime: str = "image/jpeg") -> dict:
+    # Mirrors the spike's saved response shape (base64 lengths there were
+    # in the hundreds of KB; redacted to their length in the saved
+    # fixtures) -- steps[0] is the model's thought, steps[1] is the
+    # model_output step carrying the image content block.
+    return {"id": "v1_ChdkSmFtYXNqeU1PbW9nOFVQM3RISXVRWRIX", "status": "completed",
+            "usage": {"total_tokens": 1519, "output_tokens_by_modality":
+                     [{"modality": "image", "tokens": 1120}]},
+            "steps": [{"type": "thought", "signature": "<redacted>"},
+                     {"type": "model_output",
+                      "content": [{"type": "image", "mime_type": mime,
+                                  "data": base64.b64encode(png).decode()}]}],
+            "object": "interaction", "model": "gemini-3.1-flash-image"}
+
+
+def test_gemini_generator_builds_the_interactions_request():
+    calls = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        calls.append((url, json, headers))
+        return _FakeResponse(json_data=_gemini_body(_png_bytes()))
+
+    gen = gemini_generator(api_key="SECRET", model="gemini-3.1-flash-image", post=post)
+    got = gen.generate("a crab")
+    url, body, headers = calls[0]
+    assert url == GEMINI_INTERACTIONS_URL
+    assert headers["x-goog-api-key"] == "SECRET" and "SECRET" not in url
+    assert body == {"model": "gemini-3.1-flash-image", "input": [{"type": "text", "text": "a crab"}],
+                    "response_format": _GEMINI_RESPONSE_FORMAT}
+    assert got.mime == "image/jpeg" and got.data == _png_bytes()
+
+
+def test_gemini_generator_finds_the_image_in_a_later_model_output_step():
+    # The real spike response: a "thought" step with no content field at
+    # all, then a "model_output" step whose content carries the image --
+    # never at content[0] of steps[0].
+    body = {"id": "int-1", "status": "completed",
+           "steps": [{"type": "thought", "signature": "x"},
+                    {"type": "model_output",
+                     "content": [{"type": "text", "text": "here you go"},
+                                {"type": "image", "mime_type": "image/jpeg",
+                                 "data": base64.b64encode(_png_bytes()).decode()}]}]}
+    gen = gemini_generator(api_key="k", post=lambda *a, **k: _FakeResponse(json_data=body))
+    got = gen.generate("x")
+    assert got.mime == "image/jpeg" and got.data == _png_bytes()
+
+
+def test_gemini_generator_an_interaction_without_an_image_is_a_declined_prompt():
+    gen = gemini_generator(api_key="k", post=lambda *a, **k: _FakeResponse(
+        json_data={"id": "int-2", "status": "completed",
+                  "steps": [{"type": "model_output",
+                            "content": [{"type": "text", "text": "I can't make that"}]}]}))
+    assert gen.generate("x") is None
+
+
+def test_gemini_generator_a_body_that_is_no_interaction_is_a_transport_error():
+    gen = gemini_generator(api_key="k", post=lambda *a, **k: _FakeResponse(json_data={"error": {}}))
+    with pytest.raises(TransportError):
+        gen.generate("x")
+
+
+def test_gemini_generator_an_image_block_without_data_or_mime_is_a_transport_error():
+    body = {"id": "int-3", "status": "completed",
+           "steps": [{"type": "model_output", "content": [{"type": "image"}]}]}
+    gen = gemini_generator(api_key="k", post=lambda *a, **k: _FakeResponse(json_data=body))
+    with pytest.raises(TransportError):
+        gen.generate("x")
+
+
+def test_gemini_generator_429_and_402_are_the_quota_state():
+    for status in (429, 402):
+        gen = gemini_generator(api_key="k",
+                               post=lambda *a, status=status, **k: _FakeResponse(status_code=status))
+        with pytest.raises(QuotaExhausted) as e:
+            gen.generate("x")
+        assert e.value.source == "illustrator"
+
+
+def test_gemini_is_registered_as_an_image_generator():
+    assert require_image_generator("gemini") is gemini_generator
+    gen = image_generator("gemini", api_key="k", model="gemini-3.1-flash-image",
+                          post=lambda *a, **k: _FakeResponse(json_data=_gemini_body(_png_bytes())))
+    assert isinstance(gen, HttpImageGenerator)
+
+
+def test_require_image_generator_refuses_an_unknown_provider_by_name():
+    with pytest.raises(ValueError) as e:
+        require_image_generator("no-such-provider")
+    assert "no-such-provider" in str(e.value) and "known" in str(e.value)
 
 
 # --- FetchBackend: url -> bytes -> media store, pictures and recordings ---

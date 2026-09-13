@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 15, proposed 2026-09-13 against principles r4 and architecture
+Revision 16, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -37,6 +37,10 @@ Revision log:
   subject; a comment's identity is derived from its own row's (key_sha,
   ts); no new store (spec 3 r30, spec 5 r9/r10). User approval
   2026-09-13.
+- r16 2026-09-13: `media.source` may be `generated` (spec 3 r34's
+  illustrator: licence `generated`, origin the model id), the value the
+  provenance prior and the feedback screen's caption read; no new store.
+  User approval 2026-09-13.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -101,7 +105,9 @@ sentences(text_sha PK, text, clauses, gloss, voice, source, origin,
   -- unregistered or the rendering differs from text: a curated change
   -- that retires a word id is a migration, never a silent drift.
 media(sha PK, kind, ext, source, origin, licence, acquired, speaker_id)
-  -- provenance for media/objects/*; speaker_id null for pictures.
+  -- provenance for media/objects/*; speaker_id null for pictures; source
+  -- `generated` (licence `generated`, origin the model) for a picture the
+  -- illustrator drew (r16, spec 3 r34).
 speakers(id PK, kind, sex, age_band, region)
   -- E7. Written at recording ingest from what the source exposes (Forvo
   -- per-item sex and country; the TTS roster's sex; the commission

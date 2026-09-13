@@ -13,6 +13,8 @@ cachekeys.py key and its cost/transport wiring, on stdlib + requests.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import subprocess
 import tempfile
@@ -38,6 +40,9 @@ __all__ = [
     "FetchBackend", "tool_fetcher",
     "ForvoBackend", "forvo_limit_body", "TtsBackend", "LlmBackend",
     "DictionaryG2P", "PairSearchBackend",
+    "GeneratedImage", "ImageGenerator", "HttpImageGenerator", "STYLE_PREFIX",
+    "IllustratorBackend", "IMAGE_GENERATORS", "image_generator", "require_image_generator",
+    "GEMINI_INTERACTIONS_URL", "gemini_generator",
 ]
 
 
@@ -103,12 +108,26 @@ class Provider:
         self._cache = cache
         self._backends = dict(backends)
 
+    def _backend(self, backend: str) -> Backend:
+        """The roster entry by name, as a source failure rather than a
+        KeyError when the name is not registered: a source order naming a
+        backend this deck's providers.yaml did not configure (spec 3 r34
+        section 5's unconfigured illustrator is the live case) is a
+        diagnosable, per-need failure, not a crashed run.
+        """
+        impl = self._backends.get(backend)
+        if impl is None:
+            raise TransportError(
+                f"no {backend!r} backend is registered on this deck's roster "
+                f"(registered: {sorted(self._backends)})")
+        return impl
+
     def ask(self, backend: str, question: Question) -> ProviderAnswer:
         if backend == "learner":
             raise LearnerAskNotSupported(
                 "the learner Provide backend has no ask(); its rows arrive "
                 "via RecordWriter from the feedback surfaces")
-        impl = self._backends[backend]
+        impl = self._backend(backend)
         key = impl.cache_key(question)
         cached = self._cache.latest("provide", backend, key)
         if cached is not None:
@@ -123,7 +142,7 @@ class Provider:
         rule); the newest row is the answer ask() reads next."""
         if backend == "learner":
             raise LearnerAskNotSupported("the learner Provide backend has no reask()")
-        impl = self._backends[backend]
+        impl = self._backend(backend)
         key = impl.cache_key(question)
         raw = impl.fetch(question)  # transport errors propagate uncached
         ts = self._append_answer(backend, key, question, raw)
@@ -391,6 +410,203 @@ def brave_backend(api_key: str, get: Callable[..., Any] = requests.get, *,
 
     return HttpImageSearchBackend(name="brave", build_request=build,
                                   parse_items=parse, get=get, **pacing)
+
+
+# --- the illustrator: a generated picture, the last picture source ----------
+# (spec 3 r34 section 3/5). key = illustrator:MODEL:query -- the same query
+# at the same model is the same image and is never regenerated.
+
+# The fixed style every generation carries before the need's own query
+# (user ruling 2026-09-13): flat, few elements, Thai setting, no text.
+STYLE_PREFIX = ("Simple flat illustration for a language flashcard, few elements, a Thai "
+                "setting, no text or letters: ")
+
+_MIME_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+
+@dataclass(frozen=True)
+class GeneratedImage:
+    """One generated picture as the service returned it: the decoded
+    bytes and their media type."""
+    data: bytes
+    mime: str
+
+
+@runtime_checkable
+class ImageGenerator(Protocol):
+    """The port behind the illustrator backend: one prompt in, one image
+    out. None when the service answered and positively declined the
+    prompt (a recognized empty answer, spec 3 section 6a's `nothing`);
+    QuotaExhausted("illustrator") when it states its allowance is spent;
+    TransportError for everything else (nothing is cached).
+    """
+    def generate(self, prompt: str) -> GeneratedImage | None: ...
+
+
+@dataclass
+class HttpImageGenerator:
+    """The generic JSON-over-HTTP image generator: one POST built by
+    `build_request(prompt, api_key) -> (url, headers, json body)`, the
+    image read out of the 200 body by `parse_image(body) -> (base64 data,
+    mime)`, None when the body positively says the prompt was declined,
+    ValueError when the body is not the shape expected (a TransportError
+    here). The key rides a header the builder places; every failure
+    message is redacted before it can carry the key into a log.
+    """
+    name: str
+    api_key: str
+    build_request: Callable[[str, str], tuple[str, dict, dict]]
+    parse_image: Callable[[Any], tuple[str, str] | None]
+    post: Callable[..., Any] = field(default=requests.post)
+    timeout_s: float = 120.0
+
+    def generate(self, prompt: str) -> GeneratedImage | None:
+        url, headers, body = self.build_request(prompt, self.api_key)
+        try:
+            resp = self.post(url, json=body, headers=headers, timeout=self.timeout_s)
+        except requests.RequestException as e:
+            raise TransportError(
+                f"{self.name} image generation failed: {_redact(str(e), self.api_key)}") from None
+        if resp.status_code in (429, 402):
+            # Spec 3 section 6a: the service's own statement that the
+            # allowance is spent -- the Quota state, never a source failure.
+            raise QuotaExhausted("illustrator")
+        if resp.status_code != 200:
+            raise TransportError(
+                f"{self.name} image generation returned {resp.status_code}: "
+                f"{_redact(resp.text[:200], self.api_key)}")
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise TransportError(
+                f"{self.name} answered a body that is not json: "
+                f"{_redact(str(e), self.api_key)}") from None
+        try:
+            found = self.parse_image(data)
+        except ValueError as e:
+            raise TransportError(
+                f"{self.name} answered a body of an unexpected shape: "
+                f"{_redact(str(e), self.api_key)}") from None
+        if found is None:
+            return None
+        b64, mime = found
+        try:
+            return GeneratedImage(data=base64.b64decode(b64, validate=True), mime=str(mime))
+        except (binascii.Error, ValueError, TypeError) as e:
+            raise TransportError(f"{self.name} answered undecodable image data: {e}") from None
+
+
+@dataclass
+class IllustratorBackend:
+    """The illustrator (spec 3 r34 section 3): one generated image per
+    query through `generator`, its bytes through the media store's
+    normalizing ingest (spec 4 section 3, the same path a fetched picture
+    takes), answered as an item that already carries its sha with
+    provenance source `generated`, licence `generated`, origin the model
+    (spec 2 r16). `price_per_image` is the configured cash cost of one
+    image, carried by the backend that incurs it (spec 3 section 2);
+    a declined prompt costs nothing and is cached as an empty answer.
+    """
+    generator: ImageGenerator
+    media: MediaWriter
+    model: str
+    price_per_image: float
+    style_prefix: str = STYLE_PREFIX
+
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source="illustrator", kind=self.model, query=question.params["query"])
+
+    def fetch(self, question: Question) -> RawAnswer:
+        got = self.generator.generate(self.style_prefix + question.params["query"])
+        if got is None:
+            return RawAnswer(items=(), cost=0.0)
+        ext = _MIME_EXT.get(got.mime.split(";")[0].strip().lower())
+        if ext is None:
+            raise TransportError(f"illustrator answered an image of type {got.mime!r}")
+        try:
+            ingest = self.media.add_image(got.data, ext)
+        except ValueError as e:
+            raise TransportError(f"illustrator answered undecodable image bytes: {e}") from None
+        return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext, "source": "generated",
+                                 "origin": self.model, "licence": "generated"},),
+                         cost=self.price_per_image)
+
+
+# provider name (providers.yaml illustrator.provider) -> the adapter that
+# builds its ImageGenerator: factory(api_key=..., model=..., post=...).
+IMAGE_GENERATORS: dict[str, Callable[..., ImageGenerator]] = {}
+
+
+def require_image_generator(provider: str) -> Callable[..., ImageGenerator]:
+    """The registered generator factory for `provider`, refusing an unknown name."""
+    factory = IMAGE_GENERATORS.get(provider)
+    if factory is None:
+        raise ValueError(f"illustrator.provider {provider!r} names no image generator "
+                         f"(known: {sorted(IMAGE_GENERATORS) or 'none'})")
+    return factory
+
+
+def image_generator(provider: str, *, api_key: str, model: str,
+                    post: Callable[..., Any] = requests.post) -> ImageGenerator:
+    """The configured provider's generator, refusing an unknown name."""
+    return require_image_generator(provider)(api_key=api_key, model=model, post=post)
+
+
+# --- gemini: the Interactions API image generation ---------------------------
+# Shapes confirmed against a spike run 2026-09-13 with the project's own key
+# (spec 3 r34 section 3): the docs' `output_image` shape does not match what
+# the API actually returns.
+
+GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+
+# A 640px card wants roughly a 4:3 frame, not the API's 1408x768 default.
+# The Interactions API's smallest size tier ("512") lands under 640px on its
+# long side at 4:3 (592x448, confirmed by a real call against the spike's
+# key) -- too small for the card -- so "1K" (~1200x896) is the smallest tier
+# that clears it. (`image_size` values are '512', '1K', '2K', '4K' -- the
+# 400 the API gives on an unsupported value, confirmed live: '0.5K' is
+# rejected even though the pricing page's column header reads "0.5K".)
+_GEMINI_RESPONSE_FORMAT = {"type": "image", "aspect_ratio": "4:3", "image_size": "1K"}
+
+
+def gemini_generator(*, api_key: str, model: str = "gemini-3.1-flash-image",
+                     post: Callable[..., Any] = requests.post) -> HttpImageGenerator:
+    """Gemini 3.1 Flash Image through the Interactions API (spec 3 r34
+    section 3): the key in `x-goog-api-key`, the prompt as one text
+    input, `response_format` fixing the frame to _GEMINI_RESPONSE_FORMAT.
+    The image is the first `type: "image"` content block found by
+    scanning every step's `content` list -- not a fixed index: a
+    thinking model's first step is its `thought` (no image), the image
+    lands in a later `model_output` step. An interaction that completed
+    with no image content anywhere is a declined prompt (None); a body
+    without an `id` is not an interaction at all (the wrong shape
+    entirely). The output carries Google's SynthID watermark.
+    """
+    def build(prompt: str, key: str) -> tuple[str, dict, dict]:
+        return (GEMINI_INTERACTIONS_URL,
+                {"x-goog-api-key": key, "Content-Type": "application/json"},
+                {"model": model, "input": [{"type": "text", "text": prompt}],
+                 "response_format": dict(_GEMINI_RESPONSE_FORMAT)})
+
+    def parse(body: Any) -> tuple[str, str] | None:
+        if not isinstance(body, Mapping) or "id" not in body:
+            raise ValueError(f"no interaction in {str(body)[:120]}")
+        for step in body.get("steps") or []:
+            if not isinstance(step, Mapping):
+                continue
+            for block in step.get("content") or []:
+                if isinstance(block, Mapping) and block.get("type") == "image":
+                    data, mime = block.get("data"), block.get("mime_type")
+                    if not data or not mime:
+                        raise ValueError("an image content block without data or mime_type")
+                    return str(data), str(mime)
+        return None
+
+    return HttpImageGenerator(name="gemini", api_key=api_key, build_request=build,
+                              parse_image=parse, post=post)
+
+
+IMAGE_GENERATORS["gemini"] = gemini_generator
 
 
 # --- imgfetch/audiofetch: fetch a candidate's bytes by url ------------------

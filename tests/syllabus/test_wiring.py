@@ -10,6 +10,7 @@ around build_sourcing (Task 11).
 """
 from __future__ import annotations
 
+import dataclasses
 import textwrap
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,7 @@ from thai_syllabus.attempts import DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK, DEFAUL
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
+    IllustratorConfig,
     JudgeConfig,
     ProvidersConfig,
     RulebookConfig,
@@ -33,12 +35,13 @@ from thai_syllabus.derivations import DEFAULT_SENTENCE_NOTHING_CAP
 from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
-from thai_syllabus.provider import Provider, Question
+from thai_syllabus.provider import IllustratorBackend, Provider, Question
 from thai_syllabus.rulebook import sentence_note_id
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import (
+    ILLUSTRATOR_DEFAULT_DAILY_BUDGET,
     _DbMediaIndex,
     build_assessor,
     build_provider,
@@ -47,6 +50,7 @@ from thai_syllabus.wiring import (
     load_derivations,
     load_syllabus,
     nothing_ttl_for,
+    sources_for_config,
 )
 
 from .builders import PROV, sentence, syl, pron, target, thai_of, word
@@ -79,6 +83,7 @@ def secret_paths(tmp_path):
         "forvo": _secret_file(tmp_path, "forvo", "forvo-key\n"),
         "google_tts": _secret_file(tmp_path, "google_tts", "tts-key\n"),
         "anthropic": _secret_file(tmp_path, "anthropic", "anthropic-key\n"),
+        "gemini": _secret_file(tmp_path, "gemini", "gemini-key\n"),
     }
 
 
@@ -91,6 +96,8 @@ def cfg(secret_paths):
         search_proxy="https://proxy.example",
         imgfetch_path="curl",
         audiofetch_path="curl",
+        illustrator=IllustratorConfig(provider="gemini", model="gemini-3.1-flash-image",
+                                      price_per_image=0.067),
     )
 
 
@@ -127,7 +134,7 @@ def test_build_provider_registers_the_free_backends(cfg, db, media_store):
 
 def test_build_provider_registers_secret_backed_backends(cfg, db, media_store):
     provider = build_provider(cfg, db, media_store)
-    for name in ("pexels", "brave", "forvo", "tts"):
+    for name in ("pexels", "brave", "forvo", "tts", "illustrator"):
         assert name in provider._backends
 
 
@@ -1023,7 +1030,9 @@ def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
         "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
     ctx = build_sourcing(root)
     assert ctx.image_candidates == 2 and "picture-for-word" in ctx.rubrics
-    assert ctx.provenance_prior == ("commission", "forvo", "tts")
+    assert ctx.provenance_prior == (
+        "commission", "forvo", "tts", "pexels", "openverse", "wikimedia", "brave", "learner",
+        "generated")
 
 
 def test_build_sourcing_threads_caps_and_pools(tmp_path):
@@ -1160,3 +1169,57 @@ def test_batch_judge_transport_carries_the_anthropic_secret(cfg, db, media_store
     assert transport.api_key == "anthropic-key"
     assert transport.model == "m"
     assert calls == ["anthropic"]
+
+
+# --- the illustrator (spec 3 r34 sections 5/8) -----------------------------
+
+def test_resolving_the_illustrator_reads_only_the_gemini_secret(cfg, db, media_store, monkeypatch):
+    calls = _track_reads(monkeypatch)
+    provider = build_provider(cfg, db, media_store)
+    backend = provider._backends["illustrator"]
+    assert isinstance(backend, IllustratorBackend) and backend.price_per_image == 0.067
+    assert calls == []                       # building the roster reads nothing
+    backend.generator._resolve()
+    assert calls == ["gemini"]
+    assert backend.cache_key(Question(subject="s", provides="picture", params={"query": "q"})
+                             ).encode() == "illustrator:gemini-3.1-flash-image:q"
+
+
+def test_an_unconfigured_illustrator_is_off_the_roster_and_out_of_the_source_order(
+        db, media_store, secret_paths):
+    cfg = ProvidersConfig(secrets={name: str(path) for name, path in secret_paths.items()},
+                          imgfetch_path="curl", audiofetch_path="curl")
+    assert "illustrator" not in build_provider(cfg, db, media_store)._backends
+    assert sources_for_config(cfg)("picture") == ("pexels", "openverse", "wikimedia", "brave")
+    assert sources_for_config(cfg)("recording") == ("forvo", "tts")
+
+
+def test_a_configured_illustrator_is_last_in_the_picture_order(cfg):
+    assert sources_for_config(cfg)("picture")[-1] == "illustrator"
+
+
+def test_an_unknown_illustrator_provider_is_refused_when_the_roster_is_built(cfg, db, media_store):
+    bad = dataclasses.replace(cfg, illustrator=IllustratorConfig(provider="nobody", model="m",
+                                                                 price_per_image=0.1))
+    with pytest.raises(ValueError, match="nobody"):
+        build_provider(bad, db, media_store)
+
+
+def test_default_budgets_includes_the_illustrator_daily_default(cfg):
+    """Spec 3 r34 section 8: 20 images a day unless providers.yaml says
+    otherwise; max_cost layers over it field by field."""
+    assert default_budgets(cfg)["illustrator"] == ILLUSTRATOR_DEFAULT_DAILY_BUDGET == Budget(
+        max_asks=20)
+    cfg2 = ProvidersConfig(quotas={"illustrator": {"max_cost": 1.5}})
+    assert default_budgets(cfg2)["illustrator"] == Budget(max_asks=20, max_cost=1.5)
+
+
+def test_build_sourcing_and_load_derivations_use_the_configured_source_order(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert load_derivations(root).sources_for("picture") == ("pexels", "openverse", "wikimedia",
+                                                             "brave")
+    assert build_sourcing(root).sources_for("picture") == ("pexels", "openverse", "wikimedia",
+                                                           "brave")

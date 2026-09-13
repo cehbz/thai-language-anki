@@ -229,8 +229,14 @@ def _verdict_line(verdict: JudgeVerdict | None) -> str | None:
     return f"{line} — {verdict.evidence}" if verdict.evidence else line
 
 
-def _artifact(sha: str | None) -> dict[str, str] | None:
-    return {"sha": sha, "url": f"/media/{sha}"} if sha else None
+def _artifact(d: "Derivations", sha: str | None) -> dict[str, Any] | None:
+    """One artifact as a question carries it: its sha, its url, and
+    whether it is a generated picture (spec 5 r11: its media row's
+    source is `generated`, spec 2 r16) -- the page captions it so."""
+    if not sha:
+        return None
+    prov = d.db.media_provenance(sha) or {}
+    return {"sha": sha, "url": f"/media/{sha}", "generated": prov.get("source") == "generated"}
 
 
 def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
@@ -243,7 +249,7 @@ def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
     for sha in candidate_shas(rows):
         if sha == best_sha:
             continue
-        art = _artifact(sha)
+        art = _artifact(d, sha)
         art["verdict"] = _verdict_line(
             deciding_verdict(d.db, subject, kind, sha, current_rubric=d.current_rubric))
         out.append(art)
@@ -258,7 +264,7 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
     rows = rows_for(d.db, subject, kind)
     role = role_for(kind, subject_kind)
     best = _best(d, subject, kind)
-    current = _artifact(best.artifact_sha)
+    current = _artifact(d, best.artifact_sha)
     if current is not None:
         current["verdict"] = _verdict_line(
             deciding_verdict(d.db, subject, kind, best.artifact_sha,
@@ -314,11 +320,10 @@ def _tried_candidates(d: "Derivations", subject: str, kind: str,
     for artifact_sha in candidate_shas(rows)[:5]:
         verdict = judge_verdict(d.db, subject, kind, artifact_sha,
                                 current_rubric=d.current_rubric)
-        candidates.append({
-            "sha": artifact_sha,
-            "verdict": {"passed": verdict.passed, "evidence": verdict.evidence}
-                       if verdict is not None else None,
-        })
+        art = _artifact(d, artifact_sha)
+        art["verdict"] = ({"passed": verdict.passed, "evidence": verdict.evidence}
+                          if verdict is not None else None)
+        candidates.append(art)
     return candidates
 
 
@@ -363,8 +368,8 @@ def _challenger_question(d: "Derivations", challenger: Challenger,
         "subject_kind": challenger.subject_kind,
         "role": role_for(challenger.kind, challenger.subject_kind),
         "gloss": _gloss_for(d.syllabus, challenger.subject, challenger.subject_kind),
-        "current": _artifact(challenger.current_sha),
-        "challenger": _artifact(challenger.challenger_sha),
+        "current": _artifact(d, challenger.current_sha),
+        "challenger": _artifact(d, challenger.challenger_sha),
         "label": _subject_label(d.syllabus, challenger.subject, challenger.subject_kind),
         "shown": _question_shown(challenger.kind, challenger.subject, challenger.subject_kind,
                                  challenger.current_sha, syllabus_state_id),
@@ -390,7 +395,7 @@ def _reask_questions(d: "Derivations", study: StudyReader,
             "learner_ranks": learner_ranks(role),
             "gloss": _gloss_for(d.syllabus, found.subject, found.subject_kind),
             "original_answer": found.rating,
-            "current": _artifact(best.artifact_sha),
+            "current": _artifact(d, best.artifact_sha),
             "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
                          "ts": r.ts} for r in found.evidence[-5:]],
             "label": _subject_label(d.syllabus, found.subject, found.subject_kind),
@@ -917,15 +922,23 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     """One run's history row: the runreport answer as it was recorded,
     with the fields a row older than the field itself would be missing
     filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`, r30's
-    three comment counts). The page reads its columns off the oldest row,
-    so a field missing there is a column missing for every run.
+    three comment counts, r34's `covered_new`), plus
+    `spend_per_covered_new` (spec 5 r11, decision 12): the run's judge
+    and illustrator dollars over `covered_new`, None when nothing was
+    newly covered. The page reads its columns off the oldest row, so a
+    field missing there is a column missing for every run.
     """
+    covered_new = answer.get("covered_new", 0)
+    spend = answer.get("spend") or {}
+    cash = sum(float((spend.get(b) or {}).get("cost", 0.0)) for b in ("judge", "illustrator"))
     return {**answer,
             "adjudicated": answer.get("adjudicated", 0),
             "stayed_disputed": answer.get("stayed_disputed", 0),
             "comments_read": answer.get("comments_read", 0),
             "comment_actions": answer.get("comment_actions", 0),
-            "comment_unactionable": answer.get("comment_unactionable", 0)}
+            "comment_unactionable": answer.get("comment_unactionable", 0),
+            "covered_new": covered_new,
+            "spend_per_covered_new": round(cash / covered_new, 4) if covered_new else None}
 
 
 def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
@@ -947,11 +960,14 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     row, else 0; `run_report_history` is every such row's answer, oldest
     first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
     and the comment pass's three counts -- `comments_read`,
-    `comment_actions`, `comment_unactionable` (spec 3 r30) -- whether or
-    not the row itself recorded them: a row written before either reads
-    0 for its fields, so all five are columns of every run in the history
-    and not only of the runs since (the page takes the history's columns
-    from its oldest row).
+    `comment_actions`, `comment_unactionable` (spec 3 r30) -- and
+    `covered_new` (spec 3 r34) -- whether or not the row itself recorded
+    them: a row written before any of them reads 0 for its fields, so all
+    six are columns of every run in the history and not only of the runs
+    since (the page takes the history's columns from its oldest row).
+    Each row also carries `spend_per_covered_new`, derived not stored
+    (spec 5 r11): the run's judge and illustrator dollars over
+    `covered_new`, None when nothing was newly covered.
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -1436,6 +1452,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
   .current-artifact { max-width: min(90vw, 640px); }
   .verdict { color: #9aa4b1; font-size: 14px; }
+  .provenance { font-size: 11px; color: #9aa4b1; text-transform: uppercase; letter-spacing: 0.04em; }
   .subject-cards { display: flex; flex-direction: column; gap: 14px; width: 100%; }
   /* spec 5 r9: the type label reads the same on a gallery card and on a
      question's compiled cards, so the rule is not scoped to either. */
@@ -1744,6 +1761,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       });
       wrap.appendChild(img);
     }
+    // Spec 5 r11: a drawn picture says so under itself, whatever its verdict.
+    if (art.generated) { wrap.appendChild(el("div", { "class": "provenance" }, "generated")); }
     if (caption) { wrap.appendChild(el("div", { "class": "verdict" }, caption)); }
     return wrap;
   }
@@ -1872,7 +1891,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
         var verdictText = c.verdict
           ? (c.verdict.passed ? "pass" : "fail") + (c.verdict.evidence ? " -- " + c.verdict.evidence : "")
           : "no verdict";
-        tried.appendChild(artifactView(q.kind, { sha: c.sha, url: "/media/" + c.sha }, verdictText, true));
+        tried.appendChild(artifactView(q.kind, c, verdictText, true));
       });
     } else {
       tried.appendChild(el("div", {}, "none"));
@@ -2178,7 +2197,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       // first, one table row per run with every field the row carries --
       // `adjudicated` and `stayed_disputed` (spec 3 r29) and
       // `comments_read`/`comment_actions`/`comment_unactionable` (r30)
-      // among them, on every row, compute_stats having filled them in
+      // and `covered_new`/`spend_per_covered_new` (spec 5 r11) among them, on every row, compute_stats having filled them in
       // where an older row recorded none of them.
       panel.appendChild(el("h3", {}, "Run history"));
       var history = stats.run_report_history;

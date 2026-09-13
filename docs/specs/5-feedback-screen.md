@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 10, proposed 2026-09-13 against principles r4 and architecture
+Revision 11, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -63,6 +63,13 @@ Revision log:
   comment_unactionable per run. Evidence: a reading the learner could
   not see or undo would make the comment channel a black box. User
   approval 2026-09-13.
+- r11 2026-09-13: a generated candidate (spec 3 r34's illustrator,
+  provenance `generated`) is captioned "generated" wherever the screen
+  shows it, current or rejected; the learner vetoes or prefers it from
+  the card like any other; the stats history shows covered_new and the
+  spend per newly covered need per run. Evidence: a drawn picture beside
+  photographs is a different kind of evidence and the learner should
+  know which one they are rating. User approval 2026-09-13.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -105,7 +112,9 @@ stops; unanswered questions stay queued. Question kinds:
    judge's verdict line, rejected candidates as thumbnails at judgeable
    size (click to enlarge), each captioned with its deciding verdict
    (the newest fresh verdict by the highest-authority backend that has
-   one on the artifact, the same rule ranking uses; r7, r8); a recording
+   one on the artifact, the same rule ranking uses; r7, r8) -- a
+   generated picture (spec 3 §5's illustrator) is captioned `generated`
+   as well, current or rejected (r11); a recording
    renders as a player wherever a picture would be a thumbnail, the
    query read-only. Actions: 1
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
@@ -159,7 +168,10 @@ lives in the browser.
 Per-session: answered/queued, per-confusion drill accuracy, counts of
 exhausted subjects remaining. Per-deck: current-best coverage per need,
 learner-rated good/acceptable/unacceptable counts, RunReport history
-with every field of spec 3 §7 (the comment counts among them, r10). The
+with every field of spec 3 §7 (the comment counts, r10; `covered_new`
+and the spend per newly covered need, r11: the run's judge plus
+illustrator spend over `covered_new`, empty when nothing was covered,
+derived by the screen, not stored). The
 per-subject screen lists excluded candidates with the reason and the
 subject's card-level flags (spec 4 §4). Every derivation the screen
 shows (current-best, exhausted, queue, coverage) comes from the same

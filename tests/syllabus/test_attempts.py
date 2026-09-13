@@ -288,15 +288,17 @@ def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
 def test_picture_sources_are_asked_pexels_first(tmp_path):
     """Spec 3 r26 section 5: pexels, openverse, wikimedia -- the keyed
     corpus first, the challenge-prone anonymous-tier corpus second; brave,
-    the metered paid search, last, so a need reaches it only after the
-    free corpora have been tried."""
-    assert sources_for("picture") == ("pexels", "openverse", "wikimedia", "brave")
+    the metered paid search, last of the corpora; and the illustrator
+    (spec 3 r34) after brave, the answer of last resort."""
+    assert sources_for("picture") == ("pexels", "openverse", "wikimedia", "brave", "illustrator")
 
 
-def test_brave_is_the_last_picture_source(tmp_path):
+def test_the_illustrator_is_the_last_picture_source_after_brave(tmp_path):
     """One source per need per run (spec 3 r26 `next_source`): brave is
-    asked only for a need the three free corpora have all failed."""
-    assert sources_for("picture")[-1] == "brave"
+    asked only for a need the three free corpora have all failed, and the
+    illustrator (spec 3 r34) only once every corpus is tried -- a drawn
+    picture is the answer of last resort."""
+    assert sources_for("picture")[-2:] == ("brave", "illustrator")
 
 
 def test_a_picture_need_with_nothing_on_record_has_no_query(tmp_path):
@@ -3313,3 +3315,90 @@ def test_a_learner_direction_is_the_query_named_beside_the_shown_picture(tmp_pat
     ctx.provider._backends["llm-comment"] = llm
     comment_attempt(ctx)
     assert "search query: <deck-field>a bowl of rice</deck-field>" in llm.prompts[0]
+
+
+# --- the illustrator (spec 3 r34 section 5) ---------------------------------
+
+class _Illustrator:
+    """A fake illustrator backend answering the item shape
+    provider.IllustratorBackend answers: the sha of bytes already in the
+    media store, provenance generated."""
+
+    def __init__(self, media, answer="image"):
+        self.media, self.answer, self.queries = media, answer, []
+
+    def cache_key(self, q):
+        return ProvideKey(source="illustrator", kind="m", query=q.params["query"])
+
+    def fetch(self, q):
+        self.queries.append(q.params["query"])
+        if self.answer == "quota":
+            raise QuotaExhausted("illustrator")
+        if self.answer == "declined":
+            return RawAnswer(items=(), cost=0.0)
+        ingest = self.media.add_image(_jpeg_bytes("https://x/good-drawn.jpg"), "jpg")
+        return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext, "source": "generated",
+                                 "origin": "m", "licence": "generated"},), cost=0.067)
+
+
+def _illustrated_ctx(tmp_path, answer="image"):
+    ctx, _search, _judge = _picture_ctx(tmp_path, phrase="rice food")
+    ctx.provider._backends["illustrator"] = _Illustrator(ctx.media_store, answer)
+    return ctx
+
+
+def test_the_illustrator_attempt_ingests_the_generated_picture_with_provenance_generated(tmp_path):
+    """Spec 3 r34 section 5: the item already carries its sha, so no
+    imgfetch; the media row says generated/generated; the candidate is
+    judged like any other (inline judge here: a green image passes)."""
+    ctx = _illustrated_ctx(tmp_path)
+    res = attempt(ctx, Need("rice", "picture"), "illustrator")
+    assert res.attempted and res.questions == []
+    row = _outcome(ctx.db, "rice", "picture", "illustrator")
+    (sha,) = row.answer["candidates"]
+    assert row.answer["outcome"] == "candidates" and row.answer["tried"] == []
+    prov = ctx.db.media_provenance(sha)
+    assert prov["source"] == "generated" and prov["licence"] == "generated" and prov["origin"] == "m"
+    assert not [r for r in rows_for(ctx.db, "rice", "picture") if r.backend == "imgfetch"]
+    assert current_best_of(ctx, "rice", "picture").artifact_sha == sha
+    assert res.spend["illustrator"].asks == 1 and res.spend["illustrator"].cost == 0.067
+
+
+def test_the_illustrator_is_asked_under_the_needs_query_and_collects_a_fit_question_under_batch(
+        tmp_path):
+    ctx = _illustrated_ctx(tmp_path)
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={"judge": _batch_judge()})
+    res = attempt(ctx, Need("rice", "picture"), "illustrator")
+    assert ctx.provider._backends["illustrator"].queries == ["rice food"]
+    assert [q.question.role for q in res.questions] == ["picture-for-word"]
+
+
+def test_a_declined_generation_is_a_nothing_outcome(tmp_path):
+    ctx = _illustrated_ctx(tmp_path, answer="declined")
+    res = attempt(ctx, Need("rice", "picture"), "illustrator")
+    row = _outcome(ctx.db, "rice", "picture", "illustrator")
+    assert res.attempted and row.answer["outcome"] == "nothing" and row.answer["candidates"] == []
+
+
+def test_the_illustrators_quota_propagates_with_no_outcome_row(tmp_path):
+    ctx = _illustrated_ctx(tmp_path, answer="quota")
+    with pytest.raises(QuotaExhausted):
+        attempt(ctx, Need("rice", "picture"), "illustrator")
+    assert not [r for r in rows_for(ctx.db, "rice", "picture")
+                if r.port == "attempt" and r.backend == "illustrator"]
+
+
+def test_re_ingesting_the_same_generated_sha_neither_fails_nor_duplicates_the_media_row(tmp_path):
+    """`add_media` is idempotent on sha (store.add_media: insert or
+    ignore), so a second attempt over the cached answer re-records the
+    same candidate without a second provenance row or an error."""
+    ctx = _illustrated_ctx(tmp_path)
+    first = attempt(ctx, Need("rice", "picture"), "illustrator")
+    (sha,) = _outcome(ctx.db, "rice", "picture", "illustrator").answer["candidates"]
+    before = ctx.db.media_provenance(sha)
+    second = attempt(ctx, Need("rice", "picture"), "illustrator")
+    assert first.attempted and second.attempted
+    assert _outcome(ctx.db, "rice", "picture", "illustrator").answer["candidates"] == [sha]
+    assert ctx.db.media_provenance(sha) == before
+    assert ctx.db.add_media(sha=sha, kind="picture", ext="jpg", source="generated",
+                            origin="m", licence="generated", acquired=date(2026, 9, 3)) is False

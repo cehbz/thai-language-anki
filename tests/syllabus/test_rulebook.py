@@ -5,6 +5,8 @@ derived from both.
 import re
 from pathlib import Path
 
+import pytest
+
 from thai_syllabus.curated import RulebookConfig
 from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
@@ -90,7 +92,7 @@ def test_registered_rules_match_the_spec_table():
     expected = {
         "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
         "coverage/confusions",
-        "coverage/categories", "coverage/exercise-depth", "picture/fit",
+        "coverage/categories", "coverage/exercise-depth", "coverage/pictures", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
         "sentence/fills-novelty",
         "target/sentence-required", "grapheme/keyword-picture-required",
@@ -311,6 +313,32 @@ def test_coverage_exercise_depth_excludes_a_word_with_no_filled_target():
     metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/exercise-depth")
     assert metric.value == 0.0
     assert metric.detail == {"once": 0, "twice": 0, "three_plus": 0, "once_words": []}
+
+
+# --- coverage/pictures (F3) ------------------------------------------------
+
+def test_coverage_pictures_measures_words_and_scenes_by_subject_kind():
+    """Spec 1 r15: needs with a current-best picture over picture needs, by
+    subject kind -- a picture-introduced word counts once however many
+    Targets name it; a sentence-introduced word is no picture need."""
+    rice, glue = word("rice", "ข้าว"), word("glue", "ก็")   # rice; a glue word
+    targets = (target("rice/receptive", "rice"), target("rice/productive", "rice", "productive"),
+               target("glue/receptive", "glue", introduction="sentence"))
+    to = thai_of(rice, glue)
+    s1 = sentence(((rice.id,),), to)
+    s2 = sentence(((rice.id,), (glue.id,)), to)
+    media = FakeMediaIndex(pictures={"rice", s1.text_sha})
+    syllabus = make_syllabus(words=(rice, glue), targets=targets, sentences=(s1, s2), media=media)
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/pictures")
+    assert metric.detail == {"word": {"covered": 1, "total": 1},
+                             "sentence": {"covered": 1, "total": 2}}
+    assert metric.value == pytest.approx(2 / 3)
+
+
+def test_coverage_pictures_is_full_with_no_picture_need_at_all():
+    metric = next(m for m in make_syllabus().report().metrics if m.rule == "coverage/pictures")
+    assert metric.value == 1.0
+    assert metric.detail == {"word": {"covered": 0, "total": 0}, "sentence": {"covered": 0, "total": 0}}
 
 
 # --- coverage/confusions ------------------------------------------------

@@ -428,7 +428,9 @@ def test_rulebook_provenance_prior_round_trip(tmp_path):
     assert cfg.provenance_prior == ("commission", "forvo")
     curated.save_rulebook_config(path, cfg)
     assert curated.load_rulebook_config(path).provenance_prior == ("commission", "forvo")
-    assert curated.RulebookConfig().provenance_prior == ("commission", "forvo", "tts")
+    assert curated.RulebookConfig().provenance_prior == (
+        "commission", "forvo", "tts", "pexels", "openverse", "wikimedia", "brave", "learner",
+        "generated")
 
 
 def test_rulebook_provenance_prior_explicit_empty_list_stays_empty(tmp_path):
@@ -1241,3 +1243,78 @@ def test_providers_transient_cap_rejects_zero(tmp_path):
     path.write_text(yaml.safe_dump(_providers(transient_cap=0)))
     with pytest.raises(curated.CuratedValidationError, match="transient_cap"):
         curated.load_providers_config(path)
+
+
+def test_providers_illustrator_is_absent_by_default_and_round_trips(tmp_path):
+    """Spec 3 r34 section 8: the illustrator's model and price per image;
+    a deck with no section has no illustrator source."""
+    assert curated.ProvidersConfig().illustrator is None
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        secrets={"gemini": "~/.config/thai-deck-gen/gemini.key"},
+        illustrator={"provider": "gemini", "model": "gemini-3.1-flash-image",
+                     "price_per_image": 0.067})))
+    cfg = curated.load_providers_config(path)
+    assert cfg.illustrator == curated.IllustratorConfig(provider="gemini",
+                                                        model="gemini-3.1-flash-image",
+                                                        price_per_image=0.067)
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_illustrator_requires_the_gemini_secret_and_a_sane_price(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        illustrator={"provider": "gemini", "model": "m", "price_per_image": 0.067})))
+    with pytest.raises(curated.CuratedValidationError, match="providers.secrets.gemini"):
+        curated.load_providers_config(path)
+    for bad in (-1, "0.067", True, None):
+        path.write_text(yaml.safe_dump(_providers(
+            secrets={"gemini": "/tmp/k"},
+            illustrator={"provider": "gemini", "model": "m", "price_per_image": bad})))
+        with pytest.raises(curated.CuratedValidationError,
+                           match="providers.illustrator.price_per_image"):
+            curated.load_providers_config(path)
+    path.write_text(yaml.safe_dump(_providers(secrets={"gemini": "/tmp/k"},
+                                              illustrator={"model": "m", "price_per_image": 0.1})))
+    with pytest.raises(curated.CuratedValidationError, match="providers.illustrator.provider"):
+        curated.load_providers_config(path)
+
+
+def test_providers_illustrator_refuses_a_provider_with_no_image_generator(tmp_path):
+    """Spec 3 r34 section 8: the name must be one the code can actually
+    ask. load_derivations (the review screen, the stats folds) never
+    builds the roster, so a name only build_provider refused would put a
+    source that can never be asked into every exhausted() fold."""
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        secrets={"openai": "/tmp/k"},
+        illustrator={"provider": "openai", "model": "m", "price_per_image": 0.067})))
+    with pytest.raises(curated.CuratedValidationError,
+                       match="providers.illustrator.provider"):
+        curated.load_providers_config(path)
+
+
+def test_providers_illustrator_requires_a_model(tmp_path):
+    """An empty model would reach both the cache key (illustrator::query)
+    and the request body ({"model": ""})."""
+    path = tmp_path / "providers.yaml"
+    for bad in ({}, {"model": ""}, {"model": 3}):
+        path.write_text(yaml.safe_dump(_providers(
+            secrets={"gemini": "/tmp/k"},
+            illustrator={"provider": "gemini", "price_per_image": 0.067, **bad})))
+        with pytest.raises(curated.CuratedValidationError,
+                           match="providers.illustrator.model"):
+            curated.load_providers_config(path)
+
+
+def test_providers_illustrator_refuses_a_section_that_is_not_a_mapping(tmp_path):
+    """`illustrator:` with nothing under it is a half-written section, not
+    a deck that asked for no illustrator: it refuses rather than silently
+    leaving the source off the roster."""
+    path = tmp_path / "providers.yaml"
+    for bad in (None, "gemini", ["gemini"]):
+        path.write_text(yaml.safe_dump(_providers(secrets={"gemini": "/tmp/k"},
+                                                  illustrator=bad)))
+        with pytest.raises(curated.CuratedValidationError, match="providers.illustrator"):
+            curated.load_providers_config(path)

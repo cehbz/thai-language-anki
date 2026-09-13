@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 14, proposed 2026-09-12 against principles r4 and architecture
+Revision 15, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -40,6 +40,13 @@ Revision log:
   (5 → 4 pairs, 4 → 3, 3 → 2, else 1). Evidence: sound-stage design
   2026-09-12 ruling 2 (about 55 pairs over 24 confusions,
   weight-proportional). User approval 2026-09-12.
+- r15 2026-09-13: `coverage/pictures` (measure, F3): needs with an
+  current-best picture over picture needs, by subject kind. Evidence: word
+  pictures cover 751 of 766 judged subjects (854 have a need), scenes
+  220 of 377; the residue (157 scenes, about 100 words) is what the
+  illustrator (spec 3 r34) is for, and coverage, not the per-candidate
+  pass rate, is the figure that says whether it works. User approval
+  2026-09-13.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -307,7 +314,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | A4 | compile (a missing artifact drops the card, counted) |
 | F1 | pair/exact-confusion (check, error); pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); one speaker per rendition by construction |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
-| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); front-gloss policy provisional |
+| F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
 | F6 | grapheme/keyword-picture-required (check, error), grapheme/keyword-contains-symbol (check, error) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
