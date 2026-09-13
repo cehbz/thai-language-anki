@@ -44,7 +44,7 @@ from .curated import (
     load_providers_config,
     rulebook_file_text,
 )
-from .derivations import DEFAULT_SENTENCE_NOTHING_CAP, current_best
+from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
@@ -468,7 +468,7 @@ class Derivations:
     Syllabus (media index included), the db the record lives in, the media
     store its artifacts resolve to, and the current_rubric / prior /
     provenance_source / sources_for / attempt_cap / transient_cap /
-    sentence_nothing_cap a fold is measured under. build_sourcing wires
+    requery_cap / sentence_nothing_cap a fold is measured under. build_sourcing wires
     the run's Sourcing from this same bundle, so a surface holding one
     derives exactly what the run derives.
     """
@@ -481,6 +481,9 @@ class Derivations:
     sources_for: Callable[[str], Sequence[str]]
     attempt_cap: int
     transient_cap: int
+    # tried_sources()'s distinct-query cap (spec 3 r35 section 8), the same
+    # value build_sourcing hands the run's Sourcing.
+    requery_cap: int = DEFAULT_REQUERY_CAP
     # sentence_exhausted()'s no-fit cap (spec 3 r19 section 5), the same
     # value build_sourcing hands the run's Sourcing.
     sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
@@ -519,7 +522,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
                        sources_for=sources_for_config(cfg), attempt_cap=cfg.attempt_cap,
-                       transient_cap=cfg.transient_cap,
+                       transient_cap=cfg.transient_cap, requery_cap=cfg.requery_cap,
                        sentence_nothing_cap=cfg.sentence_nothing_cap,
                        nothing_ttl=nothing_ttl_for(cfg),
                        thresholds=dict(bundle.rulebook.thresholds),
@@ -548,7 +551,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         voices={"male": tuple(cfg.tts_male_voices), "female": tuple(cfg.tts_female_voices)},
         judge_model=cfg.judge.model,
         sources_for=derivations.sources_for, attempt_cap=derivations.attempt_cap,
-        transient_cap=derivations.transient_cap,
+        transient_cap=derivations.transient_cap, requery_cap=derivations.requery_cap,
         sentence_nothing_cap=derivations.sentence_nothing_cap,
         sentence_max_clauses=cfg.sentence_max_clauses,
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,

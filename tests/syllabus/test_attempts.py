@@ -1657,7 +1657,7 @@ def test_a_picture_attempt_writes_a_candidates_outcome_when_a_hit_is_stored(tmp_
     ctx, _search, _judge = _picture_ctx(tmp_path, urls=("https://x/good.jpg",))
     attempt(ctx, Need("rice", "picture"), "openverse")
     row = _outcome(ctx.db, "rice", "picture", "openverse")
-    assert row.question == {"kind": "picture", "subject_kind": "word", "source": "openverse"}
+    assert row.question == {"kind": "picture", "subject_kind": "word", "source": "openverse", "query": "rice food"}
     assert row.answer["outcome"] == "candidates"
     assert len(row.answer["candidates"]) == 1
 
@@ -3402,3 +3402,46 @@ def test_re_ingesting_the_same_generated_sha_neither_fails_nor_duplicates_the_me
     assert ctx.db.media_provenance(sha) == before
     assert ctx.db.add_media(sha=sha, kind="picture", ext="jpg", source="generated",
                             origin="m", licence="generated", acquired=date(2026, 9, 3)) is False
+
+
+# --- the outcome row carries its query (spec 3 r35 section 6) ------------------
+
+def test_a_picture_outcome_row_carries_the_query_it_was_asked_with(tmp_path):
+    """Spec 3 r35 section 6: the row names the query, so tried_sources can
+    fold per (need, query)."""
+    ctx, _search, _judge = _picture_ctx(tmp_path, phrase="rice food")
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert _outcome(ctx.db, "rice", "picture", "openverse").question["query"] == "rice food"
+
+
+def test_the_illustrators_outcome_row_carries_the_query_too(tmp_path):
+    ctx = _illustrated_ctx(tmp_path)
+    attempt(ctx, Need("rice", "picture"), "illustrator")
+    assert _outcome(ctx.db, "rice", "picture", "illustrator").question["query"] == "rice food"
+
+
+def test_a_recording_outcome_row_carries_no_query(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    attempt(ctx, Need("rice", "recording"), "tts")
+    assert "query" not in _outcome(ctx.db, "rice", "recording", "tts").question
+
+
+def test_a_picture_attempt_at_a_source_already_asked_under_another_query_is_a_requery(tmp_path):
+    """Spec 3 r35 section 7: RunReport.requeried counts these; the first
+    ask under the phrase is not one; the tried-url filter still applies
+    across queries (section 5), so the same hit is not fetched twice."""
+    ctx, search, _judge = _picture_ctx(tmp_path, phrase="rice food",
+                                       urls=("https://x/bad.jpg",))
+    first = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert first.requeried is False
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(None, None, "rice", "picture-for-word"), subject="rice",
+                  question={"role": "picture-for-word", "kind": "picture"},
+                  answer={"value": False, "suggestion": "a heap of rice grains"})
+    second = attempt(ctx, Need("rice", "picture"), "openverse")
+    assert second.requeried is True and second.attempted
+    assert search.queries == ["rice food", "a heap of rice grains"]
+    fetched = [r for r in rows_for(ctx.db, "rice", "picture")
+               if r.port == "provide" and r.backend == "imgfetch"]
+    assert len(fetched) == 1
+    assert _outcome(ctx.db, "rice", "picture", "openverse").answer["outcome"] == "nothing"

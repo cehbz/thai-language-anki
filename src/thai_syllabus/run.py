@@ -142,6 +142,9 @@ class RunReport:
     # -- an event count outside the identity; with a batch judge the
     # verdict lands at the next run's resolve, and that run counts it
     covered_new: int = 0
+    # picture needs re-searched under a new query this run (spec 3 r35
+    # section 7): an event count outside the identity
+    requeried: int = 0
     # the comment pass (spec 3 r30 section 5): comments read this run,
     # actions taken, requests the deck could not act on -- events, not
     # needs, outside the identity above
@@ -183,6 +186,7 @@ class _Tally:
     drafted: int = 0
     retired: int = 0
     covered_new: int = 0
+    requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
     # _finish measures `covered_new` against (spec 3 r34 section 7)
     open_pictures_before: frozenset[tuple[str, str]] = frozenset()
@@ -241,6 +245,7 @@ class _Tally:
                  "reason": item.reason},)
         self.excluded = len(self.excluded_items)
         self.drafted += result.drafted
+        self.requeried += int(result.requeried)
         # The comment pass's own counts (spec 3 r30 section 5): every
         # other attempt leaves these at 0. `retired` is a count, not a
         # bucket -- _retire_exhausted_sentence adds F13's own the same way.
@@ -490,6 +495,7 @@ def _needs(ctx: Sourcing, collected_this_run: frozenset[tuple[str, str]] = froze
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
                   prior=ctx.provenance_prior, sources_for=ctx.sources_for,
                   attempt_cap=ctx.attempt_cap, transient_cap=ctx.transient_cap,
+                  requery_cap=ctx.requery_cap,
                   provenance_source=provenance_source_for(ctx.db),
                   collected_this_run=collected_this_run,
                   nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
@@ -602,6 +608,7 @@ def _maybe_retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -
         return
     sources = ctx.sources_for(need.kind)
     if next_source(ctx.db, need.subject, need.kind, sources, transient_cap=ctx.transient_cap,
+                   requery_cap=ctx.requery_cap,
                    nothing_ttl=ctx.nothing_ttl, now_ns=ctx.now_ns()) is not None:
         return
     _retire_exhausted_sentence(ctx, need, tally)
@@ -657,7 +664,7 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 continue
             sources = ctx.sources_for(need.kind)
             source = next_source(ctx.db, need.subject, need.kind, sources,
-                                transient_cap=ctx.transient_cap,
+                                transient_cap=ctx.transient_cap, requery_cap=ctx.requery_cap,
                                 nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
             if source is None:
                 tally.exhausted += 1
@@ -672,7 +679,7 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 # written for this need; the next run starts over).
                 live = [s for s in sources if s not in dead_sources]
                 source = next_source(ctx.db, need.subject, need.kind, live,
-                                    transient_cap=ctx.transient_cap,
+                                    transient_cap=ctx.transient_cap, requery_cap=ctx.requery_cap,
                                     nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
                 if source is None:
                     tally.deferred += 1
@@ -1031,6 +1038,7 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         pending=pending, sentences_adopted=tally.sentences_adopted,
         adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
         drafted=tally.drafted, retired=tally.retired, covered_new=tally.covered_new,
+        requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
         comment_unactionable=tally.comment_unactionable,
         excluded=tally.excluded, excluded_items=tally.excluded_items,
@@ -1058,6 +1066,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
                 "covered_new": report.covered_new,
+                "requeried": report.requeried,
                 "comments_read": report.comments_read,
                 "comment_actions": report.comment_actions,
                 "comment_unactionable": report.comment_unactionable,

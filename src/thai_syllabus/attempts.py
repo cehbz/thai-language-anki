@@ -39,6 +39,7 @@ from .cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, Phra
 from .compile import card_meaning
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
+    DEFAULT_REQUERY_CAP,
     DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
     CurrentBest,
@@ -184,6 +185,7 @@ class Sourcing:
     sources_for: Callable[[str], Sequence[str]] = field(default=sources_for)
     attempt_cap: int = DEFAULT_ATTEMPT_CAP
     transient_cap: int = DEFAULT_TRANSIENT_CAP
+    requery_cap: int = DEFAULT_REQUERY_CAP
     # Per-source ageing (spec 3 r19 section 6a/9): days after which a
     # `nothing` outcome stops counting as tried, so next_source offers
     # a growing corpus (Forvo) again. A source absent here never ages.
@@ -247,6 +249,11 @@ class AttemptResult:
     # their sentence need is exhausted (spec 3 r19 section 5): neither
     # attempted nor deferred -- the run counts them `exhausted`
     subjects_exhausted: frozenset[str] = frozenset()
+    # a picture attempt at a source that already had an outcome row on
+    # this need under another query (spec 3 r35 section 7): the need was
+    # re-searched under a new query -- an event outside the run's
+    # needs identity, RunReport.requeried
+    requeried: bool = False
     # the comment pass (spec 3 r30 section 5): comments read this run,
     # actions taken, requests the deck could not act on (refused actions
     # included); `retired` counts the sentences it deleted -- events,
@@ -320,19 +327,25 @@ class _Fetches:
 
 
 def _append_outcome(ctx: Sourcing, need: Need, source: str, outcome: Outcome,
-                    candidates: Sequence[str], *, tried: Sequence[str] = ()) -> None:
+                    candidates: Sequence[str], *, tried: Sequence[str] = (),
+                    query: str | None = None) -> None:
     """One outcome row per (need, source) an attempt asks, after the ask
     and its fetches (spec 3 section 6): the row every derivation over
     next_source/exhausted folds over. `outcome` is "candidates" when at
     least one artifact from it was stored. `tried` is every url a picture
     attempt handed to imgfetch this attempt, ingested or refused; empty
-    for a recording or rendition attempt's row.
+    for a recording or rendition attempt's row. `query` is the query a
+    picture attempt asked the source with (spec 3 r35 section 6:
+    sources exhaust per query, so the row names the query it was tried
+    under); None, and no key, for every other kind.
     """
+    question: dict[str, Any] = {"kind": need.kind, "subject_kind": need.subject_kind,
+                                "source": source}
+    if query is not None:
+        question["query"] = query
     ctx.db.append(port="attempt", backend=source,
                   key=AttemptOutcomeKey(subject=need.subject, kind=need.kind, source=source),
-                  subject=need.subject,
-                  question={"kind": need.kind, "subject_kind": need.subject_kind,
-                            "source": source},
+                  subject=need.subject, question=question,
                   answer={"outcome": outcome, "candidates": list(candidates),
                           "tried": list(tried)})
 
@@ -426,6 +439,9 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                          "no direction, suggestion or drafted phrase (spec 3 section 5)")
     fetches = _Fetches()
     already = record.tried_urls(ctx.db, need.subject, need.kind, source)
+    requeried = any(r.port == "attempt" and r.backend == source
+                    and r.question.get("query") not in (None, query)
+                    for r in record.rows_for(ctx.db, need.subject, need.kind))
     question = Question(subject=need.subject, provides="picture",
                         params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
     # An aged-out `nothing` re-offers the source (spec 3 r19 section 6a):
@@ -440,7 +456,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     except TransportError:
         fetches.failed()
         _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
-                        tried=fetches.tried)
+                        tried=fetches.tried, query=query)
         raise
     _count(spend, source, hits)
     hit_items = [i for i in hits.items if isinstance(i, Mapping)]
@@ -460,7 +476,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
         except TransportError:
             fetches.failed()
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates,
-                            tried=fetches.tried)
+                            tried=fetches.tried, query=query)
             raise
         _count(spend, source, hits)
         excluded = already | {i["url"] for i in tried_items}
@@ -468,8 +484,8 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                        if isinstance(i, Mapping) and i.get("url") and i["url"] not in excluded]
         for item in fresh_items[:ctx.image_candidates]:
             _ingest_picture(ctx, need, item, source, spend, fetches)
-    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates, tried=fetches.tried)
-    return _judge_pictures(ctx, need, query, spend)
+    _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates, tried=fetches.tried, query=query)
+    return replace(_judge_pictures(ctx, need, query, spend), requeried=requeried)
 
 
 def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,

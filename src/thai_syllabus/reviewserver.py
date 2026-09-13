@@ -105,6 +105,7 @@ def _exhausted(d: "Derivations", subject: str, kind: str, *,
     a single stand-alone question."""
     return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
                      attempt_cap=d.attempt_cap, transient_cap=d.transient_cap,
+                     requery_cap=d.requery_cap,
                      sentence_nothing_cap=d.sentence_nothing_cap,
                      nothing_ttl=d.nothing_ttl,
                      now_ns=time.time_ns() if now_ns is None else now_ns)
@@ -422,7 +423,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     syllabus_state_id = d.syllabus.state_id()
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
-                    transient_cap=d.transient_cap,
+                    transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                     provenance_source=d.provenance_source,
                     nothing_ttl=d.nothing_ttl, now_ns=now_ns)
     items: list[dict[str, Any]] = []
@@ -922,7 +923,7 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     """One run's history row: the runreport answer as it was recorded,
     with the fields a row older than the field itself would be missing
     filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`, r30's
-    three comment counts, r34's `covered_new`), plus
+    three comment counts, r34's `covered_new`, r35's `requeried`), plus
     `spend_per_covered_new` (spec 5 r11, decision 12): the run's judge
     and illustrator dollars over `covered_new`, None when nothing was
     newly covered. The page reads its columns off the oldest row, so a
@@ -938,6 +939,7 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
             "comment_actions": answer.get("comment_actions", 0),
             "comment_unactionable": answer.get("comment_unactionable", 0),
             "covered_new": covered_new,
+            "requeried": answer.get("requeried", 0),
             "spend_per_covered_new": round(cash / covered_new, 4) if covered_new else None}
 
 
@@ -1097,7 +1099,7 @@ class ReviewContext:
         d = self.derivations
         return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                      sources_for=d.sources_for, attempt_cap=d.attempt_cap,
-                     transient_cap=d.transient_cap,
+                     transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                      provenance_source=d.provenance_source,
                      nothing_ttl=d.nothing_ttl, now_ns=time.time_ns())
 
@@ -2197,7 +2199,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       // first, one table row per run with every field the row carries --
       // `adjudicated` and `stayed_disputed` (spec 3 r29) and
       // `comments_read`/`comment_actions`/`comment_unactionable` (r30)
-      // and `covered_new`/`spend_per_covered_new` (spec 5 r11) among them, on every row, compute_stats having filled them in
+      // and `covered_new`/`spend_per_covered_new` (spec 5 r11) and
+      // `requeried` (spec 3 r35) among them, on every row, compute_stats having filled them in
       // where an older row recorded none of them.
       panel.appendChild(el("h3", {}, "Run history"));
       var history = stats.run_report_history;

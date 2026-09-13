@@ -1137,6 +1137,26 @@ def test_providers_transient_cap_defaults_to_three_and_round_trips(tmp_path):
     assert curated.load_providers_config(path) == cfg
 
 
+def test_providers_requery_cap_defaults_to_three_and_round_trips(tmp_path):
+    """Spec 3 r35 section 8: the distinct queries a picture need is
+    searched under since its requery window opened."""
+    assert curated.ProvidersConfig().requery_cap == 3
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(requery_cap=5)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.requery_cap == 5
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_requery_cap_rejects_zero_and_a_non_integer(tmp_path):
+    path = tmp_path / "providers.yaml"
+    for bad in (0, "3", 2.5, True):
+        path.write_text(yaml.safe_dump(_providers(requery_cap=bad)))
+        with pytest.raises(curated.CuratedValidationError, match="providers.requery_cap"):
+            curated.load_providers_config(path)
+
+
 def test_providers_sentence_nothing_cap_defaults_to_three_and_round_trips(tmp_path):
     """Spec 3 r19 section 9: the no-fit cap derivations.sentence_exhausted
     counts against."""

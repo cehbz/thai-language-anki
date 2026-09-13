@@ -661,6 +661,7 @@ class ProvidersConfig:
     quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
     transient_cap: int = 3     # tried_sources()'s transient-outcome cap default
+    requery_cap: int = 3       # tried_sources()'s distinct-query cap default (spec 3 r35 section 8)
     # sentence_exhausted()'s no-fit cap default (spec 3 r19 section 5)
     sentence_nothing_cap: int = 3
     # the drafting prompt's own clause cap default (spec 3 r23 section 5/8):
@@ -837,6 +838,10 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if not isinstance(transient_cap, int) or transient_cap < 1:
         errors.append(f"providers.transient_cap: {transient_cap!r} must be a positive integer")
 
+    requery_cap = data.get("requery_cap", 3)
+    if isinstance(requery_cap, bool) or not isinstance(requery_cap, int) or requery_cap < 1:
+        errors.append(f"providers.requery_cap: {requery_cap!r} must be a positive integer")
+
     sentence_nothing_cap = data.get("sentence_nothing_cap", 3)
     if not isinstance(sentence_nothing_cap, int) or sentence_nothing_cap < 1:
         errors.append(f"providers.sentence_nothing_cap: {sentence_nothing_cap!r} "
@@ -912,7 +917,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
-        attempt_cap=attempt_cap, transient_cap=transient_cap,
+        attempt_cap=attempt_cap, transient_cap=transient_cap, requery_cap=requery_cap,
         sentence_nothing_cap=sentence_nothing_cap,
         sentence_max_clauses=sentence_max_clauses,
         sentence_introducible_per_ask=sentence_introducible_per_ask,
@@ -946,6 +951,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "quotas": dict(config.quotas),
         "attempt_cap": config.attempt_cap,
         "transient_cap": config.transient_cap,
+        "requery_cap": config.requery_cap,
         "sentence_nothing_cap": config.sentence_nothing_cap,
         "sentence_max_clauses": config.sentence_max_clauses,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,

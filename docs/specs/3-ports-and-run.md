@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 34, proposed 2026-09-13 against principles r4 and architecture
+Revision 35, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -183,6 +183,23 @@ Revision log:
   per candidate; some cues (pointing into the distance, a calendar with
   two days back marked) live in no stock corpus. User approval
   2026-09-13.
+- r35 2026-09-13: a picture need's sources exhaust per query, not per
+  need: the outcome row records the query it was asked with, a source
+  counts as tried only while the need's current query is the one its
+  row carries, so a judge suggestion or a learner direction newer than
+  the last ask re-enables every source, cheapest first, under the new
+  query, the illustrator last; the tried-url filter still applies across
+  queries; at most `requery_cap` (§8, default 3) distinct queries per
+  need since the requery window opened (the escalation anchor, or a
+  newer direction), then exhausted per need as before; the attempt cap
+  stays per need and so bounds the requeries too (a deck raises
+  `attempt_cap` to `requery_cap` times its picture roster to let every
+  query run its course); the transient cap counts per source under the
+  current query (§6a); RunReport.requeried (§7). Evidence: of the 157
+  uncovered scenes, 129 held a judge suggestion newer than their last
+  search and 70 had every free source tried, so the loop judge → better
+  phrase → search broke exactly when the judge had learned what to look
+  for. User approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -346,6 +363,21 @@ any other. The run never sends a failed drawing back for an edit: a need
 is drawn again only when its query changes (a new suggestion or
 direction), and a learner comment or direction is the way to say what the
 drawing got wrong.
+
+Sources exhaust per query, not per need (r35): the outcome row carries
+the query the source was asked with, and a source counts as tried for
+the need only while the need's current query (the precedence above) is
+the one its row carries; a newer suggestion or direction re-enables
+every source, cheapest first, under the new query, so the corpora are
+searched again before the illustrator is asked to draw again, and the
+tried-url filter still applies across queries, so a re-asked source
+fetches only hits the need has not seen. A row written before r35
+carries no query and counts as tried only while the need has none. At
+most `requery_cap` (§8) distinct queries are searched per need since the
+requery window opened (the escalation anchor, or a learner direction
+newer than it); past that the need is exhausted per need, as before,
+until the learner directs it. The attempt cap is per need whatever the
+query (§6), so it bounds the spend across requeries.
 
 Assess-first: when a candidate on record has no fit verdict under the
 current rubric, the attempt is the fit questions on those candidates,
@@ -572,15 +604,19 @@ exact-confusion check; adoption into curated pairs is the learner's act.
   usable came of it), or `transient-failure` (the ask or any fetch it
   needed failed on the wire; retry). The attempt appends one outcome
   row per source it asks (port `attempt`, backend = the source, key
-  AttemptOutcomeKey(subject, kind, source)); `candidates` and `nothing`
+  AttemptOutcomeKey(subject, kind, source)); a picture attempt's row
+  names the query it was asked with (r35); `candidates` and `nothing`
   count as tried, and so does a source with `transient_cap`
-  transient outcomes since the anchor (§6a).
+  transient outcomes since the anchor (§6a) -- for a picture need, all
+  three under the need's current query (r35).
 - **next_source(subject, kind)**: the first of the kind's sources,
-  cheapest first, not tried since current-best last changed. A
+  cheapest first, not tried under the need's current query since
+  current-best last changed (r35). A
   `transient-failure` outcome advances the need only at the cap (§6a).
 - **exhausted(subject, kind)**: over outcomes, not asks: the last k
   attempts produced no candidate out-ranking current-best and the
-  attempt cap is reached;
+  attempt cap is reached; the attempt count is per need, whatever the
+  query (r35);
   reopened by learner input, a rubric change, or a new source.
 - **queue(syllabus, budgets)**: order per the periodic-batch principle:
   (1) no artifact or learner-unacceptable, directed first (a learner
@@ -616,7 +652,8 @@ Every ask and fetch ends in one of four states:
   statement and is the Quota state above, not this one (r26). Nothing
   is appended for the ask; the attempt's outcome is `transient-failure`. Bounded: once a source has `transient_cap`
   (providers.yaml, default 3) transient outcomes since the escalation
-  anchor, it counts as tried: next_source advances past it and exhausted
+  anchor -- for a picture need, under the need's current query (r35) --
+  it counts as tried: next_source advances past it and exhausted
   counts it as one attempt. Learner input resets the anchor as for every
   other outcome.
 - **Ageing.** A `nothing` outcome from a source whose corpus grows
@@ -716,6 +753,7 @@ always. The remaining fields count events, not needs.
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted: recording exhausted with no passing candidate (F13), or retired by a learner comment (r30) |
 | covered_new | picture needs that gained a current-best picture this run: open before the run's resolve, covered by its end (r34); the spend per newly covered need (spec 5 §3) is the run's judge plus illustrator spend over it |
+| requeried | picture needs re-searched this run at a source already asked under another query (r35); an event count outside the identity |
 | comments_read | learner comments this run read (one reading row each) |
 | comment_actions | actions those readings took (`none` writes no row) |
 | comment_unactionable | requests in those readings the deck could not act on, refused actions included |
@@ -734,7 +772,9 @@ Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
-`image_candidates` (5), `image_width` (1600), `transient_cap` (3) and
+`image_candidates` (5), `image_width` (1600), `transient_cap` (3),
+`requery_cap` (3: the distinct queries one picture need is searched under
+since its requery window opened, r35) and
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`;
 brave 30 a day, and `min_interval_seconds` 1: Brave's $5 monthly free
 credit is about 1000 requests and the account is capped at $0, so a day

@@ -401,6 +401,38 @@ def test_second_run_resolves_then_escalates(ctx_batch_two_needs, fake_search, fa
     assert r2.pending == 2 and r2.improved == 0
 
 
+def test_a_fresh_suggestion_re_enables_the_first_source_under_the_new_query(
+        ctx_batch_two_needs, fake_search, fake_batch):
+    """Spec 3 r35 end to end: run 1 asks pexels under the drafted phrase;
+    the batch fails every candidate with a suggestion; run 2 asks pexels
+    again under the suggestion (not openverse), the tried-url filter
+    keeps the same hits from being fetched twice, and `requeried` counts
+    both needs. The identity holds.
+
+    The two needs' suggestions must differ (as a real judge's would,
+    reading two different photos): the search backend's cache_key is
+    (source, query) with no subject (provider.py, matching the real
+    corpora), so an identical suggestion text for both fish and rice
+    would collide on one cached search row instead of exercising two
+    independent requeries.
+    """
+    r1 = run(ctx_batch_two_needs, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=False,
+                            value_for=lambda prompt: {"value": False,
+                                                      "suggestion": ("a heap of grains"
+                                                                    if "rice" in prompt
+                                                                    else "a fish on ice")})
+    fetched_before = len(ctx_batch_two_needs.db.rows_since("provide", "imgfetch", 0))
+    r2 = run(ctx_batch_two_needs, budgets={})
+    assert fake_search.asks[-2:] == [("fish", "pexels"), ("rice", "pexels")]
+    assert r2.requeried == 2 and r1.requeried == 0
+    assert len(ctx_batch_two_needs.db.rows_since("provide", "imgfetch", 0)) == fetched_before
+    assert (r2.available == r2.attempted + r2.exhausted + r2.pending
+           + r2.unserved + r2.budgeted + r2.deferred)
+    row = ctx_batch_two_needs.db.latest("run", "runreport", RunReportKey())
+    assert row.answer["requeried"] == 2
+
+
 def test_run_asks_the_preference_question_once_the_fits_resolve(
         ctx_batch_two_needs, fake_batch):
     r1 = run(ctx_batch_two_needs, budgets={})
@@ -2371,7 +2403,8 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "drafted", "retired", "covered_new", "excluded",
                            "comments_read", "comment_actions", "comment_unactionable",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
-                           "spend", "unserved", "budgeted", "deferred", "preferences"}
+                           "spend", "unserved", "budgeted", "deferred", "preferences",
+                           "requeried"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,

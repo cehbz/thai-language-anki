@@ -57,6 +57,7 @@ __all__ = [
     "stale",
     "DEFAULT_ATTEMPT_CAP",
     "DEFAULT_TRANSIENT_CAP",
+    "DEFAULT_REQUERY_CAP",
     "DEFAULT_SENTENCE_NOTHING_CAP",
 ]
 
@@ -80,6 +81,13 @@ DEFAULT_ATTEMPT_CAP = 8
 # a source at this many transient-failure outcomes since the anchor
 # counts as tried.
 DEFAULT_TRANSIENT_CAP = 3
+
+# The requery cap tried_sources() enforces (spec 3 r35 section 6/8): a
+# picture need is searched under at most this many distinct queries since
+# the requery window opened (the escalation anchor, or a newer learner
+# direction); past it the fold counts every row since the anchor as tried,
+# per need, as before r35.
+DEFAULT_REQUERY_CAP = 3
 
 # tried_sources()'s ageing window unit (spec 3 r19 section 6a/9): a
 # nothing_ttl day, in the ts's own nanosecond units.
@@ -543,25 +551,92 @@ def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[A
             and r.answer.get("outcome") in ("candidates", "nothing")]
 
 
+def _current_query(cache: CacheReader, subject: str, kind: str, source: str | None) -> str | None:
+    """The query (subject, kind) would be asked with now at `source`
+    (spec 3 r35 section 6): for a picture need, record.latest_phrase over
+    the subject's whole row set (a direction, else a suggestion newer
+    than the last Source ask, else the drafted phrase -- the precedence
+    attempts.picture_query_for searches under); None for every other
+    kind, whose outcome rows carry no query either. `source` is unused
+    until a source declares a query form of its own (spec 3 r36).
+    """
+    if kind != "picture":
+        return None
+    # `or None`, as attempts.picture_query_for reads it: an empty phrase is
+    # no query, on both sides of the fold.
+    return record.latest_phrase(cache.assessments_of(subject)) or None
+
+
+def _requery_window_ts(cache: CacheReader, subject: str, anchor_ts: int) -> int:
+    """The instant the requery cap counts distinct queries from: the
+    escalation anchor, or the newest learner direction row on the subject
+    when that is newer -- a direction lifts the cap (spec 3 r35 section
+    6) while the anchor itself moves on ratings only (_anchor_ts).
+    """
+    directed = record.directions(cache.assessments_of(subject))
+    return max(anchor_ts, max((r.ts for r in directed), default=-1))
+
+
+def _under_current_query(cache: CacheReader, subject: str, kind: str,
+                         outcomes: Sequence[Answer], anchor_ts: int, *,
+                         requery_cap: int) -> list[Answer]:
+    """The rows among `outcomes` (attempt rows since the anchor) that
+    count as tried now (spec 3 r35 section 6): for a picture need, those
+    whose own `query` is the need's current query at their source -- a
+    row carrying none (written before r35) matches only a current query
+    of None. Once `requery_cap` distinct queries have been asked since
+    the requery window opened and the current query is not one of them,
+    every row counts: the need is exhausted per need, as before r35. A
+    need of any other kind keeps every row.
+
+    This fold runs for every need on every queue build, so it reads the
+    subject's rows as few times as it can: the current query is computed
+    once (it is the same for every source until spec 3 r36 gives a source
+    its own query form), and the requery window -- a second read -- only
+    when the cap could bind. The queries asked since the window are a
+    subset of those asked since the anchor, so fewer than `requery_cap`
+    distinct queries since the anchor rules the cap out whatever the
+    window is. The narrowing is conservative: it can only permit a
+    requery the per-window count would refuse, never refuse one it
+    would permit (the current query outside the anchor's set is outside
+    the window's subset too).
+    """
+    if kind != "picture" or not outcomes:
+        return list(outcomes)
+    current = _current_query(cache, subject, kind, None)
+    since_anchor = {q for r in outcomes if (q := r.question.get("query")) is not None}
+    if current is not None and current not in since_anchor and len(since_anchor) >= requery_cap:
+        window_ts = _requery_window_ts(cache, subject, anchor_ts)
+        asked = {q for r in outcomes if r.ts > window_ts
+                 if (q := r.question.get("query")) is not None}
+        if len(asked) >= requery_cap:
+            return list(outcomes)
+    return [r for r in outcomes if r.question.get("query") == current]
+
+
 def tried_sources(cache: CacheReader, subject: str, kind: str, *,
                   transient_cap: int, nothing_ttl: Mapping[str, int] = {},
-                  now_ns: int | None = None) -> frozenset[str]:
-    """The sources tried since current-best last changed: those with a
-    `candidates` outcome, those with a `nothing` outcome not aged out, and
-    those with `transient_cap` `transient-failure` outcomes (spec 3
-    section 6a). Ageing (spec 3 r19 section 6a/9): a `nothing` row from a
-    source named in `nothing_ttl` (days, keyed by source) whose own `ts`
-    is older than `now_ns` minus that many days no longer counts as
-    tried on its own (the caller reads the clock once per pass; a ttl
-    without `now_ns` is refused, the folds never read it) -- a
-    growing corpus (Forvo) may have new hits by then. `candidates` rows
-    and the transient-failure count are never aged; a source absent from
-    `nothing_ttl` never ages either.
+                  now_ns: int | None = None,
+                  requery_cap: int = DEFAULT_REQUERY_CAP) -> frozenset[str]:
+    """The sources tried since current-best last changed, under the
+    need's current query (spec 3 r35 section 6, _under_current_query):
+    those with a `candidates` outcome, those with a `nothing` outcome not
+    aged out, and those with `transient_cap` `transient-failure`
+    outcomes (spec 3 section 6a). Ageing (spec 3 r19 section 6a/9): a
+    `nothing` row from a source named in `nothing_ttl` (days, keyed by
+    source) whose own `ts` is older than `now_ns` minus that many days
+    no longer counts as tried on its own (the caller reads the clock
+    once per pass; a ttl without `now_ns` is refused, the folds never
+    read it) -- a growing corpus (Forvo) may have new hits by then.
+    `candidates` rows and the transient-failure count are never aged; a
+    source absent from `nothing_ttl` never ages either.
     """
     now_ns = _clock_for(nothing_ttl, now_ns)
     rows = record.rows_for(cache, subject, kind)
     since_ts = _anchor_ts(cache, subject, kind, rows)
-    outcomes = [r for r in rows if r.port == "attempt" and r.ts > since_ts]
+    outcomes = _under_current_query(
+        cache, subject, kind, [r for r in rows if r.port == "attempt" and r.ts > since_ts],
+        since_ts, requery_cap=requery_cap)
 
     def _fresh_nothing(r: Answer) -> bool:
         days = nothing_ttl.get(r.backend)
@@ -616,14 +691,16 @@ def aged_out(cache: CacheReader, subject: str, kind: str, source: str, *,
 def next_source(cache: CacheReader, subject: str, kind: str,
                 sources: Sequence[str], *, transient_cap: int,
                 nothing_ttl: Mapping[str, int] = {},
-                now_ns: int | None = None) -> str | None:
+                now_ns: int | None = None,
+                requery_cap: int = DEFAULT_REQUERY_CAP) -> str | None:
     """The first of `sources` (cheapest first) not in tried_sources; None
     once every source is tried since current-best last changed. A source
     whose only `nothing` outcome has aged out of `nothing_ttl` (spec 3 r19
-    section 6a/9) is offered again here.
+    section 6a/9) is offered again here. Under the need's current query
+    (spec 3 r35): a source tried under an earlier query is offered again.
     """
     tried = tried_sources(cache, subject, kind, transient_cap=transient_cap,
-                          nothing_ttl=nothing_ttl, now_ns=now_ns)
+                          nothing_ttl=nothing_ttl, now_ns=now_ns, requery_cap=requery_cap)
     for source in sources:
         if source not in tried:
             return source
@@ -678,7 +755,8 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *,
               sources: Sequence[str], attempt_cap: int, transient_cap: int,
               sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP,
               nothing_ttl: Mapping[str, int] = {},
-              now_ns: int | None = None) -> ExhaustedStatus:
+              now_ns: int | None = None,
+              requery_cap: int = DEFAULT_REQUERY_CAP) -> ExhaustedStatus:
     """Every source in `sources` is tried since current-best last changed,
     or the attempt count since then reached `attempt_cap`; a source at
     the transient cap counts as one attempt. Reopened by a learner row, a
@@ -691,16 +769,21 @@ def exhausted(cache: CacheReader, subject: str, kind: str, *,
     Kind "sentence" has no Source roster of its own -- the run's own
     sentence attempt serves it -- so it is `sentence_exhausted` under
     `sentence_nothing_cap` instead (spec 3 r19 section 5).
+
+    `attempts` counts every outcome row since the anchor, whatever its
+    query: the attempt cap is the per-need spend bound (decision 16).
     """
     if kind == _RUN_SENTENCE_KIND:
         return sentence_exhausted(cache, subject, cap=sentence_nothing_cap)
     since = attempts_since_change(cache, subject, kind)
     capped = tried_sources(cache, subject, kind, transient_cap=transient_cap,
-                           nothing_ttl=nothing_ttl, now_ns=now_ns) - {
+                           nothing_ttl=nothing_ttl, now_ns=now_ns,
+                           requery_cap=requery_cap) - {
         r.backend for r in since}
     attempts = len(since) + len(capped)
     is_exhausted = (next_source(cache, subject, kind, sources, transient_cap=transient_cap,
-                                nothing_ttl=nothing_ttl, now_ns=now_ns) is None
+                                nothing_ttl=nothing_ttl, now_ns=now_ns,
+                                requery_cap=requery_cap) is None
                     or attempts >= attempt_cap)
     return ExhaustedStatus(exhausted=is_exhausted, attempts=attempts)
 
@@ -741,7 +824,8 @@ def directed(cache: CacheReader, subject: str) -> bool:
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
                        current_rubric: Mapping[str, str], sources: Sequence[str], *,
                        transient_cap: int, nothing_ttl: Mapping[str, int] = {},
-                       now_ns: int | None = None) -> bool:
+                       now_ns: int | None = None,
+                       requery_cap: int = DEFAULT_REQUERY_CAP) -> bool:
     """A candidate has no verdict under the current rubric, a judge
     suggestion has not been followed by a new attempt, or an unasked
     source remains (spec 3 section 6 bucket 2) -- including one a
@@ -759,7 +843,8 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
         return True
     return next_source(cache, subject, kind, sources, transient_cap=transient_cap,
-                       nothing_ttl=nothing_ttl, now_ns=now_ns) is not None
+                       nothing_ttl=nothing_ttl, now_ns=now_ns,
+                       requery_cap=requery_cap) is not None
 
 
 # --- queue: F10 order ----------------------------------------------------
@@ -871,13 +956,15 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
          collected_this_run: frozenset[tuple[str, str]] = frozenset(),
          nothing_ttl: Mapping[str, int] = {},
-         now_ns: int | None = None) -> list[QueueEntry]:
+         now_ns: int | None = None,
+         requery_cap: int = DEFAULT_REQUERY_CAP) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
                   transient_cap=transient_cap,
                   provenance_source=provenance_source,
                   collected_this_run=collected_this_run,
-                  nothing_ttl=nothing_ttl, now_ns=now_ns).entries
+                  nothing_ttl=nothing_ttl, now_ns=now_ns,
+                  requery_cap=requery_cap).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
@@ -885,14 +972,18 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
           collected_this_run: frozenset[tuple[str, str]] = frozenset(),
           nothing_ttl: Mapping[str, int] = {},
-          now_ns: int | None = None) -> QueuedNeeds:
+          now_ns: int | None = None,
+          requery_cap: int = DEFAULT_REQUERY_CAP) -> QueuedNeeds:
     """queue()'s entries plus the counts the same pass left out.
     `collected_this_run` names the (subject, kind) needs this run already
     collected a question for; each is skipped like an already-pending
     need. It is keyed by kind, so a word's other open needs stay queued.
     `nothing_ttl`/`now_ns` (spec 3 r19 section 6a/9) reach exhausted()'s
     and _has_untried_lever()'s own next_source/tried_sources folds, so a
-    growing source's aged-out `nothing` reopens the need here too.
+    growing source's aged-out `nothing` reopens the need here too; so
+    does `requery_cap` (spec 3 r35 section 6), which bounds how many
+    distinct queries a picture need is searched under before its sources
+    exhaust per need again.
     """
     entries: list[QueueEntry] = []
     candidates = available_needs(syllabus)
@@ -924,7 +1015,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         # Never kind "sentence": queued() skips it above, so exhausted()'s
         # own sentence_nothing_cap never decides anything from here.
         status = exhausted(cache, subject, kind, sources=sources, attempt_cap=attempt_cap,
-                          transient_cap=transient_cap, nothing_ttl=nothing_ttl, now_ns=now_ns)
+                          transient_cap=transient_cap, nothing_ttl=nothing_ttl, now_ns=now_ns,
+                          requery_cap=requery_cap)
         attempts = status.attempts
 
         if best.artifact_sha is None or is_vetoed:
@@ -936,7 +1028,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources,
                                 transient_cap=transient_cap, nothing_ttl=nothing_ttl,
-                                now_ns=now_ns):
+                                now_ns=now_ns, requery_cap=requery_cap):
             bucket = 2
         else:
             bucket = 3

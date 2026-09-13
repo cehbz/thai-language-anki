@@ -1827,6 +1827,14 @@ def test_stats_history_carries_covered_new_and_the_spend_per_newly_covered_need(
     assert [r["spend_per_covered_new"] for r in hist] == [None, None, pytest.approx(0.03)]
 
 
+def test_stats_history_carries_requeried_on_every_run(ctx_with_an_old_and_a_new_run, db):
+    """Spec 3 r35: a per-run column, 0 on a row written before it."""
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"}, answer=_run_report_answer(requeried=4), cost=0.0)
+    hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
+    assert [r["requeried"] for r in hist] == [0, 0, 4]
+
+
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
 
 @pytest.fixture

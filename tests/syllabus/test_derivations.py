@@ -173,26 +173,39 @@ def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording"
 
 # --- fixture helpers matching the task brief's representative scenarios ----
 
-def outcome_row(subject, kind, *, source, outcome, candidates=(), subject_kind="word", ts=None):
+def outcome_row(subject, kind, *, source, outcome, candidates=(), subject_kind="word", ts=None,
+                query=None):
     """One attempt-outcome row (port "attempt", spec 3 section 6): what
     `source` produced for (subject, kind) -- the row next_source,
     attempts_since_change and exhausted fold over.
     """
     ts = ts if ts is not None else _next_ts()
+    question = {"kind": kind, "subject_kind": subject_kind, "source": source}
+    if query is not None:
+        question["query"] = query      # spec 3 r35: a picture row names its query
     return Answer(port="attempt", backend=source, key=f"attempt:{subject}:{kind}:{source}:{ts}",
-                 key_sha="x", subject=subject,
-                 question={"kind": kind, "subject_kind": subject_kind, "source": source},
+                 key_sha="x", subject=subject, question=question,
                  answer={"outcome": outcome, "candidates": list(candidates)}, cost=0.0, ts=ts)
 
 
-def seed_ask(cache, subject, kind, *, source, ts, subject_kind="word"):
+def seed_ask(cache, subject, kind, *, source, ts, subject_kind="word", query=None):
     """One provide row and one "nothing" outcome row for `source` under
     (subject, kind, subject_kind) -- the two rows one real attempt
     appends when it asks a source and nothing usable comes of it.
     """
     cache.rows.append(provide_row(subject, kind, backend=source, ts=ts))
     cache.rows.append(outcome_row(subject, kind, source=source, outcome="nothing",
-                                  subject_kind=subject_kind, ts=ts))
+                                  subject_kind=subject_kind, ts=ts, query=query))
+
+
+def phrase_row(subject, phrase, ts=None):
+    """attempts.phrase_attempt's own per-subject row (cachekeys.PhraseKey):
+    the drafted phrase record.latest_phrase falls back to."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="provide", backend="llm", key=f"provide:llm:phrase:{subject}", key_sha="x",
+                 subject=subject,
+                 question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                 answer={"phrase": phrase}, cost=0.0, ts=ts)
 
 
 def seed_artifact(cache, subject, artifact_sha, *, ts, judge_pass, rubric="rubric-v1",
@@ -650,6 +663,90 @@ def test_a_source_at_the_transient_cap_counts_as_tried(cache):
                        transient_cap=3) == "wikimedia"
     assert next_source(cache, "rice", "picture", ("openverse", "wikimedia"),
                        transient_cap=4) == "openverse"
+
+
+# --- spec 3 r35: sources exhaust per query, not per need -------------------
+
+def test_a_source_counts_as_tried_only_under_the_needs_current_query(cache):
+    """Design section 1: every source tried under the drafted phrase; a
+    judge suggestion newer than the last ask becomes the current query
+    and re-enables every source, cheapest first."""
+    cache.rows.append(phrase_row("rice", "bowl of rice", ts=1))
+    for ts, source in ((2, "openverse"), (3, "wikimedia"), (4, "pexels")):
+        seed_ask(cache, "rice", "picture", source=source, ts=ts, query="bowl of rice")
+    assert next_source(cache, "rice", "picture", sources_for("picture"), transient_cap=3) is None
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, False, ts=5,
+                                suggestion="a heap of rice grains"))
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset()
+    assert next_source(cache, "rice", "picture", sources_for("picture"), transient_cap=3) == "openverse"
+
+
+def test_a_row_written_before_queries_were_recorded_counts_only_while_the_need_has_no_query(cache):
+    """Decision 14: a pre-r35 row's query is unknown, so it matches only a
+    need whose current query is None."""
+    seed_ask(cache, "rice", "picture", source="openverse", ts=1)
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset({"openverse"})
+    cache.rows.append(phrase_row("rice", "bowl of rice", ts=2))
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset()
+
+
+def test_the_requery_cap_falls_back_to_per_need_after_three_distinct_queries(cache):
+    """Design section 1's bound: after requery_cap distinct queries since
+    the anchor a fourth new query re-enables nothing; the need is
+    exhausted as before r35."""
+    for ts, query in ((1, "q1"), (2, "q2"), (3, "q3")):
+        seed_ask(cache, "rice", "picture", source="openverse", ts=ts, query=query)
+    cache.rows.append(phrase_row("rice", "q4", ts=4))
+    assert next_source(cache, "rice", "picture", ("openverse",), transient_cap=3) is None
+    assert next_source(cache, "rice", "picture", ("openverse",), transient_cap=3,
+                       requery_cap=4) == "openverse"
+    status = exhausted(cache, "rice", "picture", sources=("openverse",), attempt_cap=8,
+                       transient_cap=3)
+    assert status.exhausted is True and status.attempts == 3
+
+
+def test_a_query_already_asked_is_not_a_new_query_at_the_cap(cache):
+    """Three queries asked, the current one among them: no requery is
+    happening, and the fold is per query as usual (the row under q3 is
+    tried, the other two are not)."""
+    for ts, query in ((1, "q1"), (2, "q2"), (3, "q3")):
+        seed_ask(cache, "rice", "picture", source="openverse", ts=ts, query=query)
+    cache.rows.append(phrase_row("rice", "q3", ts=4))
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset({"openverse"})
+    assert next_source(cache, "rice", "picture", ("openverse", "wikimedia"),
+                       transient_cap=3) == "wikimedia"
+
+
+def test_a_learner_direction_lifts_the_requery_cap(cache):
+    """Decision 15: the requery window restarts at a direction, so the
+    direction's own query is searched however many queries came before."""
+    for ts, query in ((1, "q1"), (2, "q2"), (3, "q3")):
+        seed_ask(cache, "rice", "picture", source="openverse", ts=ts, query=query)
+    cache.rows.append(direction_row("rice", ts=4))      # "try a red one" becomes the query
+    assert next_source(cache, "rice", "picture", ("openverse",), transient_cap=3) == "openverse"
+
+
+def test_a_recording_need_still_exhausts_per_need(cache):
+    """Only a picture need has a query; a recording row carries none and
+    a picture phrase on the same subject changes nothing for it."""
+    seed_ask(cache, "rice", "recording", source="forvo", ts=1)
+    cache.rows.append(phrase_row("rice", "bowl of rice", ts=2))
+    assert tried_sources(cache, "rice", "recording", transient_cap=3) == frozenset({"forvo"})
+
+
+def test_a_need_out_of_sources_under_an_old_query_is_queued_again_under_a_fresh_suggestion(cache):
+    """The queue reads the same fold: a need counted exhausted under its
+    phrase is an entry again (bucket 1, no artifact) once a newer
+    suggestion is its query."""
+    syllabus = _one_word_syllabus()
+    cache.rows.append(phrase_row("rice", "bowl of rice", ts=1))
+    for ts, source in ((2, "openverse"), (3, "wikimedia"), (4, "pexels")):
+        seed_ask(cache, "rice", "picture", source=source, ts=ts, query="bowl of rice")
+    assert _queued(syllabus, cache).exhausted == 1
+    cache.rows.append(judge_row("rice", "picture", "a" * 64, False, ts=5,
+                                suggestion="a heap of rice grains"))
+    found = _queued(syllabus, cache)
+    assert found.exhausted == 0 and [e.bucket for e in found.entries] == [1]
 
 
 def test_a_capped_source_counts_as_one_attempt_toward_exhaustion(cache):

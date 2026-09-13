@@ -106,6 +106,7 @@ def _print_run_report(cycle: int, report: RunReport) -> None:
          f"stayed_disputed={report.stayed_disputed} "
          f"drafted={report.drafted} retired={report.retired} "
          f"covered_new={report.covered_new} "
+         f"requeried={report.requeried} "
          f"comments_read={report.comments_read} "
          f"comment_actions={report.comment_actions} "
          f"comment_unactionable={report.comment_unactionable} "
