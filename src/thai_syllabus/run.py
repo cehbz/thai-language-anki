@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from time import time_ns
+from typing import NamedTuple
 
 from .assessor import JudgeUnreachable, PreparedQuestion
 from .cachekeys import RetirementKey, RunReportKey
@@ -117,6 +118,10 @@ class RunReport:
     # (spec 3 r28 section 5) -- an event, not a need: a Word is curated
     # data, so it sits outside the identity above
     adjudicated: int = 0
+    # verdicts this run checked that no engine corroborated, so the words
+    # stay disputed (spec 3 r29) -- an event count beside `adjudicated`,
+    # also outside the identity
+    stayed_disputed: int = 0
     drafted: int = 0            # drafts the sentence attempt produced
     # adopted Sentences the run deleted because their recording need was
     # exhausted with no passing candidate (F13, spec 3 section 5); a
@@ -153,6 +158,7 @@ class _Tally:
     excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     sentences_adopted: int = 0
     adjudicated: int = 0
+    stayed_disputed: int = 0
     drafted: int = 0
     retired: int = 0
     # subjects (text_shas) of sentences this pass retired -- a later
@@ -229,13 +235,22 @@ def _adopt_sentences(ctx: Sourcing) -> int:
     return len(adopted)
 
 
-def _materialize_adjudications(ctx: Sourcing) -> int:
+class _Adjudicated(NamedTuple):
+    """What one adjudication pass came to: `written` words whose
+    pronunciation reached words.yaml, `stayed_disputed` verdicts no
+    engine corroborated (spec 3 r29). Both are RunReport fields.
+    """
+    written: int = 0
+    stayed_disputed: int = 0
+
+
+def _materialize_adjudications(ctx: Sourcing) -> _Adjudicated:
     """Spec 3 r28 section 5: every adjudicated pronunciation the engines
     corroborate becomes the Word's, corroboration `adjudicated`, written
     to curated words.yaml under this writing command; the rest stay
-    disputed and are logged. Engines load lazily, only when there is a
-    verdict to check, so a run with nothing to materialize never pulls in
-    pythainlp/torch.
+    disputed, logged, and counted as `stayed_disputed` (r29). Engines
+    load lazily, only when there is a verdict to check, so a run with
+    nothing to materialize never pulls in pythainlp/torch.
 
     words.yaml is rewritten whole, from the same (Word, category) rows
     the loader produced, in their own order -- only the adjudicated
@@ -244,19 +259,25 @@ def _materialize_adjudications(ctx: Sourcing) -> int:
     """
     found = adjudications(ctx.db, ctx.syllabus, current_rubric=ctx.rubrics)
     if not found or ctx.curated_dir is None:
-        return 0
+        return _Adjudicated()
     engines = ctx.engines or default_engines()
     updated: dict[WordId, Word] = {}
+    not_corroborated = 0
     for word_id, syllables in found.items():
         w = ctx.syllabus.word(word_id)
         if corroborates(syllables, w.thai, engines):
             updated[word_id] = dataclasses.replace(
                 w, pron=Pronunciation(syllables=syllables, corroboration="adjudicated"))
         else:
+            not_corroborated += 1
             _log.info("adjudication of %s (%s) not corroborated by an engine; stays disputed",
                       word_id, w.thai)
+    if not_corroborated:
+        _log.warning(
+            "adjudication: %d of %d verdicts not corroborated by an engine; "
+            "the words stay disputed", not_corroborated, len(found))
     if not updated:
-        return 0
+        return _Adjudicated(stayed_disputed=not_corroborated)
     # Deferred: curated.py reads parse_day_starts from this module, so a
     # top-level import here would be a cycle.
     from .curated import save_words
@@ -264,7 +285,7 @@ def _materialize_adjudications(ctx: Sourcing) -> int:
     rows = [(updated.get(w.id, w), ctx.syllabus.category_of(w.id)) for w in ctx.syllabus.words]
     save_words(ctx.curated_dir / "words.yaml", rows)
     ctx.syllabus = ctx.syllabus.with_words(tuple(w for w, _c in rows))
-    return len(updated)
+    return _Adjudicated(written=len(updated), stayed_disputed=not_corroborated)
 
 
 def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
@@ -660,7 +681,9 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
                            extra_deferred=_unconsidered(needs, pending))
     tally.sentences_adopted += _adopt_sentences(ctx)
-    tally.adjudicated += _materialize_adjudications(ctx)
+    materialized = _materialize_adjudications(ctx)
+    tally.adjudicated += materialized.written
+    tally.stayed_disputed += materialized.stayed_disputed
     if still_out is not None:
         # The run ended here, before it ever looked at a need: every
         # available need this run never considered (not even pending, in
@@ -827,7 +850,7 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
-        adjudicated=tally.adjudicated,
+        adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
         drafted=tally.drafted, retired=tally.retired,
         excluded=tally.excluded, excluded_items=tally.excluded_items,
         unreachable=tally.unreachable,
@@ -851,6 +874,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
                 "adjudicated": report.adjudicated,
+                "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
                 "excluded": report.excluded,
                 "excluded_items": [dict(item) for item in report.excluded_items],

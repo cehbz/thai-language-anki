@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 7, proposed 2026-09-12 against principles r4 and architecture
+Revision 8, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -33,6 +33,10 @@ Revision log:
   Forvo `nothing` and TTS untried reached the learner as a 1 to 4
   question with nothing shown; the learner could not tell what was
   asked. User approval 2026-09-12.
+- r8 2026-09-13: the deciding verdict is the highest-authority backend's
+  verdict on the artifact, not the role's first backend's; a recording
+  only the judge rejected showed "no verdict yet". User approval
+  2026-09-13.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -62,8 +66,10 @@ stops; unanswered questions stay queued. Question kinds:
    `/api/cards` serves the gallery; r6), the current artifact WITH the
    judge's verdict line, rejected candidates as thumbnails at judgeable
    size (click to enlarge), each captioned with its deciding verdict
-   (r7); a recording renders as a player wherever a picture would be a
-   thumbnail, the query read-only. Actions: 1
+   (the newest fresh verdict by the highest-authority backend that has
+   one on the artifact, the same rule ranking uses; r7, r8); a recording
+   renders as a player wherever a picture would be a thumbnail, the
+   query read-only. Actions: 1
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
    3 acceptable / 4 good; optional one-line note (the Direction). With
    no current artifact only 1 (none of these) and 2 (use the picked

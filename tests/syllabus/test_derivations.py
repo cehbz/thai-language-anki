@@ -2225,6 +2225,55 @@ def test_deciding_verdict_is_the_mechanical_row_on_a_recording(cache):
     assert v.backend == "mechanical"
 
 
+def _mechanical_row(subject, artifact_sha, value, *, evidence, ts):
+    """One mechanical verdict on a word's recording -- the ground-truth
+    backend AUTHORITY_ORDER["recording-for-word"] puts above the judge.
+    """
+    return Answer(port="assess", backend="mechanical",
+        key=MechanicalKey(check="duration", params="", subject=subject,
+                          artifact_sha=artifact_sha),
+        key_sha="x", subject=subject,
+        question={"role": "recording-for-word", "artifact_sha": artifact_sha,
+                  "kind": "recording", "subject_kind": "word"},
+        answer={"value": value, "evidence": evidence}, cost=0.0, ts=ts)
+
+
+def test_deciding_verdict_is_the_judges_when_no_mechanical_row_speaks_on_the_artifact(cache):
+    """Spec 5 r8: the deciding verdict is the highest-authority backend
+    that HAS a verdict on this artifact, the same rule _machine_ranks
+    ranks by -- not the role's first backend regardless. A recording the
+    judge rejected with no mechanical row of its own showed the learner
+    "no verdict yet".
+    """
+    cache.rows.append(judge_row("rice", "recording", "a" * 64, False,
+                                rubric="R", evidence="a second speaker mid-clip"))
+    v = deciding_verdict(cache, "rice", "recording", "a" * 64,
+                         current_rubric={"recording-for-word": "R"})
+    assert v is not None and v.backend == "judge"
+    assert v.passed is False and v.evidence == "a second speaker mid-clip"
+
+
+def test_deciding_verdict_prefers_the_mechanical_row_when_both_speak(cache):
+    """Authority still decides where both have a verdict on the artifact:
+    mechanical outranks the judge on a recording role."""
+    cache.rows.append(judge_row("rice", "recording", "a" * 64, True,
+                                rubric="R", evidence="clean", ts=6))
+    cache.rows.append(_mechanical_row("rice", "a" * 64, False,
+                                      evidence="duration=6.2s", ts=5))
+    v = deciding_verdict(cache, "rice", "recording", "a" * 64,
+                         current_rubric={"recording-for-word": "R"})
+    assert v is not None and v.backend == "mechanical"
+    assert v.passed is False and v.evidence == "duration=6.2s"
+
+
+def test_deciding_verdict_is_none_when_neither_backend_speaks_on_the_artifact(cache):
+    """A verdict on a DIFFERENT artifact of the same need decides
+    nothing here."""
+    cache.rows.append(judge_row("rice", "recording", "b" * 64, False, rubric="R"))
+    assert deciding_verdict(cache, "rice", "recording", "a" * 64,
+                            current_rubric={"recording-for-word": "R"}) is None
+
+
 def test_deciding_verdict_is_the_judge_row_on_a_picture(cache):
     seed_artifact(cache, "rice", "b" * 64, ts=1, judge_pass=True)
     v = deciding_verdict(cache, "rice", "picture", "b" * 64, current_rubric={})

@@ -424,24 +424,23 @@ def judge_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str
 
 def deciding_verdict(cache: CacheReader, subject: str, kind: str, artifact_sha: str, *,
                      current_rubric: Mapping[str, str]) -> JudgeVerdict | None:
-    """The newest fresh verdict on `artifact_sha` by the backend that
-    decides (subject, kind)'s role -- the first non-learner entry of
-    AUTHORITY_ORDER[role] (spec 5 r7 section 1: what a rejected candidate
-    shows the learner as its reason). None when that backend has none.
+    """The newest fresh verdict on `artifact_sha` by the highest-authority
+    backend that HAS one on it: the first non-learner entry of
+    AUTHORITY_ORDER[role] with a fresh row about this artifact (spec 5 r7
+    section 1: what a rejected candidate shows the learner as its reason).
+    That is the rule _machine_ranks ranks the artifact by (spec 5 r8), so
+    the caption names the verdict that actually decided it -- a recording
+    only the judge rejected shows the judge's reason, not "no verdict
+    yet", and a recording a mechanical check rejected still shows the
+    check. None when no such backend has a fresh verdict on it.
     """
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
-    order = [b for b in AUTHORITY_ORDER.get(role, ("judge",)) if b != "learner"]
-    if not order:
+    decided = _role_row(rows, role, current_rubric, artifact_sha=artifact_sha,
+                        machine_only=True)
+    if decided is None:
         return None
-    backend = order[0]
-    mine = [r for r in rows if r.port == "assess" and r.backend == backend
-            and r.question.get("role") == role
-            and r.question.get("artifact_sha") == artifact_sha
-            and not _stale(r, current_rubric)]
-    if not mine:
-        return None
-    latest = max(mine, key=lambda r: r.ts)
+    backend, latest = decided
     return JudgeVerdict(artifact_sha=artifact_sha,
                         passed=_judge_rank(latest.answer.get("value")) > _JUDGE_FAIL_RANK,
                         evidence=latest.answer.get("evidence"), backend=backend)
@@ -1192,15 +1191,25 @@ def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
 # --- adoptable_drafts -------------------------------------------------------
 
 def _role_row(rows: Sequence[Answer], role: str,
-             current_rubric: Mapping[str, str]) -> tuple[str, Answer] | None:
-    """(deciding backend, its newest fresh row) for a text-only verdict on
-    `role`: the first backend in AUTHORITY_ORDER[role] with a fresh row
-    decides -- ties within that backend go to the newest row. None when
-    none has spoken.
+             current_rubric: Mapping[str, str], *, artifact_sha: str | None = None,
+             machine_only: bool = False) -> tuple[str, Answer] | None:
+    """(deciding backend, its newest fresh row) for a verdict on `role`:
+    the first backend in AUTHORITY_ORDER[role] with a fresh row decides --
+    ties within that backend go to the newest row. None when none has
+    spoken. Default is the text-only case (a draft's verdict names no
+    artifact); `artifact_sha` narrows to the rows about that one artifact
+    and `machine_only` drops "learner" from the order, together the rule
+    _machine_ranks ranks an artifact by (spec 3 section 6) and
+    `deciding_verdict` reports under (spec 5 r8).
     """
-    for backend in AUTHORITY_ORDER.get(role, ("judge",)):
+    order = AUTHORITY_ORDER.get(role, ("judge",))
+    if machine_only:
+        order = tuple(b for b in order if b != "learner")
+    for backend in order:
         spoken = [r for r in rows if r.port == "assess" and r.backend == backend
-                 and r.question.get("role") == role and not _stale(r, current_rubric)]
+                 and r.question.get("role") == role and not _stale(r, current_rubric)
+                 and (artifact_sha is None
+                      or r.question.get("artifact_sha") == artifact_sha)]
         if not spoken:
             continue
         return backend, max(spoken, key=lambda r: r.ts)

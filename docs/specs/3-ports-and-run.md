@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 28, proposed 2026-09-12 against principles r4 and architecture
+Revision 29, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -114,6 +114,10 @@ Revision log:
   Evidence: 246 of 824 words disputed on 2026-09-12; E4 blocks their
   cards; the pair search needs corroborated members. User approval
   2026-09-12.
+- r29 2026-09-13: RunReport.stayed_disputed counts the verdicts no engine
+  corroborated, shown per run in the stats screen's history. Evidence:
+  the first adjudication cycle left 205 of 246 words disputed and the
+  count was visible only in the run log. User approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -384,7 +388,8 @@ equal on segments and length with the tone settled by the tone engine on
 a monosyllable, corroborates the word as `adjudicated` and the run
 writes the pronunciation to words.yaml; otherwise the word stays
 `disputed`, logged and counted. RunReport.adjudicated counts the words
-written. Words are not needs: the pass owns no bucket.
+written; RunReport.stayed_disputed counts the verdicts no engine
+corroborated. Words are not needs: the pass owns no bucket.
 
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
@@ -558,6 +563,7 @@ always. The remaining fields count events, not needs.
 | drafted | drafts the sentence attempt produced |
 | retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |
 | adjudicated | words whose pronunciation this run wrote as adjudicated |
+| stayed_disputed | verdicts this run checked that no engine corroborated (the words stay disputed) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |

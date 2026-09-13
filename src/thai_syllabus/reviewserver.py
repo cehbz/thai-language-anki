@@ -820,6 +820,18 @@ def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
     return drills
 
 
+def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
+    """One run's history row: the runreport answer as it was recorded,
+    with the fields a row older than the field itself would be missing
+    filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`). The
+    page reads its columns off the oldest row, so a field missing there
+    is a column missing for every run.
+    """
+    return {**answer,
+            "adjudicated": answer.get("adjudicated", 0),
+            "stayed_disputed": answer.get("stayed_disputed", 0)}
+
+
 def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
                   session: SessionStats | None = None) -> dict[str, Any]:
     """Spec 5 section 3's stats, every count derived under `d`'s
@@ -837,7 +849,11 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 
     `pending`/`sentences_adopted` come from the newest run.py runreport
     row, else 0; `run_report_history` is every such row's answer, oldest
-    first.
+    first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
+    whether or not the row itself recorded them -- a row written before
+    r29 reads 0 for both, so the two counts are columns of every run in
+    the history and not only of the runs since (the page takes the
+    history's columns from its oldest row).
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -876,7 +892,7 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
         "drills": _drill_stats(d),
         "pending": runreport_answer.get("pending", 0),
         "sentences_adopted": runreport_answer.get("sentences_adopted", 0),
-        "run_report_history": [r.answer for r in run_reports(d.db)],
+        "run_report_history": [_history_row(r.answer) for r in run_reports(d.db)],
     }
 
 
@@ -1364,6 +1380,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       return;
     }
     var q = queueItems[qIdx];
+    // A new question starts clean -- the previous question's nominated
+    // candidate must not leak into this one's action 2.
+    window.__lastThumbClick = null;
     var box = el("div", { "class": "card-box" });
     if (q.gloss) { box.appendChild(el("div", { "class": "gloss-chip" }, q.gloss)); }
 
@@ -1398,11 +1417,17 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     var wrap = el("div", { "class": thumb ? "artifact artifact-thumb" : "artifact" });
     if (kind === "recording") {
       var audio = el("audio", { controls: "controls", src: art.url, "data-sha": art.sha });
-      audio.addEventListener("play", function () { window.__lastThumbClick = art; });
+      // Only a thumbnail (rejected/direction/challenger/reask candidate)
+      // arms action 2 -- the current artifact is what is being judged,
+      // not a candidate to switch to, so playing it must not nominate it.
+      audio.addEventListener("play", function () { if (thumb) { window.__lastThumbClick = art; } });
       wrap.appendChild(audio);
     } else {
       var img = el("img", { src: art.url, "data-sha": art.sha });
-      img.addEventListener("click", function () { window.__lastThumbClick = art; openOverlay(art.url); });
+      img.addEventListener("click", function () {
+        if (thumb) { window.__lastThumbClick = art; }
+        openOverlay(art.url);
+      });
       wrap.appendChild(img);
     }
     if (caption) { wrap.appendChild(el("div", { "class": "verdict" }, caption)); }
@@ -1466,7 +1491,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       // Spec 5 r7: with nothing current there is nothing to rate 3 or 4;
       // the question is pick one of the rejected candidates, or none.
       box.appendChild(el("div", { "class": "empty" },
-        "no current " + q.kind + ": each candidate below failed its check (the reason is under it) -- "
+        "no current " + q.kind + ": each candidate below failed or has yet to pass its check (the reason is under it) -- "
         + "pick one (click or play it, then 2) to use it anyway, or 1 for none of these; "
         + "n gives the next search a direction"));
     }
@@ -1825,7 +1850,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       panel.appendChild(table);
 
       // RunReport history (spec 5 section 3): every run.py row, oldest
-      // first, one table row per run with every field the row carries.
+      // first, one table row per run with every field the row carries --
+      // `adjudicated` and `stayed_disputed` (spec 3 r29) among them, on
+      // every row, compute_stats having filled them in where an older
+      // row recorded neither.
       panel.appendChild(el("h3", {}, "Run history"));
       var history = stats.run_report_history;
       if (history.length) {

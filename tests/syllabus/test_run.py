@@ -556,7 +556,7 @@ def _spy_on_the_adjudication_ask(monkeypatch) -> list[list[str]]:
 
 
 def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_words_yaml(
-        tmp_path, fake_search, fake_batch, monkeypatch):
+        tmp_path, fake_search, fake_batch, monkeypatch, caplog):
     disputed = word("rice", "ข้าว", "rice", corroboration="disputed",
                     syllables=(syl(onset="k", vowel="a", coda="w", length="short", tone="mid"),))
     root = _deck(tmp_path, (disputed, FISH),
@@ -567,7 +567,8 @@ def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_word
     seen = _spy_on_the_adjudication_ask(monkeypatch)
     r1 = run(ctx, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
-    r2 = run(ctx, budgets={})
+    with caplog.at_level(logging.INFO, logger="thai_syllabus.run"):
+        r2 = run(ctx, budgets={})
     assert r2.adjudicated == 1
     rows = load_words(root / "curated" / "words.yaml")
     assert [w.id for w, _c in rows] == ["rice", "fish"]   # no row lost, no row moved
@@ -578,6 +579,9 @@ def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_word
     # adjudication ask ran, so the same run never asks about it again.
     assert seen == [["rice"], []]
     assert ctx.syllabus.word(WordId("rice")).pron.corroboration == "adjudicated"
+    # everything corroborated -- no "stays disputed" summary line.
+    assert "not corroborated by an engine; the words stay disputed" not in caplog.text
+    assert r2.stayed_disputed == 0
 
 
 def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
@@ -596,6 +600,16 @@ def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
     assert "not corroborated" in caplog.text
     rice = next(w for w, _c in load_words(root / "curated" / "words.yaml") if w.id == "rice")
     assert rice.pron.corroboration == "disputed"
+    summary = [r for r in caplog.records
+               if "not corroborated by an engine; the words stay disputed" in r.message]
+    assert len(summary) == 1
+    assert summary[0].levelno == logging.WARNING
+    assert summary[0].message == (
+        "adjudication: 1 of 1 verdicts not corroborated by an engine; the words stay disputed")
+    # Spec 3 r29: the count is a report field too, so the trend is
+    # visible per run and not only in this run's own log.
+    assert r2.stayed_disputed == 1
+    assert ctx.db.latest("run", "runreport", RunReportKey()).answer["stayed_disputed"] == 1
 
 
 # --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
@@ -2288,7 +2302,8 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
-                           "sentences_adopted", "adjudicated", "drafted", "retired", "excluded",
+                           "sentences_adopted", "adjudicated", "stayed_disputed",
+                           "drafted", "retired", "excluded",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences"}
 

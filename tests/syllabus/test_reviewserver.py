@@ -1530,8 +1530,10 @@ def ctx_two_words_one_pictured(derivations, db, w1):
 
 
 def _run_report_answer(**overrides):
-    """Every field run._persist_report's answer carries (spec 3 section
-    7), defaulted so a test only names the fields it cares about.
+    """The fields run._persist_report's answer carried before spec 3 r29
+    (spec 3 section 7), defaulted so a test only names the fields it
+    cares about -- an older row, the shape a deck's early runs left
+    behind, is exactly this with nothing overridden.
     """
     answer = {"attempted": 0, "improved": 0, "exhausted": 0, "available": 0,
              "pending": 0, "sentences_adopted": 0, "drafted": 0,
@@ -1563,6 +1565,31 @@ def test_stats_cover_every_need(ctx_two_words_one_pictured):
 def test_stats_list_every_run_with_excluded_and_unreachable(ctx_with_two_runs):
     hist = rs.compute_stats(ctx_with_two_runs)["run_report_history"]
     assert len(hist) == 2 and {"excluded", "unreachable"} <= hist[0].keys()
+
+
+@pytest.fixture
+def ctx_with_an_old_and_a_new_run(derivations, db):
+    """An older runreport row from before spec 3 r29 (neither
+    `adjudicated` nor `stayed_disputed` on it) and a newer one carrying
+    both -- the mix a deck that has been running since before r29 holds.
+    """
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"}, answer=_run_report_answer(), cost=0.0)
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"},
+             answer=_run_report_answer(adjudicated=3, stayed_disputed=5), cost=0.0)
+    return derivations
+
+
+def test_stats_history_carries_adjudicated_and_stayed_disputed_per_run(
+        ctx_with_an_old_and_a_new_run):
+    """Spec 3 r29: both counts are per-run columns of the run history,
+    and a row written before r29 reads as 0 rather than dropping the
+    column for every run (the page takes its columns from the oldest
+    row).
+    """
+    hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
+    assert [(r["adjudicated"], r["stayed_disputed"]) for r in hist] == [(0, 0), (3, 5)]
 
 
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------

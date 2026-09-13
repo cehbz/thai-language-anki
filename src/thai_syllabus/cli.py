@@ -103,6 +103,7 @@ def _print_run_report(cycle: int, report: RunReport) -> None:
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
          f"adjudicated={report.adjudicated} "
+         f"stayed_disputed={report.stayed_disputed} "
          f"drafted={report.drafted} retired={report.retired} excluded={report.excluded} "
          f"unserved={report.unserved} budgeted={report.budgeted} "
          f"deferred={report.deferred} preferences={report.preferences} "
