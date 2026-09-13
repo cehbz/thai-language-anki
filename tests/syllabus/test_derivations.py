@@ -2072,6 +2072,44 @@ def test_adoptable_drafts_never_re_adopts_a_retired_text(cache):
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
+def _comment_veto_row(subject, comment_sha, version="1", ts=None):
+    """The learner's strike on one reading (learner.append_comment_veto),
+    under the comment's own subject -- not the draft's."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="assess", backend="learner", key=f"comment-veto:{comment_sha}:{version}",
+                 key_sha="x", subject=subject,
+                 question={"kind": "comment-veto", "comment_sha": comment_sha,
+                          "prompt_version": version, "subject_kind": "word"},
+                 answer={"vetoed": True}, cost=0.0, ts=ts)
+
+
+def test_a_replacement_draft_is_unadoptable_once_its_reading_is_struck(cache):
+    """Spec 5 r10: a replacement sentence the comment pass drafted lives
+    under DRAFT_SUBJECT marked with the reading that produced it, while
+    the strike lands under the comment's own subject -- record's global
+    veto fold is what connects the two, so the draft stops being
+    adoptable.
+    """
+    _drafted(cache)
+    cache.rows[-1].question.update({"comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1"})
+    cache.rows += [_sentence_verdict("judge", True, rubric="R")]
+    assert len(adoptable_drafts(cache, _draft_syllabus(),
+                                current_rubric={"sentence-for-target": "R"})) == 1
+    cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
+    assert adoptable_drafts(cache, _draft_syllabus(),
+                            current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_a_drafters_draft_survives_a_strike_on_some_other_reading(cache):
+    """A drafting ask's row names no reading at all, so no strike reaches
+    it -- only the rows a reading actually produced go."""
+    _drafted(cache)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R")]
+    cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
+    assert [s.text for s, _ in adoptable_drafts(
+        cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})] == ["กิน"]  # กิน: eat
+
+
 # --- refused_drafts: the texts the judge failed since the last adoption ----
 
 def _refused_draft_row(text, ts=None):
@@ -2121,6 +2159,104 @@ def test_refused_drafts_lists_a_retired_text_with_its_own_evidence(cache):
     cache.rows.append(_retirement_row(text_sha(text)))
     refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
     assert refused == [(text, "retired: recording exhausted")]
+
+
+def test_refused_drafts_reads_a_learner_retirements_reason_and_hint_off_the_row(cache):
+    """Spec 3 r30 section 5: the comment pass retires a sentence with the
+    learner's own reason and replacement hint (record.retirement_evidence),
+    not F13's fixed wording -- the drafter is told why, and what to draft
+    instead."""
+    text = "กิน"   # กิน: eat
+    cache.rows.append(_refused_draft_row(text))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(text)))
+    row = _retirement_row(text_sha(text))
+    row.question.update({"reason": "unnatural", "replacement_hint": "use a particle", "text": text})
+    cache.rows.append(row)
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(text, "retired: unnatural; replacement hint: use a particle")]
+
+
+def test_refused_drafts_lists_a_retired_text_that_was_never_a_draft_when_the_row_carries_it(cache):
+    """A migrated or replacement sentence has no draft row; its retirement
+    row carries the text, so the drafter is still told not to propose it."""
+    text = "ข้าว"   # ข้าว: rice
+    row = _retirement_row(text_sha(text))
+    row.question.update({"reason": "bad gloss", "text": text})
+    cache.rows.append(row)
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(text, "retired: bad gloss")]
+
+
+def test_refused_drafts_drops_a_struck_replacement_the_judge_failed(cache):
+    """The other side of the r10 strike (record.sentence_drafts): a
+    replacement sentence whose reading was struck stops being a draft at
+    all, so the failed-verdict list loses it too. That is the right
+    reading of "striking a reading unmakes what it did" -- the text was
+    never the drafter's proposal, so there is nothing to warn it off; a
+    drafter's own failed draft beside it is untouched.
+    """
+    struck, mine = "ข้าว", "กิน"   # ข้าว: rice, กิน: eat
+    replacement = _refused_draft_row(struck)
+    replacement.question.update({"comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1"})
+    cache.rows.append(replacement)
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(struck),
+                                        evidence="not a sentence"))
+    cache.rows.append(_refused_draft_row(mine))
+    cache.rows.append(_sentence_verdict("judge", False, rubric="R", subject=text_sha(mine),
+                                        evidence="too formal"))
+    cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == [(mine, "too formal")]
+
+
+def test_refused_drafts_still_lists_a_struck_replacement_that_was_adopted_and_retired(cache):
+    """Losing the draft row does not lose the retirement: a replacement
+    that was adopted before its reading was struck, and has since been
+    retired, is still told to the drafter through the retirement row's
+    own text -- the fallback for a retired text that was never a draft
+    covers a text that has stopped being one.
+    """
+    text = "ข้าว"   # ข้าว: rice
+    replacement = _refused_draft_row(text)
+    replacement.question.update({"comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1"})
+    cache.rows.append(replacement)
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(text)))
+    row = _retirement_row(text_sha(text))
+    row.question.update({"reason": "recording exhausted", "text": text})
+    cache.rows.append(row)
+    cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == [
+        (text, "retired: recording exhausted")]
+
+
+def test_refused_drafts_leaves_out_a_row_only_retirement_that_carries_no_text(cache):
+    """An F13 row written before r30 names no text: there is nothing to
+    tell the drafter not to propose, so it is silently left out rather
+    than listed as a text_sha."""
+    cache.rows.append(_retirement_row(text_sha("ข้าว")))   # ข้าว: rice
+    assert refused_drafts(cache, _draft_syllabus(),
+                          current_rubric={"sentence-for-target": "R"}) == []
+
+
+def test_refused_drafts_lists_a_row_only_retirement_once_and_after_the_drafts(cache):
+    """A retired text that IS a draft is listed from its draft row, not
+    twice; the row-only retirements follow the drafts, deterministically
+    ordered by text_sha, and share the same cap."""
+    drafted, row_only = "กิน", "ข้าว"   # กิน: eat, ข้าว: rice
+    cache.rows.append(_refused_draft_row(drafted))
+    cache.rows.append(_sentence_verdict("judge", True, rubric="R", subject=text_sha(drafted)))
+    both = _retirement_row(text_sha(drafted))
+    both.question.update({"text": drafted})
+    cache.rows.append(both)
+    other = _retirement_row(text_sha(row_only))
+    other.question.update({"reason": "bad gloss", "text": row_only})
+    cache.rows.append(other)
+    refused = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    assert refused == [(drafted, "retired: recording exhausted"), (row_only, "retired: bad gloss")]
+    limited = refused_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"},
+                             limit=1)
+    assert limited == [(drafted, "retired: recording exhausted")]
 
 
 def test_refused_drafts_combines_retired_and_failed_texts_under_one_cap(cache):

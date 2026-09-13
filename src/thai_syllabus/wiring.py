@@ -8,7 +8,8 @@ which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
 
-The llm Provide backends (llm-sentence/llm-phrase/llm-entry/llm-parse) ride
+The llm Provide backends (llm-sentence/llm-phrase/llm-entry/llm-parse/
+llm-comment) ride
 the drafter's transport from drafter.transport (cli by default; api rides
 the judge's account, model, price and thinking), one registered name per
 producer.
@@ -206,17 +207,29 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     # item's phrase (record.parse_phrases non-empty) -- an answer
     # phrasing none of them (spec 3 section 5, fix round 2 finding 2) is
     # not a cacheable answer, so a stable lacking set never turns into a
-    # permanent empty cache hit; llm-entry keeps LlmBackend's default,
-    # which recognizes any text.
+    # permanent empty cache hit; llm-comment recognizes only a completion
+    # that parses to at least one well-formed reading
+    # (record.parse_comment_readings non-empty, spec 3 r30 section 5) --
+    # a recognizer sees the completion alone and cannot know which
+    # comments the prompt handed out, so which readings are answers to
+    # this ask is the run's question, not this one's: the run reads the
+    # answer against its own handed map (unhanded shas dropped) and
+    # records a comment the answer passes over as read with no action
+    # and one unactionable line, so a hallucinated or partial answer can
+    # neither act on a comment nobody asked about nor stall a handed
+    # one; llm-entry keeps LlmBackend's default, which recognizes any
+    # text.
     recognizers: dict[str, Callable[[str], bool]] = {
         "llm-sentence": _recognize_drafting_answer,
         "llm-parse": lambda text: bool(record.parses_in(text)),
         "llm-phrase": lambda text: bool(record.parse_phrases(text)),
+        "llm-comment": lambda text: bool(record.parse_comment_readings(text)),
     }
     for producer, name in (("sentence-drafter", "llm-sentence"),
                            ("phrase-drafter", "llm-phrase"),
                            ("entry-drafter", "llm-entry"),
-                           ("sentence-parser", "llm-parse")):
+                           ("sentence-parser", "llm-parse"),
+                           ("comment-reader", "llm-comment")):
         kwargs = {"recognize": recognizers[name]} if name in recognizers else {}
         backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
                                     transport=drafter_transport,

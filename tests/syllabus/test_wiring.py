@@ -319,6 +319,22 @@ def test_llm_phrase_recognizes_only_a_completion_naming_at_least_one_phrase(cfg,
         json.dumps({"phrases": [{"subject": "rice", "phrase": "bowl of rice"}]})) is True
 
 
+def test_llm_comment_recognizes_only_a_completion_reading_at_least_one_comment(cfg, db,
+                                                                               media_store):
+    """Spec 3 r30 section 5: llm-comment's LlmBackend.recognize rejects a
+    completion record.parse_comment_readings cannot read as a reading --
+    an empty `{"readings": []}` included, the same rule llm-phrase
+    follows: a permanent empty-answer cache hit would otherwise leave
+    every unread comment unread forever."""
+    backends = build_provider(cfg, db, media_store)._backends
+    assert backends["llm-comment"].producer == "comment-reader"
+    assert backends["llm-comment"].recognize("no json here") is False
+    assert backends["llm-comment"].recognize('{"readings": []}') is False
+    assert backends["llm-comment"].recognize(
+        '{"readings": [{"comment": "c1c1c1c1c1c1c1c1", "reading": "ok", "actions": [], '
+        '"unactionable": []}]}') is True
+
+
 def test_llm_sentence_recognizes_a_no_fit_answer(cfg, db, media_store):
     """Spec 3 r19 section 5: `{"sentences": [], "reason": "..."}` is an
     answer, not an unusable completion -- the provide row is cached and

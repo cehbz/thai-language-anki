@@ -30,10 +30,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
-from . import record
-from .assessor import UNTRUSTED, AssessQuestion, Assessor, Excluded, PreparedQuestion, deck_field
+from . import ipa, record
+from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnreachable,
+                       PreparedQuestion, deck_field)
 from .authority import role_for
-from .cachekeys import AttemptOutcomeKey, PhraseKey, RenditionAskKey, rendition_identity
+from .cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
+                        RenditionAskKey, RetirementKey, rendition_identity, sha)
+from .compile import card_meaning
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
     DEFAULT_SENTENCE_NOTHING_CAP,
@@ -48,12 +51,14 @@ from .derivations import (
     sentence_exhausted,
     unjudged_candidates,
 )
-from .entities import Target, Word, is_corroborated
+from .entities import Clauses, Target, Word, clauses_to_json, element_word, is_corroborated
 from .ids import PairId, WordId
+from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
 from .media import Speaker
 from .phonology import Engines
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
-from .record import DRAFT_SUBJECT, PHRASE_SUBJECT
+from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PARSE_SUBJECT,
+                     PHRASE_SUBJECT)
 from .safety import Guard
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
@@ -64,7 +69,8 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
-           "phrase_attempt", "picture_query_for", "adjudication_attempt",
+           "phrase_attempt", "picture_query_for", "adjudication_attempt", "retire_sentence",
+           "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
 
@@ -86,6 +92,14 @@ DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK = 5
 # fill -- more is a word list in disguise, the thing sentences exist to
 # avoid; met words beyond that are filler and free.
 DEFAULT_SENTENCE_TARGETS_PER_SENTENCE = 3
+
+# The comment pass's own cap (spec 3 r30 section 5) on how many unread
+# comments one reading ask is handed, oldest first: one prompt carries a
+# full card's worth of facts per comment, and a backlog of hundreds would
+# be one unreadable ask. A comment held back keeps no reading row, so the
+# next run hands it. Not config: the prompt's shape decides it, the way
+# the sentence attempt's own caps above do.
+COMMENTS_PER_ASK = 40
 
 # Cheapest source first, per ARTIFACT kind (spec 3 section 5). A sentence's
 # own recording and scene picture are the same artifact kinds a word's are;
@@ -229,6 +243,21 @@ class AttemptResult:
     # their sentence need is exhausted (spec 3 r19 section 5): neither
     # attempted nor deferred -- the run counts them `exhausted`
     subjects_exhausted: frozenset[str] = frozenset()
+    # the comment pass (spec 3 r30 section 5): comments read this run,
+    # actions taken, requests the deck could not act on (refused actions
+    # included); `retired` counts the sentences it deleted -- events,
+    # all outside the run's needs identity
+    comments_read: int = 0
+    comment_actions: int = 0
+    comment_unactionable: int = 0
+    retired: int = 0
+    # the judge could not be reached AFTER this attempt had already
+    # written rows (the comment pass's own check of its replacement
+    # drafts): the counts above are real and must reach the report, so
+    # the attempt returns instead of raising and the run collects the
+    # result first, then takes its judge-death path (spec 3 r30 section
+    # 5). A death before anything was written still raises.
+    judge_unreachable: bool = False
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -631,6 +660,534 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
                                 "subject_kind": subject_kind},
                       answer={"phrase": phrase})
     return AttemptResult(attempted=True, spend=spend)
+
+
+# --- retirement (Sentence): the one mechanism both callers use --------------
+
+def retire_sentence(ctx: Sourcing, text_sha: str, *, reason: str,
+                    replacement_hint: str | None = None,
+                    derived_from: CommentRef | None = None) -> None:
+    """Retire one adopted Sentence (spec 3 section 5; F13 and the comment
+    pass, r30): one retirement row first (port "attempt", backend "run",
+    cachekeys.RetirementKey -- an append is a checkpoint, and the row is
+    what record.retirements reads once the sentences row is gone: the
+    text is never re-adopted and the drafter is told not to propose it,
+    with the reason and the replacement hint beside it), then the
+    sentences row deleted and reported to the writing command's Guard,
+    and `ctx.syllabus` replaced without it so the rest of this pass and
+    every later cycle over the same ctx read the deck as it now is (its
+    Targets reopen). `text` goes on the row when ctx.syllabus still
+    holds the sentence. The caller decides whether to retire and keeps
+    its own counts.
+    """
+    rows = record.rows_for(ctx.db, text_sha, "recording")
+    text = next((s.text for s in ctx.syllabus.sentences if s.text_sha == text_sha), None)
+    question: dict[str, Any] = {"kind": "retirement", "subject_kind": "sentence",
+                                "reason": reason, "candidates": len(record.candidate_shas(rows))}
+    if text is not None:
+        question["text"] = text
+    if replacement_hint:
+        question["replacement_hint"] = replacement_hint
+    if derived_from is not None:
+        question["comment_sha"] = derived_from.comment_sha
+        question["prompt_version"] = derived_from.prompt_version
+    ctx.db.append(port="attempt", backend="run", key=RetirementKey(text_sha), subject=text_sha,
+                  question=question, answer={"retired": True})
+    ctx.db.delete_sentence(text_sha)
+    ctx.syllabus = replace(
+        ctx.syllabus, sentences=tuple(s for s in ctx.syllabus.sentences if s.text_sha != text_sha))
+    if ctx.guard is not None:
+        ctx.guard.removed("sentences", [text_sha])
+    _log.info("retired sentence %s (%s): %s (%d candidates)", text_sha, text or "?", reason,
+              question["candidates"])
+
+
+# --- comments (any subject): the reading pass ------------------------------
+
+_FAMILY_OF_SUBJECT_KIND = {"word": "word", "sentence": "sentence", "pair": "minimal_pair",
+                          "grapheme": "grapheme"}
+
+# What a handed comment the answer named no reading for is recorded as
+# (design decision 7): the prompt is keyed by its own text, so the very
+# same handed set would read the very same cached answer for ever. One
+# reading row with no action and this one unactionable line counts it,
+# shows it (record.reading_view) and closes it.
+_NO_READING = "the model gave no reading"
+
+# What a comment whose subject the syllabus cannot account for is
+# recorded as: the deck can say nothing about a card whose subject is
+# gone (a retired sentence), and a comment whose own recorded
+# subject_kind disagrees with what the syllabus holds is a row this pass
+# refuses to read rather than build facts from the wrong family.
+_SUBJECT_GONE = "subject not in the syllabus"
+_SUBJECT_KIND_MISMATCH = "subject kind mismatch"
+
+
+def _subject_kind_in(syllabus: Syllabus, subject: str) -> str | None:
+    """What `subject` is in this syllabus, by identity alone: a word id,
+    a sentence text_sha, a pair id or a grapheme symbol; None when gone
+    (a retired sentence's comment is not handed)."""
+    if syllabus.find_word(WordId(subject)) is not None:
+        return "word"
+    if any(s.text_sha == subject for s in syllabus.sentences):
+        return "sentence"
+    if any(p.id == subject for p in syllabus.pairs):
+        return "pair"
+    if any(g.symbol == subject for g in syllabus.graphemes):
+        return "grapheme"
+    return None
+
+
+def _handable(ctx: Sourcing, comment: record.Comment) -> tuple[str | None, str | None]:
+    """(subject_kind, refusal) for one comment: the kind the SYLLABUS
+    resolves its subject to (`_subject_kind_in`), never the kind the row
+    recorded -- a row is data, and building a word's facts for a subject
+    the syllabus holds as a grapheme would raise out of the whole pass.
+    The recorded kind is checked against it and a disagreement refuses
+    the comment rather than guessing which is right; so does a subject
+    the syllabus no longer holds. A refusal is a reading row saying so
+    (never an exception, and never an ask).
+    """
+    resolved = _subject_kind_in(ctx.syllabus, comment.subject)
+    if resolved is None:
+        return None, _SUBJECT_GONE
+    if comment.subject_kind is not None and comment.subject_kind != resolved:
+        _log.warning("comment %s on %s: recorded subject_kind %r, syllabus says %r",
+                     comment.comment_sha, comment.subject, comment.subject_kind, resolved)
+        return None, _SUBJECT_KIND_MISMATCH
+    return resolved, None
+
+
+def _card_type(comment: record.Comment, subject_kind: str) -> tuple[str, str]:
+    """The card type label and its one-line meaning the reader is handed
+    (compile.CARD_MEANINGS); a session comment names its question."""
+    if comment.card_kind == "question":
+        return (f"question ({comment.question_kind}) about the subject's {comment.artifact_kind}",
+                "A session question about that artifact; the subject's compiled cards were shown "
+                "above it.")
+    family = _FAMILY_OF_SUBJECT_KIND[subject_kind]
+    return (f"{family} / {comment.card_kind}",
+            card_meaning(family, comment.card_kind) or "(no meaning on record for this card type)")
+
+
+def _subject_facts(ctx: Sourcing, subject: str, subject_kind: str) -> list[str]:
+    """The facts about the commented card's subject the reader is given,
+    every deck field delimited as untrusted data."""
+    syllabus = ctx.syllabus
+    if subject_kind == "word":
+        w = _word_of(ctx, subject)
+        return [f"word id: {w.id}", f"thai: {deck_field(w.thai)}",
+                f"meaning: {deck_field(w.meaning)}", f"pronunciation: {ipa.render(w.pron)}",
+                f"category: {syllabus.category_of(w.id) or '(none)'}"]
+    if subject_kind == "sentence":
+        s = syllabus.sentence(subject)
+        def gloss_of(e) -> str:
+            return f"{element_word(e)} ({deck_field(syllabus.word(element_word(e)).meaning)})"
+
+        clauses = " ".join("[" + ", ".join(gloss_of(e) for e in clause) + "]"
+                           for clause in s.clauses)
+        fills = ", ".join(str(t.id) for t in syllabus.fill_set(s)) or "(none)"
+        return [f"text: {deck_field(s.text)}", f"gloss: {deck_field(s.gloss)}",
+                f"clauses (word id with its gloss): {clauses}", f"fills targets: {fills}"]
+    if subject_kind == "pair":
+        pair = syllabus.pair(PairId(subject))
+        members = "; ".join(
+            f"{m}: {deck_field(syllabus.word(m).thai)} ({deck_field(syllabus.word(m).meaning)})"
+            for m in pair.members)
+        return [f"minimal pair {pair.id} on confusion {pair.confusion}", f"members: {members}"]
+    if subject_kind == "grapheme":
+        g = next((g for g in syllabus.graphemes if g.symbol == subject), None)
+        if g is not None:
+            return [f"grapheme {deck_field(g.symbol)} ({g.kind}), sound {g.sound}, "
+                    f"keyword word {g.keyword}"]
+    # `_handable` resolves the kind off the syllabus itself, so this is
+    # unreachable from the pass: an explicit refusal by name, never a
+    # bare StopIteration or KeyError out of a fact lookup.
+    raise ValueError(f"comment subject {subject!r} is no {subject_kind!r} this syllabus holds")
+
+
+def _shown_facts(ctx: Sourcing, comment: record.Comment) -> list[str]:
+    """The artifacts the commented card actually showed (spec 5 r5's own
+    `shown`), each with what there is to say about it."""
+    out: list[str] = []
+    picture = comment.shown.get("picture")
+    if picture:
+        # the query the last picture search carried, else the one on
+        # record for the next (record.latest_phrase: direction >
+        # suggestion > phrase) -- read over the subject's WHOLE row set,
+        # since a learner direction is a row of its own kind and
+        # `rows_for(..., "picture")` cannot see it (picture_query_for
+        # reads assessments_of for the same reason)
+        rows = record.without_vetoed_readings(ctx.db.assessments_of(comment.subject))
+        pictures = [r for r in rows if r.question.get("kind") == "picture"]
+        query = record.latest_query(pictures) or record.latest_phrase(rows)
+        out.append(f"picture {picture} (search query: {deck_field(query) if query else '(none)'})")
+    for sha_ in comment.shown.get("recordings") or []:
+        prov = ctx.db.media_provenance(sha_) or {}
+        out.append(f"recording {sha_} (source: {prov.get('source') or 'unknown'})")
+    return out or ["(no artifact shown)"]
+
+
+_COMMENT_VOCABULARY = (
+    "Actions you may take, each a JSON object with \"action\" and the parameters shown:\n"
+    "- direction(kind: picture|recording, text): the English phrase the subject's next search of "
+    "that artifact kind uses (a picture direction is the next image-search query).\n"
+    "- retire_sentence(reason, replacement_hint): delete the sentence from the deck (sentence "
+    "subjects only); its Targets reopen; the hint guides the next draft.\n"
+    "- replacement_sentence(thai, gloss): a replacement sentence in Thai using only the deck's "
+    "vocabulary, with an English gloss stating exactly what it says; it is parsed and judged "
+    "like any draft.\n"
+    "- rate(kind: picture|recording, value: 1..4): the learner's rating of the shown artifact "
+    "(1 unacceptable, 2 unacceptable but use this one, 3 acceptable, 4 good).\n"
+    "- gloss_on(word): show the English gloss on that word's picture front; the word must be "
+    "the comment's own subject.\n"
+    "- none(remark): the comment asks for nothing the deck does.\n"
+    "Anything else the comment asks for goes under \"unactionable\" as text.")
+
+
+def _comment_prompt(ctx: Sourcing, handed: Sequence[tuple[record.Comment, str]]) -> str:
+    """The reading prompt (spec 3 r30 section 5): per comment, its sha,
+    text, card type with meaning, subject facts and shown artifacts,
+    every deck field delimited as untrusted data; the action vocabulary
+    once; the answer shape."""
+    blocks = []
+    for comment, subject_kind in handed:
+        label, meaning = _card_type(comment, subject_kind)
+        lines = [f"- comment {comment.comment_sha}: {deck_field(comment.text)}",
+                 f"  card: {label} -- {meaning}",
+                 f"  subject ({subject_kind}):"]
+        lines += [f"    {fact}" for fact in _subject_facts(ctx, comment.subject, subject_kind)]
+        lines += ["  shown:"] + [f"    {fact}" for fact in _shown_facts(ctx, comment)]
+        blocks.append("\n".join(lines))
+    return (
+        "A learner wrote a comment on a flashcard of a Thai deck. For each comment, say in one "
+        "line what the learner means with respect to that card, then list the actions the deck "
+        "should take from the vocabulary below, in order.\n"
+        f"{UNTRUSTED}\n"
+        f"{_COMMENT_VOCABULARY}\n"
+        "Comments:\n" + "\n".join(blocks) + "\n"
+        'Output JSON only: {"readings": [{"comment": "<sha as given>", "reading": "<one line>", '
+        '"actions": [{"action": "...", ...}], "unactionable": ["..."]}]}')
+
+
+def _artifact_for(comment: record.Comment, kind: str) -> tuple[str | None, str | None]:
+    """The shown artifact a rate action is about: (sha, refusal)."""
+    if kind == "picture":
+        sha_ = comment.shown.get("picture")
+        return (sha_, None) if sha_ else (None, "the card showed no picture")
+    recordings = list(comment.shown.get("recordings") or [])
+    if len(recordings) == 1:
+        return recordings[0], None
+    return None, f"the card showed {len(recordings)} recordings"
+
+
+def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None = None
+                  ) -> str | None:
+    """Why a drafted `sentence` could not be adopted, or None when it
+    could: the Sentence invariant (Syllabus.check_sentence), the clause
+    cap, at least one still-open Target filled, and the per-sentence
+    Target cap (spec 3 section 5, r27). The one acceptance test every
+    pass that can raise a draft's judge question applies --
+    `sentence_attempt`, the comment pass's `replacement_sentence`, and
+    the run's D2 recovery over the drafts on record -- so no pass asks
+    the judge about a draft another would refuse, and the reason reads
+    the same wherever it is reported (a reading row's `refused`, a log
+    line).
+
+    `open_targets` is the caller's own snapshot of the Targets still open
+    (`sentence_attempt` reads it once for the whole run); None reads
+    gaps() here.
+    """
+    try:
+        ctx.syllabus.check_sentence(sentence)
+    except ValueError as e:
+        return str(e)
+    if len(sentence.clauses) > ctx.sentence_max_clauses:
+        # spec 3 section 5: more clauses than the cap refuses the draft
+        # like the Sentence invariant above -- local and mechanical, the
+        # provide row keeping it.
+        return f"{len(sentence.clauses)} clauses (cap {ctx.sentence_max_clauses})"
+    if open_targets is None:
+        open_ids = set(ctx.syllabus.gaps().unfilled_targets)
+        open_targets = [t for t in ctx.syllabus.targets if t.id in open_ids]
+    fills = ctx.syllabus.fill_set(sentence)
+    filled = [t for t in open_targets if t in fills]
+    if not filled:
+        return "fills no open Target"
+    if len(filled) > ctx.sentence_targets_per_sentence:
+        # spec 3 r27 section 5: more open Targets than the cap is a word
+        # list in disguise -- refused like the clause cap; met words
+        # beyond the filled ones are filler and free.
+        return f"{len(filled)} targets (cap {ctx.sentence_targets_per_sentence})"
+    return None
+
+
+def _refused(action: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    return {**action, "outcome": "refused", "reason": reason}
+
+
+def _done(action: Mapping[str, Any]) -> dict[str, Any]:
+    return {**action, "outcome": "done"}
+
+
+def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
+                       parses: Mapping[str, Clauses], ref: CommentRef,
+                       questions: list[AssessQuestion]) -> dict[str, Any]:
+    """replacement_sentence: the parsed clauses become a draft accepted
+    the way sentence_attempt accepts one (invariant, clause cap, fills an
+    open Target, target cap), appended as the same provide row under
+    DRAFT_SUBJECT that a drafting ask leaves -- record.sentence_drafts
+    reads it back -- with its sentence-for-target question collected for
+    the run's batch; adoption is the next run's, once the verdict lands.
+    """
+    text = action["thai"].strip()
+    clauses = parses.get(text)
+    if clauses is None:
+        return _refused(action, "no parse returned for this text")
+    draft = record.SentenceDraft(clauses=clauses, text=text, gloss=action["gloss"].strip())
+    if draft.text_sha in {s.text_sha for s in ctx.syllabus.sentences}:
+        return _refused(action, "already adopted")
+    sentence = record.draft_sentence(draft, ctx.today)
+    refusal = draft_refusal(ctx, sentence)
+    if refusal is not None:
+        return _refused(action, refusal)
+    ctx.db.append(port="provide", backend="llm",
+                  key=ProvideKey(source="llm-comment", kind="sentence", query=draft.text_sha),
+                  subject=DRAFT_SUBJECT,
+                  question={"provides": "sentence", "kind": "sentence", "subject_kind": "sentence",
+                            "comment_sha": ref.comment_sha, "prompt_version": ref.prompt_version},
+                  answer={"items": [json.dumps({"sentences": [
+                      {"clauses": clauses_to_json(clauses), "text": text, "gloss": draft.gloss}]},
+                      ensure_ascii=False)]})
+    role = role_for("sentence")
+    last_word = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence)).thai
+    questions.append(AssessQuestion(
+        subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
+        params={"text": text, "gloss": draft.gloss, "word": last_word},
+        kind="sentence", subject_kind="sentence"))
+    return _done(action)
+
+
+# The subject kinds that have a picture and a recording need of their own
+# (derivations.available_needs): a `direction` or `rate` names one of
+# those two artifact kinds (record._COMMENT_ARTIFACT_KINDS) and nothing
+# else, and only a word and a sentence have such a need. Under any other
+# subject `authority.role_for` falls back to the word role, so the row
+# would be written under a role no fold over that subject ever reads --
+# dead, while the screen reports an action taken. A pair's rendition
+# would be the one other judged artifact, but the comment vocabulary
+# cannot name it, so it needs no exception here.
+_ARTIFACT_SUBJECT_KINDS = frozenset({"word", "sentence"})
+
+
+def _act(ctx: Sourcing, comment: record.Comment, subject_kind: str, action: Mapping[str, Any],
+         parses: Mapping[str, Clauses], ref: CommentRef,
+         questions: list[AssessQuestion]) -> dict[str, Any]:
+    """One action executed as its existing typed row, marked with the
+    comment; the record of what happened goes on the reading row."""
+    name = action["action"]
+    if name == "none":
+        # design decision 5: an act with no side effect -- a remark --
+        # and still an action taken, never an unactionable request.
+        return _done(action)
+    if name in ("direction", "rate") and subject_kind not in _ARTIFACT_SUBJECT_KINDS:
+        return _refused(action, f"the subject has no {action['kind']} need")
+    if name == "direction":
+        append_direction(ctx.db, subject=comment.subject,
+                         role=role_for(action["kind"], subject_kind), text=action["text"].strip(),
+                         subject_kind=subject_kind, derived_from=ref)
+        return _done(action)
+    if name == "rate":
+        sha_, refusal = _artifact_for(comment, action["kind"])
+        if refusal:
+            return _refused(action, refusal)
+        rating = ACTION_RATINGS[action["value"]]
+        if rating == "unacceptable-none":
+            current = current_best_of(ctx, comment.subject, action["kind"]).artifact_sha
+            if current != sha_:
+                return _refused(action, f"the card no longer shows that {action['kind']}")
+        append_rating(ctx.db, subject=comment.subject, role=role_for(action["kind"], subject_kind),
+                      rating=rating, artifact_sha=sha_, subject_kind=subject_kind, derived_from=ref)
+        return _done(action)
+    if name == "gloss_on":
+        # the parser already drops a gloss_on naming a word other than
+        # the comment's own subject (design decision 3,
+        # record.parse_comment_readings); these guard what is left.
+        if subject_kind != "word":
+            return _refused(action, "the subject is not a word")
+        if ctx.syllabus.find_word(WordId(action["word"])) is None:
+            return _refused(action, f"no word {action['word']!r}")
+        ctx.db.append(port="assess", backend="learner",
+                      key=DirectionKey(subject=action["word"], role="gloss-on",
+                                       text_sha=sha("gloss on")),
+                      subject=action["word"],
+                      question={"kind": "gloss-on", "role": "picture-for-word",
+                                "subject_kind": "word", "comment_sha": ref.comment_sha,
+                                "prompt_version": ref.prompt_version},
+                      answer={"direction": "gloss on"})
+        return _done(action)
+    if name == "retire_sentence":
+        if subject_kind != "sentence":
+            return _refused(action, "the subject is not a sentence")
+        if not any(s.text_sha == comment.subject for s in ctx.syllabus.sentences):
+            return _refused(action, "not an adopted sentence")
+        retire_sentence(ctx, comment.subject, reason=action["reason"].strip(),
+                        replacement_hint=(action.get("replacement_hint") or "").strip() or None,
+                        derived_from=ref)
+        return _done(action)
+    if name == "replacement_sentence":
+        return _draft_replacement(ctx, action, parses, ref, questions)
+    return _refused(action, "outside the vocabulary")
+
+
+def _parse_replacements(ctx: Sourcing, readings: Mapping[str, record.CommentReading],
+                        spend: dict[str, Spend]) -> dict[str, Clauses]:
+    """One parse ask (record.parse_prompt, the migration's own) over every
+    replacement text the readings name, before anything is executed, so a
+    parse failure leaves nothing half done. Empty when no reading names
+    one -- no ask is made.
+    """
+    texts = sorted({a["thai"].strip() for r in readings.values() for a in r.actions
+                    if a["action"] == "replacement_sentence"})
+    if not texts:
+        return {}
+    vocabulary = sorted(ctx.syllabus.words, key=lambda w: w.id)
+    parsed = ctx.provider.ask("llm-parse", Question(
+        subject=PARSE_SUBJECT, provides="parse", kind="sentence", subject_kind="sentence",
+        params={"prompt": record.parse_prompt(texts, vocabulary)}))
+    _count(spend, "llm-parse", parsed)
+    parses: dict[str, Clauses] = {}
+    for item in parsed.items:
+        parses.update(record.parses_in(str(item)))
+    return parses
+
+
+def comment_attempt(ctx: Sourcing) -> AttemptResult:
+    """One reading ask per run (spec 3 r30 section 5) over the oldest
+    COMMENTS_PER_ASK comments with no reading row under
+    COMMENT_PROMPT_VERSION whose subject the syllabus still holds: the
+    prompt hands each comment with its card, its subject's facts and what
+    it showed; the answer (record.parse_comment_readings, handed the
+    comment sha -> subject map so nothing is executed against a comment
+    nobody asked about, read over every answer item, the first reading of
+    a sha winning) is executed comment by comment, each action as its
+    existing typed row marked with the comment (learner.CommentRef), then
+    one reading row per comment. A replacement's Thai goes through one
+    parse ask first (record.parse_prompt, the migration's own), before
+    anything is executed, so a parse failure leaves nothing half done.
+
+    A comment the answer names but was not handed is dropped and logged;
+    a handed one it says nothing about is recorded as read with no action
+    and one unactionable line (`_NO_READING`), never left to be re-asked
+    as the same cached prompt for ever. A comment whose subject the
+    syllabus cannot account for (`_handable`) is never handed and never
+    raises: it gets its own reading row saying so, closing it. A comment
+    over the cap is held back whole -- no row, no reading -- so the next
+    run hands it. `llm-comment` and `llm-parse` transport failures
+    propagate (run counts them under source_failures) -- both come before
+    any row is written, so nothing is half done.
+
+    A judge that cannot be reached at the replacement drafts' check comes
+    after every row was written, so it is reported rather than raised:
+    the result carries its counts, no questions, and
+    `judge_unreachable`, and the run collects it before ending the pass
+    (spec 3 r30 section 5). The drafts keep their provide rows; the run's
+    own D2 recovery raises their questions again next run.
+    """
+    spend: dict[str, Spend] = {}
+    handable: list[tuple[record.Comment, str]] = []
+    closed: list[tuple[record.Comment, str]] = []
+    for comment in record.comments(ctx.db):
+        rows = ctx.db.assessments_of(comment.subject)
+        if record.reading_of(rows, comment.comment_sha, COMMENT_PROMPT_VERSION) is not None:
+            continue
+        subject_kind, refusal = _handable(ctx, comment)
+        if refusal is not None:
+            closed.append((comment, refusal))
+        else:
+            handable.append((comment, str(subject_kind)))
+    handed, held_back = handable[:COMMENTS_PER_ASK], handable[COMMENTS_PER_ASK:]
+    if held_back:
+        _log.info("comment pass: %d comment(s) handed (cap %d), %d held back for the next run",
+                  len(handed), COMMENTS_PER_ASK, len(held_back))
+    if not handed and not closed:
+        return AttemptResult(attempted=False)
+
+    readings: dict[str, record.CommentReading] = {}
+    if handed:
+        question = Question(subject=COMMENT_SUBJECT, provides="comment-reading", kind="comment",
+                            subject_kind="batch", params={"prompt": _comment_prompt(ctx, handed)})
+        answer = ctx.provider.ask("llm-comment", question)
+        _count(spend, "llm-comment", answer)
+        subjects = {c.comment_sha: c.subject for c, _ in handed}
+        for item in answer.items:
+            for comment_sha, reading in record.parse_comment_readings(str(item), subjects).items():
+                readings.setdefault(comment_sha, reading)
+    parses = _parse_replacements(ctx, readings, spend)
+
+    questions: list[AssessQuestion] = []
+    read = actions_done = unactionable = retired = 0
+    for comment, refusal in closed:
+        # no ask was made about it and no action is possible: the row is
+        # what counts it, shows it (record.reading_view) and closes it.
+        ctx.db.append(port="assess", backend="llm",
+                      key=CommentReadingKey(comment.comment_sha, COMMENT_PROMPT_VERSION),
+                      subject=comment.subject,
+                      question={"kind": "comment-reading", "comment_sha": comment.comment_sha,
+                                "prompt_version": COMMENT_PROMPT_VERSION,
+                                "subject_kind": comment.subject_kind or "",
+                                "anchor": comment.anchor, "card_kind": comment.card_kind},
+                      answer={"reading": "", "actions": [], "unactionable": [refusal]})
+        read += 1
+        unactionable += 1
+    for comment, subject_kind in handed:
+        ref = CommentRef(comment.comment_sha, COMMENT_PROMPT_VERSION)
+        reading = readings.get(comment.comment_sha)
+        if reading is None:
+            _log.warning("comment %s: the reader named no reading for it", comment.comment_sha)
+            reading = record.CommentReading(reading="", actions=(), unactionable=(_NO_READING,))
+        before = len(ctx.syllabus.sentences)
+        records = [_act(ctx, comment, subject_kind, a, parses, ref, questions)
+                   for a in reading.actions]
+        retired += before - len(ctx.syllabus.sentences)
+        actions_done += sum(1 for r in records if r["outcome"] == "done")
+        unactionable += (sum(1 for r in records if r["outcome"] == "refused")
+                         + len(reading.unactionable))
+        read += 1
+        ctx.db.append(port="assess", backend="llm",
+                      key=CommentReadingKey(comment.comment_sha, COMMENT_PROMPT_VERSION),
+                      subject=comment.subject,
+                      question={"kind": "comment-reading", "comment_sha": comment.comment_sha,
+                                "prompt_version": COMMENT_PROMPT_VERSION,
+                                "subject_kind": subject_kind, "anchor": comment.anchor,
+                                "card_kind": comment.card_kind},
+                      answer={"reading": reading.reading, "actions": records,
+                              "unactionable": list(reading.unactionable)})
+    result = None
+    unreachable = False
+    if questions:
+        try:
+            result = ctx.assessor.ask_many("judge", questions)
+        except JudgeUnreachable:
+            # Every retirement, direction, rating and reading row above is
+            # already on the record -- an append is a checkpoint -- so the
+            # counts must reach the report even though the run is about to
+            # end. Reported, not raised: the run collects this result and
+            # then takes its judge-death path (`judge_unreachable`). The
+            # replacement drafts keep their provide rows and the D2
+            # recovery re-raises their questions next run.
+            _log.warning("comment pass: the judge could not be reached to check %d replacement "
+                         "draft(s); %d comment(s) were read and their rows stand", len(questions),
+                         read)
+            unreachable = True
+        else:
+            _count_verdicts(spend, "judge", result)
+    return AttemptResult(attempted=True,
+                         questions=list(result.collected) if result else [],
+                         excluded=dict(result.excluded) if result else {}, spend=spend,
+                         comments_read=read, comment_actions=actions_done,
+                         comment_unactionable=unactionable, retired=retired,
+                         judge_unreachable=unreachable)
 
 
 # --- adjudication (Word): the pronunciation ask ------------------------------
@@ -1195,15 +1752,15 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     keeps a run dominated by introducible targets (e.g. 36 of 40) from
     starving the handed batch of the receptive backlog the drafter can
     actually place several of per sentence. Each merged
-    draft becomes a Sentence (record.draft_sentence); acceptance is the
-    Sentence invariant (Syllabus.check_sentence) -- a refused draft is
-    logged ("draft refused: %s") and skipped, nothing else. A draft
-    whose own clause count exceeds `ctx.sentence_max_clauses` is refused
-    the same way (spec 3 section 5: "more clauses than the cap refuses
-    the draft"), logged ("draft refused: %d clauses (cap %d): %s") and
-    skipped; the drafting prompt itself already asks for at most that
-    many. Of the Targets it fills (Syllabus.fill_set), only those still open go to
-    the judge; a draft filling none of them is skipped. The judge
+    draft becomes a Sentence (record.draft_sentence); acceptance is
+    `draft_refusal` -- the Sentence invariant (Syllabus.check_sentence),
+    the clause cap `ctx.sentence_max_clauses` (spec 3 section 5: "more
+    clauses than the cap refuses the draft"; the drafting prompt itself
+    already asks for at most that many), at least one still-open Target
+    filled (Syllabus.fill_set), and the per-sentence Target cap (r27) --
+    the same test the comment pass's replacement and the run's D2
+    recovery apply. A refused draft is logged ("draft refused: %s: %s",
+    the reason and the text) and skipped, nothing else. The judge
     question carries the text, gloss, and the sentence's own last used
     word (Syllabus.last_used_word). Adoption is the run's, after the
     verdicts land. The drafting prompt also names the texts the judge
@@ -1286,28 +1843,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         if draft.text_sha in adopted:
             continue
         sentence = record.draft_sentence(draft, ctx.today)
-        try:
-            syllabus.check_sentence(sentence)
-        except ValueError as e:
-            _log.warning("draft refused: %s", e)
-            continue
-        if len(sentence.clauses) > ctx.sentence_max_clauses:
-            # spec 3 section 5: more clauses than the cap refuses the
-            # draft like the Sentence invariant above -- local and
-            # mechanical, the provide row keeping it.
-            _log.warning("draft refused: %d clauses (cap %d): %s",
-                         len(sentence.clauses), ctx.sentence_max_clauses, draft.text)
-            continue
-        fills = syllabus.fill_set(sentence)
-        filled = [t for t in open_targets if t in fills]
-        if not filled:
-            continue
-        if len(filled) > ctx.sentence_targets_per_sentence:
-            # spec 3 r27 section 5: more open Targets than the cap is a
-            # word list in disguise -- refused like the clause cap; met
-            # words beyond the filled ones are filler and free.
-            _log.warning("draft refused: %d targets (cap %d): %s",
-                         len(filled), ctx.sentence_targets_per_sentence, draft.text)
+        refusal = draft_refusal(ctx, sentence, open_targets)
+        if refusal is not None:
+            _log.warning("draft refused: %s: %s", refusal, draft.text)
             continue
         last_word = syllabus.word(syllabus.last_used_word(sentence)).thai
         questions.append(AssessQuestion(

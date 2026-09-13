@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 8, proposed 2026-09-13 against principles r4 and architecture
+Revision 10, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -37,6 +37,32 @@ Revision log:
   verdict on the artifact, not the role's first backend's; a recording
   only the judge rejected showed "no verdict yet". User approval
   2026-09-13.
+- r9 2026-09-13: `n` comments on any card or question (a session
+  comment anchors on the subject under card kind "question", recording
+  the question kind, the artifact kind, the subject kind and what was
+  shown); a comment's identity is derived from its own row; every
+  rendered card carries its type label with the one-line meaning of
+  that card as a tooltip (the table lives with the models, spec 4 §1);
+  the sentence Listening back labels its target word; a question names
+  its subject in words (a word's Thai, id and meaning; a sentence's text
+  and gloss), never a sha; the subject's comments are listed under a
+  question, each "unread" until a run reads it (r10). Evidence: rating a
+  sentence's scene picture offered no way to say the sentence itself
+  was bad; `n` was inert in a session; a rate question named its subject
+  by a sha; a Listening back read as sentence plus a stray word. User
+  approval 2026-09-13.
+- r10 2026-09-13: under each comment the screen shows its reading once
+  a run has read it (spec 3 r30): the reading line, one label per
+  action taken ("direction for the picture search: …", "sentence
+  retired: …", "replacement drafted: …", "rating N on the …", "gloss
+  on: …", "no action: …") and per request the deck could not act on
+  ("no action available: …"); a strike control writes a veto row
+  against that reading (spec 2 r15), after which every fold ignores the
+  rows it produced and the reading shows as struck; a retirement
+  stands; the stats history shows comments_read, comment_actions and
+  comment_unactionable per run. Evidence: a reading the learner could
+  not see or undo would make the comment channel a black box. User
+  approval 2026-09-13.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -45,15 +71,27 @@ in spec 3's derivations; this surface only presents and records.
 ## 1. Modes
 
 **Proof gallery**: every card rendered front/back in introduction order,
-sequential, no scheduling; per-card one-line notes; pair drill with
-per-confusion accuracy logging; gloss overlay; stats. A note appends as
-a learner assessment row via RecordWriter, recording the card as shown:
-the artifact shas it displayed, the sentence text for a sentence card,
-and the syllabus state id. The card lists its notes thereafter, each
-marked stale once the card no longer shows what the note named (F9: an
-answer is about the thing shown). A note that fails to save stays in the
-box with a visible failure and retries on Enter. Drill results append as
-study-adjacent evidence rows.
+sequential, no scheduling; per-card one-line comments (`n`; r9); pair
+drill with per-confusion accuracy logging; gloss overlay; stats. A note
+appends as a learner assessment row via RecordWriter, recording the card
+as shown: the artifact shas it displayed, the sentence text for a
+sentence card, and the syllabus state id. The card lists its notes
+thereafter, each marked stale once the card no longer shows what the
+note named (F9: an answer is about the thing shown). Every rendered
+card, gallery or question, shows its type (family and kind as
+`/api/cards` reports them) with the one-line meaning of that card type
+as a tooltip (r9). A comment is listed with its reading under it in both
+modes — "unread" until a run has read it (r10). Under each comment:
+`unread`, or its reading with the actions taken and the unactionable
+requests, and a strike control that writes a veto row against that
+reading; folds that consume a comment-derived row (directions, ratings)
+ignore vetoed ones, and a replacement sentence the struck reading
+drafted is no longer adoptable (it drops out of the drafts the run
+reads back); a retirement inferred from a comment acts at once and
+striking it re-adopts nothing (r10). A note that fails to save stays in
+the box with a visible failure and retries on Enter; a strike that fails
+to save says so beside the control and the reading is left as it was.
+Drill results append as study-adjacent evidence rows.
 
 **Question session**: serves the spec-3 queue, capped by the
 learner-attention budget (default 20/session, configurable), highest
@@ -91,6 +129,14 @@ stops; unanswered questions stay queued. Question kinds:
 4. **Re-ask with evidence** (StudyRecord contradiction): the original
    answer, the lapse evidence, re-rate.
 
+`n` on any question comments on its subject (r9): the row is the gallery
+comment's shape anchored on the subject under card kind `question`,
+carrying the question kind, the artifact kind, the subject kind and what
+the question showed. Every question names its subject in words: a word's
+Thai, id and meaning; a sentence's text and gloss; a pair's members;
+never a sha (r9). The subject's comments, any card or question, are
+listed under it.
+
 Every answer appends one learner row (spec 3 §4's key; the finding
 identity for waivers); the session shows a running count against the
 budget and can be closed at any point with nothing lost.
@@ -101,9 +147,10 @@ One process: `thai-syllabus review --deck DIR [--port 8877]`. Reads
 Syllabus state, the cache (via AssessmentReader), and media/objects;
 writes only via RecordWriter appends. Port 8877 (8765 reserved for
 AnkiConnect). Endpoints: / (app), /api/queue, /api/cards, /api/answer
-(POST), /api/supply (POST), /api/note (POST), /api/drill (POST),
-/media/SHA, /stats. No external resources; inline CSS/JS; keyboard-first
-(1-4 rate, n note, arrows navigate, g gloss, s stats). localStorage for
+(POST), /api/supply (POST), /api/note (POST), /api/veto (POST),
+/api/drill (POST), /media/SHA, /stats. No external resources; inline
+CSS/JS; keyboard-first (1-4 rate, n comment, arrows navigate, g gloss, s
+stats; the strike is a button, not a key). localStorage for
 UI conveniences only (position, mode, gloss toggle); nothing of record
 lives in the browser.
 
@@ -112,11 +159,11 @@ lives in the browser.
 Per-session: answered/queued, per-confusion drill accuracy, counts of
 exhausted subjects remaining. Per-deck: current-best coverage per need,
 learner-rated good/acceptable/unacceptable counts, RunReport history
-with every field of spec 3 §7. The per-subject screen lists excluded
-candidates with the reason and the subject's card-level flags (spec 4
-§4). Every derivation the screen shows (current-best, exhausted, queue,
-coverage) comes from the same wired media index and parameters the run
-uses; the screen computes none.
+with every field of spec 3 §7 (the comment counts among them, r10). The
+per-subject screen lists excluded candidates with the reason and the
+subject's card-level flags (spec 4 §4). Every derivation the screen
+shows (current-best, exhausted, queue, coverage) comes from the same
+wired media index and parameters the run uses; the screen computes none.
 
 ## 4. Explicitly out
 
@@ -125,3 +172,5 @@ uses; the screen computes none.
 - No auth; localhost only.
 - No mobile packaging; the phone surface is Anki itself (ReviewNote,
   flags), imported per spec 4.
+- No unstriking a reading (r10): a strike is one-way from the screen —
+  it appends a veto row, and nothing on the screen retracts one.

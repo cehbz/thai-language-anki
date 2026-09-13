@@ -1176,3 +1176,33 @@ def test_compile_leaves_no_leftover_tmp_file(fx):
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert list(fx.out_path.parent.glob("*.tmp")) == []
+
+
+# --- card meanings (spec 5 r9) ----------------------------------------------
+
+from thai_syllabus.compile import (CARD_MEANINGS, GRAPHEME_MODEL, MINIMAL_PAIR_MODEL,
+                                   card_kind_of, card_meaning)
+
+
+def test_every_compiled_card_type_has_a_one_line_meaning():
+    """Spec 5 r9 (design ruling 4): every card the compile can emit has a
+    one-line meaning, keyed by the family and kind /api/cards reports."""
+    expected = set()
+    for family, model in (("word", WORD_MODEL), ("minimal_pair", MINIMAL_PAIR_MODEL),
+                          ("grapheme", GRAPHEME_MODEL), ("sentence", SENTENCE_MODEL)):
+        for template in model.templates:
+            expected.add((family, card_kind_of(template["name"])))
+    assert set(CARD_MEANINGS) == expected
+    for meaning in CARD_MEANINGS.values():
+        assert meaning and "\n" not in meaning and meaning.endswith(".")
+    assert card_meaning("word", "listening") == CARD_MEANINGS[("word", "listening")]
+    assert card_meaning("word", "no-such-kind") is None
+
+
+def test_sentence_listening_back_labels_the_target_word():
+    """Design ruling 4: the Listening back read as sentence plus a stray
+    word; the target line now says what it is."""
+    listening = next(t for t in SENTENCE_MODEL.templates if t["name"] == "Listening")
+    assert '<div class="target"><span class="label">target word</span> {{TargetWord}}</div>' in listening["afmt"]
+    cloze = next(t for t in SENTENCE_MODEL.templates if t["name"] == "Cloze")
+    assert '<span class="label">' not in cloze["afmt"]

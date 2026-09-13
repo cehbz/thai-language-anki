@@ -1300,19 +1300,29 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
     `answer["evidence"]`, whitespace collapsed and cut to 200 characters
     (empty when it named none).
 
-    A text F13 has retired (spec 3 section 5, record.retired_texts) is
-    listed too, evidence "retired: recording exhausted", whatever its own
-    sentence-for-target verdict was (it passed -- that is why it was
-    adopted in the first place; retirement is about its recording, never
-    its quality) -- combined with the failing-verdict texts above into
-    the one newest-first list `limit` caps together.
+    A retired text (spec 3 section 5, record.retirements) is listed too,
+    whatever its own sentence-for-target verdict was (it passed -- that
+    is why it was adopted in the first place; F13's retirement is about
+    its recording, never its quality), with its own retirement row's
+    evidence: F13's "retired: recording exhausted", or the learner's own
+    reason and replacement hint when the comment pass retired it (r30,
+    record.retirement_evidence) -- combined with the failing-verdict
+    texts above into the one newest-first list `limit` caps together.
+
+    A retired text that was never a draft -- migrated, or a comment's
+    replacement sentence -- has no draft row to be found by, so its
+    retirement row's own `text` lists it (a row written before r30
+    carries none, and there is nothing to name): after the drafts, in
+    text_sha order.
     """
     adopted = {s.text_sha for s in syllabus.sentences}
-    retired = record.retired_texts(cache)
+    retired = record.retirements(cache)
+    listed: set[str] = set()
     out: list[tuple[str, str]] = []
     for draft in reversed(record.sentence_drafts(cache)):
         if draft.text_sha in retired:
-            out.append((draft.text, "retired: recording exhausted"))
+            out.append((draft.text, record.retirement_evidence(retired[draft.text_sha])))
+            listed.add(draft.text_sha)
             if len(out) >= limit:
                 break
             continue
@@ -1330,4 +1340,12 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
         out.append((draft.text, evidence))
         if len(out) >= limit:
             break
-    return out
+    # A retired sentence that was never a draft (migrated, or a comment's
+    # replacement) has no draft row: its retirement row carries the text.
+    for sha_, r in sorted(retired.items(), key=lambda kv: kv[0]):
+        if len(out) >= limit:
+            break
+        if sha_ in listed or r.text is None:
+            continue
+        out.append((r.text, record.retirement_evidence(r)))
+    return out[:limit]

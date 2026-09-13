@@ -41,8 +41,9 @@ from .syllabus import Syllabus
 if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
 
-__all__ = ["BuiltDeck", "build_deck", "card_kind_of", "CARD_CSS", "compile_syllabus",
-          "field_values", "GateRefusal", "render_card", "tag_value", "thai_cloze"]
+__all__ = ["BuiltDeck", "build_deck", "card_kind_of", "CARD_CSS", "CARD_MEANINGS",
+          "card_meaning", "compile_syllabus", "field_values", "GateRefusal", "render_card",
+          "tag_value", "thai_cloze"]
 
 
 class GateRefusal(Exception):
@@ -69,6 +70,7 @@ img { max-width: 100%; height: auto; }
 .answer { font-weight: bold; }
 .other { color: #888; }
 .target { font-size: 40px; }
+.target .label { font-size: 0.6em; color: #888; margin-right: 0.4em; text-transform: uppercase; }
 .gloss, .grammar, .classifier { font-size: 20px; color: #555; }
 .nightMode .card { color: #ddd; background: #2f2f31; }
 .nightMode .ipa, .nightMode .other { color: #999; }
@@ -173,9 +175,30 @@ SENTENCE_MODEL = _model(
         "name": "Listening",
         "qfmt": "{{Audio}}",
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
-               '<div class="target">{{TargetWord}}</div>'
+               '<div class="target"><span class="label">target word</span> {{TargetWord}}</div>'
                '{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
     }])
+
+# Spec 5 r9 (design ruling 4): one line per card type -- what the front
+# asks, what the back shows -- keyed by the family and kind /api/cards
+# reports (card_kind_of over the template name). The page shows it as
+# the card type's tooltip and the comment pass hands it to the reader
+# with the comment; both read this one table.
+CARD_MEANINGS: dict[tuple[str, str], str] = {
+    ("word", "listening"): "Front plays the word; back shows its picture, Thai, IPA and meaning.",
+    ("word", "production"): "Front shows the picture (and a gloss when set); back shows the Thai, plays it and gives the IPA.",
+    ("word", "reading"): "Front shows the Thai; back shows the picture, plays the word and gives the meaning.",
+    ("word", "spelling"): "Front plays the word; back shows the Thai spelling.",
+    ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and offers both; back names the one heard, with IPA, and plays the other.",
+    ("grapheme", "reading"): "Front shows the letter; back shows its recited name, the keyword picture, the keyword's Thai and gloss, plays it and gives the sound.",
+    ("sentence", "cloze"): "Front shows the sentence with the target word blanked, plus the scene picture; back shows the target word, plays the sentence and gives the gloss.",
+    ("sentence", "listening"): "Front plays the sentence; back shows its Thai, names the target word and gives the gloss.",
+}
+
+
+def card_meaning(family: str, kind: str) -> str | None:
+    return CARD_MEANINGS.get((family, kind))
+
 
 STRIDE = 100  # due-per-order-position block size; comfortably above the
              # largest sibling count any family below uses (word: 4).

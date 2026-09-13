@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import logging
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -12,22 +13,27 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
-from thai_syllabus.attempts import (AttemptResult, Need, Sourcing, _pool, _sentence_prompt,
-                                    adjudication_attempt, assess_first, attempt, current_best_of,
-                                    phrase_attempt, picture_query_for, sentence_attempt,
+from thai_syllabus.attempts import (COMMENTS_PER_ASK, AttemptResult, Need, Sourcing, _pool,
+                                    _sentence_prompt, adjudication_attempt, assess_first, attempt,
+                                    comment_attempt, current_best_of, phrase_attempt,
+                                    picture_query_for, retire_sentence, sentence_attempt,
                                     sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
-from thai_syllabus.record import (DRAFT_SUBJECT, drafted_phrase, drafts_in, parse_phrases,
-                                  rows_for, sentence_drafts)
-from thai_syllabus.entities import Category, Clauses, MinimalPair, Sentence, SoundConfusion, text_sha
+from thai_syllabus.learner import CommentRef, append_comment, append_direction
+from thai_syllabus.record import (DRAFT_SUBJECT, comments, drafted_phrase, drafts_in,
+                                  gloss_on_requested, latest_phrase, parse_phrases, reading_of,
+                                  retired_texts, retirements, rows_for, sentence_drafts)
+from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
+                                    SoundConfusion, text_sha)
 from thai_syllabus.ids import WordId
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
 from thai_syllabus.run import _Tally
+from thai_syllabus.safety import Guard
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused,
@@ -2754,3 +2760,420 @@ def test_adjudication_attempt_collects_one_question_per_disputed_word(tmp_path):
 def test_adjudication_attempt_is_not_attempted_when_every_word_is_corroborated(tmp_path):
     ctx = _sourcing(tmp_path, _word_syllabus(), backends={}, assess={"judge": _batch_judge()})
     assert adjudication_attempt(ctx).attempted is False
+
+
+# --- retire_sentence: one retirement mechanism (F13 and the comment pass) ----
+
+def _adopted_sentence_ctx(tmp_path):
+    rice, eat = word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")   # ข้าว: rice, กิน: eat
+    s = compose_sentence(((eat.id, rice.id),), thai_of(rice, eat), gloss="eat rice")
+    syllabus = Syllabus(words=(rice, eat), targets=(target("rice/receptive", "rice"),
+                                                    target("eat/receptive", "eat")),
+                        sentences=(s,), frequency={"eat": 1, "rice": 2})
+    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={"judge": _batch_judge()})
+    ctx.db.add_sentence(text_sha=s.text_sha, text=s.text, clauses=s.clauses, gloss=s.gloss,
+                        voice=s.voice, source="test", origin="fixture", licence="cc0",
+                        acquired=date(2026, 1, 1))
+    ctx.guard = Guard()
+    return ctx, s
+
+
+def test_retire_sentence_leaves_a_row_with_reason_hint_text_and_origin_then_deletes(tmp_path):
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    retire_sentence(ctx, s.text_sha, reason="unnatural", replacement_hint="shorter",
+                    derived_from=CommentRef("c1c1c1c1c1c1c1c1", "1"))
+    (row,) = [r for r in ctx.db.assessments_of(s.text_sha) if r.port == "attempt"]
+    assert row.backend == "run"
+    assert row.question == {"kind": "retirement", "subject_kind": "sentence",
+                            "reason": "unnatural", "candidates": 0, "text": s.text,
+                            "replacement_hint": "shorter", "comment_sha": "c1c1c1c1c1c1c1c1",
+                            "prompt_version": "1"}
+    assert row.answer == {"retired": True}
+    assert ctx.db.all_sentences() == [] and ctx.syllabus.sentences == ()
+    assert ctx.guard.removals == {"sentences": 1}
+    assert retired_texts(ctx.db) == frozenset({s.text_sha})
+
+
+def test_retire_sentence_for_f13_carries_no_hint_and_no_origin(tmp_path):
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    retire_sentence(ctx, s.text_sha, reason="recording exhausted")
+    (row,) = [r for r in ctx.db.assessments_of(s.text_sha) if r.port == "attempt"]
+    assert row.question == {"kind": "retirement", "subject_kind": "sentence",
+                            "reason": "recording exhausted", "candidates": 0, "text": s.text}
+
+
+# --- the comment pass (spec 3 r30 section 5) --------------------------------
+
+def _readings_json(*items):
+    return json.dumps({"readings": [
+        {"comment": sha_, "reading": reading, "actions": list(actions),
+         "unactionable": list(unactionable)}
+        for sha_, reading, actions, unactionable in items]}, ensure_ascii=False)
+
+
+def _comment_ctx(tmp_path, *, syllabus=None, judge=None, parse_text='{"parses": []}'):
+    """A ctx whose llm-comment answer is set after the comment is written
+    (the answer names the comment's own sha): `ctx.provider._backends`
+    is a dict, so the test swaps the backend in."""
+    syllabus = syllabus if syllabus is not None else _word_syllabus()
+    return _sourcing(tmp_path, syllabus,
+                     backends={"llm-comment": _Llm('{"readings": []}'),
+                               "llm-parse": _Llm(parse_text)},
+                     assess={"judge": judge or _batch_judge()})
+
+
+def _answer_with(ctx, text):
+    ctx.provider._backends["llm-comment"] = _Llm(text)
+
+
+def _pass_picture(ctx, subject, sha_):
+    """A judge pass on `sha_` under the ctx's own rubric, so current_best
+    ranks it."""
+    rubric = ctx.rubrics["picture-for-word"]
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(rubric, sha_, subject, "picture-for-word"), subject=subject,
+                  question={"role": "picture-for-word", "artifact_sha": sha_, "rubric": rubric,
+                            "kind": "picture", "subject_kind": "word"},
+                  answer={"value": True, "evidence": "ok"})
+
+
+def test_comment_attempt_is_not_attempted_with_no_unread_comment(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    assert comment_attempt(ctx).attempted is False
+
+
+def test_comment_attempt_hands_the_comment_with_its_card_meaning_and_subject_facts(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    _seed_phrase(ctx, "rice", "steamed rice")
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="that is noodles",
+                   shown={"picture": "a" * 64, "recordings": []}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    llm = _Llm(_readings_json((c.comment_sha, "noodles shown", [], [])))
+    ctx.provider._backends["llm-comment"] = llm
+    res = comment_attempt(ctx)
+    assert res.attempted and res.comments_read == 1 and res.comment_actions == 0
+    prompt = llm.prompts[0]
+    assert f"comment {c.comment_sha}" in prompt
+    assert "<deck-field>that is noodles</deck-field>" in prompt
+    assert "word / reading" in prompt and "Front shows the Thai" in prompt
+    assert "<deck-field>ข้าว</deck-field>" in prompt and "rice (cooked)" in prompt   # ข้าว: rice
+    assert f"picture {'a' * 64}" in prompt and "steamed rice" in prompt
+    for name in ("direction", "retire_sentence", "replacement_sentence", "rate", "gloss_on",
+                 "none"):
+        assert name in prompt
+    row = reading_of(ctx.db.assessments_of("rice"), c.comment_sha, "1")
+    assert row.answer == {"reading": "noodles shown", "actions": [], "unactionable": []}
+    assert row.question["kind"] == "comment-reading" and row.question["card_kind"] == "reading"
+    # read once: the next call hands nothing
+    assert comment_attempt(ctx).attempted is False
+
+
+def test_direction_and_rate_actions_write_the_typed_rows_marked_with_the_comment(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    _pass_picture(ctx, "rice", _seed_current_picture(ctx, "rice"))   # a current-best picture
+    current = current_best_of(ctx, "rice", "picture").artifact_sha
+    assert current is not None
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="noodles",
+                   shown={"picture": current, "recordings": []}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "wrong food", [
+        {"action": "direction", "kind": "picture", "text": "bowl of steamed jasmine rice"},
+        {"action": "rate", "kind": "picture", "value": 1}], ["make it bigger"])))
+    res = comment_attempt(ctx)
+    assert res.comment_actions == 2 and res.comment_unactionable == 1
+    rows = ctx.db.assessments_of("rice")
+    assert latest_phrase(rows) == "bowl of steamed jasmine rice"
+    direction = next(r for r in rows if r.question.get("kind") == "direction")
+    assert direction.question["comment_sha"] == c.comment_sha
+    assert direction.question["prompt_version"] == "1"
+    rating = next(r for r in rows if r.question.get("kind") == "rating")
+    assert rating.answer["value"] == "unacceptable-none" and rating.question["artifact_sha"] == current
+    assert current_best_of(ctx, "rice", "picture").artifact_sha is None
+    reading = reading_of(rows, c.comment_sha)
+    assert [a["outcome"] for a in reading.answer["actions"]] == ["done", "done"]
+
+
+def test_a_rejection_of_a_picture_no_longer_current_is_refused_not_written(tmp_path):
+    """The screen refuses a stale rejection (reviewserver._refuses_stale_rejection):
+    so does the pass, else a newer current-best would be wiped by a
+    comment about an older one."""
+    ctx = _comment_ctx(tmp_path)
+    _pass_picture(ctx, "rice", _seed_current_picture(ctx, "rice"))
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="noodles",
+                   shown={"picture": "f" * 64, "recordings": []}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "wrong food",
+                                      [{"action": "rate", "kind": "picture", "value": 1}], [])))
+    res = comment_attempt(ctx)
+    assert res.comment_actions == 0 and res.comment_unactionable == 1
+    assert not [r for r in ctx.db.assessments_of("rice") if r.question.get("kind") == "rating"]
+    (action,) = reading_of(ctx.db.assessments_of("rice"), c.comment_sha).answer["actions"]
+    assert action["outcome"] == "refused" and "no longer" in action["reason"]
+
+
+def test_retire_sentence_action_retires_with_reason_and_hint_and_a_replacement_is_drafted(tmp_path):
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    ctx.provider._backends["llm-parse"] = _Llm(json.dumps({"parses": [
+        {"text": "กินข้าวครับ", "clauses": [["eat", "rice", "polite-particle"]]}]},
+        ensure_ascii=False))   # กินข้าวครับ: eat rice (polite)
+    ctx.provider._backends["llm-comment"] = _Llm('{"readings": []}')
+    particle = word("polite-particle", "ครับ", "polite particle (male)", speaker="male")  # ครับ: kráp
+    # a glue word carries its own sentence-introduced Target (spec 1
+    # section 3's gate: every word a sentence names is targeted)
+    ctx.syllabus = replace(ctx.syllabus.with_words((*ctx.syllabus.words, particle)),
+                           targets=(*ctx.syllabus.targets,
+                                    target("polite-particle/receptive", "polite-particle",
+                                           introduction="sentence")))
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="too blunt", shown={"text_sha": s.text_sha}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "the sentence lacks a particle", [
+        {"action": "retire_sentence", "reason": "too blunt", "replacement_hint": "add a particle"},
+        {"action": "replacement_sentence", "thai": "กินข้าวครับ", "gloss": "eat rice (polite)"}],
+        [])))
+    res = comment_attempt(ctx)
+    assert res.retired == 1 and res.comment_actions == 2
+    assert ctx.syllabus.sentences == () and ctx.db.all_sentences() == []
+    retirement = retirements(ctx.db)[s.text_sha]
+    assert retirement.reason == "too blunt" and retirement.replacement_hint == "add a particle"
+    # the replacement is a draft in the record with a judge question collected for the batch
+    drafts = [r for r in rows_for(ctx.db, DRAFT_SUBJECT, "sentence") if r.port == "provide"]
+    assert len(drafts) == 1 and drafts[0].question["comment_sha"] == c.comment_sha
+    assert '"กินข้าวครับ"' in drafts[0].answer["items"][0]
+    assert [d.text for d in sentence_drafts(ctx.db)] == ["กินข้าวครับ"]
+    (q,) = res.questions
+    assert q.question.role == "sentence-for-target" and q.question.params["text"] == "กินข้าวครับ"
+    assert q.question.params["gloss"] == "eat rice (polite)"
+    (retire, replaced) = reading_of(ctx.db.assessments_of(s.text_sha),
+                                    c.comment_sha).answer["actions"]
+    assert retire["outcome"] == "done" and replaced["outcome"] == "done"
+
+
+def test_a_judge_that_dies_at_the_replacement_check_reports_the_counts_it_already_wrote(tmp_path):
+    """Fix round 1 finding 1: the retirement, the rows and the reading are
+    already on the record when the judge is asked about the replacement
+    draft, so a dead judge there is REPORTED, not raised -- the run must
+    be able to say a sentence was deleted and a comment read. The drafts
+    keep their provide rows and the run's D2 recovery re-raises their
+    questions next run."""
+    def dead(prompt, attachments=()):
+        raise TransportError("no judge")
+
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db, backends={
+        "judge": JudgeBackend(model="m", transport="api", complete=dead)})
+    ctx.provider._backends["llm-parse"] = _Llm(json.dumps({"parses": [
+        {"text": "กินข้าวครับ", "clauses": [["eat", "rice", "polite-particle"]]}]},
+        ensure_ascii=False))   # กินข้าวครับ: eat rice (polite)
+    particle = word("polite-particle", "ครับ", "polite particle (male)", speaker="male")  # ครับ: kráp
+    ctx.syllabus = replace(ctx.syllabus.with_words((*ctx.syllabus.words, particle)),
+                           targets=(*ctx.syllabus.targets,
+                                    target("polite-particle/receptive", "polite-particle",
+                                           introduction="sentence")))
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="too blunt", shown={"text_sha": s.text_sha}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "the sentence lacks a particle", [
+        {"action": "retire_sentence", "reason": "too blunt", "replacement_hint": "add a particle"},
+        {"action": "replacement_sentence", "thai": "กินข้าวครับ", "gloss": "eat rice (polite)"}],
+        [])))
+    res = comment_attempt(ctx)
+    assert res.judge_unreachable is True and res.questions == []
+    assert res.retired == 1 and res.comments_read == 1 and res.comment_actions == 2
+    assert ctx.db.all_sentences() == []                     # the retirement stands
+    assert [d.text for d in sentence_drafts(ctx.db)] == ["กินข้าวครับ"]   # the draft stands
+    assert reading_of(ctx.db.assessments_of(s.text_sha), c.comment_sha) is not None
+
+
+def test_a_replacement_that_does_not_parse_or_fails_acceptance_is_refused_with_the_reason(tmp_path):
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    ctx.provider._backends["llm-parse"] = _Llm('{"parses": []}')
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="odd", shown={}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "odd", [
+        {"action": "replacement_sentence", "thai": "ข้าวกิน", "gloss": "rice eats"}], [])))
+    # ข้าวกิน: rice eat (reversed)
+    res = comment_attempt(ctx)
+    assert res.comment_actions == 0 and res.comment_unactionable == 1 and res.questions == []
+    (action,) = reading_of(ctx.db.assessments_of(s.text_sha), c.comment_sha).answer["actions"]
+    assert action["outcome"] == "refused" and action["reason"] == "no parse returned for this text"
+
+
+def test_an_answer_naming_an_unhanded_comment_is_ignored_and_an_omitted_one_is_recorded(tmp_path):
+    """D7: a handed comment the answer names no reading for gets its own
+    reading row saying so -- the same cached answer would otherwise leave
+    it unread for ever."""
+    ctx = _comment_ctx(tmp_path)
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="a",
+                   shown={}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json(("0000000000000000", "not asked", [
+        {"action": "rate", "kind": "picture", "value": 4}], [])))
+    res = comment_attempt(ctx)
+    assert res.attempted and res.comments_read == 1 and res.comment_actions == 0
+    assert res.comment_unactionable == 1
+    assert not [r for r in ctx.db.assessments_of("rice") if r.question.get("kind") == "rating"]
+    reading = reading_of(ctx.db.assessments_of("rice"), c.comment_sha, "1")
+    assert reading.answer == {"reading": "", "actions": [],
+                              "unactionable": ["the model gave no reading"]}
+    assert comment_attempt(ctx).attempted is False
+
+
+def test_gloss_on_writes_a_gloss_on_row_not_a_direction(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    _seed_phrase(ctx, "rice", "steamed rice")
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="production", text="show the word",
+                   shown={}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "wants the gloss on the front",
+                                      [{"action": "gloss_on", "word": "rice"}], [])))
+    comment_attempt(ctx)
+    rows = ctx.db.assessments_of("rice")
+    assert gloss_on_requested(rows) is True
+    assert latest_phrase(rows_for(ctx.db, "rice", "picture")) == "steamed rice"   # query untouched
+
+
+def test_a_none_action_is_an_act_the_reading_records_not_an_unactionable_request(tmp_path):
+    """D5: `none(remark)` executes nothing and still counts as an action."""
+    ctx = _comment_ctx(tmp_path)
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="nice card",
+                   shown={}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "praise", [
+        {"action": "none", "remark": "nothing for the deck to do"}], [])))
+    res = comment_attempt(ctx)
+    assert res.comments_read == 1 and res.comment_actions == 1 and res.comment_unactionable == 0
+    (action,) = reading_of(ctx.db.assessments_of("rice"), c.comment_sha).answer["actions"]
+    assert action["action"] == "none" and action["outcome"] == "done"
+
+
+def test_a_comment_on_a_subject_no_longer_in_the_syllabus_is_closed_unactionable(tmp_path):
+    """It is never handed (this ctx has no llm-comment backend at all, so
+    an ask would raise) and never raises building facts for a subject
+    that is gone: one reading row closes it."""
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="gone", shown={}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    retire_sentence(ctx, s.text_sha, reason="recording exhausted")
+    res = comment_attempt(ctx)
+    assert res.comments_read == 1 and res.comment_unactionable == 1 and res.comment_actions == 0
+    reading = reading_of(ctx.db.assessments_of(s.text_sha), c.comment_sha, "1")
+    assert reading.answer == {"reading": "", "actions": [],
+                              "unactionable": ["subject not in the syllabus"]}
+    assert comment_attempt(ctx).attempted is False   # closed, not re-read
+
+
+def test_a_comment_whose_recorded_subject_kind_disagrees_with_the_syllabus_is_closed(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="hm",
+                   shown={}, subject_kind="grapheme")   # the syllabus holds "rice" as a word
+    (c,) = comments(ctx.db)
+    res = comment_attempt(ctx)
+    assert res.comments_read == 1 and res.comment_unactionable == 1
+    assert ctx.provider._backends["llm-comment"].prompts == []   # nothing was asked
+    reading = reading_of(ctx.db.assessments_of("rice"), c.comment_sha, "1")
+    assert reading.answer["unactionable"] == ["subject kind mismatch"]
+
+
+def test_a_pair_and_a_grapheme_subject_build_their_facts_for_the_prompt(tmp_path):
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: gài
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",   # ก: the letter k
+                               consonant_class="mid", keyword_word=chicken)
+    pairs = _pair_syllabus()
+    syllabus = replace(pairs, words=(*pairs.words, chicken), graphemes=(grapheme,))
+    ctx = _comment_ctx(tmp_path, syllabus=syllabus)
+    append_comment(ctx.db, subject="p1", card_id="p1/white", kind="recognition",
+                   text="they sound the same", shown={}, subject_kind="pair")
+    append_comment(ctx.db, subject="ก", card_id="ก", kind="reading",
+                   text="the keyword is odd", shown={}, subject_kind="grapheme")
+    pair_comment, grapheme_comment = comments(ctx.db)
+    llm = _Llm(_readings_json((pair_comment.comment_sha, "hard pair", [], []),
+                              (grapheme_comment.comment_sha, "keyword", [], [])))
+    ctx.provider._backends["llm-comment"] = llm
+    res = comment_attempt(ctx)
+    assert res.comments_read == 2 and res.comment_unactionable == 0
+    prompt = llm.prompts[0]
+    assert "minimal pair p1 on confusion tone:rising-vs-low" in prompt
+    assert "minimal_pair / recognition" in prompt and "<deck-field>ขาว</deck-field>" in prompt
+    assert "grapheme <deck-field>ก</deck-field> (consonant), sound k" in prompt
+    assert "grapheme / reading" in prompt and "keyword word chicken" in prompt
+
+
+def test_direction_and_rate_are_refused_on_a_subject_that_has_no_such_need(tmp_path):
+    """A grapheme (or a pair) has no picture and no recording need: only a
+    word and a sentence do (derivations.available_needs), and the comment
+    vocabulary names no other artifact kind (record._COMMENT_ARTIFACT_KINDS).
+    Without the guard `authority.role_for` falls back to the word role and
+    both rows are written under a subject no fold over them ever reads --
+    dead rows the screen reports as actions taken."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: gài
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",   # ก: the letter k
+                               consonant_class="mid", keyword_word=chicken)
+    syllabus = replace(_word_syllabus(), words=(word("rice", "ข้าว", "rice (cooked)"), chicken),
+                       graphemes=(grapheme,))
+    ctx = _comment_ctx(tmp_path, syllabus=syllabus)
+    append_comment(ctx.db, subject="ก", card_id="ก", kind="reading", text="wrong picture",
+                   shown={"picture": "a" * 64, "recordings": []}, subject_kind="grapheme")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "the keyword picture is wrong", [
+        {"action": "rate", "kind": "picture", "value": 1},
+        {"action": "direction", "kind": "picture", "text": "a hen"}], [])))
+    res = comment_attempt(ctx)
+    assert res.comments_read == 1 and res.comment_actions == 0 and res.comment_unactionable == 2
+    rows = ctx.db.assessments_of("ก")
+    assert not [r for r in rows if r.question.get("kind") in ("rating", "direction")]
+    actions = reading_of(rows, c.comment_sha, "1").answer["actions"]
+    assert [a["outcome"] for a in actions] == ["refused", "refused"]
+    assert {a["reason"] for a in actions} == {"the subject has no picture need"}
+
+
+def test_only_the_oldest_comments_up_to_the_cap_are_handed_in_one_run(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    for i in range(COMMENTS_PER_ASK + 1):
+        append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text=f"note {i}",
+                       shown={}, subject_kind="word")
+    written = comments(ctx.db)
+    assert len(written) == COMMENTS_PER_ASK + 1
+    llm = _Llm(_readings_json(*((c.comment_sha, "read", [], []) for c in written)))
+    ctx.provider._backends["llm-comment"] = llm
+    res = comment_attempt(ctx)
+    assert res.comments_read == COMMENTS_PER_ASK
+    rows = ctx.db.assessments_of("rice")
+    assert reading_of(rows, written[-1].comment_sha) is None    # held back, no reading at all
+    assert all(reading_of(rows, c.comment_sha) is not None for c in written[:COMMENTS_PER_ASK])
+    assert f"comment {written[-1].comment_sha}" not in llm.prompts[0]
+    # the next run hands the one held back
+    assert comment_attempt(ctx).comments_read == 1
+
+
+def test_every_answer_item_is_read_and_the_first_reading_of_a_comment_wins(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="a",
+                   shown={}, subject_kind="word")
+    (c,) = comments(ctx.db)
+
+    class _TwoItems(_Llm):
+        def fetch(self, q):
+            self.prompts.append(q.params["prompt"])
+            return RawAnswer(items=(_readings_json((c.comment_sha, "first", [], [])),
+                                    _readings_json((c.comment_sha, "second", [], []))))
+
+    ctx.provider._backends["llm-comment"] = _TwoItems("")
+    assert comment_attempt(ctx).comments_read == 1
+    reading = reading_of(ctx.db.assessments_of("rice"), c.comment_sha)
+    assert reading.answer["reading"] == "first"
+
+
+def test_a_learner_direction_is_the_query_named_beside_the_shown_picture(tmp_path):
+    ctx = _comment_ctx(tmp_path)
+    _seed_phrase(ctx, "rice", "steamed rice")
+    append_direction(ctx.db, subject="rice", role="picture-for-word", text="a bowl of rice")
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="wrong",
+                   shown={"picture": "b" * 64, "recordings": []}, subject_kind="word")
+    (c,) = comments(ctx.db)
+    llm = _Llm(_readings_json((c.comment_sha, "wrong picture", [], [])))
+    ctx.provider._backends["llm-comment"] = llm
+    comment_attempt(ctx)
+    assert "search query: <deck-field>a bowl of rice</deck-field>" in llm.prompts[0]

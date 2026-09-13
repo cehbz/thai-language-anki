@@ -33,6 +33,13 @@ still run against them.
   2026-09-10).
 - Feedback screen: a rendition's accepted members render as "rejected"
   (candidate_shas vs the rendition identity; pre-existing).
+- ReviewNote harvests (comments typed in Anki) append `learner-note` rows;
+  the comment pass reads `card-flag` rows only, so they are never read.
+- `compile` never consumes `record.gloss_on_requested`: a `gloss_on`
+  action writes its row, FrontGloss still compiles empty (F3).
+- The sentence Listening template now labels the target word; the Anki
+  notetype updates on the next import (cutover pending).
+
 ## Cutover
 
 - Compile, delete-and-reimport in Anki, proof pass in `thai-syllabus

@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 14, proposed 2026-09-12 against principles r4 and architecture
+Revision 15, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -31,6 +31,12 @@ Revision log:
 - r14 2026-09-12: words.yaml is learner-owned; the run writes adjudicated
   pronunciations and adopted rows under its writing command (spec 3 r28).
   User approval 2026-09-12.
+- r15 2026-09-13: two key kinds in cache (§2): a learner comment's
+  reading (comment-reading:COMMENT_SHA:PROMPT_VERSION) and its veto
+  (comment-veto:COMMENT_SHA:PROMPT_VERSION), both under the comment's
+  subject; a comment's identity is derived from its own row's (key_sha,
+  ts); no new store (spec 3 r30, spec 5 r9/r10). User approval
+  2026-09-13.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -111,6 +117,11 @@ cache(port, backend, key_sha, subject, question, answer, cost, ts)
   -- Never deleted or updated: a re-ask appends a new row (newest wins on
   -- read for the learner backend; exact-key hit for memoized backends).
   -- subject indexes the attempt record, empty answers included.
+  -- a learner comment (spec 5) is a learner card-flag row with note
+  -- text, identified by its own (key_sha, ts); its reading and its veto
+  -- are two further rows under the same subject, keyed comment-reading /
+  -- comment-veto over (comment identity, prompt version) (r15, spec 3
+  -- r30).
 study(family, anchor, card_kind, member_index, speaker_id, compile_id,
       ts, grade, time_ms)  -- PK (family, anchor, card_kind, ts)
   -- store 4. The import reads a card's tags once and writes their parts

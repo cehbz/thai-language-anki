@@ -40,7 +40,7 @@ from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.phonology import Engines
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import FetchBackend, LlmBackend, RawAnswer, TtsBackend
-from thai_syllabus.record import drafted_phrase, parse_phrases, rows_for
+from thai_syllabus.record import DRAFT_SUBJECT, drafted_phrase, parse_phrases, rows_for
 from thai_syllabus.safety import Guard
 from thai_syllabus.tts import pick_voice
 from thai_syllabus.run import (
@@ -250,8 +250,10 @@ def fake_batch():
     return _BatchTransport()
 
 
-def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None):
+def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None, comment=None):
     """Replaces every backend that would touch the network."""
+    ctx.provider._backends["llm-comment"] = (
+        comment if comment is not None else _Llm('{"readings": []}'))
     ctx.provider._backends.update({
         "openverse": fake_search.backend("openverse"),
         "wikimedia": fake_search.backend("wikimedia"),
@@ -925,19 +927,22 @@ def _ctx(db, syl, assessor=None):
 
 class _Q:
     """A collected question as run() reads it: its own question's subject
-    and kind."""
+    and kind, and the cache key submit() refuses duplicates of (run's own
+    _one_per_key folds over it)."""
 
     def __init__(self, subject: str, kind: str = "picture"):
         self.question = type("_AskedAbout", (), {"subject": subject, "kind": kind})()
+        self.key = JudgeKey(rubric_sha="r", subject=subject, identity="", role=kind)
 
 
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
            preference=AttemptResult(attempted=False), assess=None,
            phrase_result=AttemptResult(attempted=False), query="q",
-           adjudication_result=AttemptResult(attempted=False)):
+           adjudication_result=AttemptResult(attempted=False),
+           comment_result=AttemptResult(attempted=False)):
     """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
-    adjudication_attempt/preference_attempt/adoptable_drafts/
-    picture_query_for. A `results`
+    adjudication_attempt/comment_attempt/preference_attempt/
+    adoptable_drafts/picture_query_for. A `results`
     entry that is an exception class is raised instead of returned.
     `assess` is assess_first's fixed return for every need -- None keeps
     the fall-through to the source. `query` is every picture need's
@@ -968,6 +973,12 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
             raise adjudication_result("no judge")
         return adjudication_result
 
+    def fake_comment_attempt(ctx):
+        if isinstance(comment_result, type) and issubclass(comment_result, Exception):
+            raise comment_result("no reader")
+        return comment_result
+
+    monkeypatch.setattr(run_mod, "comment_attempt", fake_comment_attempt)
     monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
     monkeypatch.setattr(run_mod, "picture_query_for", lambda ctx, need: query)
@@ -2099,6 +2110,8 @@ def test_run_retires_an_adopted_sentence_whose_recording_is_exhausted(db, monkey
     assert report.retired == 1
     assert _RETIRED_SHA not in {s.text_sha for s in db.all_sentences()}
     assert ctx.guard.removals == {"sentences": 1}
+    row = next(r for r in db.assessments_of(_RETIRED_SHA) if r.question.get("kind") == "retirement")
+    assert row.question["reason"] == "recording exhausted" and "text" not in row.question
     assert report.attempted == 1 and report.exhausted == 0
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
@@ -2304,8 +2317,97 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
                            "sentences_adopted", "adjudicated", "stayed_disputed",
                            "drafted", "retired", "excluded",
+                           "comments_read", "comment_actions", "comment_unactionable",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences"}
+
+
+# --- the comment pass (spec 3 r30 section 5): one reading ask per run,
+# before the sentence attempt, owning no need bucket -------------------
+
+def test_the_comment_pass_counts_are_events_beside_the_identity(db, monkeypatch):
+    _patch(monkeypatch, {}, comment_result=AttemptResult(
+        True, comments_read=2, comment_actions=3, comment_unactionable=1, retired=1))
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {})
+    assert (report.comments_read, report.comment_actions, report.comment_unactionable,
+            report.retired) == (2, 3, 1, 1)
+    assert report.attempted == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+    answer = db.latest("run", "runreport", RunReportKey()).answer
+    assert (answer["comments_read"], answer["comment_actions"],
+            answer["comment_unactionable"]) == (2, 3, 1)
+
+
+def test_a_dead_judge_in_the_comment_pass_defers_the_open_targets_and_the_queue(db, monkeypatch):
+    """The pass runs before the sentence attempt: a judge that dies at a
+    replacement's check leaves every open Target unhanded (deferred) and
+    every queued need unconsidered (deferred); the identity holds."""
+    _patch(monkeypatch, {}, comment_result=JudgeUnreachable)
+    syl = _Syl(_Gaps(recordings=("a", "b"), sentences=("t1",)))
+    report = run(_ctx(db, syl), {})
+    assert report.unreachable is True
+    assert report.available == 3 and report.deferred == 3 and report.attempted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_comment_reader_transport_failure_is_a_source_failure_and_the_run_goes_on(
+        db, monkeypatch):
+    calls = _patch(monkeypatch, {}, comment_result=TransportError)
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {})
+    assert report.source_failures == {"llm-comment": 1}
+    assert report.attempted == 1 and calls
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_judge_that_dies_after_the_comment_pass_wrote_its_rows_still_reports_them(
+        db, monkeypatch):
+    """Fix round 1 finding 1: the pass reports a dead judge at the
+    replacement check (AttemptResult.judge_unreachable) rather than
+    raising, because its retirement, action and reading rows are already
+    on the record. The run collects the counts FIRST, then ends the pass:
+    the report must not say retired=0 while a sentence was deleted."""
+    _patch(monkeypatch, {}, comment_result=AttemptResult(
+        True, comments_read=1, comment_actions=2, retired=1, judge_unreachable=True))
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",)))), {})
+    assert report.unreachable is True
+    assert report.retired == 1 and report.comments_read == 1 and report.comment_actions == 2
+    assert report.attempted == 0 and report.deferred == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+    answer = db.latest("run", "runreport", RunReportKey()).answer
+    assert answer["retired"] == 1 and answer["comments_read"] == 1
+
+
+def test_a_dead_judge_in_the_draft_recovery_defers_the_open_targets_and_the_queue(db, monkeypatch):
+    """The D2 recovery runs before the sentence attempt too: a judge that
+    dies there leaves every open Target unhanded and every queued need
+    unconsidered (deferred); the identity holds."""
+    _patch(monkeypatch, {})
+
+    def dead(ctx):
+        raise JudgeUnreachable("no judge")
+
+    monkeypatch.setattr(run_mod, "_recover_orphaned_drafts", dead)
+    report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b"), sentences=("t1",)))), {})
+    assert report.unreachable is True
+    assert report.available == 3 and report.deferred == 3 and report.attempted == 0
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_the_comment_pass_runs_before_the_sentence_attempt(db, monkeypatch):
+    order = []
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "comment_attempt",
+                        lambda ctx: (order.append("comment"), AttemptResult(attempted=False))[1])
+    monkeypatch.setattr(run_mod, "sentence_attempt",
+                        lambda ctx, max_targets=40: (order.append("sentence"),
+                                                     AttemptResult(attempted=False))[1])
+    run(_ctx(db, _Syl(_Gaps())), {})
+    assert order == ["comment", "sentence"]
 
 
 # --- Spend ------------------------------------------------------------
@@ -2368,3 +2470,154 @@ def test_parse_day_starts_accepts_an_offset_hour_past_nineteen():
 def test_day_start_ns_refuses_an_unparseable_day_starts():
     with pytest.raises(ValueError, match="day_starts"):
         run_mod.day_start_ns(datetime.now().astimezone(), "22")
+
+
+# --- the comment pass over a real deck (spec 3 r30 section 5) -------------
+
+_COMMENT_ITEM = re.compile(r"^- comment ([0-9a-f]{16}):", re.MULTILINE)
+
+
+class _LlmComment:
+    """The comment reader: one direction per handed comment."""
+
+    def __init__(self):
+        self.prompts: list[str] = []
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="comment-reader", model="m", prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.prompts.append(q.params["prompt"])
+        readings = [{"comment": c, "reading": "wants a plainer photo",
+                     "actions": [{"action": "direction", "kind": "picture",
+                                  "text": "plain bowl of rice"}],
+                     "unactionable": []} for c in _COMMENT_ITEM.findall(q.params["prompt"])]
+        return RawAnswer(items=(json.dumps({"readings": readings}),))
+
+
+def test_a_gallery_comment_is_read_once_and_directs_the_next_picture_search(tmp_path, fake_search,
+                                                                           fake_batch):
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    reader = _LlmComment()
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch, comment=reader)
+    from thai_syllabus.learner import append_comment
+    append_comment(ctx.db, subject="rice", card_id="rice", kind="reading", text="too busy",
+                   shown={}, subject_kind="word")
+    r1 = run(ctx, budgets={})
+    assert r1.comments_read == 1 and r1.comment_actions == 1 and r1.comment_unactionable == 0
+    assert any(r.question.get("kind") == "direction" and r.answer["direction"] == "plain bowl of rice"
+               for r in ctx.db.assessments_of("rice"))
+    # the direction was this same run's picture query (phrase_attempt
+    # skips a directed subject; picture_query_for reads the direction)
+    asks = [r for r in rows_for(ctx.db, "rice", "picture")
+            if r.port == "provide" and r.backend == "pexels"]
+    assert asks and asks[0].question["params"]["query"] == "plain bowl of rice"
+    assert len(reader.prompts) == 1
+    if r1.batch_id:
+        fake_batch.complete_all(r1.batch_id, passed=True)
+    r2 = run(ctx, budgets={})
+    assert r2.comments_read == 0 and len(reader.prompts) == 1     # read once; nothing handed again
+    for r in (r1, r2):
+        assert (r.available == r.attempted + r.exhausted + r.pending + r.unserved
+                + r.budgeted + r.deferred)
+
+
+# --- D2: the orphaned-draft recovery step --------------------------------
+
+def _seed_draft(db, *, clauses, text, gloss):
+    """One sentence draft on record in the shape a drafting ask leaves
+    (record.sentence_drafts reads it back), with no verdict of its own --
+    what a lost batch leaves behind."""
+    db.append(port="provide", backend="llm",
+              key=ProvideKey(source="llm-sentence", kind="sentence", query=text_sha(text)),
+              subject=DRAFT_SUBJECT,
+              question={"provides": "sentence", "kind": "sentence", "subject_kind": "sentence"},
+              answer={"items": [json.dumps({"sentences": [
+                  {"clauses": clauses, "text": text, "gloss": gloss}]}, ensure_ascii=False)]})
+
+
+def _submitted_pairs(db, batch_id):
+    marker = db.latest("assess", "judge", BatchMarkerKey(batch_id))
+    return list(zip(marker.question["subjects"], marker.question["roles"]))
+
+
+@pytest.fixture
+def ctx_orphaned_draft(tmp_path, fake_search, fake_batch):
+    """A deck whose one draft on record never got a verdict -- the batch
+    that carried its question was lost."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    _seed_draft(ctx.db, clauses=[["eat", "rice"]], text=EAT_RICE, gloss="eat rice")
+    return ctx
+
+
+def test_a_draft_with_no_verdict_has_its_judge_question_collected_again(
+        ctx_orphaned_draft, fake_batch):
+    """D2 (spec 3 r30 section 5): with no batch outstanding and no fresh
+    sentence-for-target verdict, the run collects the draft's own judge
+    question again -- whatever produced the draft, a drafter's or a
+    comment's replacement."""
+    report = run(ctx_orphaned_draft, budgets={})
+    assert (text_sha(EAT_RICE), "sentence-for-target") in _submitted_pairs(
+        ctx_orphaned_draft.db, report.batch_id)
+    # drafts are not needs: no bucket of their own, and the identity holds
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_draft_with_a_fresh_verdict_collects_nothing(ctx_orphaned_draft, fake_batch):
+    r1 = run(ctx_orphaned_draft, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=False)
+    r2 = run(ctx_orphaned_draft, budgets={})
+    assert r2.batch_id and r2.batch_id != r1.batch_id
+    assert (text_sha(EAT_RICE), "sentence-for-target") not in _submitted_pairs(
+        ctx_orphaned_draft.db, r2.batch_id)
+
+
+def test_the_recovery_and_the_drafting_ask_raising_one_question_submit_it_once(
+        ctx_batch_sentences, fake_batch):
+    """The drafting ask is cached by prompt, so the run after a lost batch
+    gets the very drafts it got before: the recovery step and the sentence
+    attempt raise the same judge question. submit() refuses two prepared
+    questions sharing a key, so the run submits it once."""
+    _seed_draft(ctx_batch_sentences.db, clauses=[["eat", "rice"]], text=EAT_RICE,
+                gloss="eat rice")
+    report = run(ctx_batch_sentences, budgets={})
+    pairs = _submitted_pairs(ctx_batch_sentences.db, report.batch_id)
+    assert pairs.count((text_sha(EAT_RICE), "sentence-for-target")) == 1
+
+
+def test_a_dead_judge_in_the_draft_recovery_over_a_real_deck_stops_the_run(tmp_path, fake_search):
+    """The same path end to end: an inline judge whose wire is down, and
+    one draft on record to ask about."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+                 transport="api")
+
+    def dead(prompt, attachments=()):
+        raise TransportError("no judge")
+
+    ctx = _wire(build_sourcing(root), fake_search, complete=dead)
+    _seed_draft(ctx.db, clauses=[["eat", "rice"]], text=EAT_RICE, gloss="eat rice")
+    report = run(ctx, budgets={})
+    assert report.unreachable is True and report.attempted == 0
+    assert report.deferred == report.available
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_draft_the_run_could_never_adopt_is_not_asked_about(tmp_path, fake_search, fake_batch):
+    """Fix round 1 finding 4: the recovery applies attempts.draft_refusal,
+    the same acceptance test sentence_attempt and a comment's replacement
+    apply, so the judge is never asked about a draft that could not be
+    adopted whatever the verdict said -- here one over the clause cap."""
+    root = _deck(tmp_path, (RICE, FISH, EAT),
+                 (target("rice/receptive", "rice"), target("fish/receptive", "fish"),
+                  target("eat/receptive", "eat")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    # three clauses against sentence_max_clauses = 2; clauses join with a space
+    over_cap = " ".join((EAT.thai, RICE.thai, FISH.thai))
+    _seed_draft(ctx.db, clauses=[["eat"], ["rice"], ["fish"]], text=over_cap, gloss="eat rice fish")
+    report = run(ctx, budgets={})
+    assert text_sha(over_cap) not in [s for s, _role in _submitted_pairs(ctx.db, report.batch_id)]

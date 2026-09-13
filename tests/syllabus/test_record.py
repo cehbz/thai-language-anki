@@ -8,16 +8,25 @@ from datetime import date
 
 import pytest
 
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LearnerKey,
-                                     PhraseKey, ProvideKey, RetirementKey, sha)
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, CommentReadingKey, CommentVetoKey,
+                                     DirectionKey, FlagKey, JudgeKey,
+                                     LearnerKey, PhraseKey, ProvideKey, RetirementKey,
+                                     comment_identity, sha)
 from thai_syllabus.ids import WordId
 from thai_syllabus.record import (
+    COMMENT_ACTIONS,
     DRAFT_SUBJECT,
     PARSE_SUBJECT,
     PHRASE_SUBJECT,
+    CommentReading,
+    Retirement,
     SentenceDraft,
+    action_label,
     asks_since,
     card_notes,
+    comment_of,
+    comments,
+    comments_of,
     cost_since,
     fetches_since,
     candidate_shas,
@@ -25,6 +34,7 @@ from thai_syllabus.record import (
     draft_sentence,
     drafted_phrase,
     drafts_in,
+    gloss_on_requested,
     judge_verdicts,
     latest_phrase,
     last_source_ask_ts,
@@ -33,19 +43,27 @@ from thai_syllabus.record import (
     learner_ratings,
     merge_drafts,
     normalize_shown,
+    parse_comment_readings,
     parse_drafts,
     parse_no_fit,
     parse_phrases,
     parse_prompt,
     parses_in,
     ratings_for_role,
+    reading_of,
+    reading_view,
     retired_texts,
+    retirement_evidence,
+    retirements,
     rows_for,
     sentence_drafts,
     source_asks,
     spend_since,
     tried_urls,
+    vetoed_readings,
+    vetoed_readings_all,
     vocabulary_line,
+    without_vetoed_readings,
 )
 from thai_syllabus.store import SyllabusDb
 
@@ -154,8 +172,10 @@ def test_card_notes_defaults_shown_to_empty_mapping_when_absent(cache):
     cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
                 {"role": "card-flag", "kind": "card-flag", "anchor": "c1", "card_kind": "reading"},
                 {"kind": "rating", "rating": None, "note": "a pre-r5 note"}, 0)
+    row = cache.assessments_of("rice")[0]
     notes = card_notes(cache.assessments_of("rice"), "c1", "reading")
-    assert notes == [{"text": "a pre-r5 note", "ts": notes[0]["ts"], "shown": {}}]
+    assert notes == [{"text": "a pre-r5 note", "ts": notes[0]["ts"], "shown": {},
+                      "comment_sha": comment_identity(row.key_sha, row.ts)}]
 
 
 def test_source_asks_excludes_audiofetch_too(cache):
@@ -858,3 +878,374 @@ def test_retired_texts_ignores_an_attempt_run_row_of_a_different_kind(cache):
                 {"kind": "something-else", "subject_kind": "sentence"},
                 {"retired": True}, 0)
     assert retired_texts(cache) == frozenset()
+
+
+def test_comments_are_the_card_flag_rows_with_a_note_oldest_first_with_a_derived_identity(cache):
+    """Spec 5 r9: a comment is a card-flag row carrying note text; an
+    Anki flag import row (no note) is not one. Identity is derived from
+    the row's own (key_sha, ts).
+    """
+    cache.append("assess", "learner", LearnerKey(artifact_sha="rice", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "rice",
+                 "card_kind": "reading", "shown": {"picture": "a" * 64},
+                 "subject_kind": "word"},
+                {"kind": "rating", "rating": None, "note": "blurry"}, 0)
+    cache.append("assess", "learner", FlagKey(family="word", anchor="rice", card_kind="reading",
+                                              flags=1), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "rice",
+                 "card_kind": "reading"},
+                {"flagged": True, "flag": 1}, 0)
+    cache.append("assess", "learner", LearnerKey(artifact_sha="fish", role="card-flag"), "fish",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "fish",
+                 "card_kind": "question", "shown": {}, "subject_kind": "word",
+                 "question_kind": "rate", "artifact_kind": "picture"},
+                {"kind": "rating", "rating": None, "note": "sentence is odd"}, 0)
+    found = comments(cache)
+    assert [c.subject for c in found] == ["rice", "fish"]
+    rice, fish = found
+    row = cache.assessments_of("rice")[0]
+    assert rice.comment_sha == comment_identity(row.key_sha, row.ts)
+    assert rice.text == "blurry" and rice.card_kind == "reading" and rice.subject_kind == "word"
+    assert rice.question_kind is None and rice.shown == {"picture": "a" * 64}
+    assert fish.question_kind == "rate" and fish.artifact_kind == "picture"
+    assert comments_of(cache.assessments_of("rice")) == [rice]
+    assert comment_of(cache.assessments_of("rice")[1]) is None
+
+
+def test_card_notes_carry_the_comment_identity(cache):
+    cache.append("assess", "learner", LearnerKey(artifact_sha="c1", role="card-flag"), "rice",
+                {"role": "card-flag", "kind": "card-flag", "anchor": "c1",
+                 "card_kind": "reading", "shown": {}},
+                {"kind": "rating", "rating": None, "note": "first"}, 0)
+    row = cache.assessments_of("rice")[0]
+    (note,) = card_notes(cache.assessments_of("rice"), "c1", "reading")
+    assert note["comment_sha"] == comment_identity(row.key_sha, row.ts)
+
+
+# --- the comment pass: readings, vetoes, retirements (spec 3 r30 section 5) --
+
+_SHA = "c1c1c1c1c1c1c1c1"
+
+
+def test_parse_comment_readings_keeps_vocabulary_actions_and_demotes_the_rest():
+    text = json.dumps({"readings": [
+        {"comment": _SHA, "reading": "the picture shows noodles, not rice",
+         "actions": [{"action": "direction", "kind": "picture", "text": "bowl of steamed rice"},
+                     {"action": "rate", "kind": "picture", "value": 1},
+                     {"action": "rename_card", "to": "x"},
+                     {"action": "rate", "kind": "picture", "value": 9},
+                     {"action": "none"}],
+         "unactionable": ["change the font"]},
+        {"reading": "no comment id"},
+        {"comment": "d2d2d2d2d2d2d2d2", "reading": ""},
+    ]})
+    out = parse_comment_readings(text)
+    assert list(out) == [_SHA]
+    r = out[_SHA]
+    assert r.reading == "the picture shows noodles, not rice"
+    assert [a["action"] for a in r.actions] == ["direction", "rate"]
+    assert r.unactionable[0] == "change the font"
+    assert r.unactionable[1].startswith("unrecognized action: ") and "rename_card" in r.unactionable[1]
+    assert len(r.unactionable) == 4      # rename_card, value 9, none without remark
+
+
+def test_parse_comment_readings_is_empty_for_anything_but_the_shape():
+    assert parse_comment_readings("no json") == {}
+    assert parse_comment_readings('{"phrases": []}') == {}
+    assert parse_comment_readings('```json\n{"readings": []}\n```') == {}
+
+
+def test_parse_comment_readings_reads_a_fenced_answer():
+    """The reader answers in a ```json fence as often as not
+    (transport.strip_fences): the readings inside it are read all the
+    same."""
+    fenced = ('```json\n' + json.dumps({"readings": [
+        {"comment": _SHA, "reading": "the picture is wrong",
+         "actions": [{"action": "rate", "kind": "picture", "value": 1}],
+         "unactionable": []}]}) + '\n```')
+    r = parse_comment_readings(fenced)[_SHA]
+    assert r.reading == "the picture is wrong"
+    assert [a["action"] for a in r.actions] == ["rate"]
+
+
+def test_parse_comment_readings_drops_a_sha_that_was_never_handed():
+    """The reader may only answer for the comments the prompt handed it:
+    with a handed map, a reading naming any other sha -- a hallucinated
+    or stale one -- is dropped, so nothing is ever executed against a
+    comment nobody asked about. With no map (wiring's recognizer, which
+    has no handed set) the parser stays shape-only."""
+    text = json.dumps({"readings": [
+        {"comment": _SHA, "reading": "the picture is wrong"},
+        {"comment": "d2d2d2d2d2d2d2d2", "reading": "invented"}]})
+    assert list(parse_comment_readings(text, {_SHA: "rice"})) == [_SHA]
+    assert list(parse_comment_readings(text)) == [_SHA, "d2d2d2d2d2d2d2d2"]
+    assert parse_comment_readings(text, {}) == {}
+
+
+def test_every_comment_action_names_its_parameters():
+    assert set(COMMENT_ACTIONS) == {"direction", "retire_sentence", "replacement_sentence",
+                                    "rate", "gloss_on", "none"}
+
+
+def test_gloss_on_is_actionable_only_on_the_comments_own_subject():
+    """Decision 3: the deck can only turn the gloss on for the card the
+    comment was written on; gloss_on naming another word is unactionable.
+    With no subject handed in, the parser has nothing to check against."""
+    text = json.dumps({"readings": [
+        {"comment": _SHA, "reading": "show the gloss",
+         "actions": [{"action": "gloss_on", "word": "rice"},
+                     {"action": "gloss_on", "word": "fish"}]}]})
+    r = parse_comment_readings(text, {_SHA: "rice"})[_SHA]
+    assert [a["word"] for a in r.actions] == ["rice"]
+    assert len(r.unactionable) == 1
+    assert r.unactionable[0].startswith("gloss-on names another word: ")
+    assert "fish" in r.unactionable[0]
+    loose = parse_comment_readings(text)[_SHA]
+    assert [a["word"] for a in loose.actions] == ["rice", "fish"]
+
+
+def test_a_none_action_with_a_remark_is_an_action_that_stays_tellable_apart():
+    """Decision 5: none(remark) is valid and has no side effect; it is
+    counted as an action read, not as an unactionable request, and the
+    reading names it so the executor can tell it from a real act."""
+    text = json.dumps({"readings": [
+        {"comment": _SHA, "reading": "just a remark",
+         "actions": [{"action": "none", "remark": "I like this card"}]}]})
+    r = parse_comment_readings(text)[_SHA]
+    assert [a["action"] for a in r.actions] == ["none"]
+    assert r.unactionable == ()
+
+
+def test_a_comment_reading_can_carry_no_action_and_one_unactionable_item():
+    """Decision 7: a comment the answer omits is recorded as read with no
+    action and one unactionable line."""
+    reading = CommentReading(reading="read", actions=(),
+                             unactionable=("the model gave no reading",))
+    assert reading.actions == ()
+    assert reading.unactionable == ("the model gave no reading",)
+
+
+def _reading_row(cache, subject, comment_sha, version="1", actions=(), unactionable=()):
+    return cache.append("assess", "llm", CommentReadingKey(comment_sha, version), subject,
+                        {"kind": "comment-reading", "comment_sha": comment_sha,
+                         "prompt_version": version, "subject_kind": "word",
+                         "anchor": subject, "card_kind": "reading"},
+                        {"reading": "read", "actions": list(actions),
+                         "unactionable": list(unactionable)}, 0)
+
+
+def test_reading_of_is_the_newest_reading_for_the_comment_optionally_per_version(cache):
+    _reading_row(cache, "rice", _SHA, "1")
+    _reading_row(cache, "rice", _SHA, "2")
+    _reading_row(cache, "rice", "other0000000000", "2")
+    rows = cache.assessments_of("rice")
+    assert reading_of(rows, _SHA).question["prompt_version"] == "2"
+    assert reading_of(rows, _SHA, "1").question["prompt_version"] == "1"
+    assert reading_of(rows, _SHA, "3") is None
+    assert reading_of(rows, "nope") is None
+
+
+def test_rows_derived_from_a_vetoed_reading_vanish_from_rows_for_ratings_and_directions(cache):
+    """Spec 3 r30 section 5 / spec 5 r10: a struck reading's rows are
+    ignored by every fold; the reading and veto rows stay; a row from an
+    unstruck reading and a plain learner row are untouched."""
+    derived = {"comment_sha": _SHA, "prompt_version": "1"}
+    cache.append("assess", "learner", LearnerKey("a" * 64, "picture-for-word"), "rice",
+                {"role": "picture-for-word", "artifact_sha": "a" * 64, "rubric": None,
+                 "kind": "rating", "subject_kind": "word", **derived},
+                {"value": "unacceptable-none"}, 0)
+    cache.append("assess", "learner", DirectionKey("rice", "picture-for-word", "t"), "rice",
+                {"kind": "direction", "role": "picture-for-word", "subject_kind": "word",
+                 **derived}, {"direction": "struck"}, 0)
+    cache.append("assess", "learner", DirectionKey("rice", "picture-for-word", "u"), "rice",
+                {"kind": "direction", "role": "picture-for-word", "subject_kind": "word",
+                 "comment_sha": "e2e2e2e2e2e2e2e2", "prompt_version": "1"},
+                {"direction": "kept"}, 0)
+    cache.append("assess", "learner", LearnerKey("b" * 64, "picture-for-word"), "rice",
+                {"role": "picture-for-word", "artifact_sha": "b" * 64, "rubric": None,
+                 "kind": "rating", "subject_kind": "word"}, {"value": "good"}, 0)
+    _reading_row(cache, "rice", _SHA, "1")
+    cache.append("assess", "learner", CommentVetoKey(_SHA, "1"), "rice",
+                {"kind": "comment-veto", "comment_sha": _SHA, "prompt_version": "1",
+                 "subject_kind": "word"}, {"vetoed": True}, 0)
+    rows = cache.assessments_of("rice")
+    assert vetoed_readings(rows) == frozenset({(_SHA, "1")})
+    kept = without_vetoed_readings(rows)
+    assert [r.question.get("kind") for r in kept] == ["direction", "rating", "comment-reading",
+                                                       "comment-veto"]
+    assert [r.answer["value"] for r in learner_ratings(rows)] == ["good"]
+    assert [r.answer["direction"] for r in directions(rows)] == ["kept"]
+    assert [r.answer.get("value") for r in rows_for(cache, "rice", "rating")] == ["good"]
+
+
+def test_a_row_missing_either_half_of_the_reading_reference_is_never_matched(cache):
+    """A (comment_sha, prompt_version) pair is the whole reference: a
+    veto row missing either half strikes nothing, and a derived row
+    missing either half is never taken for a struck one -- no row is
+    ever hidden, or hidden by, an absent field."""
+    cache.append("assess", "learner", DirectionKey("rice", "picture-for-word", "t"), "rice",
+                {"kind": "direction", "role": "picture-for-word", "subject_kind": "word",
+                 "comment_sha": _SHA}, {"direction": "no version"}, 0)
+    cache.append("assess", "learner", DirectionKey("rice", "picture-for-word", "u"), "rice",
+                {"kind": "direction", "role": "picture-for-word", "subject_kind": "word",
+                 "prompt_version": "1"}, {"direction": "no sha"}, 0)
+    cache.append("assess", "learner", CommentVetoKey(_SHA, "1"), "rice",
+                {"kind": "comment-veto", "comment_sha": _SHA, "subject_kind": "word"},
+                {"vetoed": True}, 0)
+    rows = cache.assessments_of("rice")
+    assert vetoed_readings(rows) == frozenset()
+    assert [r.answer["direction"] for r in directions(rows)] == ["no version", "no sha"]
+
+
+def _replacement_draft_row(cache, comment_sha=_SHA, version="1", query="q",
+                           text="กินข้าว", gloss="eat rice"):   # กินข้าว: eat rice
+    """The provide row attempts._draft_replacement leaves: a drafting
+    row under DRAFT_SUBJECT marked with the reading that produced it."""
+    return cache.append("provide", "llm", ProvideKey(source="llm-comment", kind="sentence",
+                                                     query=query),
+                        DRAFT_SUBJECT,
+                        {"provides": "sentence", "kind": "sentence", "subject_kind": "sentence",
+                         "comment_sha": comment_sha, "prompt_version": version},
+                        {"items": [json.dumps({"sentences": [
+                            {"clauses": [["eat"], ["rice"]], "text": text, "gloss": gloss}]},
+                            ensure_ascii=False)]}, 0)
+
+
+def _veto_row(cache, subject, comment_sha=_SHA, version="1"):
+    return cache.append("assess", "learner", CommentVetoKey(comment_sha, version), subject,
+                        {"kind": "comment-veto", "comment_sha": comment_sha,
+                         "prompt_version": version, "subject_kind": "word"},
+                        {"vetoed": True}, 0)
+
+
+def test_vetoed_readings_all_sees_a_strike_written_under_another_subject(cache):
+    """The veto row lives under the comment's own subject, while the rows
+    derived from that reading can live under another (a replacement draft
+    under DRAFT_SUBJECT) -- a per-subject fold would never see it, so the
+    global fold reads every learner row."""
+    _veto_row(cache, "rice")
+    assert vetoed_readings(cache.assessments_of(DRAFT_SUBJECT)) == frozenset()
+    assert vetoed_readings_all(cache) == frozenset({(_SHA, "1")})
+
+
+def test_sentence_drafts_drops_a_replacement_draft_whose_reading_was_struck(cache):
+    """Spec 5 r10: striking a reading unmakes what it did, the
+    replacement sentence it drafted included -- every reader of the
+    drafts (adoptable_drafts, the run's D2 recovery step) sees it gone."""
+    _replacement_draft_row(cache)
+    assert [d.text for d in sentence_drafts(cache)] == ["กินข้าว"]   # กินข้าว: eat rice
+    _veto_row(cache, "rice")
+    assert sentence_drafts(cache) == []
+
+
+def test_sentence_drafts_keeps_a_drafters_draft_when_a_reading_is_struck(cache):
+    """A drafting ask's own row names no reading, so no strike can reach
+    it; nor does a strike on some other reading reach a replacement."""
+    cache.append("provide", "llm-sentence", ProvideKey(source="llm-sentence", kind="", query="q1"),
+                DRAFT_SUBJECT, {"kind": "sentence", "subject_kind": "sentence"},
+                {"items": [
+                    '{"sentences": [{"clauses": [["eat"], ["rice"]], "text": "กินข้าว",'
+                    ' "gloss": "eat rice"}]}']}, 0)   # กินข้าว: eat rice
+    _replacement_draft_row(cache, comment_sha="e2e2e2e2e2e2e2e2", query="q2",
+                           text="กิน", gloss="eat")   # กิน: eat
+    _veto_row(cache, "rice")
+    assert sorted(d.text for d in sentence_drafts(cache)) == sorted(["กินข้าว", "กิน"])
+
+
+def test_reading_view_is_none_for_an_identity_with_no_reading_on_record(cache):
+    """A comment identity the pass never read (an Anki flag-import row
+    surfaces one) has no reading row: the view is None, never an
+    exception, and the page shows the entry unread."""
+    _reading_row(cache, "rice", _SHA, "1")
+    assert reading_view(cache.assessments_of("rice"), "f0f0f0f0f0f0f0f0") is None
+    assert reading_view([], _SHA) is None
+
+
+def test_reading_view_labels_the_actions_and_marks_a_vetoed_reading(cache):
+    _reading_row(cache, "rice", _SHA, "1",
+                 actions=[{"action": "direction", "kind": "picture", "text": "steamed rice",
+                           "outcome": "done"},
+                          {"action": "rate", "kind": "picture", "value": 1, "outcome": "refused",
+                           "reason": "the card no longer shows that picture"}],
+                 unactionable=["change the font"])
+    view = reading_view(cache.assessments_of("rice"), _SHA)
+    assert view == {"reading": "read", "prompt_version": "1", "vetoed": False,
+                    "actions": ["direction for the picture search: steamed rice",
+                                "rating 1 on the picture (not done: the card no longer shows that picture)"],
+                    "unactionable": ["no action available: change the font"]}
+    cache.append("assess", "learner", CommentVetoKey(_SHA, "1"), "rice",
+                {"kind": "comment-veto", "comment_sha": _SHA, "prompt_version": "1",
+                 "subject_kind": "word"}, {"vetoed": True}, 0)
+    assert reading_view(cache.assessments_of("rice"), _SHA)["vetoed"] is True
+    assert reading_view(cache.assessments_of("rice"), "nope") is None
+
+
+def test_reading_view_renders_a_reading_with_no_action_and_one_unactionable_item(cache):
+    """Decision 7: the screen shows the omitted comment's recorded
+    reading -- no action, one unactionable line."""
+    _reading_row(cache, "rice", _SHA, "1", unactionable=["the model gave no reading"])
+    view = reading_view(cache.assessments_of("rice"), _SHA)
+    assert view["actions"] == []
+    assert view["unactionable"] == ["no action available: the model gave no reading"]
+
+
+def test_action_labels_cover_the_vocabulary():
+    assert action_label({"action": "retire_sentence", "reason": "unnatural",
+                         "replacement_hint": "shorter", "outcome": "done"}) == "sentence retired: unnatural"
+    assert action_label({"action": "replacement_sentence", "thai": "กินข้าว", "gloss": "eat rice",
+                         "outcome": "done"}) == "replacement drafted: กินข้าว (eat rice)"   # กินข้าว: eat rice
+    assert action_label({"action": "gloss_on", "word": "rice", "outcome": "done"}) == "gloss on: rice"
+    assert action_label({"action": "none", "remark": "just a note", "outcome": "done"}) == "no action: just a note"
+
+
+def test_retirements_carry_reason_hint_and_text_and_retired_texts_is_their_keys(cache):
+    cache.append("attempt", "run", RetirementKey("s1"), "s1",
+                {"kind": "retirement", "subject_kind": "sentence", "reason": "recording exhausted",
+                 "candidates": 1}, {"retired": True}, 0)
+    cache.append("attempt", "run", RetirementKey("s2"), "s2",
+                {"kind": "retirement", "subject_kind": "sentence", "reason": "unnatural word order",
+                 "replacement_hint": "put the time first", "text": "กินข้าว",   # กินข้าว: eat rice
+                 "candidates": 0, "comment_sha": _SHA, "prompt_version": "1"}, {"retired": True}, 0)
+    found = retirements(cache)
+    assert found["s1"] == Retirement(text=None, reason="recording exhausted", replacement_hint=None)
+    assert found["s2"] == Retirement(text="กินข้าว", reason="unnatural word order",
+                                     replacement_hint="put the time first")
+    assert retired_texts(cache) == frozenset({"s1", "s2"})
+    assert retirement_evidence(found["s1"]) == "retired: recording exhausted"
+    assert retirement_evidence(found["s2"]) == "retired: unnatural word order; replacement hint: put the time first"
+
+
+def test_a_struck_readings_retirement_keeps_its_reason_and_loses_its_hint(cache):
+    """Spec 5 r10: striking a reading undoes what it steered. The sentence
+    stays retired -- the deletion already happened and the text is never
+    re-adopted -- but the learner's replacement hint must stop steering
+    the drafter (record.retirement_evidence, derivations.refused_drafts),
+    so the fold drops it. A retirement naming no reading is untouched."""
+    cache.append("attempt", "run", RetirementKey("s1"), "s1",
+                {"kind": "retirement", "subject_kind": "sentence", "reason": "unnatural",
+                 "replacement_hint": "put the time first", "candidates": 0,
+                 "comment_sha": _SHA, "prompt_version": "1"}, {"retired": True}, 0)
+    cache.append("attempt", "run", RetirementKey("s2"), "s2",
+                {"kind": "retirement", "subject_kind": "sentence", "reason": "too blunt",
+                 "replacement_hint": "add a particle", "candidates": 0}, {"retired": True}, 0)
+    assert retirements(cache)["s1"].replacement_hint == "put the time first"
+    cache.append("assess", "learner", CommentVetoKey(_SHA, "1"), "s1",
+                {"kind": "comment-veto", "comment_sha": _SHA, "prompt_version": "1",
+                 "subject_kind": "sentence"}, {"vetoed": True}, 0)
+    struck = retirements(cache)
+    assert struck["s1"] == Retirement(text=None, reason="unnatural", replacement_hint=None)
+    assert retirement_evidence(struck["s1"]) == "retired: unnatural"
+    assert struck["s2"].replacement_hint == "add a particle"   # names no reading
+    assert retired_texts(cache) == frozenset({"s1", "s2"})     # still retired
+
+
+def test_gloss_on_requested_reads_the_gloss_on_row_unless_its_reading_is_vetoed(cache):
+    assert gloss_on_requested(cache.assessments_of("rice")) is False
+    cache.append("assess", "learner", DirectionKey("rice", "gloss-on", sha("gloss on")), "rice",
+                {"kind": "gloss-on", "role": "picture-for-word", "subject_kind": "word",
+                 "comment_sha": _SHA, "prompt_version": "1"}, {"direction": "gloss on"}, 0)
+    assert gloss_on_requested(cache.assessments_of("rice")) is True
+    cache.append("assess", "learner", CommentVetoKey(_SHA, "1"), "rice",
+                {"kind": "comment-veto", "comment_sha": _SHA, "prompt_version": "1",
+                 "subject_kind": "word"}, {"vetoed": True}, 0)
+    assert gloss_on_requested(cache.assessments_of("rice")) is False

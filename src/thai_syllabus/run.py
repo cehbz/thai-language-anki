@@ -1,8 +1,10 @@
 """The batch run (spec 3 section 7): the previous run's judge batch
-resolved and what it passed adopted, one sentence attempt over the open
-Targets, one phrase attempt drafting a search phrase for every open
-picture need lacking one (spec 3 r24 section 5), one Source per queued
-need, and every question collected on the way submitted as one batch.
+resolved and what it passed adopted, one comment pass reading every
+unread learner comment (spec 3 r30 section 5), one sentence attempt over
+the open Targets, one phrase attempt drafting a search phrase for every
+open picture need lacking one (spec 3 r24 section 5), one Source per
+queued need, and every question collected on the way submitted as one
+batch.
 
 Iteration only: every policy (queue/current_best/exhausted/next_source,
 what a picture still owes a preference question, what an attempt is for a
@@ -21,8 +23,9 @@ from datetime import datetime, time, timedelta, timezone
 from time import time_ns
 from typing import NamedTuple
 
-from .assessor import JudgeUnreachable, PreparedQuestion
-from .cachekeys import RetirementKey, RunReportKey
+from .assessor import AssessQuestion, JudgeUnreachable, PreparedQuestion
+from .authority import role_for
+from .cachekeys import RunReportKey
 from .attempts import (
     AttemptResult,
     Need,
@@ -31,11 +34,14 @@ from .attempts import (
     adjudication_attempt,
     assess_first,
     attempt,
+    comment_attempt,
     current_best_of,
+    draft_refusal,
     phrase_attempt,
     picture_query_for,
     preference_attempt,
     provenance_source_for,
+    retire_sentence,
     sentence_attempt,
 )
 from .derivations import (
@@ -57,10 +63,12 @@ from .phonology import corroborates, default_engines
 from .ports import RecordWriter
 from .record import (
     asks_since,
-    candidate_shas,
+    draft_sentence,
     fetches_since,
     ratings_for_role,
+    retired_texts,
     rows_for,
+    sentence_drafts,
     spend_since,
 )
 from .transport import QuotaExhausted, TransportError
@@ -123,10 +131,17 @@ class RunReport:
     # also outside the identity
     stayed_disputed: int = 0
     drafted: int = 0            # drafts the sentence attempt produced
-    # adopted Sentences the run deleted because their recording need was
-    # exhausted with no passing candidate (F13, spec 3 section 5); a
-    # learner row that outlives the rule (F9) keeps the sentence instead
+    # adopted Sentences the run deleted, whatever caused it (spec 3 r30
+    # section 7): a recording need exhausted with no passing candidate
+    # (F13, spec 3 section 5) -- a learner row that outlives the rule (F9)
+    # keeps the sentence instead -- or a learner comment's retire_sentence
     retired: int = 0
+    # the comment pass (spec 3 r30 section 5): comments read this run,
+    # actions taken, requests the deck could not act on -- events, not
+    # needs, outside the identity above
+    comments_read: int = 0
+    comment_actions: int = 0
+    comment_unactionable: int = 0
     excluded: int = 0           # questions the judge could not prepare
     # one {subject, artifact_sha, reason} per exclusion, for a screen to
     # read back per subject (record.excluded_candidates)
@@ -161,6 +176,9 @@ class _Tally:
     stayed_disputed: int = 0
     drafted: int = 0
     retired: int = 0
+    comments_read: int = 0
+    comment_actions: int = 0
+    comment_unactionable: int = 0
     # subjects (text_shas) of sentences this pass retired -- a later
     # queue entry naming one of these is skipped, never attempted
     # (run._try_each_need)
@@ -211,6 +229,13 @@ class _Tally:
                  "reason": item.reason},)
         self.excluded = len(self.excluded_items)
         self.drafted += result.drafted
+        # The comment pass's own counts (spec 3 r30 section 5): every
+        # other attempt leaves these at 0. `retired` is a count, not a
+        # bucket -- _retire_exhausted_sentence adds F13's own the same way.
+        self.retired += result.retired
+        self.comments_read += result.comments_read
+        self.comment_actions += result.comment_actions
+        self.comment_unactionable += result.comment_unactionable
         for backend, incurred in result.spend.items():
             self.spend.setdefault(backend, Spend()).add(incurred.asks, incurred.cost)
 
@@ -233,6 +258,67 @@ def _adopt_sentences(ctx: Sourcing) -> int:
     adopted: tuple[Sentence, ...] = tuple(sentence for sentence, _targets in chosen)
     ctx.syllabus = ctx.syllabus.with_sentences(adopted)
     return len(adopted)
+
+
+def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
+    """D2 (spec 3 r30 section 5): every sentence draft on record
+    (record.sentence_drafts) that is neither adopted nor retired, asked
+    again -- cache-first through `ctx.assessor.ask_many`, whose JudgeKey
+    carries the rubric sha, so a draft already holding a fresh
+    sentence-for-target verdict under the current rubric collects
+    nothing and only an unjudged one does.
+
+    A batch that never came back orphans whatever drafts it carried, a
+    drafting ask's and a comment's replacement alike, and neither pass
+    re-raises the question on its own: the drafting ask is cached by
+    prompt (a re-ask is a hit, and the drafter may well answer with
+    other texts), and a comment is read once. Without this the draft
+    would sit on record for ever, neither adopted nor refused.
+
+    The question is the one `sentence_attempt` (and
+    `attempts._draft_replacement`) raises for a draft: role
+    sentence-for-target, the current rubric, `{text, gloss, word}` with
+    the sentence's own last used word. A draft is asked about only when
+    it could still be adopted: `attempts.draft_refusal`, the one
+    acceptance test both of those passes apply (the Sentence invariant,
+    the clause cap, at least one still-open Target filled, the
+    per-sentence Target cap), decides, so the judge is never asked about
+    a draft the run would refuse anyway -- a curated change since it was
+    drafted, or its Targets filled in the meantime. A refusal is a
+    routine, permanent fact about the draft, logged at debug. Drafts are
+    not needs: the questions ride this run's batch like the sentence
+    attempt's, and no bucket counts them.
+    """
+    adopted = {s.text_sha for s in ctx.syllabus.sentences}
+    retired = retired_texts(ctx.db)
+    role = role_for("sentence")
+    questions: list[AssessQuestion] = []
+    for draft in sentence_drafts(ctx.db):
+        if draft.text_sha in adopted or draft.text_sha in retired or not draft.gloss:
+            continue
+        sentence = draft_sentence(draft, ctx.today)
+        refusal = draft_refusal(ctx, sentence)
+        if refusal is not None:
+            _log.debug("orphaned draft not asked about: %s: %s", refusal, draft.text)
+            continue
+        try:
+            last_word = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence)).thai
+        except (KeyError, ValueError) as e:
+            _log.debug("orphaned draft not asked about: %s: %s", e, draft.text)
+            continue
+        questions.append(AssessQuestion(
+            subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
+            params={"text": draft.text, "gloss": draft.gloss, "word": last_word},
+            kind="sentence", subject_kind="sentence"))
+    if not questions:
+        return AttemptResult(attempted=False)
+    result = ctx.assessor.ask_many("judge", questions)
+    spend: dict[str, Spend] = {}
+    for verdict in result.resolved.values():
+        spend.setdefault("judge", Spend()).add(0 if verdict.hit else 1,
+                                               float(verdict.cost or 0.0))
+    return AttemptResult(attempted=True, questions=list(result.collected),
+                         excluded=dict(result.excluded), spend=spend)
 
 
 class _Adjudicated(NamedTuple):
@@ -462,47 +548,25 @@ def _retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -> None
     still landed in whichever bucket found it exhausted, and the sentence's
     own needs leave `available` only on the next run, once it is gone.
 
-    `ctx.syllabus` is replaced with a copy holding every sentence but this
-    one (spec 3 section 5: a retired sentence's Targets reopen), the same
-    way run() already mutates `ctx.now_ns` on ctx for the pass -- without
-    this, the rest of THIS pass (and every later cycle over the same ctx,
-    cli._cmd_run's own `--cycles`) would keep reading the deleted sentence
-    off a stale in-memory snapshot: `need.subject` is added to
-    `tally.retired_subjects` so `_try_each_need` can skip that sentence's
-    other still-queued needs (its scene picture) rather than attempt them
-    against gone data.
-
-    Before any of that, one retirement row (port "attempt", backend
-    "run", key cachekeys.RetirementKey(need.subject)) is appended under
-    the sentence's own text_sha -- an append is a checkpoint, so it lands
-    even if the process dies before delete_sentence runs. It is the
-    durable trace derivations.adoptable_drafts and refused_drafts both
-    read (record.retired_texts) once the sentences row itself is gone:
-    without it a retired text's still-passing draft and verdict would
-    get the same sentence re-adopted on the very next pass (spec 3
-    section 5: a retired text is not re-adopted, and is listed among the
-    texts not to propose).
+    The retirement itself -- the retirement row, the delete, the Guard
+    report and the `ctx.syllabus` replacement -- is
+    attempts.retire_sentence, the one mechanism the comment pass (r30)
+    retires through too; F13's own contribution is the two guards above,
+    the reason it passes ("recording exhausted", with no replacement
+    hint and no comment it was derived from), and the tally:
+    `need.subject` is added to `tally.retired_subjects` so
+    `_try_each_need` can skip that sentence's other still-queued needs
+    (its scene picture) rather than attempt them against gone data, and
+    `tally.retired` counts every deleted adopted Sentence, whatever
+    caused it.
     """
     if current_best_of(ctx, need.subject, need.kind).artifact_sha is not None:
         return
     if _learner_outlives_the_rule(ctx, need):
         return
-    n_candidates = len(candidate_shas(rows_for(ctx.db, need.subject, need.kind)))
-    ctx.db.append(port="attempt", backend="run", key=RetirementKey(need.subject),
-                 subject=need.subject,
-                 question={"kind": "retirement", "subject_kind": "sentence",
-                          "reason": "recording exhausted", "candidates": n_candidates},
-                 answer={"retired": True})
-    ctx.db.delete_sentence(need.subject)
-    ctx.syllabus = dataclasses.replace(
-        ctx.syllabus,
-        sentences=tuple(s for s in ctx.syllabus.sentences if s.text_sha != need.subject))
+    retire_sentence(ctx, need.subject, reason="recording exhausted")
     tally.retired_subjects.add(need.subject)
-    if ctx.guard is not None:
-        ctx.guard.removed("sentences", [need.subject])
     tally.retired += 1
-    _log.info("retired sentence %s: recording exhausted (%d candidates, none passing)",
-              need.subject, n_candidates)
 
 
 def _maybe_retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -> None:
@@ -635,17 +699,21 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
 
 def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
         sentence_targets_per_run: int = 40) -> RunReport:
-    """One pass: resolve, adopt, draft sentences once, draft an image
-    phrase once for every open picture need lacking one (spec 3 r24
-    section 5), try each queued need at its next source, submit
-    everything collected as one batch. An unreachable judge -- at the
-    resolve, in an attempt, or at the submit -- ends the pass there,
-    reported and persisted; a batch still unanswered ends it before any
-    attempt, so at most one batch is out. A drafter transport failure
-    counts under source_failures["llm-sentence"] and defers every word
-    with an open Target; one under source_failures["llm-phrase"] leaves
-    every picture need still lacking a phrase waiting (deferred) for
-    this pass. Either way the loop runs.
+    """One pass: resolve, adopt, re-ask the judge about any draft a lost
+    batch orphaned (spec 3 r30 section 5), read every unread learner
+    comment once, draft sentences once, draft an image phrase once for
+    every open picture need lacking one (spec 3 r24 section 5), try each
+    queued need at its next source, submit everything collected as one
+    batch. An unreachable judge -- at the resolve, in a pass, in an
+    attempt, or at the submit -- ends the pass there, reported and
+    persisted; a batch still unanswered ends it before any attempt, so at
+    most one batch is out. A drafter transport failure counts under
+    source_failures["llm-sentence"] and defers every word with an open
+    Target; one under source_failures["llm-phrase"] leaves every picture
+    need still lacking a phrase waiting (deferred) for this pass; the
+    comment reader's (or its parse ask's) counts under
+    source_failures["llm-comment"] and leaves the comments unread until
+    the next run. Either way the loop runs.
     """
     # One clock read for the whole run (spec 3 r19 section 6a/9): every
     # queue build and the attempt loop's own next_source calls age a
@@ -703,6 +771,47 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # picture's question, whichever of the two named it.
     collected_at_resolve = frozenset(
         (q.question.subject, q.question.kind) for q in tally.questions)
+
+    # D2 (spec 3 r30 section 5), before either drafting pass: a draft on
+    # record that no verdict ever came back for -- a lost batch orphans a
+    # drafter's and a comment's replacement alike -- has its own judge
+    # question collected again, cache-first, so a draft already judged
+    # under the current rubric collects nothing. Drafts are not needs: no
+    # bucket, `pending` unaffected. A dead judge here ends the run before
+    # any Target was handed, the same as the comment pass below.
+    try:
+        tally.collect(_recover_orphaned_drafts(ctx))
+    except JudgeUnreachable:
+        return _judge_died_before_the_loop(ctx, tally, collected_at_resolve, now_ns=now_ns)
+
+    # One reading ask per run (spec 3 r30 section 5) over every unread
+    # learner comment, before the sentence attempt: a retirement it makes
+    # reopens Targets the drafter is handed this same run, so `available`
+    # (read beside the queue below) and the buckets agree. Its
+    # replacement drafts' judge questions ride this run's batch like the
+    # sentence attempt's (drafts are not needs: no bucket). A reader or
+    # parser transport failure counts under source_failures and otherwise
+    # never breaks the run; a dead judge at a replacement's check ends it,
+    # every open Target and queued need deferred.
+    #
+    # That check comes after the pass has already written its retirement,
+    # direction, rating and reading rows, so the attempt reports the dead
+    # judge (AttemptResult.judge_unreachable) instead of raising: the
+    # counts are collected into the tally FIRST -- the report must say
+    # what was deleted and read -- and only then does the run take the
+    # judge-death path. A judge death before anything was written still
+    # raises and lands on the same path with the counts at zero.
+    try:
+        comments = comment_attempt(ctx)
+    except JudgeUnreachable:
+        return _judge_died_before_the_loop(ctx, tally, collected_at_resolve, now_ns=now_ns)
+    except TransportError as e:
+        tally.source_failures["llm-comment"] = tally.source_failures.get("llm-comment", 0) + 1
+        _log.warning("comment reader llm-comment failed: %s", e)
+    else:
+        tally.collect(comments)
+        if comments.judge_unreachable:
+            return _judge_died_before_the_loop(ctx, tally, collected_at_resolve, now_ns=now_ns)
 
     # An open Target's need is its word's, one however many Targets that
     # word has (derivations.available_needs), and that is the unit every
@@ -796,7 +905,7 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         return _finish(ctx, tally, needs, batch_id=None, pending=0)
 
     try:
-        batch_id = ctx.assessor.submit(tally.questions)
+        batch_id = ctx.assessor.submit(_one_per_key(tally.questions))
     except JudgeUnreachable:
         tally.unreachable = True
         _fold_unsubmitted(tally, collected_at_resolve, avail)
@@ -823,6 +932,48 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
                        for q in tally.questions} & avail)
         tally.preferences = sum(1 for need in collected_at_resolve if need not in avail)
     return _finish(ctx, tally, needs, batch_id=batch_id, pending=pending)
+
+
+def _judge_died_before_the_loop(ctx: Sourcing, tally: _Tally,
+                                collected_at_resolve: frozenset[tuple[str, str]], *,
+                                now_ns: int) -> RunReport:
+    """A pass that runs before the sentence attempt met an unreachable
+    judge (spec 3 r30 section 5: the comment pass's replacement check,
+    the orphaned-draft recovery). Nothing was handed to the drafter and
+    the need loop never ran, so every word with an open Target and every
+    queued need is deferred, the questions collected at resolve fold
+    where `_fold_unsubmitted` puts them, and the identity holds.
+    """
+    tally.unreachable = True
+    needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
+    _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
+    tally.deferred += len(open_words(ctx.syllabus)) + len(needs.entries)
+    return _finish(ctx, tally, needs, batch_id=None, pending=0)
+
+
+def _one_per_key(questions: Sequence[PreparedQuestion]) -> list[PreparedQuestion]:
+    """The run's collected questions, one per cache key. `submit` refuses
+    two prepared questions sharing a key, and two passes of one run can
+    legitimately raise the same one: the D2 recovery collects an orphaned
+    draft's judge question, and the drafting ask -- served from its own
+    prompt cache, so it answers exactly what it answered before -- hands
+    that very draft to `ask_many` again in the same run (spec 3 r30
+    section 5). `Assessor.ask_many` already collects a key once within
+    one call; this does the same across the run's calls, keeping the
+    first, and says once per run how many it coalesced.
+    """
+    seen: set[str] = set()
+    out: list[PreparedQuestion] = []
+    for q in questions:
+        encoded = q.key.encode()
+        if encoded in seen:
+            continue
+        seen.add(encoded)
+        out.append(q)
+    if len(out) < len(questions):
+        _log.info("two passes collected the same judge question %d time(s) this run; "
+                  "each is submitted once", len(questions) - len(out))
+    return out
 
 
 def _fold_unsubmitted(tally: _Tally, collected_at_resolve: frozenset[tuple[str, str]],
@@ -852,6 +1003,8 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         pending=pending, sentences_adopted=tally.sentences_adopted,
         adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
         drafted=tally.drafted, retired=tally.retired,
+        comments_read=tally.comments_read, comment_actions=tally.comment_actions,
+        comment_unactionable=tally.comment_unactionable,
         excluded=tally.excluded, excluded_items=tally.excluded_items,
         unreachable=tally.unreachable,
         batch_id=batch_id, source_failures=tally.source_failures, spend=tally.spend,
@@ -876,6 +1029,9 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adjudicated": report.adjudicated,
                 "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
+                "comments_read": report.comments_read,
+                "comment_actions": report.comment_actions,
+                "comment_unactionable": report.comment_unactionable,
                 "excluded": report.excluded,
                 "excluded_items": [dict(item) for item in report.excluded_items],
                 "unreachable": report.unreachable,

@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 29, proposed 2026-09-13 against principles r4 and architecture
+Revision 30, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -118,6 +118,24 @@ Revision log:
   corroborated, shown per run in the stats screen's history. Evidence:
   the first adjudication cycle left 205 of 246 words disputed and the
   count was visible only in the run log. User approval 2026-09-13.
+- r30 2026-09-13: the comment pass (§5): one reading ask per run on the
+  drafter transport over every learner comment lacking a reading under
+  the current prompt version, each handed with its card type and
+  meaning, its subject's facts and what the card showed; the answer's
+  actions come from the deck's vocabulary (direction, retire_sentence
+  with reason and replacement hint, replacement_sentence through the
+  parse ask, rate, gloss_on, none) and each is written as its existing
+  typed row marked with the comment; one reading row per comment; an
+  action outside the vocabulary is unactionable, a comment not handed
+  is ignored, one omitted gets its own reading row saying so; rows
+  derived from a reading the learner struck (spec 5 r10's veto row) are
+  ignored by every direction and rating fold; a learner-retired
+  sentence's retirement row carries reason, hint and text and the
+  drafter is told so; `retired` counts every deletion; RunReport gains
+  comments_read, comment_actions, comment_unactionable (§7). Evidence:
+  rating a sentence's scene picture offered no way to say the sentence
+  itself was bad, and a gallery note went nowhere. User approval
+  2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -202,7 +220,7 @@ one speaker answers empty.
 | forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
-| llm | sentence (per run over open targets), parse (clauses for given texts), phrase, entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
+| llm | sentence (per run over open targets), parse (clauses for given texts), phrase, comment (readings of learner comments, per run), entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
@@ -391,6 +409,60 @@ writes the pronunciation to words.yaml; otherwise the word stays
 written; RunReport.stayed_disputed counts the verdicts no engine
 corroborated. Words are not needs: the pass owns no bucket.
 
+**Comments (any subject).** One reading ask per run on the drafter
+transport (`llm-comment`, cache-first, the prompt the contract) over
+every learner comment (spec 5: a card-flag row with note text, on a
+card or a question) with no reading row under the current prompt
+version whose subject the syllabus still accounts for, oldest first and
+at most 40 an ask — a comment over that cap is held back whole, no row
+and no reading, and the next run hands it. A comment whose subject the
+syllabus no longer holds, or whose recorded subject kind disagrees with
+the kind the syllabus resolves that subject to, is never handed and
+never raises: it is closed with its own reading row carrying no action
+and one unactionable line (`subject not in the syllabus` /
+`subject kind mismatch`), counted in `comments_read` and
+`comment_unactionable`, and it does not consume the cap. Each item
+carries the comment, the
+card type and its one-line meaning (spec 4 §1's families and kinds), the
+subject's facts (a word: Thai, meaning, pronunciation, category; a
+sentence: text, gloss, clauses with each word's gloss, the Targets it
+fills), the artifacts the card showed (a picture with the query that
+found it, a recording with its source) and the action vocabulary:
+`direction(kind, text)` (the subject's next search of that artifact
+kind), `retire_sentence(reason, replacement_hint)`,
+`replacement_sentence(thai, gloss)`, `rate(kind, 1..4)`,
+`gloss_on(word)`, `none(remark)`; anything else is `unactionable`. The
+answer is `{"readings": [{"comment", "reading", "actions", "unactionable"}]}`.
+Each action is written as its existing typed row (DirectionKey; the
+retirement row and delete through the Guard; the learner rating row,
+with the screen's stale-rejection rule; a `gloss-on` row), marked with
+the comment's identity and the prompt version; a reading row per
+comment (comment-reading key, spec 2) records the reading, the actions
+with their outcome and the unactionable list. A replacement's Thai goes
+through the parse ask against the vocabulary before anything is
+executed; parsed, it is accepted the way a drafted sentence is
+(invariant, clause and target caps, marking), appended as a draft and
+judged; refused, the reading says why. A learner-caused retirement is
+the F13 mechanism plus the reason and hint on the row, and the drafting
+prompt lists learner-retired texts with those words beside the failed
+texts. An action outside the vocabulary is unactionable and logged; a
+comment named that was not handed is ignored; one the answer omits gets
+its own reading row saying the model gave no reading, so the same cached
+prompt is never re-asked. A row derived from a reading the learner
+struck (spec 5's veto row) is ignored by every fold over directions and
+ratings; a retirement stands (the drafter re-drafts). Comments are not
+needs: the pass owns no bucket; a replacement's judge question rides the
+run's batch like a draft's. A judge that cannot be reached at that check
+is reported, not raised — every row is already written, so the run
+counts what the pass did and then ends the pass. A batch that never
+comes back would orphan such a draft, so each run also re-asks,
+cache-first, the sentence-for-target question of every draft on record
+that is neither adopted nor retired, holds no fresh verdict, and would
+still pass the same acceptance test a fresh draft does (the invariant,
+the clause cap, at least one still-open Target filled, the per-sentence
+Target cap) — a drafter's and a comment's replacement alike — and
+submits a question raised twice in one run once.
+
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
 (`id  thai  (meaning)` lines); the answer is
@@ -534,8 +606,14 @@ run(syllabus, budgets):
   resolve the previous run's batch, if any: append its verdicts, release
       its marker (expired or errored results carry no verdict; those
       questions re-ask); pending clears here
+  adopt the drafts those verdicts passed; re-ask about any draft a lost
+      batch left orphaned (D2 recovery)
+  comment pass over the unread learner comments (one reading ask;
+      retirements reopen Targets, replacements are drafted)
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
+  phrase ask (the picture queries), then the adjudication ask (the
+      uncorroborated pronunciations)
   questions = []
   for need in queue(syllabus, budgets):        # pending excluded
       if unjudged(need): questions += assess(need); continue   # §5 assess-first
@@ -561,13 +639,16 @@ always. The remaining fields count events, not needs.
 | deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose ask failed on the wire or whose every untried source is dead for the run (r26), questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
-| retired | adopted Sentences the run deleted because their recording need was exhausted with no passing candidate (F13) |
+| retired | adopted Sentences the run deleted: recording exhausted with no passing candidate (F13), or retired by a learner comment (r30) |
+| comments_read | learner comments this run read (one reading row each) |
+| comment_actions | actions those readings took (`none` writes no row) |
+| comment_unactionable | requests in those readings the deck could not act on, refused actions included |
 | adjudicated | words whose pronunciation this run wrote as adjudicated |
 | stayed_disputed | verdicts this run checked that no engine corroborated (the words stay disputed) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
-| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase` |
+| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase`, the comment reader's (or its parse ask's) under `llm-comment` |
 | spend[source] | the source's asks and cost this run |
 
 Every ask appends; kill-safe anywhere. The run is transport-agnostic.

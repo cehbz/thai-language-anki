@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from .cachekeys import RunReportKey
+from .cachekeys import RunReportKey, comment_identity
 from .entities import Clauses, Sentence, Word, clauses_from_json, text_sha
 from .media import Provenance
 from .ports import Answer, CacheReader
@@ -37,8 +37,14 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "can
           "parse_drafts", "parse_no_fit", "merge_drafts", "draft_sentence", "drafts_in",
           "sentence_drafts",
           "excluded_candidates", "card_flags", "card_notes", "normalize_shown",
+          "Comment", "comment_of", "comments_of", "comments",
           "PARSE_SUBJECT", "vocabulary_line", "parse_prompt", "parses_in",
-          "PHRASE_SUBJECT"]
+          "PHRASE_SUBJECT",
+          "COMMENT_SUBJECT", "COMMENT_PROMPT_VERSION", "COMMENT_ACTIONS", "CommentReading",
+          "parse_comment_readings", "reading_of", "vetoed_readings", "vetoed_readings_all",
+          "without_vetoed_readings",
+          "action_label", "reading_view", "gloss_on_requested",
+          "Retirement", "retirements", "retirement_evidence"]
 
 # The subject every sentence-drafting ask is appended under: drafts are
 # proposed for a run's open Targets as a set, not for one subject.
@@ -55,6 +61,35 @@ PARSE_SUBJECT = "sentence-parses"
 # appended separately, one provide row per subject (cachekeys.PhraseKey),
 # which is what `drafted_phrase`/`latest_phrase` read back.
 PHRASE_SUBJECT = "picture-phrases"
+
+# The subject every comment-reading ask is appended under (spec 3 r30
+# section 5): one batch prompt reads every unread comment; the readings
+# themselves are appended one row per comment under the comment's own
+# subject (cachekeys.CommentReadingKey).
+COMMENT_SUBJECT = "card-comments"
+
+# The comment prompt's version, part of every reading and veto key: a
+# bump re-reads every comment under the new prompt.
+COMMENT_PROMPT_VERSION = "1"
+
+# The execution side of a comment (design section 2): action name ->
+# its required parameters. The parser keeps an action only when every
+# parameter is present and typed; anything else is unactionable text.
+COMMENT_ACTIONS: dict[str, tuple[str, ...]] = {
+    "direction": ("kind", "text"),
+    "retire_sentence": ("reason", "replacement_hint"),
+    "replacement_sentence": ("thai", "gloss"),
+    "rate": ("kind", "value"),
+    "gloss_on": ("word",),
+    "none": ("remark",),
+}
+
+# The artifact kinds a comment's `direction` or `rate` action may name:
+# the two a card shows and the learner's own screen already rates. Named
+# for the comment vocabulary it belongs to, so it is not read as
+# reviewserver._ARTIFACT_KINDS (the kinds a question carries, rendition
+# included).
+_COMMENT_ARTIFACT_KINDS = ("picture", "recording")
 
 # provide rows from these backends are not Source asks (spec 3 section 3
 # vocabulary: an attempt is one Source ask): imgfetch/audiofetch write the
@@ -85,9 +120,11 @@ LEARNER_RANK: dict[str, float] = {
 
 def rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:
     """Every row on record for `subject` whose own question names `kind`,
-    oldest first.
+    oldest first, minus the rows derived from a comment reading the
+    learner struck (`without_vetoed_readings`).
     """
-    return [r for r in cache.assessments_of(subject) if r.question.get("kind") == kind]
+    return [r for r in without_vetoed_readings(cache.assessments_of(subject))
+            if r.question.get("kind") == kind]
 
 
 def subject_kind_of(rows: Sequence[Answer]) -> str:
@@ -155,17 +192,21 @@ def candidate_shas(rows: Sequence[Answer]) -> list[str]:
 
 
 def learner_ratings(rows: Sequence[Answer]) -> list[Answer]:
-    """Every learner rating row in `rows`, oldest first (newest last). A
-    rating row always carries an artifact_sha; one that does not is
-    returned as-is, not dropped.
+    """Every learner rating row in `rows`, oldest first (newest last),
+    minus the rows derived from a struck comment reading
+    (`without_vetoed_readings`). A rating row always carries an
+    artifact_sha; one that does not is returned as-is, not dropped.
     """
-    return sorted((r for r in rows if r.backend == "learner"
+    return sorted((r for r in without_vetoed_readings(rows) if r.backend == "learner"
                   and r.question.get("kind") == "rating"), key=lambda r: r.ts)
 
 
 def directions(rows: Sequence[Answer]) -> list[Answer]:
-    """Every learner direction row in `rows`, oldest first."""
-    return sorted((r for r in rows if r.backend == "learner"
+    """Every learner direction row in `rows`, oldest first, minus the
+    rows derived from a struck comment reading
+    (`without_vetoed_readings`).
+    """
+    return sorted((r for r in without_vetoed_readings(rows) if r.backend == "learner"
                   and r.question.get("kind") == "direction"), key=lambda r: r.ts)
 
 
@@ -300,18 +341,65 @@ def cost_since(cache: CacheReader, port: str, backend: str, since_ts: int) -> fl
     return sum(r.cost for r in cache.rows_since(port, backend, since_ts))
 
 
-def retired_texts(cache: CacheReader) -> frozenset[str]:
-    """Every sentence text_sha the run has ever retired (F13, spec 3
-    section 5): the subject of every port "attempt" backend "run" kind
-    "retirement" row on record (cachekeys.RetirementKey,
-    run._retire_exhausted_sentence). A retirement row outlives the
-    sentences row it accompanied (deleted right after), so this still
-    finds it once the sentence itself is gone -- derivations.adoptable_drafts
-    reads it to never re-adopt the same text, and refused_drafts reads it
-    to keep telling the drafter not to propose it again.
+@dataclass(frozen=True)
+class Retirement:
+    """What one retirement row states (spec 3 r30 section 5): the
+    sentence text when the row carries it (a learner-caused retirement
+    always does; an F13 row written before r30 does not), the reason,
+    and the replacement hint a learner comment gave.
     """
-    return frozenset(r.subject for r in cache.rows_since("attempt", "run", 0)
-                     if r.question.get("kind") == "retirement")
+    text: str | None
+    reason: str
+    replacement_hint: str | None
+
+
+def retirements(cache: CacheReader) -> dict[str, Retirement]:
+    """text_sha -> the newest retirement row's facts, over every port
+    "attempt" backend "run" kind "retirement" row on record
+    (cachekeys.RetirementKey, attempts.retire_sentence). A retirement row
+    outlives the sentences row it accompanied (deleted right after), so
+    this still finds it once the sentence itself is gone.
+
+    A retirement whose reading was struck (spec 5 r10) keeps its reason
+    and loses its replacement hint: the deletion already happened and the
+    text is never re-adopted, but a struck reading must stop steering the
+    drafter (`retirement_evidence`, derivations.refused_drafts). The
+    strike lands under the comment's subject and the retirement row under
+    the sentence's own, so the two never meet in one subject's row set --
+    `vetoed_readings_all` is the fold that sees it, which is why this one
+    takes the whole cache rather than a row sequence. A retirement row
+    from F13 names no reading and is never touched.
+    """
+    struck = vetoed_readings_all(cache)
+    out: dict[str, Retirement] = {}
+    for r in cache.rows_since("attempt", "run", 0):
+        if r.question.get("kind") != "retirement":
+            continue
+        ref = _reading_ref(r)
+        hint = None if ref in struck else (r.question.get("replacement_hint") or None)
+        out[r.subject] = Retirement(text=r.question.get("text") or None,
+                                    reason=str(r.question.get("reason") or "retired"),
+                                    replacement_hint=hint)
+    return out
+
+
+def retired_texts(cache: CacheReader) -> frozenset[str]:
+    """Every sentence text_sha the run has ever retired (F13 and the
+    comment pass, spec 3 section 5): `retirements`'s keys --
+    derivations.adoptable_drafts reads it to never re-adopt the same
+    text, and refused_drafts reads it to keep telling the drafter not to
+    propose it again.
+    """
+    return frozenset(retirements(cache))
+
+
+def retirement_evidence(r: Retirement) -> str:
+    """The drafter's line for a retired text (derivations.refused_drafts):
+    why it was retired, and the learner's replacement hint when the
+    retiring comment gave one.
+    """
+    line = f"retired: {r.reason}"
+    return f"{line}; replacement hint: {r.replacement_hint}" if r.replacement_hint else line
 
 
 def excluded_candidates(cache: CacheReader, subject: str) -> list[dict[str, str | None]]:
@@ -398,8 +486,178 @@ def card_notes(rows: Sequence[Answer], anchor: str, card_kind: str) -> list[dict
             continue
         answer = r.answer if isinstance(r.answer, Mapping) else {}
         out.append({"text": answer.get("note") or "", "ts": r.ts,
-                    "shown": normalize_shown(r.question.get("shown") or {})})
+                    "shown": normalize_shown(r.question.get("shown") or {}),
+                    "comment_sha": comment_identity(r.key_sha, r.ts)})
     return out
+
+
+@dataclass(frozen=True)
+class Comment:
+    """One learner comment (spec 5 r9): a card-flag row with note text,
+    identified by its own row (cachekeys.comment_identity). `subject_kind`
+    is None for a row written before the field existed; `question_kind`
+    and `artifact_kind` are set for a session comment only."""
+    comment_sha: str
+    subject: str
+    subject_kind: str | None
+    anchor: str
+    card_kind: str
+    text: str
+    ts: int
+    shown: Mapping[str, Any]
+    question_kind: str | None
+    artifact_kind: str | None
+
+
+def comment_of(row: Answer) -> Comment | None:
+    """`row` as a Comment, or None when it is not one: a card-flag row
+    whose answer carries a non-empty note (an Anki flag import row
+    carries none, anki_import's `{"flagged": ...}` answer)."""
+    if row.question.get("kind") != "card-flag":
+        return None
+    answer = row.answer if isinstance(row.answer, Mapping) else {}
+    text = answer.get("note")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    q = row.question
+    return Comment(comment_sha=comment_identity(row.key_sha, row.ts), subject=row.subject,
+                   subject_kind=q.get("subject_kind"), anchor=str(q.get("anchor") or ""),
+                   card_kind=str(q.get("card_kind") or ""), text=text, ts=row.ts,
+                   shown=normalize_shown(q.get("shown") or {}),
+                   question_kind=q.get("question_kind"), artifact_kind=q.get("artifact_kind"))
+
+
+def comments_of(rows: Sequence[Answer]) -> list[Comment]:
+    """Every comment among `rows`, oldest first."""
+    return [c for r in sorted(rows, key=lambda r: r.ts) if (c := comment_of(r)) is not None]
+
+
+def comments(cache: CacheReader) -> list[Comment]:
+    """Every comment on record, every subject, oldest first."""
+    return comments_of(cache.rows_since("assess", "learner", 0))
+
+
+def reading_of(rows: Sequence[Answer], comment_sha: str,
+               prompt_version: str | None = None) -> Answer | None:
+    """The newest comment-reading row among `rows` for `comment_sha`,
+    under `prompt_version` when given, else any version; None when none.
+    """
+    mine = [r for r in rows if r.question.get("kind") == "comment-reading"
+            and r.question.get("comment_sha") == comment_sha
+            and (prompt_version is None or r.question.get("prompt_version") == prompt_version)]
+    return max(mine, key=lambda r: r.ts) if mine else None
+
+
+def _reading_ref(row: Answer) -> tuple[str, str] | None:
+    """The (comment_sha, prompt_version) reading `row` names, or None
+    when it names neither or only half of one: both halves together are
+    the reference (a prompt version bump is a new reading), so a row
+    carrying one alone refers to no reading at all.
+    """
+    comment_sha, version = row.question.get("comment_sha"), row.question.get("prompt_version")
+    if not comment_sha or not version:
+        return None
+    return (str(comment_sha), str(version))
+
+
+def vetoed_readings(rows: Sequence[Answer]) -> frozenset[tuple[str, str]]:
+    """Every (comment_sha, prompt_version) a comment-veto row among
+    `rows` strikes (spec 5 r10). A veto row naming only half a reference
+    strikes nothing rather than everything that half-matches it.
+    """
+    return frozenset(ref for r in rows if r.question.get("kind") == "comment-veto"
+                     and (ref := _reading_ref(r)) is not None)
+
+
+def vetoed_readings_all(cache: CacheReader) -> frozenset[tuple[str, str]]:
+    """Every (comment_sha, prompt_version) struck anywhere on the record.
+    `vetoed_readings` folds over one subject's rows, which is enough for
+    every row the comment pass writes back under the comment's own
+    subject; a replacement sentence is the exception -- it is drafted
+    under DRAFT_SUBJECT while the strike lands under the comment's
+    subject, so the two never meet in one subject's row set. This fold
+    reads the veto rows themselves (every one is a learner assess row),
+    so a reader of rows written under another subject can still see the
+    strike (`sentence_drafts`).
+    """
+    return vetoed_readings(cache.rows_since("assess", "learner", 0))
+
+
+# The two row kinds a veto never hides: they are the reading itself and
+# the strike on it, which the feedback screen reads back (reading_view).
+_READING_ROW_KINDS = ("comment-reading", "comment-veto")
+
+
+def without_vetoed_readings(rows: Sequence[Answer]) -> list[Answer]:
+    """`rows` minus every row derived from a vetoed reading (spec 3 r30
+    section 5): a row whose question names a (comment_sha,
+    prompt_version) a comment-veto row among `rows` strikes -- the
+    reading and veto rows themselves excepted. A row naming no reading,
+    or only half of one (`_reading_ref`), is never dropped -- every
+    learner row written before the comment pass names none. `rows_for`,
+    `learner_ratings` and `directions` apply this, so every fold over
+    directions and ratings ignores a struck reading without knowing
+    anything about comments; a caller must hand in the subject's whole
+    row set for the veto to be seen.
+    """
+    struck = vetoed_readings(rows)
+    if not struck:
+        return list(rows)
+    return [r for r in rows
+            if r.question.get("kind") in _READING_ROW_KINDS
+            or (ref := _reading_ref(r)) is None or ref not in struck]
+
+
+def action_label(action: Mapping[str, Any]) -> str:
+    """The short label the screen shows for one recorded action (spec 5
+    r10): what was done, and when refused, why.
+    """
+    name = action.get("action")
+    if name == "direction":
+        label = f"direction for the {action.get('kind')} search: {action.get('text')}"
+    elif name == "retire_sentence":
+        label = f"sentence retired: {action.get('reason')}"
+    elif name == "replacement_sentence":
+        label = f"replacement drafted: {action.get('thai')} ({action.get('gloss')})"
+    elif name == "rate":
+        label = f"rating {action.get('value')} on the {action.get('kind')}"
+    elif name == "gloss_on":
+        label = f"gloss on: {action.get('word')}"
+    elif name == "none":
+        label = f"no action: {action.get('remark')}"
+    else:
+        label = str(name)
+    if action.get("outcome") == "refused":
+        return f"{label} (not done: {action.get('reason')})"
+    return label
+
+
+def reading_view(rows: Sequence[Answer], comment_sha: str) -> dict[str, Any] | None:
+    """A comment's reading as the page shows it (spec 5 r10): the
+    reading text, one label per action, the unactionable requests, the
+    prompt version (the strike names it) and whether it is vetoed. None
+    while unread. A reading with no action and one unactionable line --
+    what a comment the reader passed over is recorded as -- renders as
+    an empty `actions` list beside that line.
+    """
+    row = reading_of(rows, comment_sha)
+    if row is None:
+        return None
+    version = str(row.question.get("prompt_version"))
+    answer = row.answer if isinstance(row.answer, Mapping) else {}
+    return {"reading": answer.get("reading"), "prompt_version": version,
+            "vetoed": (comment_sha, version) in vetoed_readings(rows),
+            "actions": [action_label(a) for a in answer.get("actions") or []
+                        if isinstance(a, Mapping)],
+            "unactionable": [f"no action available: {u}" for u in answer.get("unactionable") or []]}
+
+
+def gloss_on_requested(rows: Sequence[Answer]) -> bool:
+    """A gloss-on row on the subject (the comment pass's `gloss_on`
+    action, spec 3 r30 section 5) whose reading is not vetoed.
+    """
+    return any(r.backend == "learner" and r.question.get("kind") == "gloss-on"
+               for r in without_vetoed_readings(rows))
 
 
 def run_reports(cache: CacheReader) -> list[Answer]:
@@ -527,6 +785,111 @@ def parse_phrases(text: str) -> dict[str, str]:
     return out
 
 
+# --- the comment pass: reading one learner comment (spec 3 r30 section 5) ---
+
+@dataclass(frozen=True)
+class CommentReading:
+    """One comment's reading as the reader answered it (spec 3 r30
+    section 5): one line saying what the learner means, the vocabulary
+    actions to take (each a mapping carrying `action` and that action's
+    own parameters, COMMENT_ACTIONS), and the requests the deck cannot
+    act on. Either tuple may be empty: a comment the reader passed over
+    is recorded as a reading with no action and one unactionable line,
+    and a `none` action is an action with no side effect -- an executed
+    act, not an unactionable request, told apart by its own name.
+    """
+    reading: str
+    actions: tuple[Mapping[str, Any], ...]
+    unactionable: tuple[str, ...]
+
+
+def _valid_action(a: Any) -> bool:
+    """Whether `a` is one action of the COMMENT_ACTIONS vocabulary with
+    every parameter present and typed. Whether a well-formed `gloss_on`
+    names a word the deck can act on is a separate question the comment's
+    own subject answers (`_names_another_word`).
+    """
+    if not isinstance(a, Mapping) or a.get("action") not in COMMENT_ACTIONS:
+        return False
+    for param in COMMENT_ACTIONS[a["action"]]:
+        if param == "value":
+            v = a.get("value")
+            if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 4:
+                return False
+        elif param == "kind":
+            if a.get("kind") not in _COMMENT_ARTIFACT_KINDS:
+                return False
+        elif param == "replacement_hint":
+            if a.get(param) is not None and not isinstance(a.get(param), str):
+                return False
+        elif not isinstance(a.get(param), str) or not a[param].strip():
+            return False
+    return True
+
+
+def _names_another_word(a: Any, subject: str | None) -> bool:
+    """A well-formed `gloss_on` naming a word other than the comment's
+    own subject (design decision 3): the deck shows the gloss on the
+    commented card, and has no way to act on a different one. Always
+    False while the comment's subject is unknown -- there is nothing to
+    check the word against.
+    """
+    return a.get("action") == "gloss_on" and subject is not None and a.get("word") != subject
+
+
+def parse_comment_readings(text: str,
+                           subjects: Mapping[str, str] | None = None
+                           ) -> dict[str, CommentReading]:
+    """The comment sha -> reading map one comment-reading answer's JSON
+    carries ({"readings": [{"comment", "reading", "actions",
+    "unactionable"}]}). An item lacking a string `comment` or a non-empty
+    string `reading` is skipped; an action outside COMMENT_ACTIONS or
+    missing a parameter is demoted to `unactionable` as "unrecognized
+    action: <its json>" and logged, so the item keeps its reading and is
+    not re-asked.
+
+    `subjects` is the handed comment sha -> subject map when the caller
+    has it (attempts.comment_attempt hands one): only the shas it names
+    are read back -- an item naming any other, a hallucinated or stale
+    one, is dropped, so nothing is ever executed against a comment
+    nobody asked about -- and a `gloss_on` naming a word other than that
+    comment's own subject is demoted as "gloss-on names another word:
+    <its json>". With no map (wiring's recognizer, which has no handed
+    set) the read is shape-only. Empty when `text` is not that JSON.
+    """
+    try:
+        data = json.loads(strip_fences(text))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    items = (data.get("readings") if isinstance(data, Mapping) else None) or []
+    out: dict[str, CommentReading] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        comment, reading = item.get("comment"), item.get("reading")
+        if not isinstance(comment, str) or not isinstance(reading, str) or not reading.strip():
+            continue
+        if subjects is not None and comment not in subjects:
+            _log.warning("parse_comment_readings: dropping a reading for an unhanded comment %s",
+                         comment)
+            continue
+        subject = subjects.get(comment) if subjects is not None else None
+        actions: list[Mapping[str, Any]] = []
+        unactionable = [str(u) for u in (item.get("unactionable") or []) if str(u).strip()]
+        for a in item.get("actions") or []:
+            well_formed = _valid_action(a)
+            if well_formed and not _names_another_word(a, subject):
+                actions.append(dict(a))
+                continue
+            rendered = json.dumps(a, ensure_ascii=False, sort_keys=True, default=str)
+            why = "gloss-on names another word" if well_formed else "unrecognized action"
+            _log.warning("parse_comment_readings: comment %s: %s %s", comment, why, rendered)
+            unactionable.append(f"{why}: {rendered}")
+        out[comment] = CommentReading(reading=reading.strip(), actions=tuple(actions),
+                                      unactionable=tuple(unactionable))
+    return out
+
+
 def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
     """One draft per distinct text among `drafts`, in first-seen order:
     their gloss is the first non-empty one. Differing clauses reject the
@@ -586,10 +949,25 @@ def sentence_drafts(cache: CacheReader) -> list[SentenceDraft]:
     well as within one: a text drafted in two separate runs is one draft
     here, the same as `sentence_attempt`'s own merge over one run's
     items.
+
+    A drafting row the comment pass wrote -- a replacement sentence
+    (attempts._draft_replacement), marked with the reading that produced
+    it -- is dropped once that reading is struck (spec 5 r10): striking
+    a reading unmakes what it did, and the replacement is one of the
+    things it did. The strike lives under the comment's own subject, not
+    DRAFT_SUBJECT, so the global fold (`vetoed_readings_all`) is what
+    sees it; the filter sits here rather than in one caller so that both
+    readers of the drafts -- derivations.adoptable_drafts and the run's
+    own recovery step -- lose the draft together. A drafting ask's own
+    row names no reading and is never touched.
     """
+    struck = vetoed_readings_all(cache)
     raw: list[SentenceDraft] = []
     for row in rows_for(cache, DRAFT_SUBJECT, "sentence"):
         if row.port != "provide":
+            continue
+        ref = _reading_ref(row)
+        if ref is not None and ref in struck:
             continue
         raw.extend(d for item in row.answer.get("items", []) for d in parse_drafts(str(item)))
     return merge_drafts(raw)

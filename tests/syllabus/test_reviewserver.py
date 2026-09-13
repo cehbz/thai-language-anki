@@ -26,9 +26,9 @@ from thai_syllabus import record as record_mod
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, FlagKey, JudgeKey,
-                                    LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
-                                    RunReportKey, preference_identity, sha)
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, FlagKey,
+                                    JudgeKey, LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
+                                    RunReportKey, comment_identity, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
 from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP, directed
 from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
@@ -279,6 +279,179 @@ def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations
     # both renderers (renderRate and renderReask) share the one label
     # mapping -- the label text above is never duplicated per renderer.
     assert rs.INDEX_HTML.count("rateLabels(q.learner_ranks)") == 2
+
+
+# --- the page: card type labels, subject headers, comments (spec 5 r9) -----
+
+def test_the_page_embeds_the_card_meaning_table_from_compile():
+    """Spec 5 r9 (design ruling 4): the one-line meaning of every card
+    type reaches the page as embedded JSON, keyed "family/kind" the way
+    /api/cards reports them -- compile.CARD_MEANINGS is the one table
+    (spec 4 section 1), never a copy in the script.
+    """
+    from thai_syllabus.compile import CARD_MEANINGS
+    assert 'var CARD_MEANINGS = {' in rs.INDEX_HTML
+    for (family, kind), meaning in CARD_MEANINGS.items():
+        assert json.dumps(f"{family}/{kind}") in rs.INDEX_HTML
+        assert json.dumps(meaning, ensure_ascii=False) in rs.INDEX_HTML
+    assert "n comment" in rs.INDEX_HTML
+
+
+def test_every_rendered_card_carries_its_type_label_with_the_meaning_tooltip():
+    """Design ruling 4: one kindLabel helper, used by the gallery card
+    and by every compiled card a question shows -- the tooltip is the
+    embedded meaning, never recomposed per call site.
+    """
+    assert "function kindLabel(family, kind)" in rs.INDEX_HTML
+    assert 'CARD_MEANINGS[family + "/" + kind]' in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count("kindLabel(card.family, card.kind)") == 2
+    assert 'el("div", { "class": "kind" }, card.family + " / " + card.kind)' not in rs.INDEX_HTML
+    assert ".kind[title] { cursor: help; }" in rs.INDEX_HTML
+
+
+def test_every_question_names_its_subject_in_words_never_a_bare_sha():
+    """Design ruling 5: all four question renderers head with
+    subjectHeader (q.label's Thai, then id and kind), never the old
+    `q.subject + " (" + q.kind + ")"` sha line.
+    """
+    assert "function subjectHeader(q, suffix)" in rs.INDEX_HTML
+    assert "var thai = (q.label && q.label.thai)" in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count("subjectHeader(q") == 5  # the definition + four renderers
+    assert 'subjectHeader(q, " — exhausted, attempts=" + q.attempts)' in rs.INDEX_HTML
+    assert 'subjectHeader(q, " — a new candidate outranks your pick")' in rs.INDEX_HTML
+    assert 'subjectHeader(q, " — lapse evidence contradicts a past rating")' in rs.INDEX_HTML
+    assert 'q.subject + " (" + q.kind + ")"' not in rs.INDEX_HTML
+    assert ".subject-header {" in rs.INDEX_HTML
+
+
+def test_a_sentence_question_never_prints_its_text_sha_as_an_id():
+    """Design ruling 5, fix: a sentence subject's id IS its text sha
+    (compile.py tags the sentence family by text_sha), so subjectHeader
+    drops the id line for a sentence -- its text and gloss are above it
+    -- and keeps the id for every other subject kind, whose ids are
+    meaningful (a word's, a pair's, a grapheme's). subjectHeader is the
+    one place the page prints a subject in visible text.
+    """
+    assert 'var id = q.subject_kind === "sentence" ? null' in rs.INDEX_HTML
+    assert '(id ? id + " · " : "") + q.kind + (suffix || "")' in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count("q.label.id") == 1
+    # ... and the large line's own fallback, where the label lookup found
+    # nothing: a sentence falls back to its gloss, never to its subject.
+    assert '(q.subject_kind === "sentence" ? (q.gloss || "(sentence)") : q.subject)' \
+        in rs.INDEX_HTML
+    # the header's Thai is scoped: compile.CARD_CSS's own .thai (48px)
+    # loads second, so an unscoped page rule never applied.
+    assert ".subject-header .thai { font-size: 44px; }" in rs.INDEX_HTML
+    assert "\n  .thai { font-size: 44px; }" not in rs.INDEX_HTML
+
+
+def test_the_subjects_comments_are_listed_under_a_question_each_unread():
+    """Spec 5 r9: one renderComments for both modes (the gallery card's
+    own notes and a question's subject comments), each row carrying its
+    reading -- "unread" until spec 5 r10's reading pass fills one in.
+    """
+    assert "function renderComments(items, box, subject, subjectKind, reload)" in rs.INDEX_HTML
+    assert "function renderCardNotes" not in rs.INDEX_HTML
+    assert "renderComments(card.notes, box, card.subject," in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count("renderComments(q.comments, box, q.subject,") == 4
+    assert 'el("div", { "class": "reading unread" }, "unread")' in rs.INDEX_HTML
+    assert 'on a " + (n.question_kind || "") + " question"' in rs.INDEX_HTML
+
+
+def test_the_page_renders_readings_and_a_strike_control():
+    """Spec 5 r10: an unread comment still reads "unread"; a read one
+    shows the reading line, one line per action taken and per request
+    nothing could be done about, and -- while it stands -- a strike
+    control that POSTs the whole reading reference to /api/veto and
+    reloads the view it struck from.
+    """
+    assert "/api/veto" in rs.INDEX_HTML
+    assert '"read as: "' in rs.INDEX_HTML
+    assert "strike" in rs.INDEX_HTML and "(struck)" in rs.INDEX_HTML
+    assert "function renderReading(n, subject, subjectKind, reload)" in rs.INDEX_HTML
+    assert 'if (!n.reading) { return el("div", { "class": "reading unread" }, "unread"); }' \
+        in rs.INDEX_HTML
+    # the struck reading stays visible and says so -- a veto hides nothing
+    assert 'r.vetoed ? "reading struck" : "reading"' in rs.INDEX_HTML
+    # an empty reading (a comment the reader closed or passed over,
+    # attempts._NO_READING) prints no bare "read as: " line -- only its
+    # unactionable line speaks -- but a struck one still says so
+    assert 'var head = (r.reading ? "read as: " + r.reading : "") ' \
+        '+ (r.vetoed ? " (struck)" : "");' in rs.INDEX_HTML
+    assert 'if (head.trim()) { wrap.appendChild(el("div", {}, head.trim())); }' in rs.INDEX_HTML
+    # one line per action label, one per unactionable request (both
+    # already prefixed by record.action_label / reading_view)
+    assert '(r.actions || []).forEach' in rs.INDEX_HTML
+    assert '(r.unactionable || []).forEach' in rs.INDEX_HTML
+    # the strike is a button, not a new key: Esc/Enter are untouched
+    assert 'el("button", { "class": "strike" }, "strike this reading")' in rs.INDEX_HTML
+    assert 'if (!r.vetoed) {' in rs.INDEX_HTML
+    # the POST names the subject the comment sits under AND both halves
+    # of the (comment_sha, prompt_version) reference -- half a reference
+    # strikes nothing, and the server answers ok to a wrong subject
+    assert 'postJson("/api/veto", { subject: subject, subject_kind: subjectKind,' \
+        in rs.INDEX_HTML
+    assert "comment_sha: n.comment_sha, prompt_version: r.prompt_version })" in rs.INDEX_HTML
+    assert "if (result && result.ok) { reload(); return; }" in rs.INDEX_HTML
+    # a strike that does not save says so beside the control (the note
+    # box's own failure wording and styling) and strikes nothing
+    assert 'var err = el("div", { "class": "save-error" });' in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count(
+        'err.textContent = (result && result.error) || "not saved -- server unreachable";') == 2
+    assert "#noteError, .save-error { color: #d9534f; font-size: 13px; }" in rs.INDEX_HTML
+
+
+def test_every_comment_list_names_the_subject_the_strike_would_veto():
+    """The strike's subject is the comment's own: a question's
+    `q.subject` and a gallery card's ENTITY subject (`card.subject`),
+    never the card anchor (`card.id`) -- the comment views are built
+    from that subject's rows, and a veto written under any other subject
+    strikes nothing while the server still answers ok.
+    """
+    assert ('renderComments(card.notes, box, card.subject, '
+            'SUBJECT_KIND_OF_FAMILY[card.family], loadGallery)') in rs.INDEX_HTML
+    assert "renderComments(card.notes, box, card.id" not in rs.INDEX_HTML
+    # SUBJECT_KIND_OF_FAMILY's keys ARE compile.CARD_MEANINGS' families,
+    # so the lookup cannot miss and carries no dead fallback branch
+    from thai_syllabus.compile import CARD_MEANINGS
+    assert {family for family, _kind in CARD_MEANINGS} == {
+        "word", "sentence", "minimal_pair", "grapheme"}
+    assert '|| "word"' not in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count(
+        "renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue)") == 4
+    # no call site left on the r9 two-argument form
+    assert "renderComments(card.notes, box)" not in rs.INDEX_HTML
+    assert "renderComments(q.comments, box)" not in rs.INDEX_HTML
+
+
+def test_the_struck_reading_and_the_strike_control_carry_their_own_css():
+    assert ".reading.struck { text-decoration: line-through; opacity: 0.7; }" in rs.INDEX_HTML
+    assert ".reading .action { padding-left: 12px; }" in rs.INDEX_HTML
+    assert ".reading .unactionable { color: #c98a3d; }" in rs.INDEX_HTML
+    assert "button.strike {" in rs.INDEX_HTML
+
+
+def test_n_in_a_session_comments_on_the_current_questions_subject():
+    """Design ruling 1: `n` is live in both modes -- in a session it
+    posts the gallery comment's shape anchored on the subject under card
+    kind "question", carrying the question kind, the artifact kind, the
+    subject kind and what the question showed. The box keeps r5's
+    failure semantics (stays open, says why, retries on Enter).
+    """
+    assert 'mode === "session" && queueItems.length' in rs.INDEX_HTML
+    assert 'card_id: q.subject, kind: "question"' in rs.INDEX_HTML
+    assert "subject_kind: q.subject_kind, question_kind: q.type," in rs.INDEX_HTML
+    assert "artifact_kind: q.kind, shown: q.shown" in rs.INDEX_HTML
+    assert "var SUBJECT_KIND_OF_FAMILY = {" in rs.INDEX_HTML
+    assert 'not saved -- server unreachable' in rs.INDEX_HTML
+    assert 'placeholder="comment (Enter to save, Esc to cancel)"' in rs.INDEX_HTML
+    # the keystroke opening the box must not also type "n" into it
+    assert 'if (e.key === "n") { e.preventDefault(); openNoteBox(); return; }' in rs.INDEX_HTML
+    # the empty-artifact block says what n does now -- not the pre-r9
+    # "gives the next search a direction"
+    assert "n leaves a comment on this question (the machine reads it next run)" \
+        in rs.INDEX_HTML
+    assert "n gives the next search a direction" not in rs.INDEX_HTML
 
 
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
@@ -1196,9 +1369,12 @@ def test_compiled_cards_lists_a_cards_notes_oldest_first_not_stale_while_matchin
 
     reading_card = next(c for c in rs.compiled_cards(derivations)
                         if c["kind"] == "reading" and c["id"] == w1.id)
+    identities = {r.ts: comment_identity(r.key_sha, r.ts) for r in db.assessments_of(w1.id)}
     assert reading_card["notes"] == [
-        {"text": "clear picture", "ts": ts1, "stale": False},
-        {"text": "still good", "ts": ts2, "stale": False},
+        {"text": "clear picture", "ts": ts1, "stale": False, "comment_sha": identities[ts1],
+         "reading": None},
+        {"text": "still good", "ts": ts2, "stale": False, "comment_sha": identities[ts2],
+         "reading": None},
     ]
 
 
@@ -1577,7 +1753,8 @@ def ctx_with_an_old_and_a_new_run(derivations, db):
              question={"kind": "runreport"}, answer=_run_report_answer(), cost=0.0)
     db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"},
-             answer=_run_report_answer(adjudicated=3, stayed_disputed=5), cost=0.0)
+             answer=_run_report_answer(adjudicated=3, stayed_disputed=5, comments_read=2,
+                                       comment_actions=1, comment_unactionable=1), cost=0.0)
     return derivations
 
 
@@ -1590,6 +1767,14 @@ def test_stats_history_carries_adjudicated_and_stayed_disputed_per_run(
     """
     hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
     assert [(r["adjudicated"], r["stayed_disputed"]) for r in hist] == [(0, 0), (3, 5)]
+
+
+def test_stats_history_carries_the_comment_counts_on_every_run(ctx_with_an_old_and_a_new_run):
+    """Spec 3 r30: the comment pass's three counts are per-run columns of
+    the history too, 0 on a row written before them."""
+    hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
+    assert [(r["comments_read"], r["comment_actions"], r["comment_unactionable"]) for r in hist] \
+        == [(0, 0, 0), (2, 1, 1)]
 
 
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
@@ -1808,7 +1993,9 @@ def test_http_note_records_the_posted_shown_verbatim_and_lists_it_not_stale(
     _status, body = _get(port, "/api/cards")
     reading_card = next(c for c in json.loads(body)
                         if c["kind"] == "reading" and c["id"] == w1.id)
-    assert reading_card["notes"] == [{"text": "clear picture", "ts": saved.ts, "stale": False}]
+    assert reading_card["notes"] == [
+        {"text": "clear picture", "ts": saved.ts, "stale": False,
+         "comment_sha": comment_identity(saved.key_sha, saved.ts), "reading": None}]
 
 
 def test_http_note_records_the_shown_the_page_rendered_not_a_later_current_best(
@@ -1904,6 +2091,193 @@ def test_http_note_records_a_valid_shown_mapping_verbatim(live_server, w1):
     saved = verify_db.assessments_of(w1.id)[-1]
     assert saved.question["shown"] == {"picture": sha_a, "recordings": [sha_b, sha_c],
                                        "text_sha": None, "syllabus_state_id": "d" * 64}
+
+
+def test_http_note_on_a_question_records_the_question_kind_and_subject_kind(live_server, w1):
+    """Spec 5 r9: `n` in a session posts the question's own facts; the
+    row is the card-flag shape anchored on the subject."""
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "question",
+                          "subject_kind": "word", "question_kind": "rate",
+                          "artifact_kind": "picture", "text": "not rice",
+                          "shown": {"picture": None, "recordings": [], "text_sha": None}})
+    assert status == 200 and json.loads(body)["ok"] is True
+    saved = SyllabusDb(db_path).assessments_of(w1.id)[-1]
+    assert saved.question["card_kind"] == "question"
+    assert saved.question["question_kind"] == "rate"
+    assert saved.question["artifact_kind"] == "picture"
+    assert saved.question["subject_kind"] == "word"
+
+
+def test_http_note_refuses_a_question_kind_the_queue_never_emits(live_server, w1):
+    """A present `question_kind` must be one of the four kinds the queue
+    emits -- anything else is a bad request (400, no row appended), the
+    same treatment a malformed `shown` gets: a comment whose recorded
+    question kind is garbage can never be read back as evidence.
+    """
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "question",
+                          "question_kind": "ponder", "text": "hmm"})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    assert "question_kind" in json.loads(body)["error"]
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []  # no row appended
+
+
+def test_http_note_refuses_an_artifact_kind_the_queue_never_emits(live_server, w1):
+    """Likewise `artifact_kind`: picture, recording or rendition, the
+    kinds a question actually carries.
+    """
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "question",
+                          "question_kind": "rate", "artifact_kind": "diagram", "text": "hmm"})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    assert "artifact_kind" in json.loads(body)["error"]
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []  # no row appended
+
+
+def test_http_note_refuses_a_subject_kind_outside_the_vocabulary(live_server, w1):
+    """`subject_kind` is validated the way /api/veto validates it: the
+    comment pass resolves the kind off the syllabus and refuses a comment
+    whose recorded kind disagrees (attempts._handable), so a kind that is
+    no kind at all would close the comment unread -- a bad request, not a
+    row. An absent one stays absent (a gallery comment names none).
+    """
+    port, db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading",
+                          "subject_kind": "letter", "text": "hmm"})
+    assert status == 400
+    assert json.loads(body)["ok"] is False
+    assert "subject_kind" in json.loads(body)["error"]
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []  # no row appended
+    status, _body = _post(port, "/api/note",
+                          {"subject": w1.id, "card_id": w1.id, "kind": "reading", "text": "hm"})
+    assert status == 200
+    assert "subject_kind" not in SyllabusDb(db_path).assessments_of(w1.id)[-1].question
+
+
+def test_http_note_accepts_a_rendition_question_and_an_absent_kind(live_server, w1):
+    """The kinds the queue does emit pass (rendition among them), and an
+    absent question/artifact kind stays the gallery comment's own shape.
+    """
+    port, _db_path = live_server
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "question",
+                          "question_kind": "challenger", "artifact_kind": "rendition",
+                          "text": "the pair reads flat"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    status, body = _post(port, "/api/note",
+                         {"subject": w1.id, "card_id": w1.id, "kind": "reading", "text": "fine"})
+    assert status == 200 and json.loads(body)["ok"] is True
+
+
+def test_http_veto_writes_the_veto_row_and_the_reading_reads_vetoed(live_server, w1):
+    """Spec 5 r10: the strike is one POST naming the reading; the reading
+    stays on record, read back as vetoed."""
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    rs.append_gallery_note(verify_db, subject=w1.id, card_id=w1.id, kind="reading", text="busy",
+                           shown={}, subject_kind="word")
+    (c,) = record_mod.comments(verify_db)
+    _reading_row(verify_db, w1.id, c.comment_sha)
+    assert record_mod.reading_view(verify_db.assessments_of(w1.id),
+                                   c.comment_sha)["vetoed"] is False
+    status, body = _post(port, "/api/veto", {"subject": w1.id, "comment_sha": c.comment_sha,
+                                             "prompt_version": "1", "subject_kind": "word"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert record_mod.reading_view(verify_db.assessments_of(w1.id),
+                                   c.comment_sha)["vetoed"] is True
+
+
+def test_http_a_strike_shows_as_vetoed_on_the_next_queue_fetch(live_server, w1):
+    """Spec 5 r10 end to end: the page posts the strike and reloads, and
+    what comes back on the reload marks that comment's reading struck --
+    the one round trip the page's own reload depends on."""
+    port, db_path = live_server
+    seed_db = SyllabusDb(db_path)
+    # w1's picture need has no candidate of its own, so no rate question
+    # would carry the comment -- seed one (as the queue HTTP test does).
+    _provide(seed_db, w1.id, "picture", items=[{"sha": "p1"}])
+    rs.append_gallery_note(seed_db, subject=w1.id, card_id=w1.id, kind="reading", text="busy",
+                           shown={}, subject_kind="word")
+    (c,) = record_mod.comments(seed_db)
+    _reading_row(seed_db, w1.id, c.comment_sha)
+    seed_db.close()
+
+    def queued_reading():
+        status, body = _get(port, "/api/queue")
+        assert status == 200
+        (item,) = [i for i in json.loads(body) if i["type"] == "rate"
+                   and i["subject"] == w1.id and i["kind"] == "picture"]
+        (entry,) = [n for n in item["comments"] if n["comment_sha"] == c.comment_sha]
+        return entry["reading"]
+
+    assert queued_reading() == {"reading": "wants plain rice", "prompt_version": "1",
+                                "vetoed": False, "actions": [], "unactionable": []}
+    status, body = _post(port, "/api/veto", {"subject": w1.id, "comment_sha": c.comment_sha,
+                                             "prompt_version": "1", "subject_kind": "word"})
+    assert status == 200 and json.loads(body)["ok"] is True
+    assert queued_reading()["vetoed"] is True
+
+
+def test_http_veto_is_idempotent(live_server, w1):
+    """A second strike writes a second row and changes nothing else."""
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    rs.append_gallery_note(verify_db, subject=w1.id, card_id=w1.id, kind="reading", text="busy",
+                           shown={}, subject_kind="word")
+    (c,) = record_mod.comments(verify_db)
+    _reading_row(verify_db, w1.id, c.comment_sha)
+    payload = {"subject": w1.id, "comment_sha": c.comment_sha, "prompt_version": "1"}
+    assert _post(port, "/api/veto", payload)[0] == 200
+    assert _post(port, "/api/veto", payload)[0] == 200
+    assert record_mod.vetoed_readings_all(verify_db) == frozenset({(c.comment_sha, "1")})
+
+
+@pytest.mark.parametrize("payload", [
+    {"subject": "rice"},
+    {"subject": "rice", "comment_sha": "c1c1c1c1c1c1c1c1"},
+    {"subject": "rice", "prompt_version": "1"},
+    {"comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1"},
+    {"subject": "rice", "comment_sha": "not-a-sha", "prompt_version": "1"},
+    {"subject": "rice", "comment_sha": "C1C1C1C1C1C1C1C1", "prompt_version": "1"},
+    {"subject": "rice", "comment_sha": ["c1c1c1c1c1c1c1c1"], "prompt_version": "1"},
+    # a truthy prompt_version that is no version: str()-ing it would
+    # write a durable veto row naming a reading no row can ever carry
+    {"subject": "rice", "comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": ["1"]},
+    {"subject": "rice", "comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": 1},
+    {"subject": "rice", "comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "  "},
+    # a subject_kind outside the closed vocabulary record.subject_kind_of
+    # reads back, refused the way /api/note refuses an unknown kind
+    {"subject": "rice", "comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1",
+     "subject_kind": "noun"},
+])
+def test_http_veto_refuses_a_body_that_does_not_name_one_reading(live_server, payload):
+    """A strike names a subject and a whole (comment_sha,
+    prompt_version) reference -- half a reference, or a comment_sha that
+    is not one, would strike nothing and must not be stored as if it
+    had."""
+    port, db_path = live_server
+    status, body = _post(port, "/api/veto", payload)
+    assert status == 400 and json.loads(body)["ok"] is False
+    assert record_mod.vetoed_readings_all(SyllabusDb(db_path)) == frozenset()
+
+
+@pytest.mark.parametrize("body", [[], 5, "x", None])
+def test_http_refuses_a_body_that_is_not_a_json_object(live_server, body):
+    """Valid JSON that is not an object has no fields to read: `.get` on
+    one raises AttributeError past the handlers' own (KeyError,
+    ValueError) clause, so the shape is refused once, at the read, and
+    every endpoint answers 400 rather than 500."""
+    port, db_path = live_server
+    status, out = _post(port, "/api/veto", body)
+    assert status == 400 and json.loads(out)["ok"] is False
+    assert record_mod.vetoed_readings_all(SyllabusDb(db_path)) == frozenset()
 
 
 # --- the screen derives what the run derives (spec 5 section 3) ------------
@@ -2142,3 +2516,173 @@ def test_a_need_with_no_candidate_and_no_source_left_is_a_direction_question(der
     items = rs.build_queue(derivations, budget=50)
     mine = [i for i in items if i["subject"] == w1.id and i["kind"] == "picture"]
     assert [i["type"] for i in mine] == ["direction"]
+
+
+# --- spec 5 r9: a question names its subject, carries `shown` and comments -
+
+def test_a_question_names_its_subject_in_words_not_a_sha(derivations, db, w1):
+    """Design ruling 5: a word's thai, id and meaning; a sentence's text
+    and gloss."""
+    _provide(db, w1.id, "picture", items=[{"sha": "p1"}])
+    _judge(db, w1.id, "picture", "p1", True)      # p1 is current-best, so it is what was shown
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == w1.id and i["kind"] == "picture"]
+    assert item["label"] == {"thai": "ข้าว", "gloss": "rice", "id": "rice"}   # ข้าว: rice
+    assert item["shown"]["picture"] == "p1" and item["shown"]["recordings"] == []
+    assert item["shown"]["text_sha"] is None
+    assert len(item["shown"]["syllabus_state_id"]) == 64
+    assert item["comments"] == []
+
+
+def test_subject_label_and_shown_for_a_sentence_and_a_pair(syllabus, w1, w2, pair):
+    """A sentence names its text and gloss; a pair its members' Thai; an
+    unknown sentence falls back to its id with no Thai."""
+    s = sentence(((w1.id, w2.id),), thai_of(w1, w2), gloss="rice is near")
+    with_sentence = dataclasses.replace(syllabus, sentences=(s,))
+    assert rs._subject_label(with_sentence, s.text_sha, "sentence") == {
+        "thai": s.text, "gloss": "rice is near", "id": s.text_sha}
+    assert rs._subject_label(syllabus, s.text_sha, "sentence") == {
+        "thai": None, "gloss": None, "id": s.text_sha}
+    assert rs._subject_label(syllabus, pair.id, "pair") == {
+        "thai": "ข้าว / ใกล้", "gloss": "rice / near", "id": pair.id}   # ข้าว: rice, ใกล้: near
+    shown = rs._question_shown("recording", s.text_sha, "sentence", "r" * 64, "s" * 64)
+    assert shown == {"picture": None, "recordings": ["r" * 64], "text_sha": s.text_sha,
+                     "syllabus_state_id": "s" * 64}
+    assert rs._question_shown("picture", "rice", "word", None, "s" * 64)["recordings"] == []
+
+
+def test_a_question_lists_every_comment_on_its_subject_unread(derivations, db, w1):
+    _provide(db, w1.id, "picture", items=[{"sha": "p1"}])
+    rs.append_gallery_note(db, subject=w1.id, card_id=w1.id, kind="reading", text="blurry",
+                           shown={}, subject_kind="word")
+    rs.append_gallery_note(db, subject=w1.id, card_id=w1.id, kind="question", text="not rice",
+                           shown={}, subject_kind="word", question_kind="rate",
+                           artifact_kind="picture")
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == w1.id and i["kind"] == "picture"]
+    assert [(c["text"], c["card_kind"], c["question_kind"], c["reading"])
+            for c in item["comments"]] == [("blurry", "reading", None, None),
+                                          ("not rice", "question", "rate", None)]
+    assert all(len(c["comment_sha"]) == 16 for c in item["comments"])
+
+
+def _reading_row(db, subject, comment_sha, version="1", actions=(), unactionable=()):
+    """The comment pass's reading row (record.reading_of reads it back)."""
+    return db.append(port="assess", backend="llm",
+                     key=CommentReadingKey(comment_sha, version), subject=subject,
+                     question={"kind": "comment-reading", "comment_sha": comment_sha,
+                               "prompt_version": version, "subject_kind": "word",
+                               "anchor": subject, "card_kind": "reading"},
+                     answer={"reading": "wants plain rice", "actions": list(actions),
+                             "unactionable": list(unactionable)})
+
+
+def test_a_questions_comments_carry_their_reading(derivations, db, w1):
+    """Spec 5 r10: the comment view carries the run's reading of it --
+    the text, the labelled actions, the unactionable requests and the
+    prompt version the strike would name."""
+    _provide(db, w1.id, "picture", items=[{"sha": "p1"}])
+    rs.append_gallery_note(db, subject=w1.id, card_id=w1.id, kind="reading", text="busy",
+                           shown={}, subject_kind="word")
+    (c,) = record_mod.comments(db)
+    _reading_row(db, w1.id, c.comment_sha,
+                 actions=[{"action": "direction", "kind": "picture", "text": "plain rice",
+                           "outcome": "done"}], unactionable=["bigger font"])
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == w1.id and i["kind"] == "picture"]
+    assert item["comments"][0]["reading"] == {
+        "reading": "wants plain rice", "prompt_version": "1", "vetoed": False,
+        "actions": ["direction for the picture search: plain rice"],
+        "unactionable": ["no action available: bigger font"]}
+
+
+def test_a_cards_notes_carry_their_reading(derivations, db, media_store, w1):
+    sha_a = _seed_picture(db, media_store, w1.id)
+    _judge(db, w1.id, "picture", sha_a, True)
+    rs.append_gallery_note(db, subject=w1.id, card_id=w1.id, kind="reading", text="busy",
+                           shown={}, subject_kind="word")
+    (c,) = record_mod.comments(db)
+    _reading_row(db, w1.id, c.comment_sha)
+    reading_card = next(card for card in rs.compiled_cards(derivations)
+                        if card["kind"] == "reading" and card["id"] == w1.id)
+    assert reading_card["notes"][0]["reading"]["reading"] == "wants plain rice"
+    assert reading_card["notes"][0]["reading"]["vetoed"] is False
+
+
+def test_a_note_whose_identity_was_never_read_stays_unread(derivations, db, media_store, w1):
+    """An Anki flag-import row carries no note text, so the comment pass
+    never reads it, yet card_notes lists it with an identity of its own
+    -- reading_view answers None for it and the entry shows unread."""
+    sha_a = _seed_picture(db, media_store, w1.id)
+    _judge(db, w1.id, "picture", sha_a, True)
+    db.append(port="assess", backend="learner",
+              key=FlagKey(family="word", anchor=w1.id, card_kind="reading", flags=1),
+              subject=w1.id,
+              question={"kind": "card-flag", "role": "card-flag", "family": "word",
+                        "anchor": w1.id, "card_kind": "reading", "flags": 1},
+              answer={"flagged": True, "flag": 1})
+    reading_card = next(card for card in rs.compiled_cards(derivations)
+                        if card["kind"] == "reading" and card["id"] == w1.id)
+    assert [n["reading"] for n in reading_card["notes"]] == [None]
+
+
+def test_direction_challenger_and_reask_items_carry_the_label(derivations, db, w1):
+    for source in ("pexels", "openverse", "wikimedia"):
+        _provide(db, w1.id, "picture", backend=source, query="rice photo", items=[])
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "direction" and i["subject"] == w1.id and i["kind"] == "picture"]
+    assert item["label"]["thai"] == "ข้าว" and "comments" in item and "shown" in item   # ข้าว: rice
+
+
+def test_challenger_item_carries_label_shown_and_comments(derivations, db, w1):
+    _learner(db, w1.id, "picture", "s-old", "acceptable")
+    _judge(db, w1.id, "picture", "s-new", True, rubric="rubric-v2")
+    items = rs.build_queue(
+        dataclasses.replace(derivations, current_rubric={"picture-for-word": "rubric-v2"}),
+        budget=50)
+    (challenger,) = [i for i in items if i["type"] == "challenger" and i["subject"] == w1.id]
+    assert challenger["label"]["thai"] == "ข้าว"   # ข้าว: rice
+    assert challenger["shown"]["picture"] == "s-old"
+    assert challenger["comments"] == []
+
+
+def test_reask_item_carries_label_shown_and_comments(derivations, db, w1):
+    db.append_study(_word_study_row(w1.id))
+    _learner(db, w1.id, "picture", "sA", "good")
+    items = rs.build_queue(derivations, study=db, budget=50)
+    (reask,) = [i for i in items if i["type"] == "reask" and i["subject"] == w1.id]
+    assert reask["label"]["thai"] == "ข้าว"   # ข้าว: rice
+    assert reask["shown"]["picture"] == "sA"
+    assert reask["comments"] == []
+
+
+def test_a_rendition_rate_items_shown_carries_the_member_recording_shas(
+        derivations, db, w1, w2, pair):
+    """r9 fix round 1: a rendition names no single artifact of its own --
+    `current_best`'s artifact_sha is the compound identity
+    (cachekeys.rendition_identity), never a real recording sha. The
+    question's `shown` must instead name what the learner actually
+    heard: the two member recordings backing that rendition, in the
+    pair's own member order (mirroring the gallery's own pair-card
+    `shown`, `_shown_of`'s `recordings` list)."""
+    from thai_syllabus.cachekeys import rendition_identity
+
+    shas = {w1.id: "rec-w1-sha", w2.id: "rec-w2-sha"}
+    db.append(port="attempt", backend="forvo",
+             key=AttemptOutcomeKey(subject=pair.id, kind="rendition", source="forvo"),
+             subject=pair.id,
+             question={"kind": "rendition", "subject_kind": "pair", "source": "forvo"},
+             answer={"outcome": "candidates", "candidates": [rendition_identity(shas)]})
+    db.append(port="assess", backend="rendition",
+             key=MechanicalKey(check="rendition", params="v1", subject=pair.id,
+                              artifact_sha=rendition_identity(shas)),
+             subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),
+                      "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                      "params": {"members": shas}},
+             answer={"value": True})
+
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == pair.id and i["kind"] == "rendition"]
+    assert item["shown"]["recordings"] == [shas[w1.id], shas[w2.id]]
+    assert item["shown"]["picture"] is None

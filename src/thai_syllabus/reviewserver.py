@@ -30,8 +30,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .authority import role_for
-from .cachekeys import DirectionKey, DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey, sha
-from .compile import CARD_CSS, build_deck, card_kind_of, field_values, render_card, tag_value
+from .cachekeys import DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey
+from .compile import (CARD_CSS, CARD_MEANINGS, build_deck, card_kind_of, field_values,
+                      render_card, tag_value)
 from .derivations import (
     DEFAULT_REASK_LAPSES,
     LEARNER_RANK,
@@ -53,6 +54,8 @@ from .derivations import (
     vetoed,
 )
 from .ids import PairId
+from .learner import (ACTION_RATINGS, append_comment, append_comment_veto, append_direction,
+                      append_rating)
 from .media import Speaker
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
 from .provider import FetchBackend, Provider, Question, tool_fetcher
@@ -60,10 +63,12 @@ from .record import (
     candidate_shas,
     card_flags,
     card_notes,
+    comments_of,
     excluded_candidates,
     latest_nothing_reason,
     latest_query,
     latest_rating,
+    reading_view,
     rows_for,
     run_reports,
     source_asks,
@@ -86,15 +91,6 @@ DEFAULT_PORT = 8877          # 8765 is reserved for AnkiConnect / proof_gallery.
 # The rank an artifact must reach to count as covered (spec 5 section 3's
 # current-best coverage per need).
 _ACCEPTABLE_FLOOR = LEARNER_RANK["acceptable"]
-
-# action 1-4 (spec 5 section 1 kind 1) -> the learner rating vocabulary
-# derivations.py's current_best/exhausted already fold over (LEARNER_RANK).
-ACTION_RATINGS: dict[int, str] = {
-    1: "unacceptable-none",
-    2: "unacceptable-use-this",
-    3: "acceptable",
-    4: "good",
-}
 
 
 def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
@@ -135,6 +131,94 @@ def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> 
     return word.meaning if word is not None else None
 
 
+def _subject_label(syllabus: Syllabus, subject: str, subject_kind: str) -> dict[str, Any]:
+    """How a question names its subject (spec 5 r9, design ruling 5): a
+    word's Thai, id and meaning; a sentence's text and gloss; a pair's
+    members' Thai; a grapheme's symbol. Never a bare sha."""
+    if subject_kind == "sentence":
+        try:
+            s = syllabus.sentence(subject)
+        except KeyError:
+            return {"thai": None, "gloss": None, "id": subject}
+        return {"thai": s.text, "gloss": s.gloss, "id": subject}
+    if subject_kind == "pair":
+        try:
+            pair = syllabus.pair(PairId(subject))
+        except KeyError:
+            return {"thai": None, "gloss": None, "id": subject}
+        members = [w.thai for m in pair.members if (w := syllabus.find_word(m)) is not None]
+        return {"thai": " / ".join(members) or None, "gloss": _gloss_for(syllabus, subject, "pair"),
+                "id": subject}
+    if subject_kind == "grapheme":
+        return {"thai": subject, "gloss": None, "id": subject}
+    word = syllabus.find_word(subject)
+    if word is None:
+        return {"thai": None, "gloss": None, "id": subject}
+    return {"thai": word.thai, "gloss": word.meaning, "id": str(word.id)}
+
+
+def _question_shown(kind: str, subject: str, subject_kind: str, current_sha: str | None,
+                    syllabus_state_id: str, *,
+                    member_shas: Sequence[str] = ()) -> dict[str, Any]:
+    """What a session comment records as shown (spec 5 r9, decision 6):
+    the question's current artifact of its kind, the sentence text_sha
+    for a sentence subject, the syllabus state id -- the gallery note's
+    own `shown` shape (_shown_of), echoed back by the page on /api/note.
+    A rendition names no single artifact of its own (`current_sha` is
+    the compound identity current_best ranks by, cachekeys.
+    rendition_identity, never a real recording) -- its own artifacts are
+    its member recordings, `member_shas` (the caller's own
+    `_rendition_member_shas`), in the same `recordings` shape a pair
+    card's own `shown` uses (`_shown_of`).
+    """
+    if kind == "rendition":
+        recordings = list(member_shas)
+    elif kind == "recording" and current_sha:
+        recordings = [current_sha]
+    else:
+        recordings = []
+    return {"picture": current_sha if kind == "picture" else None,
+            "recordings": recordings,
+            "text_sha": subject if subject_kind == "sentence" else None,
+            "syllabus_state_id": syllabus_state_id}
+
+
+def _rendition_member_shas(d: "Derivations", subject: str, artifact_sha: str | None) -> list[str]:
+    """A rendition's own artifacts (spec 5 r9): its member recording
+    shas, in the pair's own member order -- the same params["members"]
+    (word id -> sha) wiring._DbMediaIndex.rendition() reads off the
+    newest "rendition" assess row naming `artifact_sha` (the compound
+    identity, cachekeys.rendition_identity), so a comment on a rendition
+    question names what the learner actually heard, never the identity
+    sha itself. Empty when there is no such row, or no pair to order by.
+    """
+    if artifact_sha is None:
+        return []
+    rows = [r for r in d.db.assessments_of(subject) if r.port == "assess"
+           and r.backend == "rendition" and r.question.get("artifact_sha") == artifact_sha]
+    if not rows:
+        return []
+    members = rows[-1].question.get("params", {}).get("members", {}) or {}
+    try:
+        pair = d.syllabus.pair(PairId(subject))
+    except KeyError:
+        return list(members.values())
+    return [members[m] for m in pair.members if m in members]
+
+
+def _comment_views(rows: Sequence[Answer]) -> list[dict[str, Any]]:
+    """The subject's comments as the page lists them under a question
+    (spec 5 r9): every comment on the subject, any card or question,
+    oldest first, each with the run's reading of it (spec 5 r10,
+    record.reading_view) -- None while no run has read it, which the page
+    shows as unread. `rows` must be the subject's whole row set: the
+    reading rows live in it beside the comments."""
+    return [{"text": c.text, "ts": c.ts, "comment_sha": c.comment_sha, "anchor": c.anchor,
+             "card_kind": c.card_kind, "question_kind": c.question_kind,
+             "reading": reading_view(rows, c.comment_sha)}
+            for c in comments_of(rows)]
+
+
 def _verdict_line(verdict: JudgeVerdict | None) -> str | None:
     """The one line spec 5 section 1 kind 1 shows beside an artifact, or
     None when derivations.deciding_verdict has nothing fresh.
@@ -170,7 +254,7 @@ def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
 
 def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                    *, directed: bool = False, rank: float = 0.0,
-                   attempts: int = 0) -> dict[str, Any]:
+                   attempts: int = 0, syllabus_state_id: str) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
     role = role_for(kind, subject_kind)
     best = _best(d, subject, kind)
@@ -199,6 +283,12 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
         # thumbnails, never fetched or recomputed here.
         "excluded": excluded_candidates(d.db, subject),
         "flags": card_flags(d.db.assessments_of(subject)),
+        "label": _subject_label(d.syllabus, subject, subject_kind),
+        "shown": _question_shown(
+            kind, subject, subject_kind, best.artifact_sha, syllabus_state_id,
+            member_shas=(_rendition_member_shas(d, subject, best.artifact_sha)
+                        if kind == "rendition" else ())),
+        "comments": _comment_views(d.db.assessments_of(subject)),
     }
 
 
@@ -247,7 +337,7 @@ def _sentence_tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
 
 
 def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
-                        attempts: int) -> dict[str, Any]:
+                        attempts: int, *, syllabus_state_id: str) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
     tried = _sentence_tried_summary(rows) if kind == "sentence" else _tried_summary(rows)
     return {
@@ -259,10 +349,15 @@ def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind:
         # sentence need's no-fit answer (spec 3 r19 section 5). Always
         # present, None for a kind whose `nothing` outcomes state none.
         "reason": latest_nothing_reason(rows),
+        "label": _subject_label(d.syllabus, subject, subject_kind),
+        "shown": _question_shown(kind, subject, subject_kind, _best(d, subject, kind).artifact_sha,
+                                 syllabus_state_id),
+        "comments": _comment_views(d.db.assessments_of(subject)),
     }
 
 
-def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, Any]:
+def _challenger_question(d: "Derivations", challenger: Challenger,
+                         *, syllabus_state_id: str) -> dict[str, Any]:
     return {
         "type": "challenger", "subject": challenger.subject, "kind": challenger.kind,
         "subject_kind": challenger.subject_kind,
@@ -270,10 +365,15 @@ def _challenger_question(d: "Derivations", challenger: Challenger) -> dict[str, 
         "gloss": _gloss_for(d.syllabus, challenger.subject, challenger.subject_kind),
         "current": _artifact(challenger.current_sha),
         "challenger": _artifact(challenger.challenger_sha),
+        "label": _subject_label(d.syllabus, challenger.subject, challenger.subject_kind),
+        "shown": _question_shown(challenger.kind, challenger.subject, challenger.subject_kind,
+                                 challenger.current_sha, syllabus_state_id),
+        "comments": _comment_views(d.db.assessments_of(challenger.subject)),
     }
 
 
-def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any]]:
+def _reask_questions(d: "Derivations", study: StudyReader,
+                     *, syllabus_state_id: str) -> list[dict[str, Any]]:
     """Spec 5 section 1 kind 4: every derivations.reasks contradiction as
     a question. The lapse threshold is rulebook.yaml's own
     "reask/lapses" where the deck sets one, else DEFAULT_REASK_LAPSES.
@@ -293,6 +393,13 @@ def _reask_questions(d: "Derivations", study: StudyReader) -> list[dict[str, Any
             "current": _artifact(best.artifact_sha),
             "evidence": [{"anchor": r.anchor, "card_kind": r.card_kind, "grade": r.grade,
                          "ts": r.ts} for r in found.evidence[-5:]],
+            "label": _subject_label(d.syllabus, found.subject, found.subject_kind),
+            "shown": _question_shown(
+                found.kind, found.subject, found.subject_kind, best.artifact_sha,
+                syllabus_state_id,
+                member_shas=(_rendition_member_shas(d, found.subject, best.artifact_sha)
+                            if found.kind == "rendition" else ())),
+            "comments": _comment_views(d.db.assessments_of(found.subject)),
         })
     return out
 
@@ -307,6 +414,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     kind with no derivation input yields no questions.
     """
     now_ns = time.time_ns()   # one clock read per session build (spec 3 r19 section 6a/9)
+    syllabus_state_id = d.syllabus.state_id()
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
                     transient_cap=d.transient_cap,
@@ -321,7 +429,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
             # exhausted (below); with a source left it is the machine's.
             continue
         items.append(_rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
-                                    rank=e.rank, attempts=e.attempts))
+                                    rank=e.rank, attempts=e.attempts,
+                                    syllabus_state_id=syllabus_state_id))
         if len(items) >= budget:
             break
     # A need kept queued for a candidate awaiting a verdict under the
@@ -337,19 +446,20 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
             status = _exhausted(d, subject, kind, now_ns=now_ns)
             if status.exhausted:
                 items.append(_direction_question(d, subject, kind, subject_kind,
-                                                 status.attempts))
+                                                 status.attempts,
+                                                 syllabus_state_id=syllabus_state_id))
                 if len(items) >= budget:
                     break
 
     if len(items) < budget:
         for challenger in challengers(d.db, d.syllabus, current_rubric=d.current_rubric,
                                       prior=d.prior, provenance_source=d.provenance_source):
-            items.append(_challenger_question(d, challenger))
+            items.append(_challenger_question(d, challenger, syllabus_state_id=syllabus_state_id))
             if len(items) >= budget:
                 break
 
     if len(items) < budget and study is not None:
-        items.extend(_reask_questions(d, study))
+        items.extend(_reask_questions(d, study, syllabus_state_id=syllabus_state_id))
 
     return items[:budget]
 
@@ -495,11 +605,17 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
             # no longer shows what it named (F9) -- scoped by this
             # card's own anchor (entry["id"]) AND kind (C2 fix): a
             # minimal-pair note's two member cards share a subject and
-            # a card_kind but never an anchor.
+            # a card_kind but never an anchor. `reading` is the run's
+            # reading of that note (spec 5 r10), None while unread --
+            # card_notes lists a flag-import row too (it carries no note
+            # text, so the comment pass never reads it), and an identity
+            # with no reading row reads None rather than raising.
             shown_now = _shown_of(entry)
             entry["shown"] = {**shown_now, "syllabus_state_id": syllabus_state_id}
             entry["notes"] = [
-                {"text": n["text"], "ts": n["ts"], "stale": _is_stale(n["shown"], shown_now)}
+                {"text": n["text"], "ts": n["ts"], "stale": _is_stale(n["shown"], shown_now),
+                 "comment_sha": n["comment_sha"],
+                 "reading": reading_view(subject_rows, n["comment_sha"])}
                 for n in card_notes(subject_rows, entry["id"], kind)
             ]
             if item.family == "minimal_pair":
@@ -513,27 +629,13 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
 # --- writes: notes, drills, answers, supply ---------------------------------
 
 def append_gallery_note(record: RecordWriter, *, subject: str, card_id: str, kind: str,
-                        text: str, shown: Mapping[str, Any] | None = None) -> int:
-    """One gallery note as a card-level flag row (spec 4 section 4's
-    shape; spec 5 section 1), under role "card-flag" (AUTHORITY_ORDER's
-    learner-only role). `subject` is the card's own entity subject
-    (card.subject: a word/pair/grapheme/sentence id); `card_id` is the
-    row's own per-card anchor, `kind` its card_kind.
-
-    `shown` records the card as shown (spec 5 section 1 r5): the
-    artifact shas it displayed, the sentence text_sha for a sentence
-    card, and the syllabus state id -- carried in the question (never
-    the answer, which stays the plain {kind, rating, note} shape every
-    other reader already expects). {} when omitted -- a note naming
-    nothing, record.card_notes' own default for a pre-r5 row.
-    """
-    role = "card-flag"
-    key = LearnerKey(artifact_sha=str(card_id), role=role)
-    return record.append(port="assess", backend="learner", key=key, subject=str(subject),
-                         question={"role": role, "kind": "card-flag",
-                                  "anchor": str(card_id), "card_kind": kind,
-                                  "shown": dict(shown) if shown is not None else {}},
-                         answer={"kind": "rating", "rating": None, "note": text})
+                        text: str, shown: Mapping[str, Any] | None = None,
+                        subject_kind: str | None = None, question_kind: str | None = None,
+                        artifact_kind: str | None = None) -> int:
+    """One comment on a card or a question (spec 5 r9): learner.append_comment."""
+    return append_comment(record, subject=subject, card_id=card_id, kind=kind, text=text,
+                          shown=shown, subject_kind=subject_kind, question_kind=question_kind,
+                          artifact_kind=artifact_kind)
 
 
 def append_drill_result(record: RecordWriter, *, confusion: str, pair_id: str,
@@ -600,11 +702,8 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
 
     if "direction" in payload:
         text = payload["direction"]
-        key = DirectionKey(subject=subject, role=role, text_sha=sha(text))
-        ts = record.append(port="assess", backend="learner", key=key, subject=subject,
-                           question={"kind": "direction", "role": role,
-                                    "subject_kind": subject_kind},
-                           answer={"direction": text})
+        ts = append_direction(record, subject=subject, role=role, text=text,
+                              subject_kind=subject_kind)
         return {"ok": True, "ts": ts, "kind": "direction"}
 
     action = payload.get("action")
@@ -613,19 +712,13 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
         return {"ok": True, "kind": "challenger", "action": "keep"}
     artifact_sha = (payload.get("artifact_sha") or payload.get("challenger_sha")
                     if action == "switch" else payload.get("artifact_sha"))
+    # `learner.append_rating` is the one place a rating is checked against
+    # LEARNER_RANK, and its ValueError is the 400 this handler already
+    # answers with -- a second check here would be the same refusal twice.
     rating = _rating_of(payload)
-
-    if rating not in LEARNER_RANK:
-        raise ValueError(f"unknown rating {rating!r}")
-
-    answer: dict[str, Any] = {"value": rating}
-    if payload.get("note"):
-        answer["note"] = payload["note"]
-    key = LearnerKey(artifact_sha=artifact_sha, role=role)
-    ts = record.append(port="assess", backend="learner", key=key, subject=subject,
-                       question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
-                                "kind": "rating", "subject_kind": subject_kind},
-                       answer=answer)
+    ts = append_rating(record, subject=subject, role=role, rating=rating,
+                       artifact_sha=artifact_sha, subject_kind=subject_kind,
+                       note=payload.get("note") or None)
     return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": artifact_sha}
 
 
@@ -823,13 +916,16 @@ def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
 def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     """One run's history row: the runreport answer as it was recorded,
     with the fields a row older than the field itself would be missing
-    filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`). The
-    page reads its columns off the oldest row, so a field missing there
-    is a column missing for every run.
+    filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`, r30's
+    three comment counts). The page reads its columns off the oldest row,
+    so a field missing there is a column missing for every run.
     """
     return {**answer,
             "adjudicated": answer.get("adjudicated", 0),
-            "stayed_disputed": answer.get("stayed_disputed", 0)}
+            "stayed_disputed": answer.get("stayed_disputed", 0),
+            "comments_read": answer.get("comments_read", 0),
+            "comment_actions": answer.get("comment_actions", 0),
+            "comment_unactionable": answer.get("comment_unactionable", 0)}
 
 
 def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
@@ -850,10 +946,12 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     `pending`/`sentences_adopted` come from the newest run.py runreport
     row, else 0; `run_report_history` is every such row's answer, oldest
     first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
-    whether or not the row itself recorded them -- a row written before
-    r29 reads 0 for both, so the two counts are columns of every run in
-    the history and not only of the runs since (the page takes the
-    history's columns from its oldest row).
+    and the comment pass's three counts -- `comments_read`,
+    `comment_actions`, `comment_unactionable` (spec 3 r30) -- whether or
+    not the row itself recorded them: a row written before either reads
+    0 for its fields, so all five are columns of every run in the history
+    and not only of the runs since (the page takes the history's columns
+    from its oldest row).
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -1049,6 +1147,62 @@ def _valid_shown_value(v: Any) -> bool:
     return False
 
 
+# The vocabulary a session comment may name (spec 5 r9): the four kinds
+# build_queue emits as a question's `type`, and the artifact kinds a
+# question carries as its `kind`. A comment recording anything else
+# could never be read back as evidence against a question, so the
+# handler refuses it the way it refuses a malformed `shown`.
+_QUESTION_KINDS = frozenset({"rate", "direction", "challenger", "reask"})
+_ARTIFACT_KINDS = frozenset({"picture", "recording", "rendition"})
+
+# The kinds of thing a subject can be (record.subject_kind_of's own
+# vocabulary, the one _subject_label and authority.role_for branch on).
+_SUBJECT_KINDS = frozenset({"word", "sentence", "pair", "grapheme"})
+
+
+# A comment identity is cachekeys.sha()'s own 16-hex shape; the 64-hex
+# form is accepted alongside it the way `shown` accepts one, so a longer
+# sha() (or a row written under one) is never refused on length alone.
+_COMMENT_SHA_RE = re.compile(r'^(?:[0-9a-f]{16}|[0-9a-f]{64})$')
+
+
+def _validated_comment_sha(value: Any) -> str:
+    """One `comment_sha` off an /api/veto body: a lowercase hex comment
+    identity (cachekeys.comment_identity). Anything else raises
+    ValueError, so the handler's existing except clause answers 400 and
+    appends no row -- a veto naming something that is no identity would
+    strike nothing, and must never be stored as if it had.
+    """
+    if not isinstance(value, str) or not _COMMENT_SHA_RE.match(value):
+        raise ValueError(f"comment_sha must be a hex comment identity: {value!r}")
+    return value
+
+
+def _validated_version(value: Any) -> str:
+    """One `prompt_version` off an /api/veto body: the non-empty string
+    the reading row carries. Truthiness alone is not enough -- `["1"]`
+    is truthy and `str()`s to something no reading ever names, so the
+    veto row it wrote would be a durable no-op reported as ok.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"prompt_version must be a non-empty string: {value!r}")
+    return value
+
+
+def _validated_kind(value: Any, field: str, allowed: frozenset[str]) -> str | None:
+    """One optional kind field off an /api/note body. Absent (or JSON
+    null) stays absent -- a gallery comment names neither. A *present*
+    value must be one of `allowed`: anything else raises ValueError, so
+    the handler's existing except clause answers 400 naming the field
+    and appends no row.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in allowed:
+        raise ValueError(f"{field} must be one of {', '.join(sorted(allowed))}: {value!r}")
+    return value
+
+
 def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "ReviewServer/1.0"
@@ -1067,10 +1221,20 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             self._send_bytes(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                             "application/json; charset=utf-8", status)
 
-        def _read_json(self) -> Any:
+        def _read_json(self) -> Mapping[str, Any]:
+            """The POST body as the object every handler reads fields
+            off. A body that parses but is not an object (a list, a
+            number, a bare string) is a bad request, not something to
+            call `.get` on: an AttributeError would escape the handlers'
+            own (KeyError, ValueError) clause and answer 500 instead of
+            400, so the shape is checked once, here.
+            """
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else b"{}"
-            return json.loads(body.decode("utf-8"))
+            payload = json.loads(body.decode("utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError("a request body must be a JSON object")
+            return payload
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urllib.parse.urlparse(self.path)
@@ -1108,6 +1272,12 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._send_json({"ok": False, "error": "invalid json"}, status=400)
                 return
+            except ValueError as e:
+                # `_read_json`'s own shape check: valid JSON, wrong kind
+                # of value. (JSONDecodeError is a ValueError, so this
+                # clause must stay second.)
+                self._send_json({"ok": False, "error": str(e)}, status=400)
+                return
             try:
                 if parsed.path == "/api/answer":
                     refusal = _refuses_stale_rejection(ctx, payload)
@@ -1125,9 +1295,35 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                     subject = payload.get("subject") or card_id
                     kind = payload.get("kind", "note")
                     shown = _validated_shown(payload.get("shown"))
+                    question_kind = _validated_kind(payload.get("question_kind"),
+                                                    "question_kind", _QUESTION_KINDS)
+                    artifact_kind = _validated_kind(payload.get("artifact_kind"),
+                                                    "artifact_kind", _ARTIFACT_KINDS)
                     ts = append_gallery_note(ctx.record, subject=str(subject),
                                              card_id=card_id, kind=kind,
-                                             text=payload.get("text", ""), shown=shown)
+                                             text=payload.get("text", ""), shown=shown,
+                                             subject_kind=_validated_kind(
+                                                 payload.get("subject_kind"),
+                                                 "subject_kind", _SUBJECT_KINDS),
+                                             question_kind=question_kind,
+                                             artifact_kind=artifact_kind)
+                    self._send_json({"ok": True, "ts": ts})
+                elif parsed.path == "/api/veto":
+                    # Spec 5 r10: the strike names one whole reading --
+                    # both halves of the (comment_sha, prompt_version)
+                    # reference record.vetoed_readings matches on, and
+                    # the subject the comment (and so the veto row) sits
+                    # under. Half a reference strikes nothing, so it is
+                    # a bad request rather than a row that does nothing.
+                    subject = payload.get("subject")
+                    if not subject or not isinstance(subject, str):
+                        raise ValueError("a veto names the comment's subject")
+                    ts = append_comment_veto(
+                        ctx.record, subject=subject,
+                        comment_sha=_validated_comment_sha(payload.get("comment_sha")),
+                        prompt_version=_validated_version(payload.get("prompt_version")),
+                        subject_kind=_validated_kind(payload.get("subject_kind"),
+                                                     "subject_kind", _SUBJECT_KINDS) or "word")
                     self._send_json({"ok": True, "ts": ts})
                 elif parsed.path == "/api/drill":
                     ts = append_drill_result(ctx.record, confusion=payload["confusion"],
@@ -1195,7 +1391,7 @@ def main(argv: list[str] | None = None) -> int:
 
 # ---------------------------------------------------------------------------
 # the page: inline CSS + JS, no external resources, keyboard-first
-# (spec 5 section 2: "1-4 rate, n note, arrows navigate, g gloss, s stats")
+# (spec 5 section 2: "1-4 rate, n comment, arrows navigate, g gloss, s stats")
 # ---------------------------------------------------------------------------
 
 _INDEX_HTML_TEMPLATE = """<!doctype html>
@@ -1230,7 +1426,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     max-width: 900px; margin: 0 auto; display: flex; flex-direction: column;
     align-items: center; gap: 12px; text-align: center;
   }
-  .thai { font-size: 44px; }
+  /* Scoped to the header: compile.CARD_CSS's own `.thai` (48px) loads
+     second, so an unscoped page rule at equal specificity never applied
+     -- and must not compete with a compiled card's own .thai anyway. */
+  .subject-header .thai { font-size: 44px; }
   .gloss-chip {
     display: inline-block; border: 2px dashed #4fb3bf; color: #7fe0ea;
     padding: 4px 12px; border-radius: 8px; font-size: 18px; background: #10262a;
@@ -1238,7 +1437,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .current-artifact { max-width: min(90vw, 640px); }
   .verdict { color: #9aa4b1; font-size: 14px; }
   .subject-cards { display: flex; flex-direction: column; gap: 14px; width: 100%; }
-  .subject-cards .kind { color: #6b7480; font-size: 12px; text-transform: uppercase; }
+  /* spec 5 r9: the type label reads the same on a gallery card and on a
+     question's compiled cards, so the rule is not scoped to either. */
+  .kind { color: #6b7480; font-size: 12px; text-transform: uppercase; }
+  .kind[title] { cursor: help; }
+  .subject-header { display: flex; flex-direction: column; align-items: center; gap: 2px; }
   .subject-cards .face { border: 1px solid #2a2f36; border-radius: 8px; padding: 10px; }
   .subject-cards .face-label { color: #6b7480; font-size: 12px; margin-bottom: 4px; }
   .query { color: #6b7480; font-size: 13px; font-family: monospace; }
@@ -1274,6 +1477,15 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .notes { text-align: left; max-width: 640px; margin: 0 auto; font-size: 14px; }
   .note { padding: 4px 0; border-bottom: 1px solid #2a2f36; color: #b9c2cd; }
   .note.stale { color: #c98a3d; }
+  .reading { color: #6b7480; font-size: 13px; padding-left: 12px; }
+  .reading.unread { font-style: italic; }
+  .reading.struck { text-decoration: line-through; opacity: 0.7; }
+  .reading .action { padding-left: 12px; }
+  .reading .unactionable { color: #c98a3d; }
+  button.strike {
+    margin-top: 4px; font-size: 12px; background: #262b31; color: #e8e8e8;
+    border: 1px solid #3a4048; border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  }
   #noteInput, #directionInput, #supplyInput {
     position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
     background: #1b1f24; border: 1px solid #3a4048; border-radius: 8px;
@@ -1283,7 +1495,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     width: 420px; background: #0e1114; color: #e8e8e8; border: 1px solid #333;
     border-radius: 4px; padding: 6px 10px; font-size: 15px;
   }
-  #noteError { color: #d9534f; font-size: 13px; }
+  #noteError, .save-error { color: #d9534f; font-size: 13px; }
   #overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex;
     align-items: center; justify-content: center; z-index: 10; cursor: zoom-out;
@@ -1308,12 +1520,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       <span id="progress">- / -</span>
     </div>
     <div class="left">
-      <span id="help">1-4 rate &middot; n note &middot; arrows navigate &middot; g gloss &middot; s stats</span>
+      <span id="help">1-4 rate &middot; n comment &middot; arrows navigate &middot; g gloss &middot; s stats</span>
     </div>
   </div>
   <div id="main"></div>
   <div id="noteInput" hidden>
-    <input id="noteText" placeholder="note (Enter to save, Esc to cancel)">
+    <input id="noteText" placeholder="comment (Enter to save, Esc to cancel)">
     <span id="noteError" hidden></span>
   </div>
   <div id="directionInput" hidden><input id="directionText" placeholder="direction (Enter to save, Esc to cancel)"></div>
@@ -1330,6 +1542,13 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   var POS_KEY = "review_pos";
   var GLOSS_KEY = "review_gloss";
   var MODE_KEY = "review_mode";
+
+  // compile.CARD_MEANINGS, embedded once at assembly (spec 5 r9), keyed
+  // by the family and kind /api/cards and the queue report.
+  var CARD_MEANINGS = __CARD_MEANINGS__;
+  // A gallery card names its family; a comment names its subject kind
+  // (spec 4 section 2's entity-identity vocabulary, _ENTITY_TAG_PREFIX).
+  var SUBJECT_KIND_OF_FAMILY = { word: "word", minimal_pair: "pair", grapheme: "grapheme", sentence: "sentence" };
 
   var mode = localStorage.getItem(MODE_KEY) || "session";
   var glossOn = (localStorage.getItem(GLOSS_KEY) ?? "1") === "1";
@@ -1358,6 +1577,101 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }).then(function (r) { return r.json(); }).catch(function () { return { ok: false }; });
+  }
+
+  // --- shared: card type label, subject header, comments ------------------
+
+  // Spec 5 r9 (design ruling 4): the card type label every rendered card
+  // carries, its one-line meaning as the tooltip -- compile.CARD_MEANINGS,
+  // embedded once, keyed by the family and kind /api/cards reports.
+  function kindLabel(family, kind) {
+    var text = family + " / " + kind;
+    var meaning = CARD_MEANINGS[family + "/" + kind];
+    return el("div", meaning ? { "class": "kind", title: meaning } : { "class": "kind" },
+              meaning ? text + " ⓘ" : text);
+  }
+
+  // Design ruling 5: a question names its subject in words -- its Thai
+  // large, then id and kind small; the gloss chip above already carries
+  // the meaning. Never a bare sha.
+  function subjectHeader(q, suffix) {
+    var wrap = el("div", { "class": "subject-header" });
+    // The large line is the subject's own Thai. Where the label lookup
+    // found nothing, a sentence falls back to its gloss (never its
+    // subject, which IS the text sha -- ruling 5); every other kind's
+    // subject is a readable id.
+    var thai = (q.label && q.label.thai)
+      || (q.subject_kind === "sentence" ? (q.gloss || "(sentence)") : q.subject);
+    wrap.appendChild(el("div", { "class": "thai" }, thai));
+    // A sentence's id IS its text sha (compile.py tags the sentence
+    // family by text_sha), so the id line would print the one thing
+    // ruling 5 forbids -- its text and gloss are already above, and the
+    // line keeps only the kind. Every other subject kind has an id worth
+    // naming: a word's, a pair's, a grapheme's.
+    var id = q.subject_kind === "sentence" ? null : ((q.label && q.label.id) || q.subject);
+    wrap.appendChild(el("div", { "class": "query" },
+      (id ? id + " · " : "") + q.kind + (suffix || "")));
+    return wrap;
+  }
+
+  // Spec 5 r10: under each comment, what the machine did with it --
+  // "unread" until a run has read it, then the reading, one line per
+  // action taken and per request nothing could be done about, and a
+  // strike control that writes a veto row against that reading (every
+  // fold then ignores the rows it produced; a retirement stands).
+  // `subject` is the subject the comment's rows live under -- the veto
+  // row must land there or record.vetoed_readings never sees it, and
+  // /api/veto answers ok either way.
+  function renderReading(n, subject, subjectKind, reload) {
+    if (!n.reading) { return el("div", { "class": "reading unread" }, "unread"); }
+    var r = n.reading;
+    var wrap = el("div", { "class": r.vetoed ? "reading struck" : "reading" });
+    // A comment the reader closed or passed over is recorded with an
+    // EMPTY reading and one unactionable line (attempts._NO_READING):
+    // "read as: " alone would say nothing, so the line is omitted and
+    // only the unactionable line below speaks. The struck marker still
+    // needs somewhere to sit when that happens.
+    var head = (r.reading ? "read as: " + r.reading : "") + (r.vetoed ? " (struck)" : "");
+    if (head.trim()) { wrap.appendChild(el("div", {}, head.trim())); }
+    (r.actions || []).forEach(function (a) { wrap.appendChild(el("div", { "class": "action" }, "· " + a)); });
+    (r.unactionable || []).forEach(function (u) { wrap.appendChild(el("div", { "class": "action unactionable" }, "· " + u)); });
+    if (!r.vetoed) {
+      var strike = el("button", { "class": "strike" }, "strike this reading");
+      // A strike that does not save must say so rather than look done:
+      // the reading is left exactly as it was and the button stays
+      // clickable, the note box's own failure semantics (r5).
+      var err = el("div", { "class": "save-error" });
+      err.hidden = true;
+      strike.addEventListener("click", function () {
+        postJson("/api/veto", { subject: subject, subject_kind: subjectKind,
+                                comment_sha: n.comment_sha, prompt_version: r.prompt_version })
+          .then(function (result) {
+            if (result && result.ok) { reload(); return; }
+            err.hidden = false;
+            err.textContent = (result && result.error) || "not saved -- server unreachable";
+          });
+      });
+      wrap.appendChild(strike);
+      wrap.appendChild(err);
+    }
+    return wrap;
+  }
+
+  // Both modes' comment list (spec 5 section 1 r5, r9): the gallery
+  // card's own notes and a question's subject comments, oldest first.
+  // el()'s textContent escapes the comment's own text -- never innerHTML.
+  function renderComments(items, box, subject, subjectKind, reload) {
+    if (!items || !items.length) { return; }
+    var notes = el("div", { "class": "notes" });
+    items.forEach(function (n) {
+      var row = el("div", { "class": n.stale ? "note stale" : "note" });
+      var where = n.card_kind === "question" ? "on a " + (n.question_kind || "") + " question"
+                : (n.card_kind ? "on the " + n.card_kind + " card" : "");
+      row.appendChild(el("div", {}, n.text + (n.stale ? " (stale)" : "") + (where ? "  — " + where : "")));
+      row.appendChild(renderReading(n, subject, subjectKind, reload));
+      notes.appendChild(row);
+    });
+    box.appendChild(notes);
   }
 
   // --- session (question queue) ------------------------------------------
@@ -1457,7 +1771,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       var style = document.createElement("style");
       style.textContent = card.css;
       container.appendChild(style);
-      container.appendChild(el("div", { "class": "kind" }, card.family + " / " + card.kind));
+      container.appendChild(kindLabel(card.family, card.kind));
       var front = el("div", { "class": "face" });
       front.appendChild(el("div", { "class": "face-label" }, "front"));
       var frontFace = el("div", { "class": "card" });
@@ -1474,7 +1788,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function renderRate(q, box) {
-    box.appendChild(el("div", {}, q.subject + " (" + q.kind + ")"));
+    box.appendChild(subjectHeader(q));
     if (q.query) { box.appendChild(el("div", { "class": "query" }, "query: " + q.query)); }
     var cards = el("div", { "class": "subject-cards" });
     cards.appendChild(el("div", { "class": "empty" }, "loading the subject's cards"));
@@ -1493,13 +1807,14 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       box.appendChild(el("div", { "class": "empty" },
         "no current " + q.kind + ": each candidate below failed or has yet to pass its check (the reason is under it) -- "
         + "pick one (click or play it, then 2) to use it anyway, or 1 for none of these; "
-        + "n gives the next search a direction"));
+        + "n leaves a comment on this question (the machine reads it next run)"));
     }
     if (q.rejected && q.rejected.length) {
       var thumbs = el("div", { "class": "thumbs" });
       q.rejected.forEach(function (art) { thumbs.appendChild(artifactView(q.kind, art, art.verdict || "no verdict yet", true)); });
       box.appendChild(thumbs);
     }
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
     var actions = el("div", { "class": "actions" });
     var labels = rateLabels(q.learner_ranks);
     var offered = q.current ? [1, 2, 3, 4] : [1, 2];
@@ -1538,7 +1853,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function renderDirection(q, box) {
-    box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- exhausted, attempts=" + q.attempts));
+    box.appendChild(subjectHeader(q, " — exhausted, attempts=" + q.attempts));
     // The source's own words for declining, where it stated any (spec 3
     // r19 section 5's no-fit answer on a sentence need).
     if (q.reason) { box.appendChild(el("div", { "class": "query" }, "reason: " + q.reason)); }
@@ -1563,6 +1878,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       tried.appendChild(el("div", {}, "none"));
     }
     box.appendChild(tried);
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
     var actions = el("div", { "class": "actions" });
     var dirBtn = el("button", {}, "type a direction");
     dirBtn.addEventListener("click", function () { openDirectionBox(q); });
@@ -1574,7 +1890,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function renderChallenger(q, box) {
-    box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- a new candidate outranks your pick"));
+    box.appendChild(subjectHeader(q, " — a new candidate outranks your pick"));
     var side = el("div", { "class": "side-by-side" });
     var cur = el("figure");
     cur.appendChild(artifactView(q.kind, q.current, null, true));
@@ -1585,6 +1901,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     side.appendChild(cur);
     side.appendChild(chal);
     box.appendChild(side);
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
     var actions = el("div", { "class": "actions" });
     var keepBtn = el("button", { "class": "good" }, "keep");
     keepBtn.addEventListener("click", function () {
@@ -1606,7 +1923,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function renderReask(q, box) {
-    box.appendChild(el("div", {}, q.subject + " (" + q.kind + ") -- lapse evidence contradicts a past rating"));
+    box.appendChild(subjectHeader(q, " — lapse evidence contradicts a past rating"));
     box.appendChild(el("div", { "class": "verdict" }, "original answer: " + q.original_answer));
     if (q.current) {
       var cur = el("div", { "class": "current-artifact" });
@@ -1619,6 +1936,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       ev.appendChild(el("div", {}, e.anchor + " (" + e.card_kind + "): grade " + e.grade));
     });
     box.appendChild(ev);
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
     var actions = el("div", { "class": "actions" });
     var labels = rateLabels(q.learner_ranks);
     [1, 2, 3, 4].forEach(function (n) {
@@ -1663,29 +1981,21 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     // "g" overlays the note's own gloss on the front (spec 5 section 2);
     // metadata beside the rendered HTML, not a recomposed card shape.
     if (glossOn && card.gloss) { box.appendChild(el("div", { "class": "gloss-chip" }, card.gloss)); }
+    box.appendChild(kindLabel(card.family, card.kind));
     var face = el("div", { "class": "card" });
     face.innerHTML = card.front_html;
     box.appendChild(face);
     if (card.family === "minimal_pair") { renderPairDrill(card, box); }
-    renderCardNotes(card, box);
+    // SUBJECT_KIND_OF_FAMILY covers every family compile.py emits (word,
+    // sentence, minimal_pair, grapheme -- CARD_MEANINGS' own keys), so
+    // the lookup never misses and needs no fallback; the strike's
+    // subject is the card's ENTITY subject, never its anchor (card.id).
+    renderComments(card.notes, box, card.subject, SUBJECT_KIND_OF_FAMILY[card.family], loadGallery);
     box.appendChild(el("div", { "class": "verdict" }, "space to reveal"));
     main.appendChild(box);
     saveProgress();
     var audio = face.querySelector("audio");
     if (audio) { audio.play().catch(function () {}); }
-  }
-
-  // The card's own notes (spec 5 section 1 r5), oldest first, under the
-  // card; stale once the card no longer shows what the note named (F9).
-  // el()'s textContent escapes the note's own text -- never innerHTML.
-  function renderCardNotes(card, box) {
-    if (!card.notes || !card.notes.length) { return; }
-    var notes = el("div", { "class": "notes" });
-    card.notes.forEach(function (n) {
-      var cls = n.stale ? "note stale" : "note";
-      notes.appendChild(el("div", { "class": cls }, n.text + (n.stale ? " (stale)" : "")));
-    });
-    box.appendChild(notes);
   }
 
   // Per-confusion accuracy logging (spec 5 section 1): a forced two-way
@@ -1751,8 +2061,29 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   // retry on Enter -- openBox's own unconditional hide-on-Enter (shared
   // by direction/supply, out of this task's scope) can't express that.
   function openNoteBox() {
-    if (mode !== "gallery" || !galleryCards.length) { return; }
-    var card = galleryCards[gIdx];
+    var target = null;
+    if (mode === "gallery" && galleryCards.length) {
+      // card.shown is this exact card's own artifacts/state, echoed
+      // back verbatim (spec 5 section 1 r5, C1 fix) -- never asked
+      // of the server again at save time, which could by then be
+      // showing a different current-best than what's on screen.
+      var card = galleryCards[gIdx];
+      target = { body: { subject: card.subject, card_id: card.id, kind: card.kind,
+                         subject_kind: SUBJECT_KIND_OF_FAMILY[card.family] || null,
+                         shown: card.shown },
+                 reload: loadGallery };
+    } else if (mode === "session" && queueItems.length) {
+      // Spec 5 r9 (design ruling 1): `n` on a question comments on its
+      // subject; the row anchors on the subject under card_kind
+      // "question" and records the question kind, the artifact kind and
+      // what the question showed.
+      var q = queueItems[qIdx];
+      target = { body: { subject: q.subject, card_id: q.subject, kind: "question",
+                         subject_kind: q.subject_kind, question_kind: q.type,
+                         artifact_kind: q.kind, shown: q.shown },
+                 reload: loadQueue };
+    }
+    if (!target) { return; }
     var box = document.getElementById("noteInput");
     var input = document.getElementById("noteText");
     var err = document.getElementById("noteError");
@@ -1763,28 +2094,22 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     input.onkeydown = function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
-        var text = input.value;
-        // card.shown is this exact card's own artifacts/state, echoed
-        // back verbatim (spec 5 section 1 r5, C1 fix) -- never asked
-        // of the server again at save time, which could by then be
-        // showing a different current-best than what's on screen.
-        postJson("/api/note", { subject: card.subject, card_id: card.id, kind: card.kind,
-                               text: text, shown: card.shown })
-          .then(function (result) {
-            if (result && result.ok) {
-              box.hidden = true;
-              err.hidden = true;
-              loadGallery();
-            } else {
-              // ok === false is a real server response (e.g. a 400 on
-              // a malformed `shown`) -- show its own error; postJson's
-              // catch synthesizes {ok: false} with no `error` for an
-              // actually unreachable server. Either way the box stays
-              // open with the text and Enter retries.
-              err.hidden = false;
-              err.textContent = (result && result.error) || "not saved -- server unreachable";
-            }
-          });
+        var body = Object.assign({ text: input.value }, target.body);
+        postJson("/api/note", body).then(function (result) {
+          if (result && result.ok) {
+            box.hidden = true;
+            err.hidden = true;
+            target.reload();
+          } else {
+            // ok === false is a real server response (e.g. a 400 on
+            // a malformed `shown`) -- show its own error; postJson's
+            // catch synthesizes {ok: false} with no `error` for an
+            // actually unreachable server. Either way the box stays
+            // open with the text and Enter retries.
+            err.hidden = false;
+            err.textContent = (result && result.error) || "not saved -- server unreachable";
+          }
+        });
       } else if (e.key === "Escape") {
         e.preventDefault();
         box.hidden = true;
@@ -1851,9 +2176,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
       // RunReport history (spec 5 section 3): every run.py row, oldest
       // first, one table row per run with every field the row carries --
-      // `adjudicated` and `stayed_disputed` (spec 3 r29) among them, on
-      // every row, compute_stats having filled them in where an older
-      // row recorded neither.
+      // `adjudicated` and `stayed_disputed` (spec 3 r29) and
+      // `comments_read`/`comment_actions`/`comment_unactionable` (r30)
+      // among them, on every row, compute_stats having filled them in
+      // where an older row recorded none of them.
       panel.appendChild(el("h3", {}, "Run history"));
       var history = stats.run_report_history;
       if (history.length) {
@@ -1911,7 +2237,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     if (e.key === "ArrowRight" || e.key === "j") { next(); return; }
     if (e.key === "ArrowLeft" || e.key === "k") { prev(); return; }
     if (e.key === " " && mode === "gallery") { e.preventDefault(); revealGallery(); return; }
-    if (e.key === "n") { openNoteBox(); return; }
+    // preventDefault: the box takes focus inside openNoteBox, so without
+    // it this same keystroke types "n" into the freshly cleared input.
+    if (e.key === "n") { e.preventDefault(); openNoteBox(); return; }
     if (["1", "2", "3", "4"].indexOf(e.key) !== -1 && mode === "session" && queueItems.length) {
       var q = queueItems[qIdx];
       if (q.type === "rate" || q.type === "reask") { answerRate(q, parseInt(e.key, 10)); }
@@ -1935,8 +2263,16 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 # The compiled card's own CSS (compile.CARD_CSS, spec 4 section 1), so a
 # ".card" element on the page -- the gallery face and the rate screen's
 # current-artifact wrapper -- renders at the size and style Anki renders
-# it at (principles F4), not a page-composed one.
-INDEX_HTML = _INDEX_HTML_TEMPLATE.replace("__CARD_CSS__", CARD_CSS)
+# it at (principles F4), not a page-composed one. Beside it, spec 5 r9:
+# compile.CARD_MEANINGS embedded once as JSON, keyed "family/kind" (the
+# shape /api/cards and the queue report), so the type label every
+# rendered card carries reads its tooltip off the one table that lives
+# with the models -- never a copy maintained in the script.
+INDEX_HTML = (_INDEX_HTML_TEMPLATE.replace("__CARD_CSS__", CARD_CSS)
+              .replace("__CARD_MEANINGS__", json.dumps(
+                  {f"{family}/{kind}": meaning
+                   for (family, kind), meaning in CARD_MEANINGS.items()},
+                  ensure_ascii=False)))
 
 
 if __name__ == "__main__":

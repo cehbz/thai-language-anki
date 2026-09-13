@@ -27,6 +27,14 @@ def rendition_identity(members) -> str:
     return sha(",".join(members[m] for m in sorted(members)))
 
 
+def comment_identity(key_sha: str, ts: int) -> str:
+    """A learner comment's identity (spec 5 r9): sha() of its own cache
+    row's primary key (key_sha, ts). Every note on one card shares one
+    LearnerKey, so the row, not the key, is the comment.
+    """
+    return sha(f"{key_sha}:{ts}")
+
+
 class CacheKey:
     """Base for the key dataclasses below. `encode()` is the canonical
     string a `cache` row's `key` column stores -- computed, never parsed
@@ -295,6 +303,36 @@ class RetirementKey(CacheKey):
 
     def encode(self) -> str:
         return f"retired:{self.text_sha}"
+
+
+@dataclass(frozen=True)
+class CommentReadingKey(CacheKey):
+    """comment-reading:COMMENT_SHA:PROMPT_VERSION -- the run's one
+    reading of one learner comment (spec 3 r30 section 5; spec 2 r15):
+    the reading text, the actions taken and the unactionable list,
+    appended under the comment's subject. COMMENT_SHA is
+    comment_identity() of the comment's row; a prompt version bump is a
+    new key, so every comment is read again under it.
+    """
+    comment_sha: str
+    prompt_version: str
+
+    def encode(self) -> str:
+        return f"comment-reading:{self.comment_sha}:{self.prompt_version}"
+
+
+@dataclass(frozen=True)
+class CommentVetoKey(CacheKey):
+    """comment-veto:COMMENT_SHA:PROMPT_VERSION -- the learner struck one
+    reading (spec 5 r10; spec 2 r15). Rows derived from that reading
+    (record.without_vetoed_readings) are ignored by every fold; the
+    reading row itself stays, shown as vetoed.
+    """
+    comment_sha: str
+    prompt_version: str
+
+    def encode(self) -> str:
+        return f"comment-veto:{self.comment_sha}:{self.prompt_version}"
 
 
 @dataclass(frozen=True)

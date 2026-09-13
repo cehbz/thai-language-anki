@@ -10,6 +10,8 @@ from thai_syllabus.cachekeys import (
     AttemptOutcomeKey,
     BatchMarkerKey,
     CacheKey,
+    CommentReadingKey,
+    CommentVetoKey,
     DrillKey,
     FlagKey,
     JudgeKey,
@@ -24,6 +26,7 @@ from thai_syllabus.cachekeys import (
     RetirementKey,
     ReverifyKey,
     WaiverKey,
+    comment_identity,
     preference_identity,
     rendition_identity,
     sha,
@@ -230,3 +233,16 @@ def test_a_rendition_identity_is_its_member_set_whatever_the_order():
     assert (rendition_identity({"near": "a", "far": "b"})
             == rendition_identity({"far": "b", "near": "a"}))
     assert rendition_identity({"near": "a"}) != rendition_identity({"near": "b"})
+
+
+def test_comment_identity_is_sixteen_hex_over_the_rows_own_primary_key():
+    a = comment_identity("k" * 64, 5)
+    assert len(a) == 16 and a == comment_identity("k" * 64, 5)
+    assert a != comment_identity("k" * 64, 6) and a != comment_identity("j" * 64, 5)
+
+
+def test_comment_reading_and_veto_keys_encode_the_comment_and_prompt_version():
+    assert CommentReadingKey("abcd" * 4, "1").encode() == f"comment-reading:{'abcd' * 4}:1"
+    assert CommentVetoKey("abcd" * 4, "1").encode() == f"comment-veto:{'abcd' * 4}:1"
+    assert CommentReadingKey("abcd" * 4, "1") != CommentReadingKey("abcd" * 4, "2")
+    assert isinstance(CommentVetoKey("a", "1"), CacheKey)
