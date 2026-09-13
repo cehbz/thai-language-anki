@@ -13,8 +13,9 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
-from thai_syllabus.attempts import (COMMENTS_PER_ASK, AttemptResult, Need, Sourcing, _pool,
-                                    _sentence_prompt, adjudication_attempt, assess_first, attempt,
+from thai_syllabus.attempts import (COMMENTS_PER_ASK, AttemptResult, Need, Sourcing,
+                                    _picture_params, _pool, _sentence_prompt,
+                                    adjudication_attempt, assess_first, attempt,
                                     comment_attempt, current_best_of, phrase_attempt,
                                     picture_query_for, retire_sentence, sentence_attempt,
                                     sources_for)
@@ -22,9 +23,10 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, 
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
-from thai_syllabus.record import (DRAFT_SUBJECT, comments, drafted_phrase, drafts_in,
-                                  gloss_on_requested, latest_phrase, parse_phrases, reading_of,
-                                  retired_texts, retirements, rows_for, sentence_drafts)
+from thai_syllabus.record import (DRAFT_SUBJECT, candidate_shas, comments, drafted_phrase,
+                                  drafts_in, gloss_on_requested, latest_phrase, parse_phrases,
+                                  reading_of, retired_texts, retirements, rows_for,
+                                  sentence_drafts)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
                                     SoundConfusion, text_sha)
 from thai_syllabus.ids import WordId
@@ -176,11 +178,12 @@ def _rendition_backend(db):
     return RenditionBackend(speaker_of=speaker_of)
 
 
-def _batch_judge():
+def _batch_judge(resolve_path=None):
     class _NeverSubmits:
         def submit(self, requests):
             raise AssertionError("ask_many must not submit a batch")
-    return JudgeBackend(model="m", transport="batch", batch_transport=_NeverSubmits())
+    return JudgeBackend(model="m", transport="batch", batch_transport=_NeverSubmits(),
+                        resolve_path=resolve_path)
 
 
 # --- contexts ---------------------------------------------------------------
@@ -573,6 +576,110 @@ def test_assess_first_is_none_once_every_recording_candidate_is_judged(tmp_path)
     assert assess_first(ctx, Need("rice", "recording")) is None
 
 
+# --- assess-first under a rubric change: the incumbent alone (r33) ----------
+
+_OLD_RUBRIC = "a previous picture rubric"
+
+
+def _judged_under_a_previous_rubric(tmp_path, urls):
+    """A picture need whose candidates were all judged under an older
+    rubric, then the rubric changed: every verdict on record is stale.
+    Returns (ctx, the candidate shas in record order)."""
+    ctx, _search, _judge = _picture_ctx(tmp_path, urls=urls)
+    ctx.rubrics["picture-for-word"] = _OLD_RUBRIC
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    ctx.rubrics["picture-for-word"] = PICTURE_FIT_RUBRIC          # the rubric changes
+
+    def resolve(sha):
+        prov = ctx.db.media_provenance(sha)
+        path = ctx.media_store.path_for(sha, prov["ext"]) if prov else None
+        return path if path is not None and path.exists() else None
+
+    ctx.assessor = Assessor(record=ctx.db, cache=ctx.db,
+                            backends={"judge": _batch_judge(resolve)})
+    return ctx, candidate_shas(rows_for(ctx.db, "rice", "picture"))
+
+
+def _fresh_verdict(ctx, prepared, value):
+    """The verdict a batch would bring back for one prepared question."""
+    ctx.db.append(port="assess", backend="judge", key=prepared.key,
+                  subject=prepared.question.subject,
+                  question={"role": prepared.question.role, "kind": "picture",
+                            "artifact_sha": prepared.question.artifact_sha,
+                            "rubric": prepared.question.rubric,
+                            "subject_kind": "word", "params": {}},
+                  answer={"value": value})
+
+
+def test_assess_first_under_a_rubric_change_asks_the_incumbent_alone(tmp_path):
+    """Fix round 1 finding 1: the fit questions come from
+    unjudged_candidates, so the fold's incumbent rule actually shortens
+    the ask -- three stale candidates cost one question, not three."""
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/good.jpg", "https://x/bad.jpg", "https://x/good2.jpg"))
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and res.attempted
+    assert [q.question.artifact_sha for q in res.questions] == [shas[2]]   # the newest pass
+
+
+def test_assess_first_asks_the_rest_once_the_incumbent_failed_afresh(tmp_path):
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/good.jpg", "https://x/bad.jpg", "https://x/good2.jpg"))
+    _fresh_verdict(ctx, assess_first(ctx, Need("rice", "picture")).questions[0], False)
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert [q.question.artifact_sha for q in res.questions] == [shas[0], shas[1]]
+
+
+def test_assess_first_asks_every_candidate_when_none_passed_the_old_rubric(tmp_path):
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/bad1.jpg", "https://x/bad2.jpg", "https://x/bad3.jpg"))
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert [q.question.artifact_sha for q in res.questions] == list(shas)
+
+
+def test_assess_first_asks_the_rest_when_the_incumbent_cannot_be_prepared(tmp_path):
+    """Fix round 1 finding 3: an incumbent whose bytes are gone is
+    excluded and never gets a verdict row, so the candidates it beat
+    would wait on a verdict that can never arrive. They are asked on the
+    same call instead."""
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/good.jpg", "https://x/bad.jpg", "https://x/good2.jpg"))
+    ctx.media_store.path_for(shas[2], "jpg").unlink()      # the incumbent's bytes vanish
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and res.attempted
+    assert [e.artifact_sha for e in res.excluded.values()] == [shas[2]]
+    assert [q.question.artifact_sha for q in res.questions] == [shas[0], shas[1]]
+
+
+def test_assess_first_falls_through_when_the_second_round_is_excluded_too(tmp_path):
+    """Fix round 2 finding A: the second round gets the same
+    total-exclusion check as the first, or a need whose every candidate
+    is unpreparable comes back attempted with nothing asked and never
+    reaches a source again."""
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/good.jpg", "https://x/bad.jpg", "https://x/good2.jpg"))
+    for sha in shas:
+        ctx.media_store.path_for(sha, "jpg").unlink()
+    res = assess_first(ctx, Need("rice", "picture"))
+    assert res is not None and not res.attempted          # the caller goes on to a source
+    assert sorted(e.artifact_sha for e in res.excluded.values()) == sorted(shas)
+    assert res.questions == []
+
+
+def test_a_source_attempt_judges_new_hits_even_while_an_incumbent_is_stuck(tmp_path):
+    """Fix round 2 finding B: a hit this attempt just stored carries no
+    verdict at all, so it is not one the incumbent beat and the gate
+    never holds it -- even when the incumbent itself can never answer."""
+    ctx, shas = _judged_under_a_previous_rubric(
+        tmp_path, ("https://x/good.jpg", "https://x/bad.jpg", "https://x/good2.jpg",
+                   "https://x/good3.jpg"))                # a fourth hit no attempt has tried
+    ctx.media_store.path_for(shas[2], "jpg").unlink()     # the incumbent cannot be prepared
+    res = attempt(ctx, Need("rice", "picture"), "openverse")
+    fetched = [s for s in candidate_shas(rows_for(ctx.db, "rice", "picture")) if s not in shas]
+    assert len(fetched) == 1
+    assert fetched[0] in [q.question.artifact_sha for q in res.questions]
+
+
 def test_assess_first_then_source_attempt_excludes_the_same_unpreparable_sha_once(tmp_path):
     """spec 3 section 7 / run.py's _Tally.collect: a picture need whose
     only candidate on record is unpreparable (a provide row naming a sha
@@ -580,9 +687,10 @@ def test_assess_first_then_source_attempt_excludes_the_same_unpreparable_sha_onc
     test_assess_first_returns_the_exclusion_when_every_waiting_candidate_is_excluded
     above -- so the judge backend's resolve_path finds nothing to attach)
     falls through assess_first to the source. The source attempt that
-    follows (_picture_attempt) ends by re-judging every candidate on
-    record, including the still-unpreparable one (PreparationError is
-    never cached), so the real assess_first and attempt calls this test
+    follows (_picture_attempt) ends by judging every candidate awaiting a
+    verdict, including the still-unpreparable one (it never got a verdict
+    row, and PreparationError is never cached), so the real assess_first
+    and attempt calls this test
     drives by hand -- no _patch, a real Sourcing ctx -- each produce an
     Excluded naming the same (subject, artifact_sha). _Tally.collect must
     fold those into exactly one RunReport.excluded / one excluded_items
@@ -635,6 +743,26 @@ def test_scene_picture_attempt_searches_the_scene_s_drafted_phrase(tmp_path):
     verdicts = [r for r in ctx.db.assessments_of(sentence.text_sha) if r.port == "assess"]
     assert {r.question["role"] for r in verdicts} == {"scene-for-sentence"}
     assert {r.question["subject_kind"] for r in verdicts} == {"sentence"}
+
+
+def test_scene_fit_params_carry_the_sentences_target_word_and_its_gloss(tmp_path):
+    """Spec 3 r33: the scene fit question names the word the production
+    card blanks -- the last used word (the one the sentence introduces)."""
+    sentence = _sentence()
+    ctx, _search, _judge = _picture_ctx(
+        tmp_path, _word_syllabus().with_sentences([sentence]))
+    params = _picture_params(ctx, Need(sentence.text_sha, "picture", "sentence"), "a rice meal")
+    assert params["word"] == sentence.text and params["meaning"] == sentence.gloss
+    assert params["target"] == "ข้าว"            # ข้าว: rice
+    assert params["target_gloss"] == "rice (cooked)"
+
+
+def test_word_fit_params_carry_no_target(tmp_path):
+    """A word's picture is judged on its own; there is nothing to blank."""
+    ctx, _search, _judge = _picture_ctx(tmp_path)
+    params = _picture_params(ctx, Need("rice", "picture"), "bowl of rice")
+    assert "target" not in params and "target_gloss" not in params
+    assert params["word"] == "ข้าว" and params["meaning"] == "rice (cooked)"   # ข้าว: rice
 
 
 def test_a_scene_picture_attempt_refuses_a_sentence_with_no_phrase_on_record(tmp_path):

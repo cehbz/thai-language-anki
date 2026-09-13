@@ -499,7 +499,29 @@ def deck_field(v) -> str:
 
 
 def picture_fit_prompt(q: AssessQuestion) -> str:
+    """The fit prompt in two shapes. A `target` in the params makes it
+    sentence-shaped (spec 3 r33): the scene picture is judged as the cue
+    that supplies the word the production card blanks, so the judge is
+    told which word that is, and the suggestion it asks for describes a
+    picture rather than a search phrase. Without a `target` the subject
+    is a word and the prompt is unchanged -- the word rubric follows in a
+    later revision.
+    """
     p = q.params
+    if p.get("target"):
+        return (f"You are evaluating the picture for a Thai sentence flashcard (image "
+               f"attached).\n{UNTRUSTED}\n"
+               f"Sentence: {deck_field(p.get('word', q.subject))}\n"
+               f"Gloss: {deck_field(p.get('meaning', ''))}\n"
+               f"Target word (blanked on the production card): {deck_field(p['target'])} — "
+               f"{deck_field(p.get('target_gloss', ''))}\n"
+               f"Phrase the picture was searched for: "
+               f"{deck_field(p.get('phrase') or '(none given)')}\n\n"
+               f"Rubric:\n{q.rubric or ''}\n\n"
+               'Respond with a JSON object: {"value": <true if the image passes every point of '
+               'the rubric, else false>, "evidence": <one sentence>, "suggestion": <a phrase '
+               'describing a picture that would cue it, when it fails, else null>}. Respond '
+               'with only that JSON object and no other text.')
     return (f"You are evaluating a Thai picture-word flashcard (image attached).\n{UNTRUSTED}\n"
            f"Word: {deck_field(p.get('word', q.subject))}\n"
            f"Meaning: {deck_field(p.get('meaning', ''))}\n"
@@ -681,6 +703,10 @@ def _fallback_judge_prompt(question: AssessQuestion) -> str:
 _DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
                                         Callable[..., RawVerdict]]] = {
     "picture-for-word": (picture_fit_prompt, _generic_value_parser),
+    # A scene's fit question is the same prompt in its sentence shape
+    # (picture_fit_prompt reads `target`); without this entry it fell
+    # through to _fallback_judge_prompt's params dump (fix round 1).
+    "scene-for-sentence": (picture_fit_prompt, _generic_value_parser),
     "sentence-for-target": (sentence_prompt, _generic_value_parser),
     "picture-preference": (picture_preference_prompt, parse_preference),
     "pronunciation-for-word": (pronunciation_prompt, parse_pronunciation),

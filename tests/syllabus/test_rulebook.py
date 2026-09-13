@@ -685,8 +685,15 @@ def test_sentence_recording_required_is_silent_with_a_current_best_recording():
 
 def test_the_scene_rubric_is_registered_for_the_scene_role():
     assert rubrics_for(RULES)["scene-for-sentence"] == SCENE_FIT_RUBRIC
-    assert "evoke the sentence" in SCENE_FIT_RUBRIC
     assert "need not appear" in SCENE_FIT_RUBRIC
+
+
+def test_the_scene_rubric_judges_a_memory_cue_not_a_depiction():
+    """Spec 3 r33: a picture a learner who knows the sentence would take
+    as its picture, by any route, with the blanked target recoverable."""
+    assert "memory cue" in SCENE_FIT_RUBRIC
+    assert "the target word is blanked" in SCENE_FIT_RUBRIC
+    assert "evoke the sentence, and is it a good way" not in SCENE_FIT_RUBRIC
 
 
 def test_the_sentence_rubric_asks_whether_the_gloss_states_the_meaning():

@@ -21,7 +21,7 @@ is a pure fold over an injected CacheReader.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -953,9 +953,13 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
 # --- assess-first: the candidates a verdict is owed to ---------------------
 
 def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
-                        current_rubric: Mapping[str, str]) -> tuple[str, ...]:
+                        current_rubric: Mapping[str, str],
+                        excluding: Collection[str] = ()) -> tuple[str, ...]:
     """`subject`'s candidates of `kind` with no verdict deciding them yet,
-    in record.candidate_shas order (spec 3 section 5 assess-first).
+    in record.candidate_shas order (spec 3 section 5 assess-first),
+    naming no sha in `excluding` -- the candidates the caller has found
+    it cannot prepare a question for, so no verdict of theirs can arrive
+    and the incumbent rule below must not wait on one.
 
     For a role whose deciding backend is mechanical
     (authority.AUTHORITY_ORDER[role][0] == "mechanical":
@@ -967,19 +971,65 @@ def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
 
     Every other role is judge-decided: empty for a role absent from
     `current_rubric` (the judge ranks nothing there); else a candidate
-    awaits when no judge verdict under the current rubric names its sha.
+    awaits when no judge verdict under the current rubric names its sha,
+    subject to the incumbent rule below.
+
+    **Incumbent first (r33).** A rubric change makes every verdict on
+    record stale at once, and the record holds thousands of candidate
+    pairs. A need that was covered re-asks its incumbent alone -- the
+    candidate whose newest verdict under a previous rubric passed, the
+    newest such verdict winning when several qualify. The candidates it
+    beat wait until that fresh verdict is in and has failed: if it
+    passes, the incumbent carries the need under the new rubric and they
+    are never re-judged at all. A candidate with no verdict of its own
+    is never held back, in either branch -- it is new, not one the
+    incumbent beat, and no verdict on the incumbent decides it. A need
+    with no passing stale verdict (never covered, or every old verdict
+    failed) has no incumbent and every awaiting candidate goes at once,
+    and so does one whose incumbent is in `excluding`.
     """
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
     if AUTHORITY_ORDER.get(role, ("judge",))[0] == "mechanical":
         judged = {r.question.get("artifact_sha") for r in rows
                  if r.port == "assess" and r.backend == "mechanical"}
-        return tuple(s for s in record.candidate_shas(rows) if s not in judged)
+        return tuple(s for s in record.candidate_shas(rows)
+                    if s not in judged and s not in excluding)
     if role not in current_rubric:
         return ()
-    judged = {r.question.get("artifact_sha") for r in record.judge_verdicts(rows, role)
-              if not _stale(r, current_rubric)}
-    return tuple(s for s in record.candidate_shas(rows) if s not in judged)
+    candidates = record.candidate_shas(rows)
+    on_record = set(candidates)
+    verdicts = [r for r in record.judge_verdicts(rows, role)   # oldest first
+                if r.question.get("artifact_sha") in on_record]
+    fresh = {r.question["artifact_sha"]: r for r in verdicts
+             if not _stale(r, current_rubric)}              # newest per sha wins
+    awaiting = tuple(s for s in candidates if s not in fresh and s not in excluding)
+    superseded = {r.question["artifact_sha"]: r for r in verdicts
+                  if _stale(r, current_rubric)}
+    incumbent = _incumbent(superseded)
+    if incumbent is None or incumbent in excluding:
+        return awaiting
+    if incumbent in awaiting:
+        # Only a candidate the incumbent beat waits on its verdict; one
+        # with no verdict of its own was never weighed against it, and
+        # the incumbent's answer can never decide it.
+        return tuple(s for s in awaiting if s == incumbent or s not in superseded)
+    # The incumbent's fresh verdict is in. `is True` rather than
+    # _judge_rank: this asks whether the judge passed it, not how it
+    # ranks against the rest -- a numeric verdict on some other role, or
+    # a malformed value, is not a pass and must not close the gate.
+    if fresh[incumbent].answer.get("value") is True:
+        return tuple(s for s in awaiting if s not in superseded)
+    return awaiting
+
+
+def _incumbent(superseded: Mapping[str, Answer]) -> str | None:
+    """The sha whose newest verdict under a previous rubric passed, the
+    newest such verdict winning when several qualify (r33). None when no
+    superseded verdict passed.
+    """
+    passed = [(r.ts, s) for s, r in superseded.items() if r.answer.get("value") is True]
+    return max(passed)[1] if passed else None
 
 
 # --- the preference question a resolved batch leaves open ------------------

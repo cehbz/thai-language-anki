@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 32, proposed 2026-09-13 against principles r4 and architecture
+Revision 33, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -149,6 +149,21 @@ Revision log:
   the Quota state like 429. Evidence: on eight scene phrases from open
   needs Brave passed 5 of 36 fit verdicts where Pexels passed 2 of 40
   and Pixabay, Unsplash and Flickr none. User approval 2026-09-13.
+- r33 2026-09-13: scene pictures are judged as memory cues, not
+  depictions: the scene rubric passes a picture a learner who knows the
+  sentence would take as its picture by any route (literal, fragment,
+  symbol, consequence, implied situation), pointing at the target word's
+  contribution, with the target recoverable from the picture and the
+  blanked sentence; the scene question carries the target word; the
+  suggestion describes a picture that would cue it; the word rubric
+  follows in a later revision; a rubric change re-asks a covered need's
+  incumbent first. Evidence: r31's wording still judged depiction (355
+  scene candidates re-asked under it); the criterion the user set is the
+  ease and direction of the association, not the presence of the
+  sentence's elements; the record holds 5,200 word-picture and 2,602
+  scene candidate pairs, all stale under a new rubric; and scene fit
+  questions had no prompt of their own, so they were asked through the
+  generic params dump. User approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -293,7 +308,10 @@ hit of a cached answer re-asks the search once within the attempt and
 ingests what is new; a search asked live in this attempt is not
 re-asked, its hits having just been served (r19)),
 judge *fit* on each
-(pass/fail, the old rubric texts verbatim), and if more than one passes
+(pass/fail; the question carries the thing the picture is for, its gloss
+and the phrase searched for, and for a sentence also `target` and
+`target_gloss`, the word its production card blanks, r33),
+and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase.
 
@@ -301,7 +319,14 @@ Assess-first: when a candidate on record has no fit verdict under the
 current rubric, the attempt is the fit questions on those candidates,
 asked with no phrase (the search that produced them is not this
 attempt's; the rubric's "pass if no phrase is given" applies, r25); no
-source is asked and no outcome row is written. A source is asked only
+source is asked and no outcome row is written. Under a rubric change a
+need re-asks its incumbent first (the candidate whose newest verdict
+under a previous rubric passed, the newest such if several); the
+candidates it beat await until that verdict is in and has failed, and are
+never re-judged at all if it passes. A candidate with no verdict at all
+is still asked -- it is new, not one the incumbent beat -- and so is the
+rest of the set when the incumbent itself cannot be prepared (r33). A
+source is asked only
 once every candidate is judged. If every such question is excluded
 (unpreparable), the source is asked in the same attempt. Scene pictures
 follow the same rule. Recording needs follow it too: a candidate on

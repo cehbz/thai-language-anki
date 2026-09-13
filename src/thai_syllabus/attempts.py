@@ -391,14 +391,21 @@ def picture_query_for(ctx: Sourcing, need: Need) -> str | None:
 def _picture_params(ctx: Sourcing, need: Need, query: str | None) -> dict[str, Any]:
     """What the judge's fit prompt reads back: the thing the picture is for,
     its gloss, and the phrase it was searched for (None for a candidate
-    already on record, assess-first)."""
+    already on record, assess-first). A sentence adds `target` and
+    `target_gloss`, the word its production card blanks (spec 3 r33): the
+    scene picture is judged as the cue that supplies that word, so the
+    judge is told which one it is."""
     if need.subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(need.subject)
-        thing, gloss = sentence.text, sentence.gloss
-    else:
-        word = _word_of(ctx, need.subject)
-        thing, gloss = word.thai, word.meaning
-    return {"word": thing, "meaning": gloss, "gloss_shown": gloss, "phrase": query}
+        target = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence))
+        # No `gloss_shown`: the scene prompt's shape has no "gloss shown
+        # on the card" line -- the sentence's own gloss is always beside
+        # it (fix round 1).
+        return {"word": sentence.text, "meaning": sentence.gloss,
+                "target": target.thai, "target_gloss": target.meaning, "phrase": query}
+    word = _word_of(ctx, need.subject)
+    return {"word": word.thai, "meaning": word.meaning, "gloss_shown": word.meaning,
+            "phrase": query}
 
 
 def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
@@ -501,15 +508,24 @@ def _ingest_picture(ctx: Sourcing, need: Need, item: Mapping, source: str,
 
 
 def _judge_pictures(ctx: Sourcing, need: Need, query: str | None,
-                    spend: dict[str, Spend]) -> AttemptResult:
-    """One fit question per candidate on record, cache-first; and, under
-    an inline transport with more than one passing picture, one
-    preference question over the passing set (a word's pictures only).
-    Under a batch transport that preference question is the run's, once
-    the fits are in."""
+                    spend: dict[str, Spend], shas: Sequence[str] | None = None) -> AttemptResult:
+    """One fit question per candidate awaiting a verdict
+    (derivations.unjudged_candidates, as _assess_recordings does), or per
+    sha in `shas` when the caller narrows the set further; and, under an
+    inline transport with more than one passing picture, one preference
+    question over the passing set (a word's pictures only). Under a batch
+    transport that preference question is the run's, once the fits are
+    in.
+
+    Asking every candidate on record instead would be cache-first and so
+    free on a steady rubric -- but under a rubric change every stale
+    candidate is a cache miss, and the incumbent rule (r33) would shorten
+    nothing (fix round 1).
+    """
     role = need.role
     params = _picture_params(ctx, need, query)
-    shas = _candidate_shas(ctx, need)
+    if shas is None:
+        shas = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
     questions = [AssessQuestion(subject=need.subject, role=role, artifact_sha=sha,
                                 rubric=ctx.rubrics[role], params=params, kind=need.kind,
                                 subject_kind=need.subject_kind)
@@ -1898,25 +1914,24 @@ _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {
 }
 
 
-def _assess_pictures(ctx: Sourcing, need: Need) -> AttemptResult:
-    """The fit questions on a picture need's candidates already on record
-    (spec 3 section 5 assess-first): no phrase -- the search that
-    produced such a candidate is not this attempt's, so the question
-    names none and the rubric's "pass if no phrase is given" applies.
+def _assess_pictures(ctx: Sourcing, need: Need, shas: Sequence[str],
+                     spend: dict[str, Spend]) -> AttemptResult:
+    """The fit questions on `shas` (spec 3 section 5 assess-first): no
+    phrase -- the search that produced such a candidate is not this
+    attempt's, so the question names none and the rubric's "pass if no
+    phrase is given" applies.
     """
-    return _judge_pictures(ctx, need, None, {})
+    return _judge_pictures(ctx, need, None, spend, shas)
 
 
-def _assess_recordings(ctx: Sourcing, need: Need) -> AttemptResult:
-    """Spec 3 r23 section 5: the mechanical duration/format check on the
-    need's candidates with no mechanical verdict under this subject
-    (derivations.unjudged_candidates), the same AssessQuestion shape
-    _recording_attempt builds at the end of its own attempt. Mechanical
-    is inline and free -- no batch transport -- so every question
-    resolves within the call and `questions` always comes back empty.
+def _assess_recordings(ctx: Sourcing, need: Need, shas: Sequence[str],
+                       spend: dict[str, Spend]) -> AttemptResult:
+    """Spec 3 r23 section 5: the mechanical duration/format check on
+    `shas`, the same AssessQuestion shape _recording_attempt builds at
+    the end of its own attempt. Mechanical is inline and free -- no batch
+    transport -- so every question resolves within the call and
+    `questions` always comes back empty.
     """
-    spend: dict[str, Spend] = {}
-    shas = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
     questions = [AssessQuestion(subject=need.subject, role=need.role, artifact_sha=sha,
                                 kind=need.kind, subject_kind=need.subject_kind)
                 for sha in shas]
@@ -1925,11 +1940,11 @@ def _assess_recordings(ctx: Sourcing, need: Need) -> AttemptResult:
                          excluded=dict(result.excluded), spend=spend)
 
 
-# The assessment a kind's assess-first step runs: the fit/check questions
-# on every candidate on record, cache-first (_judge_pictures/_check asks
-# nothing for a candidate already judged under the current rubric or
-# already mechanically checked under this subject).
-_ASSESS_FIRST: dict[str, Callable[[Sourcing, Need], AttemptResult]] = {
+# The assessment a kind's assess-first step runs over the candidates
+# derivations.unjudged_candidates named: the fit/check questions on each,
+# cache-first.
+_ASSESS_FIRST: dict[str, Callable[[Sourcing, Need, Sequence[str], dict[str, Spend]],
+                                  AttemptResult]] = {
     "picture": _assess_pictures,
     "recording": _assess_recordings,
 }
@@ -1946,6 +1961,12 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     dataclasses.replace so the assess step's own spend (and any other
     field) survives onto the unattempted result, not just `excluded`.
     Logs the excluded candidates when it falls through.
+
+    An excluded candidate never gets a verdict row, so under the r33
+    incumbent rule an unpreparable incumbent would strand the candidates
+    it beat on a verdict that can never arrive (fix round 1). Asking
+    again with the exclusions named lifts that gate: whatever the rule
+    then returns is assessed on this same call.
     """
     awaiting = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
     if not awaiting:
@@ -1954,13 +1975,33 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     if assess is None:
         raise ValueError(f"no assess-first step is defined for artifact kind {need.kind!r} "
                          f"(subject {need.subject!r}, a {need.subject_kind})")
-    result = assess(ctx, need)
+    spend: dict[str, Spend] = {}
+    result = assess(ctx, need, awaiting, spend)
     excluded_shas = {e.artifact_sha for e in result.excluded.values()}
-    if all(sha in excluded_shas for sha in awaiting):
-        _log.warning("assess-first for %s/%s: every awaiting candidate was excluded (%s); "
-                     "asking a source", need.subject, need.kind, ", ".join(sorted(awaiting)))
-        return replace(result, attempted=False)
-    return result
+    if not all(sha in excluded_shas for sha in awaiting):
+        return result
+    rest = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics,
+                               excluding=excluded_shas)
+    if not rest:
+        return _fall_through(result, need, awaiting)
+    second = assess(ctx, need, rest, spend)
+    merged = replace(second, excluded={**result.excluded, **second.excluded})
+    second_excluded = {e.artifact_sha for e in second.excluded.values()}
+    if all(sha in second_excluded for sha in rest):
+        # Every candidate the first round's exclusions released is
+        # unpreparable too: the same fall-through the first round gets,
+        # or the need stalls for good with nothing asked (fix round 2).
+        return _fall_through(merged, need, tuple(awaiting) + tuple(rest))
+    return merged
+
+
+def _fall_through(result: AttemptResult, need: Need, awaiting: Sequence[str]) -> AttemptResult:
+    """assess-first's unattempted result: nothing could be asked, so the
+    caller goes on to a source, and the exclusions still reach the report
+    (spec 3 section 7)."""
+    _log.warning("assess-first for %s/%s: every awaiting candidate was excluded (%s); "
+                 "asking a source", need.subject, need.kind, ", ".join(sorted(awaiting)))
+    return replace(result, attempted=False)
 
 
 def attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:

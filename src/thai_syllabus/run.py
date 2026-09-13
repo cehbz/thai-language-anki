@@ -205,8 +205,10 @@ class _Tally:
         calls this run -- assess-first's own exclusion (attempts.py
         assess_first, spec 3 section 5) collected on fall-through, then
         the same candidate excluded again by the source attempt that
-        follows (e.g. _judge_pictures re-asks the fit question for every
-        candidate on record, not only the freshly fetched ones). One
+        follows (e.g. _judge_pictures asks the fit question for every
+        candidate awaiting a verdict, not only the freshly fetched
+        ones -- an unpreparable one never gets a verdict row, so it is
+        still awaiting). One
         candidate must count once in RunReport.excluded (spec 3 section
         7), so an exclusion naming an artifact_sha is deduplicated here
         on (subject, artifact_sha) across every `collect` call this

@@ -1252,6 +1252,91 @@ def test_a_verdict_on_a_sha_that_is_not_a_candidate_leaves_nothing_unjudged(cach
                                current_rubric={"picture-for-word": R}) == ()
 
 
+# --- assess-first under a rubric change: the incumbent goes first (r33) -----
+# The record holds thousands of candidate pairs, all stale the moment a
+# rubric changes. A need whose incumbent still passes the new rubric is
+# covered by that one ask; its other candidates are never re-judged.
+
+_SHA_A, _SHA_B, _SHA_C, _SHA_D = "a" * 64, "b" * 64, "c" * 64, "d" * 64
+
+
+def _three_stale_candidates(cache):
+    """Three picture candidates judged under a previous rubric: A passed,
+    C failed, B passed most recently -- so B is the incumbent."""
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": _SHA_A}, {"sha": _SHA_B}, {"sha": _SHA_C}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", _SHA_A, True, rubric="legacy", ts=2))
+    cache.rows.append(judge_row("rice", "picture", _SHA_C, False, rubric="legacy", ts=3))
+    cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric="legacy", ts=4))
+
+
+def test_a_rubric_change_re_asks_the_incumbent_alone(cache):
+    _three_stale_candidates(cache)
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_B,)
+
+
+def test_the_rest_follow_once_the_incumbents_fresh_verdict_failed(cache):
+    _three_stale_candidates(cache)
+    cache.rows.append(judge_row("rice", "picture", _SHA_B, False, rubric=R, ts=5))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_C)
+
+
+def test_the_rest_are_never_re_judged_once_the_incumbent_passed_afresh(cache):
+    """The incumbent carries the need under the new rubric, so the cost of
+    re-judging the candidates it beat is never spent."""
+    _three_stale_candidates(cache)
+    cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric=R, ts=5))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == ()
+
+
+def test_a_new_hit_is_asked_beside_an_incumbent_still_awaiting_its_verdict(cache):
+    """Fix round 2 finding B: the gate holds back the candidates the
+    incumbent beat. A candidate with no verdict at all is not one of
+    them, and the incumbent's own verdict can never decide it."""
+    _three_stale_candidates(cache)
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": _SHA_D}], ts=5))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_B, _SHA_D)
+
+
+def test_a_new_hit_is_asked_even_while_the_incumbent_holds(cache):
+    """Fix round 1 finding 4: the gate holds back the candidates the
+    incumbent beat, not a candidate with no verdict at all -- a hit
+    stored after the rubric changed was never judged against anything."""
+    _three_stale_candidates(cache)
+    cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric=R, ts=5))
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": _SHA_D}], ts=6))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_D,)
+
+
+def test_every_candidate_awaits_when_no_stale_verdict_passed(cache):
+    """A need never covered (or whose every old verdict failed) has no
+    incumbent to re-ask: it behaves as before, all at once."""
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": _SHA_A}, {"sha": _SHA_B}, {"sha": _SHA_C}], ts=1))
+    for ts, sha in ((2, _SHA_A), (3, _SHA_B), (4, _SHA_C)):
+        cache.rows.append(judge_row("rice", "picture", sha, False, rubric="legacy", ts=ts))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_B, _SHA_C)
+
+
+def test_the_incumbent_is_the_newest_passing_stale_verdict(cache):
+    """Two candidates passed the old rubric; the one judged later is the
+    one the need was carrying, whatever the candidate order says."""
+    cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
+                                  items=[{"sha": _SHA_A}, {"sha": _SHA_B}], ts=1))
+    cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric="legacy", ts=2))
+    cache.rows.append(judge_row("rice", "picture", _SHA_A, True, rubric="legacy", ts=3))
+    assert unjudged_candidates(cache, "rice", "picture",
+                               current_rubric={"picture-for-word": R}) == (_SHA_A,)
+
+
 def test_unjudged_candidates_names_a_mechanical_candidate_with_no_verdict_under_this_subject(cache):
     """r23: recording-for-word's deciding backend is mechanical
     (authority.AUTHORITY_ORDER["recording-for-word"][0] == "mechanical"),

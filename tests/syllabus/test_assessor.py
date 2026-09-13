@@ -28,7 +28,9 @@ from thai_syllabus.assessor import (
     DurationBackend,
     FormatBackend,
     RenditionBackend,
+    UNTRUSTED,
     _custom_id,
+    deck_field,
     last_json_object,
     parse_preference,
     parse_pronunciation,
@@ -504,6 +506,26 @@ def test_picture_fit_prompt_delimits_fields_and_names_the_rubric():
     p = picture_fit_prompt(q)
     assert "RUBRIC" in p and "<deck-field>ส้ม</deck-field>" in p and "oranges on a table" in p
     assert '"value"' in p
+    assert f"Word: {deck_field('ส้ม')}" in p and "Target word" not in p
+
+
+def test_picture_fit_prompt_for_a_sentence_names_the_target_word_and_its_gloss():
+    """A scene question carries `target`/`target_gloss` (spec 3 r33): the
+    prompt is sentence-shaped and names the word the production card
+    blanks, so the judge can ask whether the picture recovers it."""
+    q = AssessQuestion(subject="sha1", role="scene-for-sentence", artifact_sha="s", rubric="RUBRIC",
+                       params={"word": "ฉันกินข้าว",       # ฉันกินข้าว: I eat rice
+                               "meaning": "I eat rice", "gloss_shown": "I eat rice",
+                               "target": "ข้าว", "target_gloss": "rice (cooked)",  # ข้าว: rice
+                               "phrase": "a bowl of rice"})
+    p = picture_fit_prompt(q)
+    assert "You are evaluating the picture for a Thai sentence flashcard (image attached)." in p
+    assert f"Sentence: {deck_field('ฉันกินข้าว')}" in p
+    assert f"Gloss: {deck_field('I eat rice')}" in p
+    assert ("Target word (blanked on the production card): "
+            f"{deck_field('ข้าว')} — {deck_field('rice (cooked)')}") in p
+    assert f"Phrase the picture was searched for: {deck_field('a bowl of rice')}" in p
+    assert "Word:" not in p and "RUBRIC" in p and '"value"' in p
 
 
 def test_picture_fit_prompt_asks_for_only_the_json_object():
@@ -960,6 +982,29 @@ def test_default_dispatch_builds_the_picture_fit_prompt_and_parses_its_value():
                        params={"word": "ก", "meaning": "m"})
     raw = jb.fetch(q)
     assert prompts[0] == picture_fit_prompt(q)
+    assert raw.value is True and raw.evidence == "e"
+
+
+def test_default_dispatch_builds_the_fit_prompt_for_a_scene_too():
+    """Fix round 1 finding 2: scene-for-sentence had no entry in the
+    table, so every scene fit question was asked through the generic
+    params dump and the sentence-shaped prompt was never used."""
+    prompts = []
+
+    def complete(prompt, attachments=()):
+        prompts.append(prompt)
+        return Completion(text='{"value": true, "evidence": "e"}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    q = AssessQuestion(subject="sha1", role="scene-for-sentence", rubric="scene rubric",
+                       params={"word": "ฉันกินข้าว", "meaning": "I eat rice",   # I eat rice
+                               "target": "ข้าว", "target_gloss": "rice (cooked)"})  # ข้าว: rice
+    raw = jb.fetch(q)
+    assert prompts[0] == picture_fit_prompt(q)
+    assert "Role: scene-for-sentence" not in prompts[0]   # not the fallback dump
+    assert UNTRUSTED in prompts[0]
+    assert f"Sentence: {deck_field('ฉันกินข้าว')}" in prompts[0]
+    assert f"{deck_field('ข้าว')} — {deck_field('rice (cooked)')}" in prompts[0]
     assert raw.value is True and raw.evidence == "e"
 
 

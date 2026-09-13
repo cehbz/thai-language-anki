@@ -319,14 +319,20 @@ def test_a_learner_rejection_with_no_floor_keeps_a_reranked_picture_pending_once
                      subject="rice",
                      question={"kind": "picture", "subject_kind": "word"},
                      answer={"items": [{"sha": shas[seed]}]})
+        # Under the current rubric: a verdict carrying no rubric would be
+        # stale (derivations._stale), and r33's incumbent rule holds back
+        # the candidates a passing incumbent beat -- these two are meant
+        # to be settled passes, not a rubric change to work through.
         pic_question = AssessQuestion(subject="rice", role="picture-for-word",
                                       artifact_sha=shas[seed], kind="picture",
+                                      rubric=ctx.rubrics["picture-for-word"],
                                       subject_kind="word")
         ctx.db.append(port="assess", backend="judge",
                      key=JudgeKey.for_question(pic_question),
                      subject="rice",
                      question={"role": "picture-for-word", "artifact_sha": shas[seed],
-                              "rubric": None, "kind": "picture", "subject_kind": "word"},
+                              "rubric": pic_question.rubric, "kind": "picture",
+                              "subject_kind": "word"},
                      answer={"value": True})
     ctx.db.append(port="assess", backend="learner",
                  key=LearnerKey(artifact_sha=shas["pic-a"], role="picture-for-word"),
@@ -428,14 +434,20 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
                      subject="rice",
                      question={"kind": "picture", "subject_kind": "word"},
                      answer={"items": [{"sha": shas[seed]}]})
+        # Under the current rubric: a verdict carrying no rubric would be
+        # stale (derivations._stale), and r33's incumbent rule holds back
+        # the candidates a passing incumbent beat -- these two are meant
+        # to be settled passes, not a rubric change to work through.
         pic_question = AssessQuestion(subject="rice", role="picture-for-word",
                                       artifact_sha=shas[seed], kind="picture",
+                                      rubric=ctx.rubrics["picture-for-word"],
                                       subject_kind="word")
         ctx.db.append(port="assess", backend="judge",
                      key=JudgeKey.for_question(pic_question),
                      subject="rice",
                      question={"role": "picture-for-word", "artifact_sha": shas[seed],
-                              "rubric": None, "kind": "picture", "subject_kind": "word"},
+                              "rubric": pic_question.rubric, "kind": "picture",
+                              "subject_kind": "word"},
                      answer={"value": True})
     ctx.db.append(port="assess", backend="learner",
                  key=LearnerKey(artifact_sha=shas["pic-a"], role="picture-for-word"),
