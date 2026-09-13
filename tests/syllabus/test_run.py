@@ -149,7 +149,7 @@ class _Llm:
         return RawAnswer(items=(self.drafts,))
 
 
-_PHRASE_ITEM = re.compile(r"^- subject: (\S+)  text:", re.MULTILINE)
+_PHRASE_ITEM = re.compile(r"^- subject: (\S+)  kind:", re.MULTILINE)
 
 
 class _LlmPhrase:

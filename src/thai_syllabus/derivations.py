@@ -551,22 +551,6 @@ def attempts_since_change(cache: CacheReader, subject: str, kind: str) -> list[A
             and r.answer.get("outcome") in ("candidates", "nothing")]
 
 
-def _current_query(cache: CacheReader, subject: str, kind: str, source: str | None) -> str | None:
-    """The query (subject, kind) would be asked with now at `source`
-    (spec 3 r35 section 6): for a picture need, record.latest_phrase over
-    the subject's whole row set (a direction, else a suggestion newer
-    than the last Source ask, else the drafted phrase -- the precedence
-    attempts.picture_query_for searches under); None for every other
-    kind, whose outcome rows carry no query either. `source` is unused
-    until a source declares a query form of its own (spec 3 r36).
-    """
-    if kind != "picture":
-        return None
-    # `or None`, as attempts.picture_query_for reads it: an empty phrase is
-    # no query, on both sides of the fold.
-    return record.latest_phrase(cache.assessments_of(subject)) or None
-
-
 def _requery_window_ts(cache: CacheReader, subject: str, anchor_ts: int) -> int:
     """The instant the requery cap counts distinct queries from: the
     escalation anchor, or the newest learner direction row on the subject
@@ -589,29 +573,49 @@ def _under_current_query(cache: CacheReader, subject: str, kind: str,
     every row counts: the need is exhausted per need, as before r35. A
     need of any other kind keeps every row.
 
+    A row is compared against the current query in the form its own
+    source consumes (record.query_form, r36): a keywords source's row
+    carries the head terms, a phrase source's the description, and each
+    matches its own form of the one current query.
+
+    The cap counts the phrase form alone, so a keywords source's rows
+    never inflate the distinct-query count: the two forms name one
+    drafted query, and counting both would spend the cap twice per
+    requery. A need searched exclusively at keywords sources therefore
+    never reaches the cap at all, and is bounded by the attempt cap
+    alone (`exhausted`) -- the same bound every need had before r35.
+
     This fold runs for every need on every queue build, so it reads the
-    subject's rows as few times as it can: the current query is computed
-    once (it is the same for every source until spec 3 r36 gives a source
-    its own query form), and the requery window -- a second read -- only
-    when the cap could bind. The queries asked since the window are a
-    subset of those asked since the anchor, so fewer than `requery_cap`
-    distinct queries since the anchor rules the cap out whatever the
-    window is. The narrowing is conservative: it can only permit a
-    requery the per-window count would refuse, never refuse one it
-    would permit (the current query outside the anchor's set is outside
-    the window's subset too).
+    subject's rows as few times as it can: the subject's rows are read
+    once and the current query resolved once per form actually present
+    among `outcomes` (`forms`), and the requery window -- a second
+    read -- only when the cap could bind. The queries asked since the
+    window are a subset of those asked since the anchor, so fewer than
+    `requery_cap` distinct queries since the anchor rules the cap out
+    whatever the window is. The narrowing is conservative: it can only
+    permit a requery the per-window count would refuse, never refuse one
+    it would permit (the current query outside the anchor's set is
+    outside the window's subset too).
     """
     if kind != "picture" or not outcomes:
         return list(outcomes)
-    current = _current_query(cache, subject, kind, None)
-    since_anchor = {q for r in outcomes if (q := r.question.get("query")) is not None}
+    rows = cache.assessments_of(subject)
+    # "phrase" always: the cap counts it whether or not a phrase source
+    # has a row here. `or None`, as attempts.picture_query_for reads it:
+    # an empty query is no query, on both sides of the fold.
+    forms = {record.query_form(r.backend) for r in outcomes} | {"phrase"}
+    by_form = {form: record.latest_phrase(rows, form=form) or None for form in forms}
+    current = by_form["phrase"]
+    phrase_rows = [r for r in outcomes if record.query_form(r.backend) == "phrase"]
+    since_anchor = {q for r in phrase_rows if (q := r.question.get("query")) is not None}
     if current is not None and current not in since_anchor and len(since_anchor) >= requery_cap:
         window_ts = _requery_window_ts(cache, subject, anchor_ts)
-        asked = {q for r in outcomes if r.ts > window_ts
+        asked = {q for r in phrase_rows if r.ts > window_ts
                  if (q := r.question.get("query")) is not None}
         if len(asked) >= requery_cap:
             return list(outcomes)
-    return [r for r in outcomes if r.question.get("query") == current]
+    return [r for r in outcomes
+            if r.question.get("query") == by_form[record.query_form(r.backend)]]
 
 
 def tried_sources(cache: CacheReader, subject: str, kind: str, *,

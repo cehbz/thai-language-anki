@@ -23,8 +23,9 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, 
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
-from thai_syllabus.record import (DRAFT_SUBJECT, candidate_shas, comments, drafted_phrase,
-                                  drafts_in, gloss_on_requested, latest_phrase, parse_phrases,
+from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, candidate_shas,
+                                  comments, drafted_phrase, drafted_queries, drafts_in,
+                                  gloss_on_requested, latest_phrase, parse_phrases,
                                   reading_of, retired_texts, retirements, rows_for,
                                   sentence_drafts)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
@@ -2879,6 +2880,80 @@ def test_phrase_attempt_ignores_an_answer_naming_a_subject_it_never_asked_for(tm
                       json.dumps({"phrases": [{"subject": "not-asked", "phrase": "irrelevant"}]}))
     phrase_attempt(ctx)
     assert drafted_phrase(ctx.db.assessments_of("not-asked")) is None
+
+
+def test_phrase_prompt_names_the_target_word_the_category_and_asks_for_two_forms(tmp_path):
+    """Spec 3 r36 section 5: the drafter searches for the cue, not the
+    topic -- it is told what the target word contributes (a sentence)
+    or the category (a word), the cue criteria, and answers a phrase
+    and keywords."""
+    scene = _sentence()                       # its target word is the last used word
+    syllabus = _word_syllabus().with_sentences([scene])
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
+    phrase_attempt(ctx)
+    prompt = _phrase_drafter(ctx).prompts[0]
+    target = syllabus.word(syllabus.last_used_word(scene))
+    assert f"target: {deck_field(target.thai)} ({deck_field(target.meaning)})" in prompt
+    assert f"kind: word  thai: {deck_field('ข้าว')}" in prompt       # ข้าว: rice
+    assert f"category: {deck_field('Food')}" in prompt
+    assert "memory cue" in prompt and "keywords" in prompt and "at most ten words" in prompt
+    assert 'Output JSON only: {"phrases": [{"subject": "...", "phrase": "...", "keywords": "..."}]}' in prompt
+    assert UNTRUSTED in prompt
+
+
+def test_a_scene_using_no_targeted_word_is_still_asked_for_a_query(tmp_path):
+    """Fix round 1: Syllabus.last_used_word raises for a sentence using
+    no targeted word (as `candidate_targets` and `_sentence_order_key`
+    already tolerate). Its item line falls back to text and gloss with no
+    `target:` clause -- the scene still deserves a query -- and the ask
+    still goes out for every other need beside it."""
+    orphan = _sentence(text="กิน", gloss="someone eats",   # กิน: eat
+                       clauses=((WordId("eat"),),))
+    syllabus = _word_syllabus().with_words(
+        (word("rice", "ข้าว", "rice (cooked)"), word("eat", "กิน", "eat"))
+    ).with_sentences([orphan])
+    with pytest.raises(ValueError):                        # the fixture's own premise
+        syllabus.last_used_word(orphan)
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
+    assert phrase_attempt(ctx).attempted
+    prompt = _phrase_drafter(ctx).prompts[0]
+    line = next(ln for ln in prompt.splitlines()
+                if ln.startswith(f"- subject: {orphan.text_sha}"))
+    assert f"text: {deck_field('กิน')}" in line and f"gloss: {deck_field('someone eats')}" in line
+    assert "target:" not in line
+    assert "- subject: rice  kind: word" in prompt        # the other need still asked
+
+
+def test_phrase_attempt_records_both_forms_and_only_the_phrase_when_none_came(tmp_path):
+    syllabus = _word_syllabus()
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "a bowl of steamed rice", "keywords": "rice bowl steam"}]}))
+    phrase_attempt(ctx)
+    assert drafted_queries(ctx.db.assessments_of("rice")) == DraftedQuery("a bowl of steamed rice",
+                                                                          "rice bowl steam")
+    row = [r for r in ctx.db.assessments_of("rice") if r.question.get("provides") == "phrase"][-1]
+    assert row.answer == {"phrase": "a bowl of steamed rice", "keywords": "rice bowl steam"}
+    ctx2 = _phrase_ctx(tmp_path / "two", syllabus, json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "rice on a banana leaf"}]}))
+    phrase_attempt(ctx2)
+    row = [r for r in ctx2.db.assessments_of("rice") if r.question.get("provides") == "phrase"][-1]
+    assert row.answer == {"phrase": "rice on a banana leaf"}
+
+
+def test_a_source_is_asked_in_the_form_it_declares(tmp_path, monkeypatch):
+    """Every current source consumes the phrase; a keywords source (Flickr,
+    when wired) gets the head terms, and a direction for either."""
+    ctx, search, _judge = _picture_ctx(tmp_path, phrase=None)
+    ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject="rice"), subject="rice",
+                  question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                  answer={"phrase": "a bowl of steamed rice", "keywords": "rice bowl steam"})
+    assert picture_query_for(ctx, Need("rice", "picture"), "openverse") == "a bowl of steamed rice"
+    assert picture_query_for(ctx, Need("rice", "picture"), "illustrator") == "a bowl of steamed rice"
+    monkeypatch.setitem(QUERY_FORMS, "openverse", "keywords")
+    assert picture_query_for(ctx, Need("rice", "picture"), "openverse") == "rice bowl steam"
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.queries == ["rice bowl steam"]
+    assert _outcome(ctx.db, "rice", "picture", "openverse").question["query"] == "rice bowl steam"
 
 
 # --- adjudication_attempt: one pronunciation ask per uncorroborated word ----

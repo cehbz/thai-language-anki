@@ -767,6 +767,27 @@ def test_transient_outcomes_before_the_anchor_do_not_count_toward_the_cap(cache)
                        transient_cap=3) == "openverse"
 
 
+def test_a_keywords_source_is_tried_under_its_own_form_of_the_current_query(cache, monkeypatch):
+    """Spec 3 r36: the per-query fold compares each row against the
+    current query in the form its source consumes -- each form matches
+    its own source only. A keywords source's row carrying the phrase
+    (asked before it declared a form) is not a match; the row carrying
+    the head terms is."""
+    from thai_syllabus import record as record_mod
+    monkeypatch.setitem(record_mod.QUERY_FORMS, "wikimedia", "keywords")
+    cache.rows.append(Answer(port="provide", backend="llm", key="provide:llm:phrase:rice", key_sha="x",
+                             subject="rice",
+                             question={"provides": "phrase", "kind": "picture", "subject_kind": "word"},
+                             answer={"phrase": "a bowl of steamed rice", "keywords": "rice bowl"},
+                             cost=0.0, ts=1))
+    seed_ask(cache, "rice", "picture", source="openverse", ts=2, query="a bowl of steamed rice")
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=3, query="a bowl of steamed rice")
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset({"openverse"})
+    seed_ask(cache, "rice", "picture", source="wikimedia", ts=4, query="rice bowl")
+    assert tried_sources(cache, "rice", "picture", transient_cap=3) == frozenset({"openverse",
+                                                                                 "wikimedia"})
+
+
 # --- ruling 5: migration writes no outcome rows -----------------------------
 
 def test_a_migrated_forvo_answer_with_items_but_no_outcome_row_is_untried(cache):

@@ -33,6 +33,8 @@ from thai_syllabus.record import (
     directions,
     draft_sentence,
     drafted_phrase,
+    drafted_queries,
+    DraftedQuery,
     drafts_in,
     gloss_on_requested,
     judge_verdicts,
@@ -48,7 +50,10 @@ from thai_syllabus.record import (
     parse_no_fit,
     parse_phrases,
     parse_prompt,
+    parse_queries,
     parses_in,
+    query_form,
+    QUERY_FORMS,
     ratings_for_role,
     reading_of,
     reading_view,
@@ -492,6 +497,67 @@ def test_latest_phrase_falls_back_to_the_drafted_phrase(cache):
 
 def test_latest_phrase_is_none_with_nothing_on_record(cache):
     assert latest_phrase(cache.assessments_of("rice")) is None
+
+
+# --- spec 3 r36: two forms per drafted query -------------------------------
+
+def _phrase_row(cache, subject, phrase, keywords=None):
+    answer = {"phrase": phrase}
+    if keywords is not None:
+        answer["keywords"] = keywords
+    return cache.append("provide", "llm", PhraseKey(subject=subject), subject,
+                        {"provides": "phrase", "kind": "picture", "subject_kind": "word"}, answer, 0)
+
+
+def test_parse_queries_reads_both_forms_and_tolerates_a_list_of_keywords():
+    text = json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "a bowl of steamed rice", "keywords": "rice bowl steam"},
+        {"subject": "crab", "phrase": "a live crab on wet sand", "keywords": ["crab", "sand"]},
+        {"subject": "old", "phrase": "an old phrase item"},
+        {"subject": "bad", "keywords": "no phrase"}]})
+    out = parse_queries(text)
+    assert out == {"rice": DraftedQuery("a bowl of steamed rice", "rice bowl steam"),
+                   "crab": DraftedQuery("a live crab on wet sand", "crab sand"),
+                   "old": DraftedQuery("an old phrase item", None)}
+    assert parse_phrases(text) == {"rice": "a bowl of steamed rice", "crab": "a live crab on wet sand",
+                                   "old": "an old phrase item"}
+
+
+def test_drafted_queries_reads_the_newest_row_and_a_pre_r36_row_has_no_keywords(cache):
+    _phrase_row(cache, "rice", "bowl of rice", "rice bowl")
+    _phrase_row(cache, "rice", "steamed jasmine rice")
+    assert drafted_queries(cache.assessments_of("rice")) == DraftedQuery("steamed jasmine rice", None)
+    assert drafted_phrase(cache.assessments_of("rice")) == "steamed jasmine rice"
+    assert drafted_queries([]) is None
+
+
+def test_latest_phrase_serves_the_form_a_source_consumes(cache):
+    _phrase_row(cache, "rice", "a bowl of steamed rice", "rice bowl steam")
+    rows = cache.assessments_of("rice")
+    assert latest_phrase(rows) == "a bowl of steamed rice"
+    assert latest_phrase(rows, form="keywords") == "rice bowl steam"
+    _phrase_row(cache, "rice", "rice on a banana leaf")            # newer, no keywords
+    rows = cache.assessments_of("rice")
+    assert latest_phrase(rows, form="keywords") == "rice on a banana leaf"
+
+
+def test_a_direction_and_a_fresh_suggestion_are_the_query_for_every_form(cache):
+    _phrase_row(cache, "rice", "a bowl of steamed rice", "rice bowl steam")
+    cache.append("assess", "judge", JudgeKey.for_rule(None, None, "rice", "picture-for-word"),
+                "rice", {"role": "picture-for-word", "kind": "picture"},
+                {"value": False, "suggestion": "a heap of rice grains"}, 0)
+    assert latest_phrase(cache.assessments_of("rice"), form="keywords") == "a heap of rice grains"
+    cache.append("assess", "learner",
+                DirectionKey(subject="rice", role="picture-for-word", text_sha=sha("try red")),
+                "rice", {"kind": "direction", "role": "picture-for-word"},
+                {"direction": "try red"}, 0)
+    assert latest_phrase(cache.assessments_of("rice"), form="keywords") == "try red"
+
+
+def test_query_form_defaults_to_the_phrase_and_reads_the_table(monkeypatch):
+    assert query_form("pexels") == "phrase" == query_form(None) == query_form("illustrator")
+    monkeypatch.setitem(QUERY_FORMS, "flickr", "keywords")
+    assert query_form("flickr") == "keywords"
 
 
 # --- parse_phrases: the phrase drafter's own answer shape (spec 3 s5) ------
@@ -1249,3 +1315,15 @@ def test_gloss_on_requested_reads_the_gloss_on_row_unless_its_reading_is_vetoed(
                 {"kind": "comment-veto", "comment_sha": _SHA, "prompt_version": "1",
                  "subject_kind": "word"}, {"vetoed": True}, 0)
     assert gloss_on_requested(cache.assessments_of("rice")) is False
+
+
+def test_parse_queries_refuses_a_keywords_list_that_is_not_all_strings():
+    """Drafter output is untrusted: a list with a non-string element is no
+    keywords form, not a stringified one ("x 5 None" is not a query)."""
+    text = json.dumps({"phrases": [
+        {"subject": "rice", "phrase": "a bowl of rice", "keywords": ["x", 5, None]},
+        {"subject": "fish", "phrase": "a fish", "keywords": [1, 2]},
+        {"subject": "egg", "phrase": "an egg", "keywords": ["egg", " shell "]}]})
+    out = parse_queries(text)
+    assert out["rice"].keywords is None and out["fish"].keywords is None
+    assert out["egg"].keywords == "egg shell"

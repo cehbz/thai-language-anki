@@ -393,14 +393,17 @@ def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:
 
 # --- pictures (Word) and scene pictures (Sentence) --------------------------
 
-def picture_query_for(ctx: Sourcing, need: Need) -> str | None:
+def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> str | None:
     """The query on record, in precedence (spec 3 section 5): the latest
     learner direction; a judge suggestion newer than the last Source
-    ask; the drafted phrase (record.latest_phrase, appended by
-    `phrase_attempt`). None when none is on record (r25): the need
-    waits -- the gloss is the drafter's input, never a search.
+    ask; the drafted query (record.latest_phrase, appended by
+    `phrase_attempt`) in the form `source` consumes (record.query_form,
+    r36: every current source the phrase; a keywords source the head
+    terms). None when none is on record (r25): the need waits -- the
+    gloss is the drafter's input, never a search.
     """
-    return record.latest_phrase(ctx.db.assessments_of(need.subject)) or None
+    return record.latest_phrase(ctx.db.assessments_of(need.subject),
+                                form=record.query_form(source)) or None
 
 
 def _picture_params(ctx: Sourcing, need: Need, query: str | None) -> dict[str, Any]:
@@ -433,7 +436,7 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     A source whose items already carry their sha (the illustrator) is
     ingested by `_ingest_stored`, never through imgfetch."""
     spend: dict[str, Spend] = {}
-    query = picture_query_for(ctx, need)
+    query = picture_query_for(ctx, need, source)
     if query is None:
         raise ValueError(f"picture need {need.subject!r} has no query on record: "
                          "no direction, suggestion or drafted phrase (spec 3 section 5)")
@@ -625,59 +628,85 @@ def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
                          excluded=dict(result.excluded), spend=spend)
 
 
-def _phrase_item(ctx: Sourcing, subject: str, subject_kind: str) -> tuple[str, str]:
-    """The Thai text and English gloss `_phrase_prompt` lists for one open
-    picture need's subject (spec 3 section 5): a sentence's own text and
-    gloss, or a word's Thai form and meaning.
+def _phrase_item(ctx: Sourcing, subject: str, subject_kind: str) -> str:
+    """One item line of `_phrase_prompt` (spec 3 r36 section 5): a
+    sentence's text and gloss with its target word and that word's gloss
+    (the word its production card blanks, Syllabus.last_used_word -- the
+    cue must point at what it contributes); a word's Thai form, meaning
+    and category. Every deck field delimited as data (assessor.deck_field).
+
+    A sentence with no target word to name -- `last_used_word` raises
+    ValueError when it uses no targeted word, `word` KeyError when that
+    target names a word this Syllabus does not register -- falls back to
+    the pre-r36 line, text and gloss alone (fix round 1). The scene still
+    deserves a query, and one such sentence must not abort the whole
+    batch ask: `run._run_pass` catches only TransportError.
     """
     if subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(subject)
-        return sentence.text, sentence.gloss
+        line = (f"- subject: {subject}  kind: sentence  text: {deck_field(sentence.text)}  "
+                f"gloss: {deck_field(sentence.gloss)}")
+        try:
+            target = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence))
+        except (ValueError, KeyError):
+            _log.debug("scene %r has no target word to name in the phrase prompt", subject)
+            return line
+        return f"{line}  target: {deck_field(target.thai)} ({deck_field(target.meaning)})"
     word = _word_of(ctx, subject)
-    return word.thai, word.meaning
+    category = ctx.syllabus.category_of(word.id) or "(none)"
+    return (f"- subject: {subject}  kind: word  thai: {deck_field(word.thai)}  "
+            f"meaning: {deck_field(word.meaning)}  category: {deck_field(category)}")
 
 
 def _phrase_prompt(ctx: Sourcing, needs: Sequence[tuple[str, str]]) -> str:
-    """The phrase-drafting prompt (spec 3 section 5): one line per open
-    picture need lacking a drafted phrase -- its subject (a word id or a
-    sentence text_sha), Thai text and English gloss delimited as deck
-    data (assessor.UNTRUSTED/deck_field, as the sentence-drafting
-    prompt's own refused block delimits deck text). Asks for a short,
-    concrete, proper-noun-free image-search phrase per item.
+    """The query-drafting prompt (spec 3 r36 section 5): the cue criteria
+    in the rubric's terms (a picture that makes a learner who knows the
+    item think of it, pointing at what is distinctive -- for a sentence,
+    what the target word contributes -- by any route), one item line per
+    open picture need lacking a drafted query (`_phrase_item`), and two
+    forms per item: `phrase`, a photograph description of at most ten
+    words with no proper nouns, and `keywords`, at most three head terms
+    a photo library would tag such a picture with.
     """
-    lines = []
-    for subject, subject_kind in needs:
-        text, gloss = _phrase_item(ctx, subject, subject_kind)
-        lines.append(f"- subject: {subject}  text: {deck_field(text)}  "
-                     f"gloss: {deck_field(gloss)}")
+    lines = [_phrase_item(ctx, subject, subject_kind) for subject, subject_kind in needs]
     return (
-        "For each item, write a short English image-search phrase (at most six words, "
-        "concrete, no proper nouns) that would find an illustrative photo.\n"
+        "For each item, describe the picture that would be the best memory cue for it on a "
+        "flashcard: a picture that makes a learner who knows the item think of it at a glance, "
+        "pointing at what is distinctive about it -- for a sentence, what the target word "
+        "contributes -- by any route: a literal scene, a fragment, a symbol, a consequence, "
+        "a moment before or after. Give two forms per item: `phrase`, a description of that "
+        "photograph in English, at most ten words, no proper nouns; and `keywords`, at most "
+        "three English head terms a photo library would tag such a picture with.\n"
         f"{UNTRUSTED}\n"
         "Items:\n" + "\n".join(lines) + "\n"
-        'Output JSON only: {"phrases": [{"subject": "...", "phrase": "..."}]}')
+        'Output JSON only: {"phrases": [{"subject": "...", "phrase": "...", "keywords": "..."}]}')
 
 
 def phrase_attempt(ctx: Sourcing) -> AttemptResult:
-    """One drafting ask per run (spec 3 section 5) over every open picture
-    need -- word or scene -- with no drafted phrase on record
-    (record.drafted_phrase): a short English image-search phrase for
-    each, so `picture_query_for` finds one and the need is searched
-    (r25: without one it waits). Skipped -- no ask made, `attempted=False` -- once every open
+    """One drafting ask per run (spec 3 r36 section 5) over every open
+    picture need -- word or scene -- with no drafted query on record
+    (record.drafted_queries): the memory cue each one deserves, in two
+    forms -- a photograph description (`phrase`) and the head terms a
+    photo library would tag it with (`keywords`) -- so
+    `picture_query_for` finds one in the form each source consumes
+    (record.query_form) and the need is searched (r25: without one it
+    waits). Skipped -- no ask made, `attempted=False` -- once every open
     picture need already has one.
 
     The batch prompt is asked once on the drafter transport (`llm-phrase`,
     cachekeys.LlmPromptKey keyed by the prompt itself, appended under
     record.PHRASE_SUBJECT). Its answer -- `{"phrases": [{"subject": "...",
-    "phrase": "..."}]}` (record.parse_phrases) -- then appends one
-    provide row per subject the answer actually names (backend llm,
-    provides "phrase", key cachekeys.PhraseKey), so `record.drafted_phrase`
-    finds it on this and every later run; an item naming a subject that
+    "phrase": "...", "keywords": "..."}]}` (record.parse_queries, r36:
+    `keywords` is optional and the row carries it only when the drafter
+    gave one) -- then appends one provide row per subject the answer
+    actually names (backend llm, provides "phrase", key
+    cachekeys.PhraseKey), so `record.drafted_queries` finds it on this
+    and every later run; an item naming a subject that
     was not asked for is ignored, and an item the answer omits is simply
     asked for again next run. A subject that already carries a learner
     direction is never handed to the drafter: `record.latest_phrase`
-    always prefers the direction over a drafted phrase, so drafting one
-    would be dead weight.
+    always prefers the direction over a drafted query -- in either
+    form -- so drafting one would be dead weight.
     """
     spend: dict[str, Spend] = {}
     needs = [(subject, subject_kind) for subject, kind, subject_kind
@@ -687,7 +716,7 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
         rows = ctx.db.assessments_of(subject)
         if record.directions(rows):
             continue   # the direction always wins (record.latest_phrase)
-        if record.drafted_phrase(rows) is None:
+        if record.drafted_queries(rows) is None:
             lacking[subject] = subject_kind
     if not lacking:
         return AttemptResult(attempted=False)
@@ -712,8 +741,8 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
         _log.warning("phrase drafter failed for %d asked item(s): %s", len(lacking), e)
         raise
     _count(spend, "llm-phrase", answer)
-    drafted = record.parse_phrases(str(answer.items[0])) if answer.items else {}
-    for subject, phrase in drafted.items():
+    drafted = record.parse_queries(str(answer.items[0])) if answer.items else {}
+    for subject, q in drafted.items():
         subject_kind = lacking.get(subject)
         if subject_kind is None:
             continue
@@ -721,7 +750,8 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
                       subject=subject,
                       question={"provides": "phrase", "kind": "picture",
                                 "subject_kind": subject_kind},
-                      answer={"phrase": phrase})
+                      answer={"phrase": q.phrase,
+                              **({"keywords": q.keywords} if q.keywords else {})})
     return AttemptResult(attempted=True, spend=spend)
 
 

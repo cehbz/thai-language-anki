@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 35, proposed 2026-09-13 against principles r4 and architecture
+Revision 36, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -200,6 +200,22 @@ Revision log:
   search and 70 had every free source tried, so the loop judge → better
   phrase → search broke exactly when the judge had learned what to look
   for. User approval 2026-09-13.
+- r36 2026-09-13: the phrase ask searches for the cue: its item carries
+  the sentence, its gloss and the target word with its gloss (a word:
+  its form, meaning and category), the prompt states the cue criteria
+  in the scene rubric's terms, and it asks for two forms per item --
+  `phrase` (a photograph description, at most ten words, no proper
+  nouns) and `keywords` (at most three head terms); the PhraseKey row
+  carries the phrase and, when the drafter gave them, the keywords (a
+  keywords source falls back to the phrase); a source declares which
+  form it consumes (every current
+  source the phrase; Flickr, when wired, the keywords); a direction or
+  suggestion serves every form. Re-drafting the pre-r36 phrases is a
+  one-off outside this spec. Evidence: the drafter composed the phrase
+  from the sentence gloss and never saw the target word, so it searched
+  for the topic, not the cue; Flickr ANDs every word of a query over
+  title, description and tags, so a ten-word phrase starves it. User
+  approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -284,7 +300,7 @@ one speaker answers empty.
 | forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
-| llm | sentence (per run over open targets), parse (clauses for given texts), phrase, comment (readings of learner comments, per run), entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
+| llm | sentence (per run over open targets), parse (clauses for given texts), phrase (a picture need's image query in two forms, r36), comment (readings of learner comments, per run), entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | pair-search | pair | pairs:CONFUSION:DICT_VERSION | free | dictionary bump = new key |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
@@ -331,12 +347,21 @@ requires `judge.max_tokens` (at least 16000), which both transports send.
 **Picture (Word and scene).** Query, in precedence: the latest learner
 direction; a judge suggestion newer than the last Source ask on the need
 (the search that produced the judged candidate); the drafted phrase —
-one ask per run on the drafter transport drafts a short English
-image-search phrase for every open picture need, word or scene, that has
-none on record and no direction (the `phrase` provide, one row per
-subject; the ask is cached by prompt, and an answer phrasing none of the
-asked items is not an answer: nothing is appended and the ask is a
-source failure, re-asked next run). A need with no query on record is
+one ask per run on the drafter transport drafts, for every open picture
+need, word or scene, that has none on record and no direction, an
+English image query in two forms (r36): `phrase`, a description of the
+photograph that would cue the item (at most ten words, no proper nouns),
+and `keywords`, at most three head terms; the item hands the drafter a
+sentence's text, gloss and target word with its gloss, or a word's form,
+meaning and category, and states the cue criteria (§4's scene rubric: a
+picture a learner who knows the item would take as its picture, pointing
+at what the target contributes, by any route); each source consumes the
+form it declares (every current source the phrase; `record.QUERY_FORMS`),
+and a direction or a suggestion is the query for every form (the
+`phrase` provide, one row per subject carrying both forms; the ask is
+cached by prompt, and an answer phrasing none of the asked items is not
+an answer: nothing is appended and the ask is a source failure, re-asked
+next run). A need with no query on record is
 not attempted this run and counts `deferred` (r25): the gloss is the
 drafter's input, never a search (the corpora index English metadata, so
 the phrase is English). Source order: pexels, openverse, wikimedia, brave, illustrator (r26, r32, r34). One attempt: search, imgfetch the first N
@@ -774,7 +799,8 @@ providers.yaml adds `judge.price_per_mtok: {input, output}`,
 16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3),
 `requery_cap` (3: the distinct queries one picture need is searched under
-since its requery window opened, r35) and
+since its requery window opened, r35; a source's query form is code,
+`record.QUERY_FORMS`, not configuration, r36) and
 `quotas.<source>.{max_asks, max_cost, day_starts}` (forvo 450, `22:00Z`;
 brave 30 a day, and `min_interval_seconds` 1: Brave's $5 monthly free
 credit is about 1000 requests and the account is capped at $0, so a day

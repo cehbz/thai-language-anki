@@ -31,6 +31,7 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "can
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls", "latest_nothing_reason",
           "latest_phrase", "drafted_phrase", "parse_phrases",
+          "DraftedQuery", "QUERY_FORMS", "query_form", "drafted_queries", "parse_queries",
           "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
           "subject_kind_of", "retired_texts",
           "DRAFT_SUBJECT", "SentenceDraft",
@@ -103,6 +104,27 @@ _COMMENT_ARTIFACT_KINDS = ("picture", "recording")
 # the batch prompt, appended separately under backend "llm-phrase" (spec 3
 # roster), which stays a Source ask and is unaffected by this exclusion.
 _NOT_SOURCE_ASK_BACKENDS = ("imgfetch", "audiofetch", "learner", "legacy-current", "llm")
+
+# The query form each picture source consumes (spec 3 r36 section 5):
+# "phrase" (a photograph description) or "keywords" (head terms a photo
+# library ANDs over its tags -- Flickr, when wired). A source absent here
+# consumes the phrase. Lives here, not in attempts.py, because
+# derivations.py compares an outcome row's query against the current one
+# per source and cannot import attempts (a cycle).
+QUERY_FORMS: dict[str, str] = {}
+
+
+def query_form(source: str | None) -> str:
+    return QUERY_FORMS.get(source or "", "phrase")
+
+
+@dataclass(frozen=True)
+class DraftedQuery:
+    """One drafted image query in its two forms (spec 3 r36 section 5):
+    the photograph description and, when the drafter gave one, the head
+    terms. A row written before r36 carries the phrase alone."""
+    phrase: str
+    keywords: str | None
 
 # The learner rating vocabulary: every value a rating row's answer["value"]
 # is allowed to carry, ranked on the same numeric scale a judge verdict
@@ -268,28 +290,40 @@ def latest_nothing_reason(rows: Sequence[Answer]) -> str | None:
     return str(max(reasons, key=lambda r: r.ts).answer["reason"]) if reasons else None
 
 
-def drafted_phrase(rows: Sequence[Answer]) -> str | None:
-    """The newest drafted image-search phrase on record for one subject
-    (spec 3 section 5): a provide row the phrase drafter appended
-    (backend "llm", question["provides"] == "phrase") whose answer
-    carries a `phrase`, or None when none is on record -- what
-    `attempts.phrase_attempt` tests to decide whether a picture need
-    still lacks one.
+def drafted_queries(rows: Sequence[Answer]) -> DraftedQuery | None:
+    """The newest drafted image query on record for one subject (spec 3
+    section 5): a provide row the phrase drafter appended (backend "llm",
+    question["provides"] == "phrase") whose answer carries a `phrase`,
+    with its `keywords` when the row has one (r36); None when none is on
+    record -- what `attempts.phrase_attempt` tests to decide whether a
+    picture need still lacks one.
     """
     drafts = [r for r in rows if r.port == "provide" and r.backend == "llm"
              and r.question.get("provides") == "phrase" and r.answer.get("phrase")]
-    return str(max(drafts, key=lambda r: r.ts).answer["phrase"]) if drafts else None
+    if not drafts:
+        return None
+    newest = max(drafts, key=lambda r: r.ts)
+    keywords = newest.answer.get("keywords")
+    return DraftedQuery(phrase=str(newest.answer["phrase"]),
+                        keywords=str(keywords) if keywords else None)
 
 
-def latest_phrase(rows: Sequence[Answer]) -> str | None:
-    """The image-search phrase a picture attempt's query prefers (spec 3
-    section 5), in precedence: the latest learner direction; else a judge
-    suggestion newer than the last Source ask (`last_source_ask_ts` --
-    the search that produced the judged candidate, never
-    attempts.phrase_attempt's own per-subject phrase row, fix round 2
-    finding 1); else the newest drafted phrase on record
-    (`drafted_phrase`); else None -- no query on record, and the need
-    waits (spec 3 r25 section 5).
+def drafted_phrase(rows: Sequence[Answer]) -> str | None:
+    """The phrase form of `drafted_queries`, or None."""
+    drafted = drafted_queries(rows)
+    return drafted.phrase if drafted is not None else None
+
+
+def latest_phrase(rows: Sequence[Answer], form: str = "phrase") -> str | None:
+    """The image query a picture attempt prefers (spec 3 section 5), in
+    precedence: the latest learner direction; else a judge suggestion
+    newer than the last Source ask (`last_source_ask_ts` -- the search
+    that produced the judged candidate, never attempts.phrase_attempt's
+    own per-subject phrase row); else the newest drafted query
+    (`drafted_queries`) in `form` -- its keywords under "keywords" when
+    it has them, else its phrase (r36); else None -- no query on record,
+    and the need waits (spec 3 r25 section 5). A direction and a
+    suggestion are one text and serve every form.
     """
     directed = directions(rows)
     if directed:
@@ -299,7 +333,12 @@ def latest_phrase(rows: Sequence[Answer]) -> str | None:
                   and r.answer.get("suggestion") and r.ts > last_provide]
     if suggestions:
         return str(max(suggestions, key=lambda r: r.ts).answer["suggestion"])
-    return drafted_phrase(rows)
+    drafted = drafted_queries(rows)
+    if drafted is None:
+        return None
+    if form == "keywords" and drafted.keywords:
+        return drafted.keywords
+    return drafted.phrase
 
 
 def asks_since(cache: CacheReader, backend: str, since_ts: int) -> int:
@@ -761,28 +800,42 @@ def parse_no_fit(text: str) -> str | None:
     return reason.strip()
 
 
-def parse_phrases(text: str) -> dict[str, str]:
-    """The subject -> phrase map one phrase-drafting answer's JSON
-    carries (spec 3 section 5, attempts._phrase_prompt's own {"phrases":
-    [{"subject": "...", "phrase": "..."}]} shape): an item lacking a
-    `subject` or a non-empty string `phrase` is skipped. Empty when
-    `text` is not that JSON. A subject listed twice keeps the last one
-    listed.
+def parse_queries(text: str) -> dict[str, DraftedQuery]:
+    """The subject -> DraftedQuery map one phrase-drafting answer's JSON
+    carries (spec 3 r36 section 5, attempts._phrase_prompt's own
+    {"phrases": [{"subject", "phrase", "keywords"}]} shape): an item
+    lacking a `subject` or a non-empty string `phrase` is skipped;
+    `keywords` is a string or a list of strings (joined by one space),
+    None when missing or empty. Empty when `text` is not that JSON. A
+    subject listed twice keeps the last one listed.
     """
     try:
         data = json.loads(strip_fences(text))
     except (json.JSONDecodeError, TypeError):
         return {}
     items = (data.get("phrases") if isinstance(data, Mapping) else None) or []
-    out: dict[str, str] = {}
+    out: dict[str, DraftedQuery] = {}
     for item in items:
         if not isinstance(item, Mapping):
             continue
         subject, phrase = item.get("subject"), item.get("phrase")
         if not subject or not isinstance(phrase, str) or not phrase.strip():
             continue
-        out[str(subject)] = phrase.strip()
+        raw = item.get("keywords")
+        if isinstance(raw, list):
+            # a list of strings, joined by one space; any other element
+            # makes the whole list no keywords form (untrusted output)
+            raw = (" ".join(k.strip() for k in raw if k.strip())
+                   if all(isinstance(k, str) for k in raw) else None)
+        keywords = raw.strip() if isinstance(raw, str) and raw.strip() else None
+        out[str(subject)] = DraftedQuery(phrase=phrase.strip(), keywords=keywords)
     return out
+
+
+def parse_phrases(text: str) -> dict[str, str]:
+    """The phrase form of `parse_queries` (the shape every pre-r36 caller
+    reads)."""
+    return {subject: q.phrase for subject, q in parse_queries(text).items()}
 
 
 # --- the comment pass: reading one learner comment (spec 3 r30 section 5) ---
