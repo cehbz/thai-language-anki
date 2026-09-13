@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 30, proposed 2026-09-13 against principles r4 and architecture
+Revision 31, proposed 2026-09-13 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -136,6 +136,13 @@ Revision log:
   rating a sentence's scene picture offered no way to say the sentence
   itself was bad, and a gallery note went nowhere. User approval
   2026-09-13.
+- r31 2026-09-13: the scene rubric asks whether the picture evokes the
+  sentence and is a good way to evoke it; a detail the sentence adds
+  need not appear; contradiction or a merely shared topic fails.
+  Evidence: 172 fit verdicts on eight scene phrases from open needs
+  across five sources passed 7, the failures citing a missing clause (a
+  sugar lump not shown while hot water is poured; a scabbed cut not
+  "bright red"). User approval 2026-09-13.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record

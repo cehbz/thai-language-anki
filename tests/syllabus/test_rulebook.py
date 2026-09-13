@@ -685,7 +685,8 @@ def test_sentence_recording_required_is_silent_with_a_current_best_recording():
 
 def test_the_scene_rubric_is_registered_for_the_scene_role():
     assert rubrics_for(RULES)["scene-for-sentence"] == SCENE_FIT_RUBRIC
-    assert "scene the sentence describes" in SCENE_FIT_RUBRIC
+    assert "evoke the sentence" in SCENE_FIT_RUBRIC
+    assert "need not appear" in SCENE_FIT_RUBRIC
 
 
 def test_the_sentence_rubric_asks_whether_the_gloss_states_the_meaning():

@@ -241,10 +241,16 @@ PRONUNCIATION_RUBRIC = (
     "the dictionary form over a colloquial reduction. Give a two- or three-word English gloss.")
 
 SCENE_FIT_RUBRIC = (
-    "Does this picture depict the scene the sentence describes? The card "
-    "shows the picture beside the sentence, so the picture has to fit what "
-    "is being said -- the people, objects and action the sentence names -- "
-    "not merely share a topic with it. If it fails, give a `suggestion`: "
+    "Does this picture evoke the sentence, and is it a good way to evoke "
+    "it? The card shows the picture beside the sentence so the learner "
+    "recalls what is being said. Pass a picture that shows the sentence's "
+    "main event -- the action and the people or things it acts on -- "
+    "clearly enough that a learner who knows the sentence would think of "
+    "it. A detail the sentence adds (a number, a colour, the order of two "
+    "steps, a second clause) need not appear, and its absence is not a "
+    "failure. Fail a picture that contradicts the sentence, that merely "
+    "shares a topic with it, or whose subject is something else that the "
+    "sentence's words happen to name. If it fails, give a `suggestion`: "
     "the search phrase that would have found a better picture.\n\n"
     "Fail only if text in the image reveals the answer: the Thai sentence "
     "itself, its English translation, or a romanized spelling of it. "
