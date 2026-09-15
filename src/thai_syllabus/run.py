@@ -481,7 +481,10 @@ def _spent_today(ctx: Sourcing, budgets: Mapping[str, Budget]) -> dict[str, Spen
 def _spent_on(source: str, carried: Mapping[str, Spend], tally: _Tally) -> Spend:
     """`source`'s day so far: what the record already held plus what this
     run has spent on it."""
-    already, mine = carried.get(source, Spend()), tally.spend.setdefault(source, Spend())
+    # a read, never a write (every budgeted source is already seeded in
+    # tally.spend by _run_pass; a probe for spec 3 r37's roster-wide
+    # check adds nothing)
+    already, mine = carried.get(source, Spend()), tally.spend.get(source, Spend())
     return Spend(asks=already.asks + mine.asks, cost=already.cost + mine.cost)
 
 
@@ -671,29 +674,68 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 if need.kind == "recording" and need.subject_kind == "sentence":
                     _retire_exhausted_sentence(ctx, need, tally)
                 continue
-            if source in dead_sources:
-                # Spec 3 r26 section 7: a source dead for the run counts
-                # as tried for this pass only -- the need takes its next
-                # live source now, and nothing about the dead one reaches
-                # the record. No live source left: deferred (no row was
-                # written for this need; the next run starts over).
-                live = [s for s in sources if s not in dead_sources]
-                source = next_source(ctx.db, need.subject, need.kind, live,
-                                    transient_cap=ctx.transient_cap, requery_cap=ctx.requery_cap,
-                                    nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
-                if source is None:
-                    tally.deferred += 1
+            def _budget_exceeded(candidate: str) -> bool:
+                budget = budgets.get(candidate)
+                return budget is not None and budget.exceeded_by(
+                    _spent_on(candidate, carried, tally))
+
+            if need.kind == "picture":
+                # Spec 3 r37 section 6a/7: within a run a picture source
+                # that is budgeted -- its own Quota answer, or a spent
+                # day budget -- counts like a dead one for source
+                # selection: the need takes its next live, unbudgeted
+                # source in the same pass, and nothing about a skipped
+                # source reaches the record. A need with no live source
+                # left counts `budgeted` whenever any source it skipped
+                # was budgeted, even when its very first choice was dead
+                # instead -- budgeted wins over deferred in that case;
+                # only when every skipped source was dead (r26) does it
+                # count `deferred`.
+                unavailable = {s for s in sources
+                              if s in dead_sources or s in budgeted_sources
+                              or _budget_exceeded(s)}
+                if source in unavailable:
+                    any_budgeted = any(s in budgeted_sources or _budget_exceeded(s)
+                                       for s in unavailable)
+                    live = [s for s in sources if s not in unavailable]
+                    source = next_source(ctx.db, need.subject, need.kind, live,
+                                        transient_cap=ctx.transient_cap,
+                                        requery_cap=ctx.requery_cap,
+                                        nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
+                    if source is None:
+                        if any_budgeted:
+                            tally.budgeted += 1
+                        else:
+                            tally.deferred += 1
+                        continue
+            else:
+                if source in dead_sources:
+                    # Spec 3 r26 section 7: a source dead for the run
+                    # counts as tried for this pass only -- the need
+                    # takes its next live source now, and nothing about
+                    # the dead one reaches the record. No live source
+                    # left: deferred (no row was written for this need;
+                    # the next run starts over).
+                    live = [s for s in sources if s not in dead_sources]
+                    source = next_source(ctx.db, need.subject, need.kind, live,
+                                        transient_cap=ctx.transient_cap,
+                                        requery_cap=ctx.requery_cap,
+                                        nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)
+                    if source is None:
+                        tally.deferred += 1
+                        continue
+                if source in budgeted_sources:
+                    # Spec 3 r37 restricts the budgeted fall-through
+                    # above to picture needs: a recording's own day
+                    # budget (Forvo) still waits for the day rather than
+                    # moving straight to tts in the same run -- the
+                    # source said its own allowance is gone, so this
+                    # need is budgeted, not deferred, and asks nothing.
+                    tally.budgeted += 1
                     continue
-            if source in budgeted_sources:
-                # Same reasoning as a spent day budget below: the source
-                # said its own allowance is gone, so this need is
-                # budgeted, not deferred, and asks nothing.
-                tally.budgeted += 1
-                continue
-            budget = budgets.get(source)
-            if budget is not None and budget.exceeded_by(_spent_on(source, carried, tally)):
-                tally.budgeted += 1
-                continue
+                if _budget_exceeded(source):
+                    tally.budgeted += 1
+                    continue
             try:
                 result = attempt(ctx, need, source)
             except JudgeUnreachable:

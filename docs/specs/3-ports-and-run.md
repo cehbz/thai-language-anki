@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 36, proposed 2026-09-13 against principles r4 and architecture
+Revision 37, proposed 2026-09-15 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -219,6 +219,18 @@ Revision log:
   for the topic, not the cue; Flickr ANDs every word of a query over
   title, description and tags, so a ten-word phrase starves it. User
   approval 2026-09-13.
+- r37 2026-09-15: within a run a PICTURE need's budgeted source (its own
+  Quota answer, or a spent day budget) is skipped for source selection
+  like a dead one: the need takes its next live, unbudgeted source in
+  the same pass and counts budgeted only when none is left; nothing
+  about the skipped source reaches the record. A recording need's spent
+  source budget still waits for the day (Forvo's cap is the day's pace,
+  and tts is not a substitute for it). Pexels gets the one-wait challenge retry by
+  default (pacing 1 s, 60 s). Evidence: the 2026-09-13 run had Pexels
+  dead on a challenge page, Openverse timed out and Wikimedia throttled;
+  every remaining picture need stalled at Wikimedia (budgeted 83 of 84)
+  and Brave and the illustrator were never asked. User approval
+  2026-09-15.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -698,9 +710,12 @@ Every ask and fetch ends in one of four states:
   over-credit answer is the same state: a 402 from an image corpus says
   the paid allowance is spent, not that the source is broken, and is
   the Quota state exactly as its 429 is (r32); the illustrator's 429 or
-  402 is the same state (r34). No row is appended, the need
-  counts under budgeted, the source is budgeted for the rest of the
-  run, and source_failures does not count it.
+  402 is the same state (r34). No row is appended; the source is
+  budgeted for the rest of the run and source_failures does not count
+  it; the need that met the answer counts budgeted, and a later picture
+  need whose next source it is takes its next live, unbudgeted source in
+  the same run (r37), counting budgeted only when none is left; a
+  recording need waits for the day as before.
 
 A backend appends a row only for an answer it positively recognized
 (§2). A refusal carries a typed reason, never matched as text: the
@@ -760,7 +775,7 @@ run(syllabus, budgets):
   for need in queue(syllabus, budgets):        # pending excluded
       if unjudged(need): questions += assess(need); continue   # §5 assess-first
       source = next_source(need)               # none -> exhausted, skip
-      if budget spent: continue                # -> budgeted
+      if source dead (any kind) or budgeted (picture): source = next live unbudgeted source, else -> budgeted / deferred (r26, r37)
       questions += attempt(need, source)       # provide; assess inline or collect
   submit(questions) as one batch; append its marker   # no-op if empty
   RunReport
@@ -777,7 +792,7 @@ always. The remaining fields count events, not needs.
 | exhausted | needs whose next source is None |
 | pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
 | unserved | needs whose kind has no Source and no per-run pass |
-| budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent) |
+| budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent); a picture need whose every remaining source is dead or budgeted, at least one of them budgeted (r37) |
 | deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose ask failed on the wire or whose every untried source is dead for the run (r26), questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
@@ -792,7 +807,7 @@ always. The remaining fields count events, not needs.
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
-| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left; a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase`, the comment reader's (or its parse ask's) under `llm-comment` |
+| source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left or budgeted (r37); a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase`, the comment reader's (or its parse ask's) under `llm-comment` |
 | spend[source] | the source's asks and cost this run |
 
 Every ask appends; kill-safe anywhere. The run is transport-agnostic.
@@ -818,10 +833,11 @@ layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
 (forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
 (seconds between two requests to the source within one process;
-openverse 1, brave 1, others 0) and `quotas.<source>.challenge_wait_seconds`
+openverse 1, pexels 1, brave 1, others 0) and
+`quotas.<source>.challenge_wait_seconds`
 (the one wait before the single retry of a challenge page, §6a;
-openverse 60, others 0: a challenge is a plain transport failure, and
-brave answers 402/429 rather than a challenge page),
+openverse 60, pexels 60, others 0: a challenge is a plain transport
+failure, and brave answers 402/429 rather than a challenge page),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
 `sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
 (3). `secrets.brave` names a reference to the Brave Search API subscription

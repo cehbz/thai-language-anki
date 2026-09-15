@@ -2007,13 +2007,33 @@ def test_a_need_whose_every_untried_source_is_dead_is_deferred(db, monkeypatch):
            + report.unserved + report.budgeted + report.deferred)
 
 
-def test_a_quota_exhausted_source_budgets_the_need_and_every_later_one_on_it(db, monkeypatch):
-    """Forvo's own quota statement (spec 3 section 6a) is not a source
-    failure: the need that hit it counts budgeted, not deferred, no
-    source_failures entry is recorded, and a later need whose next
-    source is the same one is skipped as budgeted too, without ever
-    calling attempt() for it -- the source is budgeted for the rest of
-    the run, the same bucket a spent day budget uses."""
+def test_a_quota_exhausted_source_lets_a_later_picture_need_fall_through_to_its_next_live_source(
+        db, monkeypatch):
+    """Spec 3 r37 section 6a/7: a picture source's own quota statement
+    (spec 3 section 6a) is not a source failure -- the need that hit it
+    counts budgeted, no source_failures entry is recorded -- but unlike a
+    recording's Forvo (which still waits for the day), a LATER picture
+    need whose next source is the same one takes its next live,
+    unbudgeted source in the same run instead of waiting: it counts
+    attempted, and nothing about the skipped source reaches the record."""
+    calls = _patch(monkeypatch, {("a", "pexels"): QuotaExhausted})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse")]
+    assert report.budgeted == 1 and report.deferred == 0 and report.attempted == 1
+    assert report.source_failures == {}
+    assert report.available == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+    assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {}
+
+
+def test_a_recording_source_s_own_quota_statement_still_waits_for_the_day(db, monkeypatch):
+    """Spec 3 r37 leaves non-picture kinds on the pre-r37 rule (the spec
+    says a spent Forvo budget waits for the day): a later recording need
+    whose next source is Forvo, already budgeted by an earlier need's own
+    quota statement, is skipped as budgeted too, without ever calling
+    attempt() for it -- unlike the picture case above, it does not fall
+    through to tts in the same run."""
     calls = _patch(monkeypatch, {("a", "forvo"): QuotaExhausted})
     report = run(_ctx(db, _Syl(_Gaps(recordings=("a", "b")))), {})
     assert [n.subject for n, _s in calls] == ["a"]   # "b" never reaches attempt()
@@ -2023,6 +2043,81 @@ def test_a_quota_exhausted_source_budgets_the_need_and_every_later_one_on_it(db,
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
     assert db.latest("run", "runreport", RunReportKey()).answer["source_failures"] == {}
+
+
+def test_a_picture_source_whose_day_budget_is_spent_falls_through_the_same_way(db, monkeypatch):
+    """Spec 3 r37: a picture source's spent day budget (`Budget.exceeded_by`)
+    is skipped for source selection exactly like its own quota answer --
+    the need whose ask spent it counts attempted, and a later need whose
+    next source is the same one takes its next live source instead of
+    waiting."""
+    calls = _patch(monkeypatch, {})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b")))), {"pexels": Budget(max_asks=1)})
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse")]
+    assert report.budgeted == 0 and report.deferred == 0 and report.attempted == 2
+    assert report.available == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_picture_need_dead_first_then_budgeted_then_live_asks_the_third(db, monkeypatch):
+    """Spec 3 r37: a need whose first choice is dead and whose second
+    choice is already budgeted still finds a third, live source in the
+    same pass."""
+    calls = _patch(monkeypatch, {("a", "pexels"): TransportError,
+                                 ("b", "openverse"): QuotaExhausted})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c")))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
+                                                  ("c", "wikimedia")]
+    assert report.source_failures == {"pexels": 1}
+    assert report.available == 3
+    assert report.deferred == 1 and report.budgeted == 1 and report.attempted == 1
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_picture_need_with_every_remaining_source_budgeted_counts_budgeted(db, monkeypatch):
+    """Spec 3 r37: once a picture need's whole roster (pexels, openverse,
+    wikimedia, brave, illustrator) is budgeted, one source at a time as
+    each need in turn discovers the next live one already spent, a final
+    need with no live source left counts budgeted -- the same identity
+    holds throughout."""
+    calls = _patch(monkeypatch, {("a", "pexels"): QuotaExhausted,
+                                 ("b", "openverse"): QuotaExhausted,
+                                 ("c", "wikimedia"): QuotaExhausted,
+                                 ("d", "brave"): QuotaExhausted,
+                                 ("e", "illustrator"): QuotaExhausted})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d", "e", "f")))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
+                                                  ("c", "wikimedia"), ("d", "brave"),
+                                                  ("e", "illustrator")]
+    assert report.available == 6 and report.attempted == 0 and report.deferred == 0
+    assert report.budgeted == 6   # "f" too: no live source is left for it
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_picture_need_dead_first_then_every_other_source_budgeted_counts_budgeted(
+        db, monkeypatch):
+    """Spec 3 r37: budgeted wins over deferred whenever any source a need
+    skipped was budgeted, even when the very first choice it skipped was
+    dead instead -- only when every skipped source was dead does the need
+    count deferred (r26)."""
+    calls = _patch(monkeypatch, {("a", "pexels"): TransportError,
+                                 ("b", "openverse"): QuotaExhausted,
+                                 ("c", "wikimedia"): QuotaExhausted,
+                                 ("d", "brave"): QuotaExhausted,
+                                 ("e", "illustrator"): QuotaExhausted})
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c", "d", "e", "f")))), {})
+    assert [(n.subject, s) for n, s in calls] == [("a", "pexels"), ("b", "openverse"),
+                                                  ("c", "wikimedia"), ("d", "brave"),
+                                                  ("e", "illustrator")]
+    assert report.source_failures == {"pexels": 1}
+    assert report.available == 6 and report.attempted == 0
+    assert report.deferred == 1                # "a" itself: its own ask died
+    assert report.budgeted == 5                 # "b".."e" themselves, plus "f"
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_drafter_transport_failure_is_a_source_failure_and_the_loop_runs(db, monkeypatch):
@@ -2730,3 +2825,4 @@ def test_a_draft_the_run_could_never_adopt_is_not_asked_about(tmp_path, fake_sea
     _seed_draft(ctx.db, clauses=[["eat"], ["rice"], ["fish"]], text=over_cap, gloss="eat rice fish")
     report = run(ctx, budgets={})
     assert text_sha(over_cap) not in [s for s, _role in _submitted_pairs(ctx.db, report.batch_id)]
+

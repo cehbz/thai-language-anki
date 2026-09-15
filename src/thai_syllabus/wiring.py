@@ -88,12 +88,15 @@ _DEFAULT_NOTHING_TTL: dict[str, int] = {"forvo": 180}
 # pacing_for's own defaults (spec 3 r26 sections 6a/8): seconds between
 # two requests to a source, and the one wait on a challenge page before
 # the single retry. Openverse's registered tier allows 100 requests a
-# minute; 1 s keeps a run at 60. Every other source is unpaced and
-# treats a challenge page as a plain transport failure unless
-# providers.yaml's quotas.<source> configures otherwise. Brave is
-# metered against a small monthly credit: 1 s between requests, and no
-# challenge wait (it answers 402/429, never a challenge page).
+# minute; 1 s keeps a run at 60. Pexels serves the same Cloudflare
+# challenge page as Openverse (spec 3 r37), so it gets the same one-wait
+# retry by default. Every other source is unpaced and treats a challenge
+# page as a plain transport failure unless providers.yaml's
+# quotas.<source> configures otherwise. Brave is metered against a small
+# monthly credit: 1 s between requests, and no challenge wait (it
+# answers 402/429, never a challenge page).
 _DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0),
+                                                   "pexels": (1.0, 60.0),
                                                    "brave": (1.0, 0.0)}
 
 

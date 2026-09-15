@@ -210,6 +210,15 @@ def test_openverse_is_anonymous_and_paced_by_default(cfg, db, media_store):
     assert (wikimedia.min_interval_s, wikimedia.challenge_wait_s) == (0.0, 0.0)
 
 
+def test_pexels_is_paced_by_default(cfg, db, media_store):
+    """Spec 3 r37 section 8: Pexels serves the same Cloudflare challenge
+    page as Openverse -- the same default pacing (1 s between requests,
+    one 60 s wait then one retry on a challenge page before the source
+    is dead for the run)."""
+    pexels = build_provider(cfg, db, media_store)._backends["pexels"]._resolve()
+    assert (pexels.min_interval_s, pexels.challenge_wait_s) == (1.0, 60.0)
+
+
 def test_brave_is_paced_at_one_second_by_default(cfg, db, media_store):
     """A metered source on a $5 monthly credit: one request a second, no
     challenge wait (Brave answers 402/429, never a challenge page)."""
