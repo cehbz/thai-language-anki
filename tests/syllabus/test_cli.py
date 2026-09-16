@@ -297,8 +297,12 @@ def test_run_wires_a_sourcing_ctx_and_budgets_into_run_pipeline(deck, monkeypatc
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
 
+    # --cycles 1: this report has needs still attempted, so with the
+    # default (now unbounded) cycles it would loop forever against a
+    # fake that never reaches "nothing left to do" -- this test is about
+    # the wiring, not the loop.
     rc = cli.main(["run", "--deck", str(deck), "--backend-cap", "forvo=5",
-                  "--backend-cap", "learner=3"])
+                  "--backend-cap", "learner=3", "--cycles", "1"])
     assert rc == 0
     ctx = calls["ctx"]
     assert isinstance(ctx, Sourcing)
@@ -320,7 +324,9 @@ def test_run_prints_excluded_and_unreachable(deck, monkeypatch, capsys):
     terminal, not just the persisted row."""
     monkeypatch.setattr(cli, "run_pipeline",
                         lambda ctx, budgets, **kw: RunReport(attempted=1, excluded=2))
-    rc = cli.main(["run", "--deck", str(deck)])
+    # --cycles 1: attempted=1 never reaches "nothing left to do" under
+    # the default unbounded loop.
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
     assert rc == 0
     text = capsys.readouterr().out
     assert "excluded=2" in text
@@ -344,7 +350,9 @@ def test_run_prints_every_report_field_in_its_summary_line(deck, monkeypatch, ca
                             sentences_adopted=1, drafted=3, excluded=0, unserved=4,
                             budgeted=5, deferred=6, preferences=7, unreachable=False,
                             batch_id="batch-7", source_failures={"openverse": 2}))
-    rc = cli.main(["run", "--deck", str(deck)])
+    # --cycles 1: batch_id is set, so without a cap on cycles the run
+    # would try to wait on it through a real (unmocked) Assessor.
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
     assert rc == 0
     text = capsys.readouterr().out
     for field in ("attempted=1", "improved=1", "exhausted=2", "available=9", "pending=1",
@@ -469,9 +477,13 @@ def test_run_cycles_stops_at_a_spend_cap(deck, monkeypatch, capsys):
     assert "spend cap reached: 0.0000 of 0.0000 USD this invocation" in capsys.readouterr().out
 
 
-def test_run_default_cycles_is_one_and_prints_cycle_number(deck, monkeypatch, capsys):
+def test_run_default_cycles_is_unbounded_and_prints_cycle_number(deck, monkeypatch, capsys):
+    """No --cycles: the default is None (unbounded), not 1 -- a pass with
+    nothing left to do still stops the loop after its own first cycle,
+    and that cycle is printed as `cycle=1`.
+    """
     monkeypatch.setattr(cli, "run_pipeline",
-                        lambda ctx, budgets, **kw: RunReport(attempted=1))
+                        lambda ctx, budgets, **kw: RunReport())
     rc = cli.main(["run", "--deck", str(deck)])
     assert rc == 0
     assert "cycle=1" in capsys.readouterr().out
@@ -640,7 +652,10 @@ def test_run_stops_waiting_once_max_wait_seconds_is_reached(deck, monkeypatch, c
         sleep=sleeps.append)
 
     assert rc == 1
-    assert sleeps == [1, 1]
+    # backoff doubles each poll (1, then 2, capped at the default
+    # --poll-max-seconds of 900): the second sleep alone pushes the
+    # accumulated wait (1 + 2 = 3) past --max-wait-seconds 2.
+    assert sleeps == [1, 2]
     assert ("run: batch b1 did not end within 2 s; stopped"
            in capsys.readouterr().err)
 
@@ -661,6 +676,150 @@ def test_run_cycles_never_polls_after_the_last_cycle(deck, monkeypatch):
     rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
     assert rc == 0
     assert status_calls == []
+
+
+# --- run to quiescence (spec 3 r39) -----------------------------------------
+
+def test_run_default_cycles_unbounded_keeps_going_until_nothing_left_to_do(
+        deck, monkeypatch):
+    """No --cycles: a pass that attempted needs (no batch, so nothing to
+    wait on) is followed by another pass; the invocation stops only once
+    a pass raises no batch and attempts nothing.
+    """
+    reports = [
+        RunReport(batch_id=None, attempted=3),
+        RunReport(batch_id=None, attempted=0, sentences_adopted=0),
+    ]
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return reports[len(run_calls) - 1]
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    rc = cli.main(["run", "--deck", str(deck)])
+    assert rc == 0
+    assert len(run_calls) == 2
+
+
+def test_run_cycles_2_caps_the_passes_even_when_the_second_still_attempts_needs(
+        deck, monkeypatch):
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(batch_id=None, attempted=5)  # always more to do
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "2"])
+    assert rc == 0
+    assert len(run_calls) == 2
+
+
+def test_run_wait_backoff_doubles_up_to_poll_max_seconds_by_default(deck, monkeypatch):
+    from thai_syllabus import assessor as assessor_module
+
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(batch_id="b1", attempted=1))
+    statuses = iter(["in_progress", "in_progress", "in_progress", "in_progress", "ended"])
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status",
+                        lambda self, batch_id: next(statuses))
+
+    sleeps = []
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "2"], sleep=sleeps.append)
+
+    assert rc == 0
+    assert sleeps == [300, 600, 900, 900]
+
+
+def test_run_wait_backoff_respects_custom_poll_seconds_and_poll_max_seconds(
+        deck, monkeypatch):
+    from thai_syllabus import assessor as assessor_module
+
+    monkeypatch.setattr(cli, "run_pipeline",
+                        lambda ctx, budgets, **kw: RunReport(batch_id="b1", attempted=1))
+    statuses = iter(["in_progress", "in_progress", "in_progress", "ended"])
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status",
+                        lambda self, batch_id: next(statuses))
+
+    sleeps = []
+    rc = cli.main(
+        ["run", "--deck", str(deck), "--cycles", "2",
+         "--poll-seconds", "60", "--poll-max-seconds", "120"],
+        sleep=sleeps.append)
+
+    assert rc == 0
+    assert sleeps == [60, 120, 120]
+
+
+def test_run_spend_cap_is_checked_before_waiting_on_a_batch(deck, monkeypatch):
+    from thai_syllabus import assessor as assessor_module
+
+    def fake_run(ctx, budgets, **kwargs):
+        ctx.db.append(
+            "assess", "judge",
+            JudgeKey(rubric_sha="r", subject="rice", identity="", role="picture-for-word"),
+            "rice", {"kind": "picture"}, {"value": True}, 1.0)
+        return RunReport(batch_id="b1", attempted=1)
+
+    def fake_status(self, batch_id):
+        raise AssertionError("must not poll: the spend cap stops the run first")
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status", fake_status)
+
+    sleeps = []
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "5", "--spend-cap", "0.5"],
+                 sleep=sleeps.append)
+
+    assert rc == 0
+    assert sleeps == []
+
+
+def test_run_prints_the_spend_on_the_cycle_line_and_the_waiting_line(
+        deck, monkeypatch, capsys):
+    """`spent=` is the same judge+tts+illustrator sum --spend-cap checks,
+    printed on every cycle line even with no --spend-cap given, and
+    again on the waiting line between polls.
+    """
+    from thai_syllabus import assessor as assessor_module
+
+    def fake_run(ctx, budgets, **kwargs):
+        ctx.db.append(
+            "provide", "illustrator",
+            ProvideKey(source="illustrator", kind="picture", query="a bowl of rice"),
+            "rice", {"kind": "picture", "params": {"query": "a bowl of rice"}},
+            {"items": [{"sha": "a" * 64, "ext": "png"}]}, 0.4)
+        return RunReport(batch_id="b1", attempted=1)
+
+    statuses = iter(["in_progress", "ended"])
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status",
+                        lambda self, batch_id: next(statuses))
+
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "2", "--poll-seconds", "5"],
+                 sleep=lambda s: None)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cycle=1 spent=0.4000" in out
+    assert ("waiting on batch b1; spent 0.4000 USD this invocation; "
+           "next poll in 5 s") in out
+
+
+def test_run_rejects_poll_max_seconds_below_one(deck):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["run", "--deck", str(deck), "--poll-max-seconds", "0"])
+    assert exc.value.code == 2
+
+
+def test_run_rejects_poll_max_seconds_below_poll_seconds(deck):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["run", "--deck", str(deck), "--poll-seconds", "600",
+                 "--poll-max-seconds", "300"])
+    assert exc.value.code == 2
 
 
 # --- writing_command guard (item 3, spec 2 section 6) ----------------------
@@ -696,7 +855,9 @@ def test_run_exits_1_and_reports_a_safety_check_failure_when_the_body_deletes_a_
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
 
-    rc = cli.main(["run", "--deck", str(deck)])
+    # --cycles 1: attempted=1 never reaches "nothing left to do" under
+    # the default unbounded loop.
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "1"])
 
     assert rc == 1
     err = capsys.readouterr().err

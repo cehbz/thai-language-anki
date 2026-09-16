@@ -6,7 +6,7 @@
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
-                          [--max-wait-seconds S]
+                          [--poll-max-seconds S] [--max-wait-seconds S]
     thai-syllabus restore  --deck DIR
 
 Each command wires itself through wiring.py: load_syllabus() for the
@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import anki_import, migrate as migrate_mod, record, reviewserver
 from .assessor import JudgeUnreachable
+from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
 from .run import Budget, RunReport
@@ -95,11 +96,29 @@ def _min_one(flag: str) -> Callable[[str], int]:
     return parse
 
 
-def _print_run_report(cycle: int, report: RunReport) -> None:
-    """One run's report block (spec 3 section 7), prefixed with the
-    cycle it belongs to -- `cycle=1` for a single-cycle (default) run.
+def _spend_so_far(ctx: Sourcing, start_ns: int) -> float:
+    """This invocation's own cash cost so far: the judge's own cost (port
+    assess) plus tts's and the illustrator's own cost (port provide, spec
+    3 r34, `price_per_image`), recorded since THIS invocation started --
+    the same sum --spend-cap checks (an earlier invocation's spend never
+    counts). Computed unconditionally (not just when --spend-cap is set)
+    so both the cycle line and the waiting line can show it.
     """
-    print(f"cycle={cycle} attempted={report.attempted} improved={report.improved} "
+    return (record.cost_since(ctx.db, "assess", "judge", start_ns)
+            + record.cost_since(ctx.db, "provide", "tts", start_ns)
+            + record.cost_since(ctx.db, "provide", "illustrator", start_ns))
+
+
+def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
+    """One run's report block (spec 3 section 7), prefixed with the
+    cycle it belongs to -- `cycle=1` for a single-cycle (default) run --
+    and `spent`, this invocation's own cash cost so far (the same sum
+    --spend-cap checks), visible whether or not a cap is set. Flushed:
+    under `nohup` a long invocation's stdout is block-buffered, and these
+    lines are the only way to watch it progress from the outside.
+    """
+    print(f"cycle={cycle} spent={spent:.4f} attempted={report.attempted} "
+         f"improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
          f"adjudicated={report.adjudicated} "
@@ -114,11 +133,11 @@ def _print_run_report(cycle: int, report: RunReport) -> None:
          f"unserved={report.unserved} budgeted={report.budgeted} "
          f"deferred={report.deferred} preferences={report.preferences} "
          f"unreachable={report.unreachable} "
-         f"batch_id={report.batch_id}")
+         f"batch_id={report.batch_id}", flush=True)
     for name, spend in sorted(report.spend.items()):
-        print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}")
+        print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}", flush=True)
     for name, count in sorted(report.source_failures.items()):
-        print(f"  source_failures: {name}={count}")
+        print(f"  source_failures: {name}={count}", flush=True)
 
 
 def _cmd_run(args: argparse.Namespace, *,
@@ -126,23 +145,27 @@ def _cmd_run(args: argparse.Namespace, *,
     """Wires a Sourcing ctx through wiring.build_sourcing, then layers
     --backend-cap overrides onto default_budgets before running.
 
-    Loops run_pipeline up to --cycles times (spec 3 section 7: the
-    two-run cycle -- at most one batch outstanding at a time). Between
-    cycles this waits for the batch the cycle just submitted to end, so
-    the next cycle's own resolve can see it; it never waits after the
+    Repeats run_pipeline to quiescence (spec 3 r39): a picture need
+    advances one source per pass, with verdicts only landing on a later
+    pass's resolve, so one invocation loops resolve/attempt/submit rather
+    than stopping after a single pass. Default --cycles is None
+    (unbounded); an explicit N caps the passes. Between passes that
+    submitted a batch this waits for it to end (status polled at growing
+    intervals: --poll-seconds doubling each poll up to --poll-max-seconds),
+    so the next pass's own resolve can see it; it never waits after the
     last cycle requested. The wait is bounded by --max-wait-seconds: once
     the sleep accumulated for that one batch reaches it, the run gives up
     (exit 1) rather than polling forever against a batch that never ends.
-    A cycle stops the loop early when the judge was unreachable --
-    whether run_pipeline said so, or the wait between cycles found the
-    batch transport itself unreachable (exit 1, same as a single run
-    today) -- when the report says there is nothing left to do (no batch
-    out, nothing adopted or improved), or when --spend-cap is set and the
-    cash cost recorded since this invocation started -- the judge, tts
-    and the illustrator's drawings (r34) -- has
-    reached it (spec 3 section 7 governs a source's own daily budget;
-    --spend-cap is this invocation's own budget, so spend from an
-    earlier invocation never counts against it).
+    The loop stops early when the judge was unreachable -- whether
+    run_pipeline said so, or the wait itself found the batch transport
+    unreachable (exit 1, same as a single run today) -- when a pass
+    raises no batch and attempts nothing (nothing left to do, exit 0), or
+    when --spend-cap is set and the cash cost recorded since this
+    invocation started -- the judge, tts and the illustrator's drawings
+    (r34) -- has reached it, checked before any wait (spec 3 section 7
+    governs a source's own daily budget; --spend-cap is this invocation's
+    own budget, so spend from an earlier invocation never counts against
+    it).
     """
     start_ns = time.time_ns()
     with writing_command(args.deck, "run") as guard:
@@ -154,42 +177,47 @@ def _cmd_run(args: argparse.Namespace, *,
             name, max_asks = _parse_backend_cap(raw)
             budgets[name] = Budget(max_asks=max_asks)
 
-        for cycle in range(1, args.cycles + 1):
+        cycle = 1
+        while args.cycles is None or cycle <= args.cycles:
             report = run_pipeline(ctx, budgets)
-            _print_run_report(cycle, report)
+            spent = _spend_so_far(ctx, start_ns)
+            _print_run_report(cycle, report, spent)
             # A run that could not reach the judge exits non-zero, so a
             # script or a cron job sees the difference from "nothing left
             # to do".
             if report.unreachable:
-                print("run: the judge is unreachable; stopped early", file=sys.stderr)
+                print("run: the judge is unreachable; stopped early",
+                     file=sys.stderr, flush=True)
                 return 1
-            if (report.batch_id is None and report.sentences_adopted == 0
-                    and report.improved == 0):
+            if (report.batch_id is None and report.attempted == 0
+                    and report.sentences_adopted == 0):
                 return 0  # nothing left to do
-            if args.spend_cap is not None:
-                # The metered cash backends: the judge, tts and the
-                # illustrator's drawings (spec 3 r34, `price_per_image`); a
-                # drafter on the api transport spends outside this cap.
-                spent = (record.cost_since(ctx.db, "assess", "judge", start_ns)
-                        + record.cost_since(ctx.db, "provide", "tts", start_ns)
-                        + record.cost_since(ctx.db, "provide", "illustrator", start_ns))
-                if spent >= args.spend_cap:
-                    print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
-                         f"USD this invocation")
-                    return 0
-            if cycle < args.cycles and report.batch_id is not None:
+            if args.spend_cap is not None and spent >= args.spend_cap:
+                print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
+                     f"USD this invocation", flush=True)
+                return 0
+            more_cycles = args.cycles is None or cycle < args.cycles
+            if more_cycles and report.batch_id is not None:
+                interval = args.poll_seconds
                 elapsed = 0
                 try:
                     while ctx.assessor.batch_status(report.batch_id) != "ended":
-                        sleep(args.poll_seconds)
-                        elapsed += args.poll_seconds
+                        print(f"waiting on batch {report.batch_id}; "
+                             f"spent {spent:.4f} USD this invocation; "
+                             f"next poll in {interval} s", flush=True)
+                        sleep(interval)
+                        elapsed += interval
                         if elapsed >= args.max_wait_seconds:
                             print(f"run: batch {report.batch_id} did not end within "
-                                 f"{args.max_wait_seconds} s; stopped", file=sys.stderr)
+                                 f"{args.max_wait_seconds} s; stopped",
+                                 file=sys.stderr, flush=True)
                             return 1
+                        interval = min(interval * 2, args.poll_max_seconds)
                 except JudgeUnreachable:
-                    print("run: the judge is unreachable; stopped early", file=sys.stderr)
+                    print("run: the judge is unreachable; stopped early",
+                         file=sys.stderr, flush=True)
                     return 1
+            cycle += 1
         return 0
 
 
@@ -231,10 +259,10 @@ def main(argv: list[str] | None = None, *,
                    help="cap NAME's asks at N per day, measured from the record "
                         "(spend since local midnight plus this run's own), "
                         "e.g. --backend-cap forvo=100 (repeatable)")
-    p.add_argument("--cycles", type=_min_one("cycles"), default=1,
-                   help="repeat resolve/attempt/submit this many times, waiting "
-                        "between cycles for the batch just submitted to end "
-                        "(spec 3 section 7); default 1, today's single-run behavior")
+    p.add_argument("--cycles", type=_min_one("cycles"), default=None,
+                   help="cap the number of resolve/attempt/submit passes; default "
+                        "unbounded -- the invocation repeats until a pass raises "
+                        "no batch and attempts nothing (spec 3 r39)")
     p.add_argument("--spend-cap", type=float, default=None, metavar="USD",
                    help="stop cycling once the judge's own cost (port assess) "
                         "plus tts's and the illustrator's own cost (port provide) "
@@ -242,12 +270,18 @@ def main(argv: list[str] | None = None, *,
                         "earlier invocation's spend never counts against it; a "
                         "drafter on the api transport is not counted")
     p.add_argument("--poll-seconds", type=_min_one("poll-seconds"), default=300,
-                   help="how long to sleep between polls of an outstanding "
-                        "batch's status")
-    p.add_argument("--max-wait-seconds", type=_min_one("max-wait-seconds"), default=43200,
-                   help="give up (exit 1) once the sleep accumulated waiting on one "
-                        "batch between cycles reaches this, rather than polling "
-                        "forever; default 43200 (12 hours)")
+                   help="how long to sleep before the first poll of an "
+                        "outstanding batch's status; each later poll doubles "
+                        "this, up to --poll-max-seconds")
+    p.add_argument("--poll-max-seconds", type=_min_one("poll-max-seconds"), default=900,
+                   help="the cap the doubling --poll-seconds backoff grows to "
+                        "between polls of an outstanding batch's status; must "
+                        "be at least --poll-seconds; default 900 (15 minutes)")
+    p.add_argument("--max-wait-seconds", type=_min_one("max-wait-seconds"), default=21600,
+                   help="give up on one batch after this much waiting (exit 1; the "
+                        "batch keeps processing and the next invocation resolves "
+                        "it); default 21600 (6 hours) -- the longest of eleven "
+                        "measured batches took 188 minutes")
 
     p = sub.add_parser(
         "restore",
@@ -256,6 +290,10 @@ def main(argv: list[str] | None = None, *,
     p.add_argument("--deck", type=Path, required=True)
 
     args = parser.parse_args(argv)
+    if args.command == "run" and args.poll_max_seconds < args.poll_seconds:
+        parser.error(
+            f"--poll-max-seconds ({args.poll_max_seconds}) must be at least "
+            f"--poll-seconds ({args.poll_seconds})")
 
     try:
         if args.command == "migrate":
