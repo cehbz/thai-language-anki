@@ -533,6 +533,29 @@ def test_picture_fit_prompt_asks_for_only_the_json_object():
     assert "Respond with only that JSON object and no other text." in picture_fit_prompt(q)
 
 
+def test_picture_fit_prompt_word_shape_asks_for_a_short_plain_search_phrase():
+    # Spec 3 r38: the judge's suggestion is a search phrase, not a
+    # picture description -- at most ten words, no quotes or punctuation
+    # (Openverse ANDs every term and Pexels's front challenges punctuation).
+    q = AssessQuestion(subject="w", role="picture-for-word", artifact_sha="s", rubric="R")
+    p = picture_fit_prompt(q)
+    assert "at most ten words" in p and "no quotes or punctuation" in p
+
+
+def test_picture_fit_prompt_sentence_shape_asks_for_a_short_plain_search_phrase():
+    q = AssessQuestion(subject="sha1", role="scene-for-sentence", artifact_sha="s", rubric="R",
+                       params={"target": "ข้าว"})
+    p = picture_fit_prompt(q)
+    assert "at most ten words" in p and "no quotes or punctuation" in p
+
+
+def test_picture_fit_prompt_change_does_not_touch_the_judge_cache_key():
+    # The prompt's wording lives outside the rubric -- JudgeKey.for_rule
+    # hashes the rubric only, so this revision changes no cache key.
+    key = JudgeKey.for_rule("R", "s", "note1", "picture-for-word")
+    assert key.encode() == f"judge:{sha('R')}:note1:s:picture-for-word"
+
+
 def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
     calls = []
 

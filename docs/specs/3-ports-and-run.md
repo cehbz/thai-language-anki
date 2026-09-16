@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 37, proposed 2026-09-15 against principles r4 and architecture
+Revision 38, proposed 2026-09-16 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -231,6 +231,7 @@ Revision log:
   every remaining picture need stalled at Wikimedia (budgeted 83 of 84)
   and Brave and the illustrator were never asked. User approval
   2026-09-15.
+- r38 2026-09-16: a source is asked with the search form of the need's query (punctuation stripped, whitespace collapsed; the key and the outcome row keep the query itself; the illustrator draws the query as written), and the judge's `suggestion` is a search phrase (at most ten words, no punctuation); the Openverse token request waits once and retries once on a transport failure, the search's own challenge wait (§6a). Evidence: Pexels's Cloudflare front challenges on the query string's punctuation, not the egress -- the same 25-word query passes without its commas and is challenged with them, and a challenged need was challenged again through the proxy; Openverse ANDs every term and answered nothing to 23 of 23 asks under long suggestions; since r35 a suggestion stays the query for every source, and r33's prompt asked for a picture description: 3,997 suggestions since, median 17 words, 645 with quotes. The Openverse token request had timed out once per run and each time cost Openverse the run, though 12 of 12 probes succeed in about 3 s. User approval 2026-09-16.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -374,6 +375,10 @@ meaning and category, and states the cue criteria (§4's scene rubric: a
 picture a learner who knows the item would take as its picture, pointing
 at what the target contributes, by any route); each source consumes the
 form it declares (every current source the phrase; `record.QUERY_FORMS`),
+and is asked with its search form (r38: punctuation stripped,
+whitespace collapsed -- Pexels's front challenges punctuated query
+strings and the AND-corpora starve on them; the outcome row and the key
+keep the query as written, the illustrator draws it as written),
 and a direction or a suggestion is the query for every form (the
 `phrase` provide, one row per subject carrying both forms; the ask is
 cached by prompt, and an answer phrasing none of the asked items is not
@@ -395,7 +400,8 @@ and the phrase searched for, and for a sentence also `target` and
 `target_gloss`, the word its production card blanks, r33),
 and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
-`suggestion` becomes the next attempt's phrase. The illustrator (r34) is
+`suggestion` becomes the next attempt's phrase (a search phrase of at
+most ten words, no punctuation, r38). The illustrator (r34) is
 reached only once every corpus is tried: it renders the need's current
 query under the fixed style prefix (`Simple flat illustration for a
 language flashcard, few elements, a Thai setting, no text or letters: `)
@@ -690,7 +696,8 @@ Every ask and fetch ends in one of four states:
   Cloudflare's managed challenge, by its `cf-mitigated: challenge`
   header or its page) is retried once by the backend after
   `quotas.<source>.challenge_wait_seconds`; a second challenge is the
-  transport failure (r26). An image corpus's 429 is its own throttle
+  transport failure (r26). The Openverse token request waits and
+  retries once the same way on a transport failure (r38). An image corpus's 429 is its own throttle
   statement and is the Quota state above, not this one (r26). Nothing
   is appended for the ask; the attempt's outcome is `transient-failure`. Bounded: once a source has `transient_cap`
   (providers.yaml, default 3) transient outcomes since the escalation
@@ -845,7 +852,9 @@ key, sent as `X-Subscription-Token` on every search. `secrets.openverse` names a
 reference to one line `client_id:client_secret` from Openverse's
 application registration; when set, the backend fetches an OAuth2
 client-credentials access token once per process, through
-`search_proxy`, and sends it as a bearer on every search (Openverse's
+`search_proxy` (one wait-and-retry on a transport failure,
+`quotas.openverse.challenge_wait_seconds`, r38), and sends it as a
+bearer on every search (Openverse's
 registered tier: 100 requests a minute, 10,000 a day, against 20 and
 200 anonymous, per its throttling documentation); unset, searches are
 anonymous. `search_proxy`

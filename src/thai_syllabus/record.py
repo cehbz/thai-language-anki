@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -31,7 +32,8 @@ __all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "can
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls", "latest_nothing_reason",
           "latest_phrase", "drafted_phrase", "parse_phrases",
-          "DraftedQuery", "QUERY_FORMS", "query_form", "drafted_queries", "parse_queries",
+          "DraftedQuery", "QUERY_FORMS", "query_form", "search_form", "drafted_queries",
+          "parse_queries",
           "asks_since", "spend_since", "cost_since", "unresolved_batch", "run_reports",
           "subject_kind_of", "retired_texts",
           "DRAFT_SUBJECT", "SentenceDraft",
@@ -116,6 +118,25 @@ QUERY_FORMS: dict[str, str] = {}
 
 def query_form(source: str | None) -> str:
     return QUERY_FORMS.get(source or "", "phrase")
+
+
+def search_form(query: str) -> str:
+    """The search form of a query (spec 3 r38 section 5): a letter (any
+    script, its own combining marks included), a digit, a space or a
+    hyphen survives; every other character -- quotes, commas, terminal
+    punctuation -- becomes a space; whitespace then collapses to one
+    space and the result is stripped. This is what a source is asked
+    with, not what is cached or drawn: `HttpImageSearchBackend.fetch`
+    builds the request from it while `cache_key` and the illustrator
+    keep the query as written. Evidence (r38): Pexels's Cloudflare front
+    challenges a punctuated query string, not the egress, and Openverse
+    ANDs every term so a long, punctuated judge suggestion starves it.
+    Pure function -- no regex, and nothing about it touches a cache key.
+    """
+    def keep(ch: str) -> bool:
+        return ch == "-" or ch.isspace() or unicodedata.category(ch)[0] in ("L", "N", "M")
+
+    return " ".join("".join(ch if keep(ch) else " " for ch in query).split())
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import requests
 import yaml
 
 from thai_syllabus import secrets as secrets_mod
@@ -266,6 +267,74 @@ def test_a_configured_openverse_secret_becomes_a_bearer_token_read_at_first_use(
     assert openverse.auth() == "tok"
     assert posts == [("https://api.openverse.org/v1/auth_tokens/token/", "cid", "sec",
                       "https://proxy.example")]
+
+
+def _wired_openverse_cfg(secret_paths, tmp_path, **quotas):
+    key = tmp_path / "openverse.key"
+    key.write_text("cid:sec\n")
+    key.chmod(0o600)
+    return ProvidersConfig(secrets={**{n: str(p) for n, p in secret_paths.items()},
+                                    "openverse": str(key)},
+                           imgfetch_path="curl", audiofetch_path="curl",
+                           quotas=quotas)
+
+
+def test_the_openverse_token_retry_wait_defaults_to_the_challenge_wait(
+        db, media_store, secret_paths, tmp_path, monkeypatch):
+    """Spec 3 r38: with no quotas.openverse override, the wired auth's
+    token request retries once on a transport failure after the same 60 s
+    default wait the search's own challenge retry uses."""
+    cfg = _wired_openverse_cfg(secret_paths, tmp_path)
+
+    def fake_post(url, data=None, headers=None, timeout=None, proxies=None):
+        if len(posts) == 0:
+            posts.append(1)
+            raise requests.ConnectTimeout("timed out")
+        posts.append(1)
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"access_token": "tok", "expires_in": 3600}
+        return _Resp()
+
+    posts: list[int] = []
+    slept = []
+    monkeypatch.setattr("thai_syllabus.provider.requests.post", fake_post)
+    monkeypatch.setattr("thai_syllabus.provider.time.sleep", slept.append)
+    provider = build_provider(cfg, db, media_store)
+    openverse = provider._backends["openverse"]
+    assert openverse.auth() == "tok"
+    assert slept == [60.0]
+    assert len(posts) == 2
+
+
+def test_the_openverse_token_retry_wait_follows_quotas_challenge_wait_seconds(
+        db, media_store, secret_paths, tmp_path, monkeypatch):
+    """Spec 3 r38: quotas.openverse.challenge_wait_seconds overrides the
+    wait the token retry uses too, the same value the search retries on."""
+    cfg = _wired_openverse_cfg(secret_paths, tmp_path,
+                               openverse={"challenge_wait_seconds": 5})
+
+    def fake_post(url, data=None, headers=None, timeout=None, proxies=None):
+        if len(posts) == 0:
+            posts.append(1)
+            raise requests.ConnectTimeout("timed out")
+        posts.append(1)
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"access_token": "tok", "expires_in": 3600}
+        return _Resp()
+
+    posts: list[int] = []
+    slept = []
+    monkeypatch.setattr("thai_syllabus.provider.requests.post", fake_post)
+    monkeypatch.setattr("thai_syllabus.provider.time.sleep", slept.append)
+    provider = build_provider(cfg, db, media_store)
+    openverse = provider._backends["openverse"]
+    assert openverse.auth() == "tok"
+    assert slept == [5.0]
+    assert len(posts) == 2
 
 
 def test_wikimedia_image_width_reaches_the_backend(db, media_store, secret_paths):

@@ -502,10 +502,10 @@ def picture_fit_prompt(q: AssessQuestion) -> str:
     """The fit prompt in two shapes. A `target` in the params makes it
     sentence-shaped (spec 3 r33): the scene picture is judged as the cue
     that supplies the word the production card blanks, so the judge is
-    told which word that is, and the suggestion it asks for describes a
-    picture rather than a search phrase. Without a `target` the subject
-    is a word and the prompt is unchanged -- the word rubric follows in a
-    later revision.
+    told which word that is, and the suggestion it asks for is a short
+    search phrase for the cue picture, not a description (spec 3 r38).
+    Without a `target` the subject is a word and the prompt is otherwise
+    unchanged -- the word rubric follows in a later revision.
     """
     p = q.params
     if p.get("target"):
@@ -519,9 +519,10 @@ def picture_fit_prompt(q: AssessQuestion) -> str:
                f"{deck_field(p.get('phrase') or '(none given)')}\n\n"
                f"Rubric:\n{q.rubric or ''}\n\n"
                'Respond with a JSON object: {"value": <true if the image passes every point of '
-               'the rubric, else false>, "evidence": <one sentence>, "suggestion": <a phrase '
-               'describing a picture that would cue it, when it fails, else null>}. Respond '
-               'with only that JSON object and no other text.')
+               'the rubric, else false>, "evidence": <one sentence>, "suggestion": <when it '
+               'fails, a search phrase for a picture that would cue it: at most ten words, '
+               'plain words only, no quotes or punctuation; else null>}. Respond with only '
+               'that JSON object and no other text.')
     return (f"You are evaluating a Thai picture-word flashcard (image attached).\n{UNTRUSTED}\n"
            f"Word: {deck_field(p.get('word', q.subject))}\n"
            f"Meaning: {deck_field(p.get('meaning', ''))}\n"
@@ -530,9 +531,9 @@ def picture_fit_prompt(q: AssessQuestion) -> str:
            f"{deck_field(p.get('phrase') or '(none given)')}\n\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <true if the image passes every point of the '
-           'rubric, else false>, "evidence": <one sentence>, "suggestion": <a better search '
-           'phrase when it fails, else null>}. Respond with only that JSON object and no other '
-           'text.')
+           'rubric, else false>, "evidence": <one sentence>, "suggestion": <when it fails, a '
+           'better search phrase: at most ten words, plain words only, no quotes or '
+           'punctuation; else null>}. Respond with only that JSON object and no other text.')
 
 
 def picture_preference_prompt(q: AssessQuestion) -> str:

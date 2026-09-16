@@ -443,8 +443,9 @@ def _openverse_auth(cfg: ProvidersConfig, secrets) -> Callable[[], str | None] |
             if not sep or not client_id or not client_secret:
                 raise TransportError(
                     "secrets.openverse must hold one line client_id:client_secret")
+            _, wait = pacing_for(cfg, "openverse")
             holder.append(OpenverseAuth(client_id=client_id, client_secret=client_secret,
-                                        search_proxy=cfg.search_proxy))
+                                        search_proxy=cfg.search_proxy, retry_wait_s=wait))
         return holder[0].token()
 
     return token

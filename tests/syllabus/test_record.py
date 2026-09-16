@@ -54,6 +54,7 @@ from thai_syllabus.record import (
     parses_in,
     query_form,
     QUERY_FORMS,
+    search_form,
     ratings_for_role,
     reading_of,
     reading_view,
@@ -588,6 +589,29 @@ def test_query_form_defaults_to_the_phrase_and_reads_the_table(monkeypatch):
     assert query_form("pexels") == "phrase" == query_form(None) == query_form("illustrator")
     monkeypatch.setitem(QUERY_FORMS, "flickr", "keywords")
     assert query_form("flickr") == "keywords"
+
+
+def test_search_form_strips_punctuation_and_collapses_whitespace():
+    # Spec 3 r38 section 5: a source is asked with the search form of the
+    # query -- Pexels's Cloudflare front challenges punctuated query
+    # strings and Openverse's AND-every-term search starves on them.
+    assert (search_form("a desk calendar with today's date circled, and 'east' vs \"west\".")
+           == "a desk calendar with today s date circled and east vs west")
+
+
+def test_search_form_keeps_a_hyphen():
+    assert "cold-weather" in search_form("cold-weather clothing").split()
+
+
+def test_search_form_keeps_unicode_letters():
+    # A Thai word (with its own combining tone marks) and an accented
+    # Latin word both survive untouched -- only punctuation is stripped.
+    assert search_form("ไก่ ย่าง and a café") == "ไก่ ย่าง and a café"
+
+
+def test_search_form_of_empty_or_whitespace_is_empty():
+    assert search_form("") == ""
+    assert search_form("   \t\n  ") == ""
 
 
 # --- parse_phrases: the phrase drafter's own answer shape (spec 3 s5) ------

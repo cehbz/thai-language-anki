@@ -221,6 +221,24 @@ def test_openverse_search_proxy_is_sent_as_a_forward_proxy_with_the_real_url():
                       {"http": "http://10.112.227.2:8888", "https": "http://10.112.227.2:8888"})]
 
 
+def test_fetch_sends_the_search_form_of_the_query_while_the_cache_key_keeps_it_raw():
+    # Spec 3 r38 section 5: a source is asked with the search form of the
+    # query (punctuation stripped, whitespace collapsed); the cache key
+    # and the record keep the query as written.
+    calls = []
+    raw = "a desk calendar with today's date circled,"
+
+    def get(url, params=None, headers=None, timeout=None, proxies=None):
+        calls.append(params)
+        return _FakeResponse(json_data={"photos": []})
+
+    backend = pexels_backend(api_key="k", get=get)
+    q = Question(subject="w", provides="picture", params={"query": raw})
+    backend.fetch(q)
+    assert calls == [{"query": "a desk calendar with today s date circled"}]
+    assert backend.cache_key(q).query == raw
+
+
 def test_a_search_without_a_proxy_sends_none():
     calls = []
 
@@ -376,6 +394,64 @@ def test_openverse_auth_failure_is_a_transport_error():
                          post=lambda *a, **k: _FakeResponse(status_code=401, text="bad"))
     with pytest.raises(TransportError, match="openverse"):
         auth.token()
+
+
+def test_openverse_auth_401_is_not_retried_even_with_a_retry_wait_configured():
+    # Spec 3 r38: a refused credential is not transient.
+    posts = []
+
+    def post(*a, **k):
+        posts.append(1)
+        return _FakeResponse(status_code=401, text="bad")
+
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post,
+                         retry_wait_s=60.0, sleep=lambda s: None)
+    with pytest.raises(TransportError, match="openverse"):
+        auth.token()
+    assert len(posts) == 1
+
+
+def test_openverse_auth_retries_once_after_a_transport_failure_then_succeeds():
+    # Spec 3 r38: one wait-and-retry on a transport failure (timeout,
+    # connection error), the same wait the search's own challenge retry uses.
+    posts = []
+    slept = []
+
+    def post(url, data=None, headers=None, timeout=None, proxies=None):
+        posts.append(1)
+        if len(posts) == 1:
+            raise requests.ConnectTimeout("timed out")
+        return _FakeResponse(json_data={"access_token": "tok123", "expires_in": 3600})
+
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post,
+                         retry_wait_s=60.0, sleep=slept.append)
+    assert auth.token() == "tok123"
+    assert slept == [60.0]
+    assert len(posts) == 2
+
+
+def test_openverse_auth_second_failure_after_the_retry_is_the_transport_error():
+    def post(*a, **k):
+        raise requests.ConnectTimeout("timed out")
+
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post,
+                         retry_wait_s=60.0, sleep=lambda s: None)
+    with pytest.raises(TransportError, match="openverse"):
+        auth.token()
+
+
+def test_openverse_auth_with_no_retry_wait_configured_fails_at_once():
+    # retry_wait_s defaults to 0.0: today's behaviour, one post.
+    posts = []
+
+    def post(*a, **k):
+        posts.append(1)
+        raise requests.ConnectTimeout("timed out")
+
+    auth = OpenverseAuth(client_id="cid", client_secret="sec", post=post)
+    with pytest.raises(TransportError, match="openverse"):
+        auth.token()
+    assert len(posts) == 1
 
 
 def test_wikimedia_a_200_body_without_batchcomplete_is_a_transport_error():
@@ -692,6 +768,17 @@ def test_illustrator_backend_ingests_the_image_and_answers_a_generated_candidate
     (item,) = answer.items
     assert item["source"] == "generated" and item["licence"] == "generated" and item["origin"] == "m"
     assert media.has(item["sha"], item["ext"]) and answer.cost == 0.067
+
+
+def test_illustrator_backend_draws_the_raw_query_not_its_search_form(tmp_path):
+    # Spec 3 r38 section 5: a description suits drawing -- unlike a
+    # search source, the illustrator is not asked with search_form(query).
+    gen = _StubGenerator(None)
+    backend = IllustratorBackend(generator=gen, media=MediaStore(tmp_path / "m"), model="m",
+                                 price_per_image=0.067)
+    raw = "a desk calendar with today's date circled,"
+    backend.fetch(Question(subject="s", provides="picture", params={"query": raw}))
+    assert gen.prompts == [STYLE_PREFIX + raw]
 
 
 def test_illustrator_backend_a_declined_prompt_is_an_empty_answer_at_no_cost(tmp_path):

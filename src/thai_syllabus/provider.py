@@ -29,6 +29,7 @@ import requests
 
 from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
+from .record import search_form
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, FetchRefused, QuotaExhausted, TransportError
 
@@ -180,7 +181,11 @@ class OpenverseAuth:
     access token until `expires_in` has passed (a 60 s margin), then
     fetches again. A refused or malformed token answer is a
     TransportError: the source is unreachable for the run, nothing is
-    cached.
+    cached. A transport failure (timeout, connection error) gets one
+    wait-and-retry on `retry_wait_s` -- the same challenge wait the
+    search itself retries on (spec 3 r38); a non-200 answer (a refused
+    credential) is never retried, and a second transport failure is the
+    TransportError as before.
     """
     client_id: str
     client_secret: str
@@ -189,8 +194,22 @@ class OpenverseAuth:
     post: Callable[..., Any] = field(default_factory=lambda: requests.post)
     search_proxy: str | None = None
     clock: Callable[[], float] = time.monotonic
+    retry_wait_s: float = 0.0
+    # default_factory, not a plain default, for the same reason `post`
+    # is one: an auth built lazily (wiring._openverse_auth's first
+    # token() call) picks up a test's patched time.sleep, not whatever
+    # time.sleep was at import time.
+    sleep: Callable[[float], None] = field(default_factory=lambda: time.sleep)
     _token: str | None = field(default=None, init=False, repr=False)
     _expires_at: float = field(default=0.0, init=False, repr=False)
+
+    def _post_once(self, proxies: Mapping | None) -> Any:
+        return self.post(OPENVERSE_TOKEN_URL,
+                         data={"client_id": self.client_id,
+                               "client_secret": self.client_secret,
+                               "grant_type": "client_credentials"},
+                         headers={"User-Agent": IMAGE_SEARCH_USER_AGENT},
+                         timeout=30, proxies=proxies)
 
     def token(self) -> str:
         now = self.clock()
@@ -199,14 +218,17 @@ class OpenverseAuth:
         proxies = ({"http": self.search_proxy, "https": self.search_proxy}
                   if self.search_proxy else None)
         try:
-            resp = self.post(OPENVERSE_TOKEN_URL,
-                             data={"client_id": self.client_id,
-                                   "client_secret": self.client_secret,
-                                   "grant_type": "client_credentials"},
-                             headers={"User-Agent": IMAGE_SEARCH_USER_AGENT},
-                             timeout=30, proxies=proxies)
+            resp = self._post_once(proxies)
         except requests.RequestException as e:
-            raise TransportError(f"openverse token request failed: {e}") from e
+            if self.retry_wait_s <= 0:
+                raise TransportError(f"openverse token request failed: {e}") from e
+            _log.warning("openverse: token request failed (%s); waiting %.0f s "
+                         "before one retry", type(e).__name__, self.retry_wait_s)
+            self.sleep(self.retry_wait_s)
+            try:
+                resp = self._post_once(proxies)
+            except requests.RequestException as e2:
+                raise TransportError(f"openverse token request failed: {e2}") from e2
         if resp.status_code != 200:
             raise TransportError(
                 f"openverse token request returned {resp.status_code}: {resp.text[:200]}")
@@ -277,7 +299,13 @@ class HttpImageSearchBackend:
             self._last_call = self.clock()
 
     def fetch(self, question: Question) -> RawAnswer:
-        query = question.params["query"]
+        # Spec 3 r38 section 5: the source is asked with the search form
+        # of the query (punctuation stripped, whitespace collapsed) --
+        # Pexels's Cloudflare front challenges a punctuated query string
+        # and Openverse's AND-every-term search starves on one. The
+        # cache key (cache_key, above) and the record keep the query as
+        # written.
+        query = search_form(question.params["query"])
         url, params, headers, expect = self.build_request(query)
         headers = dict(headers)
         if self.auth is not None:
