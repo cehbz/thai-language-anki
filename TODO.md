@@ -6,6 +6,19 @@ The old packages (thai_deck_eval, thai_deck_gen) stay; their spec-level
 tests in tests/spec/test_deck_doctrine.py and test_generator_contract.py
 still run against them.
 
+## Priority (user, 2026-09-17): by value to learning
+
+1. Sound stage part 2 (steps 4 to 7 below): graphemes, then pairs; the
+   pronunciation-judge experiment first, since pair membership needs
+   adjudicated pronunciations (178 words disputed).
+2. Cutover to Anki: nothing built since the redesign is in the study
+   deck yet.
+3. Sentences for the 319 unfilled targets: the drafter's cached answer
+   yields the same refused drafts every pass (198 and 126 refusals of
+   two drafts in one night); fix the re-ask, then a drafting run.
+4. The six open picture needs: learner direction from the review screen
+   re-opens them; no engineering.
+
 ## Sentences: after the parsimonious-sentences arc
 
 - `Word.components` (curated): a compound's registered parts, so a
