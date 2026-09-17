@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from PIL import Image as PILImage
@@ -36,12 +36,14 @@ from thai_syllabus.derivations import (
     next_source,
     open_words,
 )
-from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
+from thai_syllabus.entities import (Category, Grapheme, MinimalPair, SoundConfusion,
+                                    text_sha)
 from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.inventory import ConsonantRow
 from thai_syllabus.phonology import Engines
 from thai_syllabus.profile import Profile
-from thai_syllabus.provider import FetchBackend, LlmBackend, RawAnswer, TtsBackend
+from thai_syllabus.provider import (FetchBackend, GlyphBackend, LlmBackend, RawAnswer,
+                                    TtsBackend)
 from thai_syllabus.record import DRAFT_SUBJECT, drafted_phrase, parse_phrases, rows_for
 from thai_syllabus.safety import Guard
 from thai_syllabus.tts import pick_voice
@@ -322,6 +324,19 @@ def ctx_batch_sentences(tmp_path, fake_search, fake_batch):
     ctx.provider._backends["wikimedia"] = _Silent("wikimedia")
     ctx.provider._backends["pexels"] = _Silent("pexels")
     return ctx
+
+
+def _pass_picture(ctx, subject, artifact_sha):
+    """A passing picture-for-word verdict under the deck's own current
+    rubric, so current_best (and with it MediaIndex.picture_sha) ranks
+    `artifact_sha` as the subject's picture."""
+    rubric = ctx.rubrics["picture-for-word"]
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(rubric, artifact_sha, subject, "picture-for-word"),
+                  subject=subject,
+                  question={"role": "picture-for-word", "artifact_sha": artifact_sha,
+                            "rubric": rubric, "kind": "picture", "subject_kind": "word"},
+                  answer={"value": True})
 
 
 def _seed_no_fit(db, word_id, target_id, *, times):
@@ -998,6 +1013,14 @@ class _Syl:
     # and derivations.adjudications: no word here is uncorroborated, so
     # neither pass does anything over this fake
     words: tuple = ()
+
+    @property
+    def name_word_ids(self):
+        """The real Syllabus's own fold, read by attempts.sources_for_need
+        (spec 3 r41 section 5): no word over this fake is a grapheme's
+        recited name, so every need keeps its kind's roster."""
+        return frozenset(g.name_word for g in self.graphemes
+                         if getattr(g, "name_word", None) is not None)
 
     def gaps(self):
         return self._gaps
@@ -2956,3 +2979,50 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
         ("ก", "chicken", "name-chicken"), ("ง", "snake", "name-snake")]
     assert ctx.syllabus.name_word_ids == frozenset({"name-chicken", "name-snake"})
+
+
+# --- the chart cell's own roster (spec 3 r41 §5) ----------------------------
+
+def test_a_name_words_picture_need_is_attempted_at_the_glyph_source(tmp_path, fake_search,
+                                                                    fake_batch):
+    """R4 end to end: the run asks glyph and nothing else for a chart
+    cell, and every other picture need still walks the corpora."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    # rice is the ordinary word whose picture need still walks the corpora;
+    # chicken's own picture is already good below, being the cell's image.
+    root = _deck(tmp_path, (chicken, name, RICE),
+                 (target("chicken/receptive", "chicken"),
+                  target("name-chicken/receptive", "name-chicken"),
+                  target("rice/receptive", "rice")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    drawn = []
+
+    class _Glyph(GlyphBackend):
+        """The real chart-cell backend, its asks recorded. `sha-chicken`
+        has a provenance row but no bytes in the store, so the real
+        fetch() draws nothing and answers empty -- this test is about the
+        roster the run asks, not the drawing (test_provider's own)."""
+
+        def fetch(self, q):
+            drawn.append((q.subject, q.params["query"]))
+            return super().fetch(q)
+
+    ctx.provider._backends["glyph"] = _Glyph(media=ctx.media_store,
+                                             font_path="/nowhere/Fake.ttf")
+    # The grapheme the name word belongs to, and a keyword picture for it.
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    ctx.syllabus = dataclasses.replace(ctx.syllabus, graphemes=(g,))
+    ctx.db.add_media(sha="sha-chicken", kind="picture", ext="jpg", source="pexels",
+                     origin="https://x/c.jpg", licence="by", acquired=date(2026, 9, 17))
+    _pass_picture(ctx, "chicken", "sha-chicken")
+    assert ctx.syllabus.media.picture_sha("chicken") == "sha-chicken"   # the cell has its image
+
+    report = run(ctx, {})
+
+    assert drawn == [("name-chicken", "ก")]
+    assert ("name-chicken", "pexels") not in fake_search.asks
+    assert ("rice", "pexels") in fake_search.asks
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)

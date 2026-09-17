@@ -42,10 +42,12 @@ from .derivations import (
     DEFAULT_REQUERY_CAP,
     DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
+    GLYPH_SOURCES,
     CurrentBest,
     aged_out,
     available_needs,
     current_best,
+    need_sources,
     passing_pictures,
     pictures_awaiting_preference,
     refused_drafts,
@@ -70,8 +72,10 @@ from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
            "VoiceConstraint",
-           "sources_for", "provenance_source_for", "current_best_of",
+           "sources_for", "sources_for_need", "provenance_source_for",
+           "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
+           "ChartCell", "chart_cell", "GLYPH_SOURCE",
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
            "GRAPHEME_NAME_MEANING", "retire_sentence",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
@@ -126,6 +130,17 @@ _FORVO_SEX = {"m": "male", "f": "female"}
 
 def sources_for(kind: str) -> tuple[str, ...]:
     return SOURCES.get(kind, ())
+
+
+def sources_for_need(ctx: Sourcing, need: Need) -> tuple[str, ...]:
+    """The sources `need` may be asked under this ctx, cheapest first
+    (spec 3 r41 section 5): the chart-cell source alone for a grapheme
+    name word's picture, the deck's own roster for that kind otherwise.
+    The rule itself is derivations.need_sources, so the run's attempt
+    loop, the queue and the review server share one fold.
+    """
+    return need_sources(ctx.syllabus, ctx.sources_for, need.subject, need.kind,
+                        need.subject_kind)
 
 
 SubjectKind = Literal["word", "pair", "grapheme", "sentence"]
@@ -415,6 +430,60 @@ def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:
 
 # --- pictures (Word) and scene pictures (Sentence) --------------------------
 
+@dataclass(frozen=True)
+class ChartCell:
+    """A grapheme's alphabet-chart cell (design 2026-09-12 section 2): the
+    symbol beside its keyword's current picture. The need it serves is the
+    grapheme's recited-name Word's picture need, and the cell is the whole
+    of what that need is ever offered (spec 3 r41 section 5).
+    """
+    symbol: str
+    picture_sha: str
+    picture_ext: str
+
+
+def chart_cell(ctx: Sourcing, need: Need) -> ChartCell | None:
+    """`need`'s chart cell, or None when `need` is not a grapheme name
+    word's picture need, or its keyword has no current-best picture yet --
+    in which case there is nothing to draw and the need waits (spec 3
+    r41 section 5), exactly as a picture need with no query does (r25).
+    """
+    if need.kind != "picture" or need.subject_kind != "word":
+        return None
+    if need.subject not in ctx.syllabus.name_word_ids:
+        return None
+    grapheme = next((g for g in ctx.syllabus.graphemes if g.name_word == need.subject), None)
+    if grapheme is None:
+        return None
+    sha = ctx.syllabus.media.picture_sha(grapheme.keyword)
+    if sha is None:
+        return None
+    ext = (ctx.db.media_provenance(sha) or {}).get("ext")
+    if not ext:
+        return None
+    return ChartCell(symbol=grapheme.symbol, picture_sha=sha, picture_ext=str(ext))
+
+
+# The chart-cell source's name, the one entry derivations.GLYPH_SOURCES
+# holds; a dictionary lookup, never a parsed string.
+GLYPH_SOURCE = GLYPH_SOURCES[0]
+
+
+def _source_params(ctx: Sourcing, need: Need, source: str) -> dict[str, str]:
+    """The Question params one source needs beyond the query (spec 3 r41
+    section 5). The glyph backend composes the chart cell out of an
+    artifact already in the store, so the attempt names that artifact --
+    and the backend stays a renderer that needs no Syllabus. Every other
+    source takes the query alone.
+    """
+    if source != GLYPH_SOURCE:
+        return {}
+    cell = chart_cell(ctx, need)
+    if cell is None:
+        return {}
+    return {"cell_picture": cell.picture_sha, "cell_picture_ext": cell.picture_ext}
+
+
 def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> str | None:
     """The query on record, in precedence (spec 3 section 5): the latest
     learner direction; else the newer by ts of the newest judge
@@ -423,7 +492,17 @@ def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> s
     (record.query_form, r36: every current source the phrase; a keywords
     source the head terms). None when none is on record (r25): the need
     waits -- the gloss is the drafter's input, never a search.
+
+    A grapheme name word's picture is the exception (r41): its chart cell
+    is drawn from the symbol, so the symbol is the query, a fact of
+    curated data that no direction, suggestion or draft can replace --
+    and None while its keyword has no picture, which puts the need on
+    r25's waiting path until the keyword gets one.
     """
+    if (need.kind == "picture" and need.subject_kind == "word"
+            and need.subject in ctx.syllabus.name_word_ids):
+        cell = chart_cell(ctx, need)
+        return cell.symbol if cell is not None else None
     return record.latest_phrase(ctx.db.assessments_of(need.subject),
                                 form=record.query_form(source)) or None
 
@@ -468,7 +547,8 @@ def _picture_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
                     and r.question.get("query") not in (None, query)
                     for r in record.rows_for(ctx.db, need.subject, need.kind))
     question = Question(subject=need.subject, provides="picture",
-                        params={"query": query}, kind=need.kind, subject_kind=need.subject_kind)
+                        params={"query": query, **_source_params(ctx, need, source)},
+                        kind=need.kind, subject_kind=need.subject_kind)
     # An aged-out `nothing` re-offers the source (spec 3 r19 section 6a):
     # ask it afresh, never the cached empty answer.
     fresh = aged_out(ctx.db, need.subject, need.kind, source,

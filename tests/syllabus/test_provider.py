@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import requests
 from PIL import Image as PILImage
+from PIL import ImageFont
 
 from thai_syllabus.assessor import Price
 from thai_syllabus.cachekeys import ProvideKey, sha
@@ -21,6 +22,8 @@ from thai_syllabus.provider import (
     ForvoBackend,
     GEMINI_INTERACTIONS_URL,
     GeneratedImage,
+    GLYPH_CANVAS,
+    GlyphBackend,
     HttpImageGenerator,
     HttpImageSearchBackend,
     IllustratorBackend,
@@ -1422,3 +1425,136 @@ def test_a_provider_miss_is_not_a_hit_and_the_re_read_is(db):
     q = Question(subject="s", provides="picture", params={"query": "orange"})
     assert provider.ask("openverse", q).hit is False
     assert provider.ask("openverse", q).hit is True
+
+
+# --- the glyph backend: the alphabet-chart cell (spec 3 r41 section 3) -----
+
+def _bitmap_font(path, size):
+    """The font seam a test substitutes: PIL's bundled default, so no test
+    ever depends on a system font being installed."""
+    return ImageFont.load_default(size=size)
+
+
+def _glyph_backend(tmp_path, font_loader=_bitmap_font):
+    return GlyphBackend(media=MediaStore(tmp_path / "media"), font_path="/nowhere/Fake.ttf",
+                        font_loader=font_loader)
+
+
+def _cell_question(sha="abc123", ext="jpg", symbol="ก"):     # ก: k
+    return Question(subject="name-chicken", provides="picture",
+                    params={"query": symbol, "cell_picture": sha, "cell_picture_ext": ext},
+                    kind="picture", subject_kind="word")
+
+
+def test_the_glyph_key_is_the_keyword_picture_and_the_symbol(tmp_path):
+    """Spec 3 r41 section 3: a changed keyword picture is a new key, so the
+    cell is redrawn; the same picture and symbol are the same cell for
+    ever."""
+    key = _glyph_backend(tmp_path).cache_key(_cell_question(sha="deadbeef"))
+    assert key.encode() == "glyph:deadbeef:ก"
+
+
+def test_the_glyph_key_of_a_need_with_no_cell_picture_names_no_picture(tmp_path):
+    key = _glyph_backend(tmp_path).cache_key(
+        Question(subject="name-chicken", provides="picture", params={"query": "ก"},
+                 kind="picture", subject_kind="word"))
+    assert key.encode() == "glyph::ก"
+
+
+def _keyword_picture(media, colour=(200, 40, 40)) -> tuple[str, str]:
+    """A keyword's current-best picture already in the store, as the
+    attempt hands it to the backend: (sha, ext)."""
+    buf = io.BytesIO()
+    PILImage.new("RGB", (120, 80), colour).save(buf, format="JPEG")
+    ingest = media.add_image(buf.getvalue(), "jpg")
+    return ingest.sha, ingest.ext
+
+
+def test_the_cell_is_drawn_into_the_store_with_glyph_provenance(tmp_path):
+    media = MediaStore(tmp_path / "media")
+    sha, ext = _keyword_picture(media)
+    backend = GlyphBackend(media=media, font_path="/nowhere/Fake.ttf",
+                           font_loader=_bitmap_font)
+
+    got = backend.fetch(_cell_question(sha=sha, ext=ext))
+
+    assert got.cost == 0.0
+    (item,) = got.items
+    assert (item["source"], item["licence"], item["origin"]) == ("glyph", "generated", "ก")
+    assert item["ext"] == "png"
+    assert media.path_for(item["sha"], item["ext"]).exists()
+
+
+def test_the_cell_is_a_square_canvas_of_the_configured_size(tmp_path):
+    media = MediaStore(tmp_path / "media")
+    sha, ext = _keyword_picture(media)
+    backend = GlyphBackend(media=media, font_path="/nowhere/Fake.ttf",
+                           font_loader=_bitmap_font)
+
+    (item,) = backend.fetch(_cell_question(sha=sha, ext=ext)).items
+
+    with PILImage.open(media.path_for(item["sha"], item["ext"])) as cell:
+        # MediaStore.add_image bounds the long edge at 800, so 640 stands.
+        assert cell.size == (GLYPH_CANVAS, GLYPH_CANVAS)
+        assert cell.getpixel((8, 8)) == (255, 255, 255)          # white ground
+        assert cell.getpixel((GLYPH_CANVAS - 40, GLYPH_CANVAS // 2)) != (255, 255, 255)
+
+
+def test_two_draws_of_the_same_pair_are_byte_identical(tmp_path):
+    """Deterministic (spec 3 r41 section 3): no clock, no randomness, a
+    fixed font size -- so the same pair is the same sha and the cache row
+    is a hit for ever."""
+    media = MediaStore(tmp_path / "media")
+    sha, ext = _keyword_picture(media)
+    backend = GlyphBackend(media=media, font_path="/nowhere/Fake.ttf",
+                           font_loader=_bitmap_font)
+
+    first = backend.fetch(_cell_question(sha=sha, ext=ext)).items[0]["sha"]
+    second = backend.fetch(_cell_question(sha=sha, ext=ext)).items[0]["sha"]
+
+    assert first == second
+
+
+def test_a_different_keyword_picture_draws_a_different_cell(tmp_path):
+    media = MediaStore(tmp_path / "media")
+    red_sha, ext = _keyword_picture(media, (200, 40, 40))
+    blue_sha, _ = _keyword_picture(media, (40, 40, 200))
+    backend = GlyphBackend(media=media, font_path="/nowhere/Fake.ttf",
+                           font_loader=_bitmap_font)
+
+    red = backend.fetch(_cell_question(sha=red_sha, ext=ext)).items[0]["sha"]
+    blue = backend.fetch(_cell_question(sha=blue_sha, ext=ext)).items[0]["sha"]
+
+    assert red != blue
+
+
+def test_the_font_seam_is_asked_for_the_configured_font_and_size(tmp_path):
+    media = MediaStore(tmp_path / "media")
+    sha, ext = _keyword_picture(media)
+    asked = []
+
+    def loader(path, size):
+        asked.append((path, size))
+        return ImageFont.load_default()
+
+    backend = GlyphBackend(media=media, font_path="/fonts/Ayuthaya.ttf", font_loader=loader,
+                           font_size=48)
+    backend.fetch(_cell_question(sha=sha, ext=ext))
+
+    assert asked == [("/fonts/Ayuthaya.ttf", 48)]
+
+
+def test_a_question_naming_no_cell_picture_draws_nothing(tmp_path):
+    """Spec 3 r41 section 3: a name word whose keyword has no picture has
+    no chart cell. The attempt does not reach here (its query is None and
+    the need waits), but a backend must never draw half a cell."""
+    backend = _glyph_backend(tmp_path)
+    got = backend.fetch(Question(subject="name-chicken", provides="picture",
+                                 params={"query": "ก"}, kind="picture", subject_kind="word"))
+    assert got == RawAnswer(items=(), cost=0.0)
+
+
+def test_a_cell_picture_that_is_not_in_the_store_draws_nothing(tmp_path):
+    backend = _glyph_backend(tmp_path)
+    got = backend.fetch(_cell_question(sha="0" * 64, ext="jpg"))
+    assert got == RawAnswer(items=(), cost=0.0)

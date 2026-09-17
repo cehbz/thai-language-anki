@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 17, proposed 2026-09-17 against principles r5 and architecture
+Revision 18, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -49,6 +49,11 @@ Revision log:
   42 Grapheme rows, 42 recited-name Words with two Targets each and the
   keyword Words the vocabulary lacks; proposing each by hand is the work
   the run exists to do. User approval 2026-09-17.
+- r18 2026-09-17: `media.source` may be `glyph` (spec 3 r41's chart cell:
+  licence `generated`, origin the grapheme's symbol), the value the
+  provenance prior and the feedback screen's caption read; providers.yaml
+  gains `glyph: {font}`, the Thai font the cell is drawn with. No new
+  store. User approval 2026-09-17.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec

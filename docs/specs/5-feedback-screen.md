@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 11, proposed 2026-09-13 against principles r4 and architecture
+Revision 12, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -70,6 +70,13 @@ Revision log:
   spend per newly covered need per run. Evidence: a drawn picture beside
   photographs is a different kind of evidence and the learner should
   know which one they are rating. User approval 2026-09-13.
+- r12 2026-09-17: a chart cell (spec 3 r41's glyph source, provenance
+  `glyph`) is captioned "glyph" wherever the screen shows it, current or
+  rejected, as a generated candidate is captioned "generated"; the
+  grapheme card's own meaning is unchanged. Evidence: a drawing the deck
+  composed from its own artifacts is a third kind of evidence beside a
+  photograph and a generated image, and the learner rating it should know
+  which one it is. User approval 2026-09-17.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -114,7 +121,8 @@ stops; unanswered questions stay queued. Question kinds:
    (the newest fresh verdict by the highest-authority backend that has
    one on the artifact, the same rule ranking uses; r7, r8) -- a
    generated picture (spec 3 §5's illustrator) is captioned `generated`
-   as well, current or rejected (r11); a recording
+   as well, current or rejected (r11), and an alphabet-chart cell
+   (spec 3 §3's glyph) `glyph` (r12); a recording
    renders as a player wherever a picture would be a thumbnail, the
    query read-only. Actions: 1
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /

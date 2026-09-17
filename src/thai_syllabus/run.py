@@ -44,6 +44,7 @@ from .attempts import (
     provenance_source_for,
     retire_sentence,
     sentence_attempt,
+    sources_for_need,
 )
 from .derivations import (
     QueuedNeeds,
@@ -509,10 +510,14 @@ def _needs(ctx: Sourcing, collected_this_run: frozenset[tuple[str, str]] = froze
     """One queue build (spec 3 r19 section 6a/9): `now_ns` is the run's own
     single clock read (run()'s outermost caller), never re-read here or in
     derivations.py, so every need this pass considers ages against the
-    same instant.
+    same instant. `sources_for_need` (spec 3 r41 section 5) is the same
+    per-need roster the attempt loop takes its next source from, so the
+    queue and the loop never disagree about what a need has left.
     """
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
                   prior=ctx.provenance_prior, sources_for=ctx.sources_for,
+                  sources_for_need=lambda subject, kind, subject_kind="word":
+                      sources_for_need(ctx, Need(subject, kind, subject_kind)),
                   attempt_cap=ctx.attempt_cap, transient_cap=ctx.transient_cap,
                   requery_cap=ctx.requery_cap,
                   provenance_source=provenance_source_for(ctx.db),
@@ -681,7 +686,12 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
                 # its answer omitted this subject) and counts deferred.
                 tally.deferred += 1
                 continue
-            sources = ctx.sources_for(need.kind)
+            # Spec 3 r41 section 5: what this need may be asked, not what
+            # its kind may be -- a grapheme name word's picture has the
+            # one chart-cell source and no corpus at all. The three
+            # next_source calls below (this one and the two live-source
+            # retries) all narrow this list.
+            sources = sources_for_need(ctx, need)
             source = next_source(ctx.db, need.subject, need.kind, sources,
                                 transient_cap=ctx.transient_cap, requery_cap=ctx.requery_cap,
                                 nothing_ttl=ctx.nothing_ttl, now_ns=now_ns)

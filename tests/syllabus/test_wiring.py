@@ -25,6 +25,7 @@ from thai_syllabus.attempts import DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK, DEFAUL
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
     CuratedBundle,
+    GlyphConfig,
     IllustratorConfig,
     JudgeConfig,
     ProvidersConfig,
@@ -36,7 +37,7 @@ from thai_syllabus.derivations import DEFAULT_SENTENCE_NOTHING_CAP
 from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
-from thai_syllabus.provider import IllustratorBackend, Provider, Question
+from thai_syllabus.provider import GlyphBackend, IllustratorBackend, Provider, Question
 from thai_syllabus.rulebook import sentence_note_id
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
@@ -1110,7 +1111,7 @@ def test_build_sourcing_assembles_rubrics_and_prior(tmp_path):
     assert ctx.image_candidates == 2 and "picture-for-word" in ctx.rubrics
     assert ctx.provenance_prior == (
         "commission", "forvo", "tts", "pexels", "openverse", "wikimedia", "brave", "learner",
-        "generated")
+        "generated", "glyph")
 
 
 def test_build_sourcing_threads_caps_and_pools(tmp_path):
@@ -1307,6 +1308,25 @@ def test_default_budgets_includes_the_illustrator_daily_default(cfg):
         max_asks=20)
     cfg2 = ProvidersConfig(quotas={"illustrator": {"max_cost": 1.5}})
     assert default_budgets(cfg2)["illustrator"] == Budget(max_asks=20, max_cost=1.5)
+
+
+# --- the glyph backend on the roster (spec 3 r41 section 5) ----------------
+
+def test_a_configured_glyph_font_puts_the_backend_on_the_roster(cfg, db, media_store, tmp_path):
+    font = tmp_path / "Ayuthaya.ttf"
+    font.write_bytes(b"not really a font, but it exists")
+    configured = dataclasses.replace(cfg, glyph=GlyphConfig(font=str(font)))
+
+    backend = build_provider(configured, db, media_store)._backends["glyph"]
+
+    assert isinstance(backend, GlyphBackend)
+    assert backend.font_path == str(font)
+    assert backend.media is media_store
+
+
+def test_an_unconfigured_glyph_is_off_the_roster(cfg, db, media_store):
+    assert cfg.glyph is None
+    assert "glyph" not in build_provider(cfg, db, media_store)._backends
 
 
 def test_build_sourcing_and_load_derivations_use_the_configured_source_order(tmp_path):

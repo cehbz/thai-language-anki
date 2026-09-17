@@ -15,6 +15,7 @@ import pytest
 from thai_syllabus.derivations import (
     Challenger,
     CurrentBest,
+    GLYPH_SOURCES,
     JudgeVerdict,
     adjudications,
     adoptable_drafts,
@@ -29,6 +30,7 @@ from thai_syllabus.derivations import (
     exhausted,
     improved,
     judge_verdict,
+    need_sources,
     next_source,
     pending,
     passing_pictures,
@@ -2737,3 +2739,92 @@ def test_adjudications_ignores_a_verdict_under_a_superseded_rubric(cache):
     syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),), targets=())
     cache.rows.append(_pronunciation_row("rice", "falling", ts=1, rubric="old"))
     assert adjudications(cache, syllabus, current_rubric={"pronunciation-for-word": "R"}) == {}
+
+
+# --- need_sources: the roster one need is asked (spec 3 r41 §5) ----------
+
+class _NamedSyllabus:
+    """The one thing need_sources reads off a syllabus."""
+
+    def __init__(self, name_word_ids=frozenset()):
+        self.name_word_ids = frozenset(name_word_ids)
+
+
+def test_a_name_words_picture_need_takes_the_glyph_source_alone():
+    """R4: the chart cell is drawn, not searched -- the corpora have
+    nothing to offer a letter name, and glyph is never on the ordinary
+    picture roster."""
+    from thai_syllabus.attempts import SOURCES
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus({"name-chicken"})
+    assert need_sources(syllabus, real_sources_for, "name-chicken", "picture",
+                        "word") == ("glyph",)
+    assert GLYPH_SOURCES == ("glyph",)
+    assert "glyph" not in SOURCES["picture"]
+
+
+def test_an_ordinary_words_picture_need_takes_its_kinds_roster():
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus({"name-chicken"})
+    assert need_sources(syllabus, real_sources_for, "rice", "picture",
+                        "word") == real_sources_for("picture")
+
+
+def test_a_name_words_other_needs_take_their_kinds_roster():
+    """Its recording is Forvo then TTS like any word's (design §2)."""
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus({"name-chicken"})
+    assert need_sources(syllabus, real_sources_for, "name-chicken", "recording", "word") == (
+        "forvo", "tts")
+
+
+def test_a_sentences_scene_picture_is_never_a_chart_cell():
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus({"name-chicken"})
+    assert need_sources(syllabus, real_sources_for, "name-chicken", "picture",
+                        "sentence") == real_sources_for("picture")
+
+
+def test_the_decks_own_source_order_is_what_an_ordinary_need_gets():
+    """A deck with no illustrator configured hands its own sources_for."""
+    def deck_sources(kind):
+        return ("pexels", "openverse") if kind == "picture" else ()
+
+    syllabus = _NamedSyllabus({"name-chicken"})
+    assert need_sources(syllabus, deck_sources, "rice", "picture", "word") == (
+        "pexels", "openverse")
+
+
+def test_queued_asks_sources_for_need_per_entry(cache):
+    """R4: the queue must agree with the run's attempt loop about what a
+    need has left, so it reads the same per-need roster."""
+    asked = []
+
+    def per_need(subject, kind, subject_kind="word"):
+        asked.append((subject, kind, subject_kind))
+        return ("glyph",)
+
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("name-chicken",)))
+    found = _queued(syllabus, cache, sources_for_need=per_need)
+
+    assert asked == [("name-chicken", "picture", "word")]
+    assert [e.subject for e in found.entries] == ["name-chicken"]
+
+
+def test_queued_without_the_callable_uses_the_kind_roster(cache):
+    """Every existing caller keeps its behaviour: the default is the
+    roster sources_for gives for the kind."""
+    asked = []
+
+    def by_kind(kind):
+        asked.append(kind)
+        return ("pexels",)
+
+    found = _queued(_one_word_syllabus(), cache, sources_for=by_kind)
+
+    assert "picture" in asked
+    assert [e.subject for e in found.entries] == ["rice"]

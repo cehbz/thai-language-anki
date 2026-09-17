@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import requests
+from PIL import Image, ImageDraw, ImageFont
 
 from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
@@ -44,6 +46,8 @@ __all__ = [
     "GeneratedImage", "ImageGenerator", "HttpImageGenerator", "STYLE_PREFIX",
     "IllustratorBackend", "IMAGE_GENERATORS", "image_generator", "require_image_generator",
     "GEMINI_INTERACTIONS_URL", "gemini_generator",
+    "MediaLibrary", "GlyphBackend", "GLYPH_CANVAS", "GLYPH_FONT_SIZE", "GLYPH_MARGIN",
+    "GLYPH_RULE_WIDTH", "truetype_font",
 ]
 
 
@@ -98,6 +102,14 @@ class MediaWriter(Protocol):
     """
     def write(self, data: bytes, ext: str) -> str: ...
     def add_image(self, data: bytes, ext: str) -> "ImageIngestResult": ...
+
+
+@runtime_checkable
+class MediaLibrary(MediaWriter, Protocol):
+    """MediaWriter plus read-back by sha (store.MediaStore): what a
+    backend needs when it composes a new artifact out of one already in
+    the store (the glyph backend's chart cell, spec 3 r41 section 3)."""
+    def path_for(self, sha: str, ext: str) -> Path: ...
 
 
 class Provider:
@@ -899,3 +911,102 @@ class PairSearchBackend:
         confusion_id = question.params["confusion_id"]
         candidates = self.dictionary.search(confusion_id)
         return RawAnswer(items=tuple(candidates), cost=0.0)
+
+
+# --- glyph: the alphabet-chart cell (spec 3 r41 section 3) ------------------
+# The one source a grapheme's recited-name Word's picture need is asked
+# (attempts.sources_for_need): the symbol beside its keyword's current
+# picture, drawn here rather than searched for. Deterministic and free,
+# so the key is the pair it is drawn from and nothing is ever re-asked.
+
+GLYPH_CANVAS = 640        # px, square: the cell the card shows
+GLYPH_FONT_SIZE = 320     # px: the symbol fills the left half
+GLYPH_MARGIN = 24         # px around the rule and the picture
+GLYPH_RULE_WIDTH = 2      # px: the thin rule between symbol and picture
+
+
+def truetype_font(path: str, size: int) -> "ImageFont.FreeTypeFont":
+    """The font loader the backend uses in a run (providers.yaml
+    `glyph.font`). A test substitutes this seam so no test depends on a
+    system font being installed."""
+    return ImageFont.truetype(path, size)
+
+
+@dataclass
+class GlyphBackend:
+    """The chart cell (spec 3 r41 section 3): a square white canvas, the
+    grapheme's symbol large in the left half, its keyword's current-best
+    picture scaled into the right half, a thin rule between. Pillow only,
+    no clock, no randomness and a fixed font size, so the same pair always
+    yields the same bytes and so the same sha.
+
+    The key is `glyph:<keyword picture sha>:<symbol>`: a keyword whose
+    picture changes is a new key and the cell is redrawn (design
+    2026-09-12 section 2), and the answer is free, so nothing is ever
+    re-asked.
+    """
+    media: MediaLibrary
+    font_path: str
+    font_loader: Callable[[str, int], Any] = truetype_font
+    canvas: int = GLYPH_CANVAS
+    font_size: int = GLYPH_FONT_SIZE
+
+    def cache_key(self, question: Question) -> ProvideKey:
+        return ProvideKey(source="glyph",
+                          kind=str(question.params.get("cell_picture") or ""),
+                          query=question.params["query"])
+
+    def fetch(self, question: Question) -> RawAnswer:
+        symbol = question.params["query"]
+        sha = question.params.get("cell_picture")
+        ext = question.params.get("cell_picture_ext")
+        picture = self.media.path_for(str(sha), str(ext)) if sha and ext else None
+        if picture is None:
+            # No keyword picture, no chart cell (spec 3 r41 section 3): an
+            # empty answer, cached under this key, so the need waits for
+            # the keyword's own picture rather than half a cell.
+            _log.info("glyph: %r has no keyword picture yet; no cell drawn", symbol)
+            return RawAnswer(items=(), cost=0.0)
+        if not picture.exists():
+            # The record names a picture the store does not hold: a store
+            # inconsistency, not the normal wait -- said so, since this
+            # empty answer is cached under that sha.
+            _log.warning("glyph: %r: keyword picture %s is on record but not in the "
+                         "media store; no cell drawn", symbol, sha)
+            return RawAnswer(items=(), cost=0.0)
+        ingest = self.media.add_image(self._draw(symbol, picture), "png")
+        return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext, "source": "glyph",
+                                 "origin": symbol, "licence": "generated"},), cost=0.0)
+
+    def _draw(self, symbol: str, picture: Path) -> bytes:
+        """The cell's bytes: white ground, the symbol centred in the left
+        half, the keyword's picture fitted into the right half, a thin
+        rule between. The symbol is placed from its own text bounding box
+        rather than an anchor, so a bitmap font (what a test substitutes)
+        and a TrueType font both land centred.
+        """
+        size = self.canvas
+        half = size // 2
+        cell = Image.new("RGB", (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(cell)
+        draw.line([(half, GLYPH_MARGIN), (half, size - GLYPH_MARGIN)],
+                  fill=(0, 0, 0), width=GLYPH_RULE_WIDTH)
+        font = self.font_loader(self.font_path, self.font_size)
+        left, top, right, bottom = draw.textbbox((0, 0), symbol, font=font)
+        draw.text((half // 2 - (right - left) // 2 - left,
+                   size // 2 - (bottom - top) // 2 - top),
+                  symbol, font=font, fill=(0, 0, 0))
+        with Image.open(picture) as src:
+            src.load()
+            art = src.convert("RGB")
+            box = half - 2 * GLYPH_MARGIN
+            # Scaled to fit the right half (up or down, aspect kept): thumbnail() only
+            # ever shrinks, and a small keyword picture must still read as
+            # a picture beside the symbol, not a postage stamp.
+            scale = min(box / art.width, box / art.height)
+            art = art.resize((max(1, round(art.width * scale)),
+                              max(1, round(art.height * scale))), Image.LANCZOS)
+            cell.paste(art, (half + (half - art.width) // 2, (size - art.height) // 2))
+        out = io.BytesIO()
+        cell.save(out, format="PNG")
+        return out.getvalue()

@@ -98,12 +98,17 @@ def _best(d: "Derivations", subject: str, kind: str) -> CurrentBest:
                         provenance_source=d.provenance_source)
 
 
-def _exhausted(d: "Derivations", subject: str, kind: str, *,
+def _exhausted(d: "Derivations", subject: str, kind: str, *, subject_kind: str = "word",
                now_ns: int | None = None) -> ExhaustedStatus:
     """exhausted() under `d`'s parameters; `now_ns` is the caller's one
     clock read for the pass (spec 3 r19 section 6a/9), read here only for
-    a single stand-alone question."""
-    return exhausted(d.db, subject, kind, sources=d.sources_for(kind),
+    a single stand-alone question. The roster is the per-need one (spec 3
+    r41 section 5) when `d` carries it, so a chart cell's need is out of
+    options once the glyph source has answered, exactly as it is in the
+    run."""
+    sources = (d.sources_for(kind) if d.sources_for_need is None
+              else d.sources_for_need(subject, kind, subject_kind))
+    return exhausted(d.db, subject, kind, sources=sources,
                      attempt_cap=d.attempt_cap, transient_cap=d.transient_cap,
                      requery_cap=d.requery_cap,
                      sentence_nothing_cap=d.sentence_nothing_cap,
@@ -231,13 +236,17 @@ def _verdict_line(verdict: JudgeVerdict | None) -> str | None:
 
 
 def _artifact(d: "Derivations", sha: str | None) -> dict[str, Any] | None:
-    """One artifact as a question carries it: its sha, its url, and
-    whether it is a generated picture (spec 5 r11: its media row's
-    source is `generated`, spec 2 r16) -- the page captions it so."""
+    """One artifact as a question carries it: its sha, its url, and what
+    kind of evidence it is -- a generated picture (spec 5 r11: its media
+    row's source is `generated`, spec 2 r16) or a drawn alphabet-chart
+    cell (spec 5 r12: source `glyph`, spec 2 r18). The page captions each
+    so; a photograph carries neither mark."""
     if not sha:
         return None
     prov = d.db.media_provenance(sha) or {}
-    return {"sha": sha, "url": f"/media/{sha}", "generated": prov.get("source") == "generated"}
+    return {"sha": sha, "url": f"/media/{sha}",
+            "generated": prov.get("source") == "generated",
+            "glyph": prov.get("source") == "glyph"}
 
 
 def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
@@ -422,7 +431,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     now_ns = time.time_ns()   # one clock read per session build (spec 3 r19 section 6a/9)
     syllabus_state_id = d.syllabus.state_id()
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
-                    sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                    sources_for=d.sources_for, sources_for_need=d.sources_for_need,
+                    attempt_cap=d.attempt_cap,
                     transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                     provenance_source=d.provenance_source,
                     nothing_ttl=d.nothing_ttl, now_ns=now_ns)
@@ -449,7 +459,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
         for subject, kind, subject_kind in available_needs(d.syllabus):
             if (subject, kind) in queued:
                 continue
-            status = _exhausted(d, subject, kind, now_ns=now_ns)
+            status = _exhausted(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
             if status.exhausted:
                 items.append(_direction_question(d, subject, kind, subject_kind,
                                                  status.attempts,
@@ -994,8 +1004,9 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
             ratings["unacceptable"] += 1
 
     now_ns = time.time_ns()
-    exhausted_count = sum(1 for subject, kind, _ in available_needs(d.syllabus)
-                         if _exhausted(d, subject, kind, now_ns=now_ns).exhausted)
+    exhausted_count = sum(1 for subject, kind, subject_kind in available_needs(d.syllabus)
+                         if _exhausted(d, subject, kind, subject_kind=subject_kind,
+                                       now_ns=now_ns).exhausted)
 
     runreport = d.db.latest("run", "runreport", RunReportKey())
     runreport_answer = runreport.answer if runreport else {}
@@ -1093,13 +1104,14 @@ class ReviewContext:
     def current_best(self, subject: str, kind: str) -> CurrentBest:
         return _best(self.derivations, subject, kind)
 
-    def exhausted(self, subject: str, kind: str) -> ExhaustedStatus:
-        return _exhausted(self.derivations, subject, kind)
+    def exhausted(self, subject: str, kind: str, subject_kind: str = "word") -> ExhaustedStatus:
+        return _exhausted(self.derivations, subject, kind, subject_kind=subject_kind)
 
     def queue(self) -> list[QueueEntry]:
         d = self.derivations
         return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
-                     sources_for=d.sources_for, attempt_cap=d.attempt_cap,
+                     sources_for=d.sources_for, sources_for_need=d.sources_for_need,
+                     attempt_cap=d.attempt_cap,
                      transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                      provenance_source=d.provenance_source,
                      nothing_ttl=d.nothing_ttl, now_ns=time.time_ns())
@@ -1766,6 +1778,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     }
     // Spec 5 r11: a drawn picture says so under itself, whatever its verdict.
     if (art.generated) { wrap.appendChild(el("div", { "class": "provenance" }, "generated")); }
+    // Spec 5 r12: a drawn chart cell says so under itself, as a generated
+    // picture does, whatever its verdict.
+    if (art.glyph) { wrap.appendChild(el("div", { "class": "provenance" }, "glyph")); }
     if (caption) { wrap.appendChild(el("div", { "class": "verdict" }, caption)); }
     return wrap;
   }

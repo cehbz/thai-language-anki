@@ -431,7 +431,7 @@ def test_rulebook_provenance_prior_round_trip(tmp_path):
     assert curated.load_rulebook_config(path).provenance_prior == ("commission", "forvo")
     assert curated.RulebookConfig().provenance_prior == (
         "commission", "forvo", "tts", "pexels", "openverse", "wikimedia", "brave", "learner",
-        "generated")
+        "generated", "glyph")
 
 
 def test_rulebook_provenance_prior_explicit_empty_list_stays_empty(tmp_path):
@@ -1351,6 +1351,61 @@ def test_providers_illustrator_refuses_a_section_that_is_not_a_mapping(tmp_path)
                                                   illustrator=bad)))
         with pytest.raises(curated.CuratedValidationError, match="providers.illustrator"):
             curated.load_providers_config(path)
+
+
+# --- providers.yaml glyph: {font} (spec 3 r41 section 8) --------------------
+
+def test_no_glyph_section_leaves_the_source_unconfigured(tmp_path):
+    write_providers(tmp_path)
+    assert curated.load_providers_config(tmp_path / "providers.yaml").glyph is None
+
+
+def test_a_glyph_section_names_the_font_file(tmp_path):
+    font = tmp_path / "Ayuthaya.ttf"
+    font.write_bytes(b"not really a font, but it exists")
+    write_providers(tmp_path, glyph={"font": str(font)})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.glyph == curated.GlyphConfig(font=str(font))
+
+
+def test_a_glyph_font_that_is_not_there_is_refused_naming_the_path(tmp_path):
+    missing = tmp_path / "nowhere.ttf"
+    write_providers(tmp_path, glyph={"font": str(missing)})
+    with pytest.raises(curated.CuratedValidationError, match="nowhere.ttf"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_glyph_section_with_no_font_is_refused(tmp_path):
+    write_providers(tmp_path, glyph={})
+    with pytest.raises(curated.CuratedValidationError, match="providers.glyph.font"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_glyph_key_that_is_not_a_mapping_is_refused(tmp_path):
+    write_providers(tmp_path, glyph="yes")
+    with pytest.raises(curated.CuratedValidationError, match="providers.glyph"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_saved_config_round_trips_its_glyph_font(tmp_path):
+    font = tmp_path / "Ayuthaya.ttf"
+    font.write_bytes(b"not really a font, but it exists")
+    path = tmp_path / "out.yaml"
+    curated.save_providers_config(path, curated.ProvidersConfig(
+        imgfetch_path="curl", audiofetch_path="curl",
+        glyph=curated.GlyphConfig(font=str(font))))
+    assert curated.load_providers_config(path).glyph == curated.GlyphConfig(font=str(font))
+
+
+def test_glyph_is_last_in_the_default_provenance_prior():
+    """Spec 3 r41 section 4: a chart cell is a drawing of the deck's own
+    making, below every photograph and below a generated picture -- it
+    only ever competes with itself (glyph is a name word's one source),
+    so its place is the bottom of the order, listed so it ranks above
+    nothing at all."""
+    assert curated.RulebookConfig().provenance_prior == (
+        "commission", "forvo", "tts", "pexels", "openverse", "wikimedia", "brave",
+        "learner", "generated", "glyph")
 
 
 # --- Letter names: the category a recited-name Word carries (spec 1 r16) ----

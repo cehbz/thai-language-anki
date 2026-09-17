@@ -37,7 +37,7 @@ from thai_syllabus.ids import ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
-from thai_syllabus.wiring import Derivations
+from thai_syllabus.wiring import Derivations, sources_for_need_of
 
 from .builders import PROV, sentence, syl, pron, target, thai_of, word
 
@@ -87,24 +87,50 @@ def pair(confusion, w1, w2):
                               members=(w1, w2))
 
 
+def _syllabus_for(w1, w2, keyword_word, confusion, pair, grapheme, db, *,
+                  with_name_word=False):
+    """The Syllabus every review-server unit test measures its folds over
+    (this file's `syllabus` fixture) -- optionally carrying `grapheme`'s
+    recited-name Word too (spec 1 r16), with both its Targets, so a test
+    can exercise the chart-cell need (spec 3 r41 section 5). One builder,
+    so a test that wants the name word does not stand up a second deck.
+    """
+    words = (w1, w2, keyword_word)
+    graphemes = (grapheme,)
+    targets = [target("t-rice", w1.id), target("t-near", w2.id)]
+    if with_name_word:
+        name = word("name-chicken", "กอ ไก่", "the name of the letter ko kai")
+        graphemes = (dataclasses.replace(grapheme, name_word=name.id),)
+        words = words + (name,)
+        targets += [target("t-name-chicken-r", name.id, skill="receptive"),
+                   target("t-name-chicken-p", name.id, skill="productive")]
+    return Syllabus(words=words, targets=tuple(targets), pairs=(pair,),
+                    graphemes=graphemes, confusions=(confusion,), assessments=db)
+
+
 @pytest.fixture
 def syllabus(w1, w2, keyword_word, confusion, pair, grapheme, db):
-    targets = (target("t-rice", w1.id), target("t-near", w2.id))
-    return Syllabus(words=(w1, w2, keyword_word), targets=targets, pairs=(pair,),
-                    graphemes=(grapheme,), confusions=(confusion,), assessments=db)
+    return _syllabus_for(w1, w2, keyword_word, confusion, pair, grapheme, db)
 
 
-@pytest.fixture
-def derivations(syllabus, db, media_store):
+def _derivations_for(syllabus, db, media_store, *, sources_for_need=None):
     """The bundle wiring.load_derivations builds from a deck, with an
     empty rubric mapping (no verdict is stale on a role's account) and no
     provenance prior -- the deck-independent parameters these unit tests
-    measure their folds under.
+    measure their folds under. `sources_for_need`, when given, is the
+    per-need roster (wiring.sources_for_need_of) a hand-built Derivations
+    otherwise carries as None (spec 3 r41 section 5).
     """
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric={}, prior=(), provenance_source=lambda sha: None,
                        sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
-                       transient_cap=DEFAULT_TRANSIENT_CAP)
+                       transient_cap=DEFAULT_TRANSIENT_CAP,
+                       sources_for_need=sources_for_need)
+
+
+@pytest.fixture
+def derivations(syllabus, db, media_store):
+    return _derivations_for(syllabus, db, media_store)
 
 
 # --- cache-row helpers (mirrors test_derivations.py's) ----------------------
@@ -228,7 +254,8 @@ def test_build_queue_rate_item_carries_gloss_query_verdict_and_thumbnails(deriva
     assert rated["query"] == "rice photo"
     assert rated["current"]["sha"] == "sA"
     assert "judge: pass" in rated["current"]["verdict"]
-    assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB", "generated": False, "verdict": None}]
+    assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB", "generated": False,
+                                  "glyph": False, "verdict": None}]
 
 
 def test_rate_question_marks_learner_ranks_false_for_a_recording(derivations, db, w1):
@@ -677,7 +704,8 @@ def test_a_direction_questions_candidates_carry_generated_from_their_media_row(
     items = rs.build_queue(derivations, budget=50)
     direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
     by_sha = {c["sha"]: c for c in direction["candidates"]}
-    assert by_sha["sA"] == {"sha": "sA", "url": "/media/sA", "generated": False, "verdict": None}
+    assert by_sha["sA"] == {"sha": "sA", "url": "/media/sA", "generated": False,
+                            "glyph": False, "verdict": None}
     assert by_sha["sB"]["generated"] is True
 
 
@@ -2558,7 +2586,7 @@ def test_rejected_candidates_carry_the_deciding_verdict(derivations, db, w1):
     rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id
                 and i["kind"] == "picture")
     assert rated["rejected"] == [{"sha": "sB", "url": "/media/sB", "generated": False,
-                                  "verdict": "judge: fail — a cat"}]
+                                  "glyph": False, "verdict": "judge: fail — a cat"}]
 
 
 def test_a_generated_candidate_is_marked_from_its_media_row(derivations, db, w1):
@@ -2764,3 +2792,54 @@ def test_a_rendition_rate_items_shown_carries_the_member_recording_shas(
                if i["type"] == "rate" and i["subject"] == pair.id and i["kind"] == "rendition"]
     assert item["shown"]["recordings"] == [shas[w1.id], shas[w2.id]]
     assert item["shown"]["picture"] is None
+
+
+# --- a chart cell's need has one source on the screen too (spec 3 r41) ------
+
+def test_a_name_words_picture_need_is_exhausted_after_the_glyph_source(
+        w1, w2, keyword_word, confusion, pair, grapheme, db, media_store):
+    """R4: the screen's `exhausted` must agree with the run -- a chart
+    cell that glyph has answered has nothing else to try, and the need
+    reaches the learner as a direction request, not as one more source."""
+    syllabus = _syllabus_for(w1, w2, keyword_word, confusion, pair, grapheme, db,
+                             with_name_word=True)
+    d = _derivations_for(syllabus, db, media_store,
+                         sources_for_need=sources_for_need_of(syllabus, sources_for))
+    ctx = rs.ReviewContext(derivations=d)
+    _provide(db, "name-chicken", "picture", backend="glyph", items=[])
+
+    status = ctx.exhausted("name-chicken", "picture")
+
+    assert status.exhausted is True
+
+
+def test_an_ordinary_picture_need_still_has_its_corpora(
+        w1, w2, keyword_word, confusion, pair, grapheme, db, media_store):
+    syllabus = _syllabus_for(w1, w2, keyword_word, confusion, pair, grapheme, db,
+                             with_name_word=True)
+    d = _derivations_for(syllabus, db, media_store,
+                         sources_for_need=sources_for_need_of(syllabus, sources_for))
+    ctx = rs.ReviewContext(derivations=d)
+    _provide(db, keyword_word.id, "picture", backend="pexels", items=[])
+    assert ctx.exhausted(keyword_word.id, "picture").exhausted is False
+
+
+# --- the screen captions a chart cell "glyph" (spec 5 r12) ------------------
+
+def test_a_chart_cell_artifact_is_marked_glyph(derivations, db):
+    """Spec 5 r12: a drawn chart cell says so under itself, as a generated
+    picture does -- the learner should know which kind of evidence they
+    are rating."""
+    db.add_media(sha="cell-sha", kind="picture", ext="png", source="glyph",
+                 origin="ก", licence="generated",          # ก: k
+                 acquired=date(2026, 9, 17))
+    art = rs._artifact(derivations, "cell-sha")
+    assert art["glyph"] is True and art["generated"] is False
+
+
+def test_a_photograph_is_marked_neither(derivations, db):
+    db.add_media(sha="photo-sha", kind="picture", ext="jpg", source="pexels",
+                 origin="https://x/c.jpg", licence="by",
+                 acquired=date(2026, 9, 17))
+    art = rs._artifact(derivations, "photo-sha")
+    assert art["glyph"] is False and art["generated"] is False

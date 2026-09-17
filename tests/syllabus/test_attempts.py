@@ -14,13 +14,13 @@ from PIL import Image as PILImage
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
 from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
-                                    Need, Sourcing,
+                                    ChartCell, Need, Sourcing,
                                     _picture_params, _pool, _sentence_prompt,
-                                    adjudication_attempt, assess_first, attempt,
+                                    adjudication_attempt, assess_first, attempt, chart_cell,
                                     comment_attempt, current_best_of, grapheme_attempt,
                                     phrase_attempt,
                                     picture_query_for, retire_sentence, sentence_attempt,
-                                    sources_for)
+                                    sources_for, sources_for_need)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
 from thai_syllabus.derivations import attempts_since_change, exhausted
@@ -68,15 +68,19 @@ _FEMALE = ("th-F-a", "th-F-b")
 # --- fake backends ----------------------------------------------------------
 
 class _Search:
-    """Records every query it was asked, answers one hit per url."""
+    """Records every query it was asked -- and the whole params mapping,
+    which spec 3 r41 section 5 keeps bare for an ordinary source -- and
+    answers one hit per url."""
     def __init__(self, urls):
         self.urls, self.queries = list(urls), []
+        self.asked: list[dict] = []
 
     def cache_key(self, q):
         return ProvideKey(source="openverse", kind="", query=q.params["query"])
 
     def fetch(self, q):
         self.queries.append(q.params["query"])
+        self.asked.append(dict(q.params))
         return RawAnswer(items=tuple({"url": u, "source": "openverse", "licence": "by"}
                                      for u in self.urls))
 
@@ -89,6 +93,13 @@ def _jpeg_bytes(url: str) -> bytes:
               else (200 + digest[0] % 56, digest[1] % 50, digest[2] % 50))
     buf = io.BytesIO()
     PILImage.new("RGB", (4, 4), colour).save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+def _png_bytes(colour=(10, 200, 10)) -> bytes:
+    """A decodable PNG, the bytes a drawn chart cell arrives as."""
+    buf = io.BytesIO()
+    PILImage.new("RGB", (4, 4), colour).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -3812,3 +3823,158 @@ def test_a_symbol_twice_in_the_table_is_adopted_once(tmp_path):
     assert [g.symbol for g in ctx.syllabus.graphemes] == ["ง"]        # ง: ŋ
     assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == [
         "snake", "name-snake"]
+
+
+# --- sources_for_need: the roster one need is asked (spec 3 r41 §5) ---------
+
+def _named_ctx(tmp_path):
+    """A ctx whose syllabus holds one grapheme with a name word."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    rice = word("rice", "ข้าว", "rice")           # ข้าว: rice
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(words=(chicken, name, rice), graphemes=(g,),
+                        targets=(target("rice/receptive", "rice"),))
+    return _sourcing(tmp_path, syllabus, backends={}, assess={})
+
+
+def test_a_name_words_picture_need_is_asked_the_glyph_source_alone(tmp_path):
+    ctx = _named_ctx(tmp_path)
+    assert sources_for_need(ctx, Need("name-chicken", "picture")) == ("glyph",)
+
+
+def test_every_other_need_is_asked_the_ctxs_own_roster(tmp_path):
+    ctx = _named_ctx(tmp_path)
+    assert sources_for_need(ctx, Need("rice", "picture")) == ctx.sources_for("picture")
+    assert sources_for_need(ctx, Need("name-chicken", "recording")) == ("forvo", "tts")
+    assert sources_for_need(ctx, Need("sha", "picture", "sentence")) == ctx.sources_for("picture")
+
+
+def test_the_decks_configured_roster_is_honoured(tmp_path):
+    ctx = _named_ctx(tmp_path)
+    ctx.sources_for = lambda kind: ("pexels",) if kind == "picture" else ()
+    assert sources_for_need(ctx, Need("rice", "picture")) == ("pexels",)
+    assert sources_for_need(ctx, Need("name-chicken", "picture")) == ("glyph",)
+
+
+# --- the chart cell and its query (spec 3 r41 §5) ---------------------------
+
+def _cell_ctx(tmp_path, *, keyword_has_a_picture=True):
+    """A ctx over one grapheme whose keyword's current-best picture is (or
+    is not) in the store."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    media = FakeMediaIndex(pictures={"chicken"} if keyword_has_a_picture else set())
+    syllabus = Syllabus(words=(chicken, name), graphemes=(g,),
+                        targets=(target("name-chicken/receptive", "name-chicken"),),
+                        media=media)
+    store = MediaStore(tmp_path / "media")
+    holder: list[Sourcing] = []
+
+    def resolve(sha):
+        prov = holder[0].db.media_provenance(sha)
+        path = store.path_for(sha, prov["ext"]) if prov else None
+        return path if path is not None and path.exists() else None
+
+    ctx = _sourcing(tmp_path, syllabus, media=store, backends={},
+                    assess={"judge": JudgeBackend(model="m", transport="api", complete=_Judge(),
+                                                  resolve_path=resolve)})
+    holder.append(ctx)
+    if keyword_has_a_picture:
+        ctx.db.add_media(sha="sha-chicken", kind="picture", ext="jpg", source="pexels",
+                         origin="https://x/chicken.jpg", licence="by", acquired=date(2026, 9, 17))
+    return ctx
+
+
+def test_a_name_words_picture_need_has_a_chart_cell(tmp_path):
+    ctx = _cell_ctx(tmp_path)
+    assert chart_cell(ctx, Need("name-chicken", "picture")) == ChartCell(
+        symbol="ก", picture_sha="sha-chicken", picture_ext="jpg")
+
+
+def test_a_name_word_whose_keyword_has_no_picture_has_no_cell(tmp_path):
+    ctx = _cell_ctx(tmp_path, keyword_has_a_picture=False)
+    assert chart_cell(ctx, Need("name-chicken", "picture")) is None
+
+
+def test_no_other_need_has_a_chart_cell(tmp_path):
+    ctx = _cell_ctx(tmp_path)
+    assert chart_cell(ctx, Need("name-chicken", "recording")) is None
+    assert chart_cell(ctx, Need("chicken", "picture")) is None
+    assert chart_cell(ctx, Need("name-chicken", "picture", "sentence")) is None
+
+
+def test_the_chart_cells_query_is_the_symbol(tmp_path):
+    """R5/decision 17: the cell is drawn from the symbol, so the query is
+    a fact of curated data -- never drafted, never a learner direction."""
+    ctx = _cell_ctx(tmp_path)
+    _seed_phrase(ctx, "name-chicken", "a chicken in a yard")
+    assert picture_query_for(ctx, Need("name-chicken", "picture")) == "ก"
+
+
+def test_a_chart_cell_need_with_no_keyword_picture_has_no_query(tmp_path):
+    """Spec 3 r41 §5: the need waits -- the r25 path, deferred, until the
+    keyword's own picture arrives."""
+    ctx = _cell_ctx(tmp_path, keyword_has_a_picture=False)
+    _seed_phrase(ctx, "name-chicken", "a chicken in a yard")
+    assert picture_query_for(ctx, Need("name-chicken", "picture")) is None
+
+
+def test_an_ordinary_needs_query_is_still_the_record(tmp_path):
+    ctx = _cell_ctx(tmp_path)
+    _seed_phrase(ctx, "chicken", "a chicken in a yard")
+    assert picture_query_for(ctx, Need("chicken", "picture")) == "a chicken in a yard"
+
+
+class _RecordingGlyph:
+    """A glyph backend that records what it was asked and answers a cell
+    already in the store."""
+
+    def __init__(self, media):
+        self.media = media
+        self.asked = []
+
+    def cache_key(self, q):
+        return ProvideKey(source="glyph", kind=str(q.params.get("cell_picture") or ""),
+                          query=q.params["query"])
+
+    def fetch(self, q):
+        self.asked.append(dict(q.params))
+        sha = self.media.add_image(_png_bytes(), "png").sha
+        return RawAnswer(items=({"sha": sha, "ext": "png", "source": "glyph",
+                                 "origin": q.params["query"], "licence": "generated"},))
+
+
+def test_the_glyph_source_is_asked_with_the_cells_symbol_and_keyword_picture(tmp_path):
+    """Spec 3 r41 §5: the attempt names the artifact the cell is composed
+    from, so the backend needs no syllabus and the key carries the sha."""
+    ctx = _cell_ctx(tmp_path)
+    glyph = _RecordingGlyph(ctx.media_store)
+    ctx.provider._backends["glyph"] = glyph
+
+    attempt(ctx, Need("name-chicken", "picture"), "glyph")
+
+    assert glyph.asked == [{"query": "ก", "cell_picture": "sha-chicken",
+                            "cell_picture_ext": "jpg"}]
+
+
+def test_the_cell_is_ingested_without_imgfetch_and_keeps_its_provenance(tmp_path):
+    ctx = _cell_ctx(tmp_path)
+    glyph = _RecordingGlyph(ctx.media_store)
+    ctx.provider._backends["glyph"] = glyph
+
+    attempt(ctx, Need("name-chicken", "picture"), "glyph")
+
+    outcome = _outcome(ctx.db, "name-chicken", "picture", "glyph")
+    (sha,) = outcome.answer["candidates"]
+    assert outcome.answer["tried"] == []                     # no imgfetch
+    assert ctx.db.media_provenance(sha)["source"] == "glyph"
+
+
+def test_an_ordinary_picture_source_is_asked_the_query_alone(tmp_path):
+    ctx, search, _judge = _picture_ctx(tmp_path)
+    attempt(ctx, Need("rice", "picture"), "openverse")
+    assert search.asked == [{"query": "rice food"}]

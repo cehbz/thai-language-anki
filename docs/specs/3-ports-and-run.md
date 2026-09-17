@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 40, proposed 2026-09-17 against principles r5 and architecture
+Revision 41, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -234,6 +234,7 @@ Revision log:
 - r38 2026-09-16: a source is asked with the search form of the need's query (punctuation stripped, whitespace collapsed; the key and the outcome row keep the query itself; the illustrator draws the query as written), and the judge's `suggestion` is a search phrase (at most ten words, no punctuation); the Openverse token request waits once and retries once on a transport failure, the search's own challenge wait (§6a). Evidence: Pexels's Cloudflare front challenges on the query string's punctuation, not the egress -- the same 25-word query passes without its commas and is challenged with them, and a challenged need was challenged again through the proxy; Openverse ANDs every term and answered nothing to 23 of 23 asks under long suggestions; since r35 a suggestion stays the query for every source, and r33's prompt asked for a picture description: 3,997 suggestions since, median 17 words, 645 with quotes. The Openverse token request had timed out once per run and each time cost Openverse the run, though 12 of 12 probes succeed in about 3 s. User approval 2026-09-16.
 - r39 2026-09-16: an invocation repeats resolve/attempt/submit, waiting on each batch it submits (status polled at growing intervals, `--poll-seconds` doubling to `--poll-max-seconds`, 5 to 15 minutes by default) until a pass raises no batch and appends nothing to the record but its own report (a tally such as `attempted` measures effort, not progress: the sentence attempt counts its open targets every pass); `--cycles N` caps the passes; `--max-wait-seconds` default 21600 (6 hours; the batch keeps processing and the next invocation resolves it). Evidence: the one-source-per-pass shape with a batch per pass needs up to six passes to reach the illustrator; the Message Batches API offers no completion notification, so the wait is a poll; the earlier stop rule ended an invocation after a pass whose sources all answered nothing; eleven measured batches: median about 10 minutes, longest 188. User approval 2026-09-16.
 - r40 2026-09-17: one grapheme pass per run, after the sentence attempt and before the phrase and adjudication asks: every consonant of the repo inventory (data/thai_consonants.yaml) the deck lacks becomes a Grapheme row with its acrophonic keyword Word (matched in the vocabulary by `thai`, else a closure Word whose id is the slug of the table's gloss) and its recited-name Word (both Targets, category `Letter names`, spec 1 r16), pronunciations seeded from the engines alone -- `engines_agree` when the rule tone engine settles a monosyllable's tone, else `disputed`, which the adjudication pass (r28) asks the judge about next run; the three curated files are written under the writing command, rows added and none removed (spec 2 r17); a row whose keyword does not contain its symbol, or whose form no engine reads, is logged and counted, not adopted. `RunReport.adopted_graphemes`, `adopted_words` and `adoption_skipped` are events, outside the needs identity. Evidence: the live deck has 0 graphemes and E1 is satisfied vacuously -- 734 word Reading cards compile for a learner who cannot read; the inventory is fixed knowledge, so adoption is mechanical and free, and one pass takes all of it. User approval 2026-09-17.
+- r41 2026-09-17: `glyph`, a Provide backend of kind picture: the alphabet-chart cell for a grapheme's recited-name Word -- the symbol in a Thai font beside the keyword's current-best picture, on a square white canvas -- drawn with Pillow, deterministic and free, provenance `glyph`, keyed `glyph:<keyword picture sha>:<symbol>` so a changed keyword picture is a new cell; a name word whose keyword has no picture has no cell and its need waits. `sources_for_need` gives that need the roster `("glyph",)` and every other need its kind's roster, read alike by the run's attempt loop, queue()/queued() and the review server's exhausted(); `glyph` is never on SOURCES["picture"]. The query is the symbol, not a drafted phrase, so the phrase ask never sees the need. providers.yaml gains `glyph: {font}`. Evidence: F6's grapheme card shows the keyword's picture, and the recited name's Production card needs a cue of its own -- the alphabet chart every Thai child learns from is that cue, and it is composed from artifacts the deck already holds, so searching a corpus for it would be spending money on the wrong picture. User approval 2026-09-17.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -323,6 +324,7 @@ one speaker answers empty.
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
 | illustrator | picture (one generated image per query through the configured image generator, `illustrator.provider`; bytes into the media store; the item carries its sha, provenance `generated`, licence `generated`, origin the model) | illustrator:MODEL:query | cash per image (`illustrator.price_per_image`, on the row); 429/402 is Quota (§6a) | never: the same query at the same model is the same image; a declined prompt is a cached empty answer |
+| glyph | picture (the alphabet-chart cell for a grapheme's recited-name Word: the symbol in the configured Thai font beside the keyword's current-best picture, square white canvas, a thin rule between; drawn with Pillow into the media store, the item carrying its sha, provenance `glyph`, licence `generated`, origin the symbol) | glyph:KEYWORD_PICTURE_SHA:SYMBOL | free; no network | never: deterministic, so the same pair is the same bytes; a keyword whose picture changes is a new key, and a keyword with no picture is a cached empty answer |
 
 ## 4. Assess backends and authority
 
@@ -388,7 +390,17 @@ an answer: nothing is appended and the ask is a source failure, re-asked
 next run). A need with no query on record is
 not attempted this run and counts `deferred` (r25): the gloss is the
 drafter's input, never a search (the corpora index English metadata, so
-the phrase is English). Source order: pexels, openverse, wikimedia, brave, illustrator (r26, r32, r34). One attempt: search, imgfetch the first N
+the phrase is English). Source order: pexels, openverse, wikimedia, brave, illustrator (r26, r32, r34).
+A grapheme's recited-name Word is the exception (r41): its picture is the
+alphabet-chart cell, so its source order is `("glyph",)` alone -- no
+corpus is searched for a letter name, and `glyph` is on no other need's
+order. Its query is the grapheme's symbol, a fact of curated data that no
+direction, suggestion or draft replaces, so the phrase ask skips it; while
+its keyword has no current-best picture there is no cell to draw and the
+need waits on the r25 path, counted `deferred`. That one roster --
+`sources_for_need` -- is what the attempt loop, the queue and the screen's
+`exhausted` all read, so none of them can disagree about what a need has
+left to try. One attempt: search, imgfetch the first N
 (providers.yaml `image_candidates`, default 5) hits no earlier attempt on
 the same need and source fetched, fetched meaning ingested or refused by
 its server (a wire failure leaves the url untried, §6a) (the outcome row
@@ -874,7 +886,11 @@ gemini-3.1-flash-image, 0.067 at list, inline; a deck without the section
 has no illustrator source) with its key at
 `secrets.<provider>` (`secrets.gemini`); `quotas.illustrator.{max_asks (20), max_cost}` (r34),
 layered field by field over the defaults; an explicit `max_asks: null`
-lifts a default cap for the day. `quotas.<source>.nothing_ttl_days`
+lifts a default cap for the day.
+`glyph: {font}` (r41) names the Thai .ttf/.ttc the chart cell's symbol is
+drawn with; the loader refuses a file that is not there, and a deck with
+no `glyph` section registers no chart-cell backend at all.
+`quotas.<source>.nothing_ttl_days`
 (forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
 (seconds between two requests to the source within one process;
 openverse 1, pexels 1, brave 1, others 0) and

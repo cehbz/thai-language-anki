@@ -44,7 +44,7 @@ from .curated import (
     load_providers_config,
     rulebook_file_text,
 )
-from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best
+from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best, need_sources
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
@@ -53,6 +53,7 @@ from .provider import (
     Backend,
     FetchBackend,
     ForvoBackend,
+    GlyphBackend,
     IllustratorBackend,
     LlmBackend,
     Provider,
@@ -75,7 +76,7 @@ from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransp
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
-          "nothing_ttl_for", "pacing_for", "sources_for_config",
+          "nothing_ttl_for", "pacing_for", "sources_for_config", "sources_for_need_of",
           "ILLUSTRATOR_DEFAULT_DAILY_BUDGET", "Derivations", "load_derivations",
           "load_syllabus"]
 
@@ -209,6 +210,19 @@ def sources_for_config(cfg: ProvidersConfig) -> Callable[[str], Sequence[str]]:
     return sources_for if cfg.illustrator is not None else _sources_without_illustrator
 
 
+def sources_for_need_of(syllabus: Syllabus, sources_for: Callable[[str], Sequence[str]]
+                        ) -> Callable[..., Sequence[str]]:
+    """The per-need source roster this deck runs (spec 3 r41 section 5),
+    bound to one loaded Syllabus: the chart-cell source alone for a
+    grapheme name word's picture, this deck's own kind roster otherwise.
+    One closure, handed to queue()/queued() and to the review server's
+    exhausted() so both read what the run's attempt loop reads.
+    """
+    def for_need(subject: str, kind: str, subject_kind: str = "word") -> Sequence[str]:
+        return need_sources(syllabus, sources_for, subject, kind, subject_kind)
+    return for_need
+
+
 def _illustrator_backend(illustrator: IllustratorConfig, secrets,
                          media_store: MediaStore) -> IllustratorBackend:
     """The illustrator roster entry (spec 3 r34 section 3/5). The
@@ -266,6 +280,14 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     # deck's picture order to match.
     if cfg.illustrator is not None:
         backends["illustrator"] = _illustrator_backend(cfg.illustrator, secrets, media_store)
+
+    # Registered only when providers.yaml names a font (spec 3 r41
+    # section 5), as the illustrator is: a deck with no `glyph` section
+    # has no chart-cell source, and a name word's picture need then
+    # reports the roster's own "no such backend" failure, which says
+    # exactly what is missing.
+    if cfg.glyph is not None:
+        backends["glyph"] = GlyphBackend(media=media_store, font_path=cfg.glyph.font)
 
     # Always registered: load_providers_config refuses a providers.yaml
     # without both paths.
@@ -505,6 +527,10 @@ class Derivations:
     # reads budgets["learner"].max_asks through here, providers.yaml-
     # configurable through the same "quotas" path as forvo's day budget.
     budgets: Mapping[str, Budget] = field(default_factory=dict)
+    # The per-need source roster (spec 3 r41 section 5); None falls back
+    # to `sources_for(kind)` for every need, which is what a Derivations
+    # built by hand in a test gets.
+    sources_for_need: Callable[..., Sequence[str]] | None = None
 
 
 def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
@@ -532,7 +558,8 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
                        sentence_nothing_cap=cfg.sentence_nothing_cap,
                        nothing_ttl=nothing_ttl_for(cfg),
                        thresholds=dict(bundle.rulebook.thresholds),
-                       budgets=default_budgets(cfg))
+                       budgets=default_budgets(cfg),
+                       sources_for_need=sources_for_need_of(syllabus, sources_for_config(cfg)))
 
 
 # --- build_sourcing: the batch run's ctx (spec 3 section 4/5) -------------

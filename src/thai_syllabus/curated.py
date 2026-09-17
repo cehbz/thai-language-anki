@@ -419,9 +419,11 @@ class RulebookConfig:
     # provenance's preference order (spec 3 section 4): earlier sources win
     # ties. Audio first as before; the picture corpora in source order
     # (licensed first); a generated picture (spec 3 r34) below every
-    # photograph, above nothing.
+    # photograph, and a chart cell (spec 3 r41's glyph) below that -- it
+    # is the deck's own drawing, and the only need it serves has no other
+    # source to lose a tie to.
     provenance_prior: tuple[str, ...] = ("commission", "forvo", "tts", "pexels", "openverse",
-                                         "wikimedia", "brave", "learner", "generated")
+                                         "wikimedia", "brave", "learner", "generated", "glyph")
 
 
 def save_rulebook_config(path: str | Path, config: RulebookConfig) -> None:
@@ -610,7 +612,8 @@ def rulebook_file_text(path: str | Path) -> str:
 # `illustrator` section that is not a mapping or that names no provider,
 # a provider no image generator is registered for, no model, or no
 # non-negative price_per_image, and a gemini illustrator with no
-# `secrets.gemini`.
+# `secrets.gemini`. a `glyph` section that is not a mapping, names no
+# `font`, or names a font file that is not there.
 # An absent file refuses, naming the path.
 
 DEFAULT_IMAGE_WIDTH = 1600   # iiurlwidth bound on a wikimedia thumburl (spec 3 section 9)
@@ -641,6 +644,16 @@ class IllustratorConfig:
 
 
 @dataclass(frozen=True)
+class GlyphConfig:
+    """providers.yaml `glyph` (spec 3 r41 section 8): the Thai font the
+    glyph backend draws an alphabet-chart cell's symbol with. One setting,
+    a path to a .ttf/.ttc the deck's machine holds; the loader refuses a
+    file that is not there, because a missing font is a run that draws
+    nothing all day."""
+    font: str
+
+
+@dataclass(frozen=True)
 class ProvidersConfig:
     secrets: dict[str, str | None] = field(default_factory=dict)
     search_proxy: str | None = None
@@ -655,6 +668,11 @@ class ProvidersConfig:
     # `illustrator` section -- leaves the source off the deck's roster
     # entirely, so a picture need exhausts exactly as it did before.
     illustrator: IllustratorConfig | None = None
+    # The chart-cell source (spec 3 r41 section 5): None -- no `glyph`
+    # section -- leaves the backend off the deck's roster, and a name
+    # word's picture need then reports a source failure it can be read
+    # from, as an unconfigured source always has.
+    glyph: GlyphConfig | None = None
     image_candidates: int = 5  # candidate images fetched per target word
     image_width: int = DEFAULT_IMAGE_WIDTH
     batch: dict[str, Any] = field(default_factory=dict)
@@ -820,6 +838,24 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                                                 model=model.strip(),
                                                 price_per_image=float(price))
 
+    # The chart-cell font (spec 3 r41 section 8). Absent is the default:
+    # no glyph backend at all.
+    glyph = None
+    if "glyph" in data:
+        glyph_cfg = data["glyph"]
+        if not isinstance(glyph_cfg, Mapping):
+            errors.append(f"providers.glyph: {glyph_cfg!r} must be a mapping "
+                          "naming the chart-cell font")
+        else:
+            font = glyph_cfg.get("font")
+            if not isinstance(font, str) or not font.strip():
+                errors.append(f"providers.glyph.font: {font!r} must be a non-empty path "
+                              "to a Thai .ttf/.ttc")
+            elif not Path(font.strip()).expanduser().is_file():
+                errors.append(f"providers.glyph.font: {font.strip()} is not a file")
+            else:
+                glyph = GlyphConfig(font=str(Path(font.strip()).expanduser()))
+
     image_candidates = data.get("image_candidates", 5)
     if not isinstance(image_candidates, int) or image_candidates < 1:
         errors.append(f"providers.image_candidates: {image_candidates!r} must be "
@@ -920,6 +956,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, illustrator=illustrator,
+        glyph=glyph,
         image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,
@@ -951,6 +988,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
                             "model": config.illustrator.model,
                             "price_per_image": config.illustrator.price_per_image}}
            if config.illustrator is not None else {}),
+        **({"glyph": {"font": config.glyph.font}} if config.glyph is not None else {}),
         "image_candidates": config.image_candidates,
         "image_width": config.image_width,
         "batch": dict(config.batch),

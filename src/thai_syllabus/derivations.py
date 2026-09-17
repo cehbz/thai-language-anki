@@ -43,6 +43,7 @@ __all__ = [
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
     "pending", "adjudications",
     "attempts_since_change", "tried_sources", "next_source",
+    "GLYPH_SOURCES", "need_sources",
     "ExhaustedStatus", "exhausted", "sentence_exhausted",
     "improved",
     "directed",
@@ -708,6 +709,26 @@ def aged_out(cache: CacheReader, subject: str, kind: str, source: str, *,
     return newest.answer.get("outcome") == "nothing" and newest.ts < now_ns - days * _NANOS_PER_DAY
 
 
+# The one source a grapheme's recited-name Word's picture need is asked
+# (spec 3 r41 section 5): its picture is the alphabet-chart cell, drawn
+# from the symbol and the keyword's own current picture, so no corpus is
+# ever searched for it and `glyph` is never on attempts.SOURCES["picture"].
+GLYPH_SOURCES: tuple[str, ...] = ("glyph",)
+
+
+def need_sources(syllabus, sources_for: Callable[[str], Sequence[str]],
+                 subject: str, kind: str, subject_kind: str = "word") -> tuple[str, ...]:
+    """The sources one need may be asked, cheapest first: the chart-cell
+    source alone for a grapheme name word's picture, and the deck's own
+    roster for that kind otherwise (spec 3 r41 section 5). Read by the
+    run's attempt loop, by queue()/queued() and by the review server, so
+    every one of them agrees on what a need has left to try.
+    """
+    if kind == "picture" and subject_kind == "word" and subject in syllabus.name_word_ids:
+        return GLYPH_SOURCES
+    return tuple(sources_for(kind))
+
+
 def next_source(cache: CacheReader, subject: str, kind: str,
                 sources: Sequence[str], *, transient_cap: int,
                 nothing_ttl: Mapping[str, int] = {},
@@ -981,14 +1002,15 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          collected_this_run: frozenset[tuple[str, str]] = frozenset(),
          nothing_ttl: Mapping[str, int] = {},
          now_ns: int | None = None,
-         requery_cap: int = DEFAULT_REQUERY_CAP) -> list[QueueEntry]:
+         requery_cap: int = DEFAULT_REQUERY_CAP,
+         sources_for_need: Callable[..., Sequence[str]] | None = None) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
                   transient_cap=transient_cap,
                   provenance_source=provenance_source,
                   collected_this_run=collected_this_run,
                   nothing_ttl=nothing_ttl, now_ns=now_ns,
-                  requery_cap=requery_cap).entries
+                  requery_cap=requery_cap, sources_for_need=sources_for_need).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
@@ -997,7 +1019,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           collected_this_run: frozenset[tuple[str, str]] = frozenset(),
           nothing_ttl: Mapping[str, int] = {},
           now_ns: int | None = None,
-          requery_cap: int = DEFAULT_REQUERY_CAP) -> QueuedNeeds:
+          requery_cap: int = DEFAULT_REQUERY_CAP,
+          sources_for_need: Callable[..., Sequence[str]] | None = None) -> QueuedNeeds:
     """queue()'s entries plus the counts the same pass left out.
     `collected_this_run` names the (subject, kind) needs this run already
     collected a question for; each is skipped like an already-pending
@@ -1008,6 +1031,12 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     does `requery_cap` (spec 3 r35 section 6), which bounds how many
     distinct queries a picture need is searched under before its sources
     exhaust per need again.
+
+    `sources_for_need` (spec 3 r41 section 5), when given, says which
+    sources one need may be asked -- a grapheme name word's picture has
+    exactly one, the chart-cell source -- so the queue's exhausted() and
+    untried-lever folds agree with the run's own attempt loop. Absent, the
+    roster is the kind's, as before.
     """
     entries: list[QueueEntry] = []
     candidates = available_needs(syllabus)
@@ -1033,7 +1062,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         role = role_of(cache, subject, kind, rows)
         is_vetoed = vetoed(cache, subject, role, best.artifact_sha)
         is_directed = directed(cache, subject)
-        sources = sources_for(kind)
+        sources = (sources_for(kind) if sources_for_need is None
+                   else sources_for_need(subject, kind, subject_kind))
         # attempts: the same count exhausted() reports -- a source at the
         # transient cap is one attempt (spec 3 section 6).
         # Never kind "sentence": queued() skips it above, so exhausted()'s
