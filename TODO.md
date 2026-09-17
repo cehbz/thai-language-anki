@@ -57,6 +57,13 @@ still run against them.
   judge does); Flickr as a keywords-form source (`record.QUERY_FORMS`,
   spec 3 r36). The pre-r36 phrases: run `work/phrase-redraft.py` on the
   deck (dry run counted 1188 needs; about eight drafter asks).
+- Chart cells (spec 3 r41): an automatic redraw when the keyword's
+  picture changes (today the cell is redrawn only when the need reopens);
+  a chart-cell clause in the picture rubric (a failed cell has no recovery
+  but a learner-supplied picture); `chart_cell` computed three times per
+  glyph attempt; `Derivations.sources_for_need` bound to the
+  construction-time Syllabus; `_DbMediaIndex.words` stale after adoption
+  until the next process; ฃ and ฅ by hand with a chosen keyword.
 - `exhausted().capped` is query-scoped while its attempt count is per
   need (spec 3 r35): a source at the transient cap under an old query
   counts no attempt; an under-count of at most one per such source.
