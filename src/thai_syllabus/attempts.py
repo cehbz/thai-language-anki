@@ -1486,11 +1486,18 @@ def grapheme_attempt(ctx: Sourcing, *,
         # run._materialize_adjudications takes before writing words.yaml.
         return AttemptResult(attempted=False)
     table = list(consonants) if consonants is not None else list(ctx.consonants())
-    # R7: the pass is idempotent. A symbol the deck already holds is
-    # already adopted, so only the rest of the table is looked at, and a
-    # run with nothing left to adopt writes nothing at all.
+    # R7: the pass is idempotent. A symbol the deck already holds AND
+    # already carries a name word is fully adopted, so only the rest of
+    # the table is looked at. A symbol the deck holds but with
+    # `name_word: None` (r43: a recited name no engine could read as a
+    # phrase, the previous pass's evidence) is not skipped -- it is
+    # looked at again below, on the chance the token-wise fallback now
+    # reads it. `incomplete` is a snapshot at the start of this call; the
+    # pass discards a symbol from it as it completes that row, so a
+    # symbol named twice in `table` is still caught as a duplicate.
     known = {g.symbol for g in ctx.syllabus.graphemes}
-    rows = [row for row in table if row.symbol not in known]
+    incomplete = {g.symbol for g in ctx.syllabus.graphemes if g.name_word is None}
+    rows = [row for row in table if row.symbol not in known or row.symbol in incomplete]
     if not rows:
         return AttemptResult(attempted=False)
     missing = [name for name in _ADOPTION_FILES if not (ctx.curated_dir / name).exists()]
@@ -1505,29 +1512,45 @@ def grapheme_attempt(ctx: Sourcing, *,
     from .curated import build_categories, load_targets, save_graphemes, save_targets, save_words
 
     words = list(ctx.syllabus.words)
+    by_id: dict[WordId, Word] = {w.id: w for w in words}
     category_of: dict[WordId, CategoryName | None] = {
         w.id: ctx.syllabus.category_of(w.id) for w in words}
     listed_targets = list(load_targets(ctx.curated_dir / "targets.yaml"))
     listed_ids = {str(t.id) for t in listed_targets}
     graphemes = list(ctx.syllabus.graphemes)
+    graphemes_by_symbol = {g.symbol: i for i, g in enumerate(graphemes)}
     by_thai = {w.thai: w for w in words}
     taken = {str(w.id) for w in words}
     added_targets: list[Target] = []
     adopted_graphemes = 0
     adopted_words = 0
+    completed_graphemes = 0
     skipped = 0
 
     for row in rows:
         if row.symbol in known:
-            # The symbol is a Grapheme's identity, so a table naming one
-            # twice adopts it once. inventory.load_consonants refuses a
-            # duplicate outright, so only an injected table reaches here.
-            _log.warning("grapheme %s named twice in the table; adopted once", row.symbol)
-            continue
-        keyword = by_thai.get(row.keyword_thai)
+            if row.symbol not in incomplete:
+                # The symbol is a Grapheme's identity, so a table naming
+                # one twice adopts it once. inventory.load_consonants
+                # refuses a duplicate outright, so only an injected table
+                # reaches here -- and so does a symbol this same pass just
+                # completed (discarded from `incomplete` below).
+                _log.warning("grapheme %s named twice in the table; adopted once", row.symbol)
+                continue
+            # A row already on file with no name word (r43): its keyword
+            # is already adopted, so only the recited name is tried again
+            # below, against the row this table names for it now.
+            incomplete.discard(row.symbol)
+            completing_at = graphemes_by_symbol[row.symbol]
+            existing = graphemes[completing_at]
+            keyword = by_id[existing.keyword]
+        else:
+            completing_at = None
+            existing = None
+            keyword = by_thai.get(row.keyword_thai)
         staged: list[Word] = []
         taken_now = set(taken)
-        if keyword is None:
+        if completing_at is None and keyword is None:
             keyword_pron = engines_pronunciation(row.keyword_thai, engines)
             if keyword_pron is None:
                 # R2: a Word is never written with an empty syllable
@@ -1556,10 +1579,18 @@ def grapheme_attempt(ctx: Sourcing, *,
         if name_word is None:
             name_pron = engines_pronunciation(row.name_thai, engines)
             if name_pron is None:
+                skipped += 1
+                if completing_at is not None:
+                    # The row is unchanged: still no name word, so there
+                    # is nothing to replace it with -- a later pass tries
+                    # again (r43).
+                    _log.warning("grapheme %s: still no engine reading of the recited name %r "
+                                 "(%s); the row is left as it was", row.symbol, row.name_thai,
+                                 GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+                    continue
                 # The row still stands: Grapheme.name_word is optional,
                 # and compile() drops that grapheme's Reading card,
                 # counted (spec 1 section 1).
-                skipped += 1
                 _log.warning("grapheme %s: no engine reading of the recited name %r (%s); the "
                              "row is adopted with no name word", row.symbol, row.name_thai,
                              GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
@@ -1579,9 +1610,18 @@ def grapheme_attempt(ctx: Sourcing, *,
             # carries both).
             name_targets = [t for t in both if str(t.id) not in listed_ids]
         try:
-            grapheme = Grapheme.create(symbol=row.symbol, kind="consonant", sound=row.sound,
-                                       consonant_class=row.consonant_class,
-                                       keyword_word=keyword, name_word=name_word)
+            if completing_at is not None:
+                # Same symbol/kind/sound/class/keyword; the one field that
+                # changes is name_word (r43) -- the one case a curated row
+                # is replaced rather than added.
+                grapheme = Grapheme.create(symbol=existing.symbol, kind=existing.kind,
+                                           sound=existing.sound,
+                                           consonant_class=existing.consonant_class,
+                                           keyword_word=keyword, name_word=name_word)
+            else:
+                grapheme = Grapheme.create(symbol=row.symbol, kind="consonant", sound=row.sound,
+                                           consonant_class=row.consonant_class,
+                                           keyword_word=keyword, name_word=name_word)
         except ValueError as e:
             # Decision 12: the obsolete ฃ and ฅ carry acrophonic keywords
             # spelled with the modern ข and ค, so containment refuses
@@ -1593,7 +1633,10 @@ def grapheme_attempt(ctx: Sourcing, *,
         listed_targets += name_targets
         listed_ids.update(str(t.id) for t in name_targets)
         added_targets += name_targets
-        graphemes.append(grapheme)
+        if completing_at is not None:
+            graphemes[completing_at] = grapheme
+        else:
+            graphemes.append(grapheme)
         for w in staged:
             by_thai.setdefault(w.thai, w)
             category_of.setdefault(w.id, None)
@@ -1603,10 +1646,14 @@ def grapheme_attempt(ctx: Sourcing, *,
             category_of[name_word.id] = LETTER_NAMES_CATEGORY
         taken = taken_now
         known.add(row.symbol)
-        adopted_graphemes += 1
         adopted_words += len(staged)
+        if completing_at is not None:
+            completed_graphemes += 1
+            _log.info("grapheme %s: name word added", row.symbol)
+        else:
+            adopted_graphemes += 1
 
-    if not adopted_graphemes:
+    if not adopted_graphemes and not completed_graphemes:
         return AttemptResult(attempted=False, adoption_skipped=skipped)
     word_rows = [(w, category_of.get(w.id)) for w in words]
     save_words(ctx.curated_dir / "words.yaml", word_rows)
@@ -1615,8 +1662,8 @@ def grapheme_attempt(ctx: Sourcing, *,
     ctx.syllabus = ctx.syllabus.with_adoptions(
         words=words, targets=tuple(ctx.syllabus.targets) + tuple(added_targets),
         graphemes=graphemes, categories=build_categories(word_rows))
-    _log.info("grapheme pass: adopted %d grapheme(s) and %d word(s)",
-              adopted_graphemes, adopted_words)
+    _log.info("grapheme pass: adopted %d grapheme(s), completed %d row(s) and %d word(s)",
+              adopted_graphemes, completed_graphemes, adopted_words)
     return AttemptResult(attempted=True, adopted_graphemes=adopted_graphemes,
                          adopted_words=adopted_words, adoption_skipped=skipped)
 

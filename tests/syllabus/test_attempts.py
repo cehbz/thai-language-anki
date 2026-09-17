@@ -3554,6 +3554,20 @@ def _engines(g2p=None, tone=None):
     return Engines(g2p=g2p or (lambda thai: one), tone=tone or (lambda thai: "mid"))
 
 
+def _reads_normally_except(*unreadable_thai: str):
+    """A g2p that reads the same monosyllable as `_engines`'s own default
+    for anything but the given strings -- which it reads as thaig2p reads
+    a form it cannot read at all. Naming both a phrase and one of its own
+    whitespace-separated tokens blocks phonology.py's token-wise fallback
+    too (spec 3 r43), so a test can still make a recited name unreadable
+    end to end."""
+    one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
+
+    def g2p(thai: str):
+        return None if thai in unreadable_thai else one
+    return g2p
+
+
 def _grapheme_ctx(tmp_path, syllabus, *, engines=None, files=("words.yaml", "targets.yaml",
                                                               "graphemes.yaml")):
     """A ctx with a curated/ directory of its own (the run's writing
@@ -3721,10 +3735,14 @@ def test_a_keyword_that_does_not_contain_the_symbol_is_skipped_and_counted(tmp_p
 def test_a_name_no_engine_reads_leaves_the_row_with_no_name_word(tmp_path):
     """R2: a Word is never written with an empty syllable tuple. The
     grapheme row still stands (compile drops its Reading card, counted)
-    and the skip is reported."""
+    and the skip is reported. Both the phrase and one of its own tokens
+    ("งอ") are unreadable, so phonology.py's token-wise fallback (r43)
+    cannot read it either -- this is genuinely no engine reading, not the
+    two-token case r43 fixes."""
     one = (Syllable(segments=("ŋ", "u", ""), vowel_length="long", tone="mid"),)
     ctx = _grapheme_ctx(tmp_path, Syllabus(),
-                        engines=_engines(g2p=lambda thai: None if " " in thai else one))
+                        engines=_engines(g2p=lambda thai: None if " " in thai or thai == "งอ"
+                                         else one))
 
     result = grapheme_attempt(ctx, consonants=[NGO])
 
@@ -3792,24 +3810,79 @@ def test_the_phrase_drafter_is_not_handed_a_chart_cells_need(tmp_path):
     assert _phrase_drafter(ctx).prompts == []
 
 
-def test_a_grapheme_already_on_file_survives_the_pass(tmp_path):
-    """Spec 2 r17 section 6, for the third file too: graphemes.yaml is
-    rewritten whole, so the row the deck already had must come back out of
-    it unchanged beside the newly adopted one -- rows added, none
-    removed."""
+def test_a_grapheme_on_file_without_a_name_word_that_still_does_not_read_survives_unchanged(
+        tmp_path):
+    """Spec 2 r17 section 6, for the third file too, and spec 3 r43: a row
+    on file with no name word is rewritten only once the engines can read
+    it (below); until then it comes back out of graphemes.yaml unchanged
+    beside the newly adopted row -- rows added, none removed."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    already = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                              keyword_word=chicken)          # ก: k, no name word on file
+    syllabus = Syllabus(words=(chicken,), graphemes=(already,))
+    ctx = _grapheme_ctx(tmp_path, syllabus,
+                        engines=_engines(g2p=_reads_normally_except("กอ ไก่", "กอ")))
+
+    result = grapheme_attempt(ctx, consonants=[KO, NGO])
+
+    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 2, 1)
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
+        ("ก", "chicken", None), ("ง", "snake", "name-snake")]     # ก kept as it was; ง added
+
+
+def test_a_grapheme_on_file_without_a_name_word_completes_when_the_engines_now_read_it(tmp_path):
+    """Spec 3 r43: a recited name thaig2p cannot read as a phrase but can
+    read token by token (2026-09-17 evidence, phonology.engines_pronunciation)
+    leaves a row on file with `name_word: None`; a later pass, over the
+    same table, mints (or re-uses) that name Word and its two Targets and
+    REPLACES the Grapheme row in place -- the one case a curated row
+    changes rather than being added. The Guard's row counts are unchanged
+    (the row is replaced, not added); `adopted_graphemes` does not count
+    it (it was adopted before) and `adopted_words` counts the minted name
+    Word alone.
+    """
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     already = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
                               keyword_word=chicken)          # ก: k, no name word on file
     syllabus = Syllabus(words=(chicken,), graphemes=(already,))
     ctx = _grapheme_ctx(tmp_path, syllabus)
 
-    result = grapheme_attempt(ctx, consonants=[KO, NGO])
+    result = grapheme_attempt(ctx, consonants=[KO])
 
-    assert (result.adopted_graphemes, result.adoption_skipped) == (1, 0)
+    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (0, 1, 0)
+    name = ctx.syllabus.word("name-chicken")
+    assert name.thai == "กอ ไก่"                                   # กอ ไก่: the name of ก
+    assert ctx.syllabus.category_of("name-chicken") == "Letter names"
+    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == [
+        "name-chicken/receptive", "name-chicken/productive"]
+    g = ctx.syllabus.graphemes[0]
+    assert (g.symbol, g.kind, g.sound, g.consonant_class) == ("ก", "consonant", "k", "mid")
+    assert (g.keyword, g.name_word) == ("chicken", "name-chicken")
     rows = load_words(ctx.curated_dir / "words.yaml")
     saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
-    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
-        ("ก", "chicken", None), ("ง", "snake", "name-snake")]     # ก kept as it was; ง added
+    assert [(g2.symbol, g2.keyword, g2.name_word) for g2 in saved] == [
+        ("ก", "chicken", "name-chicken")]
+
+
+def test_a_second_pass_after_a_completion_changes_nothing(tmp_path):
+    """Idempotent, as R7 is for a brand-new adoption: once the row is
+    complete, the next pass over the same table finds no incomplete row
+    and no new symbol, so it asks nothing and writes nothing."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    already = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                              keyword_word=chicken)
+    syllabus = Syllabus(words=(chicken,), graphemes=(already,))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+    first = grapheme_attempt(ctx, consonants=[KO])
+    before = (ctx.curated_dir / "words.yaml").read_bytes()
+
+    second = grapheme_attempt(ctx, consonants=[KO])
+
+    assert first.adopted_words == 1
+    assert second == AttemptResult(attempted=False)
+    assert (ctx.curated_dir / "words.yaml").read_bytes() == before
 
 
 def test_a_symbol_twice_in_the_table_is_adopted_once(tmp_path):

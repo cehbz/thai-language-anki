@@ -41,22 +41,40 @@ def corroborates(judge: tuple[Syllable, ...], thai: str, engines: Engines) -> bo
 
 def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     """The two engines' own reading of `thai`, the seed every Word the run
-    adopts is written with (spec 3 r40 section 5; design 2026-09-12 §2):
-    thaig2p's syllables, corroboration `engines_agree` when the rule tone
-    engine agrees with a monosyllable's tone -- the same agreement rule
-    `corroborates` falls back on -- and `disputed` otherwise, including
-    every multi-syllable form, which the adjudication pass then asks the
-    judge about (r28) while E4 blocks that word's cards.
+    adopts is written with (spec 3 r40/r43 section 5; design 2026-09-12
+    §2): thaig2p's syllables, corroboration `engines_agree` when the rule
+    tone engine agrees with a monosyllable's tone -- the same agreement
+    rule `corroborates` falls back on -- and `disputed` otherwise,
+    including every multi-syllable form, which the adjudication pass then
+    asks the judge about (r28) while E4 blocks that word's cards.
 
-    None when thaig2p reads nothing: a Word is never written with an empty
-    syllable tuple, and the caller reports the row it could not adopt.
+    A recited name the engines cannot read as a phrase is read token by
+    token (r43, 2026-09-17 evidence: thaig2p reads "ปอ" and "ปลา" but not
+    "ปอ ปลา"): when thaig2p yields nothing for the whole of `thai` and
+    `thai` contains whitespace, each whitespace-separated token is read on
+    its own and the syllables concatenated in order, always `disputed` --
+    a token-wise reading is never engine-agreed, the phrase having failed
+    the whole-form ask that `corroborates` itself would still make.
+
+    None when thaig2p reads nothing and there is no token to fall back on,
+    or when any one token itself reads nothing: a Word is never written
+    with an empty syllable tuple, and the caller reports the row it could
+    not adopt.
     """
     syllables = engines.g2p(thai)
-    if not syllables:
+    if syllables:
+        agrees = len(syllables) == 1 and engines.tone(thai) == syllables[0].tone
+        return Pronunciation(syllables=tuple(syllables),
+                             corroboration="engines_agree" if agrees else "disputed")
+    if " " not in thai:
         return None
-    agrees = len(syllables) == 1 and engines.tone(thai) == syllables[0].tone
-    return Pronunciation(syllables=tuple(syllables),
-                         corroboration="engines_agree" if agrees else "disputed")
+    combined: list[Syllable] = []
+    for token in thai.split():
+        token_syllables = engines.g2p(token)
+        if not token_syllables:
+            return None
+        combined.extend(token_syllables)
+    return Pronunciation(syllables=tuple(combined), corroboration="disputed")
 
 
 @functools.cache

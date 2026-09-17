@@ -129,3 +129,34 @@ def test_a_phrase_of_several_syllables_is_disputed_and_waits_for_the_judge():
 def test_nothing_read_is_no_pronunciation_at_all():
     assert engines_pronunciation("ๆ", _engines(None)) is None
     assert engines_pronunciation("ๆ", _engines(())) is None
+
+
+# --- the token-wise fallback (2026-09-17 evidence: thaig2p reads "ปอ" and
+# "ปลา" but not "ปอ ปลา" as one phrase) -------------------------------------
+
+def _token_engines(readings: dict, tone_result="mid"):
+    """g2p keyed by the exact string asked: `readings[thai]`, None for any
+    thai not in the map -- so a phrase-level miss and a per-token hit are
+    both under the caller's control."""
+    return Engines(g2p=lambda thai: readings.get(thai), tone=lambda thai: tone_result)
+
+
+def test_a_phrase_no_engine_reads_whole_is_read_token_by_token_and_concatenated():
+    po = (Syllable(segments=("p", "ɔ", ""), vowel_length="long", tone="mid"),)
+    pla = (Syllable(segments=("p", "l", "a"), vowel_length="short", tone="mid"),)
+    eng = _token_engines({"ปอ": po, "ปลา": pla})   # "ปอ ปลา" itself: no entry -> None
+    got = engines_pronunciation("ปอ ปลา", eng)
+    assert got == Pronunciation(syllables=po + pla, corroboration="disputed")
+
+
+def test_a_phrase_with_one_unreadable_token_is_no_pronunciation_at_all():
+    po = (Syllable(segments=("p", "ɔ", ""), vowel_length="long", tone="mid"),)
+    eng = _token_engines({"ปอ": po})   # "ปลา" has no entry -> None
+    assert engines_pronunciation("ปอ ปลา", eng) is None
+
+
+def test_a_single_token_phrase_the_engine_cannot_read_is_still_no_pronunciation():
+    """No whitespace to split on: the token-wise fallback never applies,
+    exactly as before this fix."""
+    eng = _token_engines({})
+    assert engines_pronunciation("ๆ", eng) is None
