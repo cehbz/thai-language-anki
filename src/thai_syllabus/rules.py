@@ -65,7 +65,16 @@ class Report:
 
 @dataclass(frozen=True)
 class Gaps:
-    """What sourcing should produce next (input to spec 3's batch run)."""
+    """What sourcing should produce next (input to spec 3's batch run).
+
+    `graphemes_missing_keyword_data` holds grapheme *symbols* -- the
+    note_id of the rule that found them, not a word id. It is not a need
+    kind of its own (spec 3 r42 retired that): `derivations.available_needs`
+    maps each symbol to its grapheme's keyword Word and lists that word's
+    own picture need, which is the same kind, subject kind, attempt,
+    drafter and judge every other word's picture gets, and folds into the
+    keyword's need where it already has one.
+    """
     missing_renditions: tuple[str, ...]        # ConfusionId, undercovered
     unfilled_targets: tuple[str, ...]           # TargetId
     words_missing_pictures: tuple[str, ...]     # WordId

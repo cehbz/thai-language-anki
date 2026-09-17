@@ -779,6 +779,66 @@ def test_run_two_passes_first_appends_a_row_second_appends_nothing_stops(
     assert "nothing left to do: the pass appended nothing to the record" in out
 
 
+def test_run_pass_that_adopted_rows_but_appended_nothing_continues(deck, monkeypatch, capsys):
+    """M13: the grapheme pass writes curated/ files, not record rows, so a
+    pass that adopted a Grapheme and its Words moves `newest_ts` nowhere --
+    yet it left the next pass a syllabus full of new needs (pictures,
+    recordings, the adjudication of every `disputed` seed). Adoption is
+    progress; only a pass that appended nothing AND adopted nothing is
+    quiescent.
+    """
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        if len(run_calls) == 1:
+            return RunReport(batch_id=None, adopted_graphemes=1, adopted_words=2)
+        return RunReport(batch_id=None)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "3"])
+
+    assert rc == 0
+    assert len(run_calls) == 2
+    out = capsys.readouterr().out
+    assert ("nothing left to do: the pass appended nothing to the record "
+            "and adopted nothing") in out
+
+
+def test_run_pass_that_adopted_words_alone_continues(deck, monkeypatch):
+    """A pass can adopt Words without a Grapheme row (a keyword that was
+    new to the vocabulary under a row whose grapheme was already on file),
+    and those Words carry needs too."""
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        if len(run_calls) == 1:
+            return RunReport(batch_id=None, adopted_words=1)
+        return RunReport(batch_id=None)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    assert cli.main(["run", "--deck", str(deck), "--cycles", "3"]) == 0
+    assert len(run_calls) == 2
+
+
+def test_run_pass_that_only_skipped_adoptions_is_still_quiescent(deck, monkeypatch):
+    """`adoption_skipped` is not progress: the rows it counts were not
+    adopted, so the next pass would skip exactly the same ones."""
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        return RunReport(batch_id=None, adoption_skipped=2)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    assert cli.main(["run", "--deck", str(deck), "--cycles", "3"]) == 0
+    assert len(run_calls) == 1
+
+
 def test_run_pass_that_appends_nothing_but_raises_a_batch_waits_and_continues(
         deck, monkeypatch):
     """A pass with no db progress but an outstanding batch is not

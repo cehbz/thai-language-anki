@@ -498,9 +498,21 @@ def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> s
     curated data that no direction, suggestion or draft can replace --
     and None while its keyword has no picture, which puts the need on
     r25's waiting path until the keyword gets one.
+
+    A learner direction on such a need is the one of those three the
+    learner will be waiting on an answer to, so it is not dropped
+    silently: it is logged once, at WARNING, saying what the cell is drawn
+    from and where a direction would bite instead (the keyword word's own
+    picture need), and the symbol still wins.
     """
     if (need.kind == "picture" and need.subject_kind == "word"
             and need.subject in ctx.syllabus.name_word_ids):
+        if record.directions(ctx.db.assessments_of(need.subject)):
+            _log.warning(
+                "%s: a learner direction cannot change an alphabet-chart cell -- the cell is "
+                "drawn from the grapheme's symbol and its keyword's current picture, so the "
+                "direction is ignored here; direct the keyword word's own picture instead",
+                need.subject)
         cell = chart_cell(ctx, need)
         return cell.symbol if cell is not None else None
     return record.latest_phrase(ctx.db.assessments_of(need.subject),
@@ -1456,6 +1468,14 @@ def grapheme_attempt(ctx: Sourcing, *,
     `derive_productive_targets` itself raise at the next wiring, for any
     word still eligible to derive that same Target.
 
+    Those three writes are three files, not one transaction, so the pass
+    is written to survive dying between any two of them (C1): every row it
+    would add is looked up before it is minted -- the recited name by its
+    Thai text in the vocabulary, exactly as the keyword is; each of its
+    two Targets by id among the listed ones; the Grapheme by its symbol.
+    A re-run after an interruption therefore completes the row it left
+    half-written instead of duplicating it under `name-<id>-2`.
+
     `consonants` is the row list to adopt; None reads the ctx's own table
     seam (`Sourcing.consonants`, the repo inventory by default). The pass
     is free, so one run adopts them all.
@@ -1488,6 +1508,7 @@ def grapheme_attempt(ctx: Sourcing, *,
     category_of: dict[WordId, CategoryName | None] = {
         w.id: ctx.syllabus.category_of(w.id) for w in words}
     listed_targets = list(load_targets(ctx.curated_dir / "targets.yaml"))
+    listed_ids = {str(t.id) for t in listed_targets}
     graphemes = list(ctx.syllabus.graphemes)
     by_thai = {w.thai: w for w in words}
     taken = {str(w.id) for w in words}
@@ -1525,27 +1546,38 @@ def grapheme_attempt(ctx: Sourcing, *,
                            pron=keyword_pron, meaning=row.keyword_gloss)
             staged.append(keyword)
             taken_now.add(str(keyword.id))
-        name_word: Word | None = None
+        # C1: a pass that died after words.yaml left the recited name in
+        # the vocabulary, so it is matched by `thai` exactly as the
+        # keyword is and re-used. Minting a suffixed Word beside it would
+        # duplicate the name, its two Targets and its cards, and leave
+        # the first copy orphaned of any grapheme.
+        name_word: Word | None = by_thai.get(row.name_thai)
         name_targets: list[Target] = []
-        name_pron = engines_pronunciation(row.name_thai, engines)
-        if name_pron is None:
-            # The row still stands: Grapheme.name_word is optional, and
-            # compile() drops that grapheme's Reading card, counted
-            # (spec 1 section 1).
-            skipped += 1
-            _log.warning("grapheme %s: no engine reading of the recited name %r (%s); the "
-                         "row is adopted with no name word", row.symbol, row.name_thai,
-                         GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
-        else:
-            name_id = slug_id(f"name {keyword.id}", taken_now)
-            name_word = Word(id=name_id, thai=row.name_thai, pron=name_pron,
-                             meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
-            staged.append(name_word)
-            taken_now.add(str(name_id))
-            name_targets = [Target(id=TargetId(f"{name_id}/receptive"), word=name_id,
-                                   skill="receptive", introduction="picture_card"),
-                            Target(id=TargetId(f"{name_id}/productive"), word=name_id,
-                                   skill="productive", introduction="picture_card")]
+        if name_word is None:
+            name_pron = engines_pronunciation(row.name_thai, engines)
+            if name_pron is None:
+                # The row still stands: Grapheme.name_word is optional,
+                # and compile() drops that grapheme's Reading card,
+                # counted (spec 1 section 1).
+                skipped += 1
+                _log.warning("grapheme %s: no engine reading of the recited name %r (%s); the "
+                             "row is adopted with no name word", row.symbol, row.name_thai,
+                             GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+            else:
+                name_id = slug_id(f"name {keyword.id}", taken_now)
+                name_word = Word(id=name_id, thai=row.name_thai, pron=name_pron,
+                                 meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+                staged.append(name_word)
+                taken_now.add(str(name_id))
+        if name_word is not None:
+            both = (Target(id=TargetId(f"{name_word.id}/receptive"), word=name_word.id,
+                           skill="receptive", introduction="picture_card"),
+                    Target(id=TargetId(f"{name_word.id}/productive"), word=name_word.id,
+                           skill="productive", introduction="picture_card"))
+            # Each Target by id: the write that landed keeps its row, the
+            # one that did not is written now (spec 1 r16: the name word
+            # carries both).
+            name_targets = [t for t in both if str(t.id) not in listed_ids]
         try:
             grapheme = Grapheme.create(symbol=row.symbol, kind="consonant", sound=row.sound,
                                        consonant_class=row.consonant_class,
@@ -1559,12 +1591,15 @@ def grapheme_attempt(ctx: Sourcing, *,
             continue
         words += staged
         listed_targets += name_targets
+        listed_ids.update(str(t.id) for t in name_targets)
         added_targets += name_targets
         graphemes.append(grapheme)
         for w in staged:
             by_thai.setdefault(w.thai, w)
             category_of.setdefault(w.id, None)
-        if name_word is not None:
+        if name_word is not None and name_word in staged:
+            # a minted name word takes the category; a re-used one keeps
+            # whatever the vocabulary already says about it
             category_of[name_word.id] = LETTER_NAMES_CATEGORY
         taken = taken_now
         known.add(row.symbol)

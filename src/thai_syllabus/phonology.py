@@ -5,6 +5,7 @@ engine is corroboration). Engines are callables so the run injects the
 real ones and tests inject fakes; the engines themselves live in
 engines.py, and thaig2p (torch) loads only inside default_engines()."""
 from __future__ import annotations
+import functools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from .entities import Pronunciation, Syllable, Tone
@@ -58,12 +59,20 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
                          corroboration="engines_agree" if agrees else "disputed")
 
 
+@functools.cache
 def default_engines() -> Engines:
     """The real engines (spec 3 r28 section 5): pythainlp's thaig2p for
     segments/length/tone, and the deterministic tone-rule engine as the
     second opinion on a monosyllabic tone disagreement. Constructing the
     thaig2p engine pulls in pythainlp/torch, so it happens inside this
     function -- unit tests inject fake Engines and never reach here.
+
+    Memoised: every caller reads its own injected Engines first and falls
+    back to this (`ctx.engines or default_engines()`, the seam that stays
+    as it is), so a run with none injected would otherwise load the model
+    once per call site -- the adjudication pass and the grapheme pass at
+    least. The engines are stateless callables, so one instance serves
+    the whole process.
     """
     from .engines import Thaig2p, rule_tone
     return Engines(g2p=Thaig2p(), tone=rule_tone)

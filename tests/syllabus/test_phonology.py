@@ -64,6 +64,40 @@ def test_default_engines_g2p_returns_a_syllable_for_a_real_word():
     assert syls[0].segments[1] == "a"
 
 
+def test_default_engines_builds_the_engines_once(monkeypatch, real_default_engines):
+    """M7: every caller reads `ctx.engines` first and falls back to this
+    function, so a run with no injected engines builds Thaig2p -- and with
+    it pythainlp and torch -- once per call site instead of once. The
+    fallback is memoised: same Engines object, one construction. The
+    injection seam is untouched; this is only about the default.
+
+    The fake stands in for Thaig2p through the function's own deferred
+    import, so nothing here loads torch. `real_default_engines` is the
+    guard fixture's handle on the unpatched function (conftest.py), and
+    the memo is cleared either side so no other test inherits the fake.
+    """
+    from thai_syllabus import engines as engines_module
+
+    built = []
+
+    class _FakeThaig2p:
+        def __init__(self):
+            built.append(1)
+
+        def __call__(self, thai):
+            return None
+
+    monkeypatch.setattr(engines_module, "Thaig2p", _FakeThaig2p)
+    real_default_engines.cache_clear()
+    try:
+        first = real_default_engines()
+        second = real_default_engines()
+        assert first is second
+        assert built == [1]
+    finally:
+        real_default_engines.cache_clear()
+
+
 # --- engines_pronunciation: the adoption pass's seed (spec 3 r40 §5) -------
 
 def _engines(g2p_result, tone_result="mid"):

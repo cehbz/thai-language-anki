@@ -30,8 +30,9 @@ from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, cand
                                   gloss_on_requested, latest_phrase, parse_phrases,
                                   reading_of, retired_texts, retirements, rows_for,
                                   sentence_drafts)
-from thai_syllabus.curated import (load_graphemes, load_targets, load_words, save_graphemes,
-                                   save_targets, save_words)
+from thai_syllabus import curated as curated_module
+from thai_syllabus.curated import (build_categories, load_graphemes, load_targets, load_words,
+                                   save_graphemes, save_targets, save_words)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
                                     SoundConfusion, Syllable, text_sha)
 from thai_syllabus.ids import WordId
@@ -3825,6 +3826,114 @@ def test_a_symbol_twice_in_the_table_is_adopted_once(tmp_path):
         "snake", "name-snake"]
 
 
+def _rewire(ctx):
+    """The next run's wiring: a Syllabus rebuilt from the three curated
+    files exactly as `wiring.load_syllabus` builds it, so a pass that died
+    between two of those writes is followed by a pass that sees only what
+    reached the disk."""
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    words_by_id = {w.id: w for w, _ in rows}
+    ctx.syllabus = Syllabus(
+        words=tuple(w for w, _ in rows),
+        targets=tuple(load_targets(ctx.curated_dir / "targets.yaml")),
+        graphemes=tuple(load_graphemes(ctx.curated_dir / "graphemes.yaml", words_by_id)),
+        categories=build_categories(rows))
+    return ctx
+
+
+def _crash_after(monkeypatch, name):
+    """Turns one of curated.py's three writers into the crash: the writes
+    before it land, this one and the ones after it never happen. The pass
+    imports them from `curated` when it runs, so patching the module
+    reaches the call."""
+    def boom(*_args, **_kwargs):
+        raise OSError(f"disk full writing {name}")
+    monkeypatch.setattr(curated_module, name, boom)
+
+
+def test_a_pass_that_died_before_targets_yaml_re_adopts_without_duplicating(
+        tmp_path, monkeypatch):
+    """C1, spec 3 r40 §5: the three curated writes are not one
+    transaction. A run interrupted after words.yaml names the recited
+    name in the vocabulary already, so the next pass must find it by its
+    Thai text -- exactly as it finds the keyword -- and finish the row,
+    not mint `name-chicken-2` beside it.
+    """
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+    _crash_after(monkeypatch, "save_targets")
+    with pytest.raises(OSError):
+        grapheme_attempt(ctx, consonants=[KO])
+    monkeypatch.undo()
+    _rewire(ctx)
+
+    result = grapheme_attempt(ctx, consonants=[KO])
+
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    assert [w.id for w, _ in rows] == ["chicken", "name-chicken"]
+    assert not [w.id for w, _ in rows if str(w.id).endswith("-2")]
+    assert (result.adopted_graphemes, result.adopted_words) == (1, 0)
+    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
+        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
+    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
+        ("ก", "chicken", "name-chicken")]
+
+
+def test_a_pass_that_died_before_graphemes_yaml_writes_only_the_missing_row(
+        tmp_path, monkeypatch):
+    """C1, the second interruption: words.yaml and targets.yaml both
+    landed, so only the Grapheme row is absent. The Targets are already
+    listed under their own ids, so the pass writes neither a second Word
+    nor a second Target -- it writes the row that is missing.
+    """
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+    _crash_after(monkeypatch, "save_graphemes")
+    with pytest.raises(OSError):
+        grapheme_attempt(ctx, consonants=[KO])
+    monkeypatch.undo()
+    _rewire(ctx)
+
+    result = grapheme_attempt(ctx, consonants=[KO])
+
+    assert (result.adopted_graphemes, result.adopted_words) == (1, 0)
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    assert [w.id for w, _ in rows] == ["chicken", "name-chicken"]
+    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
+        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
+    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
+        ("ก", "chicken", "name-chicken")]
+    assert ctx.syllabus.name_word_ids == frozenset({"name-chicken"})
+
+
+def test_a_pass_that_died_before_targets_yaml_re_adopts_a_closure_keyword_too(
+        tmp_path, monkeypatch):
+    """C1 for the row whose keyword is new too: the keyword was already
+    re-used by its Thai text before this fix, and the recited name now
+    joins it, so the interrupted row is completed under its original two
+    ids."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+    _crash_after(monkeypatch, "save_targets")
+    with pytest.raises(OSError):
+        grapheme_attempt(ctx, consonants=[NGO])
+    monkeypatch.undo()
+    _rewire(ctx)
+
+    result = grapheme_attempt(ctx, consonants=[NGO])
+
+    assert (result.adopted_graphemes, result.adopted_words) == (1, 0)
+    assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["snake", "name-snake"]
+    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
+        "name-snake/receptive", "name-snake/productive"]
+    assert ctx.syllabus.graphemes[0].name_word == "name-snake"
+
+
 # --- sources_for_need: the roster one need is asked (spec 3 r41 §5) ---------
 
 def _named_ctx(tmp_path):
@@ -3921,6 +4030,34 @@ def test_a_chart_cell_need_with_no_keyword_picture_has_no_query(tmp_path):
     ctx = _cell_ctx(tmp_path, keyword_has_a_picture=False)
     _seed_phrase(ctx, "name-chicken", "a chicken in a yard")
     assert picture_query_for(ctx, Need("name-chicken", "picture")) is None
+
+
+def test_a_direction_on_a_chart_cell_need_is_logged_and_the_symbol_still_wins(tmp_path, caplog):
+    """I3, spec 3 r41 §5: a learner direction outranks every other query
+    (§5's precedence) -- except here, where the cell is drawn from the
+    symbol and the keyword's picture rather than searched for. Silently
+    dropping the direction would leave the learner watching a card that
+    never changes, so the pass says so once, at WARNING, and carries on
+    with the symbol.
+    """
+    ctx = _cell_ctx(tmp_path)
+    append_direction(ctx.db, subject="name-chicken", role="picture-for-word",
+                     text="use a photo of a rooster")
+
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        assert picture_query_for(ctx, Need("name-chicken", "picture")) == "ก"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "name-chicken" in warnings[0].getMessage()
+    assert "direction" in warnings[0].getMessage()
+
+
+def test_a_chart_cell_need_with_no_direction_logs_nothing(tmp_path, caplog):
+    ctx = _cell_ctx(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="thai_syllabus.attempts"):
+        assert picture_query_for(ctx, Need("name-chicken", "picture")) == "ก"
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
 
 def test_an_ordinary_needs_query_is_still_the_record(tmp_path):

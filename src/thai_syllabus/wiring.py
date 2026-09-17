@@ -71,7 +71,7 @@ from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_RUBRIC, 
                        rubrics_for, sentence_note_id)
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
-from .syllabus import Syllabus, derive_productive_targets
+from .syllabus import Syllabus, derive_productive_targets, name_word_ids_of
 from .transport import (ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport,
                         RequestParams, TransportError)
 from .tts import pick_voice
@@ -834,7 +834,8 @@ def load_syllabus(deck_root: str | Path, *,
                 if (rank := freq_map.rank(w.thai)) is not None}
     targets = tuple(bundle.targets) + derive_productive_targets(
         bundle.words, bundle.targets, bundle.categories, frequency,
-        bundle.profile.productive_cutoff)
+        bundle.profile.productive_cutoff,
+        name_word_ids=name_word_ids_of(bundle.graphemes))
 
     rulebook_text = rulebook_file_text(root / "curated" / "rulebook.yaml")
 

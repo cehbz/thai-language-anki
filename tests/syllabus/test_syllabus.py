@@ -325,6 +325,39 @@ def test_derive_productive_targets_raises_on_a_listed_target_for_an_eligible_wor
         derive_productive_targets([rice], [listed], [_food("rice")], {rice.id: 10}, 2000)
 
 
+def test_derive_productive_targets_skips_a_name_word_whose_target_adoption_listed():
+    """I4: the grapheme pass lists a recited-name Word's two Targets in
+    targets.yaml (spec 1 r16), and `Letter names` is a category, so a name
+    word whose Thai happens to carry a frequency rank at or above the
+    cutoff would be a listed productive Target on an "eligible" word --
+    the one case r9 raises on. The pass owns those rows, so the rule skips
+    the word instead: the deck must load.
+    """
+    name = word("name-chicken", "กอ ไก่", "recited name of the letter ก")   # กอ ไก่
+    letters = Category(name=CategoryName("Letter names"), members=frozenset({name.id}))
+    listed = target("name-chicken/productive", "name-chicken", skill="productive")
+
+    derived = derive_productive_targets([name], [listed], [letters], {name.id: 10}, 2000,
+                                        name_word_ids=frozenset({name.id}))
+
+    assert derived == ()
+
+
+def test_derive_productive_targets_still_derives_for_an_ordinary_word_beside_a_name_word():
+    """I4 is a skip of the named words only -- every other eligible word
+    still derives."""
+    rice = word("rice", "ข้าว")
+    name = word("name-chicken", "กอ ไก่", "recited name of the letter ก")   # กอ ไก่
+    letters = Category(name=CategoryName("Letter names"), members=frozenset({name.id}))
+
+    derived = derive_productive_targets(
+        [rice, name], [target("name-chicken/productive", "name-chicken", skill="productive")],
+        [_food("rice"), letters], {rice.id: 10, name.id: 10}, 2000,
+        name_word_ids=frozenset({name.id}))
+
+    assert [t.id for t in derived] == ["rice/productive"]
+
+
 def test_order_places_the_derived_productive_target_after_the_receptive_one():
     rice = word("rice", "ข้าว")
     receptive = target("rice/receptive", "rice")

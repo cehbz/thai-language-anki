@@ -29,9 +29,20 @@ if TYPE_CHECKING:
     from .attempts import VoiceConstraint
 
 
+def name_word_ids_of(graphemes: Sequence[Grapheme]) -> frozenset[WordId]:
+    """Every Word that is some Grapheme's recited name (spec 1 r16). The
+    aggregate reads it as `Syllabus.name_word_ids`; wiring needs the same
+    set one step earlier, while it is still deriving the Targets the
+    Syllabus will be built with, so the rule lives here and is stated
+    once.
+    """
+    return frozenset(g.name_word for g in graphemes if g.name_word is not None)
+
+
 def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
                               categories: Sequence[Category],
-                              frequency: Mapping[WordId, int], cutoff: int
+                              frequency: Mapping[WordId, int], cutoff: int,
+                              *, name_word_ids: frozenset[WordId] = frozenset()
                               ) -> tuple[Target, ...]:
     """Spec 1 r9: one Target(id=f"{w.id}/productive", word=w.id,
     skill="productive", introduction="picture_card") per Word that is a
@@ -40,6 +51,15 @@ def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
     `words` order. A listed productive Target on such a word raises
     ValueError naming the row: targets.yaml lists exceptions only. A
     listed productive Target on any other word stands as the exception.
+
+    `name_word_ids` is the Words spec 1 r16 makes a grapheme's recited
+    name (`name_word_ids_of` over the deck's graphemes). Those derive
+    nothing: the adoption pass lists both of their Targets in targets.yaml
+    itself (spec 3 r40 section 5), and `Letter names` is a category, so a
+    recited name whose form carries a frequency rank at or above the
+    cutoff would otherwise be a listed Target on an eligible word -- the
+    one case above that raises, and it would raise at every wiring,
+    leaving the deck unloadable.
     """
     categorized = {word_id for cat in categories for word_id in cat.members}
     listed_productive = {t.word: t for t in targets if t.skill == "productive"}
@@ -48,6 +68,7 @@ def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
     for w in words:
         rank = frequency.get(w.id)
         eligible = (w.id in categorized and not w.no_productive
+                   and w.id not in name_word_ids
                    and rank is not None and rank <= cutoff)
         if not eligible:
             continue
@@ -113,8 +134,10 @@ class Syllabus:
         exempts them (the chart cell and the name's own recording are
         their exercise, F6), and the run's source roster gives their
         picture need the one source that draws a chart cell (spec 3 r41).
+        A fourth, one step before the aggregate exists: wiring passes the
+        same set to `derive_productive_targets` (I4).
         """
-        return frozenset(g.name_word for g in self.graphemes if g.name_word is not None)
+        return name_word_ids_of(self.graphemes)
 
     @cached_property
     def _sentence_index(self) -> dict[str, Sentence]:
@@ -238,8 +261,6 @@ class Syllabus:
         order() places them in the sounds block, before every word
         target), so every name word is seeded at -1, the position
         sentence_after uses for a sentence with no placed word at all.
-        A name word that is also an ordinary target's word takes that
-        target's real index instead.
         """
         positions: dict[WordId, int] = {word_id: -1 for word_id in self.name_word_ids}
         for i, t in enumerate(self._ordered_targets):

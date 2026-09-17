@@ -745,6 +745,41 @@ def test_load_syllabus_no_productive_suppresses_the_derived_target(tmp_path):
     assert "rice/productive" not in {t.id for t in syllabus.targets}
 
 
+def test_load_syllabus_loads_an_adopted_grapheme_whose_name_word_is_ranked(tmp_path):
+    """I4: the grapheme pass writes the recited name's two Targets into
+    targets.yaml and puts the word in `Letter names`, so a name word whose
+    Thai appears in the frequency corpus is a listed productive Target on
+    an otherwise eligible word -- the case spec 1 r9 raises on. It is not
+    an exception the learner wrote; it is the pass's own row, so the deck
+    must load and carry exactly one `name-chicken/productive`.
+    """
+    root = _write_curated_dir(tmp_path / "deck")
+    curated = root / "curated"
+    pron = {"syllables": [{"segments": ["k", "a", ""], "vowel_length": "short",
+                           "tone": "mid"}], "corroboration": "engines_agree"}
+    words = [
+        {"id": "chicken", "thai": "ไก่", "meaning": "chicken", "pron": pron},   # ไก่: chicken
+        {"id": "name-chicken", "thai": "กอ ไก่", "category": "Letter names",   # กอ ไก่
+         "meaning": "recited name of the letter ก", "pron": pron},
+    ]
+    (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
+    targets = [{"id": "name-chicken/receptive", "word": "name-chicken", "skill": "receptive"},
+               {"id": "name-chicken/productive", "word": "name-chicken", "skill": "productive"}]
+    (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
+    (curated / "graphemes.yaml").write_text(yaml.safe_dump(
+        [{"symbol": "ก", "kind": "consonant", "sound": "k", "consonant_class": "mid",
+          "keyword": "chicken", "name_word": "name-chicken"}], allow_unicode=True))
+    (curated / "frequency_th.txt").write_text("กอ ไก่\n", encoding="utf-8")
+    (curated / "profile.yaml").write_text(yaml.safe_dump(
+        {"register": "male_colloquial", "emphasis": {}, "productive_cutoff": 1}))
+
+    syllabus = load_syllabus(root)
+
+    assert [t.id for t in syllabus.targets if t.word == "name-chicken"] == [
+        "name-chicken/receptive", "name-chicken/productive"]
+    assert syllabus.name_word_ids == frozenset({"name-chicken"})
+
+
 def test_emphasis_from_profile_moves_a_word_earlier_through_load_syllabus(tmp_path):
     """Profile.emphasis reaches Syllabus.order() through load_syllabus's
     categories wiring: a lower-frequency word in an emphasized category

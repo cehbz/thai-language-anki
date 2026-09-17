@@ -167,7 +167,12 @@ def _cmd_run(args: argparse.Namespace, *,
     unchanged across the pass -- nothing left to do, exit 0; a tally such
     as `attempted` measures effort, not progress, since the sentence
     attempt counts its open Targets every pass even when its cached
-    answer yields only refused drafts), or when --spend-cap is set and
+    answer yields only refused drafts) and adopted nothing (r40's grapheme
+    pass writes curated/ files rather than record rows, so `newest_ts`
+    does not move for it, yet the rows it adopted are new needs -- their
+    pictures, their recordings, the adjudication of every `disputed` seed
+    -- for the next pass to work on; `adoption_skipped` is not progress,
+    the rows it counts were not adopted), or when --spend-cap is set and
     the cash cost recorded since this invocation started -- the judge,
     tts and the illustrator's drawings
     (r34) -- has reached it, checked before any wait (spec 3 section 7
@@ -198,9 +203,11 @@ def _cmd_run(args: argparse.Namespace, *,
                 print("run: the judge is unreachable; stopped early",
                      file=sys.stderr, flush=True)
                 return 1
-            if report.batch_id is None and ctx.db.newest_ts(excluding_port="run") == mark:
-                print("nothing left to do: the pass appended nothing to the record",
-                     flush=True)
+            adopted = bool(report.adopted_graphemes or report.adopted_words)
+            if (report.batch_id is None and not adopted
+                    and ctx.db.newest_ts(excluding_port="run") == mark):
+                print("nothing left to do: the pass appended nothing to the record "
+                     "and adopted nothing", flush=True)
                 return 0
             if args.spend_cap is not None and spent >= args.spend_cap:
                 print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
