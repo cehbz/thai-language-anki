@@ -159,9 +159,14 @@ def _cmd_run(args: argparse.Namespace, *,
     The loop stops early when the judge was unreachable -- whether
     run_pipeline said so, or the wait itself found the batch transport
     unreachable (exit 1, same as a single run today) -- when a pass
-    raises no batch and attempts nothing (nothing left to do, exit 0), or
-    when --spend-cap is set and the cash cost recorded since this
-    invocation started -- the judge, tts and the illustrator's drawings
+    raises no batch and appends nothing to the record but its own report
+    (spec 3 r39 correction: `ctx.db.newest_ts(excluding_port="run")` is
+    unchanged across the pass -- nothing left to do, exit 0; a tally such
+    as `attempted` measures effort, not progress, since the sentence
+    attempt counts its open Targets every pass even when its cached
+    answer yields only refused drafts), or when --spend-cap is set and
+    the cash cost recorded since this invocation started -- the judge,
+    tts and the illustrator's drawings
     (r34) -- has reached it, checked before any wait (spec 3 section 7
     governs a source's own daily budget; --spend-cap is this invocation's
     own budget, so spend from an earlier invocation never counts against
@@ -179,6 +184,7 @@ def _cmd_run(args: argparse.Namespace, *,
 
         cycle = 1
         while args.cycles is None or cycle <= args.cycles:
+            mark = ctx.db.newest_ts(excluding_port="run")
             report = run_pipeline(ctx, budgets)
             spent = _spend_so_far(ctx, start_ns)
             _print_run_report(cycle, report, spent)
@@ -189,9 +195,10 @@ def _cmd_run(args: argparse.Namespace, *,
                 print("run: the judge is unreachable; stopped early",
                      file=sys.stderr, flush=True)
                 return 1
-            if (report.batch_id is None and report.attempted == 0
-                    and report.sentences_adopted == 0):
-                return 0  # nothing left to do
+            if report.batch_id is None and ctx.db.newest_ts(excluding_port="run") == mark:
+                print("nothing left to do: the pass appended nothing to the record",
+                     flush=True)
+                return 0
             if args.spend_cap is not None and spent >= args.spend_cap:
                 print(f"spend cap reached: {spent:.4f} of {args.spend_cap:.4f} "
                      f"USD this invocation", flush=True)
@@ -262,7 +269,8 @@ def main(argv: list[str] | None = None, *,
     p.add_argument("--cycles", type=_min_one("cycles"), default=None,
                    help="cap the number of resolve/attempt/submit passes; default "
                         "unbounded -- the invocation repeats until a pass raises "
-                        "no batch and attempts nothing (spec 3 r39)")
+                        "no batch and appends nothing to the record but its own "
+                        "report (spec 3 r39, r39 correction)")
     p.add_argument("--spend-cap", type=float, default=None, metavar="USD",
                    help="stop cycling once the judge's own cost (port assess) "
                         "plus tts's and the illustrator's own cost (port provide) "

@@ -468,6 +468,13 @@ def test_run_cycles_stops_at_a_spend_cap(deck, monkeypatch, capsys):
 
     def fake_run(ctx, budgets, **kwargs):
         run_calls.append(1)
+        # progress (a row on record, so the quiescence check -- appends
+        # nothing to the record but its own report -- never fires first
+        # and masks the spend-cap message this test is about); port
+        # "provide" backend "forvo" carries no cost, so --spend-cap 0
+        # still trips on this cycle's own (zero) spend.
+        ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                      "rice", {}, {"items": []}, 0.0)
         return RunReport(sentences_adopted=1)
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
@@ -535,6 +542,10 @@ def test_run_spend_cap_ignores_a_judge_verdict_written_before_the_invocation(
 
     def fake_run(ctx, budgets, **kwargs):
         run_calls.append(1)
+        # progress every pass, so the quiescence check never stops the
+        # loop short of --cycles -- this test is about the spend cap.
+        ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                      "rice", {}, {"items": []}, 0.0)
         return RunReport(sentences_adopted=1)  # never "nothing left to do"
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
@@ -605,6 +616,10 @@ def test_run_spend_cap_above_the_judges_cost_does_not_stop_the_run(deck, monkeyp
 
     def fake_run(ctx, budgets, **kwargs):
         run_calls.append(1)
+        # progress every pass, so the quiescence check never stops the
+        # loop short of --cycles -- this test is about the spend cap.
+        ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                      "rice", {}, {"items": []}, 0.0)
         return RunReport(sentences_adopted=1)
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
@@ -678,23 +693,35 @@ def test_run_cycles_never_polls_after_the_last_cycle(deck, monkeypatch):
     assert status_calls == []
 
 
-# --- run to quiescence (spec 3 r39) -----------------------------------------
+# --- run to quiescence (spec 3 r39, r39 correction) -------------------------
+#
+# Quiescence is "the pass appended nothing to the record but its own
+# report" (ctx.db.newest_ts(excluding_port="run") unchanged across the
+# pass), not "attempted == 0": a tally like `attempted` measures effort,
+# not progress -- the sentence attempt counts its open Targets every
+# pass even when its cached answer yields only refused drafts, so
+# `attempted` alone never reaches 0 and the old rule could loop forever.
+# These fakes replace run_pipeline outright, so they must append to the
+# real deck db themselves to stand in for "this pass made progress" --
+# the production run_pipeline (run.py) always appends its own RunReport
+# row (port="run"), which newest_ts(excluding_port="run") ignores.
 
 def test_run_default_cycles_unbounded_keeps_going_until_nothing_left_to_do(
         deck, monkeypatch):
-    """No --cycles: a pass that attempted needs (no batch, so nothing to
-    wait on) is followed by another pass; the invocation stops only once
-    a pass raises no batch and attempts nothing.
+    """No --cycles: a pass that appends a row to the record (progress,
+    no batch) is followed by another pass; the invocation stops only
+    once a pass raises no batch and appends nothing to the record but
+    its own report.
     """
-    reports = [
-        RunReport(batch_id=None, attempted=3),
-        RunReport(batch_id=None, attempted=0, sentences_adopted=0),
-    ]
     run_calls = []
 
     def fake_run(ctx, budgets, **kwargs):
         run_calls.append(1)
-        return reports[len(run_calls) - 1]
+        if len(run_calls) == 1:
+            ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                          "rice", {}, {"items": []}, 0.0)
+            return RunReport(batch_id=None, attempted=3)
+        return RunReport(batch_id=None, attempted=0, sentences_adopted=0)
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
 
@@ -703,17 +730,81 @@ def test_run_default_cycles_unbounded_keeps_going_until_nothing_left_to_do(
     assert len(run_calls) == 2
 
 
-def test_run_cycles_2_caps_the_passes_even_when_the_second_still_attempts_needs(
+def test_run_cycles_2_caps_the_passes_even_when_the_second_still_appends_progress(
         deck, monkeypatch):
     run_calls = []
 
     def fake_run(ctx, budgets, **kwargs):
         run_calls.append(1)
-        return RunReport(batch_id=None, attempted=5)  # always more to do
+        # progress every pass -- always more to do -- so only --cycles
+        # stops the loop, not quiescence.
+        ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                      "rice", {}, {"items": []}, 0.0)
+        return RunReport(batch_id=None, attempted=5)
 
     monkeypatch.setattr(cli, "run_pipeline", fake_run)
 
     rc = cli.main(["run", "--deck", str(deck), "--cycles", "2"])
+    assert rc == 0
+    assert len(run_calls) == 2
+
+
+def test_run_two_passes_first_appends_a_row_second_appends_nothing_stops(
+        deck, monkeypatch, capsys):
+    """The first pass appends a row (progress, no batch) so a second
+    pass runs; the second raises no batch and appends nothing -- the
+    loop stops with the "nothing left to do" message, not because
+    `attempted` or `sentences_adopted` happened to be 0.
+    """
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        if len(run_calls) == 1:
+            ctx.db.append("provide", "forvo", ProvideKey(source="forvo", kind="", query="x"),
+                          "rice", {}, {"items": []}, 0.0)
+        return RunReport(batch_id=None, attempted=1, sentences_adopted=0)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+
+    # --cycles 3: bounds the loop so a not-yet-fixed rule (e.g. the old
+    # `attempted == 0`, which this fake's constant attempted=1 never
+    # satisfies) fails this test's assertions instead of looping forever.
+    rc = cli.main(["run", "--deck", str(deck), "--cycles", "3"])
+    assert rc == 0
+    assert len(run_calls) == 2
+    out = capsys.readouterr().out
+    assert "nothing left to do: the pass appended nothing to the record" in out
+
+
+def test_run_pass_that_appends_nothing_but_raises_a_batch_waits_and_continues(
+        deck, monkeypatch):
+    """A pass with no db progress but an outstanding batch is not
+    quiescent -- the quiescence check requires batch_id is None too --
+    so the run waits on the batch and continues instead of stopping.
+    """
+    from thai_syllabus import assessor as assessor_module
+
+    run_calls = []
+
+    def fake_run(ctx, budgets, **kwargs):
+        run_calls.append(1)
+        # no db write at all -- newest_ts never moves -- yet batch_id is
+        # set, so this must not be treated as "nothing left to do".
+        if len(run_calls) == 1:
+            return RunReport(batch_id="b1")
+        return RunReport(batch_id=None, attempted=0, sentences_adopted=0)
+
+    statuses = iter(["ended"])
+
+    def fake_status(self, batch_id):
+        return next(statuses)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(assessor_module.Assessor, "batch_status", fake_status)
+
+    sleeps = []
+    rc = cli.main(["run", "--deck", str(deck), "--poll-seconds", "1"], sleep=sleeps.append)
     assert rc == 0
     assert len(run_calls) == 2
 

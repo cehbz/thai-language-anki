@@ -232,7 +232,7 @@ Revision log:
   and Brave and the illustrator were never asked. User approval
   2026-09-15.
 - r38 2026-09-16: a source is asked with the search form of the need's query (punctuation stripped, whitespace collapsed; the key and the outcome row keep the query itself; the illustrator draws the query as written), and the judge's `suggestion` is a search phrase (at most ten words, no punctuation); the Openverse token request waits once and retries once on a transport failure, the search's own challenge wait (§6a). Evidence: Pexels's Cloudflare front challenges on the query string's punctuation, not the egress -- the same 25-word query passes without its commas and is challenged with them, and a challenged need was challenged again through the proxy; Openverse ANDs every term and answered nothing to 23 of 23 asks under long suggestions; since r35 a suggestion stays the query for every source, and r33's prompt asked for a picture description: 3,997 suggestions since, median 17 words, 645 with quotes. The Openverse token request had timed out once per run and each time cost Openverse the run, though 12 of 12 probes succeed in about 3 s. User approval 2026-09-16.
-- r39 2026-09-16: an invocation repeats resolve/attempt/submit, waiting on each batch it submits (status polled at growing intervals, `--poll-seconds` doubling to `--poll-max-seconds`, 5 to 15 minutes by default) until a pass raises no batch and attempts nothing; `--cycles N` caps the passes; `--max-wait-seconds` default 21600 (6 hours; the batch keeps processing and the next invocation resolves it). Evidence: the one-source-per-pass shape with a batch per pass needs up to six passes to reach the illustrator; the Message Batches API offers no completion notification, so the wait is a poll; the earlier stop rule ended an invocation after a pass whose sources all answered nothing; eleven measured batches: median about 10 minutes, longest 188. User approval 2026-09-16.
+- r39 2026-09-16: an invocation repeats resolve/attempt/submit, waiting on each batch it submits (status polled at growing intervals, `--poll-seconds` doubling to `--poll-max-seconds`, 5 to 15 minutes by default) until a pass raises no batch and appends nothing to the record but its own report (a tally such as `attempted` measures effort, not progress: the sentence attempt counts its open targets every pass); `--cycles N` caps the passes; `--max-wait-seconds` default 21600 (6 hours; the batch keeps processing and the next invocation resolves it). Evidence: the one-source-per-pass shape with a batch per pass needs up to six passes to reach the illustrator; the Message Batches API offers no completion notification, so the wait is a poll; the earlier stop rule ended an invocation after a pass whose sources all answered nothing; eleven measured batches: median about 10 minutes, longest 188. User approval 2026-09-16.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -767,8 +767,10 @@ budgets are measured from the record since the source's day start plus
 this run's spend. The CLI invocation (`thai-syllabus run`) repeats this
 run to quiescence: it waits on any batch a run submits (polling its
 status at growing intervals) and runs again, until a run raises no batch
-and attempts nothing -- `--cycles N` caps the number of runs instead
-(r39).
+and appends nothing to the record but its own report (a tally such as
+`attempted` measures effort, not progress: the sentence attempt counts
+its open targets every pass) -- `--cycles N` caps the number of runs
+instead (r39).
 
 ```
 run(syllabus, budgets):

@@ -166,6 +166,30 @@ def test_rows_since_returns_that_port_and_backend_from_the_window_onward(db):
     assert [r.subject for r in db.rows_since("provide", "forvo", 0)] == ["rice", "fish"]
 
 
+def test_newest_ts_is_minus_one_on_an_empty_cache(db):
+    assert db.newest_ts() == -1
+
+
+def test_newest_ts_returns_the_newer_rows_ts_after_two_appends(db):
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k1"), subject="rice",
+              question={}, answer={"items": []}, ts=100)
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k2"), subject="fish",
+              question={}, answer={"items": []}, ts=300)
+    assert db.newest_ts() == 300
+
+
+def test_newest_ts_excluding_a_port_skips_the_newest_rows_port(db):
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k1"), subject="rice",
+              question={}, answer={"items": []}, ts=100)
+    db.append(port="run", backend="runreport",
+              key=ProvideKey(source="run", kind="", query="k2"), subject="run",
+              question={}, answer={"attempted": 0}, ts=300)
+    assert db.newest_ts(excluding_port="run") == 100
+
+
 def test_satisfies_the_cache_reader_protocol(db):
     from thai_syllabus.ports import CacheReader
     assert isinstance(db, CacheReader)

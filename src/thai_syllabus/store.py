@@ -210,6 +210,20 @@ class SyllabusDb:
             (subject,)).fetchall()
         return [_row_to_answer(r) for r in rows]
 
+    def newest_ts(self, *, excluding_port: str | None = None) -> int:
+        """The highest `ts` on record, or -1 when the cache is empty --
+        run's quiescence check (spec 3 r39 correction) compares this
+        before and after a pass, `excluding_port="run"` so the pass's own
+        RunReport row (`_persist_report`) never counts as progress.
+        """
+        if excluding_port is None:
+            row = self._con.execute("select max(ts) from cache").fetchone()
+        else:
+            row = self._con.execute(
+                "select max(ts) from cache where port!=?", (excluding_port,)).fetchone()
+        newest = row[0]
+        return -1 if newest is None else newest
+
     def rows_since(self, port: str, backend: str, since_ts: int) -> list[Answer]:
         rows = self._con.execute(
             "select port, backend, key, key_sha, subject, question, answer, "
