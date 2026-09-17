@@ -43,7 +43,7 @@ from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
 from thai_syllabus.cachekeys import BatchMarkerKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from thai_syllabus.rulebook import PRONUNCIATION_RUBRIC
 from thai_syllabus.store import SyllabusDb
-from thai_syllabus.transport import Completion, TransportError
+from thai_syllabus.transport import Completion, RequestParams, TransportError
 
 
 def test_no_module_imports_the_old_packages():
@@ -1441,3 +1441,95 @@ def test_batch_status_wraps_a_transport_error_as_judge_unreachable(
     a._backends["judge"].batch_transport = _DeadBatch()
     with pytest.raises(JudgeUnreachable):
         a.batch_status("b1")
+
+
+# --- a judge role's own model, thinking, max_tokens and price (r43) -------
+
+
+def pronunciation_question(subject: str) -> AssessQuestion:
+    return AssessQuestion(subject=subject, role="pronunciation-for-word",
+                          rubric="pron rubric", kind="pronunciation",
+                          params={"thai": "ข้าว", "meaning": "rice"})
+
+
+OPUS_PARAMS = RequestParams(model="claude-opus-5", max_tokens=16000, thinking="adaptive")
+
+def _answer_for(prompt: str) -> str:
+    """The answer shape the asked role's parser expects, chosen from the
+    prompt the backend built."""
+    return PRON_ANSWER if "syllables" in prompt else '{"value": true}'
+
+
+PRON_ANSWER = ('{"syllables": [{"segments": ["k\u02b0", "a", "w"], "vowel_length": "long", '
+               '"tone": "falling"}], "gloss": "rice"}')
+
+
+def test_an_inline_judge_sends_a_roles_own_params_and_nothing_for_another_role(db):
+    calls: list = []
+
+    def complete(prompt, attachments=(), *, params=None):
+        calls.append(params)
+        return Completion(text=_answer_for(prompt))
+
+    jb = JudgeBackend(model="claude-sonnet-5", transport="api", complete=complete,
+                      role_params={"pronunciation-for-word": OPUS_PARAMS})
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    a.ask("judge", pronunciation_question("rice"))
+    a.ask("judge", fit_question("rice", "a" * 64))
+    assert calls == [OPUS_PARAMS, None]
+
+
+def test_an_inline_judge_prices_a_roles_verdict_at_the_roles_price(db):
+    def complete(prompt, attachments=(), *, params=None):
+        return Completion(text=_answer_for(prompt), input_tokens=1_000_000,
+                          output_tokens=1_000_000)
+
+    jb = JudgeBackend(model="claude-sonnet-5", transport="api", complete=complete,
+                      price=Price(2.0, 10.0),
+                      role_params={"pronunciation-for-word": OPUS_PARAMS},
+                      role_prices={"pronunciation-for-word": Price(5.0, 25.0)})
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    assert a.ask("judge", pronunciation_question("rice")).cost == pytest.approx(30.0)
+    assert a.ask("judge", fit_question("rice", "a" * 64)).cost == pytest.approx(12.0)
+
+
+def test_a_batch_submit_carries_a_roles_own_params(db, fake_batch):
+    jb = JudgeBackend(model="claude-sonnet-5", transport="batch", batch_transport=fake_batch,
+                      role_params={"pronunciation-for-word": OPUS_PARAMS})
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    res = a.ask_many("judge", [pronunciation_question("rice"), fit_question("rice", "a" * 64)])
+    bid = a.submit(res.collected)
+    params_by_prompt = {}
+    for _custom, request in fake_batch._requests[bid].items():
+        params_by_prompt[request[0]] = request[2] if len(request) > 2 else None
+    pron_prompt = next(p.prompt for p in res.collected
+                       if p.question.role == "pronunciation-for-word")
+    fit_prompt = next(p.prompt for p in res.collected if p.question.role == "picture-for-word")
+    assert params_by_prompt[pron_prompt] == OPUS_PARAMS
+    assert params_by_prompt[fit_prompt] is None
+
+
+def test_a_batch_resolve_prices_a_roles_verdict_at_the_roles_price(db, fake_batch):
+    jb = JudgeBackend(model="claude-sonnet-5", transport="batch", batch_transport=fake_batch,
+                      price=Price(2.0, 10.0),
+                      role_params={"pronunciation-for-word": OPUS_PARAMS},
+                      role_prices={"pronunciation-for-word": Price(5.0, 25.0)})
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    res = a.ask_many("judge", [pronunciation_question("rice"), fit_question("rice", "a" * 64)])
+    bid = a.submit(res.collected)
+    fake_batch._status[bid] = "ended"
+    fake_batch._texts[bid] = {
+        _custom_id(p.key): Completion(
+            text=(PRON_ANSWER if p.question.role == "pronunciation-for-word"
+                  else '{"value": true}'),
+            input_tokens=1_000_000, output_tokens=1_000_000)
+        for p in res.collected}
+    got = a.resolve(bid)
+    by_role = {p.question.role: got[p.key].cost for p in res.collected}
+    assert by_role["pronunciation-for-word"] == pytest.approx(30.0)
+    assert by_role["picture-for-word"] == pytest.approx(12.0)
+
+
+def test_a_judge_backends_role_params_and_prices_default_to_empty():
+    jb = JudgeBackend(model="m", transport="api")
+    assert dict(jb.role_params) == {} and dict(jb.role_prices) == {}

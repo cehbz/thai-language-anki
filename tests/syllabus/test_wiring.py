@@ -20,7 +20,7 @@ import requests
 import yaml
 
 from thai_syllabus import secrets as secrets_mod
-from thai_syllabus.assessor import Assessor, Price
+from thai_syllabus.assessor import AssessQuestion, Assessor, Price
 from thai_syllabus.attempts import DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK, DEFAULT_SENTENCE_MAX_CLAUSES
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
@@ -1318,3 +1318,68 @@ def test_build_sourcing_and_load_derivations_use_the_configured_source_order(tmp
                                                              "brave")
     assert build_sourcing(root).sources_for("picture") == ("pexels", "openverse", "wikimedia",
                                                            "brave")
+
+
+# --- a judge role's own setting reaches the backend (spec 3 r43) ----------
+
+def _role_cfg(secret_paths, role):
+    from thai_syllabus.curated import JudgeConfig
+    return ProvidersConfig(
+        secrets={name: str(path) for name, path in secret_paths.items()},
+        imgfetch_path="curl", audiofetch_path="curl",
+        judge=JudgeConfig(transport="batch", model="claude-sonnet-5", thinking="disabled",
+                          max_tokens=4096, price_per_mtok=(2.0, 10.0),
+                          roles={"pronunciation-for-word": role}))
+
+
+def test_build_assessor_gives_the_pronunciation_role_its_own_params_and_price(
+        db, media_store, secret_paths):
+    from thai_syllabus.curated import JudgeRoleConfig
+    from thai_syllabus.transport import RequestParams
+    cfg = _role_cfg(secret_paths, JudgeRoleConfig(model="claude-opus-5", thinking="adaptive",
+                                                  max_tokens=16000,
+                                                  price_per_mtok=(5.0, 25.0)))
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert jb.role_params == {"pronunciation-for-word": RequestParams(
+        model="claude-opus-5", max_tokens=16000, thinking="adaptive")}
+    assert jb.role_prices == {"pronunciation-for-word": Price(5.0, 25.0)}
+    # the picture roles are asked and priced as the judge itself is
+    assert jb.request_params(AssessQuestion(subject="rice", role="picture-for-word")) is None
+    assert jb.price == Price(2.0, 10.0)
+
+
+def test_a_judge_role_inherits_every_field_it_does_not_name(db, media_store, secret_paths):
+    from thai_syllabus.curated import JudgeRoleConfig
+    from thai_syllabus.transport import RequestParams
+    cfg = _role_cfg(secret_paths, JudgeRoleConfig(thinking="adaptive"))
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert jb.role_params == {"pronunciation-for-word": RequestParams(
+        model="claude-sonnet-5", max_tokens=4096, thinking="adaptive")}
+    assert jb.role_prices == {"pronunciation-for-word": Price(2.0, 10.0)}
+
+
+def test_a_judge_with_no_roles_carries_no_role_params(cfg, db, media_store):
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert dict(jb.role_params) == {} and dict(jb.role_prices) == {}
+
+
+def test_a_cli_judge_still_answers_through_the_wrapped_complete(db, media_store, secret_paths,
+                                                                monkeypatch):
+    """The judge's `complete` closure gained a `params` keyword (r43), but
+    `claude -p` takes no per-request model: a cli judge must still be
+    callable with no override at all."""
+    import subprocess
+
+    from thai_syllabus.curated import JudgeConfig
+    from thai_syllabus.transport import ClaudeCliTransport, Completion
+
+    def runner(cmd, capture_output, text):
+        return subprocess.CompletedProcess(cmd, 0, '{"value": true}', "")
+
+    monkeypatch.setattr("thai_syllabus.wiring.ClaudeCliTransport",
+                        lambda: ClaudeCliTransport(runner=runner))
+    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                          imgfetch_path="curl", audiofetch_path="curl",
+                          judge=JudgeConfig(transport="cli", model="m"))
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert jb.complete("ask", []) == Completion(text='{"value": true}')

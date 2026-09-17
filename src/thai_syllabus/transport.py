@@ -4,7 +4,9 @@ transports (cli/api/batch) selected by config"; the llm Provider backend
 uses the same cli/api pair). `anthropic` is an optional dependency
 (pyproject.toml's `llm` extra), imported lazily inside the method that
 needs it. The api and batch transports send `thinking` on every request
-(spec 3 §4).
+(spec 3 §4), and take a per-request `RequestParams` override of model,
+max_tokens and thinking for a judge role configured with its own setting
+(spec 3 r43).
 
 Costs are in different currencies (spec 3 section 2): cli spends
 subscription token quota, api/batch spend cash. A transport returns a
@@ -91,12 +93,29 @@ def _import_anthropic():
 
 
 @dataclass(frozen=True)
+class RequestParams:
+    """The model, output cap and thinking mode ONE request is sent under
+    (spec 3 r43): a judge role configured with `judge.roles.<role>` is
+    asked under these instead of the transport's own fields, so one
+    transport serves every role.
+    """
+    model: str
+    max_tokens: int
+    thinking: str
+
+
+@dataclass(frozen=True)
 class Completion:
     """One transport answer: the text plus the token usage the wire reported
     (0 where the wire reports none, e.g. cli)."""
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
+    # The model that actually answered, as the wire named it (spec 3
+    # r43) -- None where the wire names none (cli). A per-role override
+    # means the judge's configured model is not always the one to price
+    # against, so the answer carries its own.
+    model: str | None = None
 
 
 _MEDIA_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -111,6 +130,15 @@ def image_block(path: Path) -> dict:
     data = base64.standard_b64encode(path.read_bytes()).decode("utf-8")
     return {"type": "image",
             "source": {"type": "base64", "media_type": image_media_type(path), "data": data}}
+
+
+def _request_fields(params: "RequestParams | None", model: str, max_tokens: int,
+                    thinking: str) -> tuple[str, int, str]:
+    """The (model, max_tokens, thinking) one request goes out under: the
+    override when there is one, else the transport's own fields."""
+    if params is None:
+        return model, max_tokens, thinking
+    return params.model, params.max_tokens, params.thinking
 
 
 def _content(prompt: str, attachments: Sequence[Path]) -> list[dict] | str:
@@ -128,7 +156,8 @@ def _completion_of(message) -> Completion:
     usage = getattr(message, "usage", None)
     return Completion(text=text,
                       input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-                      output_tokens=int(getattr(usage, "output_tokens", 0) or 0))
+                      output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                      model=getattr(message, "model", None) or None)
 
 
 @dataclass
@@ -193,12 +222,18 @@ class ClaudeApiTransport:
         anthropic = _import_anthropic()
         return anthropic.Anthropic(api_key=self.api_key)
 
-    def complete(self, prompt: str, attachments: Sequence[Path] = ()) -> Completion:
+    def complete(self, prompt: str, attachments: Sequence[Path] = (), *,
+                 params: RequestParams | None = None) -> Completion:
+        """`params`, when given, replaces this transport's own model,
+        max_tokens and thinking for this one request (spec 3 r43's
+        per-role judge setting)."""
+        model, max_tokens, thinking = _request_fields(
+            params, self.model, self.max_tokens, self.thinking)
         try:
             client = self._client()
             response = client.messages.create(
-                model=self.model, max_tokens=self.max_tokens,
-                thinking={"type": self.thinking},
+                model=model, max_tokens=max_tokens,
+                thinking={"type": thinking},
                 messages=[{"role": "user", "content": _content(prompt, attachments)}])
         except Exception as e:  # noqa: BLE001 -- any SDK exception is a transport error
             raise TransportError(f"api transport failed: {e}") from e
@@ -235,20 +270,30 @@ class ClaudeBatchTransport:
             return anthropic.Anthropic(api_key=self.api_key)
         return anthropic.Anthropic()
 
-    def submit(self, requests: Mapping[str, tuple[str, Sequence[Path]]]) -> str:
-        """requests: custom_id -> (prompt, attachments). Returns the batch id."""
+    def submit(self, requests: Mapping[str, tuple[str, Sequence[Path]]
+                                       | tuple[str, Sequence[Path], "RequestParams | None"]]
+               ) -> str:
+        """requests: custom_id -> (prompt, attachments), or (prompt,
+        attachments, params) where `params` replaces this transport's
+        model, max_tokens and thinking for that one request (spec 3
+        r43's per-role judge setting). Returns the batch id.
+        """
         try:
             client = self._client()
             batch = client.messages.batches.create(requests=[
                 {"custom_id": custom_id,
-                 "params": {"model": self.model, "max_tokens": self.max_tokens,
-                           "thinking": {"type": self.thinking},
+                 "params": {**self._params_block(request[2] if len(request) > 2 else None),
                            "messages": [{"role": "user",
-                                         "content": _content(prompt, attachments)}]}}
-                for custom_id, (prompt, attachments) in requests.items()])
+                                         "content": _content(request[0], request[1])}]}}
+                for custom_id, request in requests.items()])
         except Exception as e:  # noqa: BLE001
             raise TransportError(f"batch submit failed: {e}") from e
         return batch.id
+
+    def _params_block(self, params: RequestParams | None) -> dict[str, Any]:
+        model, max_tokens, thinking = _request_fields(
+            params, self.model, self.max_tokens, self.thinking)
+        return {"model": model, "max_tokens": max_tokens, "thinking": {"type": thinking}}
 
     def status(self, batch_id: str) -> str:
         """"in_progress" | "canceling" | "ended" (anthropic's

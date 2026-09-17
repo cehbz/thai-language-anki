@@ -15,10 +15,12 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
 
+from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND, ROLE_FOR_SENTENCE_SUBJECT
 from .entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
@@ -27,6 +29,7 @@ from .profile import Profile
 # refused at load -- load_derivations (the review screen, the stats
 # folds) reads a config without ever building a roster.
 from .provider import require_image_generator
+from .rulebook import RULES
 from .run import parse_day_starts
 from .secrets import SecretStore
 from .tts import FEMALE_VOICES, MALE_VOICES
@@ -603,7 +606,12 @@ def rulebook_file_text(path: str | Path) -> str:
 # load_providers_config refuses a file describing a run the code cannot
 # perform: no imgfetch_path/audiofetch_path, an api/batch judge with no
 # price_per_mtok or no anthropic secret, an unknown judge.thinking, a
-# judge.max_tokens under 16000 with thinking: adaptive, an unknown
+# judge.max_tokens under 16000 with thinking: adaptive, a judge.roles
+# entry naming no known judge role or carrying a key the judge has not
+# got, an unknown thinking or a non-positive max_tokens inside one, a role
+# with thinking: adaptive whose effective max_tokens (its own, else the
+# judge's) is under 16000, an api/batch role on another model than the
+# judge's with no price_per_mtok of its own, an unknown
 # drafter.transport, an api drafter with no anthropic secret or no
 # price_per_mtok, an empty male_voices or female_voices pool, a
 # quotas.<source>.day_starts that does not parse (run.parse_day_starts), an
@@ -616,6 +624,29 @@ def rulebook_file_text(path: str | Path) -> str:
 DEFAULT_IMAGE_WIDTH = 1600   # iiurlwidth bound on a wikimedia thumburl (spec 3 section 9)
 
 
+# The judge roles a `judge.roles.<role>` entry may name (spec 3 r43):
+# the authority tables' roles (spec 1 section 4) plus the roles the
+# judged Rules are asked under. A name outside this set is a typo, and
+# the loader refuses it rather than configuring a role nothing asks.
+JUDGE_ROLE_NAMES: frozenset[str] = (
+    frozenset(AUTHORITY_ORDER)
+    | frozenset(ROLE_FOR_KIND.values())
+    | frozenset(ROLE_FOR_SENTENCE_SUBJECT.values())
+    | frozenset(rule.role for rule in RULES if rule.shape == "judged"))
+
+
+@dataclass(frozen=True)
+class JudgeRoleConfig:
+    """One judge role's own setting (spec 3 r43 section 8): the model,
+    thinking mode, output cap and token price that role is asked under.
+    Every field is None where the role inherits the judge's.
+    """
+    model: str | None = None
+    thinking: str | None = None          # "disabled" | "adaptive"
+    max_tokens: int | None = None
+    price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
+
+
 @dataclass(frozen=True)
 class JudgeConfig:
     transport: str = "cli"   # "cli" | "api" | "batch"
@@ -623,6 +654,17 @@ class JudgeConfig:
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
     thinking: str = "disabled"  # "disabled" | "adaptive"; sent by the api and batch transports
     max_tokens: int = 4096      # output token cap; sent by the api and batch transports
+    # role -> that role's own setting (spec 3 r43): frozen at
+    # construction and hashed by its sorted items, so JudgeConfig stays
+    # the frozen, hashable value it has always been.
+    roles: Mapping[str, JudgeRoleConfig] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roles", MappingProxyType(dict(self.roles)))
+
+    def __hash__(self) -> int:
+        return hash((self.transport, self.model, self.price_per_mtok, self.thinking,
+                     self.max_tokens, tuple(sorted(self.roles.items()))))
 
 
 @dataclass(frozen=True)
@@ -680,6 +722,93 @@ class ProvidersConfig:
         return SecretStore(**kwargs)
 
 
+def _price_per_mtok(price_cfg: Any, label: str, errors: list[str]) -> tuple[float, float] | None:
+    """A `price_per_mtok: {input, output}` block as (input, output), or
+    None with `label`-prefixed errors appended. One reader for the judge's
+    price and a role's (spec 3 r43), so both refuse the same shapes.
+    """
+    if not isinstance(price_cfg, Mapping):
+        errors.append(f"{label}.price_per_mtok: {price_cfg!r} must be "
+                      "a mapping with 'input' and 'output'")
+        return None
+    input_price = price_cfg.get("input")
+    output_price = price_cfg.get("output")
+    if not _is_number(input_price) or not _is_number(output_price):
+        errors.append(f"{label}.price_per_mtok: {price_cfg!r} needs "
+                      "numeric 'input' and 'output'")
+        return None
+    return (float(input_price), float(output_price))
+
+
+_JUDGE_ROLE_KEYS = ("model", "thinking", "max_tokens", "price_per_mtok")
+
+
+def _judge_roles(roles_cfg: Any, *, transport: str, judge_model: str, judge_max_tokens: int,
+                 errors: list[str]) -> dict[str, JudgeRoleConfig]:
+    """providers.yaml `judge.roles` (spec 3 r43 section 8), validated the
+    way the judge's own keys are: a known role name, no key the judge has
+    not got, thinking in {disabled, adaptive} needing an EFFECTIVE
+    max_tokens (the role's, else the judge's) of at least 16000, and --
+    under the cash transports -- a price of its own for a role that names
+    another model than the judge's (spec 3 section 2's cost contract).
+    """
+    if not isinstance(roles_cfg, Mapping):
+        errors.append(f"providers.judge.roles: {roles_cfg!r} must be a mapping of "
+                      "role name to that role's setting")
+        return {}
+    roles: dict[str, JudgeRoleConfig] = {}
+    for name, role_cfg in roles_cfg.items():
+        label = f"providers.judge.roles.{name}"
+        if name not in JUDGE_ROLE_NAMES:
+            errors.append(f"{label}: {name!r} is not a judge role "
+                          f"({', '.join(sorted(JUDGE_ROLE_NAMES))})")
+            continue
+        if not isinstance(role_cfg, Mapping):
+            errors.append(f"{label}: {role_cfg!r} must be a mapping of "
+                          f"{', '.join(_JUDGE_ROLE_KEYS)}")
+            continue
+        unknown = sorted(set(role_cfg) - set(_JUDGE_ROLE_KEYS))
+        if unknown:
+            errors.append(f"{label}: unknown key(s) {', '.join(unknown)} "
+                          f"(known: {', '.join(_JUDGE_ROLE_KEYS)})")
+            continue
+        role_thinking = role_cfg.get("thinking")
+        if role_thinking is not None and role_thinking not in ("disabled", "adaptive"):
+            errors.append(f"{label}.thinking: {role_thinking!r} is not one of "
+                          "'disabled', 'adaptive'")
+            continue
+        role_max_tokens = role_cfg.get("max_tokens")
+        if role_max_tokens is not None and (not isinstance(role_max_tokens, int)
+                                            or isinstance(role_max_tokens, bool)
+                                            or role_max_tokens < 1):
+            errors.append(f"{label}.max_tokens: {role_max_tokens!r} must be a "
+                          "positive integer")
+            continue
+        effective_max_tokens = (role_max_tokens if role_max_tokens is not None
+                                else judge_max_tokens)
+        if role_thinking == "adaptive" and effective_max_tokens < 16000:
+            errors.append(f"{label}.max_tokens: {effective_max_tokens} is below 16000, the "
+                          "least an adaptive-thinking answer needs to carry text")
+            continue
+        role_price = (_price_per_mtok(role_cfg["price_per_mtok"], label, errors)
+                      if "price_per_mtok" in role_cfg else None)
+        if "price_per_mtok" in role_cfg and role_price is None:
+            continue
+        role_model = role_cfg.get("model")
+        if (transport in ("api", "batch") and role_model is not None
+                and role_model != judge_model and role_price is None):
+            # Spec 3 section 2's cost contract: tokens are priced against
+            # the model that answered, so a role on another model must say
+            # what that model costs.
+            errors.append(f"{label}.price_per_mtok: required -- the role answers on "
+                          f"{role_model!r}, not the judge's {judge_model!r}, and the "
+                          f"{transport!r} transport spends cash per token")
+            continue
+        roles[name] = JudgeRoleConfig(model=role_model, thinking=role_thinking,
+                                      max_tokens=role_max_tokens, price_per_mtok=role_price)
+    return roles
+
+
 def load_providers_config(path: str | Path) -> ProvidersConfig:
     path = Path(path)
     _require_exists(path)
@@ -706,20 +835,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if transport not in ("cli", "api", "batch"):
         errors.append(f"providers.judge.transport: {transport!r} is not one of "
                       "'cli', 'api', 'batch'")
-    price_per_mtok = None
-    if "price_per_mtok" in judge_cfg:
-        price_cfg = judge_cfg["price_per_mtok"]
-        if not isinstance(price_cfg, Mapping):
-            errors.append(f"providers.judge.price_per_mtok: {price_cfg!r} must be "
-                          "a mapping with 'input' and 'output'")
-        else:
-            input_price = price_cfg.get("input")
-            output_price = price_cfg.get("output")
-            if not _is_number(input_price) or not _is_number(output_price):
-                errors.append(f"providers.judge.price_per_mtok: {price_cfg!r} needs "
-                              "numeric 'input' and 'output'")
-            else:
-                price_per_mtok = (float(input_price), float(output_price))
+    price_per_mtok = (_price_per_mtok(judge_cfg["price_per_mtok"], "providers.judge", errors)
+                      if "price_per_mtok" in judge_cfg else None)
     if transport in ("api", "batch") and price_per_mtok is None:
         # Spec 3 section 2's cost contract: an api or batch judge spends
         # cash, measured as tokens times this price, which a budget binds.
@@ -735,9 +852,12 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     elif thinking == "adaptive" and max_tokens < 16000:
         errors.append(f"providers.judge.max_tokens: {max_tokens} is below 16000, the least "
                       "an adaptive-thinking answer needs to carry text")
-    judge = JudgeConfig(transport=transport, model=judge_cfg.get("model", ""),
+    judge_model = judge_cfg.get("model", "")
+    roles = _judge_roles(judge_cfg.get("roles") or {}, transport=transport,
+                         judge_model=judge_model, judge_max_tokens=max_tokens, errors=errors)
+    judge = JudgeConfig(transport=transport, model=judge_model,
                         price_per_mtok=price_per_mtok, thinking=thinking,
-                        max_tokens=max_tokens)
+                        max_tokens=max_tokens, roles=roles)
 
     # A loaded config describes a run that can happen: both mediafetch
     # paths are required, pictures and recordings always being in scope.
@@ -937,6 +1057,20 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
     if config.judge.price_per_mtok is not None:
         input_price, output_price = config.judge.price_per_mtok
         judge["price_per_mtok"] = {"input": input_price, "output": output_price}
+    if config.judge.roles:
+        # Only the fields a role actually names: an unset one is inherited
+        # from the judge (spec 3 r43), and writing it back as a value would
+        # freeze today's judge setting into the role.
+        judge["roles"] = {name: {key: value for key, value in (
+                                    ("model", role.model),
+                                    ("thinking", role.thinking),
+                                    ("max_tokens", role.max_tokens),
+                                    ("price_per_mtok",
+                                     None if role.price_per_mtok is None else
+                                     {"input": role.price_per_mtok[0],
+                                      "output": role.price_per_mtok[1]}))
+                                 if value is not None}
+                          for name, role in config.judge.roles.items()}
     _atomic_write_yaml(Path(path), {
         "secrets": dict(config.secrets),
         "search_proxy": config.search_proxy,

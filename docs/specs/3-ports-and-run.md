@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 39, proposed 2026-09-16 against principles r4 and architecture
+Revision 43, proposed 2026-09-17 against principles r4 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -233,6 +233,7 @@ Revision log:
   2026-09-15.
 - r38 2026-09-16: a source is asked with the search form of the need's query (punctuation stripped, whitespace collapsed; the key and the outcome row keep the query itself; the illustrator draws the query as written), and the judge's `suggestion` is a search phrase (at most ten words, no punctuation); the Openverse token request waits once and retries once on a transport failure, the search's own challenge wait (§6a). Evidence: Pexels's Cloudflare front challenges on the query string's punctuation, not the egress -- the same 25-word query passes without its commas and is challenged with them, and a challenged need was challenged again through the proxy; Openverse ANDs every term and answered nothing to 23 of 23 asks under long suggestions; since r35 a suggestion stays the query for every source, and r33's prompt asked for a picture description: 3,997 suggestions since, median 17 words, 645 with quotes. The Openverse token request had timed out once per run and each time cost Openverse the run, though 12 of 12 probes succeed in about 3 s. User approval 2026-09-16.
 - r39 2026-09-16: an invocation repeats resolve/attempt/submit, waiting on each batch it submits (status polled at growing intervals, `--poll-seconds` doubling to `--poll-max-seconds`, 5 to 15 minutes by default) until a pass raises no batch and appends nothing to the record but its own report (a tally such as `attempted` measures effort, not progress: the sentence attempt counts its open targets every pass); `--cycles N` caps the passes; `--max-wait-seconds` default 21600 (6 hours; the batch keeps processing and the next invocation resolves it). Evidence: the one-source-per-pass shape with a batch per pass needs up to six passes to reach the illustrator; the Message Batches API offers no completion notification, so the wait is a poll; the earlier stop rule ended an invocation after a pass whose sources all answered nothing; eleven measured batches: median about 10 minutes, longest 188. User approval 2026-09-16.
+- r43 2026-09-17: `judge.roles.<role>` (§8) gives one judge role its own model, thinking, max_tokens and price, inherited from the judge where unset and sent per request by the api and batch transports; the pronunciation rubric names the vowel-length rule, so the uncorroborated words are re-asked under the new setting. Evidence: on 40 disputed words the deck's judge (Sonnet 5, thinking off) corroborated 5%; Sonnet 5 with adaptive thinking 34%; Opus 5 with adaptive thinking 47% at $0.015 a word; a spelling-analysis prompt added nothing to Opus; vowel length against thaig2p is the dominant remaining mismatch. Thinking on every picture verdict would multiply that cost for no measured gain. User approval 2026-09-17.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -289,7 +290,8 @@ for the JSON object alone. A drafter answer `{"sentences": [],
 **Cost contract.** Every Answer and Verdict carries the cost the backend
 incurred, in that backend's currency, measured by the backend: Forvo one
 lookup, TTS characters times rate, the api and batch judge and the api
-drafter tokens times the model price in providers.yaml, the cli judge and
+drafter tokens times the price of the model that answered (the judge's, or
+the role's, r43), the cli judge and
 the cli drafter one call of quota, the learner seconds. A transport that receives usage and drops it violates this
 contract. Consumers: budget enforcement (section 7), cross-run accounting
 from the record, queue order, the run report.
@@ -830,7 +832,11 @@ Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
-16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
+16000 under `thinking: adaptive`),
+`judge.roles.<role>.{model, thinking, max_tokens, price_per_mtok}` (r43: a
+role's own setting, each field inherited from `judge` when unset; a role
+whose model differs from the judge's states its own price),
+`drafter.transport` (cli | api),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3),
 `requery_cap` (3: the distinct queries one picture need is searched under
 since its requery window opened, r35; a source's query form is code,
