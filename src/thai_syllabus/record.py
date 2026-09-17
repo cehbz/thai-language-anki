@@ -1,10 +1,10 @@
 """The record, read through one module (spec 3 section 6): pure folds
 over `cache` rows. Every provide/assess row a writer appends names its
-artifact kind (picture | recording | rendition | sentence |
-grapheme-keyword) or, for a learner row, its own row kind (rating |
-direction | waiver | card-flag | note | drill | reverify) in
-question["kind"], and the kind of thing its subject is (word | pair |
-sentence | grapheme) in question["subject_kind"]; a judge-batch marker
+artifact kind (picture | recording | rendition | sentence) or, for a
+learner row, its own row kind (rating | direction | waiver | card-flag |
+note | drill | reverify) in question["kind"], and the kind of thing its
+subject is (word | pair | sentence | grapheme) in
+question["subject_kind"]; a judge-batch marker
 row's kind is "batch". A fold here reads those fields, `backend`, `port`,
 `subject`, and `answer` only -- never an encoded key, and never a
 `provides`/`role` string matched by prefix or membership.

@@ -419,12 +419,19 @@ def test_authority_order_puts_mechanical_ahead_of_judge_on_recording_roles():
 
 def test_role_for_returns_the_mapped_role():
     assert role_for("picture") == "picture-for-word"
-    assert role_for("grapheme-keyword") == "grapheme-keyword-for-grapheme"
+    assert role_for("rendition") == "rendition-for-pair"
 
 
 def test_role_for_raises_keyerror_naming_the_kind():
     with pytest.raises(KeyError, match="unknown-kind"):
         role_for("unknown-kind")
+
+
+def test_the_retired_grapheme_keyword_kind_has_no_role():
+    """Spec 1 r17 / spec 3 r42: a grapheme's keyword picture is the keyword
+    word's own picture need; the old kind is off the roster."""
+    with pytest.raises(KeyError, match="grapheme-keyword"):
+        role_for("grapheme-keyword", "grapheme")
 
 
 # --- spec 3 section 1/2: judge attaches artifacts, prices verdicts, --------

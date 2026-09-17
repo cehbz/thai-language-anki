@@ -1177,8 +1177,9 @@ def test_run_reports_every_need_gaps_lists_as_available(db, monkeypatch):
 
 
 def test_run_reports_unserved_needs_from_the_queue(db, monkeypatch):
-    """grapheme-keyword needs (no Source, no per-run pass) are queued()'s
-    own count, threaded through unchanged."""
+    """A kind with no Source and no per-run pass is queued()'s own count,
+    threaded through unchanged. No kind is one today (spec 3 r42 retired
+    the last), so the fake supplies the number."""
     def fake_queued(syllabus, cache, **kwargs):
         return run_mod.QueuedNeeds(entries=[], available=2, exhausted=0, unserved=2)
 
@@ -1563,32 +1564,33 @@ def test_run_resolves_the_previous_batch_and_counts_one_still_out_as_pending(db,
            + report.unserved + report.budgeted + report.deferred)
 
 
-def test_a_dead_resolve_counts_the_exhausted_and_unserved_needs_once(db, monkeypatch):
-    """The judge died at the resolve, with an exhausted picture need and
-    an unserved grapheme need in the same syllabus: `pending` is the
-    outstanding batch's own needs, and the leftover is deferred once --
-    never the exhausted and unserved needs a second time.
+def test_a_dead_resolve_counts_the_exhausted_needs_once(db, monkeypatch):
+    """The judge died at the resolve, with an exhausted picture need in
+    the syllabus: `pending` is the outstanding batch's own needs, and the
+    leftover is deferred once -- never the exhausted need a second time.
+    Spec 3 r42 retired the last unserved kind, so that term is 0 here and
+    the identity still adds up.
     """
     assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
     _patch(monkeypatch, {})
     _exhaust(db, "b")
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), graphemes=("g",))), assessor), {})
-    assert report.available == 4 and report.pending == 1
-    assert report.exhausted == 1 and report.unserved == 1 and report.deferred == 1
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"))), assessor), {})
+    assert report.available == 3 and report.pending == 1
+    assert report.exhausted == 1 and report.unserved == 0 and report.deferred == 1
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_batch_still_out_after_the_resolve_counts_each_need_once(db, monkeypatch):
     """The same accounting where the resolve reached a batch that has not
-    ended: the run looked at no need, and the exhausted and unserved ones
-    are not deferred on top of their own buckets."""
+    ended: the run looked at no need, and the exhausted one is not
+    deferred on top of its own bucket."""
     assessor = _Stuck(outstanding=("batch-0", frozenset({("a", "picture")})))
     _patch(monkeypatch, {})
     _exhaust(db, "b")
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"), graphemes=("g",))), assessor), {})
-    assert report.batch_id == "batch-0" and report.available == 4 and report.pending == 1
-    assert report.exhausted == 1 and report.unserved == 1 and report.deferred == 1
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b", "c"))), assessor), {})
+    assert report.batch_id == "batch-0" and report.available == 3 and report.pending == 1
+    assert report.exhausted == 1 and report.unserved == 0 and report.deferred == 1
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
 

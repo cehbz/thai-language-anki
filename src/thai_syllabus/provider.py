@@ -62,9 +62,9 @@ class Question:
     # provides: picture | recording | sentence | pair | phrase | entry
     provides: str
     params: Mapping[str, Any] = field(default_factory=dict)
-    # The artifact kind (picture | recording | rendition | sentence |
-    # grapheme-keyword) the caller is asking toward, and the kind of thing
-    # `subject` is (word | pair | sentence | grapheme) -- record.py's folds
+    # The artifact kind (picture | recording | rendition | sentence) the
+    # caller is asking toward, and the kind of thing `subject` is
+    # (word | pair | sentence | grapheme) -- record.py's folds
     # read both back verbatim; Provider derives neither from `provides`.
     kind: str = ""
     subject_kind: str = "word"

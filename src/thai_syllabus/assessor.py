@@ -46,9 +46,9 @@ class AssessQuestion:
     artifact_sha: str | None = None
     rubric: str | None = None  # machine backends only
     params: Mapping[str, Any] = field(default_factory=dict)
-    # The artifact kind (picture | recording | rendition | sentence |
-    # grapheme-keyword) this verdict ranks toward, and the kind of thing
-    # `subject` is (word | pair | sentence | grapheme) -- record.py's folds
+    # The artifact kind (picture | recording | rendition | sentence) this
+    # verdict ranks toward, and the kind of thing `subject` is
+    # (word | pair | sentence | grapheme) -- record.py's folds
     # read both back verbatim; Assessor derives neither from `role`.
     kind: str = ""
     subject_kind: str = "word"

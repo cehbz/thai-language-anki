@@ -28,13 +28,14 @@ AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
 # Need kind (or a question kind such as pronunciation -- spec 3 r28:
 # words are not needs) -> the judged Assess role that kind's fit verdict
 # is asked under, for the kind's own natural subject (a word's picture, a
-# word's recording, a pair's rendition, a grapheme's keyword).
+# word's recording, a pair's rendition; r17 retired the grapheme's own
+# keyword role -- its keyword picture is judged as the keyword word's
+# picture).
 ROLE_FOR_KIND: dict[str, str] = {
     "picture": "picture-for-word",
     "recording": "recording-for-word",
     "rendition": "rendition-for-pair",
     "sentence": "sentence-for-target",
-    "grapheme-keyword": "grapheme-keyword-for-grapheme",
     "pronunciation": "pronunciation-for-word",
 }
 

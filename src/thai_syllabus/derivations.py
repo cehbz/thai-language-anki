@@ -100,11 +100,13 @@ _NANOS_PER_DAY = 86_400 * 1_000_000_000
 # screen asks the learner for a direction instead.
 DEFAULT_SENTENCE_NOTHING_CAP = 3
 
-# The one artifact kind with no Source (attempts.SOURCES has no entry for
-# it) and no per-run pass either -- unlike "sentence", which the run's own
-# sentence attempt serves. queued() counts its needs as unserved rather
-# than entering, exhausting, or pending them.
-_UNSERVED_KIND = "grapheme-keyword"
+# Artifact kinds no Source serves and no per-run pass covers: such a need
+# can never become an entry, exhausted or pending, so it sits in its own
+# `unserved` count and the run's identity still adds up (spec 3 section
+# 7). Empty since r42 retired `grapheme-keyword` -- a grapheme's keyword
+# picture is the keyword word's own picture need. The bucket stays: the
+# next kind with no server joins this set.
+_UNSERVED_KINDS: frozenset[str] = frozenset()
 
 # The kind the run's own per-run sentence attempt serves for every open
 # Target, directed or not: queued() emits no entry, exhausted count, or
@@ -925,8 +927,17 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
                   if p.confusion in gaps.missing_renditions]
     candidates += [(s, "recording", "sentence") for s in gaps.sentence_recordings]
     candidates += [(s, "picture", "sentence") for s in gaps.scene_pictures]
-    candidates += [(g, "grapheme-keyword", "grapheme")
-                  for g in gaps.graphemes_missing_keyword_data]
+    # Spec 3 r42: a grapheme's keyword picture is the keyword WORD's own
+    # picture need -- the same kind, the same subject kind, the same
+    # attempt, drafter and judge every other word's picture gets. gaps()
+    # names the grapheme (its rule's note_id is the symbol), so the
+    # keyword it points at is looked up here; the dedup below folds it
+    # into that word's own need when it has one.
+    keyword_of = {g.symbol: g.keyword for g in syllabus.graphemes}
+    # gaps() derives these symbols from the same graphemes, so a symbol
+    # this map lacks is a desync worth raising, not hiding.
+    candidates += [(keyword_of[symbol], "picture", "word")
+                  for symbol in gaps.graphemes_missing_keyword_data]
     seen: set[tuple[str, str, str]] = set()
     out: list[tuple[str, str, str]] = []
     for c in candidates:
@@ -950,24 +961,34 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
     """(subject, artifact kind, subject kind) for every need the deck has,
     satisfied or not (spec 5 section 3's coverage universe): one picture
     and one recording need per targeted word (once, however many Targets
-    name it), one rendition per pair, one keyword picture per grapheme,
-    one recording and one scene picture per sentence.
+    name it), one rendition per pair, one picture per grapheme's keyword
+    word (r42: the keyword word's own need), one recording and one scene
+    picture per sentence.
+
+    Deduped here, not by the caller: a count folded over this list (such
+    as reviewserver.compute_stats's coverage, one row per need) counts a
+    keyword word the deck also targets once.
     """
-    seen_words: set[str] = set()
-    out: list[tuple[str, str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
     for t in syllabus.targets:
-        if t.word in seen_words:
-            continue
-        seen_words.add(t.word)
-        out.append((t.word, "picture", "word"))
-        out.append((t.word, "recording", "word"))
+        candidates.append((t.word, "picture", "word"))
+        candidates.append((t.word, "recording", "word"))
     for p in syllabus.pairs:
-        out.append((p.id, "rendition", "pair"))
+        candidates.append((p.id, "rendition", "pair"))
     for g in syllabus.graphemes:
-        out.append((g.symbol, "grapheme-keyword", "grapheme"))
+        # Spec 3 r42: a keyword's picture is that word's picture need; a
+        # keyword that is also a targeted word is already a candidate and
+        # the dedup below folds the two.
+        candidates.append((g.keyword, "picture", "word"))
     for s in syllabus.sentences:
-        out.append((s.text_sha, "recording", "sentence"))
-        out.append((s.text_sha, "picture", "sentence"))
+        candidates.append((s.text_sha, "recording", "sentence"))
+        candidates.append((s.text_sha, "picture", "sentence"))
+    seen: set[tuple[str, str, str]] = set()
+    out: list[tuple[str, str, str]] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
     return out
 
 
@@ -1043,7 +1064,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     out_of_options = 0
     unserved = 0
     for subject, kind, subject_kind in candidates:
-        if kind == _UNSERVED_KIND:
+        if kind in _UNSERVED_KINDS:
             # No Source serves this kind (attempts.SOURCES has no entry
             # for it) and, unlike "sentence", no per-run pass covers it
             # either: it can never become an entry, exhausted, or pending.

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 16, proposed 2026-09-17 against principles r5 and architecture
+Revision 17, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -57,6 +57,14 @@ Revision log:
   otherwise hand the drafter 84 Targets no sentence can fill -- a recited
   name is learned from the chart cell and its own recording (F6, design
   2026-09-12 step 7). User approval 2026-09-17.
+- r17 2026-09-17: the `grapheme-keyword-for-grapheme` Assess role is
+  retired from the role map; a grapheme's keyword picture is judged under
+  `picture-for-word`, the keyword Word's own role, because that picture
+  is now that word's own need (spec 3 r42). grapheme/keyword-picture-
+  required and grapheme/keyword-contains-symbol are unchanged: they still
+  name the grapheme, which is what the finding is about. Evidence: no
+  backend ever answered the retired role -- it named a need nothing
+  served. User approval 2026-09-17.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -336,7 +344,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
-| F6 | grapheme/keyword-picture-required (check, error), grapheme/keyword-contains-symbol (check, error) |
+| F6 | grapheme/keyword-picture-required (check, error; the keyword Word's own picture need, spec 3 r42), grapheme/keyword-contains-symbol (check, error) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
 | F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive |
 | F11 | by construction: current-best ranks judged candidates only |

@@ -219,9 +219,18 @@ def test_build_queue_threads_its_one_clock_read_so_an_aged_out_nothing_re_offers
     assert [i["type"] for i in items] == ["direction"]
 
 
-def test_build_queue_respects_budget(derivations, db):
-    items = rs.build_queue(derivations, budget=1)
-    assert len(items) == 1
+def test_build_queue_respects_budget(derivations, syllabus, db):
+    """Every word has a picture candidate to rate, so the session has more
+    questions than the budget allows and the budget is what caps it.
+    (Before spec 3 r42 the one question this fixture raised on an empty db
+    was the grapheme's `grapheme-keyword` direction request -- a kind no
+    Source served, hence always exhausted; that need is the keyword word's
+    own picture now, and a budget test needs its own candidates.)
+    """
+    for w in syllabus.words:
+        _provide(db, w.id, "picture", items=[{"sha": f"p-{w.id}"}])
+    assert len(rs.build_queue(derivations, budget=50)) > 1
+    assert len(rs.build_queue(derivations, budget=1)) == 1
 
 
 def test_build_queue_rate_order_matches_derivations_queue(derivations, syllabus, db):
@@ -1696,11 +1705,26 @@ def test_compute_stats_counts_ratings_coverage_exhausted_and_drills(
     assert stats["ratings"]["good"] == 1
     assert stats["ratings"]["acceptable"] == 1
     assert stats["coverage"]["picture"]["covered"] == 2
-    assert stats["coverage"]["picture"]["total"] == 2
+    # w1's, w2's and -- spec 3 r42 -- the grapheme's keyword word's own
+    assert stats["coverage"]["picture"]["total"] == 3
     assert stats["drills"][confusion.id] == {"correct": 1, "total": 2}
     assert stats["run_report_history"] == []
     assert stats["pending"] == 0
     assert stats["sentences_adopted"] == 0
+
+
+def test_compute_stats_counts_a_keyword_that_is_also_a_targeted_word_once(
+        syllabus, keyword_word, db, media_store):
+    """Spec 3 r42: coverage is one row per need over derivations.all_needs,
+    and a grapheme's keyword picture is the keyword WORD's picture need --
+    deduped inside all_needs, so targeting that word does not give it two
+    picture needs, and no `grapheme-keyword` bucket is left to count.
+    """
+    targeted = dataclasses.replace(
+        syllabus, targets=syllabus.targets + (target("t-chicken", keyword_word.id),))
+    stats = rs.compute_stats(_derivations_for(targeted, db, media_store))
+    assert stats["coverage"]["picture"]["total"] == 3   # rice, near, chicken -- chicken once
+    assert "grapheme-keyword" not in stats["coverage"]
 
 
 def test_compute_stats_accepted_counts_a_mechanically_passing_veto_only_need(
@@ -1798,8 +1822,10 @@ def ctx_with_two_runs(derivations, db):
 
 
 def test_stats_cover_every_need(ctx_two_words_one_pictured):
+    # three picture needs: w1's, w2's, and the grapheme's keyword word's
+    # own (spec 3 r42) -- the fixture deck carries one grapheme.
     s = rs.compute_stats(ctx_two_words_one_pictured)
-    assert s["coverage"]["picture"] == {"total": 2, "covered": 1, "accepted": 1}
+    assert s["coverage"]["picture"] == {"total": 3, "covered": 1, "accepted": 1}
 
 
 def test_stats_list_every_run_with_excluded_and_unreachable(ctx_with_two_runs):

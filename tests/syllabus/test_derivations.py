@@ -1113,6 +1113,7 @@ class _FakeSyllabus:
     targets: list = field(default_factory=list)
     words: list = field(default_factory=list)
     pairs: list = field(default_factory=list)
+    graphemes: list = field(default_factory=list)
 
     def gaps(self):
         return self._gaps
@@ -1195,23 +1196,18 @@ def test_queue_entry_attempts_counts_a_source_at_the_transient_cap_as_one(cache)
     assert entry.attempts == 3 == status.attempts
 
 
-def test_grapheme_keyword_needs_with_no_source_count_as_unserved(cache):
-    """No Source serves "grapheme-keyword" (attempts.SOURCES) and no
-    per-run pass covers it either -- unlike an unfilled sentence Target,
-    it never becomes available work, exhausted, or an entry: it sits in
-    its own unserved count so every gap()-listed need is accounted for.
+def test_the_unserved_bucket_stands_with_no_kind_in_it(cache):
+    """Spec 3 r42: `grapheme-keyword` was the one kind no Source served,
+    and it is retired. The bucket, its count and the identity term stay
+    exactly as spec 3 section 7 defines them -- the next such kind joins
+    the set instead of reintroducing the branch.
     """
-    from thai_syllabus.attempts import sources_for as real_sources_for
+    from thai_syllabus.derivations import _UNSERVED_KINDS
 
-    syllabus = _FakeSyllabus(_FakeGaps(graphemes_missing_keyword_data=("g1", "g2")))
-    found = _queued(syllabus, cache, sources_for=real_sources_for)
-    assert found.unserved == 2
-    assert found.entries == [] and found.exhausted == 0 and found.available == 2
-
-
-def test_a_need_no_source_serves_reports_zero_unserved(cache):
+    assert _UNSERVED_KINDS == frozenset()
     found = _queued(_one_word_syllabus(), cache)
     assert found.unserved == 0
+    assert found.available == len(found.entries) + found.exhausted + found.unserved
 
 
 def test_exhausted_attempt_count_does_not_grow_from_a_learner_supply(cache):
@@ -1594,6 +1590,12 @@ def test_card_flag_directs_the_subject(cache):
 
 # --- available_needs ---------------------------------------------------
 
+@dataclass
+class _FakeGrapheme:
+    symbol: str
+    keyword: str
+
+
 def test_available_needs_names_each_gap_with_its_subject_kind():
     pair = _FakePair(id="p-rice-near", confusion="tone:mid-low")
     syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",),
@@ -1602,15 +1604,40 @@ def test_available_needs_names_each_gap_with_its_subject_kind():
                                        graphemes_missing_keyword_data=("k",),
                                        sentence_recordings=("s1",),
                                        scene_pictures=("s1",)),
-                             pairs=[pair])
+                             pairs=[pair],
+                             graphemes=[_FakeGrapheme(symbol="k", keyword="chicken")])
     assert available_needs(syllabus) == [
         ("rice", "picture", "word"),
         ("rice", "recording", "word"),
         ("p-rice-near", "rendition", "pair"),
         ("s1", "recording", "sentence"),
         ("s1", "picture", "sentence"),
-        ("k", "grapheme-keyword", "grapheme"),
+        ("chicken", "picture", "word"),
     ]
+
+
+def test_a_graphemes_keyword_picture_is_the_keyword_words_own_need():
+    """Spec 3 r42: the keyword's picture is a word's picture, so the
+    picture attempt, the phrase drafter and the judge serve it -- there
+    was never an attempt for the `grapheme-keyword` kind."""
+    syllabus = _FakeSyllabus(_FakeGaps(graphemes_missing_keyword_data=("ก",)),
+                             graphemes=[_FakeGrapheme(symbol="ก", keyword="chicken")])
+    assert available_needs(syllabus) == [("chicken", "picture", "word")]
+
+
+def test_the_keyword_picture_need_is_deduped_against_the_words_own():
+    """A keyword that is also a targeted vocabulary word has one picture
+    need, not two."""
+    syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("chicken",),
+                                       graphemes_missing_keyword_data=("ก",)),
+                             graphemes=[_FakeGrapheme(symbol="ก", keyword="chicken")])
+    assert available_needs(syllabus) == [("chicken", "picture", "word")]
+
+
+def test_a_grapheme_gaps_does_not_name_raises_no_need():
+    syllabus = _FakeSyllabus(_FakeGaps(graphemes_missing_keyword_data=()),
+                             graphemes=[_FakeGrapheme(symbol="ก", keyword="chicken")])
+    assert available_needs(syllabus) == []
 
 
 def test_available_needs_ignores_a_pair_whose_confusion_is_covered():
@@ -1644,10 +1671,35 @@ def test_all_needs_names_every_target_pair_grapheme_and_sentence_need():
         ("rice", "picture", "word"),
         ("rice", "recording", "word"),
         ("p-rice-near", "rendition", "pair"),
-        (grapheme.symbol, "grapheme-keyword", "grapheme"),
+        ("chicken", "picture", "word"),
         (s.text_sha, "recording", "sentence"),
         (s.text_sha, "picture", "sentence"),
     ]
+
+
+def test_all_needs_counts_a_graphemes_keyword_picture_as_a_word_picture():
+    """Spec 5 section 3's coverage universe follows the need roster: one
+    picture need per keyword word, however many graphemes point at it."""
+    chicken = word("chicken", "ไก่", "chicken")   # chicken
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken)
+    syllabus = Syllabus(words=(chicken,), graphemes=(g,))
+    assert all_needs(syllabus) == [("chicken", "picture", "word")]
+
+
+def test_all_needs_names_a_keyword_that_is_also_a_targeted_word_once():
+    """all_needs dedups inside itself, so a keyword word the deck also
+    targets carries one picture need, not two -- reviewserver's
+    compute_stats counts one row per need and would otherwise count that
+    word's picture twice.
+    """
+    chicken = word("chicken", "ไก่", "chicken")   # chicken
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken)
+    syllabus = Syllabus(words=(chicken,), targets=(target("t-chicken", "chicken"),),
+                        graphemes=(g,))
+    assert all_needs(syllabus) == [("chicken", "picture", "word"),
+                                   ("chicken", "recording", "word")]
 
 
 def test_all_needs_names_a_multiply_targeted_word_once():

@@ -161,7 +161,7 @@ class Need:
     subject kind is what decides the role and the attempt.
     """
     subject: str
-    kind: str                          # picture | recording | rendition | grapheme-keyword
+    kind: str                          # picture | recording | rendition
     subject_kind: SubjectKind = "word"
 
     @property

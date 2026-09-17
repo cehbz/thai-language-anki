@@ -1206,3 +1206,40 @@ def test_sentence_listening_back_labels_the_target_word():
     assert '<div class="target"><span class="label">target word</span> {{TargetWord}}</div>' in listening["afmt"]
     cloze = next(t for t in SENTENCE_MODEL.templates if t["name"] == "Cloze")
     assert '<span class="label">' not in cloze["afmt"]
+
+
+# --- positions over the interleaved name Targets (spec 1 r16) ------------
+
+def test_a_name_words_targets_take_one_block_each_between_grapheme_and_word():
+    """R6: compile's due blocks follow order() exactly -- the grapheme, then
+    its name word's two Targets one block apiece, then the ordinary word
+    targets. Nothing overlaps and nothing is skipped.
+
+    Characterization: `_positions` gives every non-pair order entry a
+    width-1 block (`_order_entry_width`) and a name word's Targets arrive
+    as ordinary `word_target` entries, so this holds by construction --
+    the test pins it against a later change.
+    """
+    from thai_syllabus.compile import _positions
+
+    chicken = _word("chicken", "ไก่", "chicken")
+    name = _word("name-chicken", "กอ ไก่", "the letter ก (recited name)")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(
+        words=(chicken, name, rice), graphemes=(g,),
+        targets=(Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
+                 Target(id=TargetId("name-chicken/receptive"), word=name.id,
+                        skill="receptive"),
+                 Target(id=TargetId("name-chicken/productive"), word=name.id,
+                        skill="productive")))
+
+    positions = _positions(syllabus)
+
+    assert positions.entry_index["ก"] == 0
+    assert positions.target_index["name-chicken/receptive"] == 1
+    assert positions.target_index["name-chicken/productive"] == 2
+    assert positions.target_index["rice/receptive"] == 3
+    assert positions.word_index["name-chicken"] == 1
+    assert positions.order_length == 4

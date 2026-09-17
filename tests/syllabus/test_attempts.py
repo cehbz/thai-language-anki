@@ -298,8 +298,8 @@ def test_a_need_knows_the_role_its_subject_kind_puts_it_under():
 
 def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
     ctx, _search, _judge = _picture_ctx(tmp_path)
-    with pytest.raises(ValueError, match="grapheme-keyword"):
-        attempt(ctx, Need("g1", "grapheme-keyword", "grapheme"), "llm")
+    with pytest.raises(ValueError, match="pronunciation"):
+        attempt(ctx, Need("rice", "pronunciation"), "llm")
 
 
 # --- picture: the query, the ingest, the fit questions ----------------------
