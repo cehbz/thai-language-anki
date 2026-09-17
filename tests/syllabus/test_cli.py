@@ -349,6 +349,7 @@ def test_run_prints_every_report_field_in_its_summary_line(deck, monkeypatch, ca
                             attempted=1, improved=1, exhausted=2, available=9, pending=1,
                             sentences_adopted=1, drafted=3, excluded=0, unserved=4,
                             budgeted=5, deferred=6, preferences=7, unreachable=False,
+                            adopted_graphemes=8, adopted_words=11, adoption_skipped=2,
                             batch_id="batch-7", source_failures={"openverse": 2}))
     # --cycles 1: batch_id is set, so without a cap on cycles the run
     # would try to wait on it through a real (unmocked) Assessor.
@@ -358,6 +359,7 @@ def test_run_prints_every_report_field_in_its_summary_line(deck, monkeypatch, ca
     for field in ("attempted=1", "improved=1", "exhausted=2", "available=9", "pending=1",
                  "sentences_adopted=1", "drafted=3", "excluded=0", "unserved=4",
                  "budgeted=5", "deferred=6", "preferences=7", "unreachable=False",
+                 "adopted_graphemes=8", "adopted_words=11", "adoption_skipped=2",
                  "batch_id=batch-7", "openverse=2"):
         assert field in text
 

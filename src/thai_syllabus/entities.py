@@ -220,6 +220,14 @@ class Category:
     members: frozenset[WordId]
 
 
+# The category every grapheme's recited-name Word carries (spec 1 r16;
+# design 2026-09-12 §1): a name word has both Targets, and a word with a
+# picture-introduced Target needs a category (curated.load_curated's
+# cross-file rule). Closure words -- pair members, acrophonic keywords --
+# still belong to none.
+LETTER_NAMES_CATEGORY: CategoryName = CategoryName("Letter names")
+
+
 @dataclass(frozen=True)
 class MinimalPair:
     """2-3 Words exhibiting exactly one SoundConfusion. Identity: id."""

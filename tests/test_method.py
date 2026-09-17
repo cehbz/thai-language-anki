@@ -92,8 +92,8 @@ def test_speaker_diversity(tmp_path):
 def test_category_coverage_metric(tmp_path):
     res = _run(DeckBuilder(tmp_path).build())
     m = _metric(res, "coverage/categories")
-    # golden picture words: Animals, Verbs, Food -> 3 of 27 categories
-    assert m.value == 3 / 27
+    # golden picture words: Animals, Verbs, Food -> 3 of 28 categories (Letter names joined 2026-09-17)
+    assert m.value == 3 / 28
     assert set(m.detail["covered"]) == {"Animals", "Verbs", "Food"}
     assert "Body" in m.detail["missing"]
 

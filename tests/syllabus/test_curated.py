@@ -9,7 +9,8 @@ import pytest
 import yaml
 
 from thai_syllabus import curated
-from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Target, Word
+from thai_syllabus.entities import (Category, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair,
+                                    SoundConfusion, Target, Word)
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from thai_syllabus.profile import Profile
 
@@ -210,7 +211,7 @@ def test_build_categories_groups_members_by_name():
 
 
 def test_category_names_are_loaded_from_the_repo_data_file():
-    assert len(curated.CATEGORY_NAMES) == 27
+    assert len(curated.CATEGORY_NAMES) == 28
     assert "Food" in curated.CATEGORY_NAMES
 
 
@@ -1350,3 +1351,30 @@ def test_providers_illustrator_refuses_a_section_that_is_not_a_mapping(tmp_path)
                                                   illustrator=bad)))
         with pytest.raises(curated.CuratedValidationError, match="providers.illustrator"):
             curated.load_providers_config(path)
+
+
+# --- Letter names: the category a recited-name Word carries (spec 1 r16) ----
+
+def test_letter_names_is_a_known_category():
+    """Spec 1 r16 / design 2026-09-12 §1: a grapheme's recited-name Word
+    carries both Targets, and curated's cross-file rule requires a
+    category on any word with a picture-introduced target, so the name
+    words need one of their own."""
+    from thai_syllabus.curated import CATEGORY_NAMES
+    assert LETTER_NAMES_CATEGORY == "Letter names"
+    assert LETTER_NAMES_CATEGORY in CATEGORY_NAMES
+
+
+def test_a_word_row_may_carry_the_letter_names_category(tmp_path):
+    path = tmp_path / "words.yaml"
+    path.write_text(
+        "- id: name-chicken\n"
+        "  thai: กอ ไก่\n"                       # กอ ไก่: the recited name of ก
+        "  pron: {syllables: [{segments: [k, ɔ, ''], vowel_length: long, tone: mid}],\n"
+        "         corroboration: disputed}\n"
+        "  meaning: the letter ก's recited name\n"
+        "  classifier: null\n"
+        "  category: Letter names\n",
+        encoding="utf-8")
+    rows = curated.load_words(path)
+    assert [(w.id, category) for w, category in rows] == [("name-chicken", "Letter names")]

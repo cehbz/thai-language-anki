@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from thai_syllabus.entities import Category, MinimalPair, SoundConfusion
+from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
@@ -334,3 +334,56 @@ def test_order_places_the_derived_productive_target_after_the_receptive_one():
                         categories=(_food("rice"),))
     ids = [e.id for e in syllabus.order() if e.kind == "word_target"]
     assert ids.index("rice/receptive") < ids.index("rice/productive")
+
+
+# --- name_word_ids: the Words that are a grapheme's recited name ----------
+
+def test_name_word_ids_names_every_graphemes_name_word():
+    """Spec 1 r16: a name word's Targets are placed by order() inside the
+    sounds block, met by the chart cell rather than by a sentence, and
+    served by the glyph source alone -- three folds over one set."""
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    egg = word("egg", "ไข่", "egg")                        # ไข่: egg
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(words=(chicken, name, egg), graphemes=(g,))
+    assert syllabus.name_word_ids == frozenset({"name-chicken"})
+
+
+def test_a_grapheme_with_no_name_word_contributes_none():
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken)
+    assert Syllabus(words=(chicken,), graphemes=(g,)).name_word_ids == frozenset()
+
+
+# --- with_adoptions: the aggregate the grapheme pass leaves behind --------
+
+def test_with_adoptions_replaces_the_four_curated_collections():
+    """Spec 3 r40 §5: the run's grapheme pass writes words.yaml,
+    targets.yaml and graphemes.yaml, then reads its own result back
+    through this -- a fresh instance, so every cached_property is
+    recomputed rather than carried over stale (as with_words is)."""
+    rice = word("rice", "ข้าว", "rice")                    # ข้าว: rice
+    before = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice"),))
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    names = Category(name="Letter names", members=frozenset({"name-chicken"}))
+
+    after = before.with_adoptions(
+        words=(rice, chicken, name),
+        targets=(target("rice/receptive", "rice"),
+                 target("name-chicken/receptive", "name-chicken")),
+        graphemes=(g,), categories=(names,))
+
+    assert after is not before
+    assert [w.id for w in after.words] == ["rice", "chicken", "name-chicken"]
+    assert [t.id for t in after.targets] == ["rice/receptive", "name-chicken/receptive"]
+    assert after.graphemes == (g,)
+    assert after.category_of("name-chicken") == "Letter names"
+    assert after.name_word_ids == frozenset({"name-chicken"})
+    assert after.find_word("chicken") is chicken       # the word index is rebuilt
+    assert before.find_word("chicken") is None         # the old instance is untouched

@@ -20,7 +20,7 @@ def test_g2p_exceptions():
 
 def test_categories():
     cats = load_categories()
-    assert len(cats) == 27
+    assert len(cats) == 28
     assert "Animals" in cats and "Body" in cats and "Math/Measurements" in cats
 
 def test_categories_empty_file_returns_empty_list(tmp_path):

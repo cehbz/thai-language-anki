@@ -726,3 +726,28 @@ def test_the_scene_rubric_judges_a_memory_cue_not_a_depiction():
 
 def test_the_sentence_rubric_asks_whether_the_gloss_states_the_meaning():
     assert "gloss" in SENTENCE_FOR_TARGET_RUBRIC
+
+
+# --- target/sentence-required: a name word is met by its chart cell -------
+
+def test_a_name_words_targets_never_require_a_sentence():
+    """Spec 1 r16 / F6: a recited name is learned as speech from the
+    alphabet-chart cell and its own recording -- no sentence uses "กอ ไก่"
+    (the name of ก), and handing the drafter one would be nonsense."""
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(words=(chicken, name), graphemes=(g,),
+                        targets=(target("name-chicken/receptive", "name-chicken"),
+                                 target("name-chicken/productive", "name-chicken",
+                                        skill="productive")))
+    findings = [f for f in syllabus.report().findings if f.rule == "target/sentence-required"]
+    assert findings == []
+
+
+def test_an_ordinary_targets_sentence_requirement_still_stands():
+    rice = word("rice", "ข้าว", "rice")                    # ข้าว: rice
+    syllabus = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice"),))
+    findings = [f for f in syllabus.report().findings if f.rule == "target/sentence-required"]
+    assert [f.note_id for f in findings] == ["rice/receptive"]

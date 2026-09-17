@@ -12,6 +12,11 @@ import yaml
 
 _CONSONANTS = {chr(c) for c in range(0x0E01, 0x0E2F)} - {"ฤ", "ฦ"}   # 44 letters
 
+# The repo's own data/ (spec 2 section 1: fixed knowledge, authored once,
+# never per-deck), resolved relative to the package exactly as
+# curated._DATA_DIR is, so a run finds the table whatever the cwd.
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+
 
 @dataclass(frozen=True)
 class ConsonantRow:
@@ -54,6 +59,12 @@ def load_consonants(path: str | Path) -> tuple[ConsonantRow, ...]:
         missing = sorted(_CONSONANTS - set(symbols)); extra = sorted(set(symbols) - _CONSONANTS)
         raise InventoryError(f"consonants: expected the 44 letters once each; missing {missing}, extra {extra}")
     return tuple(out)
+
+
+def consonants() -> tuple[ConsonantRow, ...]:
+    """The repo's 44 consonants (spec 3 r40 section 5): the rows the run's
+    grapheme pass adopts, validated on load like any other read."""
+    return load_consonants(DATA_DIR / "thai_consonants.yaml")
 
 
 def load_vowels(path: str | Path) -> tuple[VowelRow, ...]:

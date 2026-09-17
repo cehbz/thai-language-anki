@@ -27,7 +27,8 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, Directio
                                     LearnerKey, LlmPromptKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, sha)
 from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
-from thai_syllabus.curated import CuratedBundle, RulebookConfig, load_words, save_curated
+from thai_syllabus.curated import (CuratedBundle, RulebookConfig, load_graphemes, load_targets,
+                                   load_words, save_curated)
 from thai_syllabus.derivations import (
     available_need_keys,
     available_needs,
@@ -37,6 +38,7 @@ from thai_syllabus.derivations import (
 )
 from thai_syllabus.entities import Category, MinimalPair, SoundConfusion, text_sha
 from thai_syllabus.ids import ConfusionId, PairId, WordId
+from thai_syllabus.inventory import ConsonantRow
 from thai_syllabus.phonology import Engines
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import FetchBackend, LlmBackend, RawAnswer, TtsBackend
@@ -256,6 +258,13 @@ def fake_batch():
 
 def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None, comment=None):
     """Replaces every backend that would touch the network."""
+    # The adoption pass off by default (spec 3 r40 section 5): a fixture
+    # deck is wired to exercise one thing at a time, and the real pass
+    # would write the repo's 44 consonants into every one of them and
+    # load pythainlp/torch to read them. The one test that wants it
+    # (test_the_run_adopts_two_consonants_into_the_decks_curated_files)
+    # turns it back on with its own rows and its own fake engines.
+    ctx.adopt_graphemes = False
     ctx.provider._backends["llm-comment"] = (
         comment if comment is not None else _Llm('{"readings": []}'))
     ctx.provider._backends.update({
@@ -871,6 +880,7 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tm
     """
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = build_sourcing(root)
+    ctx.adopt_graphemes = False   # as _wire does: no repo inventory, no real engines
     forvo = _EmptyForvo()
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
@@ -920,6 +930,7 @@ def test_a_recording_needs_unjudged_candidate_is_assessed_before_any_source_over
     """
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = build_sourcing(root)
+    ctx.adopt_graphemes = False   # as _wire does: no repo inventory, no real engines
     forvo, tts = _EmptyForvo(), _EmptyTts()
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
@@ -2523,7 +2534,8 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "comments_read", "comment_actions", "comment_unactionable",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences",
-                           "requeried"}
+                           "requeried", "adopted_graphemes", "adopted_words",
+                           "adoption_skipped"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,
@@ -2826,3 +2838,121 @@ def test_a_draft_the_run_could_never_adopt_is_not_asked_about(tmp_path, fake_sea
     report = run(ctx, budgets={})
     assert text_sha(over_cap) not in [s for s, _role in _submitted_pairs(ctx.db, report.batch_id)]
 
+
+
+# --- the adoption counts: events, outside the needs identity (spec 3 r40) --
+
+def test_the_tally_sums_an_attempts_adoption_counts():
+    """Spec 3 r40 §7: `adopted_graphemes`, `adopted_words` and
+    `adoption_skipped` are events, not needs -- collected the way
+    `retired` and `comments_read` are, and never a bucket."""
+    tally = run_mod._Tally()
+    tally.collect(AttemptResult(True, adopted_graphemes=2, adopted_words=5,
+                                adoption_skipped=1))
+    tally.collect(AttemptResult(True, adopted_graphemes=1, adopted_words=2,
+                                adoption_skipped=0))
+    assert (tally.adopted_graphemes, tally.adopted_words, tally.adoption_skipped) == (3, 7, 1)
+
+
+def test_an_ordinary_attempt_leaves_the_adoption_counts_at_zero():
+    tally = run_mod._Tally()
+    tally.collect(AttemptResult(True, drafted=1))
+    assert (tally.adopted_graphemes, tally.adopted_words, tally.adoption_skipped) == (0, 0, 0)
+
+
+def test_the_run_makes_the_grapheme_pass_after_the_sentence_attempt(db, monkeypatch):
+    """Spec 3 r40 §7: the pass runs after the sentence attempt and before
+    the phrase and adjudication asks, so a newly adopted keyword's picture
+    need gets a phrase and a disputed name word is asked about this run.
+    Its counts are events, outside the identity."""
+    order = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        order.append("sentence")
+        return AttemptResult(False)
+
+    def fake_grapheme_attempt(ctx):
+        order.append("grapheme")
+        return AttemptResult(True, adopted_graphemes=42, adopted_words=66,
+                             adoption_skipped=2)
+
+    def fake_phrase_attempt(ctx):
+        order.append("phrase")
+        return AttemptResult(False)
+
+    def fake_adjudication_attempt(ctx):
+        order.append("adjudication")
+        return AttemptResult(False)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    monkeypatch.setattr(run_mod, "grapheme_attempt", fake_grapheme_attempt)
+    monkeypatch.setattr(run_mod, "phrase_attempt", fake_phrase_attempt)
+    monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
+    monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
+
+    report = run(_ctx(db, _Syl(_Gaps())), {})
+
+    assert order == ["sentence", "grapheme", "phrase", "adjudication"]
+    assert (report.adopted_graphemes, report.adopted_words, report.adoption_skipped) == (
+        42, 66, 2)
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)
+    answer = db.latest("run", "runreport", RunReportKey()).answer
+    assert (answer["adopted_graphemes"], answer["adopted_words"],
+            answer["adoption_skipped"]) == (42, 66, 2)
+
+
+def test_a_run_with_the_pass_turned_off_adopts_nothing(db, monkeypatch):
+    """R-P1: `Sourcing.adopt_graphemes` is the switch every fixture run
+    in this file is wired with off -- the pass is never reached."""
+    called = []
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "grapheme_attempt",
+                        lambda ctx: called.append(1) or AttemptResult(True))
+    ctx = _ctx(db, _Syl(_Gaps()))
+    ctx.adopt_graphemes = False
+
+    report = run(ctx, {})
+
+    assert called == [] and report.adopted_graphemes == 0
+
+
+# ก: k, keyword ไก่ (chicken); ง: ŋ, keyword งู (snake) -- neither keyword is
+# in the fixture deck, so both enter as closure Words beside their names.
+_KO = ConsonantRow(symbol="ก", consonant_class="mid", sound="k", name_thai="กอ ไก่",
+                   keyword_thai="ไก่", keyword_gloss="chicken")
+_NGO = ConsonantRow(symbol="ง", consonant_class="low", sound="ŋ", name_thai="งอ งู",
+                    keyword_thai="งู", keyword_gloss="snake")
+
+
+def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fake_search,
+                                                                    fake_batch):
+    """Spec 3 r40 §5 end to end over a real deck: the pass reads the ctx's
+    own consonant table, seeds each Word's pronunciation from the injected
+    engines (no pythainlp), writes the three curated files and reports
+    what it adopted."""
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    ctx.adopt_graphemes = True
+    ctx.consonants = lambda: (_KO, _NGO)
+    one = (syl("k", "a", "", "short", "mid"),)
+    ctx.engines = Engines(g2p=lambda thai: one, tone=lambda thai: "mid")
+
+    report = run(ctx, budgets={})
+
+    assert (report.adopted_graphemes, report.adopted_words, report.adoption_skipped) == (2, 4, 0)
+    # The adopted rows are curated data, not needs: they take no bucket,
+    # and every need the run did list still lands in exactly one.
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)
+    rows = load_words(root / "curated" / "words.yaml")
+    assert [(w.id, c) for w, c in rows] == [
+        ("rice", "Food"), ("chicken", None), ("name-chicken", "Letter names"),
+        ("snake", None), ("name-snake", "Letter names")]
+    assert [t.id for t in load_targets(root / "curated" / "targets.yaml")] == [
+        "rice/receptive", "name-chicken/receptive", "name-chicken/productive",
+        "name-snake/receptive", "name-snake/productive"]
+    saved = load_graphemes(root / "curated" / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
+        ("ก", "chicken", "name-chicken"), ("ง", "snake", "name-snake")]
+    assert ctx.syllabus.name_word_ids == frozenset({"name-chicken", "name-snake"})

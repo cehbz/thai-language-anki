@@ -52,11 +52,13 @@ from .derivations import (
     sentence_exhausted,
     unjudged_candidates,
 )
-from .entities import Clauses, Target, Word, clauses_to_json, element_word, is_corroborated
-from .ids import PairId, WordId
+from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, Target, Word, clauses_to_json,
+                       element_word, is_corroborated)
+from .ids import CategoryName, PairId, TargetId, WordId, slug_id
+from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
 from .media import Speaker
-from .phonology import Engines
+from .phonology import Engines, default_engines, engines_pronunciation
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PARSE_SUBJECT,
                      PHRASE_SUBJECT)
@@ -70,7 +72,8 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "VoiceConstraint",
            "sources_for", "provenance_source_for", "current_best_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
-           "phrase_attempt", "picture_query_for", "adjudication_attempt", "retire_sentence",
+           "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
+           "GRAPHEME_NAME_MEANING", "retire_sentence",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
@@ -217,16 +220,27 @@ class Sourcing:
     # guarded.
     guard: Guard | None = None
     # The deck's curated/ directory (spec 2 section 1), so the run can
-    # write back the one curated file it owns a change to: words.yaml,
+    # write back the curated files it owns a change to: words.yaml, for
     # the adjudicated pronunciations (spec 3 r28 section 5,
-    # run._materialize_adjudications). None outside a wired deck, in
-    # which case an adjudication is derived and nothing is written.
+    # run._materialize_adjudications), and words.yaml, targets.yaml and
+    # graphemes.yaml together for the rows the adoption pass adds (spec 3
+    # r40 section 5, grapheme_attempt). None outside a wired deck, in
+    # which case an adjudication is derived, nothing is adopted and
+    # nothing is written.
     curated_dir: Path | None = None
     # The pronunciation engines the adjudication check runs against
     # (phonology.Engines). None means the real ones, resolved lazily on
     # the first verdict there is to check -- pythainlp/torch never load
     # for a run with nothing to materialize, and a test injects fakes.
     engines: Engines | None = None
+    # The adoption pass (spec 3 r40 section 5): whether this run adopts
+    # the repo's consonant inventory at all, and the table it reads. A
+    # caller that does not want the 44 rows written into its deck (a test
+    # over a fixture deck, a probe) turns the pass off; `consonants` is
+    # the seam a test injects its own rows through, so the repo table --
+    # and, through it, the real engines -- is never read.
+    adopt_graphemes: bool = True
+    consonants: Callable[[], Sequence[ConsonantRow]] = field(default=repo_consonants)
 
 
 @dataclass(frozen=True)
@@ -262,6 +276,14 @@ class AttemptResult:
     comment_actions: int = 0
     comment_unactionable: int = 0
     retired: int = 0
+    # the grapheme pass (spec 3 r40 section 5): Grapheme rows and Words
+    # this run adopted from the repo inventory, and the rows it could not
+    # adopt (each logged with its reason: a keyword the symbol is not in,
+    # a form no engine reads) -- events, all outside the run's needs
+    # identity
+    adopted_graphemes: int = 0
+    adopted_words: int = 0
+    adoption_skipped: int = 0
     # the judge could not be reached AFTER this attempt had already
     # written rows (the comment pass's own check of its replacement
     # drafts): the counts above are real and must reach the report, so
@@ -707,12 +729,18 @@ def phrase_attempt(ctx: Sourcing) -> AttemptResult:
     direction is never handed to the drafter: `record.latest_phrase`
     always prefers the direction over a drafted query -- in either
     form -- so drafting one would be dead weight.
+
+    A grapheme name word's picture need is never handed over (r41): its
+    query is the grapheme's symbol, a fact of curated data, and no corpus
+    is ever searched for it.
     """
     spend: dict[str, Spend] = {}
     needs = [(subject, subject_kind) for subject, kind, subject_kind
             in available_needs(ctx.syllabus) if kind == "picture"]
     lacking: dict[str, str] = {}
     for subject, subject_kind in needs:
+        if subject in ctx.syllabus.name_word_ids:
+            continue   # a chart cell's query is its symbol (r41), never drafted
         rows = ctx.db.assessments_of(subject)
         if record.directions(rows):
             continue   # the direction always wins (record.latest_phrase)
@@ -1309,6 +1337,173 @@ def adjudication_attempt(ctx: Sourcing) -> AttemptResult:
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend)
+
+
+# --- graphemes (the consonant inventory): the adoption pass -----------------
+
+# The meaning a recited-name Word carries. A gloss is English (spec 1
+# section 1), and the one thing the card teaches is the symbol, so the
+# symbol stands delimited inside it.
+GRAPHEME_NAME_MEANING = "recited name of the letter {symbol}"
+
+# The three curated files the pass adds rows to (spec 2 r17 section 6).
+# It only ever adds: each is rewritten whole from the rows already on
+# disk plus the new ones. A deck missing one of them is not a store the
+# pass may rewrite -- writing targets.yaml out of nothing would lose
+# every Target the deck owns -- so its rows are skipped, reason logged.
+_ADOPTION_FILES = ("words.yaml", "targets.yaml", "graphemes.yaml")
+
+
+def grapheme_attempt(ctx: Sourcing, *,
+                     consonants: Sequence[ConsonantRow] | None = None) -> AttemptResult:
+    """One adoption pass per run (spec 3 r40 section 5; design 2026-09-12
+    §1): every consonant of the repo inventory not yet in
+    `ctx.syllabus.graphemes` becomes a Grapheme row, with its acrophonic
+    keyword Word (matched in the vocabulary by `thai`, else created as a
+    closure Word: no category, no Target) and its recited-name Word (both
+    Targets, the category `Letter names`, spec 1 r16). Pronunciations are
+    seeded from the engines alone, no judge (r40: `engines_agree` when the
+    rule tone engine settles a monosyllable's tone, else `disputed`, which
+    the adjudication pass asks about next run).
+
+    The three curated files are rewritten whole from the rows the loaders
+    produced, with the new rows appended -- rows added, none removed, so
+    the writing command's Guard has nothing to account for (spec 2 r17
+    section 6). targets.yaml is re-read from disk rather than taken from
+    `ctx.syllabus.targets`, which also holds the productive Targets
+    `derive_productive_targets` derives: targets.yaml lists exceptions
+    only (spec 1 r9), so writing a derived one back would make
+    `derive_productive_targets` itself raise at the next wiring, for any
+    word still eligible to derive that same Target.
+
+    `consonants` is the row list to adopt; None reads the ctx's own table
+    seam (`Sourcing.consonants`, the repo inventory by default). The pass
+    is free, so one run adopts them all.
+    """
+    if ctx.curated_dir is None:
+        # No curated store to write the rows to (a caller outside a wired
+        # deck), so nothing is adopted -- the same guard
+        # run._materialize_adjudications takes before writing words.yaml.
+        return AttemptResult(attempted=False)
+    table = list(consonants) if consonants is not None else list(ctx.consonants())
+    # R7: the pass is idempotent. A symbol the deck already holds is
+    # already adopted, so only the rest of the table is looked at, and a
+    # run with nothing left to adopt writes nothing at all.
+    known = {g.symbol for g in ctx.syllabus.graphemes}
+    rows = [row for row in table if row.symbol not in known]
+    if not rows:
+        return AttemptResult(attempted=False)
+    missing = [name for name in _ADOPTION_FILES if not (ctx.curated_dir / name).exists()]
+    if missing:
+        _log.warning("grapheme pass: %s absent from %s -- %d row(s) not adopted",
+                     ", ".join(missing), ctx.curated_dir, len(rows))
+        return AttemptResult(attempted=False, adoption_skipped=len(rows))
+    engines = ctx.engines or default_engines()
+    # Deferred: curated.py imports run.py, which imports this module, so a
+    # top-level import here would be a cycle (the same reason
+    # run._materialize_adjudications defers its own).
+    from .curated import build_categories, load_targets, save_graphemes, save_targets, save_words
+
+    words = list(ctx.syllabus.words)
+    category_of: dict[WordId, CategoryName | None] = {
+        w.id: ctx.syllabus.category_of(w.id) for w in words}
+    listed_targets = list(load_targets(ctx.curated_dir / "targets.yaml"))
+    graphemes = list(ctx.syllabus.graphemes)
+    by_thai = {w.thai: w for w in words}
+    taken = {str(w.id) for w in words}
+    added_targets: list[Target] = []
+    adopted_graphemes = 0
+    adopted_words = 0
+    skipped = 0
+
+    for row in rows:
+        if row.symbol in known:
+            # The symbol is a Grapheme's identity, so a table naming one
+            # twice adopts it once. inventory.load_consonants refuses a
+            # duplicate outright, so only an injected table reaches here.
+            _log.warning("grapheme %s named twice in the table; adopted once", row.symbol)
+            continue
+        keyword = by_thai.get(row.keyword_thai)
+        staged: list[Word] = []
+        taken_now = set(taken)
+        if keyword is None:
+            keyword_pron = engines_pronunciation(row.keyword_thai, engines)
+            if keyword_pron is None:
+                # R2: a Word is never written with an empty syllable
+                # tuple, and without its keyword the row has no card at
+                # all -- the whole consonant waits for a better engine.
+                skipped += 1
+                _log.warning("grapheme %s: no engine reading of keyword %r (%s); "
+                             "the row is not adopted", row.symbol, row.keyword_thai,
+                             row.keyword_gloss)
+                continue
+            # A closure Word (design 2026-09-12 §1): no category, no
+            # Target -- it exists so the grapheme card can show its
+            # picture, and its id is the slug of the gloss the table
+            # gives, suffixed while taken (the live convention).
+            keyword = Word(id=slug_id(row.keyword_gloss, taken_now), thai=row.keyword_thai,
+                           pron=keyword_pron, meaning=row.keyword_gloss)
+            staged.append(keyword)
+            taken_now.add(str(keyword.id))
+        name_word: Word | None = None
+        name_targets: list[Target] = []
+        name_pron = engines_pronunciation(row.name_thai, engines)
+        if name_pron is None:
+            # The row still stands: Grapheme.name_word is optional, and
+            # compile() drops that grapheme's Reading card, counted
+            # (spec 1 section 1).
+            skipped += 1
+            _log.warning("grapheme %s: no engine reading of the recited name %r (%s); the "
+                         "row is adopted with no name word", row.symbol, row.name_thai,
+                         GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+        else:
+            name_id = slug_id(f"name {keyword.id}", taken_now)
+            name_word = Word(id=name_id, thai=row.name_thai, pron=name_pron,
+                             meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+            staged.append(name_word)
+            taken_now.add(str(name_id))
+            name_targets = [Target(id=TargetId(f"{name_id}/receptive"), word=name_id,
+                                   skill="receptive", introduction="picture_card"),
+                            Target(id=TargetId(f"{name_id}/productive"), word=name_id,
+                                   skill="productive", introduction="picture_card")]
+        try:
+            grapheme = Grapheme.create(symbol=row.symbol, kind="consonant", sound=row.sound,
+                                       consonant_class=row.consonant_class,
+                                       keyword_word=keyword, name_word=name_word)
+        except ValueError as e:
+            # Decision 12: the obsolete ฃ and ฅ carry acrophonic keywords
+            # spelled with the modern ข and ค, so containment refuses
+            # them. Nothing staged for this row is kept.
+            skipped += 1
+            _log.warning("grapheme %s not adopted: %s", row.symbol, e)
+            continue
+        words += staged
+        listed_targets += name_targets
+        added_targets += name_targets
+        graphemes.append(grapheme)
+        for w in staged:
+            by_thai.setdefault(w.thai, w)
+            category_of.setdefault(w.id, None)
+        if name_word is not None:
+            category_of[name_word.id] = LETTER_NAMES_CATEGORY
+        taken = taken_now
+        known.add(row.symbol)
+        adopted_graphemes += 1
+        adopted_words += len(staged)
+
+    if not adopted_graphemes:
+        return AttemptResult(attempted=False, adoption_skipped=skipped)
+    word_rows = [(w, category_of.get(w.id)) for w in words]
+    save_words(ctx.curated_dir / "words.yaml", word_rows)
+    save_targets(ctx.curated_dir / "targets.yaml", listed_targets)
+    save_graphemes(ctx.curated_dir / "graphemes.yaml", graphemes)
+    ctx.syllabus = ctx.syllabus.with_adoptions(
+        words=words, targets=tuple(ctx.syllabus.targets) + tuple(added_targets),
+        graphemes=graphemes, categories=build_categories(word_rows))
+    _log.info("grapheme pass: adopted %d grapheme(s) and %d word(s)",
+              adopted_graphemes, adopted_words)
+    return AttemptResult(attempted=True, adopted_graphemes=adopted_graphemes,
+                         adopted_words=adopted_words, adoption_skipped=skipped)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

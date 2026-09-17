@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 39, proposed 2026-09-16 against principles r4 and architecture
+Revision 40, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -233,6 +233,7 @@ Revision log:
   2026-09-15.
 - r38 2026-09-16: a source is asked with the search form of the need's query (punctuation stripped, whitespace collapsed; the key and the outcome row keep the query itself; the illustrator draws the query as written), and the judge's `suggestion` is a search phrase (at most ten words, no punctuation); the Openverse token request waits once and retries once on a transport failure, the search's own challenge wait (§6a). Evidence: Pexels's Cloudflare front challenges on the query string's punctuation, not the egress -- the same 25-word query passes without its commas and is challenged with them, and a challenged need was challenged again through the proxy; Openverse ANDs every term and answered nothing to 23 of 23 asks under long suggestions; since r35 a suggestion stays the query for every source, and r33's prompt asked for a picture description: 3,997 suggestions since, median 17 words, 645 with quotes. The Openverse token request had timed out once per run and each time cost Openverse the run, though 12 of 12 probes succeed in about 3 s. User approval 2026-09-16.
 - r39 2026-09-16: an invocation repeats resolve/attempt/submit, waiting on each batch it submits (status polled at growing intervals, `--poll-seconds` doubling to `--poll-max-seconds`, 5 to 15 minutes by default) until a pass raises no batch and appends nothing to the record but its own report (a tally such as `attempted` measures effort, not progress: the sentence attempt counts its open targets every pass); `--cycles N` caps the passes; `--max-wait-seconds` default 21600 (6 hours; the batch keeps processing and the next invocation resolves it). Evidence: the one-source-per-pass shape with a batch per pass needs up to six passes to reach the illustrator; the Message Batches API offers no completion notification, so the wait is a poll; the earlier stop rule ended an invocation after a pass whose sources all answered nothing; eleven measured batches: median about 10 minutes, longest 188. User approval 2026-09-16.
+- r40 2026-09-17: one grapheme pass per run, after the sentence attempt and before the phrase and adjudication asks: every consonant of the repo inventory (data/thai_consonants.yaml) the deck lacks becomes a Grapheme row with its acrophonic keyword Word (matched in the vocabulary by `thai`, else a closure Word whose id is the slug of the table's gloss) and its recited-name Word (both Targets, category `Letter names`, spec 1 r16), pronunciations seeded from the engines alone -- `engines_agree` when the rule tone engine settles a monosyllable's tone, else `disputed`, which the adjudication pass (r28) asks the judge about next run; the three curated files are written under the writing command, rows added and none removed (spec 2 r17); a row whose keyword does not contain its symbol, or whose form no engine reads, is logged and counted, not adopted. `RunReport.adopted_graphemes`, `adopted_words` and `adoption_skipped` are events, outside the needs identity. Evidence: the live deck has 0 graphemes and E1 is satisfied vacuously -- 734 word Reading cards compile for a learner who cannot read; the inventory is fixed knowledge, so adoption is mechanical and free, and one pass takes all of it. User approval 2026-09-17.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -445,6 +446,31 @@ once every candidate is judged. If every such question is excluded
 follow the same rule. Recording needs follow it too: a candidate on
 record with no mechanical verdict under this subject is checked before
 any source is asked, at no cost.
+
+**Graphemes (the consonant inventory).** One pass per run, after the
+sentence attempt and before the phrase and adjudication asks. Every
+consonant of `data/thai_consonants.yaml` (the repo's own inventory,
+resolved relative to the package) not already in the syllabus becomes a
+Grapheme row: its acrophonic keyword is the vocabulary Word whose `thai`
+matches, else a new closure Word (no category, no Target) whose id is the
+slug of the table's gloss, suffixed `-2`, `-3` while taken; its recited
+name is a new Word (id `name-<keyword id>`) with the category `Letter
+names` and both Targets (spec 1 r16). Each new Word's pronunciation comes
+from the engines, never the judge: thaig2p's syllables, corroboration
+`engines_agree` when the rule tone engine settles a monosyllable's tone
+and `disputed` otherwise -- the adjudication pass (r28) asks about the
+disputed ones next run, and E4 blocks their cards meanwhile. words.yaml,
+targets.yaml and graphemes.yaml are then written whole from the rows the
+loaders produced with the new ones appended, under the writing command
+(spec 2 r17): rows added, none removed. A row the pass cannot adopt --
+a keyword whose form does not contain the symbol (the obsolete ฃ and ฅ,
+whose acrophonic keywords are spelled with the modern ข and ค), or a form
+no engine reads -- is logged with its reason and counted
+`adoption_skipped`; a name alone that no engine reads leaves the Grapheme
+row standing with no name word, and compile() drops its Reading card,
+counted. The pass is idempotent: a second run finds every symbol present
+and adopts nothing. Curated rows are not needs: no bucket counts them,
+and the queue built after the pass already sees what it added.
 
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
@@ -783,6 +809,7 @@ run(syllabus, budgets):
       retirements reopen Targets, replacements are drafted)
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
+  grapheme pass (the consonant inventory adopted into curated, r40)
   phrase ask (the picture queries), then the adjudication ask (the
       uncorroborated pronunciations)
   questions = []
@@ -818,6 +845,9 @@ always. The remaining fields count events, not needs.
 | comment_unactionable | requests in those readings the deck could not act on, refused actions included |
 | adjudicated | words whose pronunciation this run wrote as adjudicated |
 | stayed_disputed | verdicts this run checked that no engine corroborated (the words stay disputed) |
+| adopted_graphemes | Grapheme rows this run adopted from the repo inventory (r40) |
+| adopted_words | Words those adoptions added: keywords the vocabulary lacked, and the recited names |
+| adoption_skipped | inventory rows, and recited-name Words, the pass could not adopt (a row adopted without its name word counts one adoption and one skip), each logged with its reason (r40) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |

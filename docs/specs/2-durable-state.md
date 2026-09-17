@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 16, proposed 2026-09-13 against principles r4 and architecture
+Revision 17, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -41,6 +41,14 @@ Revision log:
   illustrator: licence `generated`, origin the model id), the value the
   provenance prior and the feedback screen's caption read; no new store.
   User approval 2026-09-13.
+- r17 2026-09-17: the run adds rows to words.yaml, targets.yaml and
+  graphemes.yaml by adoption (spec 3 r40's grapheme pass), under the
+  writing command like every other curated write; it never removes one,
+  so the Guard has nothing to account for and the additions show in
+  curated git. Evidence: the sound stage's 42 adoptable consonants carry
+  42 Grapheme rows, 42 recited-name Words with two Targets each and the
+  keyword Words the vocabulary lacks; proposing each by hand is the work
+  the run exists to do. User approval 2026-09-17.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -64,11 +72,17 @@ reference data, versioned with the deck and never hand-edited.
                                # collections), no_productive and speaker
                                # (each written only when set). Learner-
                                # owned; the run writes adjudicated
-                               # pronunciations and adopted rows under its
-                               # writing command (r14, spec 3 r28)
+                               # pronunciations and adds adopted rows --
+                               # a grapheme's keyword and recited-name
+                               # Words -- under its writing command
+                               # (r14, r17, spec 3 r28/r40)
     targets.yaml               # id, word, skill, introduction (receptive
-                               # targets and productive exceptions)
-    graphemes.yaml             # symbol, kind, sound, class, keyword
+                               # targets and productive exceptions).
+                               # Learner-owned; the run adds a name
+                               # word's two Targets by adoption (r17)
+    graphemes.yaml             # symbol, kind, sound, class, keyword,
+                               # name_word. Learner-owned; the run adds
+                               # a row per adopted grapheme (r17)
     confusions.yaml            # id, dimension, sounds + profile seed weight
     pairs.yaml                 # adopted MinimalPairs (machine-proposed,
                                # human-kept; small)
@@ -228,7 +242,8 @@ refuses to report success when:
 - words, targets, sentences, cache rows or media rows number fewer
   than in the snapshot, unless the command reported each removal by id
   (migrate's unparsed sentences; a curated merge shows in the post
-  commit's diff and is reported by id);
+  commit's diff and is reported by id). A run's adoption only adds rows
+  (r17), so it reports nothing and the check passes on the counts alone;
 - a run's accounting identity fails (spec 3 §7);
 - curated/ fails to load (spec 1's invariants), which the loader already
   refuses; the check names the pre commit to diff against.

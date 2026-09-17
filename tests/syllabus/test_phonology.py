@@ -7,8 +7,9 @@ in these tests.
 """
 import pytest
 
-from thai_syllabus.entities import Syllable
-from thai_syllabus.phonology import Engines, corroborates, syllables_from_verdict
+from thai_syllabus.entities import Pronunciation, Syllable
+from thai_syllabus.phonology import (Engines, corroborates, engines_pronunciation,
+                                     syllables_from_verdict)
 
 
 def S(on, v, co, ln, t):
@@ -61,3 +62,36 @@ def test_default_engines_g2p_returns_a_syllable_for_a_real_word():
         pytest.skip("thaig2p returned no analysis for ข้าว")
     assert len(syls) == 1
     assert syls[0].segments[1] == "a"
+
+
+# --- engines_pronunciation: the adoption pass's seed (spec 3 r40 §5) -------
+
+def _engines(g2p_result, tone_result="mid"):
+    return Engines(g2p=lambda thai: g2p_result, tone=lambda thai: tone_result)
+
+
+def test_a_monosyllable_the_tone_engine_agrees_with_is_engines_agree():
+    one = Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid")
+    got = engines_pronunciation("ไก่", _engines((one,), "mid"))   # ไก่: chicken
+    assert got == Pronunciation(syllables=(one,), corroboration="engines_agree")
+
+
+def test_a_monosyllable_the_tone_engine_disagrees_with_stays_disputed():
+    one = Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid")
+    got = engines_pronunciation("ไก่", _engines((one,), "low"))   # ไก่: chicken
+    assert got == Pronunciation(syllables=(one,), corroboration="disputed")
+
+
+def test_a_phrase_of_several_syllables_is_disputed_and_waits_for_the_judge():
+    """The rule tone engine settles one syllable's tone only, so a recited
+    name ("กอ ไก่", the name of ก) is never corroborated here: the
+    adjudication pass asks the judge next run (spec 3 r28)."""
+    two = (Syllable(segments=("k", "ɔ", ""), vowel_length="long", tone="mid"),
+           Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"))
+    got = engines_pronunciation("กอ ไก่", _engines(two, "mid"))   # กอ ไก่: the name of ก
+    assert got == Pronunciation(syllables=two, corroboration="disputed")
+
+
+def test_nothing_read_is_no_pronunciation_at_all():
+    assert engines_pronunciation("ๆ", _engines(None)) is None
+    assert engines_pronunciation("ๆ", _engines(())) is None

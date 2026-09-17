@@ -40,7 +40,7 @@ _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 
 def load_category_names(path: str | Path) -> frozenset[str]:
-    """The Fluent Forever 625-word list's 27 thematic category names."""
+    """The Fluent Forever 625-word list's 28 thematic category names."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"category names file not found: {path}")

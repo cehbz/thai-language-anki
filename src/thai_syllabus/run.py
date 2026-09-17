@@ -37,6 +37,7 @@ from .attempts import (
     comment_attempt,
     current_best_of,
     draft_refusal,
+    grapheme_attempt,
     phrase_attempt,
     picture_query_for,
     preference_attempt,
@@ -137,6 +138,13 @@ class RunReport:
     # (F13, spec 3 section 5) -- a learner row that outlives the rule (F9)
     # keeps the sentence instead -- or a learner comment's retire_sentence
     retired: int = 0
+    # the grapheme pass (spec 3 r40 section 5): Grapheme rows and Words
+    # this run adopted from the repo inventory, and the rows it could not
+    # adopt (each logged with its reason) -- events, not needs, outside
+    # the identity above
+    adopted_graphemes: int = 0
+    adopted_words: int = 0
+    adoption_skipped: int = 0
     # picture needs that gained a first accepted picture this run (spec 3
     # r34 section 7): open before the run's resolve, covered by its end
     # -- an event count outside the identity; with a batch judge the
@@ -185,6 +193,9 @@ class _Tally:
     stayed_disputed: int = 0
     drafted: int = 0
     retired: int = 0
+    adopted_graphemes: int = 0
+    adopted_words: int = 0
+    adoption_skipped: int = 0
     covered_new: int = 0
     requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
@@ -250,6 +261,11 @@ class _Tally:
         # other attempt leaves these at 0. `retired` is a count, not a
         # bucket -- _retire_exhausted_sentence adds F13's own the same way.
         self.retired += result.retired
+        # The grapheme pass's own counts (spec 3 r40 section 5): every
+        # other attempt leaves these at 0, as the comment counts below.
+        self.adopted_graphemes += result.adopted_graphemes
+        self.adopted_words += result.adopted_words
+        self.adoption_skipped += result.adoption_skipped
         self.comments_read += result.comments_read
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
@@ -936,6 +952,19 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         # attempt's own hand-over and applies only when the attempt runs.
         tally.budgeted += len(open_words_before)
 
+    # One adoption pass per run (spec 3 r40 section 5): every consonant of
+    # the repo inventory the deck does not hold yet becomes a Grapheme row
+    # with its keyword and recited-name Words, written to the three
+    # curated files under this writing command. Placed here, after the
+    # sentence attempt and before the two asks below, so a newly adopted
+    # keyword's picture need is drafted a phrase and a newly adopted
+    # `disputed` name word is asked about in this same run. Curated rows
+    # are not needs: no bucket, and the queue built below already sees
+    # them. `ctx.adopt_graphemes` turns the pass off for a caller that
+    # does not want the inventory written into its deck.
+    if ctx.adopt_graphemes:
+        tally.collect(grapheme_attempt(ctx))
+
     # One drafting ask per run (spec 3 r24 section 5), after sentence
     # drafting and before the need loop: every open picture need -- word
     # or scene, this pass's newly adopted sentences included -- lacking a
@@ -1079,7 +1108,9 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
         adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
-        drafted=tally.drafted, retired=tally.retired, covered_new=tally.covered_new,
+        drafted=tally.drafted, retired=tally.retired,
+        adopted_graphemes=tally.adopted_graphemes, adopted_words=tally.adopted_words,
+        adoption_skipped=tally.adoption_skipped, covered_new=tally.covered_new,
         requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
         comment_unactionable=tally.comment_unactionable,
@@ -1107,6 +1138,9 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adjudicated": report.adjudicated,
                 "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
+                "adopted_graphemes": report.adopted_graphemes,
+                "adopted_words": report.adopted_words,
+                "adoption_skipped": report.adoption_skipped,
                 "covered_new": report.covered_new,
                 "requeried": report.requeried,
                 "comments_read": report.comments_read,

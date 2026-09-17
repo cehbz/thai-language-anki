@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 15, proposed 2026-09-13 against principles r4 and architecture
+Revision 16, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -47,6 +47,16 @@ Revision log:
   illustrator (spec 3 r34) is for, and coverage, not the per-candidate
   pass rate, is the figure that says whether it works. User approval
   2026-09-13.
+- r16 2026-09-17: a Grapheme's recited-name Word carries the category
+  `Letter names` and both Targets (`<word id>/receptive`,
+  `<word id>/productive`, picture_card); order() places those Targets
+  directly after that grapheme, inside the sounds stage;
+  target/sentence-required exempts them. Evidence: curated's cross-file
+  rule refuses a word with a picture-introduced Target and no category,
+  so the design's "no category" could not be built; and the rule would
+  otherwise hand the drafter 84 Targets no sentence can fill -- a recited
+  name is learned from the chart cell and its own recording (F6, design
+  2026-09-12 step 7). User approval 2026-09-17.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -102,7 +112,13 @@ Grapheme                            # language model
                                     # symbol, checked at construction and
                                     # re-checked on loaded data by rule
   name_word: WordId | None          # the recited letter name as a Word
-                                    # ("gɔɔ gài" for ก); consonants today
+                                    # ("gɔɔ gài" for ก); consonants today.
+                                    # r16: that Word carries the category
+                                    # `Letter names` and both Targets, so
+                                    # the learner meets the name
+                                    # receptively and productively; its
+                                    # picture is the alphabet-chart cell
+                                    # (spec 3 §3's glyph source)
 
 Target                              # curated learning list; the unit of
   id: TargetId                      # ordering and coverage. identity
@@ -213,7 +229,9 @@ cross-entity behavior:
 **order() -> list[OrderEntry]** — OrderEntry { kind: word_target | pair
 | grapheme | sentence, id }: the one introduction order of everything the
 learner meets. Constraints, each also stated as a rule: sounds stage
-(pairs, graphemes) before words; a sentence after every word it uses;
+(pairs, graphemes) before words; a grapheme's name-word Targets
+(receptive then productive) directly after that grapheme, inside the
+sounds stage, and nowhere else (r16); a sentence after every word it uses;
 receptive target before productive target per word, so productive
 Targets enter in frequency order like their words. Ties: frequency rank
 ÷ emphasis weight; the loader resolves ranks through the FrequencyMap
@@ -296,7 +314,9 @@ constructor or the loader enforces (order() constraints, one category
 per word, every id registered, one speaker per rendition) gets unit
 tests, not a rule. A constructor-enforced invariant is re-checked by a
 rule only where the loader does not construct through the checking path
-(pairs, grapheme keywords).
+(pairs, grapheme keywords). target/sentence-required does not apply to a
+name word's Targets (r16): the chart cell and the recited name's own
+recording are their exercise, and no sentence uses a letter name.
 
 Severity: error findings close the gate (compile refuses, spec 4 §2);
 warn and info ship as declared warnings. Per-deck severity overrides live

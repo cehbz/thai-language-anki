@@ -140,3 +140,63 @@ def test_category_of_is_none_for_a_word_in_no_category():
     keyword = word("chicken", "ไก่")  # chicken
     syllabus = Syllabus(words=(keyword,), categories=())
     assert syllabus.category_of(keyword.id) is None
+
+
+# --- a name word's Targets sit inside the sounds block (spec 1 r16) -------
+
+def _grapheme_syllabus():
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    rice = word("rice", "ข้าว", "rice")                    # ข้าว: rice
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    return Syllabus(
+        words=(chicken, name, rice), graphemes=(g,),
+        targets=(target("rice/receptive", "rice"),
+                 target("name-chicken/productive", "name-chicken", skill="productive"),
+                 target("name-chicken/receptive", "name-chicken")),
+        profile=Profile(register="male_colloquial"),
+        frequency={"rice": 1})
+
+
+def test_a_name_words_targets_follow_its_grapheme_receptive_first():
+    ordering = _grapheme_syllabus().order()
+    kinds_ids = [(e.kind, e.id) for e in ordering]
+    assert kinds_ids[:3] == [("grapheme", "ก"),
+                             ("word_target", "name-chicken/receptive"),
+                             ("word_target", "name-chicken/productive")]
+
+
+def test_a_name_words_targets_precede_every_ordinary_word_target():
+    ordering = _grapheme_syllabus().order()
+    positions = {e.id: i for i, e in enumerate(ordering)}
+    assert positions["name-chicken/productive"] < positions["rice/receptive"]
+
+
+def test_a_name_words_targets_are_placed_exactly_once():
+    ids = [e.id for e in _grapheme_syllabus().order() if e.kind == "word_target"]
+    assert ids.count("name-chicken/receptive") == 1
+    assert ids.count("name-chicken/productive") == 1
+    assert ids == ["name-chicken/receptive", "name-chicken/productive", "rice/receptive"]
+
+
+def test_a_sentence_using_a_name_word_is_still_placed():
+    """`_word_last_position` keeps order() total: a name word's Targets
+    are not in _ordered_targets, so without a seeded position a sentence
+    naming one would raise. No drafted sentence uses a letter name in
+    practice; the function must not depend on that."""
+    chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")  # กอ ไก่
+    rice = word("rice", "ข้าว", "rice")                    # ข้าว: rice
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    s = sentence(((name.id,),), thai_of(chicken, name, rice), gloss="the name of ก")
+    syllabus = Syllabus(
+        words=(chicken, name, rice), graphemes=(g,), sentences=(s,),
+        targets=(target("rice/receptive", "rice"),
+                 target("name-chicken/receptive", "name-chicken")),
+        profile=Profile(register="male_colloquial"))
+    ordering = syllabus.order()
+    positions = {(e.kind, e.id): i for i, e in enumerate(ordering)}
+    assert ("sentence", s.text_sha) in positions
+    assert syllabus._word_last_position["name-chicken"] == -1

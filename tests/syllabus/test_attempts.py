@@ -13,10 +13,12 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
                                     RawVerdict, RenditionBackend, deck_field)
-from thai_syllabus.attempts import (COMMENTS_PER_ASK, AttemptResult, Need, Sourcing,
+from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
+                                    Need, Sourcing,
                                     _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt,
-                                    comment_attempt, current_best_of, phrase_attempt,
+                                    comment_attempt, current_best_of, grapheme_attempt,
+                                    phrase_attempt,
                                     picture_query_for, retire_sentence, sentence_attempt,
                                     sources_for)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
@@ -28,9 +30,13 @@ from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, cand
                                   gloss_on_requested, latest_phrase, parse_phrases,
                                   reading_of, retired_texts, retirements, rows_for,
                                   sentence_drafts)
+from thai_syllabus.curated import (load_graphemes, load_targets, load_words, save_graphemes,
+                                   save_targets, save_words)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
-                                    SoundConfusion, text_sha)
+                                    SoundConfusion, Syllable, text_sha)
 from thai_syllabus.ids import WordId
+from thai_syllabus.inventory import ConsonantRow
+from thai_syllabus.phonology import Engines
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
@@ -45,6 +51,7 @@ from thai_syllabus.tts import pick_voice
 
 from .builders import sentence as compose_sentence
 from .builders import target, thai_of, word
+from .fakes import FakeMediaIndex
 
 # This fixture's own role -> rubric map (rulebook.rubrics_for covers only
 # roles a judged Rule registers).
@@ -3520,3 +3527,288 @@ def test_a_picture_attempt_at_a_source_already_asked_under_another_query_is_a_re
                if r.port == "provide" and r.backend == "imgfetch"]
     assert len(fetched) == 1
     assert _outcome(ctx.db, "rice", "picture", "openverse").answer["outcome"] == "nothing"
+
+
+# --- the grapheme pass: the consonant inventory adopted (spec 3 r40 §5) ----
+
+KO = ConsonantRow(symbol="ก", consonant_class="mid", sound="k", name_thai="กอ ไก่",
+                  keyword_thai="ไก่", keyword_gloss="chicken")   # ก: k; ไก่: chicken
+
+
+def _engines(g2p=None, tone=None):
+    """Two fake engines: one monosyllable they agree on unless a test says
+    otherwise (thai -> syllables; thai -> tone)."""
+    one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
+    return Engines(g2p=g2p or (lambda thai: one), tone=tone or (lambda thai: "mid"))
+
+
+def _grapheme_ctx(tmp_path, syllabus, *, engines=None, files=("words.yaml", "targets.yaml",
+                                                              "graphemes.yaml")):
+    """A ctx with a curated/ directory of its own (the run's writing
+    command owns it) and injected engines -- pythainlp never loads. The
+    three files the pass adds rows to are written first, from the
+    syllabus's own rows (R-P2: the pass adds rows, it never creates the
+    store); `files` names which of them exist, so a test can leave one
+    out.
+    """
+    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={})
+    ctx.curated_dir = tmp_path / "curated"
+    ctx.curated_dir.mkdir(parents=True, exist_ok=True)
+    if "words.yaml" in files:
+        save_words(ctx.curated_dir / "words.yaml",
+                   [(w, syllabus.category_of(w.id)) for w in syllabus.words])
+    if "targets.yaml" in files:
+        save_targets(ctx.curated_dir / "targets.yaml", list(syllabus.targets))
+    if "graphemes.yaml" in files:
+        save_graphemes(ctx.curated_dir / "graphemes.yaml", list(syllabus.graphemes))
+    ctx.engines = engines or _engines()
+    return ctx
+
+
+def test_a_consonant_whose_keyword_is_vocabulary_adopts_its_name_word_and_row(tmp_path):
+    """Design 2026-09-12 §1: 20 of the 44 acrophonic keywords are already
+    vocabulary words, matched by `thai`; the recited name is the new Word,
+    with both Targets and the category Letter names (spec 1 r16)."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    result = grapheme_attempt(ctx, consonants=[KO])
+
+    assert result.attempted is True
+    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 1, 0)
+    name = ctx.syllabus.word("name-chicken")
+    assert name.thai == "กอ ไก่"                                   # กอ ไก่: the name of ก
+    assert name.meaning == GRAPHEME_NAME_MEANING.format(symbol="ก")
+    assert ctx.syllabus.category_of("name-chicken") == "Letter names"
+    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == [
+        "name-chicken/receptive", "name-chicken/productive"]
+    g = ctx.syllabus.graphemes[0]
+    assert (g.symbol, g.kind, g.sound, g.consonant_class) == ("ก", "consonant", "k", "mid")
+    assert (g.keyword, g.name_word) == ("chicken", "name-chicken")
+    assert ctx.syllabus.name_word_ids == frozenset({"name-chicken"})
+
+
+def test_the_pass_writes_the_three_curated_files(tmp_path):
+    """Spec 2 r17: the run adds rows to the learner's own files under its
+    writing command -- rows added, none removed."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    grapheme_attempt(ctx, consonants=[KO])
+
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    assert [(w.id, c) for w, c in rows] == [("chicken", "Animals"),
+                                            ("name-chicken", "Letter names")]
+    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
+        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
+    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [("ก", "chicken",
+                                                                    "name-chicken")]
+
+
+def test_a_pass_without_the_three_files_writes_nothing_and_counts_the_skip(tmp_path):
+    """R-P2: the pass adds rows to files the deck already has; a store
+    missing one of them is not a store it may rewrite (a truncated
+    targets.yaml would lose every Target the deck owns), so the rows are
+    skipped with a logged reason and nothing is written."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus, files=("words.yaml", "graphemes.yaml"))
+
+    result = grapheme_attempt(ctx, consonants=[KO])
+
+    assert result == AttemptResult(attempted=False, adoption_skipped=1)
+    assert [(w.id, c) for w, c in load_words(ctx.curated_dir / "words.yaml")] == [
+        ("chicken", "Animals")]
+    assert not (ctx.curated_dir / "targets.yaml").exists()
+    assert ctx.syllabus.graphemes == ()
+
+
+def test_a_multi_syllable_recited_name_is_written_disputed(tmp_path):
+    """R2: the rule tone engine settles one syllable's tone only, so a
+    recited name is disputed and the adjudication pass asks the judge next
+    run (E4 blocks its cards until then)."""
+    two = (Syllable(segments=("k", "ɔ", ""), vowel_length="long", tone="mid"),
+           Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"))
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
+                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus,
+                        engines=_engines(g2p=lambda thai: two if " " in thai else two[:1]))
+
+    grapheme_attempt(ctx, consonants=[KO])
+
+    assert ctx.syllabus.word("name-chicken").pron.corroboration == "disputed"
+
+
+NGO = ConsonantRow(symbol="ง", consonant_class="low", sound="ŋ", name_thai="งอ งู",
+                   keyword_thai="งู", keyword_gloss="snake")   # ง: ŋ; งู: snake
+
+
+def test_a_keyword_new_to_the_vocabulary_enters_as_a_closure_word(tmp_path):
+    """Design 2026-09-12 §1: a keyword not already a vocabulary word is a
+    closure Word -- no category, no Target -- with the slug of its gloss
+    for an id."""
+    rice = word("rice", "ข้าว", "rice")   # ข้าว: rice
+    syllabus = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice"),),
+                        categories=(Category(name="Food", members=frozenset({"rice"})),))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    result = grapheme_attempt(ctx, consonants=[NGO])
+
+    assert (result.adopted_graphemes, result.adopted_words) == (1, 2)
+    snake = ctx.syllabus.word("snake")
+    assert (snake.thai, snake.meaning) == ("งู", "snake")       # งู: snake
+    assert snake.pron.corroboration == "engines_agree"
+    assert ctx.syllabus.category_of("snake") is None
+    assert [t.id for t in ctx.syllabus.targets if t.word == "snake"] == []
+    assert ctx.syllabus.graphemes[0].keyword == "snake"
+    assert ctx.syllabus.word("name-snake").thai == "งอ งู"       # งอ งู: the name of ง
+
+
+def test_a_keyword_gloss_already_taken_is_suffixed(tmp_path):
+    """The live convention (`delicious-2`): the slug is suffixed until it
+    is free, so an existing `snake` word with another form keeps its id."""
+    other = word("snake", "อสรพิษ", "snake")   # อสรพิษ: snake (venomous)
+    syllabus = Syllabus(words=(other,))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    grapheme_attempt(ctx, consonants=[NGO])
+
+    assert ctx.syllabus.word("snake-2").thai == "งู"            # งู: snake
+    assert ctx.syllabus.graphemes[0].keyword == "snake-2"
+    assert ctx.syllabus.word("name-snake-2").thai == "งอ งู"     # งอ งู: the name of ง
+
+
+# ฃ (kho khuat) is obsolete and its acrophonic keyword ขวด (bottle) is
+# spelled with the modern ข, so the containment invariant refuses it.
+KHO_KHUAT = ConsonantRow(symbol="ฃ", consonant_class="high", sound="kʰ", name_thai="ฃอ ขวด",
+                         keyword_thai="ขวด", keyword_gloss="bottle")
+
+
+def test_a_keyword_that_does_not_contain_the_symbol_is_skipped_and_counted(tmp_path):
+    """Decision 12: Grapheme.create enforces containment and
+    grapheme/keyword-contains-symbol is an error-severity rule, so the two
+    obsolete letters are reported, not adopted -- the other rows still
+    are."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+
+    result = grapheme_attempt(ctx, consonants=[KHO_KHUAT, NGO])
+
+    assert (result.adopted_graphemes, result.adoption_skipped) == (1, 1)
+    assert [g.symbol for g in ctx.syllabus.graphemes] == ["ง"]        # ง: ŋ
+    assert ctx.syllabus.find_word("bottle") is None
+    assert load_words(ctx.curated_dir / "words.yaml") != []
+
+
+def test_a_name_no_engine_reads_leaves_the_row_with_no_name_word(tmp_path):
+    """R2: a Word is never written with an empty syllable tuple. The
+    grapheme row still stands (compile drops its Reading card, counted)
+    and the skip is reported."""
+    one = (Syllable(segments=("ŋ", "u", ""), vowel_length="long", tone="mid"),)
+    ctx = _grapheme_ctx(tmp_path, Syllabus(),
+                        engines=_engines(g2p=lambda thai: None if " " in thai else one))
+
+    result = grapheme_attempt(ctx, consonants=[NGO])
+
+    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 1, 1)
+    assert ctx.syllabus.graphemes[0].name_word is None
+    assert ctx.syllabus.find_word("name-snake") is None
+    assert ctx.syllabus.name_word_ids == frozenset()
+
+
+def test_a_keyword_no_engine_reads_leaves_the_row_unadopted(tmp_path):
+    ctx = _grapheme_ctx(tmp_path, Syllabus(), engines=_engines(g2p=lambda thai: None))
+
+    result = grapheme_attempt(ctx, consonants=[NGO])
+
+    assert (result.adopted_graphemes, result.adoption_skipped) == (0, 1)
+    assert ctx.syllabus.graphemes == ()
+
+
+def test_a_second_pass_adopts_nothing(tmp_path):
+    """R7: the pass is idempotent -- the second run over the same
+    inventory finds every symbol already in the syllabus, asks nothing and
+    writes nothing."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+    first = grapheme_attempt(ctx, consonants=[NGO])
+    before = (ctx.curated_dir / "words.yaml").read_bytes()
+
+    second = grapheme_attempt(ctx, consonants=[NGO])
+
+    assert first.adopted_graphemes == 1
+    assert second == AttemptResult(attempted=False)
+    assert (ctx.curated_dir / "words.yaml").read_bytes() == before
+    assert [g.symbol for g in ctx.syllabus.graphemes] == ["ง"]        # ง: ŋ
+
+
+def test_a_pass_with_no_curated_store_adopts_nothing(tmp_path):
+    """Outside a wired deck (run._materialize_adjudications takes the same
+    guard): nothing to write the rows to, so nothing is derived."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+    ctx.curated_dir = None
+
+    assert grapheme_attempt(ctx, consonants=[NGO]) == AttemptResult(attempted=False)
+    assert ctx.syllabus.graphemes == ()
+
+
+def test_the_phrase_drafter_is_not_handed_a_chart_cells_need(tmp_path):
+    """Decision 17: a chart cell's query is its symbol, so drafting an
+    English photograph description for it would spend the drafter's own
+    ask on an item no corpus will ever be searched for."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่",          # กอ ไก่: the name of ก
+                GRAPHEME_NAME_MEANING.format(symbol="ก"))
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(words=(chicken, name), graphemes=(g,),
+                        targets=(target("name-chicken/receptive", "name-chicken"),),
+                        categories=(Category(name="Letter names",
+                                             members=frozenset({"name-chicken"})),),
+                        media=FakeMediaIndex(pictures={"chicken"}))
+    ctx = _phrase_ctx(tmp_path, syllabus, json.dumps(
+        {"phrases": [{"subject": "name-chicken", "phrase": "a chicken in a yard"}]}))
+
+    result = phrase_attempt(ctx)
+
+    assert result == AttemptResult(attempted=False)
+    assert _phrase_drafter(ctx).prompts == []
+
+
+def test_a_grapheme_already_on_file_survives_the_pass(tmp_path):
+    """Spec 2 r17 section 6, for the third file too: graphemes.yaml is
+    rewritten whole, so the row the deck already had must come back out of
+    it unchanged beside the newly adopted one -- rows added, none
+    removed."""
+    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
+    already = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                              keyword_word=chicken)          # ก: k, no name word on file
+    syllabus = Syllabus(words=(chicken,), graphemes=(already,))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    result = grapheme_attempt(ctx, consonants=[KO, NGO])
+
+    assert (result.adopted_graphemes, result.adoption_skipped) == (1, 0)
+    rows = load_words(ctx.curated_dir / "words.yaml")
+    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
+    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
+        ("ก", "chicken", None), ("ง", "snake", "name-snake")]     # ก kept as it was; ง added
+
+
+def test_a_symbol_twice_in_the_table_is_adopted_once(tmp_path):
+    """R7 within one pass: the symbol is a Grapheme's identity, so a table
+    naming it twice yields one row and one set of Words, not a duplicate
+    pair under suffixed ids."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+
+    result = grapheme_attempt(ctx, consonants=[NGO, NGO])
+
+    assert (result.adopted_graphemes, result.adopted_words) == (1, 2)
+    assert [g.symbol for g in ctx.syllabus.graphemes] == ["ง"]        # ง: ŋ
+    assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == [
+        "snake", "name-snake"]

@@ -106,6 +106,17 @@ class Syllabus:
         return self._category_by_word.get(word_id)
 
     @cached_property
+    def name_word_ids(self) -> frozenset[WordId]:
+        """Every Word that is some Grapheme's recited name (spec 1 r16).
+        Three folds read it: order() places such a Word's Targets inside
+        the sounds block after their grapheme, target/sentence-required
+        exempts them (the chart cell and the name's own recording are
+        their exercise, F6), and the run's source roster gives their
+        picture need the one source that draws a chart cell (spec 3 r41).
+        """
+        return frozenset(g.name_word for g in self.graphemes if g.name_word is not None)
+
+    @cached_property
     def _sentence_index(self) -> dict[str, Sentence]:
         return {s.text_sha: s for s in self.sentences}
 
@@ -158,9 +169,16 @@ class Syllabus:
     # --- order() ---------------------------------------------------------
 
     def order(self) -> list[OrderEntry]:
-        sounds = ([OrderEntry("pair", p.id) for p in sorted(self.pairs, key=lambda p: p.id)]
-                 + [OrderEntry("grapheme", g.symbol)
-                   for g in sorted(self.graphemes, key=lambda g: g.symbol)])
+        sounds = [OrderEntry("pair", p.id) for p in sorted(self.pairs, key=lambda p: p.id)]
+        # Spec 1 r16: a grapheme's recited-name Word is met right after the
+        # grapheme itself, inside the sounds block -- the chart cell shows
+        # the letter, so the name is learned with it (design 2026-09-12
+        # step 7). Placed here and nowhere else: _ordered_targets below
+        # leaves these Targets out, so no word_target entry repeats one.
+        for g in sorted(self.graphemes, key=lambda g: g.symbol):
+            sounds.append(OrderEntry("grapheme", g.symbol))
+            sounds += [OrderEntry("word_target", t.id)
+                      for t in self._name_targets.get(g.name_word, ())]
 
         target_entries = [OrderEntry("word_target", t.id) for t in self._ordered_targets]
 
@@ -177,11 +195,28 @@ class Syllabus:
         return [*sounds, *target_entries, *sentence_entries]
 
     @cached_property
+    def _name_targets(self) -> dict[WordId, tuple[Target, ...]]:
+        """Each name word's own Targets, receptive before productive --
+        the block order() interleaves after that word's grapheme (spec 1
+        r16). A grapheme with no name word, or a name word with no Target,
+        contributes nothing.
+        """
+        by_word: dict[WordId, list[Target]] = {}
+        for t in self.targets:
+            if t.word in self.name_word_ids:
+                by_word.setdefault(t.word, []).append(t)
+        return {word_id: tuple(sorted(ts, key=lambda t: (0 if t.skill == "receptive" else 1,
+                                                        str(t.id))))
+                for word_id, ts in by_word.items()}
+
+    @cached_property
     def _ordered_targets(self) -> tuple[Target, ...]:
         """Targets sorted by (frequency/emphasis, word id, skill), the
         basis of order()'s word_target block and of _word_last_position;
         order() builds that block from this same tuple, with no
-        recursion through order() itself.
+        recursion through order() itself. A name word's Targets are left
+        out (spec 1 r16): order() places them in the sounds block, and
+        listing them here would place them a second time.
         """
         def key(t: Target) -> tuple[float, str, int]:
             freq = self.frequency.get(t.word, float("inf"))
@@ -189,7 +224,8 @@ class Syllabus:
             skill_rank = 0 if t.skill == "receptive" else 1
             return (freq / weight if weight else float("inf"), str(t.word), skill_rank)
 
-        return tuple(sorted(self.targets, key=key))
+        return tuple(sorted((t for t in self.targets if t.word not in self.name_word_ids),
+                            key=key))
 
     @cached_property
     def _word_last_position(self) -> dict[WordId, int]:
@@ -197,8 +233,15 @@ class Syllabus:
         _ordered_targets (receptive and productive both included) --
         the relative position a sentence using that word is placed
         after in order(); shared by last_used_word.
+
+        A name word's Targets are not in _ordered_targets (spec 1 r16:
+        order() places them in the sounds block, before every word
+        target), so every name word is seeded at -1, the position
+        sentence_after uses for a sentence with no placed word at all.
+        A name word that is also an ordinary target's word takes that
+        target's real index instead.
         """
-        positions: dict[WordId, int] = {}
+        positions: dict[WordId, int] = {word_id: -1 for word_id in self.name_word_ids}
         for i, t in enumerate(self._ordered_targets):
             positions[t.word] = max(positions.get(t.word, i), i)
         return positions
@@ -470,6 +513,21 @@ class Syllabus:
         recomputed rather than carried over stale.
         """
         return dataclasses.replace(self, words=tuple(words))
+
+    def with_adoptions(self, *, words: Sequence[Word], targets: Sequence[Target],
+                       graphemes: Sequence[Grapheme],
+                       categories: Sequence[Category]) -> "Syllabus":
+        """This Syllabus over the curated rows a run's adoption pass has
+        just written (spec 2 r17, spec 3 r40 section 5) -- the whole list
+        of each, in its own order, not an addition, exactly as
+        `with_words` takes the whole word list. A category's membership
+        comes along because a name word carries one (spec 1 r16) and
+        `category_of` is what reads it. A fresh instance, so
+        `_word_index`, `name_word_ids` and every other cached_property is
+        recomputed rather than carried over stale.
+        """
+        return dataclasses.replace(self, words=tuple(words), targets=tuple(targets),
+                                   graphemes=tuple(graphemes), categories=tuple(categories))
 
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
               ) -> list[tuple[Sentence, tuple[Target, ...]]]:

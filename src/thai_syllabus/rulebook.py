@@ -315,9 +315,15 @@ TARGET_RECORDING_REQUIRED = Rule(id="target/recording-required", principle="F7",
 
 
 def _check_target_sentence(syllabus: "Syllabus") -> list[Finding]:
+    # Spec 1 r16: a grapheme's recited-name Word is exempt. Its Targets are
+    # met by the alphabet-chart cell (its picture) and the name's own
+    # recording, inside the sounds block (F6, design 2026-09-12 step 7);
+    # no sentence uses a letter name, and requiring one would hand the
+    # drafter 84 Targets it cannot write for.
+    name_words = syllabus.name_word_ids
     filled_ids = {t.id for s in syllabus.sentences for t in syllabus.fill_set(s)}
     return [Finding(rule="target/sentence-required", note_id=t.id, evidence="no adopted sentence fills it")
-           for t in syllabus.targets if t.id not in filled_ids]
+           for t in syllabus.targets if t.id not in filled_ids and t.word not in name_words]
 
 
 TARGET_SENTENCE_REQUIRED = Rule(id="target/sentence-required", principle="F5",

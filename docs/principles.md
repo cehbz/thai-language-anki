@@ -1,6 +1,6 @@
 # Principles
 
-Revision 4, proposed 2026-09-11 (r3 approved 2026-09-11). The architecture
+Revision 5, proposed 2026-09-17 (r4 approved 2026-09-11). The architecture
 (docs/architecture.md) and the specs (docs/specs/) are the companions.
 
 Three meta-rules from the charter; every principle traces to one; every
@@ -49,6 +49,11 @@ Revision log:
 - r4 2026-09-11: F13, nothing is grandfathered. Evidence: 15 adopted
   sentences whose every recording exceeded the duration cap sat in the
   deck with no path to a recording; user ruling 2026-09-11.
+- r5 2026-09-17: F6 gains one sentence -- the recited names are learned
+  as speech, receptively and productively. Evidence: Thai speakers spell
+  with the names (กอ ไก่ "gɔɔ gài", the name of ก), so a learner who
+  cannot say them cannot ask how a word is spelled; design 2026-09-12
+  step 7. No other principle's meaning changed. User approval 2026-09-17.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
@@ -111,7 +116,9 @@ Revision log:
   symbol → sound + keyword, showing the keyword Word's own picture
   (F6a: one picture per word, everywhere). Writing is incidental, never
   a family. Consonant keywords are the acrophonic words; vowels and marks
-  take concrete picturable keywords. Tone-rule material is card-back
+  take concrete picturable keywords. The recited names are learned as
+  speech, receptively and productively: each is a Word of its own, met
+  with its grapheme. Tone-rule material is card-back
   reference, never tested; a word's tone is memorized with the word.
 - **F6b.** A pair card's back shows both members, marks the stimulus, and
   offers each member's audio individually. [evidence: study 09-02]

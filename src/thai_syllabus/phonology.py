@@ -7,7 +7,7 @@ engines.py, and thaig2p (torch) loads only inside default_engines()."""
 from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from .entities import Syllable, Tone
+from .entities import Pronunciation, Syllable, Tone
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,26 @@ def corroborates(judge: tuple[Syllable, ...], thai: str, engines: Engines) -> bo
     if len(judge) != 1:
         return False
     return engines.tone(thai) == judge[0].tone
+
+
+def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
+    """The two engines' own reading of `thai`, the seed every Word the run
+    adopts is written with (spec 3 r40 section 5; design 2026-09-12 §2):
+    thaig2p's syllables, corroboration `engines_agree` when the rule tone
+    engine agrees with a monosyllable's tone -- the same agreement rule
+    `corroborates` falls back on -- and `disputed` otherwise, including
+    every multi-syllable form, which the adjudication pass then asks the
+    judge about (r28) while E4 blocks that word's cards.
+
+    None when thaig2p reads nothing: a Word is never written with an empty
+    syllable tuple, and the caller reports the row it could not adopt.
+    """
+    syllables = engines.g2p(thai)
+    if not syllables:
+        return None
+    agrees = len(syllables) == 1 and engines.tone(thai) == syllables[0].tone
+    return Pronunciation(syllables=tuple(syllables),
+                         corroboration="engines_agree" if agrees else "disputed")
 
 
 def default_engines() -> Engines:
