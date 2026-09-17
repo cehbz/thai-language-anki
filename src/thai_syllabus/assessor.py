@@ -20,7 +20,7 @@ from typing import Any, Protocol, runtime_checkable
 from . import record
 from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, TransportError, strip_fences
+from .transport import Completion, RequestParams, TransportError, strip_fences
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
@@ -310,7 +310,7 @@ class Assessor:
         if not prepared:
             return None
         impl = self._backends["judge"]
-        requests: dict[str, tuple[str, list[Path]]] = {}
+        requests: dict[str, tuple[str, list[Path]] | tuple[str, list[Path], RequestParams]] = {}
         requesters: dict[str, tuple[str, str]] = {}  # custom_id -> (subject, role)
         subjects: list[str] = []
         roles: list[str] = []
@@ -328,7 +328,12 @@ class Assessor:
                     f"two prepared questions share one key {p.key.encode()!r}: "
                     f"(subject {earlier_subject!r}, role {earlier_role!r}) and "
                     f"(subject {p.question.subject!r}, role {p.question.role!r})")
-            requests[custom_id] = (p.prompt, p.attachments)
+            # A 3-tuple only for a role with an override of its own
+            # (spec 3 r43); every other request keeps the 2-tuple shape.
+            role_override = impl.request_params(p.question)
+            requests[custom_id] = ((p.prompt, p.attachments, role_override)
+                                   if role_override is not None
+                                   else (p.prompt, p.attachments))
             requesters[custom_id] = (p.question.subject, p.question.role)
             subjects.append(p.question.subject)
             roles.append(p.question.role)
@@ -412,7 +417,7 @@ class Assessor:
                 _log.warning("batch %s: %s: %s", batch_id, key.encode(), e)
                 continue
             raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
-                             suggestion=parsed.suggestion, cost=impl._cost(completion))
+                             suggestion=parsed.suggestion, cost=impl._cost(completion, role))
             ts = self._append_verdict("judge", key, question, raw)
             resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
                                     evidence=raw.evidence, suggestion=raw.suggestion)
@@ -736,6 +741,12 @@ class JudgeBackend:
     resolve_path: Callable[[str], Path | None] | None = None  # artifact_sha -> file path, for attachments
     price: Price | None = None  # api/batch: dollar cost from actual token usage
     quota_cost_per_call: float = 0.0  # cli: flat subscription-quota cost (no token usage on the wire)
+    # Per-role overrides (spec 3 r43, providers.yaml `judge.roles.<role>`):
+    # the RequestParams one role's questions go out under, and the Price
+    # its answers are costed at. A role with no entry is asked and priced
+    # as the judge itself is.
+    role_params: Mapping[str, RequestParams] = field(default_factory=dict)
+    role_prices: Mapping[str, Price] = field(default_factory=dict)
 
     def _parse(self, text: str, question: AssessQuestion) -> RawVerdict:
         return self.parse_response(text, question)
@@ -763,9 +774,16 @@ class JudgeBackend:
     def cache_key(self, question: AssessQuestion) -> JudgeKey:
         return JudgeKey.for_question(question)
 
-    def _cost(self, completion: Completion) -> float:
-        if self.price is not None:
-            return self.price.cost(completion)
+    def request_params(self, question: AssessQuestion) -> RequestParams | None:
+        """The per-request override this question's role is asked under
+        (spec 3 r43), or None where the role inherits the judge's own
+        model, thinking and max_tokens."""
+        return self.role_params.get(question.role)
+
+    def _cost(self, completion: Completion, role: str | None = None) -> float:
+        price = self.role_prices.get(role, self.price) if role is not None else self.price
+        if price is not None:
+            return price.cost(completion)
         return self.quota_cost_per_call
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
@@ -774,10 +792,17 @@ class JudgeBackend:
                 "this JudgeBackend has no single-question transport "
                 "(configured for batch only) -- use Assessor.ask_many")
         prompt = self.prompt_builder(question)
-        completion = self.complete(prompt, self.attachments(question))
+        params = self.request_params(question)
+        attachments = self.attachments(question)
+        # Only a role WITH an override is asked with `params`: a transport
+        # (or a test double) that takes just (prompt, attachments) still
+        # serves every role that inherits the judge's own setting.
+        completion = (self.complete(prompt, attachments, params=params) if params is not None
+                      else self.complete(prompt, attachments))
         raw = self._parse(completion.text, question)
         return RawVerdict(value=raw.value, evidence=raw.evidence,
-                          suggestion=raw.suggestion, cost=self._cost(completion))
+                          suggestion=raw.suggestion,
+                          cost=self._cost(completion, question.role))
 
 
 # --- mechanical: ground truth for what it checks ----------------------------

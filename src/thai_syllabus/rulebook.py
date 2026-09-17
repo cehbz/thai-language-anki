@@ -238,7 +238,10 @@ PRONUNCIATION_RUBRIC = (
     "vowel length, and tone. Use the deck's convention: IPA segments (kʰ tɕ tɕʰ ŋ ʔ j w; "
     "vowels a e ɛ i ɯ o ɔ u ɤ, diphthongs ia ɯa ua), lengths short|long, tones as the Chao "
     "names mid, low, falling, high, rising. Apply the tone rules to the spelling and prefer "
-    "the dictionary form over a colloquial reduction. Give a two- or three-word English gloss.")
+    "the dictionary form over a colloquial reduction. Take vowel length from the spelling: "
+    "the long-vowel signs (-า, -ี, -ือ, -ู, เ-, แ-, โ-, -อ, เ-อ, -ัว, เ-ีย, เ-ือ) are long, "
+    "the short signs and the unwritten inherent vowel are short, and a long vowel stays long "
+    "in an unstressed syllable. Give a two- or three-word English gloss.")
 
 SCENE_FIT_RUBRIC = (
     "This picture will sit beside the sentence on its cards; on the "

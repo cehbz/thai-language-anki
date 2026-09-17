@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 42, proposed 2026-09-17 against principles r5 and architecture
+Revision 43, proposed 2026-09-17 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -236,6 +236,7 @@ Revision log:
 - r40 2026-09-17: one grapheme pass per run, after the sentence attempt and before the phrase and adjudication asks: every consonant of the repo inventory (data/thai_consonants.yaml) the deck lacks becomes a Grapheme row with its acrophonic keyword Word (matched in the vocabulary by `thai`, else a closure Word whose id is the slug of the table's gloss) and its recited-name Word (both Targets, category `Letter names`, spec 1 r16), pronunciations seeded from the engines alone -- `engines_agree` when the rule tone engine settles a monosyllable's tone, else `disputed`, which the adjudication pass (r28) asks the judge about next run; the three curated files are written under the writing command, rows added and none removed (spec 2 r17); a row whose keyword does not contain its symbol, or whose form no engine reads, is logged and counted, not adopted. `RunReport.adopted_graphemes`, `adopted_words` and `adoption_skipped` are events, outside the needs identity. Evidence: the live deck has 0 graphemes and E1 is satisfied vacuously -- 734 word Reading cards compile for a learner who cannot read; the inventory is fixed knowledge, so adoption is mechanical and free, and one pass takes all of it. User approval 2026-09-17.
 - r41 2026-09-17: `glyph`, a Provide backend of kind picture: the alphabet-chart cell for a grapheme's recited-name Word -- the symbol in a Thai font beside the keyword's current-best picture, on a square white canvas -- drawn with Pillow, deterministic and free, provenance `glyph`, keyed `glyph:<keyword picture sha>:<symbol>` so a changed keyword picture is a new cell; a name word whose keyword has no picture has no cell and its need waits. `sources_for_need` gives that need the roster `("glyph",)` and every other need its kind's roster, read alike by the run's attempt loop, queue()/queued() and the review server's exhausted(); `glyph` is never on SOURCES["picture"]. The query is the symbol, not a drafted phrase, so the phrase ask never sees the need. providers.yaml gains `glyph: {font}`. Evidence: F6's grapheme card shows the keyword's picture, and the recited name's Production card needs a cue of its own -- the alphabet chart every Thai child learns from is that cue, and it is composed from artifacts the deck already holds, so searching a corpus for it would be spending money on the wrong picture. User approval 2026-09-17.
 - r42 2026-09-17: a grapheme's keyword picture is the keyword Word's own picture need -- `(keyword word id, picture, word)`, deduped against that word's own -- so the picture attempt, the phrase drafter and the judge serve it exactly as they serve any word's picture; the `grapheme-keyword` need kind and its authority role (spec 1 r17) are retired, and `unserved` names no kind today, its bucket and identity term unchanged. Evidence: the roster listed `grapheme-keyword` as a need for which no Source and no per-run pass existed, so every grapheme's keyword sat in `unserved` for ever and the 42 adopted rows would have put 42 permanent non-needs there; the keyword is a Word, and a Word's picture is a solved problem. User approval 2026-09-17.
+- r43 2026-09-17: `judge.roles.<role>` (§8) gives one judge role its own model, thinking, max_tokens and price, inherited from the judge where unset and sent per request by the api and batch transports; the pronunciation rubric names the vowel-length rule, so the uncorroborated words are re-asked under the new setting. Evidence: on 40 disputed words the deck's judge (Sonnet 5, thinking off) corroborated 5%; Sonnet 5 with adaptive thinking 34%; Opus 5 with adaptive thinking 47% at $0.015 a word; a spelling-analysis prompt added nothing to Opus; vowel length against thaig2p is the dominant remaining mismatch. Thinking on every picture verdict would multiply that cost for no measured gain. User approval 2026-09-17.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -292,7 +293,8 @@ for the JSON object alone. A drafter answer `{"sentences": [],
 **Cost contract.** Every Answer and Verdict carries the cost the backend
 incurred, in that backend's currency, measured by the backend: Forvo one
 lookup, TTS characters times rate, the api and batch judge and the api
-drafter tokens times the model price in providers.yaml, the cli judge and
+drafter tokens times the price of the model that answered (the judge's, or
+the role's, r43), the cli judge and
 the cli drafter one call of quota, the learner seconds. A transport that receives usage and drops it violates this
 contract. Consumers: budget enforcement (section 7), cross-run accounting
 from the record, queue order, the run report.
@@ -873,7 +875,11 @@ Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
 `judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
-16000 under `thinking: adaptive`), `drafter.transport` (cli | api),
+16000 under `thinking: adaptive`),
+`judge.roles.<role>.{model, thinking, max_tokens, price_per_mtok}` (r43: a
+role's own setting, each field inherited from `judge` when unset; a role
+whose model differs from the judge's states its own price),
+`drafter.transport` (cli | api),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3),
 `requery_cap` (3: the distinct queries one picture need is searched under
 since its requery window opened, r35; a source's query form is code,

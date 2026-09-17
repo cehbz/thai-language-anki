@@ -14,7 +14,8 @@ from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
-                                    PICTURE_PREFERENCE, PRINCIPLES, RULES, SCENE_FIT_RUBRIC,
+                                    PICTURE_PREFERENCE, PRINCIPLES, PRONUNCIATION_RUBRIC,
+                                    RULES, SCENE_FIT_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC, SENTENCE_REGISTER_NATURAL,
                                     apply_overlay, rubrics_for, sentence_note_id,
                                     traceability_metric)
@@ -751,3 +752,19 @@ def test_an_ordinary_targets_sentence_requirement_still_stands():
     syllabus = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice"),))
     findings = [f for f in syllabus.report().findings if f.rule == "target/sentence-required"]
     assert [f.note_id for f in findings] == ["rice/receptive"]
+
+
+# --- the pronunciation rubric names the vowel-length rule (spec 3 r43) -----
+
+def test_the_pronunciation_rubric_names_the_vowel_length_rule():
+    """Vowel length against thaig2p is the dominant remaining mismatch
+    (measured 2026-09-17), so the rubric states the spelling rule instead
+    of leaving `lengths short|long` to the model's own reading."""
+    assert "Take vowel length from the spelling" in PRONUNCIATION_RUBRIC
+    assert "-า" in PRONUNCIATION_RUBRIC and "เ-ือ" in PRONUNCIATION_RUBRIC
+    assert "unwritten inherent vowel are short" in PRONUNCIATION_RUBRIC
+    assert "stays long in an unstressed syllable" in PRONUNCIATION_RUBRIC
+    # placed before the gloss sentence, which stays last
+    assert PRONUNCIATION_RUBRIC.index("Take vowel length") < PRONUNCIATION_RUBRIC.index(
+        "Give a two- or three-word English gloss.")
+    assert PRONUNCIATION_RUBRIC.endswith("Give a two- or three-word English gloss.")

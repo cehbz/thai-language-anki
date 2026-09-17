@@ -72,7 +72,8 @@ from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_RUBRIC, 
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus, derive_productive_targets
-from .transport import ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport, TransportError
+from .transport import (ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport,
+                        RequestParams, TransportError)
 from .tts import pick_voice
 
 __all__ = ["build_provider", "build_assessor", "build_sourcing", "default_budgets",
@@ -165,6 +166,37 @@ def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
 
 def _judge_price(cfg: ProvidersConfig) -> Price | None:
     return Price(*cfg.judge.price_per_mtok) if cfg.judge.price_per_mtok else None
+
+
+def _role_params(cfg: ProvidersConfig) -> dict[str, RequestParams]:
+    """role -> the RequestParams that role's questions go out under (spec
+    3 r43's `judge.roles.<role>`), each field inherited from the judge
+    where the role names none. Empty under the cli transport: `claude -p`
+    takes no per-request model, thinking or output cap.
+    """
+    if cfg.judge.transport == "cli":
+        return {}
+    return {name: RequestParams(
+                model=role.model if role.model is not None else cfg.judge.model,
+                max_tokens=(role.max_tokens if role.max_tokens is not None
+                            else cfg.judge.max_tokens),
+                thinking=role.thinking if role.thinking is not None else cfg.judge.thinking)
+            for name, role in cfg.judge.roles.items()}
+
+
+def _role_prices(cfg: ProvidersConfig) -> dict[str, Price]:
+    """role -> the Price its answers are costed at (spec 3 r43): the
+    role's own when it states one, else the judge's. Empty under the cli
+    transport, which spends quota per call, not cash per token.
+    """
+    if cfg.judge.transport == "cli":
+        return {}
+    prices = {}
+    for name, role in cfg.judge.roles.items():
+        price_per_mtok = role.price_per_mtok or cfg.judge.price_per_mtok
+        if price_per_mtok:
+            prices[name] = Price(*price_per_mtok)
+    return prices
 
 
 def _judge_quota_cost(cfg: ProvidersConfig) -> float:
@@ -406,9 +438,17 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
             # Wrapped, not extracted as `transport.complete` directly: the
             # `.complete` lookup on `transport` (a _Lazy) resolves it, so
             # this closure defers that lookup to the moment it is called.
-            complete = lambda prompt, attachments=(): transport.complete(prompt, attachments)
+            def complete(prompt, attachments=(), *, params=None, _t=transport):
+                # `params` is forwarded only when a role actually has an
+                # override (spec 3 r43): the cli transport takes no
+                # per-request model, thinking or output cap, and never
+                # sees the keyword.
+                if params is None:
+                    return _t.complete(prompt, attachments)
+                return _t.complete(prompt, attachments, params=params)
     return JudgeBackend(model=cfg.judge.model, transport=kind, complete=complete,
-                        batch_transport=batch_transport)
+                        batch_transport=batch_transport,
+                        role_params=_role_params(cfg), role_prices=_role_prices(cfg))
 
 
 # --- budgets -------------------------------------------------------------

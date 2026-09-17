@@ -14,6 +14,7 @@ from thai_syllabus.transport import (
     ClaudeCliTransport,
     Completion,
     QuotaExhausted,
+    RequestParams,
     TransportError,
     image_block,
     image_media_type,
@@ -409,3 +410,75 @@ def test_api_transport_names_the_stop_reason_when_no_text_block_came_back():
     t = ClaudeApiTransport(api_key="k", model="m", client_factory=lambda: client)
     with pytest.raises(TransportError, match="stop_reason=max_tokens.*output_tokens=4096"):
         t.complete("q")
+
+
+# --- per-request overrides (spec 3 r43) ---------------------------------
+# A judge role may answer under its own model, thinking and max_tokens
+# (providers.yaml `judge.roles.<role>`); the transport takes them per
+# request, so one transport serves every role.
+
+def test_api_transport_sends_the_request_params_when_given():
+    client = _FakeClient("hello")
+    t = ClaudeApiTransport(api_key="k", model="claude-sonnet-5", max_tokens=4096,
+                           thinking="disabled", client_factory=lambda: client)
+    t.complete("q", params=RequestParams(model="claude-opus-5", max_tokens=16000,
+                                         thinking="adaptive"))
+    call = client.messages.calls[0]
+    assert call["model"] == "claude-opus-5"
+    assert call["max_tokens"] == 16000
+    assert call["thinking"] == {"type": "adaptive"}
+
+
+def test_api_transport_without_params_sends_its_own_fields():
+    client = _FakeClient("hello")
+    t = ClaudeApiTransport(api_key="k", model="claude-sonnet-5", max_tokens=4096,
+                           thinking="disabled", client_factory=lambda: client)
+    t.complete("q", params=None)
+    call = client.messages.calls[0]
+    assert call["model"] == "claude-sonnet-5"
+    assert call["max_tokens"] == 4096
+    assert call["thinking"] == {"type": "disabled"}
+
+
+def test_batch_submit_sends_a_requests_params_per_request():
+    client = _FakeBatchClient()
+    t = ClaudeBatchTransport(model="claude-sonnet-5", max_tokens=4096, thinking="disabled",
+                            client_factory=lambda: client)
+    t.submit({"c1": ("p1", (), RequestParams(model="claude-opus-5", max_tokens=16000,
+                                             thinking="adaptive")),
+              "c2": ("p2", (), None)})
+    by_id = {r["custom_id"]: r["params"] for r in client.messages.batches.created_with}
+    assert by_id["c1"]["model"] == "claude-opus-5"
+    assert by_id["c1"]["max_tokens"] == 16000
+    assert by_id["c1"]["thinking"] == {"type": "adaptive"}
+    assert by_id["c2"]["model"] == "claude-sonnet-5"
+    assert by_id["c2"]["max_tokens"] == 4096
+    assert by_id["c2"]["thinking"] == {"type": "disabled"}
+
+
+def test_batch_submit_still_accepts_the_two_tuple():
+    client = _FakeBatchClient()
+    t = ClaudeBatchTransport(model="claude-sonnet-5", client_factory=lambda: client)
+    assert t.submit({"c1": ("p1", ())}) == "batch_123"
+    assert client.messages.batches.created_with[0]["params"]["model"] == "claude-sonnet-5"
+
+
+class _ModelResponse:
+    """A response naming the model that answered, as the wire does."""
+    def __init__(self, text, model):
+        self.content = [_Block(text)]
+        self.usage = _Usage(10, 3)
+        self.model = model
+
+
+def test_completion_names_the_model_that_answered():
+    client = _FakeApiClient(response=_ModelResponse("hi", "claude-opus-5-20260101"))
+    t = ClaudeApiTransport(api_key="k", model="claude-sonnet-5", client_factory=lambda: client)
+    assert t.complete("q").model == "claude-opus-5-20260101"
+
+
+def test_completion_model_is_none_when_the_wire_names_none():
+    assert Completion(text="t").model is None
+    client = _FakeClient("hello")
+    t = ClaudeApiTransport(api_key="k", model="m", client_factory=lambda: client)
+    assert t.complete("q").model is None
