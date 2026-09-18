@@ -276,6 +276,33 @@ class Thaig2p:
     __call__ = syllables
 
 
+class Tltk:
+    """tltk's rule-based g2p as an `Engines.g2p` callable, the second
+    segmental oracle beside `Thaig2p` (design 2026-09-18). Rule-based, so
+    it cannot produce the decoder loop thaig2p does on long compounds; it
+    fails the other way instead, by truncating, which is why agreement
+    between the two is what corroborates rather than either alone.
+
+    tltk imports no torch, so this is cheap, but the import stays in
+    __init__ for symmetry with Thaig2p and so that importing this module
+    never needs the "nlp" extra.
+    """
+
+    def __init__(self) -> None:
+        from tltk import nlp
+        self._th2ipa = nlp.th2ipa
+
+    def syllables(self, word: str) -> tuple[Syllable, ...] | None:
+        """Never raises: None for a word tltk can't read. th2ipa itself
+        raises ValueError on some two-token phrases (ธอ ธง, ฝอ ฝา)."""
+        try:
+            return _convert_tltk(self._th2ipa(word))
+        except Exception:
+            return None
+
+    __call__ = syllables
+
+
 # --- the deterministic tone rules: consonant class x live/dead x mark -----
 
 ConsClass = Literal["mid", "high", "low"]

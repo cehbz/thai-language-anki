@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from thai_syllabus.engines import (Thaig2p, _convert, _convert_tltk,
+from thai_syllabus.engines import (Thaig2p, Tltk, _convert, _convert_tltk,
                                     rule_tone, tone_of)
 from thai_syllabus.entities import Syllable
 
@@ -369,3 +369,32 @@ def test_unmappable_input_is_no_reading_rather_than_a_raise():
     assert _convert_tltk("<s/>") is None
     assert _convert_tltk("maː") is None          # no tone digit
     assert _convert_tltk("zzz9") is None         # unknown everything
+
+
+# --- the Tltk engine callable ---------------------------------------------
+
+@pytest.mark.integration
+def test_tltk_reads_the_compounds_thaig2p_loops_on():
+    """The whole point of the second engine: ภาพวาด is four consonant
+    letters and thaig2p reads it as eleven syllables."""
+    tltk = Tltk()
+    assert tltk("ภาพวาด") == (
+        Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),
+        Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
+    assert len(tltk("โรงพยาบาล")) == 4
+    assert len(tltk("ออกกำลังกาย")) == 4
+
+
+@pytest.mark.integration
+def test_tltk_never_raises_on_a_form_it_cannot_read():
+    """tltk.nlp.th2ipa raises ValueError on some two-token phrases (ธอ ธง
+    and ฝอ ฝา on the live deck); the engine returns None instead of letting
+    that exception escape. A version of Tltk that didn't catch it would
+    raise here and fail this test."""
+    tltk = Tltk()
+    for word in ("ธอ ธง", "ฝอ ฝา"):
+        result = tltk(word)
+        assert result is None or (
+            isinstance(result, tuple)
+            and all(isinstance(s, Syllable) for s in result))
+    assert tltk("") is None
