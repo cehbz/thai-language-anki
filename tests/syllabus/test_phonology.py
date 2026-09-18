@@ -20,22 +20,22 @@ J = (S("kʰ", "a", "w", "long", "falling"),)
 
 
 def test_agreement_with_thaig2p_corroborates():
-    eng = Engines(g2p=lambda w: J, tone=lambda w: None)
+    eng = Engines(g2p=(lambda w: J,), tone=lambda w: None)
     assert corroborates(J, "ข้าว", eng) is True  # ข้าว: rice
 
 
 def test_tone_disagreement_is_settled_by_the_tone_engine_on_a_monosyllable():
     g2p = (S("kʰ", "a", "w", "long", "low"),)
-    eng = Engines(g2p=lambda w: g2p, tone=lambda w: "falling")
+    eng = Engines(g2p=(lambda w: g2p,), tone=lambda w: "falling")
     assert corroborates(J, "ข้าว", eng) is True
-    eng2 = Engines(g2p=lambda w: g2p, tone=lambda w: "low")
+    eng2 = Engines(g2p=(lambda w: g2p,), tone=lambda w: "low")
     assert corroborates(J, "ข้าว", eng2) is False
 
 
 def test_segment_disagreement_or_no_g2p_answer_leaves_it_disputed():
     other = (S("k", "a", "w", "long", "falling"),)
-    assert corroborates(J, "ข้าว", Engines(g2p=lambda w: other, tone=lambda w: "falling")) is False
-    assert corroborates(J, "ข้าว", Engines(g2p=lambda w: None, tone=lambda w: "falling")) is False
+    assert corroborates(J, "ข้าว", Engines(g2p=(lambda w: other,), tone=lambda w: "falling")) is False
+    assert corroborates(J, "ข้าว", Engines(g2p=(lambda w: None,), tone=lambda w: "falling")) is False
 
 
 def test_syllables_from_verdict_builds_entities():
@@ -55,7 +55,7 @@ def test_default_engines_g2p_returns_a_syllable_for_a_real_word():
     from thai_syllabus.phonology import default_engines
     try:
         engines = default_engines()
-        syls = engines.g2p("ข้าว")  # ข้าว: rice
+        syls = engines.g2p[0]("ข้าว")  # ข้าว: rice
     except Exception as e:  # pragma: no cover - model/deps absent in CI
         pytest.skip(f"thaig2p unavailable: {e}")
     if syls is None:
@@ -101,7 +101,7 @@ def test_default_engines_builds_the_engines_once(monkeypatch, real_default_engin
 # --- engines_pronunciation: the adoption pass's seed (spec 3 r40 §5) -------
 
 def _engines(g2p_result, tone_result="mid"):
-    return Engines(g2p=lambda thai: g2p_result, tone=lambda thai: tone_result)
+    return Engines(g2p=(lambda thai: g2p_result,), tone=lambda thai: tone_result)
 
 
 def test_a_monosyllable_the_tone_engine_agrees_with_is_engines_agree():
@@ -138,7 +138,7 @@ def _token_engines(readings: dict, tone_result="mid"):
     """g2p keyed by the exact string asked: `readings[thai]`, None for any
     thai not in the map -- so a phrase-level miss and a per-token hit are
     both under the caller's control."""
-    return Engines(g2p=lambda thai: readings.get(thai), tone=lambda thai: tone_result)
+    return Engines(g2p=(lambda thai: readings.get(thai),), tone=lambda thai: tone_result)
 
 
 def test_a_phrase_no_engine_reads_whole_is_read_token_by_token_and_concatenated():
@@ -228,3 +228,91 @@ def test_a_judge_verdict_is_normalized_on_the_way_in():
                         "tone": "high"}]})
     assert got == (Syllable(segments=("pʰ", "a", ""), vowel_length="short",
                             tone="high"),)
+
+
+# --- two segmental engines (design 2026-09-18 §1-§3) ----------------------
+# Evidence: on the live deck 78 of 140 stuck judge verdicts corroborate
+# against tltk and not thaig2p, and the run logged "141 of 141 verdicts not
+# corroborated by an engine" on three consecutive cycles before this.
+
+def _two(first, second, tone_result="mid"):
+    return Engines(g2p=(lambda thai: first, lambda thai: second),
+                   tone=lambda thai: tone_result)
+
+
+def test_a_verdict_the_second_engine_agrees_with_is_corroborated():
+    judge = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
+    wrong = (Syllable(segments=("pʰ", "a", ""), vowel_length="short", tone="high"),)
+    assert corroborates(judge, "ภาพ", _two(wrong, judge)) is True
+
+
+def test_a_verdict_no_engine_agrees_with_is_not_corroborated():
+    judge = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
+    wrong = (Syllable(segments=("pʰ", "a", ""), vowel_length="short", tone="high"),)
+    assert corroborates(judge, "ภาพ", _two(wrong, wrong)) is False
+
+
+def test_two_engines_agreeing_is_engines_agree_without_the_judge():
+    """A multi-syllable form could never be engines_agree before: the rule
+    tone engine settles one syllable only."""
+    two = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),
+           Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
+    got = engines_pronunciation("ภาพวาด", _two(two, two))
+    assert got == Pronunciation(syllables=two, corroboration="engines_agree")
+
+
+def test_engines_disagreeing_stays_disputed_for_the_judge():
+    a = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
+    b = (Syllable(segments=("pʰ", "a", ""), vowel_length="short", tone="high"),)
+    got = engines_pronunciation("ภาพ", _two(a, b, tone_result="rising"))
+    assert got == Pronunciation(syllables=a, corroboration="disputed")
+
+
+def test_the_first_engines_reading_is_the_one_written_on_disagreement():
+    a = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
+    b = (Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"),)
+    assert engines_pronunciation("ภาพ", _two(a, b, "rising")).syllables == a
+
+
+def test_a_degenerate_reading_does_not_count_as_agreement():
+    """Both engines looping the same way must not become engines_agree."""
+    loop = tuple(Syllable(segments=("w", "a", ""), vowel_length="long", tone="mid")
+                 for _ in range(11))
+    assert engines_pronunciation("ภาพวาด", _two(loop, loop)) is None
+
+
+def test_the_second_engine_alone_still_reads_a_word_the_first_cannot():
+    one = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
+    got = engines_pronunciation("ภาพ", _two(None, one, tone_result="rising"))
+    assert got == Pronunciation(syllables=one, corroboration="disputed")
+
+
+def test_a_single_engines_degenerate_reading_does_not_corroborate_even_a_matching_verdict():
+    """`readings()` drops a degenerate reading before `corroborates` ever
+    compares it -- a behaviour change from before this task, when
+    `corroborates` called `engines.g2p(thai)` directly and never consulted
+    `is_degenerate`: a judge verdict that happened to match thaig2p's own
+    decoder loop used to corroborate. It no longer does, for a
+    single-engine `Engines` exactly as for a multi-engine one -- the
+    change can only leave a word `disputed`, never wrongly corroborate
+    one, but it IS a change, and this pins it."""
+    loop = tuple(Syllable(segments=("w", "a", ""), vowel_length="long", tone="mid")
+                 for _ in range(3))
+    single = Engines(g2p=(lambda thai: loop,), tone=lambda thai: "mid")
+    assert corroborates(loop, "ภาพวาด", single) is False
+
+
+def test_a_degenerate_first_engine_does_not_force_engines_agree_with_the_second():
+    """The dangerous mixed case: engine A's reading is degenerate and
+    dropped, leaving engine B as the sole survivor. That must not read as
+    "the surviving engine agreeing with itself" -- `readings[1:]` is empty,
+    so `any(...)` is False and the result falls through to the ordinary
+    single-reading rule, `disputed` here since it is two syllables. This
+    is the exact failure mode ("one engine's say-so treated as
+    corroboration") the whole plan exists to prevent."""
+    loop = tuple(Syllable(segments=("w", "a", ""), vowel_length="long", tone="mid")
+                 for _ in range(11))
+    sound = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),
+             Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
+    got = engines_pronunciation("ภาพวาด", _two(loop, sound, tone_result="rising"))
+    assert got == Pronunciation(syllables=sound, corroboration="disputed")

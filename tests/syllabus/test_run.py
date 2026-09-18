@@ -688,7 +688,7 @@ def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_word
                  (target("rice/receptive", "rice"), target("fish/receptive", "fish")))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
     judged = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="falling"),)
-    ctx.engines = Engines(g2p=lambda w: judged, tone=lambda w: "falling")
+    ctx.engines = Engines(g2p=(lambda w: judged,), tone=lambda w: "falling")
     seen = _spy_on_the_adjudication_ask(monkeypatch)
     r1 = run(ctx, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
@@ -716,7 +716,7 @@ def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
     disputed = word("rice", "ข้าว", "rice", corroboration="disputed")
     root = _deck(tmp_path, (disputed,), (target("rice/receptive", "rice"),))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
-    ctx.engines = Engines(g2p=lambda w: None, tone=lambda w: None)
+    ctx.engines = Engines(g2p=(lambda w: None,), tone=lambda w: None)
     r1 = run(ctx, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
     with caplog.at_level(logging.INFO, logger="thai_syllabus.run"):
@@ -2961,7 +2961,7 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     ctx.adopt_graphemes = True
     ctx.consonants = lambda: (_KO, _NGO)
     one = (syl("k", "a", "", "short", "mid"),)
-    ctx.engines = Engines(g2p=lambda thai: one, tone=lambda thai: "mid")
+    ctx.engines = Engines(g2p=(lambda thai: one,), tone=lambda thai: "mid")
 
     report = run(ctx, budgets={})
 

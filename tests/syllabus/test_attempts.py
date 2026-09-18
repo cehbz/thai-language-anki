@@ -3551,7 +3551,7 @@ def _engines(g2p=None, tone=None):
     """Two fake engines: one monosyllable they agree on unless a test says
     otherwise (thai -> syllables; thai -> tone)."""
     one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
-    return Engines(g2p=g2p or (lambda thai: one), tone=tone or (lambda thai: "mid"))
+    return Engines(g2p=(g2p or (lambda thai: one),), tone=tone or (lambda thai: "mid"))
 
 
 def _reads_normally_except(*unreadable_thai: str):
