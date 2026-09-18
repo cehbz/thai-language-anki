@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 18, proposed 2026-09-17 against principles r5 and architecture
+Revision 19, proposed 2026-09-18 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -54,6 +54,17 @@ Revision log:
   provenance prior and the feedback screen's caption read; providers.yaml
   gains `glyph: {font}`, the Thai font the cell is drawn with. No new
   store. User approval 2026-09-17.
+- r19 2026-09-18: an old-deck IPA string that parses to a degenerate
+  reading (spec 3 r44) is refused at the migration boundary and
+  reported like an unparseable one, rather than written as
+  `curated_exception`. Evidence: eleven of the live deck's seventeen
+  looped pronunciations arrived this way -- migrate labelled every
+  parsed old-deck IPA `curated_exception`, the one corroboration the
+  adjudication pass never revisits, so a decoder loop became the
+  curator's own ruling and nothing could correct it. The label is
+  unchanged for every reading that is not degenerate, so a fresh
+  migration does not block the ~600 sound rows' cards. User approval
+  2026-09-18.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec

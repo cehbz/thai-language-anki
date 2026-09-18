@@ -72,6 +72,7 @@ from .curated import (
 from .entities import Clauses, Pronunciation, Sentence, Syllable, Target, Word
 from .ids import TargetId, WordId
 from .media import Provenance
+from .phonology import is_degenerate
 from .profile import Profile
 from .provider import Provider, Question
 from .store import MediaStore, SyllabusDb
@@ -153,8 +154,20 @@ _PLACEHOLDER_PRON = Pronunciation(
     corroboration="disputed")
 
 
-def _pron_from_ipa(ipa: str) -> Pronunciation:
-    return Pronunciation(syllables=_parse_ipa(ipa), corroboration="curated_exception")
+class DegenerateReadingError(IpaParseError):
+    """An old-deck IPA string that is a neural g2p decoder loop rather than
+    a reading (2026-09-18): eleven of them reached the live deck's
+    words.yaml as `curated_exception`, the one corroboration the
+    adjudication pass never revisits, so nothing could ever correct them.
+    Refused here instead, and reported like any unparseable value."""
+
+
+def _pron_from_ipa(ipa: str, thai: str) -> Pronunciation:
+    syllables = _parse_ipa(ipa)
+    if is_degenerate(syllables, thai):
+        raise DegenerateReadingError(
+            f"degenerate reading: {len(syllables)} syllables for {thai!r}")
+    return Pronunciation(syllables=syllables, corroboration="curated_exception")
 
 
 # --- report ----------------------------------------------------------------
@@ -312,9 +325,10 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
             report.bump(report.curated, "words_without_pronunciation")
             return _PLACEHOLDER_PRON
         try:
-            return _pron_from_ipa(ipa)
+            return _pron_from_ipa(ipa, thai)
         except IpaParseError as e:
-            report.drop(source, identity, f"unparseable ipa {ipa!r}: {e}")
+            kind = "degenerate" if isinstance(e, DegenerateReadingError) else "unparseable"
+            report.drop(source, identity, f"{kind} ipa {ipa!r}: {e}")
             report.bump(report.curated, "words_without_pronunciation")
             return _PLACEHOLDER_PRON
 

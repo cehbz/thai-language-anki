@@ -39,6 +39,47 @@ def corroborates(judge: tuple[Syllable, ...], thai: str, engines: Engines) -> bo
     return engines.tone(thai) == judge[0].tone
 
 
+# --- degenerate readings: the neural g2p's decoder loop --------------------
+
+# ก..ฮ: every Thai letter that can open a syllable. A syllable needs at
+# least one of them, so their count bounds any honest reading's length.
+_CONSONANT_LETTERS = frozenset(chr(c) for c in range(0x0E01, 0x0E2F))
+
+# Two identical syllables in a row are Thai (ๆ repeats a word once --
+# ข้างๆ kʰâːŋ.kʰâːŋ -- and ตุ๊กตุ๊ก túk.túk is spelt with the repeat);
+# three are the decoder emitting the same token until it is cut off.
+_MAX_REPEAT = 2
+
+
+def is_degenerate(syllables: tuple[Syllable, ...], thai: str) -> bool:
+    """Whether a reading is the neural g2p's decoder loop rather than a
+    reading (2026-09-18 evidence: thaig2p reads ภาพวาด, four consonant
+    letters, as eleven syllables "pʰa pʰa wa wa wa wa wa wa wa wa wa", and
+    reads ษอ ฤๅษี as eleven).
+
+    Two independent checks, either of which condemns the reading; on the
+    live deck's 890 words neither fires on a word that is not corrupt:
+
+    - more syllables than `thai` has consonant letters, which no reading
+      can honestly have;
+    - the same syllable three times in a row, which no Thai word has.
+
+    The predicate is shared with migrate, so an old deck's looped IPA is
+    refused at the boundary instead of entering words.yaml as a
+    `curated_exception` the adjudication pass never revisits.
+    """
+    if not syllables:
+        return False
+    if len(syllables) > sum(1 for c in thai if c in _CONSONANT_LETTERS):
+        return True
+    run = 1
+    for earlier, later in zip(syllables, syllables[1:]):
+        run = run + 1 if later == earlier else 1
+        if run > _MAX_REPEAT:
+            return True
+    return False
+
+
 def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     """The two engines' own reading of `thai`, the seed every Word the run
     adopts is written with (spec 3 r40/r43 section 5; design 2026-09-12
@@ -56,13 +97,17 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     a token-wise reading is never engine-agreed, the phrase having failed
     the whole-form ask that `corroborates` itself would still make.
 
+    A reading `is_degenerate` condemns is treated as no reading at all
+    (2026-09-18): the whole-form loop falls through to the token-wise
+    path, and a loop in the combined result is refused too.
+
     None when thaig2p reads nothing and there is no token to fall back on,
-    or when any one token itself reads nothing: a Word is never written
-    with an empty syllable tuple, and the caller reports the row it could
-    not adopt.
+    when any one token itself reads nothing, or when every reading it
+    could build is degenerate: a Word is never written with an empty
+    syllable tuple, and the caller reports the row it could not adopt.
     """
     syllables = engines.g2p(thai)
-    if syllables:
+    if syllables and not is_degenerate(tuple(syllables), thai):
         agrees = len(syllables) == 1 and engines.tone(thai) == syllables[0].tone
         return Pronunciation(syllables=tuple(syllables),
                              corroboration="engines_agree" if agrees else "disputed")
@@ -74,6 +119,8 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
         if not token_syllables:
             return None
         combined.extend(token_syllables)
+    if is_degenerate(tuple(combined), thai):
+        return None
     return Pronunciation(syllables=tuple(combined), corroboration="disputed")
 
 

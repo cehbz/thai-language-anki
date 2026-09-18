@@ -8,7 +8,7 @@ in these tests.
 import pytest
 
 from thai_syllabus.entities import Pronunciation, Syllable
-from thai_syllabus.phonology import (Engines, corroborates, engines_pronunciation,
+from thai_syllabus.phonology import (Engines, corroborates, engines_pronunciation, is_degenerate,
                                      syllables_from_verdict)
 
 
@@ -160,3 +160,60 @@ def test_a_single_token_phrase_the_engine_cannot_read_is_still_no_pronunciation(
     exactly as before this fix."""
     eng = _token_engines({})
     assert engines_pronunciation("ๆ", eng) is None
+
+
+# --- degenerate readings: the neural g2p's decoder loop (2026-09-18) --------
+# Evidence from the live deck: thaig2p reads ภาพวาด as eleven syllables
+# ("pʰa pʰa wa wa wa wa wa wa wa wa wa") and ษอ ฤๅษี as eleven, and
+# migrate wrote eleven such readings into words.yaml as curated_exception,
+# the one label the adjudication pass never revisits.
+
+def _syl(segments, length="short", tone="mid"):
+    return Syllable(segments=segments, vowel_length=length, tone=tone)
+
+
+def test_three_identical_syllables_in_a_row_is_a_decoder_loop():
+    wa = _syl(("w", "a", ""), "long")
+    assert is_degenerate((wa, wa, wa), "ภาพวาด") is True
+
+
+def test_reduplication_of_two_syllables_is_not_degenerate():
+    """ๆ repeats a word exactly once (ข้างๆ kʰâːŋ.kʰâːŋ), and ตุ๊กตุ๊ก
+    túk.túk is spelt with the repeat: two identical syllables are Thai,
+    not a loop."""
+    tuk = _syl(("t", "u", "k"), "short", "high")
+    assert is_degenerate((tuk, tuk), "ตุ๊กตุ๊ก") is False
+
+
+def test_more_syllables_than_the_spelling_has_consonants_is_degenerate():
+    """ภาพวาด is four consonant letters; no reading of it has eleven
+    syllables, since every Thai syllable needs at least one."""
+    wa = _syl(("w", "a", ""), "long")
+    assert is_degenerate(tuple(wa for _ in range(11)), "ภาพวาด") is True
+
+
+def test_a_long_honest_reading_is_not_degenerate():
+    """ออกกำลังกาย: four syllables, eight consonant letters, none repeated
+    three times over."""
+    reading = (_syl(("ʔ", "ɔ", "k"), "long", "low"), _syl(("k", "a", "m")),
+               _syl(("l", "a", "ŋ")), _syl(("k", "a", "j"), "long"))
+    assert is_degenerate(reading, "ออกกำลังกาย") is False
+
+
+def test_a_degenerate_whole_form_reading_is_no_pronunciation_at_all():
+    """The caller then reports the row it could not adopt, exactly as when
+    the engine read nothing (spec 3 r43): a looped reading is not a
+    reading."""
+    wa = _syl(("w", "a", ""), "long")
+    assert engines_pronunciation("ภาพวาด", _engines(tuple(wa for _ in range(11)))) is None
+
+
+def test_a_degenerate_token_wise_reading_is_no_pronunciation_at_all():
+    """ษอ ฤๅษี, adopted 2026-09-17 with eleven syllables: the token-wise
+    fallback concatenates per-token readings, so the loop has to be caught
+    on the combined result too."""
+    si = _syl(("s", "i", ""), "long")
+    eng = _token_engines({"ษอ": (_syl(("s", "ɔ", ""), "long", "rising"),),
+                          "ฤๅษี": tuple(si for _ in range(10))})
+    assert engines_pronunciation("ษอ ฤๅษี", eng) is None
+
