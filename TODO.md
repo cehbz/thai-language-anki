@@ -62,6 +62,20 @@ Still open:
 
 ## Deferred
 
+- **Hire native recordings for what Forvo lacks.** Pair members (up to 122
+  words, one speaker per pair, both members in one session so the pair is
+  same-speaker by construction), the 42 recited names (Forvo will not have
+  the phrases) and the ~290 corroborated words with no Forvo item. One
+  script, each item read in isolation with a pause, one file per speaker,
+  split by silence with the existing ffmpeg wrapper, ingested as `learner`-
+  supplied recordings with speaker sex/age/region recorded (E7 counts
+  known speakers only). Cost, unverified against a live quote: Fiverr
+  Thai voice-over gigs list from $35 base (one seller seen), and a rate
+  guide (votrainer.com, secondary source) puts Fiverr sellers at $5-25
+  per 150 words by level, so a ~450-word script is roughly $35-100 per
+  speaker including an isolated-word/split-file extra; three speakers
+  for diversity ~$100-300. Get two quotes before committing.
+
 - Forvo growth measurement for the ageing interval: re-look up 30 of the
   333 empty migrated lookups after the 22:00 UTC reset and count how
   many gained a recording since 2026-08-29.
@@ -134,6 +148,16 @@ inventories). Next act: the part 2 plan for steps 4 to 7.
 5. Keyword search for vowel signs and tone marks (spec 3).
 6. Pair search (weight-proportional, vocabulary first, recordability
    through Forvo), the retire key, coverage/sound-stage (spec 3, spec 5).
+   Ruling 2026-09-18: TTS renditions are allowed for pairs, one voice
+   across both members (`_tts_rendition`), `rendition/synthetic` stays
+   warn. Measured on the live deck: of the 61 pairs the weights want, the
+   vocabulary can fill 3 with one Forvo speaker on both members, 28 with
+   any Forvo, 61 with TTS; 453 of the 543 Forvo-covered words have one
+   speaker. Improve later: a native same-speaker rendition replaces a
+   synthetic one when found, and see the hired-recordings item below.
+   Before the search: revert the `vowel_length` three-way split (three
+   rows yield the same pair set three times) and retire
+   `pair/exact-confusion` (re-checks what `MinimalPair.create` refuses).
 7. Principles F6: the recited names are learned as speech.
 
 Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
