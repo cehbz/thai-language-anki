@@ -170,6 +170,91 @@ def _convert(raw: str) -> tuple[Syllable, ...] | None:
         return None
 
 
+# --- tltk's raw output -> Syllable (design 2026-09-18 §4) ------------------
+#
+# Observed output of tltk.nlp.th2ipa (tltk as installed 2026-09-18):
+#
+#     มา        -> 'maː1 <s/>'
+#     ไก่       -> 'kaj2 <s/>'
+#     ข้าว      -> 'kʰaːw3 <s/>'
+#     ช้าง      -> 'cʰaːŋ4 <s/>'
+#     ขาว       -> 'kʰaːw5 <s/>'
+#     ภาพวาด    -> 'pʰaːp3.waːt3 <s/>'
+#     ข้างๆ     -> 'kʰaːŋ3 kʰaːŋ3 <s/>'
+#
+# Unlike thaig2p, a syllable is one compact string with no separators
+# between its phones, so the inventories are matched longest-first.
+
+_TLTK_TONES: dict[str, Tone] = {"1": "mid", "2": "low", "3": "falling",
+                                "4": "high", "5": "rising"}
+
+# tltk's spellings that differ from the deck's segment inventory. Applied
+# longest-first, so cʰ is read before c.
+_TLTK_SUBSTITUTIONS = (("ᴐ", "ɔ"), ("cʰ", "tɕʰ"), ("c", "tɕ"))
+
+_TLTK_MARKUP = re.compile(r"<[^>]*>")
+_TLTK_SYLLABLE_SEP = re.compile(r"[.\s~|]+")
+
+# longest-first so "tɕʰ" wins over "tɕ" and "ɯa" over "ɯ"
+_ONSETS_LONGEST_FIRST = tuple(sorted(_ONSETS, key=len, reverse=True))
+_VOWELS_LONGEST_FIRST = tuple(sorted(_VOWELS, key=len, reverse=True))
+_CODAS_LONGEST_FIRST = tuple(sorted(_CODAS, key=len, reverse=True))
+
+
+def _take(s: str, options: tuple[str, ...]) -> tuple[str | None, str]:
+    for o in options:
+        if s.startswith(o):
+            return o, s[len(o):]
+    return None, s
+
+
+def _convert_tltk_syllable(group: str) -> Syllable:
+    tone = _TLTK_TONES.get(group[-1:])
+    if tone is None:
+        raise _ConvertError(f"no tone digit in {group!r}")
+    s = group[:-1]
+    for old, new in _TLTK_SUBSTITUTIONS:
+        s = s.replace(old, new)
+
+    onset, s = _take(s, _ONSETS_LONGEST_FIRST)
+    if onset is None:
+        raise _ConvertError(f"unknown onset in {group!r}")
+    # A Thai initial cluster (stop/fricative + r/l/w) is one onset, the
+    # same merge _convert makes for thaig2p -- but only when a vowel
+    # follows, so the w of kʰaːw stays a coda.
+    if s[:1] in _CLUSTER_SEMIVOWELS and _take(s[1:], _VOWELS_LONGEST_FIRST)[0] is not None:
+        onset, s = onset + s[0], s[1:]
+
+    vowel, s = _take(s, _VOWELS_LONGEST_FIRST)
+    if vowel is None:
+        raise _ConvertError(f"unknown vowel in {group!r}")
+    length: VowelLength = "long" if s.startswith(_LONG_MARK) else "short"
+    s = s.removeprefix(_LONG_MARK)
+    # tltk writes the diphthongs with the length mark inside: iːa, ɯːa,
+    # uːa. The deck spells them ia/ɯa/ua and calls them short.
+    if s.startswith("a") and vowel in _DIPHTHONG_HEADS:
+        vowel, s, length = vowel + "a", s[1:], "short"
+
+    coda, s = _take(s, _CODAS_LONGEST_FIRST)
+    if s:
+        raise _ConvertError(f"trailing {s!r} in {group!r}")
+    return Syllable(segments=(onset, vowel, coda or ""),
+                    vowel_length=length, tone=tone)
+
+
+def _convert_tltk(raw: str) -> tuple[Syllable, ...] | None:
+    """Convert tltk's raw th2ipa string to Syllables. Never raises:
+    returns None for anything unmappable."""
+    cleaned = _TLTK_MARKUP.sub(" ", raw).strip()
+    groups = [g for g in _TLTK_SYLLABLE_SEP.split(cleaned) if g]
+    if not groups:
+        return None
+    try:
+        return tuple(_convert_tltk_syllable(g) for g in groups)
+    except _ConvertError:
+        return None
+
+
 class Thaig2p:
     """pythainlp's thaig2p as an `Engines.g2p` callable. The pythainlp
     import (which pulls torch) happens when one is constructed, not at

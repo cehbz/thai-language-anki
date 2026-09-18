@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from thai_syllabus.engines import (Thaig2p, _convert, rule_tone, tone_of)
+from thai_syllabus.engines import (Thaig2p, _convert, _convert_tltk,
+                                    rule_tone, tone_of)
 from thai_syllabus.entities import Syllable
 
 
@@ -307,3 +308,64 @@ def test_g2p_matches_the_legacy_g2p_over_the_live_deck():
           f"{len(newly_converted)}")
     print(f"still None on both engines: {len(still_none)}")
     print(f"still-None Thai forms ({len(still_none)}): {still_none}")
+
+
+# --- tltk's raw output -> Syllable (design 2026-09-18 §4) ------------------
+# Observed from tltk.nlp.th2ipa as installed 2026-09-18. Digit tones were
+# verified against nine words whose tone is not in doubt (มา ไก่ ข้าว ช้าง
+# ขาว จะ นา น้ำ หมา).
+
+def test_a_monosyllable_with_its_digit_tone():
+    assert _convert_tltk("maː1 <s/>") == (
+        Syllable(segments=("m", "a", ""), vowel_length="long", tone="mid"),)
+
+
+def test_every_digit_maps_to_its_tone():
+    got = {}
+    for raw, thai in (("maː1", "มา"), ("kaj2", "ไก่"), ("kʰaːw3", "ข้าว"),
+                      ("cʰaːŋ4", "ช้าง"), ("kʰaːw5", "ขาว")):
+        got[thai] = _convert_tltk(raw)[0].tone
+    assert got == {"มา": "mid", "ไก่": "low", "ข้าว": "falling",
+                   "ช้าง": "high", "ขาว": "rising"}
+
+
+def test_syllables_split_on_dot_space_tilde_and_bar():
+    for raw in ("pʰaːp3.waːt3", "pʰaːp3 waːt3", "pʰaːp3~waːt3", "pʰaːp3|waːt3"):
+        assert _convert_tltk(raw) == (
+            Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),
+            Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
+
+
+def test_tltks_open_o_and_affricates_become_the_decks_spelling():
+    """tltk writes ᴐ (U+1D10) for the deck's ɔ, and c/cʰ for tɕ/tɕʰ."""
+    assert _convert_tltk("ʔᴐːk2")[0].segments == ("ʔ", "ɔ", "k")
+    assert _convert_tltk("cʰaː4")[0].segments == ("tɕʰ", "a", "")
+    assert _convert_tltk("ca2")[0].segments == ("tɕ", "a", "")
+
+
+def test_a_diphthong_is_written_with_the_length_mark_inside():
+    """เมีย is 'miːa1': the deck spells that vowel 'ia', short."""
+    assert _convert_tltk("miːa1") == (
+        Syllable(segments=("m", "ia", ""), vowel_length="short", tone="mid"),)
+    assert _convert_tltk("sɯːa5")[0].segments == ("s", "ɯa", "")
+    assert _convert_tltk("wuːa1")[0].segments == ("w", "ua", "")
+
+
+def test_a_consonant_cluster_is_one_onset():
+    """Without this merge 87 of the live deck's 890 words fail to convert:
+    the onset parse takes 'p' and then reads 'l' as the vowel."""
+    assert _convert_tltk("plaː1")[0].segments == ("pl", "a", "")
+    assert _convert_tltk("kwaːj1")[0].segments == ("kw", "a", "j")
+    assert _convert_tltk("kra2")[0].segments == ("kr", "a", "")
+
+
+def test_a_glide_coda_is_a_coda_not_a_cluster():
+    """The merge must not fire when no vowel follows the r/l/w."""
+    assert _convert_tltk("kʰaːw5")[0].segments == ("kʰ", "a", "w")
+
+
+def test_unmappable_input_is_no_reading_rather_than_a_raise():
+    assert _convert_tltk("") is None
+    assert _convert_tltk("<s/>") is None
+    assert _convert_tltk("maː") is None          # no tone digit
+    assert _convert_tltk("zzz9") is None         # unknown everything
