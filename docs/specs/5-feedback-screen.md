@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 12, proposed 2026-09-17 against principles r5 and architecture
+Revision 13, proposed 2026-09-18 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -77,6 +77,18 @@ Revision log:
   composed from its own artifacts is a third kind of evidence beside a
   photograph and a generated image, and the learner rating it should know
   which one it is. User approval 2026-09-17.
+- r13 2026-09-18: with no current artifact, "none of these" writes one
+  veto per candidate the screen showed, and a need whose every candidate
+  is vetoed is not asked as a rate question; every candidate list the
+  learner looks over is judge-passed first, then newest -- a rate
+  question's thumbnails in full, a direction request's best candidates
+  as each source's newest, at most five.
+  Evidence: ออ อ่าง's rate question (its one candidate a judge-failed chart
+  cell) was answered "none of these" three times and came back each time,
+  the veto naming no sha and changing nothing; หนู's direction request
+  offered the first five of 50+ candidates, the oldest corpus rejects,
+  and never the illustration drawn to the learner's own direction. User
+  approval 2026-09-18.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -128,13 +140,19 @@ stops; unanswered questions stay queued. Question kinds:
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
    3 acceptable / 4 good; optional one-line note (the Direction). With
    no current artifact only 1 (none of these) and 2 (use the picked
-   candidate) are offered, and the block says so (r6). Presentation at
+   candidate) are offered, and the block says so (r6); none of these
+   rejects every candidate shown, one veto row per sha, and a need whose
+   every candidate is vetoed is no longer a rate question; the rejected
+   thumbnails are ordered judge-passed first, then newest (r13).
+   Presentation at
    card size for the current artifact — the presentation is part of the
    question (F4, F9). A need with no candidate on record is not a rate
    question: while it has a source left it is the machine's; exhausted,
    it is kind 2 (r7).
 2. **Direction request** (exhausted subject): what was tried — phrases,
-   sources, best candidates, judge reasons — plus two actions: type a
+   sources, best candidates (judge-passed first, then each source's
+   newest, newest first, five at most; r13), judge reasons — plus two
+   actions: type a
    direction, or supply an artifact (file path or URL; a URL is fetched
    by kind, imgfetch for pictures and audiofetch for recordings; the
    bytes go through the media ingest path, normalized, with a

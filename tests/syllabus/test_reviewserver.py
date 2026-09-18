@@ -682,10 +682,15 @@ def test_build_queue_direction_candidates_carry_judge_verdicts(derivations, db, 
     with the judge's own verdict (derivations.judge_verdict) -- pass and
     its evidence (the judge's reason), or None when the judge never spoke.
     """
-    _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": "sA"}, {"sha": "sB"}])
+    # One candidate per source (r13 offers each source's newest).
+    _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": "sA"}])
+    _provide(db, w1.id, "picture", backend="pexels", items=[{"sha": "sB"}])
+    db.add_media(sha="sA", kind="picture", ext="jpg", source="openverse", origin="https://x/a",
+                 licence="by", acquired=date(2026, 9, 13))
+    db.add_media(sha="sB", kind="picture", ext="jpg", source="pexels", origin="https://x/b",
+                 licence="pexels", acquired=date(2026, 9, 13))
     _judge(db, w1.id, "picture", "sA", False, evidence="no rice visible")
     _provide(db, w1.id, "picture", backend="wikimedia", items=[])
-    _provide(db, w1.id, "picture", backend="pexels", items=[])
     _provide(db, w1.id, "picture", backend="brave", items=[])
     _provide(db, w1.id, "picture", backend="illustrator", items=[])
     items = rs.build_queue(derivations, budget=50)
@@ -884,6 +889,80 @@ def test_append_answer_unacceptable_none_with_no_artifact_named_records_none(db,
     row = db.assessments_of(w1.id)[0]
     assert row.question["artifact_sha"] is None
     assert row.key == "learner:-:picture-for-word"
+
+
+def test_append_answer_none_of_these_vetoes_every_shown_candidate(db, w1):
+    """spec 5 r13: with no current artifact, "1 none of these" rejects each
+    candidate the screen showed -- one veto row per sha, so the machine
+    stops re-nominating them -- instead of a veto naming nothing, which
+    changed no state and re-asked the same question.
+    """
+    result = rs.append_answer(db, {"subject": w1.id, "kind": "picture", "action": 1,
+                                   "rejected_shas": ["sA", "sB"]})
+    assert result["ok"] is True
+    assert result["vetoed"] == ["sA", "sB"]
+    rows = db.assessments_of(w1.id)
+    assert {r.question["artifact_sha"] for r in rows} == {"sA", "sB"}
+    assert all(r.answer["value"] == "unacceptable-none" for r in rows)
+
+
+def test_build_queue_skips_a_rate_question_whose_candidates_are_all_vetoed(
+        derivations, db, w1):
+    """spec 5 r13: once the learner has said none of these, there is
+    nothing left to rate; the need is the machine's again (or a direction
+    request once exhausted), not the same question a fourth time.
+    """
+    _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": "sA"}])
+    _judge(db, w1.id, "picture", "sA", False, evidence="no rice")
+    _learner(db, w1.id, "picture", "sA", "unacceptable-none")
+    items = rs.build_queue(derivations, budget=50)
+    assert not [i for i in items if i["type"] == "rate" and i["subject"] == w1.id]
+
+
+def test_a_rate_questions_thumbnails_are_judge_passed_first_then_newest(derivations, db, w1):
+    """spec 5 r13: the thumbnails under a rate question are ordered
+    judge-passed first (newest first), then the rest newest first -- a
+    passed candidate the prior outranked is the one worth a second look.
+    """
+    for i in range(1, 5):
+        _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": f"s{i}"}])
+    _judge(db, w1.id, "picture", "s1", True)      # current-best: the lowest passing sha
+    _judge(db, w1.id, "picture", "s2", True)
+    _judge(db, w1.id, "picture", "s4", False, evidence="no")
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id)
+    assert rated["current"]["sha"] == "s1"
+    assert [a["sha"] for a in rated["rejected"]] == ["s2", "s4", "s3"]
+
+
+def test_build_queue_direction_candidates_are_passed_then_newest_per_source(
+        derivations, db, w1):
+    """spec 5 section 1 kind 2 says "best candidates" (r13): judge-passed
+    first (none here: a passed candidate still on offer makes the need a
+    rate question, not a direction request), then each source's newest,
+    newest first, five at most -- never the first five ever found, which
+    on a long-searched word are one corpus's oldest rejects and hide the
+    one candidate the learner's own direction produced.
+    """
+    for i in range(1, 6):
+        _provide(db, w1.id, "picture", backend="openverse", items=[{"sha": f"s{i}"}])
+    _provide(db, w1.id, "picture", backend="illustrator", items=[{"sha": "s6"}])
+    _provide(db, w1.id, "picture", backend="pexels", items=[{"sha": "s7"}])
+    for i in range(1, 6):
+        db.add_media(sha=f"s{i}", kind="picture", ext="jpg", source="openverse",
+                     origin="https://x/a", licence="by", acquired=date(2026, 9, 13))
+    db.add_media(sha="s6", kind="picture", ext="png", source="generated",
+                 origin="gemini-3.1-flash-image", licence="generated", acquired=date(2026, 9, 13))
+    db.add_media(sha="s7", kind="picture", ext="jpg", source="pexels", origin="https://x/b",
+                 licence="pexels", acquired=date(2026, 9, 13))
+    _judge(db, w1.id, "picture", "s6", False, evidence="a mouse, not the pronoun")
+    for backend in ("wikimedia", "brave"):
+        _provide(db, w1.id, "picture", backend=backend, items=[])
+    items = rs.build_queue(derivations, budget=50)
+    direction = next(i for i in items if i["type"] == "direction" and i["subject"] == w1.id)
+    assert [c["sha"] for c in direction["candidates"]] == ["s7", "s6", "s5"]
+    assert direction["candidates"][1]["verdict"] == {"passed": False,
+                                                    "evidence": "a mouse, not the pronoun"}
 
 
 def test_append_answer_carries_optional_note(db, w1):

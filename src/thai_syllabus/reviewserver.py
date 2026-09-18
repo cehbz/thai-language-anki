@@ -48,6 +48,7 @@ from .derivations import (
     deciding_verdict,
     exhausted,
     judge_verdict,
+    vetoed,
     learner_ranks,
     queue,
     reasks,
@@ -249,16 +250,37 @@ def _artifact(d: "Derivations", sha: str | None) -> dict[str, Any] | None:
             "glyph": prov.get("source") == "glyph"}
 
 
+def _best_first(d: "Derivations", subject: str, kind: str, shas: Sequence[str], *,
+                per_source: bool = False) -> list[tuple[str, JudgeVerdict | None]]:
+    """Spec 5 r13's order for a list of candidates the learner looks
+    over: judge-passed first, newest first within each group; then the
+    rest newest first -- or, with `per_source`, each media source's
+    newest only (a direction request's five slots must not all go to
+    one corpus's rejects). Each sha with its fresh judge verdict.
+    """
+    newest_first = list(reversed(list(shas)))
+    verdicts = {sha: judge_verdict(d.db, subject, kind, sha, current_rubric=d.current_rubric)
+                for sha in newest_first}
+    passed = [sha for sha in newest_first if verdicts[sha] is not None and verdicts[sha].passed]
+    rest = [sha for sha in newest_first if sha not in passed]
+    if per_source:
+        newest_per_source: dict[str | None, str] = {}
+        for sha in rest:
+            prov = d.db.media_provenance(sha)
+            newest_per_source.setdefault(prov.get("source") if prov else None, sha)
+        rest = list(newest_per_source.values())
+    return [(sha, verdicts[sha]) for sha in passed + rest]
+
+
 def _rejected(d: "Derivations", subject: str, kind: str, rows: Sequence[Answer],
              best_sha: str | None) -> list[dict]:
-    """Every candidate but `best_sha`, each carrying the verdict that
-    rejected it (spec 5 r7 section 1) -- the same deciding-backend rule
-    current_best ranks by.
+    """Every candidate but `best_sha`, judge-passed first then newest
+    (r13), each carrying the verdict that rejected it (spec 5 r7 section
+    1) -- the same deciding-backend rule current_best ranks by.
     """
     out = []
-    for sha in candidate_shas(rows):
-        if sha == best_sha:
-            continue
+    shas = [sha for sha in candidate_shas(rows) if sha != best_sha]
+    for sha, _ in _best_first(d, subject, kind, shas):
         art = _artifact(d, sha)
         art["verdict"] = _verdict_line(
             deciding_verdict(d.db, subject, kind, sha, current_rubric=d.current_rubric))
@@ -322,14 +344,17 @@ def _tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
 
 def _tried_candidates(d: "Derivations", subject: str, kind: str,
                       rows: Sequence[Answer]) -> list[dict[str, Any]]:
-    """The first 5 candidates those asks produced, each with the judge's
-    verdict on it under the need's fit role (pass/fail and the judge's
-    evidence), or None where the judge has not spoken.
+    """Spec 5 section 1 kind 2's "best candidates" (r13): judge-passed
+    first, then each source's newest, newest first, five at most; each
+    with the judge's verdict on it under the need's fit role (pass/fail
+    and the judge's evidence), or None where the judge has not spoken.
+    The first-found five (pre-r13) were one corpus's oldest rejects on a
+    long-searched word, and the one candidate the learner's own direction
+    produced was never shown.
     """
     candidates: list[dict[str, Any]] = []
-    for artifact_sha in candidate_shas(rows)[:5]:
-        verdict = judge_verdict(d.db, subject, kind, artifact_sha,
-                                current_rubric=d.current_rubric)
+    for artifact_sha, verdict in _best_first(d, subject, kind, candidate_shas(rows),
+                                             per_source=True)[:5]:
         art = _artifact(d, artifact_sha)
         art["verdict"] = ({"passed": verdict.passed, "evidence": verdict.evidence}
                           if verdict is not None else None)
@@ -439,10 +464,13 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     items: list[dict[str, Any]] = []
     for e in entries:
         rows = rows_for(d.db, e.subject, e.kind)
-        if not candidate_shas(rows):
-            # Spec 5 r7 section 1: nothing to rate. The need reaches the
-            # learner only as a direction request once its sources are
-            # exhausted (below); with a source left it is the machine's.
+        role = role_for(e.kind, e.subject_kind)
+        if all(vetoed(d.db, e.subject, role, sha) for sha in candidate_shas(rows)):
+            # Spec 5 r7 section 1: nothing to rate -- no candidate on
+            # record, or (r13) every one of them already rejected by the
+            # learner's "none of these". The need reaches the learner only
+            # as a direction request once its sources are exhausted
+            # (below); with a source left it is the machine's.
             continue
         items.append(_rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
                                     rank=e.rank, attempts=e.attempts,
@@ -732,6 +760,22 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
     # LEARNER_RANK, and its ValueError is the 400 this handler already
     # answers with -- a second check here would be the same refusal twice.
     rating = _rating_of(payload)
+    rejected_shas = payload.get("rejected_shas") or []
+    if rating == "unacceptable-none" and artifact_sha is None and rejected_shas:
+        # Spec 5 r13: with no current artifact, "none of these" rejects
+        # each candidate the screen showed -- one veto row per sha, the
+        # shas the client itself rendered (never recomputed here, the
+        # same trust _validated_shown gives `shown`). A veto naming
+        # nothing changed no state and re-asked the same question.
+        if not all(isinstance(sha_, str) and sha_ for sha_ in rejected_shas):
+            raise ValueError("rejected_shas must be a list of artifact shas")
+        ts = 0
+        for sha_ in rejected_shas:
+            ts = append_rating(record, subject=subject, role=role, rating=rating,
+                               artifact_sha=sha_, subject_kind=subject_kind,
+                               note=payload.get("note") or None)
+        return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": None,
+                "vetoed": list(rejected_shas)}
     ts = append_rating(record, subject=subject, role=role, rating=rating,
                        artifact_sha=artifact_sha, subject_kind=subject_kind,
                        note=payload.get("note") or None)
@@ -1882,6 +1926,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       return;
     }
     if (q.current) { payload.artifact_sha = q.current.sha; }
+    else if (action === 1 && q.rejected && q.rejected.length) {
+      // Spec 5 r13: none of these = every thumbnail shown is rejected.
+      payload.rejected_shas = q.rejected.map(function (art) { return art.sha; });
+    }
     finishAnswer(payload);
   }
 
