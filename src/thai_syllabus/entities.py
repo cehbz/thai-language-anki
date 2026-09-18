@@ -54,6 +54,21 @@ class Syllable:
         return self.segments[2]
 
 
+def without_glottal_coda(syllables: tuple["Syllable", ...]) -> tuple["Syllable", ...]:
+    """The deck's one convention for a dead open syllable (design
+    2026-09-18 §5): no coda. thaig2p writes a ʔ there and tltk does not,
+    so without this the two engines could never agree on จะ, พระ or any
+    of the 19 rows the live deck stores with one -- and agreement is what
+    corroborates. ʔ as an *onset* is a real segment (อา is ʔaː) and is
+    untouched.
+    """
+    return tuple(
+        Syllable(segments=(s.segments[0], s.segments[1], ""),
+                 vowel_length=s.vowel_length, tone=s.tone)
+        if s.segments[2] == "ʔ" else s
+        for s in syllables)
+
+
 @dataclass(frozen=True)
 class Pronunciation:
     syllables: tuple[Syllable, ...]

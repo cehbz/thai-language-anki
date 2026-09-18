@@ -8,7 +8,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from .entities import Pronunciation, Syllable, Tone
+from .entities import Pronunciation, Syllable, Tone, without_glottal_coda
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,9 @@ class Engines:
 
 
 def syllables_from_verdict(value: Mapping) -> tuple[Syllable, ...]:
-    return tuple(Syllable(segments=tuple(s["segments"]), vowel_length=s["vowel_length"],
-                          tone=s["tone"]) for s in value["syllables"])
+    return without_glottal_coda(tuple(
+        Syllable(segments=tuple(s["segments"]), vowel_length=s["vowel_length"],
+                 tone=s["tone"]) for s in value["syllables"]))
 
 
 def _same_segments(a: Syllable, b: Syllable) -> bool:

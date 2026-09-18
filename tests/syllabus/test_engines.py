@@ -23,7 +23,7 @@ import pytest
 
 from thai_syllabus.engines import (Thaig2p, Tltk, _convert, _convert_tltk,
                                     rule_tone, tone_of)
-from thai_syllabus.entities import Syllable
+from thai_syllabus.entities import Syllable, without_glottal_coda
 
 
 def S(onset, vowel, coda, length, tone):
@@ -73,10 +73,12 @@ def test_convert_strips_affricate_tie_bar():
     assert syl.onset == "tɕʰ" and syl.coda == "ŋ" and syl.tone == "high"
 
 
-def test_convert_glottal_onset_and_coda():
-    # จะ (will) -> unaspirated affricate onset, explicit glottal-stop coda
-    syl = _convert("t͡ɕ a ʔ ˨˩")[0]
-    assert syl.onset == "tɕ" and syl.coda == "ʔ" and syl.tone == "low"
+def test_convert_glottal_coda_is_normalized_away():
+    # จะ (will) -> unaspirated affricate onset; thaig2p's explicit
+    # glottal-stop coda is normalized away (design 2026-09-18 §5,
+    # without_glottal_coda) so a dead open syllable matches tltk, which
+    # never writes one.
+    assert _convert("t͡ɕ a ʔ ˨˩")[0] == S("tɕ", "a", "", "short", "low")
 
 
 def test_convert_vowel_initial_syllable():
@@ -197,7 +199,6 @@ RAW_FIXTURES = [
     "s aː ˩˩˦ . m aː t̚ ˥˩",
     "m i a̯ ˧",
     "t͡ɕʰ aː ŋ ˦˥",
-    "t͡ɕ a ʔ ˨˩",
     "ʔ aː ˧",
     "k l uə ˧",
     "",
@@ -252,6 +253,28 @@ def test_cluster_onsets_convert_where_the_legacy_declines(raw):
     assert _convert(raw) is not None
 
 
+# The legacy converter still writes a ʔ coda on a dead open syllable
+# (จะ); the ported converter normalizes it away (design 2026-09-18 §5,
+# without_glottal_coda) so thaig2p's reading agrees with tltk's, which
+# never writes one. Also a deliberate divergence, not a regression, so it
+# gets its own test rather than the parity fixture list above.
+GLOTTAL_CODA_FIXTURES = [
+    "t͡ɕ a ʔ ˨˩",   # จะ (will)
+]
+
+
+@pytest.mark.parametrize("raw", GLOTTAL_CODA_FIXTURES)
+def test_glottal_coda_diverges_from_the_legacy_converter_on_purpose(raw):
+    """Full parity, modulo exactly the one stated divergence: the ported
+    converter must equal the legacy converter's reading with the glottal
+    coda normalized away, not merely agree that a coda was dropped -- a
+    regression in จะ's vowel, length or tone must still be caught here."""
+    from thai_deck_eval.lang.pythainlp_adapter import _convert as legacy_convert
+    legacy = _legacy_shape(legacy_convert(raw))
+    assert legacy[0].coda == "ʔ"
+    assert _convert(raw) == without_glottal_coda(legacy)
+
+
 @pytest.mark.parametrize("word", TONE_WORDS)
 def test_tone_engine_matches_the_legacy_tone_engine(word):
     from thai_deck_eval.lang.tone import analyze_syllable
@@ -293,7 +316,25 @@ def test_g2p_matches_the_legacy_g2p_over_the_live_deck():
 
     both = [(w, p, l) for w, p, l in results if l is not None]
     mismatches = [(w, p, l) for w, p, l in both if p != l]
-    assert not mismatches, mismatches[:5]
+    # The glottal-coda convention (design 2026-09-18 §5): the legacy
+    # converter still writes a ʔ coda on a dead open syllable; the ported
+    # converter normalizes it away (without_glottal_coda) so thaig2p
+    # agrees with tltk. A word whose only difference from the legacy
+    # reading is that normalization is a deliberate divergence, not a
+    # regression -- the live deck has exactly 19 such syllables.
+    glottal_coda_only = [(w, p, l) for w, p, l in mismatches
+                         if p == without_glottal_coda(l)]
+    real_mismatches = [(w, p, l) for w, p, l in mismatches
+                       if p != without_glottal_coda(l)]
+    assert not real_mismatches, real_mismatches[:5]
+    # Pins the count so this bucket can't silently drift or collapse to
+    # zero (e.g. if without_glottal_coda were dropped from _convert, every
+    # one of these 19 would become a real mismatch instead and the
+    # assertion above would catch it -- but only if this one also fails
+    # when the bucket empties out from underneath it).
+    assert len(glottal_coda_only) == 19, (
+        f"expected exactly 19 dead-open-syllable divergences on the live "
+        f"deck, got {len(glottal_coda_only)}: {[w for w, _, _ in glottal_coda_only]}")
 
     legacy_none = [(w, p) for w, p, l in results if l is None]
     newly_converted = [w for w, p in legacy_none if p is not None]
@@ -304,6 +345,7 @@ def test_g2p_matches_the_legacy_g2p_over_the_live_deck():
     assert "ควาย" in newly_converted  # water buffalo
 
     print(f"\nconverted by both (legacy result matched): {len(both)}")
+    print(f"glottal-coda-only divergences (expected): {len(glottal_coda_only)}")
     print(f"newly converted by the ported engine (legacy None): "
           f"{len(newly_converted)}")
     print(f"still None on both engines: {len(still_none)}")
@@ -398,3 +440,9 @@ def test_tltk_never_raises_on_a_form_it_cannot_read():
             isinstance(result, tuple)
             and all(isinstance(s, Syllable) for s in result))
     assert tltk("") is None
+
+
+def test_thaig2p_and_tltk_agree_once_the_glottal_coda_is_normalized():
+    """thaig2p emits the coda, tltk does not; both must land on the same
+    Syllable or no dead open syllable could ever be corroborated."""
+    assert _convert("t͡ɕ a ʔ ˨˩") == _convert_tltk("ca2")

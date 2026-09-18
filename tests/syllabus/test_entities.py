@@ -26,6 +26,7 @@ from thai_syllabus.entities import (
     is_corroborated,
     pronunciation_diff,
     render,
+    without_glottal_coda,
 )
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, TargetId, WordId
@@ -329,3 +330,33 @@ def test_clauses_from_json_refuses_a_repeat_pair_whose_second_item_is_not_the_re
     with pytest.raises(ValueError) as exc:
         clauses_from_json([[["run", "not-the-mark"]]])
     assert repr(["run", "not-the-mark"]) in str(exc.value)
+
+
+# --- the glottal coda convention (design 2026-09-18 §5) -------------------
+# thaig2p writes a ʔ coda on a dead open syllable (จะ -> tɕ a ʔ); tltk does
+# not; the live deck stores one in 19 of its 1456 syllables. The engines
+# cannot agree on any such word until one convention is chosen, and 1437
+# of 1456 syllables already follow this one.
+
+def test_a_glottal_coda_is_removed():
+    got = without_glottal_coda(
+        (Syllable(segments=("tɕ", "a", "ʔ"), vowel_length="short", tone="low"),))
+    assert got == (Syllable(segments=("tɕ", "a", ""), vowel_length="short", tone="low"),)
+
+
+def test_a_glottal_onset_is_untouched():
+    """ʔ is a real onset (อา is ʔaː); only the coda position is a convention."""
+    one = Syllable(segments=("ʔ", "a", "m"), vowel_length="short", tone="mid")
+    assert without_glottal_coda((one,)) == (one,)
+
+
+def test_other_codas_are_untouched():
+    one = Syllable(segments=("kʰ", "a", "w"), vowel_length="long", tone="rising")
+    assert without_glottal_coda((one,)) == (one,)
+
+
+def test_every_syllable_of_a_phrase_is_normalized():
+    got = without_glottal_coda(
+        (Syllable(segments=("k", "a", "ʔ"), vowel_length="short", tone="low"),
+         Syllable(segments=("tʰ", "i", "ʔ"), vowel_length="short", tone="high")))
+    assert [s.segments[2] for s in got] == ["", ""]

@@ -60,7 +60,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from .entities import Syllable, Tone, VowelLength
+from .entities import Syllable, Tone, VowelLength, without_glottal_coda
 
 # --- thaig2p's raw output -> Syllable ------------------------------------
 
@@ -165,7 +165,7 @@ def _convert(raw: str) -> tuple[Syllable, ...] | None:
     if not groups:
         return None
     try:
-        return tuple(_convert_syllable(g) for g in groups)
+        return without_glottal_coda(tuple(_convert_syllable(g) for g in groups))
     except _ConvertError:
         return None
 
@@ -250,7 +250,7 @@ def _convert_tltk(raw: str) -> tuple[Syllable, ...] | None:
     if not groups:
         return None
     try:
-        return tuple(_convert_tltk_syllable(g) for g in groups)
+        return without_glottal_coda(tuple(_convert_tltk_syllable(g) for g in groups))
     except _ConvertError:
         return None
 

@@ -217,3 +217,14 @@ def test_a_degenerate_token_wise_reading_is_no_pronunciation_at_all():
                           "ฤๅษี": tuple(si for _ in range(10))})
     assert engines_pronunciation("ษอ ฤๅษี", eng) is None
 
+
+
+def test_a_judge_verdict_is_normalized_on_the_way_in():
+    """syllables_from_verdict is the one funnel a verdict passes through,
+    for comparison in corroborates and for what the adjudication pass
+    writes, so normalizing here covers both (design §5)."""
+    got = syllables_from_verdict(
+        {"syllables": [{"segments": ["pʰ", "a", "ʔ"], "vowel_length": "short",
+                        "tone": "high"}]})
+    assert got == (Syllable(segments=("pʰ", "a", ""), vowel_length="short",
+                            tone="high"),)
