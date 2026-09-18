@@ -316,3 +316,17 @@ def test_a_degenerate_first_engine_does_not_force_engines_agree_with_the_second(
              Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
     got = engines_pronunciation("ภาพวาด", _two(loop, sound, tone_result="rising"))
     assert got == Pronunciation(syllables=sound, corroboration="disputed")
+
+
+@pytest.mark.integration
+def test_default_engines_wires_both_segmental_oracles():
+    from thai_syllabus.phonology import default_engines as real
+    real.cache_clear()
+    try:
+        eng = real()
+        assert len(eng.g2p) == 2
+        # the case the second engine exists for
+        assert len(eng.readings("ภาพวาด")) >= 1
+        assert all(len(r) == 2 for r in eng.readings("ภาพวาด"))
+    finally:
+        real.cache_clear()
