@@ -7,16 +7,22 @@ Three layers:
   * the pure converter/tone cases ported from tests/test_pythainlp_convert.py
     and tests/test_tone.py, restated in the `Syllable` shape;
   * a parity test that runs every one of those fixtures through both the new
-    and the legacy engine and demands equality -- this is what makes the port
-    behaviour-preserving rather than merely plausible (importing
-    thai_deck_eval is fine *here*: the boundary rule covers src/thai_syllabus,
-    not its tests);
-  * an integration-marked parity sweep over the live deck's whole word list.
+    engine and a *frozen recording* of the legacy engine's output, and
+    demands equality -- this is what makes the port behaviour-preserving
+    rather than merely plausible. The legacy package (thai_deck_eval) was
+    deleted 2026-09-18 once the migration off it was complete; its outputs
+    over every fixture these tests use were captured beforehand into
+    tests/syllabus/fixtures/legacy_convert_parity.json (see that file's
+    header for how/when), so the parity check survives the package's
+    removal;
+  * an integration-marked parity sweep over the live deck's whole word list,
+    likewise checked against the frozen recording rather than a live import.
 
 No pythainlp/torch import is triggered by the unit tests: engines.py keeps
 those imports inside Thaig2p.syllables, so the pure functions are importable
 and callable without the "nlp" extra installed.
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -24,6 +30,9 @@ import pytest
 from thai_syllabus.engines import (Thaig2p, Tltk, _convert, _convert_tltk,
                                     rule_tone, tone_of)
 from thai_syllabus.entities import Syllable, without_glottal_coda
+
+_LEGACY_PARITY_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "legacy_convert_parity.json").read_text())
 
 
 def S(onset, vowel, coda, length, tone):
@@ -304,10 +313,20 @@ def _legacy_shape(syls):
                           tone=str(s.tone.value)) for s in syls)
 
 
+def _frozen_shape(recorded):
+    """A frozen fixture record (list of {segments, vowel_length, tone} dicts,
+    or None) into the same Syllable-tuple shape _legacy_shape produces."""
+    if recorded is None:
+        return None
+    return tuple(Syllable(segments=tuple(r["segments"]),
+                          vowel_length=r["vowel_length"],
+                          tone=r["tone"]) for r in recorded)
+
+
 @pytest.mark.parametrize("raw", RAW_FIXTURES)
 def test_converter_matches_the_legacy_converter(raw):
-    from thai_deck_eval.lang.pythainlp_adapter import _convert as legacy_convert
-    assert _convert(raw) == _legacy_shape(legacy_convert(raw))
+    legacy = _frozen_shape(_LEGACY_PARITY_FIXTURE["raw_fixtures"][raw])
+    assert _convert(raw) == legacy
 
 
 # The legacy converter has no cluster-onset support: these fixtures are
@@ -323,8 +342,7 @@ CLUSTER_FIXTURES = [
 
 @pytest.mark.parametrize("raw", CLUSTER_FIXTURES)
 def test_cluster_onsets_convert_where_the_legacy_declines(raw):
-    from thai_deck_eval.lang.pythainlp_adapter import _convert as legacy_convert
-    assert legacy_convert(raw) is None
+    assert _LEGACY_PARITY_FIXTURE["cluster_fixtures"][raw] is None
     assert _convert(raw) is not None
 
 
@@ -344,49 +362,43 @@ def test_glottal_coda_diverges_from_the_legacy_converter_on_purpose(raw):
     converter must equal the legacy converter's reading with the glottal
     coda normalized away, not merely agree that a coda was dropped -- a
     regression in จะ's vowel, length or tone must still be caught here."""
-    from thai_deck_eval.lang.pythainlp_adapter import _convert as legacy_convert
-    legacy = _legacy_shape(legacy_convert(raw))
+    legacy = _frozen_shape(_LEGACY_PARITY_FIXTURE["glottal_coda_fixtures"][raw])
     assert legacy[0].coda == "ʔ"
     assert _convert(raw) == without_glottal_coda(legacy)
 
 
 @pytest.mark.parametrize("word", TONE_WORDS)
 def test_tone_engine_matches_the_legacy_tone_engine(word):
-    from thai_deck_eval.lang.tone import analyze_syllable
-    legacy = analyze_syllable(word)
-    assert rule_tone(word) == (str(legacy.tone.value) if legacy is not None else None)
-
-
-WORDS_YAML = Path.home() / "decks" / "thai-ff" / "curated" / "words.yaml"
+    assert rule_tone(word) == _LEGACY_PARITY_FIXTURE["tone_words"][word]
 
 
 @pytest.mark.integration
 def test_g2p_matches_the_legacy_g2p_over_the_live_deck():
     """Behaviour preservation plus the cluster-onset fix, over every Thai
-    form in the live deck: where the legacy converter returns a result, the
-    ported converter must equal it (the fix must not touch anything the
-    legacy engine already handles). Where the legacy declines (None), the
-    ported converter is now allowed -- and expected -- to convert more,
-    since it supports two-phone initial clusters (pl/kl/kʰw/...) the legacy
-    engine never did; ปลา (fish), กลอง (drum), ควาย (water buffalo) must be
-    among the newly-converted words. Reads the deck read-only; skips when it
-    -- or pythainlp/torch -- isn't there.
+    form in the deck as it stood when tests/syllabus/fixtures/
+    legacy_convert_parity.json was recorded: where the legacy converter
+    returned a result, the ported converter must equal it (the fix must not
+    touch anything the legacy engine already handled). Where the legacy
+    declined (None), the ported converter is allowed -- and expected -- to
+    convert more, since it supports two-phone initial clusters (pl/kl/kʰw/
+    ...) the legacy engine never did; ปลา (fish), กลอง (drum), ควาย (water
+    buffalo) must be among the newly-converted words. Compares against the
+    frozen recording rather than a live legacy import (thai_deck_eval no
+    longer exists); skips when the recording has none (fixture captured
+    without deck access) or thaig2p itself is unavailable.
     """
-    import yaml
-    if not WORDS_YAML.exists():  # pragma: no cover - deck absent in CI
-        pytest.skip(f"no deck word list at {WORDS_YAML}")
-    words = [w["thai"] for w in yaml.safe_load(WORDS_YAML.read_text()) or []
-             if w.get("thai")]
-    assert words, "the deck word list should not be empty"
+    deck_sweep = _LEGACY_PARITY_FIXTURE["deck_sweep"]
+    if deck_sweep is None:  # pragma: no cover - fixture captured without deck access
+        pytest.skip("frozen fixture has no deck_sweep recording")
+    words = list(deck_sweep.keys())
+    assert words, "the frozen deck word list should not be empty"
     try:
-        from thai_deck_eval.lang.pythainlp_adapter import PyThaiNLPG2P
-        legacy = PyThaiNLPG2P()
         ported = Thaig2p()
         ported.syllables(words[0])
     except Exception as e:  # pragma: no cover - model/deps absent in CI
         pytest.skip(f"thaig2p unavailable: {e}")
 
-    results = [(w, ported.syllables(w), _legacy_shape(legacy.syllables(w)))
+    results = [(w, ported.syllables(w), _frozen_shape(deck_sweep[w]))
                for w in words]
 
     both = [(w, p, l) for w, p, l in results if l is not None]

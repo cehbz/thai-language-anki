@@ -626,10 +626,38 @@ def test_picture_fit_judged_subjects_excludes_a_sentence_introduced_word_even_wi
     assert PICTURE_FIT.judged_subjects(s) == []
 
 
+# Inlined from the now-deleted thai_deck_eval.judge.prompts.PICTURE_RULES
+# (legacy-removal pass, 2026-09-18) -- only the three rules this test needs,
+# copied verbatim.
+_LEGACY_PICTURE_RULES = {
+    "judge/image-off-phrase":
+        "Does the image show what the intended phrase describes? This asks "
+        "only whether the search found what it was looking for. Pass if no "
+        "phrase is given.",
+    "judge/image-irrelevant":
+        "Would this image, as a picture on a flashcard, evoke the word for a "
+        "learner? An abstract word is served by a scene that cues it, not by "
+        "a literal depiction -- a person pointing at their own chest evokes "
+        "\"I\", two apples evoke \"two\". Scale the bar to the card: when a "
+        "gloss is shown the image only has to support it, so an image that "
+        "fits the glossed sense passes even if it would not have evoked the "
+        "word unaided; when no gloss is shown the image carries the meaning "
+        "alone and must evoke the word by itself. If it fails, give a "
+        "`suggestion`: the search phrase that would have found a better "
+        "picture.",
+    "judge/image-embedded-text":
+        "Fail only if text in the image reveals the answer: the Thai word "
+        "itself, its English translation, or a romanized spelling of it. "
+        "Incidental text passes -- watermarks, photographer credits, shop "
+        "signage, product packaging, text in unrelated languages. The rule "
+        "exists so the picture cannot give away the word, not to require a "
+        "text-free photograph.",
+}
+
+
 def test_picture_fit_rubric_is_the_old_text_verbatim():
-    from thai_deck_eval.judge.prompts import PICTURE_RULES
     for rid in ("judge/image-off-phrase", "judge/image-irrelevant", "judge/image-embedded-text"):
-        assert PICTURE_RULES[rid] in PICTURE_FIT_RUBRIC
+        assert _LEGACY_PICTURE_RULES[rid] in PICTURE_FIT_RUBRIC
 
 
 def test_every_rubric_comes_from_a_judged_rule():

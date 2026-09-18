@@ -1,6 +1,6 @@
-"""Ported from tests/test_secrets.py (thai_deck_eval.secrets) -- same
-behavior, thai_syllabus.secrets import path (spec 3 section 5: SecretStore
-is "the one carry-over module", ported not cross-imported).
+"""Ported from the legacy package's test_secrets.py -- same behavior,
+thai_syllabus.secrets import path (spec 3 section 5: SecretStore is "the
+one carry-over module", ported not cross-imported).
 """
 import subprocess
 

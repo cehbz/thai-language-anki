@@ -1642,7 +1642,7 @@ wheels = [
 ]
 
 [[package]]
-name = "thai-deck-eval"
+name = "thai-syllabus"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

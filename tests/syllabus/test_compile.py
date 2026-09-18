@@ -3,7 +3,7 @@ guids, tags, due, gate refusal, and dropped-card counting, against a small
 synthetic Syllabus compiled through a real SyllabusDb + MediaStore (in a
 tmp_path) end to end -- reading the produced .apkg back with the same
 "read a real collection.anki2" pattern scripts/proof_gallery.py and
-tests/gen/helpers_apkg.py already use.
+.helpers_apkg.py use.
 
 The `ยา`/`โรงพยาบาล` (medicine/hospital) substring-corruption case is
 table-tested directly against `thai_cloze`, without a full compile.
@@ -32,7 +32,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import _DbMediaIndex
 
-from tests.gen.helpers_apkg import read_apkg
+from tests.spec.syllabus_world import read_apkg
 
 PROV = Provenance(source="test", origin="fixture", licence="cc0",
                   acquired=date(2026, 1, 1))
