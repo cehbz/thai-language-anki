@@ -187,6 +187,81 @@ def test_rule_tone_returns_none_when_unparseable(word):
     assert rule_tone(word) is None
 
 
+# --- new vowel-form coverage (2026-09-18 second-engine coverage arc) ------
+# Six forms rule_tone previously refused (all currently None on main):
+# -อ (ɔː), เ-อ (ɤː), -ือ (ɯː), -ำ (am), เ-า (aw), and the implicit /o/ vowel
+# of a bare CC monosyllable. Each word below is checked against its known,
+# uncontested tone (deck-independent -- these are common words, not probes
+# tied to the deck fixture).
+
+@pytest.mark.parametrize("word,tone", [
+    ("คอ", "mid"),       # คอ: neck -- mid class, live (-อ long), no mark
+    ("ขอ", "rising"),    # ขอ: to ask for -- high class, live
+    ("พ่อ", "falling"),  # พ่อ: father -- low class, mai ek -> falling
+    ("จอ", "mid"),       # จอ: screen -- mid class, live
+])
+def test_rule_tone_of_final_o_vowel(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word,tone", [
+    ("เธอ", "mid"),   # เธอ: you/she -- low class, live (เ-อ), no mark
+    ("เจอ", "mid"),   # เจอ: to meet/find -- mid class, live
+])
+def test_rule_tone_of_pre_vowel_oe(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word,tone", [
+    ("มือ", "mid"),      # มือ: hand -- low class, live (-ือ long)
+    ("ถือ", "rising"),   # ถือ: to hold -- high class, live
+])
+def test_rule_tone_of_ue_vowel(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word,tone", [
+    ("น้ำ", "high"),  # น้ำ: water -- low class, mai tho -> high
+    ("ดำ", "mid"),    # ดำ: black -- mid class, live (-ำ is live)
+    ("ทำ", "mid"),    # ทำ: to do -- low class, live
+])
+def test_rule_tone_of_am_vowel(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word,tone", [
+    ("เขา", "rising"),  # เขา: he/she/they -- high class, live (เ-า diphthong)
+    ("เรา", "mid"),     # เรา: we -- low class, live
+    ("เมา", "mid"),     # เมา: drunk -- low class, live
+])
+def test_rule_tone_of_pre_vowel_aw(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word,tone", [
+    ("คน", "mid"),       # คน: person -- low class, live final (implicit /o/)
+    ("ลม", "mid"),       # ลม: wind -- low class, live final
+    ("นก", "high"),      # นก: bird -- low class, dead final (stop)
+    ("กบ", "low"),       # กบ: frog -- mid class, dead final
+    ("จบ", "low"),       # จบ: to finish -- mid class, dead final
+    ("ผม", "rising"),    # ผม: I/hair -- high class, live final
+])
+def test_rule_tone_of_implicit_vowel(word, tone):
+    assert rule_tone(word) == tone
+
+
+@pytest.mark.parametrize("word", [
+    "เกาะ",   # เ-าะ: short o+glottal, out of scope -- must not be confused
+              # with the เ-า (aw) diphthong now handled
+    "เกลือ",  # เ-ือ: complex diphthong, out of scope
+    "เสีย",   # เ-ีย: complex diphthong, out of scope
+    "กลัว",   # -ัว vowel behind a cluster onset: out of scope (must not
+              # gain coverage as a side effect of any of the above)
+])
+def test_rule_tone_still_declines_out_of_scope_complex_vowels(word):
+    assert rule_tone(word) is None
+
+
 # --- parity with the legacy engines --------------------------------------
 # Every fixture in tests/test_pythainlp_convert.py (thaig2p shape) and every
 # word in tests/test_tone.py, run through both implementations.

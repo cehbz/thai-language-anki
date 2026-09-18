@@ -404,23 +404,45 @@ def rule_tone(word: str) -> Tone | None:
             initial, cls = chars.pop(0)[1], "high"
         elif initial == "อ" and nxt == "ย":
             initial, cls = chars.pop(0)[1], "mid"
-        elif pre is None and nxt not in _SONORANT_FINALS | _STOP_FINALS:
+        # อ straight after the initial is never a genuine final consonant --
+        # it is the -อ vowel (คอ, ขอ) -- so it must not trip the generic
+        # "leftover consonant we don't understand" bail below.
+        elif pre is None and nxt not in _SONORANT_FINALS | _STOP_FINALS and nxt != "อ":
             return None
 
     vowel = long_v = vowel_idx = None
     if pre is not None:
-        if any(c in _ABOVE_BELOW or c == _SARA_A or c == "า" for _, c in chars):
+        if pre == "เ" and len(chars) == 1 and chars[0][1] == "า":
+            vowel, long_v = "aw", False   # เ-า: live diphthong (เขา, เรา)
+            chars.pop(0)
+        elif pre == "เ" and len(chars) == 1 and chars[0][1] == "อ":
+            vowel, long_v = "ɤ", True     # เ-อ: the อ completes the vowel,
+            chars.pop(0)                  # it is not a final consonant
+        elif any(c in _ABOVE_BELOW or c == _SARA_A or c == "า" for _, c in chars):
             return None  # complex เ-ือ / เ-าะ / เ-ีย forms: out of scope
-        vowel, long_v = _PRE_VOWELS[pre]
+        else:
+            vowel, long_v = _PRE_VOWELS[pre]
     else:
         for idx, c in list(chars):
             if c in _ABOVE_BELOW:
                 vowel, long_v = _ABOVE_BELOW[c]
                 chars.remove((idx, c))
                 vowel_idx = idx
+                if c == "ื" and chars and chars[0] == (idx + 1, "อ"):
+                    chars.pop(0)  # -ือ: the อ completes the vowel, not a final
                 break
             if c in _POST_LONG:
                 vowel, long_v = _POST_LONG[c]
+                chars.remove((idx, c))
+                vowel_idx = idx
+                break
+            if c == "อ":
+                vowel, long_v = "ɔ", True   # -อ: the vowel, not a final
+                chars.remove((idx, c))
+                vowel_idx = idx
+                break
+            if c == "ำ":
+                vowel, long_v = "am", False  # -ำ: /am/, inherently live
                 chars.remove((idx, c))
                 vowel_idx = idx
                 break
@@ -429,6 +451,11 @@ def rule_tone(word: str) -> Tone | None:
                 chars.remove((idx, c))
                 vowel_idx = idx
                 break
+        if (vowel is None and len(chars) == 1
+                and chars[0][1] in _SONORANT_FINALS | _STOP_FINALS):
+            # implicit vowel: two bare consonants, unwritten short /o/
+            # (คน, นก) -- live/dead follows the written final as usual.
+            vowel, long_v, vowel_idx = "o", False, -1
     if vowel is None:
         return None
 
@@ -441,8 +468,8 @@ def rule_tone(word: str) -> Tone | None:
             return None  # leftover consonant precedes the vowel: it's the
             # next syllable's initial (CCV), not this syllable's final
 
-    if pre in ("ไ", "ใ"):
-        live = True          # -aj diphthong behaves live
+    if pre in ("ไ", "ใ") or vowel in ("aw", "am"):
+        live = True          # -aj/-aw diphthongs and -am are inherently live
     elif final is None:
         live = long_v
     else:
