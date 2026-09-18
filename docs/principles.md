@@ -1,6 +1,6 @@
 # Principles
 
-Revision 5, proposed 2026-09-17 (r4 approved 2026-09-11). The architecture
+Revision 6, proposed 2026-09-18 (r5 approved 2026-09-17). The architecture
 (docs/architecture.md) and the specs (docs/specs/) are the companions.
 
 Three meta-rules from the charter; every principle traces to one; every
@@ -54,6 +54,12 @@ Revision log:
   with the names (กอ ไก่ "gɔɔ gài", the name of ก), so a learner who
   cannot say them cannot ask how a word is spelled; design 2026-09-12
   step 7. No other principle's meaning changed. User approval 2026-09-17.
+- r6 2026-09-18: E4 narrowed to pair membership -- corroboration is
+  required where a pronunciation is computed on (minimal-pair
+  membership), not merely where it is shown as reference beside audio.
+  Evidence: TTS synthesizes from Thai script, never from the stored IPA,
+  so the transcription never reaches the learner's ear; user ruling
+  2026-09-18.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
@@ -176,8 +182,15 @@ Revision log:
   marks its speaker's sex (a particle, a pronoun) is voiced by a speaker
   of that sex on every card, and a sentence the learner produces is one
   the learner would say. [evidence: user rulings 2026-09-10]
-- **E4.** A pronunciation is data the learner drills: it must be corroborated
-  (engines agree, or curated exception) before a card asserts it.
+- **E4.** The learner drills pronunciation from audio, not from
+  transcription: a card's recording is a native speaker or a synthesis
+  from Thai script, and the IPA beside it is reference. A transcription is
+  standard the way spelling is standard -- E2 already lets standard
+  spelling sit beside a vernacular realization, and the same licence
+  extends to the transcription. Corroboration is therefore required where
+  a pronunciation is *computed on*, which is minimal-pair membership, and
+  not merely where it is shown. [evidence: TTS synthesizes from Thai
+  script, never from the stored IPA; user ruling 2026-09-18]
 - **E5.** Classifiers are Words; a noun's unmarked colloquial classifier is a
   Word attribute, taught through counting sentences and displayed as
   reference on backs. Measure words and register variants are

@@ -516,22 +516,26 @@ COVERAGE_SPEAKERS = Rule(id="coverage/speakers", principle="E7", severity="info"
                          shape="measure", measure=_measure_coverage_speakers)
 
 
-# --- word/pronunciation-corroborated (E4) ------------------------------------
-# A disputed pronunciation blocks the word's card.
+# --- pair/pronunciation-corroborated (E4) ------------------------------------
+# Spec 1 r18: E4 is scoped to minimal-pair membership. A disputed
+# pronunciation blocks a word's cards only when the word is a pair member --
+# pair validity (exact_confusion_violation) is computed on stored
+# pronunciations, so corroboration is load-bearing there and only there.
 
-def _check_word_pronunciation_corroborated(syllabus: "Syllabus") -> list[Finding]:
+def _check_pair_pronunciation_corroborated(syllabus: "Syllabus") -> list[Finding]:
+    members = {m for p in syllabus.pairs for m in p.members}
     findings = []
-    for word_id in _targeted_words(syllabus):
-        target_word = syllabus.find_word(word_id)
-        if target_word is not None and not is_corroborated(target_word.pron.corroboration):
-            findings.append(Finding(rule="word/pronunciation-corroborated", note_id=target_word.id,
-                                    evidence=f"pronunciation is {target_word.pron.corroboration!r}"))
+    for word_id in sorted(members):
+        word = syllabus.find_word(word_id)
+        if word is not None and not is_corroborated(word.pron.corroboration):
+            findings.append(Finding(rule="pair/pronunciation-corroborated", note_id=word.id,
+                                    evidence=f"pronunciation is {word.pron.corroboration!r}"))
     return findings
 
 
-WORD_PRONUNCIATION_CORROBORATED = Rule(id="word/pronunciation-corroborated", principle="E4",
+PAIR_PRONUNCIATION_CORROBORATED = Rule(id="pair/pronunciation-corroborated", principle="E4",
                                        severity="error", shape="check",
-                                       check=_check_word_pronunciation_corroborated)
+                                       check=_check_pair_pronunciation_corroborated)
 
 
 # --- word/classifier-known (E5) ----------------------------------------------
@@ -633,7 +637,7 @@ RULES: list[Rule] = [
     COVERAGE_PICTURES,
     PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
-    WORD_PRONUNCIATION_CORROBORATED,
+    PAIR_PRONUNCIATION_CORROBORATED,
     WORD_CLASSIFIER_KNOWN,
     SENTENCE_RECORDING_REQUIRED,
     CARD_UNIQUE_FRONT,

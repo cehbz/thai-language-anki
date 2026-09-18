@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 17, proposed 2026-09-17 against principles r5 and architecture
+Revision 18, proposed 2026-09-18 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -65,6 +65,7 @@ Revision log:
   name the grapheme, which is what the finding is about. Evidence: no
   backend ever answered the retired role -- it named a need nothing
   served. User approval 2026-09-17.
+- r18 2026-09-18: E4's rule is scoped to minimal-pair membership; a `disputed` pronunciation no longer blocks a word's cards. Evidence: TTS synthesizes from the Thai script and Forvo is a native speaker, so the stored IPA never reaches the learner's ear; it renders as reference on a card back that always carries audio (`target/recording-required`, F7, is an error and no targeted word on the live deck lacks a recording). Pair validity is computed from stored pronunciations (`exact_confusion_violation`), so corroboration is load-bearing there and only there. On the live deck this unblocks 140 targeted words, 103 of which have no pronunciation on record at all. User approval 2026-09-18.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -350,7 +351,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F11 | by construction: current-best ranks judged candidates only |
 | E1 | by construction: order() places reading after graphemes |
 | E3 | sentence/register-natural (judged); the speaker marking holds at sourcing (spec 3 §5) |
-| E4 | word/pronunciation-corroborated (check, error; blocks card emission) |
+| E4 | pair/pronunciation-corroborated (check, error; blocks pair membership) |
 | E5 | word/classifier-known (check, warn, nouns) |
 | E7 | coverage/speakers (measure: per audio corpus — word recordings, renditions, sentence recordings — distinct speakers per sex, age band and region against rulebook targets; unknown never counts) |
 | F4, F9, F10, F12, F13, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule; F13's retirement is the run's (spec 3 §5) |

@@ -101,7 +101,7 @@ def test_registered_rules_match_the_spec_table():
         "sentence/recording-required", "recording/synthetic",
         "sentence/synthetic-productive",
         "sentence/register-natural",
-        "word/pronunciation-corroborated", "word/classifier-known",
+        "pair/pronunciation-corroborated", "word/classifier-known",
         "coverage/speakers", "card/unique-front", "rulebook/traceability",
     }
     assert {r.id for r in RULES} == expected
@@ -650,23 +650,48 @@ def test_picture_preference_role_and_shape():
     assert PICTURE_PREFERENCE.judged_subjects(_syl()) == []
 
 
-# --- word/pronunciation-corroborated (E4) -----------------------------------
+# --- pair/pronunciation-corroborated (E4) -----------------------------------
+# Spec 1 r18: E4 is scoped to minimal-pair membership -- a disputed
+# pronunciation blocks a word's cards only when the word is a pair member,
+# because pair validity (exact_confusion_violation) is computed on stored
+# pronunciations. Outside a pair the IPA is reference beside audio, not
+# something a card computes on.
 
-def test_disputed_pronunciation_is_an_error_on_the_word():
+def test_disputed_word_not_in_a_pair_is_silent():
     rice = word("rice", "ข้าว", corroboration="disputed")  # rice
     t = target("rice/receptive", "rice", "receptive")
     syllabus = make_syllabus(words=(rice,), targets=(t,))
     findings = [f for f in syllabus.report().findings
-               if f.rule == "word/pronunciation-corroborated"]
-    assert [f.note_id for f in findings] == ["rice"]
+               if f.rule == "pair/pronunciation-corroborated"]
+    assert findings == []
 
 
-def test_corroborated_pronunciation_is_silent():
-    rice = word("rice", "ข้าว", corroboration="engines_agree")  # rice
-    t = target("rice/receptive", "rice", "receptive")
-    syllabus = make_syllabus(words=(rice,), targets=(t,))
+def test_disputed_pair_member_is_an_error():
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),),
+                    corroboration="disputed")  # near
+    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("pair"), confusion=confusion,
+                              members=(mid_word, low_word))
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
+                             confusions=(confusion,))
     findings = [f for f in syllabus.report().findings
-               if f.rule == "word/pronunciation-corroborated"]
+               if f.rule == "pair/pronunciation-corroborated"]
+    assert [f.note_id for f in findings] == ["near"]
+
+
+def test_corroborated_pair_member_is_silent():
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("pair"), confusion=confusion,
+                              members=(mid_word, low_word))
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
+                             confusions=(confusion,))
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "pair/pronunciation-corroborated"]
     assert findings == []
 
 
