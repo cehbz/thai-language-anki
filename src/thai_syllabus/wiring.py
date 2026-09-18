@@ -246,9 +246,11 @@ def sources_for_need_of(syllabus: Syllabus, sources_for: Callable[[str], Sequenc
                         ) -> Callable[..., Sequence[str]]:
     """The per-need source roster this deck runs (spec 3 r41 section 5),
     bound to one loaded Syllabus: the chart-cell source alone for a
-    grapheme name word's picture, this deck's own kind roster otherwise.
-    One closure, handed to queue()/queued() and to the review server's
-    exhausted() so both read what the run's attempt loop reads.
+    grapheme name word's picture, the illustrator ahead of this deck's
+    own kind roster for a grapheme keyword's picture, and this deck's own
+    kind roster otherwise. One closure, handed to queue()/queued() and to
+    the review server's exhausted() so both read what the run's attempt
+    loop reads.
     """
     def for_need(subject: str, kind: str, subject_kind: str = "word") -> Sequence[str]:
         return need_sources(syllabus, sources_for, subject, kind, subject_kind)

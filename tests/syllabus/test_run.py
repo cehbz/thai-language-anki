@@ -1059,6 +1059,14 @@ class _Syl:
         return frozenset(g.name_word for g in self.graphemes
                          if getattr(g, "name_word", None) is not None)
 
+    @property
+    def grapheme_keyword_ids(self):
+        """The real Syllabus's own fold, read by the same roster rule: no
+        word over this fake is a grapheme's acrophonic keyword, so every
+        need keeps its kind's roster."""
+        return frozenset(g.keyword for g in self.graphemes
+                         if getattr(g, "keyword", None) is not None)
+
     def gaps(self):
         return self._gaps
 

@@ -140,6 +140,18 @@ class Syllabus:
         return name_word_ids_of(self.graphemes)
 
     @cached_property
+    def grapheme_keyword_ids(self) -> frozenset[WordId]:
+        """Every Word that is some Grapheme's acrophonic keyword. One fold
+        reads it: the run's source roster sends such a Word's picture need
+        to the illustrator alone, because the keyword is fixed knowledge
+        (data/thai_consonants.yaml) and a stock-photo corpus cannot depict
+        its referent -- asked for "Montho a character" the corpora returned
+        a photograph of a woman posing, and for a cattle goad a photograph
+        of a farmer.
+        """
+        return frozenset(g.keyword for g in self.graphemes)
+
+    @cached_property
     def _sentence_index(self) -> dict[str, Sentence]:
         return {s.text_sha: s for s in self.sentences}
 

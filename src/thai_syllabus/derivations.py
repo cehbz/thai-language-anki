@@ -43,7 +43,7 @@ __all__ = [
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
     "pending", "adjudications",
     "attempts_since_change", "tried_sources", "next_source",
-    "GLYPH_SOURCES", "need_sources",
+    "GLYPH_SOURCES", "ALPHABET_SOURCES", "need_sources",
     "ExhaustedStatus", "exhausted", "sentence_exhausted",
     "improved",
     "directed",
@@ -717,17 +717,46 @@ def aged_out(cache: CacheReader, subject: str, kind: str, source: str, *,
 # ever searched for it and `glyph` is never on attempts.SOURCES["picture"].
 GLYPH_SOURCES: tuple[str, ...] = ("glyph",)
 
+# A grapheme's acrophonic KEYWORD is fixed knowledge too, and no image corpus
+# holds its referent: the live deck's corpora answered "Montho a character" with
+# a stock photograph of a woman posing, จุฬา (a Thai star-shaped kite) with a
+# generic kite, and พาน (a ceremonial pedestal tray) with a plate. Checked
+# 2026-09-18: no freely-licensed illustrated set of the modern acrophonic
+# keywords exists -- Commons holds font glyphs per letter, one public-domain
+# 1925 primer whose keywords predate standardization, and a complete
+# modern-named series that shows only decorative glyph medallions; Openverse
+# returns nothing usable in Thai or English. So these are drawn, not searched.
+#
+# A preference, not an exclusive roster (fix round 2 finding 1): unlike
+# `glyph`, `illustrator` is a real provider backend that is only on the
+# roster when providers.yaml configures one (wiring.sources_for_config;
+# provider.Provider._backend raises TransportError for an unregistered
+# backend). need_sources puts it ahead of the kind's own roster rather
+# than returning it alone, so a deck with no illustrator configured still
+# falls through to that roster -- a drawn image wins when one is on
+# offer, and the need degrades exactly as before otherwise.
+ALPHABET_SOURCES: tuple[str, ...] = ("illustrator",)
+
 
 def need_sources(syllabus, sources_for: Callable[[str], Sequence[str]],
                  subject: str, kind: str, subject_kind: str = "word") -> tuple[str, ...]:
     """The sources one need may be asked, cheapest first: the chart-cell
-    source alone for a grapheme name word's picture, and the deck's own
-    roster for that kind otherwise (spec 3 r41 section 5). Read by the
-    run's attempt loop, by queue()/queued() and by the review server, so
-    every one of them agrees on what a need has left to try.
+    source alone for a grapheme name word's picture, the illustrator
+    ahead of the deck's own picture roster for a grapheme keyword's
+    picture (a preference, not an exclusive roster -- ALPHABET_SOURCES),
+    and the deck's own roster for that kind otherwise (spec 3 r41 section
+    5). Read by the run's attempt loop, by queue()/queued() and by the
+    review server, so every one of them agrees on what a need has left
+    to try.
     """
     if kind == "picture" and subject_kind == "word" and subject in syllabus.name_word_ids:
         return GLYPH_SOURCES
+    if kind == "picture" and subject_kind == "word" and subject in syllabus.grapheme_keyword_ids:
+        # deduped: the ordinary picture roster ends in `illustrator` too when
+        # the deck configures one, and a roster naming a backend twice reads
+        # as a bug even though next_source skips one already tried.
+        return ALPHABET_SOURCES + tuple(s for s in sources_for(kind)
+                                        if s not in ALPHABET_SOURCES)
     return tuple(sources_for(kind))
 
 

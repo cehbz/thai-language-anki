@@ -135,9 +135,10 @@ def sources_for(kind: str) -> tuple[str, ...]:
 def sources_for_need(ctx: Sourcing, need: Need) -> tuple[str, ...]:
     """The sources `need` may be asked under this ctx, cheapest first
     (spec 3 r41 section 5): the chart-cell source alone for a grapheme
-    name word's picture, the deck's own roster for that kind otherwise.
-    The rule itself is derivations.need_sources, so the run's attempt
-    loop, the queue and the review server share one fold.
+    name word's picture, the illustrator ahead of the deck's own roster
+    for a grapheme keyword's picture, and the deck's own roster for that
+    kind otherwise. The rule itself is derivations.need_sources, so the
+    run's attempt loop, the queue and the review server share one fold.
     """
     return need_sources(ctx.syllabus, ctx.sources_for, need.subject, need.kind,
                         need.subject_kind)

@@ -30,6 +30,36 @@ still run against them.
   adopted sentence per candidate (2 s at 400 sentences); `check_sentence`
   rebuilds the registered-id set per call.
 
+## Sound stage: contrast inventory and pair stimuli (2026-09-18)
+
+DONE 2026-09-18: the inventory revision is applied to both `data/contrasts.yaml`
+and the live deck's `curated/confusions.yaml`. 23 confusions -> 27, total weight
+70 -> 86, 61 pairs implied. Tone weights now come from Burnham et al. 1992 Table
+6(b) (English listeners, all ten pairs, measured) rather than from an estimate;
+the aspiration weights are flipped per Nagle et al. 2023; `consonant:r-l` is
+dropped; three final-place contrasts added; `vowel_length` split three ways.
+Evidence and cautions: docs/references/README.md, research-log 2026-09-18.
+
+Still open:
+
+- **`vowel_length:{low,mid,high}` are indistinguishable to the pair checker.**
+  All three carry `sounds: [short, long]`, and `exact_confusion_violation`
+  matches on dimension and sound values, not on id. Worse than "3x the pairs
+  without guaranteed height coverage": `thai_deck_gen/producers/pairs.py:37`
+  branches on the confusion's `kind` alone, ignoring the rest of the id, and
+  `find_pair` is deterministic over `sorted(lexicon)` -- so the three axes
+  produce three notes containing the identical word pair, not three different
+  pairs. Making the split useful needs a `SoundConfusion` field so the pair
+  search can restrict each axis to its own vowel group, i.e. a spec 1
+  revision. Harmless today (`pairs.yaml` is `[]`); fix before pair search if
+  height coverage matters.
+- **The aspiration reweight rests on labials only.** Nagle et al. 2023 tested
+  /b p pʰ/; the extension to alveolars and velars is theoretically motivated and
+  untested. If it is wrong, `aspiration:alveolar-voiced` at w5 is over-weighted.
+- **Liu et al. 2022 tone atlas** is in `docs/references/` but its per-pair
+  English-listener numbers live in a figure, not the text. If the figure's bars
+  can be read they would corroborate or challenge the 1992 table.
+
 ## Deferred
 
 - Forvo growth measurement for the ageing interval: re-look up 30 of the

@@ -15,6 +15,7 @@ import pytest
 from thai_syllabus.derivations import (
     Challenger,
     CurrentBest,
+    ALPHABET_SOURCES,
     GLYPH_SOURCES,
     JudgeVerdict,
     adjudications,
@@ -2796,10 +2797,11 @@ def test_adjudications_ignores_a_verdict_under_a_superseded_rubric(cache):
 # --- need_sources: the roster one need is asked (spec 3 r41 §5) ----------
 
 class _NamedSyllabus:
-    """The one thing need_sources reads off a syllabus."""
+    """The two things need_sources reads off a syllabus."""
 
-    def __init__(self, name_word_ids=frozenset()):
+    def __init__(self, name_word_ids=frozenset(), grapheme_keyword_ids=frozenset()):
         self.name_word_ids = frozenset(name_word_ids)
+        self.grapheme_keyword_ids = frozenset(grapheme_keyword_ids)
 
 
 def test_a_name_words_picture_need_takes_the_glyph_source_alone():
@@ -2831,6 +2833,47 @@ def test_a_name_words_other_needs_take_their_kinds_roster():
     syllabus = _NamedSyllabus({"name-chicken"})
     assert need_sources(syllabus, real_sources_for, "name-chicken", "recording", "word") == (
         "forvo", "tts")
+
+
+def test_a_grapheme_keywords_picture_need_puts_the_illustrator_first():
+    """FIX 1: unlike glyph, illustrator is a real provider backend that is
+    only on the roster when providers.yaml configures one
+    (wiring.sources_for_config; provider.Provider._backend raises
+    TransportError for an unregistered backend). Returning it alone would
+    strand a deck with no illustrator configured -- every grapheme
+    keyword's picture need would route to a backend that cannot answer.
+    So illustrator is a preference ahead of the kind's ordinary roster,
+    not an exclusive one: a drawn image wins when available, and the need
+    still degrades to the corpora exactly as before illustrator existed
+    when it is not."""
+    def deck_sources(kind):
+        return ("pexels", "openverse", "wikimedia", "brave") if kind == "picture" else ()
+
+    syllabus = _NamedSyllabus(frozenset(), {"montho-a-character"})
+    assert need_sources(syllabus, deck_sources, "montho-a-character", "picture", "word") == (
+        "illustrator", "pexels", "openverse", "wikimedia", "brave")
+    assert ALPHABET_SOURCES == ("illustrator",)
+
+
+def test_a_name_word_still_beats_a_keyword_to_the_glyph_source():
+    """A Word could in principle be both; the chart-cell case is checked
+    first and must win, since a name word's picture IS the chart cell --
+    even against the real roster, where illustrator sits on both the
+    ordinary picture roster and ALPHABET_SOURCES."""
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus({"both"}, {"both"})
+    assert need_sources(syllabus, real_sources_for, "both", "picture", "word") == ("glyph",)
+
+
+def test_a_grapheme_keywords_other_needs_take_their_kinds_roster():
+    """Only its picture is special: its recording is Forvo then TTS like
+    any word's."""
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    syllabus = _NamedSyllabus(frozenset(), {"montho-a-character"})
+    assert need_sources(syllabus, real_sources_for, "montho-a-character", "recording",
+                        "word") == ("forvo", "tts")
 
 
 def test_a_sentences_scene_picture_is_never_a_chart_cell():
