@@ -6,7 +6,19 @@ def test_contrasts_load_and_weights():
     entries = load_contrasts()
     ids = {e.id for e in entries}
     assert "tone:mid-low" in ids
-    assert max(entries, key=lambda e: e.weight).id == "tone:mid-low"
+    # The heaviest tone contrast is low-rising, not mid-low. This was
+    # changed on 2026-09-18 from an estimate to a measurement: Burnham,
+    # Kirkwood, Luksaneeyanawin & Pansottee (1992) Table 6(b) put English
+    # listeners at 54% on low-rising -- chance is 50 -- against 79% on
+    # mid-low. See docs/references/README.md.
+    #
+    # Scoped to tone entries: the 2026-09-18 inventory revision also added
+    # two non-tone weight-5 entries (aspiration:labial-voiced,
+    # aspiration:alveolar-voiced), so `max` over every entry would be
+    # decided by yaml line order, not by weight, and would break on a
+    # harmless reordering of the file.
+    tones = [e for e in entries if e.kind == "tone"]
+    assert max(tones, key=lambda e: e.weight).id == "tone:low-rising"
 
 def test_spelling_targets_counts():
     t = load_spelling_targets()

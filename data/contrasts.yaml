@@ -1,24 +1,72 @@
-# Thai contrast inventory for minimal-pair coverage. weight ~ difficulty for
-# English speakers (Wayland & Guion 2004: mid-low hardest).
-- {id: "tone:mid-low",      kind: tone,          weight: 5}
-- {id: "tone:mid-high",     kind: tone,          weight: 4}
-- {id: "tone:low-falling",  kind: tone,          weight: 3}
-- {id: "tone:high-rising",  kind: tone,          weight: 3}
-- {id: "tone:falling-rising", kind: tone,        weight: 2}
-- {id: "tone:mid-falling",  kind: tone,          weight: 2}
-- {id: "tone:mid-rising",   kind: tone,          weight: 2}
-- {id: "tone:low-high",     kind: tone,          weight: 2}
-- {id: "tone:low-rising",   kind: tone,          weight: 3}
-- {id: "tone:high-falling", kind: tone,          weight: 2}
-- {id: "aspiration:labial", kind: aspiration,    weight: 4}
-- {id: "aspiration:alveolar", kind: aspiration,  weight: 4}
-- {id: "aspiration:velar",  kind: aspiration,    weight: 4}
-- {id: "aspiration:affricate", kind: aspiration, weight: 3}
-- {id: "vowel_length",      kind: vowel_length,  weight: 4}
-- {id: "consonant:ng-onset", kind: consonant,    weight: 3}
-- {id: "vowel_quality:e-ɛ", kind: vowel_quality, weight: 3}
-- {id: "vowel_quality:o-ɔ", kind: vowel_quality, weight: 3}
-- {id: "vowel_quality:ɯ",   kind: vowel_quality, weight: 3}
-- {id: "vowel_quality:ɤ",   kind: vowel_quality, weight: 2}
-- {id: "consonant:r-l",     kind: consonant,     weight: 1}
-- {id: "final:unreleased",  kind: final,         weight: 2}
+# Thai contrast inventory for minimal-pair coverage. `weight` is difficulty for
+# an English-speaking learner and sets pairs per confusion (5->4 pairs, 4->3,
+# 3->2, else 1).
+#
+# Tone weights are measured, not estimated: Burnham, Kirkwood, Luksaneeyanawin &
+# Pansottee (1992), "Perception of Central Thai tones and segments by Thai and
+# Australian adults", Table 6(b) -- percent correct for ENGLISH listeners on all
+# ten pairs in an AX task, chance 50. Their mechanism generalizes past the table:
+# difficulty tracks how similar the two tones' nominal starting pitches are, not
+# static vs dynamic. Do NOT derive these from contrast type; pooling by type puts
+# low-high among the hardest when it is measured at 94%, the easiest.
+# See docs/references/README.md.
+- {id: "tone:low-rising",     kind: tone,          weight: 5}   # 54% - at chance
+- {id: "tone:high-falling",   kind: tone,          weight: 4}   # 75%
+- {id: "tone:mid-low",        kind: tone,          weight: 4}   # 79%
+- {id: "tone:mid-rising",     kind: tone,          weight: 4}   # 79%
+- {id: "tone:mid-high",       kind: tone,          weight: 3}   # 81%
+- {id: "tone:high-rising",    kind: tone,          weight: 2}   # 88%
+- {id: "tone:mid-falling",    kind: tone,          weight: 2}   # 90%
+- {id: "tone:falling-rising", kind: tone,          weight: 2}   # 91%
+- {id: "tone:low-high",       kind: tone,          weight: 1}   # 94%
+- {id: "tone:low-falling",    kind: tone,          weight: 1}   # 94%
+
+# Stops. Nagle, Bruun & Baese-Berk (ICPhS 2023): English listeners map Thai
+# voiced -> English /b/ and Thai aspirated -> English /p/ as good exemplars, but
+# Thai PLAIN is ambiguous and leans /b/. So voiced-vs-plain is Single-Category
+# (hardest) and plain-vs-aspirated is Two-Category (easier). Caveat: they tested
+# labials only; the extension to alveolars and velars is motivated but untested.
+- {id: "aspiration:labial-voiced",   kind: aspiration, weight: 5}  # b vs p
+- {id: "aspiration:alveolar-voiced", kind: aspiration, weight: 5}  # d vs t
+- {id: "aspiration:labial",          kind: aspiration, weight: 3}  # p vs pʰ
+- {id: "aspiration:alveolar",        kind: aspiration, weight: 3}  # t vs tʰ
+- {id: "aspiration:velar",           kind: aspiration, weight: 3}  # k vs kʰ
+- {id: "aspiration:affricate",       kind: aspiration, weight: 2}  # tɕ vs tɕʰ
+
+# Vowel length is phonemic across the inventory; one axis gave three pairs where
+# aspiration got six axes and fifteen. Split three ways by vowel height.
+# KNOWN LIMITATION: all three carry sounds [short, long], so
+# exact_confusion_violation cannot tell them apart, and thai_deck_gen's
+# producers/pairs.py:37 predicate branches on the confusion's kind alone,
+# ignoring the rest of the id -- find_pair is deterministic over
+# sorted(lexicon), so as things stand the split yields the identical word
+# pair three times, not three different pairs. Making it useful needs a
+# SoundConfusion field so the pair search can restrict each axis to its own
+# vowel group (spec 1). Tracked in TODO.
+- {id: "vowel_length:low",  kind: vowel_length, weight: 4}
+- {id: "vowel_length:mid",  kind: vowel_length, weight: 4}
+- {id: "vowel_length:high", kind: vowel_length, weight: 4}
+
+- {id: "consonant:ng-onset", kind: consonant,    weight: 2}  # production, not perception
+- {id: "vowel_quality:e-ɛ",  kind: vowel_quality, weight: 3}
+- {id: "vowel_quality:o-ɔ",  kind: vowel_quality, weight: 3}
+- {id: "vowel_quality:ɯ",    kind: vowel_quality, weight: 4}  # both assimilate to GOOSE
+- {id: "vowel_quality:ɤ",    kind: vowel_quality, weight: 2}
+
+# Unreleased final stops. Smyth, *Thai: An Essential Grammar*: "Beginners
+# sometimes find it difficult to hear the difference between words like rak...,
+# rat... and rap..."; Abramson & Tingsabadh (1999, Phonetica 56:111-122) measured
+# naive American English listeners worse than Thai listeners at place
+# identification in unreleased Thai finals. Previously omitted on the grounds
+# that three finals do not fit a two-valued dimension -- but tone's five-way set
+# and the stop triples were already decomposed the same way. These three carry
+# kind: consonant (place, like ng-onset), not kind: final -- "final" has no
+# member in this inventory at all.
+- {id: "final:place-p-t", kind: consonant, weight: 4}
+- {id: "final:place-t-k", kind: consonant, weight: 4}
+- {id: "final:place-p-k", kind: consonant, weight: 3}
+
+# DROPPED 2026-09-18: consonant:r-l. English already has the contrast, so there
+# is no L1 deficit; colloquial Thai neutralises initial /r/ to [l]; and reading a
+# minimal pair aloud is the most formal register, where trills dominate -- the
+# card would drill a distinction the target register does not carry.
