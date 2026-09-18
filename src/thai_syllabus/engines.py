@@ -195,6 +195,27 @@ _TLTK_SUBSTITUTIONS = (("ᴐ", "ɔ"), ("cʰ", "tɕʰ"), ("c", "tɕ"))
 _TLTK_MARKUP = re.compile(r"<[^>]*>")
 _TLTK_SYLLABLE_SEP = re.compile(r"[.\s~|]+")
 
+# tltk marks a syllable it could not read as an EMPTY SYLLABLE SLOT: a "."
+# with nothing (or only more separator whitespace) on one side of it, where
+# a real syllable's phones would otherwise sit. Two dots in a row (with or
+# without whitespace between them) is one empty slot between two real
+# syllables (สิบเอ็ด -> "cʰaːn1..muk4"-shaped: 5 syllables truncated to 2,
+# the middle three collapsed to nothing); a leading or trailing dot is an
+# empty slot at that edge (สิบเอ็ด -> "si2." itself: 2 syllables, got 1).
+# `_TLTK_SYLLABLE_SEP`'s "+" quantifier collapses a run of separators into
+# one, which would otherwise hide exactly this signal. A lone space is
+# never this signal -- "ข้างๆ" -> "kʰaːŋ3 kʰaːŋ3" is two ordinary
+# syllables, not a slot -- so only "." is checked here, and only after
+# `_TLTK_MARKUP` and the outer `.strip()` have already removed the markup
+# and edge whitespace that would otherwise make a real dot look edge-most.
+_TLTK_EMPTY_SLOT = re.compile(r"\.\s*\.")
+
+
+def _tltk_has_empty_slot(cleaned: str) -> bool:
+    return bool(cleaned) and (
+        cleaned[0] == "." or cleaned[-1] == "."
+        or _TLTK_EMPTY_SLOT.search(cleaned) is not None)
+
 # longest-first so "tɕʰ" wins over "tɕ" and "ɯa" over "ɯ"
 _ONSETS_LONGEST_FIRST = tuple(sorted(_ONSETS, key=len, reverse=True))
 _VOWELS_LONGEST_FIRST = tuple(sorted(_VOWELS, key=len, reverse=True))
@@ -244,8 +265,13 @@ def _convert_tltk_syllable(group: str) -> Syllable:
 
 def _convert_tltk(raw: str) -> tuple[Syllable, ...] | None:
     """Convert tltk's raw th2ipa string to Syllables. Never raises:
-    returns None for anything unmappable."""
+    returns None for anything unmappable, including a reading tltk itself
+    marked incomplete with an empty syllable slot (see
+    `_tltk_has_empty_slot`) -- a truncated reading is refused rather than
+    returned short, the same contract as any other unmappable input."""
     cleaned = _TLTK_MARKUP.sub(" ", raw).strip()
+    if _tltk_has_empty_slot(cleaned):
+        return None
     groups = [g for g in _TLTK_SYLLABLE_SEP.split(cleaned) if g]
     if not groups:
         return None

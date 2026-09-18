@@ -15,22 +15,46 @@ from .entities import Pronunciation, Syllable, Tone, without_glottal_coda
 class Engines:
     """The segmental oracles, in order, plus the tone-rule engine
     (design 2026-09-18 §1). `g2p` is a tuple because corroboration is
-    "the judge's verdict plus one engine" -- which engine is not fixed,
-    and a third oracle costs nothing to add. Order decides only which
-    reading is written when they disagree, and a word they disagree on is
-    `disputed` and blocked anyway.
+    "the judge's verdict plus one engine" -- which engine is not fixed.
+    Order decides only which reading is written when they disagree, and a
+    word they disagree on is `disputed` and blocked anyway.
+
+    `engines_pronunciation`'s whole-reading agreement check (below) is
+    defined for exactly two engines: it compares every other reading only
+    against `readings[0]`, so a third oracle is NOT free to add as-is --
+    with three engines where the first is unique and the other two agree
+    with each other but not the first, that pairwise agreement would go
+    undetected and the word would stay `disputed`. `corroborates`, which
+    checks a judge verdict against every reading in turn, has no such
+    limit. Widening the first check to real pairwise agreement is
+    speculative generality with no second consumer today (YAGNI); add it
+    when a third engine actually arrives.
     """
     g2p: tuple[Callable[[str], tuple[Syllable, ...] | None], ...]
     tone: Callable[[str], Tone | None]
 
     def readings(self, thai: str) -> tuple[tuple[Syllable, ...], ...]:
-        """Each engine's reading of `thai`, in order, with the empty and
-        the degenerate ones (spec 3 r44) dropped."""
+        """Each engine's reading of `thai`, in order, with the ʔ-coda
+        convention (design 2026-09-18 §5) applied and the empty and the
+        degenerate ones (spec 3 r44) dropped.
+
+        `without_glottal_coda` is applied here, at the port boundary, not
+        only inside `_convert`/`_convert_tltk`: those converters already
+        apply it, so this is redundant for the two real engines, but it is
+        what makes the guarantee belong to the port rather than to each
+        converter's discipline. A third engine, or a test fake injected
+        without it, would otherwise silently fail to corroborate on every
+        dead-open-syllable word -- a failure that looks exactly like "the
+        engines disagree" and is very hard to diagnose from the outside.
+        """
         out = []
         for engine in self.g2p:
             got = engine(thai)
-            if got and not is_degenerate(tuple(got), thai):
-                out.append(tuple(got))
+            if not got:
+                continue
+            reading = without_glottal_coda(tuple(got))
+            if not is_degenerate(reading, thai):
+                out.append(reading)
         return tuple(out)
 
 
@@ -50,7 +74,14 @@ def corroborates(judge: tuple[Syllable, ...], thai: str, engines: Engines) -> bo
     length, and then on tone -- or, for a single syllable, the rule tone
     engine decides. Before this there was one segmental oracle, so a word
     thaig2p read badly could never leave `disputed`: the live run logged
-    "141 of 141 verdicts not corroborated" on three consecutive cycles.
+    "141 of 141 verdicts not corroborated" on five consecutive cycles.
+
+    Precondition: `judge` must already carry the ʔ-coda convention (design
+    2026-09-18 §5) -- i.e. be `without_glottal_coda`'d, as `readings()`
+    guarantees every engine reading is. The sole caller passes it through
+    `syllables_from_verdict`, which normalizes on the way in; an
+    unnormalized verdict silently fails to corroborate against a dead
+    open syllable rather than raising.
     """
     for reading in engines.readings(thai):
         if len(reading) != len(judge):
@@ -110,11 +141,17 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     adopts is written with (spec 3 r40/r43 section 5; design 2026-09-12
     §2, 2026-09-18 §3): the first engine's syllables in tuple order,
     corroboration `engines_agree` when a second engine's whole reading
-    matches it, or when the rule tone engine agrees with a monosyllable's
-    tone -- the same agreement rule `corroborates` falls back on -- and
+    matches it, or -- only when no other engine produced a reading at all
+    -- when the rule tone engine agrees with a monosyllable's tone; and
     `disputed` otherwise, including every multi-syllable form no other
     engine confirms, which the adjudication pass then asks the judge
     about (r28) while E4 blocks that word's cards.
+
+    That tone fallback is NARROWER here than in `corroborates`, which
+    applies it per reading however many engines spoke. The asymmetry is
+    deliberate: `engines_agree` is terminal (`is_corroborated`, so the
+    word is never adjudicated again), while `corroborates` only accepts a
+    verdict the judge already produced.
 
     Two engines agreeing is `engines_agree` (design 2026-09-18 §3) --
     evidence a single engine plus the one-syllable tone rule could never
@@ -145,7 +182,17 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
         first = readings[0]
         if any(other == first for other in readings[1:]):
             return Pronunciation(syllables=first, corroboration="engines_agree")
-        agrees = len(first) == 1 and engines.tone(thai) == first[0].tone
+        # The rule-tone fallback is single-engine behaviour: it only ever
+        # confirms a reading no other engine was there to contradict. Once
+        # a second reading exists it necessarily differs from `first` (the
+        # whole-match check above already failed), so it IS a differing
+        # engine reading of the same word -- and the tone rule agreeing
+        # with `first` on its own would not be confirmation, it would be
+        # overriding that disagreement on the rule engine's say-so alone.
+        # (design 2026-09-18: this is what would let a truncated tltk
+        # reading be promoted to engines_agree.)
+        agrees = (len(readings) == 1 and len(first) == 1
+                 and engines.tone(thai) == first[0].tone)
         return Pronunciation(syllables=first,
                              corroboration="engines_agree" if agrees else "disputed")
     if " " not in thai:

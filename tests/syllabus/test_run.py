@@ -737,6 +737,43 @@ def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
     assert ctx.db.latest("run", "runreport", RunReportKey()).answer["stayed_disputed"] == 1
 
 
+def test_a_judge_verdict_with_a_glottal_coda_corroborates_against_an_engine_reading_without_one(
+        tmp_path, fake_search, fake_batch):
+    """FIX 7 / design 2026-09-18 §5: thaig2p writes an explicit ʔ coda on a
+    dead open syllable (จะ -> tɕ a ʔ); a correctly normalized engine
+    reading never does, and neither does tltk. Nothing stops the judge
+    from spelling a verdict with one too -- `syllables_from_verdict`
+    normalizes it away on the way in (phonology.py), which is what lets
+    that verdict still corroborate against the engine's coda-less reading.
+    This is the run-level seam the normalization exists for, exercised end
+    to end rather than at the unit level (no `ʔ` appears anywhere in this
+    module before this test)."""
+    disputed = word("will", "จะ", "will", corroboration="disputed")
+    root = _deck(tmp_path, (disputed,), (target("will/receptive", "will"),))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    # A real, already-normalized engine reading of a dead open syllable:
+    # no ʔ coda (design 2026-09-18 §5).
+    engine_reading = (syl(onset="tɕ", vowel="a", coda="", length="short", tone="low"),)
+    ctx.engines = Engines(g2p=(lambda w: engine_reading,), tone=lambda w: None)
+
+    def value_for(prompt):
+        if "adjudicating the pronunciation" in prompt:
+            # The judge's verdict DOES carry a ʔ coda.
+            return {"syllables": [{"segments": ["tɕ", "a", "ʔ"], "vowel_length": "short",
+                                   "tone": "low"}], "gloss": "will"}
+        return True
+
+    r1 = run(ctx, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True, value_for=value_for)
+    r2 = run(ctx, budgets={})
+    assert r2.adjudicated == 1
+    will = next(w for w, _c in load_words(root / "curated" / "words.yaml") if w.id == "will")
+    assert will.pron.corroboration == "adjudicated"
+    # Normalized on the way in: the written syllables carry no ʔ coda,
+    # matching the engine's own (already normalized) reading exactly.
+    assert will.pron.syllables == engine_reading
+
+
 # --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
 
 def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_batch):

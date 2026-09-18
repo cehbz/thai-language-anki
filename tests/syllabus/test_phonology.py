@@ -233,7 +233,7 @@ def test_a_judge_verdict_is_normalized_on_the_way_in():
 # --- two segmental engines (design 2026-09-18 §1-§3) ----------------------
 # Evidence: on the live deck 78 of 140 stuck judge verdicts corroborate
 # against tltk and not thaig2p, and the run logged "141 of 141 verdicts not
-# corroborated by an engine" on three consecutive cycles before this.
+# corroborated by an engine" on five consecutive cycles before this.
 
 def _two(first, second, tone_result="mid"):
     return Engines(g2p=(lambda thai: first, lambda thai: second),
@@ -247,9 +247,13 @@ def test_a_verdict_the_second_engine_agrees_with_is_corroborated():
 
 
 def test_a_verdict_no_engine_agrees_with_is_not_corroborated():
+    """Both engines must differ from the verdict AND from each other --
+    two identical engines would also pass against a broken implementation
+    that only ever consults the first one."""
     judge = (Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),)
     wrong = (Syllable(segments=("pʰ", "a", ""), vowel_length="short", tone="high"),)
-    assert corroborates(judge, "ภาพ", _two(wrong, wrong)) is False
+    other_wrong = (Syllable(segments=("w", "a", "t"), vowel_length="long", tone="rising"),)
+    assert corroborates(judge, "ภาพ", _two(wrong, other_wrong)) is False
 
 
 def test_two_engines_agreeing_is_engines_agree_without_the_judge():
@@ -279,6 +283,24 @@ def test_a_degenerate_reading_does_not_count_as_agreement():
     loop = tuple(Syllable(segments=("w", "a", ""), vowel_length="long", tone="mid")
                  for _ in range(11))
     assert engines_pronunciation("ภาพวาด", _two(loop, loop)) is None
+
+
+def test_a_lone_monosyllable_the_tone_engine_confirms_does_not_win_over_a_contradicting_second_engine():
+    """FIX 2 (design 2026-09-18): the rule-tone fallback is single-engine
+    behaviour -- it may only confirm a reading no other engine was there to
+    contradict. Shape: tltk's real truncation can collapse a two-syllable
+    word to a wrong single syllable (สิบเอ็ด: 'si2.', sìp.ʔèt truncated to
+    'si'); if the rule-tone engine happens to agree with that wrong
+    syllable's tone, the pre-fix code granted `engines_agree` even though
+    the other, correct two-syllable reading never confirmed it -- only the
+    tone rule did, unopposed by nothing since the second reading was
+    ignored entirely once it failed the whole-match check."""
+    truncated = (Syllable(segments=("s", "i", ""), vowel_length="short", tone="low"),)
+    correct = (Syllable(segments=("s", "i", "p"), vowel_length="short", tone="low"),
+              Syllable(segments=("ʔ", "e", "t"), vowel_length="short", tone="low"))
+    eng = _two(truncated, correct, tone_result="low")
+    got = engines_pronunciation("สิบเอ็ด", eng)
+    assert got == Pronunciation(syllables=truncated, corroboration="disputed")
 
 
 def test_the_second_engine_alone_still_reads_a_word_the_first_cannot():

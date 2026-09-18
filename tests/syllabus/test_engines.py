@@ -333,8 +333,14 @@ def test_g2p_matches_the_legacy_g2p_over_the_live_deck():
     # assertion above would catch it -- but only if this one also fails
     # when the bucket empties out from underneath it).
     assert len(glottal_coda_only) == 19, (
-        f"expected exactly 19 dead-open-syllable divergences on the live "
-        f"deck, got {len(glottal_coda_only)}: {[w for w, _, _ in glottal_coda_only]}")
+        f"this counts live-deck forms where thaig2p writes a ʔ coda "
+        f"without_glottal_coda then strips; expected 19, got "
+        f"{len(glottal_coda_only)}: {[w for w, _, _ in glottal_coda_only]}. "
+        f"A CHANGE in this number is expected as the deck grows (this arc's "
+        f"adoption pass adds words) -- update the expected count. A DROP TO "
+        f"ZERO is not growth: it means without_glottal_coda's normalization "
+        f"has been removed from _convert, and every one of these 19 would "
+        f"become a real mismatch -- a real bug, not a number to update away.")
 
     legacy_none = [(w, p) for w, p, l in results if l is None]
     newly_converted = [w for w, p in legacy_none if p is not None]
@@ -411,6 +417,51 @@ def test_unmappable_input_is_no_reading_rather_than_a_raise():
     assert _convert_tltk("<s/>") is None
     assert _convert_tltk("maː") is None          # no tone digit
     assert _convert_tltk("zzz9") is None         # unknown everything
+
+
+# --- an empty syllable slot is a truncated reading, refused (FIX 1) -------
+# tltk marks a part it could not read as an empty syllable slot -- a "."
+# with nothing on one side of it where a real syllable belongs. Verified on
+# the real engine 2026-09-18: exactly 2 of the live deck's 875 distinct
+# forms produce one, both genuine truncations, so this detector is exact on
+# real data.
+
+def test_a_trailing_dot_with_nothing_after_it_is_a_truncated_reading():
+    # สิบเอ็ด (sìp.ʔèt, 2 syllables): tltk emits only "si2" and marks the
+    # lost second syllable with a trailing dot -- refused, not returned as
+    # one syllable.
+    assert _convert_tltk("si2. <s/>") is None
+
+
+def test_a_double_dot_mid_string_is_an_empty_slot_between_two_readings():
+    # ชานมไข่มุก (5 syllables): tltk reads only the first and last, marking
+    # the three lost middle syllables with a double dot. The naive
+    # `_TLTK_SYLLABLE_SEP` regex collapses ".." into one separator and would
+    # otherwise silently turn this into a 2-syllable reading.
+    assert _convert_tltk("cʰaːn1..muk4 <s/>") is None
+
+
+def test_a_sound_reading_with_no_dot_at_all_is_unaffected():
+    # ไก่: one syllable, no separator of any kind -- must not be mistaken
+    # for a truncation.
+    assert _convert_tltk("kaj2 <s/>") == (
+        Syllable(segments=("k", "a", "j"), vowel_length="short", tone="low"),)
+
+
+def test_a_sound_multisyllable_reading_with_one_ordinary_dot_is_unaffected():
+    # ภาพวาด: two real syllables joined by exactly one dot -- the ordinary
+    # separator case, not a slot.
+    assert _convert_tltk("pʰaːp3.waːt3 <s/>") == (
+        Syllable(segments=("pʰ", "a", "p"), vowel_length="long", tone="falling"),
+        Syllable(segments=("w", "a", "t"), vowel_length="long", tone="falling"))
+
+
+def test_ordinary_whitespace_between_two_readings_is_not_mistaken_for_a_slot():
+    # ข้างๆ: space-separated, no dot anywhere -- this is the negative case
+    # that would break if plain whitespace were treated as a slot marker.
+    assert _convert_tltk("kʰaːŋ3 kʰaːŋ3 <s/>") == (
+        Syllable(segments=("kʰ", "a", "ŋ"), vowel_length="long", tone="falling"),
+        Syllable(segments=("kʰ", "a", "ŋ"), vowel_length="long", tone="falling"))
 
 
 # --- the Tltk engine callable ---------------------------------------------
