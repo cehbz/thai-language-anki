@@ -12,11 +12,17 @@ This file is the port of the same file written against the old
 `thai_deck_eval` evaluator (git history, through daea575). Every doctrine
 below was first run on the old implementation over an old-format deck and
 its verdict recorded; the assertions here hold the new implementation to
-that recorded verdict. Three doctrines the old gate closed on, the new
-one does not; each is marked DIVERGENCE and asserts what the new
+that recorded verdict. Two doctrines the old gate closed on, the new one
+does not; each is marked DIVERGENCE and asserts what the new
 implementation actually does, so that closing the gap makes the test fail
 and points at the doctrine. The full old-vs-new table is in
 .superpowers/sdd/2026-09-18-second-engine/doctrine-port-report.md.
+
+The sections from "pronunciation is computed on" down were added after
+the port, from docs/principles.md directly: each states one principle at
+the product level that only a unit test had asserted before. A DIVERGENCE
+there is measured against the principle's own text, not the old
+evaluator, and likewise asserts what the product does today.
 """
 import pytest
 
@@ -24,9 +30,11 @@ from thai_syllabus.compile import GateRefusal, build_deck, compile_syllabus, ren
 from thai_syllabus.curated import CuratedValidationError
 from thai_syllabus.entities import Category, MinimalPair, Target
 from thai_syllabus.ids import PairId, TargetId
+from thai_syllabus.media import Speaker
 from thai_syllabus.wiring import load_derivations
 
-from .doctrine_deck import DeckBuilder, sentence, word
+from .doctrine_deck import DeckBuilder, PictureCandidate, sentence, word
+from .syllabus_world import read_apkg
 
 
 def deck(builder):
@@ -276,3 +284,281 @@ def test_the_report_says_what_it_judged_and_what_judged_it(tmp_path):
     assert rep.syllabus_state_id == d.syllabus.state_id()
     assert rep.rulebook_id == d.syllabus.rulebook_id()
     assert isinstance(rep.gate, bool)
+
+
+# --- Doctrine: pronunciation is computed on only for pair membership (E4) ---
+
+def _with_disputed(b, word_id):
+    b.words = [word(w.id, w.thai, w.meaning, tone=w.pron.syllables[0].tone,
+                    onset=w.pron.syllables[0].segments[0], corroboration="disputed")
+               if w.id == word_id else w for w in b.words]
+    return b
+
+
+def test_a_disputed_pronunciation_off_a_pair_blocks_no_card(tmp_path):
+    """The learner drills pronunciation from audio; the IPA is reference.
+    A transcription nobody computes on may be wrong the way a spelling
+    may be non-phonetic, and the word's cards ship.
+    """
+    b = _with_disputed(DeckBuilder(tmp_path), "rice")
+    rep = report(b)
+    assert "pair/pronunciation-corroborated" not in {f.rule for f in rep.findings}
+    assert rep.gate is True
+    assert "rice" in {subject for subject, _, _ in cards(deck(b), "Production")}
+
+
+def test_a_disputed_pronunciation_on_a_pair_member_closes_the_gate(tmp_path):
+    """Pair validity is computed from the stored pronunciations, so there
+    and only there corroboration is load-bearing.
+    """
+    b = _with_disputed(DeckBuilder(tmp_path), "near")
+    rep = report(b)
+    assert "pair/pronunciation-corroborated" in {f.rule for f in rep.findings}
+    assert rep.gate is False
+
+
+# --- Doctrine: a learner's answer is final (F9) ---
+
+def test_a_learner_veto_takes_a_judge_passed_picture_off_the_card(tmp_path):
+    """The judge passed it; the learner said no. The picture is gone and
+    the word is a gap again, not a card carrying an overruled artifact.
+    """
+    b = DeckBuilder(tmp_path)
+    b.picture_ratings = {"rice": "unacceptable-none"}
+    d = deck(b)
+    assert "target/picture-required" in {f.rule for f in d.syllabus.report().findings}
+    fronts = {subject: front for subject, front, _ in cards(d, "Production")}
+    assert b.seeded[("rice", 0)] not in fronts.get("rice", "")
+
+
+def test_after_a_learner_veto_only_the_learner_can_seat_a_picture(tmp_path):
+    """The learner vetoed the picture; the machine found another and the
+    judge passed it. It stays a candidate: the learner is asked, not
+    overruled, so the card stays empty until the learner rates. (The live
+    deck's 42 alphabet keywords sat in exactly this state after their
+    corpus photos were vetoed and the illustrator's replacements passed.)
+    """
+    b = DeckBuilder(tmp_path)
+    b.picture_ratings = {"rice": "unacceptable-none"}
+    b.picture_candidates = {"rice": [PictureCandidate(judge=True)]}
+    d = deck(b)
+    assert "target/picture-required" in {f.rule for f in d.syllabus.report().findings}
+    fronts = {subject: front for subject, front, _ in cards(d, "Production")}
+    assert b.seeded[("rice", 1)] not in fronts.get("rice", "")
+
+    rated = DeckBuilder(tmp_path / "rated")
+    rated.picture_ratings = {"rice": "unacceptable-none"}
+    rated.picture_candidates = {"rice": [PictureCandidate(judge=True, learner="good")]}
+    d = deck(rated)
+    fronts = {subject: front for subject, front, _ in cards(d, "Production")}
+    assert rated.seeded[("rice", 1)] in fronts["rice"]
+
+
+def test_a_learner_choice_outranks_a_judge_that_failed_it(tmp_path):
+    """The judge failed the second picture; the learner rated it good.
+    The learner's picture is on the card, the judge's is not.
+    """
+    b = DeckBuilder(tmp_path)
+    b.picture_candidates = {"rice": [PictureCandidate(judge=False, learner="good")]}
+    d = deck(b)
+    fronts = {subject: front for subject, front, _ in cards(d, "Production")}
+    assert b.seeded[("rice", 1)] in fronts["rice"]
+    assert b.seeded[("rice", 0)] not in fronts["rice"]
+
+
+# --- Doctrine: no unjudged artifact on a card (F11) ---
+
+def test_a_found_but_unjudged_picture_never_reaches_a_card(tmp_path):
+    """A picture on record with no verdict is a candidate, not a picture:
+    the word is reported as lacking one and no card shows it.
+    """
+    b = DeckBuilder(tmp_path)
+    b.unjudged_pictures = ["rice"]
+    d = deck(b)
+    rep = d.syllabus.report()
+    assert "target/picture-required" in {f.rule for f in rep.findings}
+    assert rep.gate is False
+    shown = "".join(front + back for _, front, back in
+                    cards(d, "Production") + cards(d, "Listening"))
+    assert b.seeded[("rice", 0)] not in shown
+
+
+# --- Doctrine: native audio on what the learner produces (F7) ---
+
+def test_tts_on_a_sentence_the_learner_produces_is_reported(tmp_path):
+    """DIVERGENCE from F7's text ("a Sentence filling a productive Target
+    carries native audio"): the deck reports it and ships it, the same
+    warn-not-error stance the synthetic pair takes above.
+    """
+    b = DeckBuilder(tmp_path)
+    b.sentence_speaker_kind = "synthetic"
+    rep = report(b)
+    assert "sentence/synthetic-productive" in {f.rule for f in rep.findings}
+    assert rep.gate is True                  # F7 as written: fail
+
+
+def test_tts_on_a_receptive_only_sentence_is_not_reported(tmp_path):
+    """Receptive-only Sentences may be TTS."""
+    b = DeckBuilder(tmp_path)
+    b.sentence_speaker_kind = "synthetic"
+    b.targets = [t for t in b.targets if t.id != "rice/productive"]
+    assert "sentence/synthetic-productive" not in rules_fired(b)
+
+
+# --- Doctrine: card identity survives regeneration (A2) ---
+
+def _built(d):
+    return build_deck(d.syllabus, d.db, d.media_store, current_rubric=d.current_rubric,
+                      prior=d.prior, provenance_source=d.provenance_source).built
+
+
+def test_a_card_keeps_its_identity_across_compiles_and_a_new_text_is_a_new_card(tmp_path):
+    """Identity derives from what the card teaches -- a word card from its
+    Word, a sentence card from its text -- so scheduling survives a
+    rebuild, and a replaced sentence is a new card.
+    """
+    first = {(i.family, i.subject): i.note.guid for i in _built(deck(DeckBuilder(tmp_path / "a")))}
+
+    reglossed = DeckBuilder(tmp_path / "b")
+    eat, rice = reglossed.words[1], reglossed.words[0]
+    reglossed.sentences = [sentence(((eat.id, rice.id),), (eat, rice), gloss="have a meal")]
+    second = {(i.family, i.subject): i.note.guid for i in _built(deck(reglossed))}
+    assert second == first                   # same words, same text: same cards
+
+    retexted = DeckBuilder(tmp_path / "c")
+    retexted.sentences = [sentence(((rice.id, eat.id),), (rice, eat), gloss="rice, eat")]
+    third = {(i.family, i.subject): i.note.guid for i in _built(deck(retexted))}
+    assert {k: v for k, v in third.items() if k[0] != "sentence"} == \
+        {k: v for k, v in first.items() if k[0] != "sentence"}
+    assert set(v for k, v in third.items() if k[0] == "sentence").isdisjoint(
+        v for k, v in first.items() if k[0] == "sentence")
+
+
+# --- Doctrine: every review maps back to what it taught (A6) ---
+
+def test_every_note_names_what_it_teaches_and_the_compile_that_made_it(tmp_path):
+    d = deck(DeckBuilder(tmp_path))
+    compile_to(d, tmp_path)
+    subject_prefixes = ("word::", "pair::", "grapheme::", "sentence::", "target::")
+    for note in read_apkg(tmp_path / "deck.apkg")["notes"]:
+        tags = note["tags"].split()
+        assert any(t.startswith("family::") for t in tags), tags
+        assert any(t.startswith("kind::") for t in tags), tags
+        assert any(t.startswith("compile::") for t in tags), tags
+        assert any(t.startswith(subject_prefixes) for t in tags), tags
+
+
+# --- Doctrine: one picture per word, everywhere (F6a) ---
+
+def test_a_grapheme_card_shows_its_keywords_own_picture(tmp_path):
+    """The grapheme borrows the keyword Word's picture; it never has one
+    of its own to drift from it.
+    """
+    b = DeckBuilder(tmp_path)
+    d = deck(b)
+    backs = [back for subject, _, back in cards(d, "Reading") if subject == "ก"]
+    assert backs and b.seeded[("chicken", 0)] in backs[0]
+
+
+# --- Doctrine: sounds, then words, then their sentences; receptive before
+# productive (E1, F8) ---
+
+def _dues_by_family(tmp_path, d):
+    """{family: [(subject template name, due)]} out of the written apkg."""
+    compile_to(d, tmp_path)
+    pkg = read_apkg(tmp_path / "deck.apkg")
+    by_mid = {str(m["id"]): m for m in pkg["models"].values()}
+    by_nid = {n["id"]: n for n in pkg["notes"]}
+    out: dict[str, list[tuple[str, int]]] = {}
+    for card in pkg["cards"]:
+        model = by_mid[str(by_nid[card["nid"]]["mid"])]
+        template = model["tmpls"][card["ord"]]["name"]
+        out.setdefault(model["name"], []).append((template, card["due"]))
+    return out
+
+
+def test_every_grapheme_is_due_before_any_word_and_a_sentence_after_its_words(tmp_path):
+    dues = _dues_by_family(tmp_path, deck(DeckBuilder(tmp_path)))
+    assert max(due for _, due in dues["grapheme"]) < min(due for _, due in dues["word"])
+    assert max(due for _, due in dues["word"]) < min(due for _, due in dues["sentence"])
+
+
+def test_a_words_receptive_cards_are_due_before_its_production_card(tmp_path):
+    """Per word: the listening card of "rice" precedes its production
+    card. (Compile stamps one note per word at its earliest Target's block
+    and separates the siblings by ord; order() places a word's productive
+    Target directly after its receptive one, so nothing sits between.)
+    """
+    d = deck(DeckBuilder(tmp_path))
+    compile_to(d, tmp_path)
+    pkg = read_apkg(tmp_path / "deck.apkg")
+    by_mid = {str(m["id"]): m for m in pkg["models"].values()}
+    rice = next(n for n in pkg["notes"] if n["flds"][0] == "ข้าว")
+    model = by_mid[str(rice["mid"])]
+    due = {model["tmpls"][c["ord"]]["name"]: c["due"]
+           for c in pkg["cards"] if c["nid"] == rice["id"]}
+    assert due["Listening"] < due["Production"]
+
+
+# --- Doctrine: an unknown speaker attribute never counts (E7) ---
+
+def test_an_unknown_speaker_attribute_never_counts_as_coverage(tmp_path):
+    b = DeckBuilder(tmp_path)
+    anon = Speaker(id="anon", kind="native", sex="unknown", age_band="unknown",
+                   region="unknown")
+    b.speakers = {subject: anon for subject in b.recordings}
+    speakers = next(m for m in report(b).metrics if m.rule == "coverage/speakers")
+    assert speakers.detail["recording"]["speakers"] == 1
+    assert speakers.detail["recording"]["sex"] == {}
+    assert speakers.detail["recording"]["region"] == {}
+
+
+# --- Doctrine: a word that marks its speaker's sex is voiced by that sex (E3) ---
+
+def test_a_female_marked_word_in_a_male_voice_ships(tmp_path):
+    """DIVERGENCE from E3's text ("voiced by a speaker of that sex on
+    every card"): the marking is enforced where recordings are sourced
+    (the voice constraint on the need) and by the run's veto path, not at
+    the deck. A recording supplied directly in the wrong voice is neither
+    reported nor dropped.
+    """
+    b = DeckBuilder(tmp_path)
+    dichan = word("i-female", "ดิฉัน", "I (female speaker)", speaker="female")
+    b.words = b.words + [dichan]
+    b.targets = b.targets + [Target(id=TargetId("i-female/receptive"), word="i-female",
+                                    skill="receptive", introduction="picture_card")]
+    b.categories = b.categories + [Category(name="Pronouns", members=frozenset({"i-female"}))]
+    b.pictures = b.pictures + ["i-female"]
+    b.recordings = b.recordings + ["i-female"]      # SOMCHAI, male
+    b.severities = {"target/sentence-required": "warn"}
+    d = deck(b)
+    rep = d.syllabus.report()
+    assert rep.gate is True                  # E3 as written: a finding
+    backs = {subject: back for subject, _, back in cards(d, "Listening")}
+    assert "[sound:" in backs["i-female"]
+
+
+# --- Doctrine: productive new-card rate capped (F12) ---
+
+def test_production_cards_share_the_one_deck_limit_with_every_other_card(tmp_path):
+    """DIVERGENCE from F12's text ("productive new-card rate capped"):
+    every card kind lands in one deck under one options group, so the
+    only cap is Anki's own new-cards-per-day for the whole deck.
+    """
+    import json
+    import sqlite3
+    import tempfile
+    import zipfile
+    d = deck(DeckBuilder(tmp_path))
+    compile_to(d, tmp_path)
+    pkg = read_apkg(tmp_path / "deck.apkg")
+    assert len({card["did"] for card in pkg["cards"]}) == 1
+    with zipfile.ZipFile(tmp_path / "deck.apkg") as zf:
+        db_bytes = zf.read("collection.anki2")
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = tmp_path / "col.anki2"
+        db_path.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(db_path))
+        (dconf_json,) = conn.execute("select dconf from col").fetchone()
+        conn.close()
+    assert len(json.loads(dconf_json)) == 1
