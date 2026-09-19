@@ -95,7 +95,7 @@ def test_registered_rules_match_the_spec_table():
     # rendition attempt's one-speaker intersection).
     expected = {
         "pair/rendition-required", "rendition/synthetic",
-        "coverage/confusions",
+        "coverage/confusions", "coverage/sound-stage",
         "coverage/categories", "coverage/exercise-depth", "coverage/pictures", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
         "sentence/fills-novelty",
@@ -337,6 +337,59 @@ def test_coverage_confusions_measures_pairs_and_speakers_per_confusion():
     metrics = {m.rule: m for m in syllabus.report().metrics}
     detail = metrics["coverage/confusions"].detail[confusion.id]
     assert detail == {"pairs": 1, "speakers": 1, "covered": True}
+
+
+# --- coverage/sound-stage ------------------------------------------------
+
+def test_coverage_sound_stage_measures_confusions_keywords_and_cells():
+    """Design §5: confusions at their weighted pair count, graphemes whose
+    keyword has a picture, name words with a chart cell; value the least."""
+    confusion, mid_word, low_word, pair = _mid_low_pair()          # weight 1 -> wants 1 pair
+    empty = SoundConfusion(id=ConfusionId("tone:low-rising"), dimension="tone",
+                           sounds=("low", "rising"), weight=5)      # wants 4, has 0
+    chicken = word("chicken", "ไก่", "chicken")                     # ไก่: chicken
+    egg = word("egg", "ไข่", "egg")                                 # ไข่: egg
+    name = word("name-chicken", "กอ ไก่", "recited name of the letter ก")
+    g_full = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                             keyword_word=chicken, name_word=name)
+    g_bare = Grapheme.create(symbol="ข", kind="consonant", sound="kh", consonant_class="high",
+                             keyword_word=egg)
+    media = FakeMediaIndex(pictures={"name-chicken", "chicken"})   # egg has no picture
+    syllabus = make_syllabus(words=(mid_word, low_word, chicken, egg, name), pairs=(pair,),
+                             confusions=(confusion, empty), graphemes=(g_full, g_bare),
+                             media=media)
+    (metric,) = [m for m in syllabus.report().metrics if m.rule == "coverage/sound-stage"]
+    assert metric.detail == {"confusions": {"full": 1, "of": 2},
+                             "keyword_pictures": {"with": 1, "of": 2},
+                             "cells": {"with": 1, "of": 1}}
+    assert metric.value == 0.5
+
+
+def test_coverage_sound_stage_is_one_on_an_empty_stage():
+    syllabus = make_syllabus()
+    (metric,) = [m for m in syllabus.report().metrics if m.rule == "coverage/sound-stage"]
+    assert metric.value == 1.0
+
+
+def test_coverage_sound_stage_value_is_the_least_part_when_only_cells_lag():
+    """Confusions and keyword_pictures both full (1.0); only cells lags at
+    1/2, so value must track cells, not the other two parts."""
+    confusion, mid_word, low_word, pair = _mid_low_pair()  # its pair is adopted -> full
+    chicken = word("chicken", "ไก่", "chicken")             # ไก่: chicken
+    egg = word("egg", "ไข่", "egg")                         # ไข่: egg
+    name_kor = word("name-chicken", "กอ ไก่", "recited name of the letter ก")
+    name_khor = word("name-egg", "ขอ ไข่", "recited name of the letter ข")
+    g_kor = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                            keyword_word=chicken, name_word=name_kor)
+    g_khor = Grapheme.create(symbol="ข", kind="consonant", sound="kh", consonant_class="high",
+                             keyword_word=egg, name_word=name_khor)
+    media = FakeMediaIndex(pictures={"chicken", "egg", "name-chicken"})  # name-egg has no cell
+    syllabus = make_syllabus(words=(mid_word, low_word, chicken, egg, name_kor, name_khor),
+                             pairs=(pair,), confusions=(confusion,),
+                             graphemes=(g_kor, g_khor), media=media)
+    (metric,) = [m for m in syllabus.report().metrics if m.rule == "coverage/sound-stage"]
+    assert metric.detail["cells"] == {"with": 1, "of": 2}
+    assert metric.value == 0.5
 
 
 # --- sentence/register-natural (judged) --------------------------------------

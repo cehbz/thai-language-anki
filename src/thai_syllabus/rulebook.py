@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
 from .entities import is_corroborated
+from .pairsearch import wanted
 from .rules import Finding, Metric, Rule
 
 if TYPE_CHECKING:
@@ -144,6 +145,37 @@ def _measure_coverage_confusions(syllabus: "Syllabus") -> Metric:
 COVERAGE_CONFUSIONS = Rule(id="coverage/confusions", principle="F1",
                            severity="info", shape="measure",
                            measure=_measure_coverage_confusions)
+
+
+# --- coverage/sound-stage ------------------------------------------------
+# F1 (design 2026-09-12 section 5): the stage as built -- confusions at
+# their weight-proportional pair count, graphemes whose keyword has a
+# picture, recited-name words with a chart cell. value = the least of the
+# three fractions (the stage is a gate: its least-built part is how built
+# it is); an empty part counts as full.
+
+def _fraction(have: int, of: int) -> float:
+    return have / of if of else 1.0
+
+
+def _measure_coverage_sound_stage(syllabus: "Syllabus") -> Metric:
+    short = wanted(syllabus.confusions, syllabus.pairs)
+    full = sum(1 for c in syllabus.confusions if short[c.id] == 0)
+    keyworded = sum(1 for g in syllabus.graphemes if syllabus.media.has_picture(g.keyword))
+    names = [g.name_word for g in syllabus.graphemes if g.name_word is not None]
+    cells = sum(1 for n in names if syllabus.media.picture_sha(n) is not None)
+    detail = {"confusions": {"full": full, "of": len(syllabus.confusions)},
+             "keyword_pictures": {"with": keyworded, "of": len(syllabus.graphemes)},
+             "cells": {"with": cells, "of": len(names)}}
+    value = min(_fraction(full, len(syllabus.confusions)),
+               _fraction(keyworded, len(syllabus.graphemes)),
+               _fraction(cells, len(names)))
+    return Metric(rule="coverage/sound-stage", value=value, detail=detail)
+
+
+COVERAGE_SOUND_STAGE = Rule(id="coverage/sound-stage", principle="F1",
+                            severity="info", shape="measure",
+                            measure=_measure_coverage_sound_stage)
 
 
 # --- sentence/register-natural (judged) --------------------------------------
@@ -590,6 +622,7 @@ RULES: list[Rule] = [
     COVERAGE_CATEGORIES,
     COVERAGE_EXERCISE_DEPTH,
     COVERAGE_CONFUSIONS,
+    COVERAGE_SOUND_STAGE,
     SENTENCE_REGISTER_NATURAL,
     RULEBOOK_TRACEABILITY,
     TARGET_PICTURE_REQUIRED,
