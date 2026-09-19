@@ -4299,7 +4299,7 @@ def test_pair_search_drops_a_candidate_whose_fresh_verdict_does_not_corroborate(
 
     result = pair_search_attempt(ctx)
 
-    assert result == AttemptResult(attempted=False)
+    assert result == AttemptResult(attempted=False, candidates_dropped=1)
     assert ctx.syllabus.pairs == ()
 
 

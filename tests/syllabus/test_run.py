@@ -2626,7 +2626,8 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences",
                            "requeried", "adopted_graphemes", "adopted_words",
-                           "adoption_skipped", "adopted_pairs", "candidate_asks"}
+                           "adoption_skipped", "adopted_pairs", "candidate_asks",
+                           "candidates_dropped"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,

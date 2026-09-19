@@ -330,6 +330,9 @@ class AttemptResult:
     # the run's needs identity
     adopted_pairs: int = 0
     candidate_asks: int = 0
+    # outside forms the pair search dropped from its pool this run because
+    # the judge's syllables do not corroborate the engines (r48)
+    candidates_dropped: int = 0
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -1886,14 +1889,15 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
         result = ctx.assessor.ask_many("judge", asks)
         _count_verdicts(spend, "judge", result)
         questions, excluded = list(result.collected), dict(result.excluded)
-    if not new_pairs and not asked:
+    if not new_pairs and not asked and not uncorroborated:
         return AttemptResult(attempted=False)
     # `candidate_asks` is what the pass asked about, not what came back to
     # ride the batch: a cache hit and a question that could not be
     # prepared were both asks.
-    return AttemptResult(attempted=True, questions=questions, excluded=excluded, spend=spend,
+    return AttemptResult(attempted=bool(new_pairs or asked), questions=questions,
+                         excluded=excluded, spend=spend,
                          adopted_pairs=len(new_pairs), adopted_words=len(new_words),
-                         candidate_asks=asked)
+                         candidate_asks=asked, candidates_dropped=uncorroborated)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

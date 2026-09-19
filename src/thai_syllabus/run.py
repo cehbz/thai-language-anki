@@ -152,6 +152,7 @@ class RunReport:
     # this run -- events, not needs, outside the identity above
     adopted_pairs: int = 0
     candidate_asks: int = 0
+    candidates_dropped: int = 0
     # picture needs that gained a first accepted picture this run (spec 3
     # r34 section 7): open before the run's resolve, covered by its end
     # -- an event count outside the identity; with a batch judge the
@@ -205,6 +206,7 @@ class _Tally:
     adoption_skipped: int = 0
     adopted_pairs: int = 0
     candidate_asks: int = 0
+    candidates_dropped: int = 0
     covered_new: int = 0
     requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
@@ -279,6 +281,7 @@ class _Tally:
         # attempt leaves these at 0, as the grapheme counts above.
         self.adopted_pairs += result.adopted_pairs
         self.candidate_asks += result.candidate_asks
+        self.candidates_dropped += result.candidates_dropped
         self.comments_read += result.comments_read
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
@@ -1186,7 +1189,8 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         drafted=tally.drafted, retired=tally.retired,
         adopted_graphemes=tally.adopted_graphemes, adopted_words=tally.adopted_words,
         adoption_skipped=tally.adoption_skipped, adopted_pairs=tally.adopted_pairs,
-        candidate_asks=tally.candidate_asks, covered_new=tally.covered_new,
+        candidate_asks=tally.candidate_asks, candidates_dropped=tally.candidates_dropped,
+        covered_new=tally.covered_new,
         requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
         comment_unactionable=tally.comment_unactionable,
@@ -1219,6 +1223,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adoption_skipped": report.adoption_skipped,
                 "adopted_pairs": report.adopted_pairs,
                 "candidate_asks": report.candidate_asks,
+                "candidates_dropped": report.candidates_dropped,
                 "covered_new": report.covered_new,
                 "requeried": report.requeried,
                 "comments_read": report.comments_read,

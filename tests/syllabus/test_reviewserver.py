@@ -2023,18 +2023,20 @@ def test_stats_history_carries_requeried_on_every_run(ctx_with_an_old_and_a_new_
 
 
 def test_stats_history_carries_adopted_pairs_and_candidate_asks_per_run(derivations, db):
-    """Spec 3 r47: both counts are per-run columns of the run history,
-    and a row written before r47 reads as 0 rather than dropping the
-    column for every run (the page takes its columns from the oldest
-    row).
+    """Spec 3 r47/r48: all three counts are per-run columns of the run
+    history, and a row written before r47/r48 reads as 0 rather than
+    dropping the column for every run (the page takes its columns from
+    the oldest row).
     """
     db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"}, answer=_run_report_answer(), cost=0.0)
     db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
              question={"kind": "runreport"},
-             answer=_run_report_answer(adopted_pairs=3, candidate_asks=7), cost=0.0)
+             answer=_run_report_answer(adopted_pairs=3, candidate_asks=7,
+                                       candidates_dropped=2), cost=0.0)
     hist = rs.compute_stats(derivations)["run_report_history"]
-    assert [(r["adopted_pairs"], r["candidate_asks"]) for r in hist] == [(0, 0), (3, 7)]
+    assert [(r["adopted_pairs"], r["candidate_asks"], r["candidates_dropped"])
+            for r in hist] == [(0, 0, 0), (3, 7, 2)]
 
 
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------

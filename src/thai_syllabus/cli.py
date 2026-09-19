@@ -130,6 +130,7 @@ def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
          f"adopted_words={report.adopted_words} "
          f"adoption_skipped={report.adoption_skipped} "
          f"adopted_pairs={report.adopted_pairs} candidate_asks={report.candidate_asks} "
+         f"candidates_dropped={report.candidates_dropped} "
          f"comments_read={report.comments_read} "
          f"comment_actions={report.comment_actions} "
          f"comment_unactionable={report.comment_unactionable} "
