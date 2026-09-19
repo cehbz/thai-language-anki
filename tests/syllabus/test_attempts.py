@@ -11,31 +11,33 @@ from datetime import date
 import pytest
 from PIL import Image as PILImage
 
-from thai_syllabus.assessor import (UNTRUSTED, Assessor, JudgeBackend, JudgeUnreachable,
-                                    RawVerdict, RenditionBackend, deck_field)
+from thai_syllabus.assessor import (UNTRUSTED, Assessor, Excluded, JudgeBackend, JudgeUnreachable,
+                                    ManyResult, RawVerdict, RenditionBackend, deck_field)
 from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
                                     ChartCell, Need, Sourcing,
                                     _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt, chart_cell,
                                     comment_attempt, current_best_of, grapheme_attempt,
-                                    phrase_attempt,
+                                    pair_search_attempt, phrase_attempt,
                                     picture_query_for, retire_sentence, sentence_attempt,
                                     sources_for, sources_for_need)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
-from thai_syllabus.derivations import attempts_since_change, exhausted
+from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
 from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, candidate_shas,
                                   comments, drafted_phrase, drafted_queries, drafts_in,
                                   gloss_on_requested, latest_phrase, parse_phrases,
                                   reading_of, retired_texts, retirements, rows_for,
                                   sentence_drafts)
+from thai_syllabus import attempts as attempts_module
 from thai_syllabus import curated as curated_module
-from thai_syllabus.curated import (build_categories, load_graphemes, load_targets, load_words,
-                                   save_graphemes, save_targets, save_words)
+from thai_syllabus.curated import (build_categories, load_graphemes, load_pairs, load_targets,
+                                   load_words, save_confusions, save_graphemes, save_pairs,
+                                   save_targets, save_words)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
                                     SoundConfusion, Syllable, text_sha)
-from thai_syllabus.ids import WordId
+from thai_syllabus.ids import ConfusionId, WordId
 from thai_syllabus.inventory import ConsonantRow
 from thai_syllabus.phonology import Engines
 from thai_syllabus.media import Provenance, Speaker
@@ -51,7 +53,7 @@ from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, S
 from thai_syllabus.tts import pick_voice
 
 from .builders import sentence as compose_sentence
-from .builders import target, thai_of, word
+from .builders import syl, target, thai_of, word
 from .fakes import FakeMediaIndex
 
 # This fixture's own role -> rubric map (rulebook.rubrics_for covers only
@@ -3568,16 +3570,19 @@ def _reads_normally_except(*unreadable_thai: str):
     return g2p
 
 
-def _grapheme_ctx(tmp_path, syllabus, *, engines=None, files=("words.yaml", "targets.yaml",
-                                                              "graphemes.yaml")):
+def _grapheme_ctx(tmp_path, syllabus, *, engines=None,
+                  files=("words.yaml", "targets.yaml", "graphemes.yaml",
+                        "pairs.yaml", "confusions.yaml")):
     """A ctx with a curated/ directory of its own (the run's writing
     command owns it) and injected engines -- pythainlp never loads. The
-    three files the pass adds rows to are written first, from the
-    syllabus's own rows (R-P2: the pass adds rows, it never creates the
+    files the adoption passes add rows to are written first, from the
+    syllabus's own rows (R-P2: the passes add rows, they never create the
     store); `files` names which of them exist, so a test can leave one
-    out.
+    out. A batch judge backend is wired in unconditionally (unused by the
+    grapheme pass, which asks nothing) so the pair search's own judge ask
+    has somewhere to land.
     """
-    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={})
+    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={"judge": _batch_judge()})
     ctx.curated_dir = tmp_path / "curated"
     ctx.curated_dir.mkdir(parents=True, exist_ok=True)
     if "words.yaml" in files:
@@ -3587,6 +3592,10 @@ def _grapheme_ctx(tmp_path, syllabus, *, engines=None, files=("words.yaml", "tar
         save_targets(ctx.curated_dir / "targets.yaml", list(syllabus.targets))
     if "graphemes.yaml" in files:
         save_graphemes(ctx.curated_dir / "graphemes.yaml", list(syllabus.graphemes))
+    if "pairs.yaml" in files:
+        save_pairs(ctx.curated_dir / "pairs.yaml", list(syllabus.pairs))
+    if "confusions.yaml" in files:
+        save_confusions(ctx.curated_dir / "confusions.yaml", list(syllabus.confusions))
     ctx.engines = engines or _engines()
     return ctx
 
@@ -4005,6 +4014,325 @@ def test_a_pass_that_died_before_targets_yaml_re_adopts_a_closure_keyword_too(
     assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
         "name-snake/receptive", "name-snake/productive"]
     assert ctx.syllabus.graphemes[0].name_word == "name-snake"
+
+
+# --- the pair search: the adoption pass for minimal pairs (spec 3 r47) -----
+
+TONE = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"),
+                      weight=2)
+
+
+def _confusion_syllabus(*words, confusions=(TONE,), pairs=()):
+    return Syllabus(words=tuple(words), targets=(target(f"{words[0].id}/receptive", words[0].id),),
+                    categories=(Category(name="Food", members=frozenset({words[0].id})),),
+                    confusions=tuple(confusions), pairs=tuple(pairs))
+
+
+def _engines_reading(readings: dict[str, tuple[Syllable, ...]]):
+    """Two engines that agree on every reading in `readings` (an outside
+    form's `engines_pronunciation` is then `engines_agree`), built the
+    same shape `_engines` builds its own fake pair."""
+    def g2p(thai: str):
+        return readings.get(thai)
+    return Engines(g2p=(g2p, g2p), tone=lambda thai: None)
+
+
+def test_pair_search_adopts_a_vocabulary_pair_and_writes_pairs_yaml(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", length="short",
+                                                       tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", length="short",
+                                                   tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))
+    result = pair_search_attempt(ctx)
+    assert result.attempted is True
+    assert (result.adopted_pairs, result.adopted_words, result.candidate_asks) == (1, 0, 0)
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/far-near"]
+    saved = load_pairs(ctx.curated_dir / "pairs.yaml", {w.id: w for w in ctx.syllabus.words},
+                       {TONE.id: TONE})
+    assert [(p.confusion, p.members) for p in saved] == [("tone:mid-low", ("near", "far"))]
+
+
+def test_pair_search_asks_the_judge_about_an_outside_form_it_needs(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    result = pair_search_attempt(ctx)
+    assert (result.adopted_pairs, result.candidate_asks) == (0, 1)
+    assert [q.question.subject for q in result.questions] == [f"{CANDIDATE_SUBJECT_PREFIX}ไกล"]
+    assert result.questions[0].question.subject_kind == "candidate"
+
+
+def test_pair_search_adopts_an_outside_form_once_the_judge_glossed_it(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
+                                        f"{CANDIDATE_SUBJECT_PREFIX}ไกล", "pronunciation-for-word"),
+                  subject=f"{CANDIDATE_SUBJECT_PREFIX}ไกล",
+                  question={"role": "pronunciation-for-word", "artifact_sha": None,
+                            "rubric": ctx.rubrics["pronunciation-for-word"],
+                            "kind": "pronunciation", "subject_kind": "candidate"},
+                  answer={"value": {"syllables": [{"segments": ["kl", "a", ""],
+                                                   "vowel_length": "short", "tone": "low"}],
+                                    "gloss": "far"}})
+    result = pair_search_attempt(ctx)
+    assert (result.adopted_pairs, result.adopted_words, result.candidate_asks) == (1, 1, 0)
+    far = ctx.syllabus.word("far")
+    assert (far.thai, far.meaning, far.pron.corroboration) == ("ไกล", "far", "adjudicated")
+    assert ctx.syllabus.category_of("far") is None
+    assert [p.members for p in ctx.syllabus.pairs] == [("near", "far")]
+    assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["near", "far"]
+
+
+def test_pair_search_stops_at_the_wanted_count_and_never_reuses_a_member(tmp_path):
+    a = word("a", "กา", "crow", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c = word("c", "ก้า", "c", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b, c))
+    assert pair_search_attempt(ctx).adopted_pairs == 1
+    assert pair_search_attempt(ctx) == AttemptResult(attempted=False)   # wanted 1 (weight 2), have 1
+
+
+def test_pair_search_does_nothing_without_pairs_yaml(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far),
+                        files=("words.yaml", "targets.yaml", "graphemes.yaml"))
+    assert pair_search_attempt(ctx) == AttemptResult(attempted=False, adoption_skipped=1)
+
+
+# Review fix round 1: a weight-5 confusion (pair_count 4) with two formable
+# pairs, so a second run still has `wanted > 0` and the old `taken` bug (built
+# from `by_thai`, a WordId never matching a Thai-keyed dict) could silently
+# reuse an adopted pair's members and duplicate its row.
+TONE5 = SoundConfusion(id=ConfusionId("tone:mid-low-5"), dimension="tone", sounds=("mid", "low"),
+                       weight=5)
+
+
+def test_pair_search_run_twice_does_not_duplicate_an_adopted_pair(tmp_path):
+    a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),))
+    d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b, c, d, confusions=(TONE5,)))
+
+    first = pair_search_attempt(ctx)
+    assert first.adopted_pairs == 2
+    assert sorted(p.id for p in ctx.syllabus.pairs) == [
+        "tone:mid-low-5/a-b", "tone:mid-low-5/c-d"]
+
+    second = pair_search_attempt(ctx)
+    assert second == AttemptResult(attempted=False)
+    assert sorted(p.id for p in ctx.syllabus.pairs) == [
+        "tone:mid-low-5/a-b", "tone:mid-low-5/c-d"]
+    saved = load_pairs(ctx.curated_dir / "pairs.yaml", {w.id: w for w in ctx.syllabus.words},
+                       {TONE5.id: TONE5})
+    assert sorted(p.id for p in saved) == ["tone:mid-low-5/a-b", "tone:mid-low-5/c-d"]
+
+
+def test_pair_search_adopts_a_late_pair_once_its_member_is_corroborated(tmp_path):
+    """The first run can only form a-b (c is not yet corroborated); once c
+    becomes corroborated the second run adopts c-d alone -- a-b, already
+    adopted, is never reconsidered."""
+    a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c_disputed = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),),
+                      corroboration="disputed")
+    d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b, c_disputed, d, confusions=(TONE5,)))
+
+    first = pair_search_attempt(ctx)
+    assert first.adopted_pairs == 1
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low-5/a-b"]
+
+    c_ready = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),))
+    ctx.syllabus = replace(ctx.syllabus, words=tuple(
+        c_ready if w.id == "c" else w for w in ctx.syllabus.words))
+
+    second = pair_search_attempt(ctx)
+    assert second.adopted_pairs == 1
+    assert [p.id for p in ctx.syllabus.pairs] == [
+        "tone:mid-low-5/a-b", "tone:mid-low-5/c-d"]
+
+
+def test_pair_search_gives_an_outside_members_pair_the_minted_word_id(tmp_path):
+    """The PairId of a pair with an outside member is built from the ids
+    the mint gives it -- not the pre-mint Candidates' Thai text -- so it
+    reads exactly like the all-vocabulary case."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
+                                        f"{CANDIDATE_SUBJECT_PREFIX}ไกล", "pronunciation-for-word"),
+                  subject=f"{CANDIDATE_SUBJECT_PREFIX}ไกล",
+                  question={"role": "pronunciation-for-word", "artifact_sha": None,
+                            "rubric": ctx.rubrics["pronunciation-for-word"],
+                            "kind": "pronunciation", "subject_kind": "candidate"},
+                  answer={"value": {"syllables": [{"segments": ["kl", "a", ""],
+                                                   "vowel_length": "short", "tone": "low"}],
+                                    "gloss": "far"}})
+    result = pair_search_attempt(ctx)
+    assert result.adopted_pairs == 1
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/far-near"]
+
+
+def test_pair_search_asks_about_both_outside_forms_of_a_selected_pair(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ตา", "ต่า")
+    ctx.engines = _engines_reading({"ตา": (syl(onset="t", vowel="a", tone="mid"),),
+                                   "ต่า": (syl(onset="t", vowel="a", tone="low"),)})
+    result = pair_search_attempt(ctx)
+    assert result.adopted_pairs == 0
+    assert result.candidate_asks == 2
+    assert sorted(q.question.subject for q in result.questions) == sorted(
+        f"{CANDIDATE_SUBJECT_PREFIX}{form}" for form in ("ตา", "ต่า"))
+
+
+def test_pair_search_caps_asks_at_pair_search_asks(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ตา", "ต่า")
+    ctx.engines = _engines_reading({"ตา": (syl(onset="t", vowel="a", tone="mid"),),
+                                   "ต่า": (syl(onset="t", vowel="a", tone="low"),)})
+    ctx.pair_search_asks = 1
+    result = pair_search_attempt(ctx)
+    assert result.adopted_pairs == 0
+    assert result.candidate_asks == 1
+    assert len(result.questions) == 1
+    assert result.questions[0].question.subject in {
+        f"{CANDIDATE_SUBJECT_PREFIX}ตา", f"{CANDIDATE_SUBJECT_PREFIX}ต่า"}
+
+
+def test_pair_search_resolves_a_homograph_by_word_id_not_thai(tmp_path):
+    """Two Words sharing one `thai` (a homograph; load_words dedupes ids
+    only, never thai) -- a vocabulary-member lookup keyed on `thai` alone
+    could resolve the wrong Word, or mint a pair from it that itself
+    violates the confusion and raises. Keyed on word_id, the pass adopts
+    the pair the search actually chose and never raises."""
+    w1a = word("w1a", "กา", "a-meaning", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    w1b = word("w1b", "กา", "b-meaning", syllables=(syl(onset="k", vowel="a", tone="falling"),))
+    w3 = word("w3", "ก่า", "partner", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low-homograph"), dimension="tone",
+                               sounds=("mid", "low"), weight=1)
+    syllabus = Syllabus(words=(w1a, w1b, w3),
+                        targets=(target("w1a/receptive", "w1a"),),
+                        categories=(Category(name="Food", members=frozenset({"w1a"})),),
+                        confusions=(confusion,))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+
+    result = pair_search_attempt(ctx)
+
+    assert result.adopted_pairs == 1
+    assert [p.members for p in ctx.syllabus.pairs] == [("w1a", "w3")]
+
+
+def _candidate_verdict(ctx, thai, syllables, gloss):
+    """A fresh judge verdict on an outside form, as the pair search's own
+    ask records it."""
+    ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
+                                        f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
+                                        "pronunciation-for-word"),
+                  subject=f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
+                  question={"role": "pronunciation-for-word", "artifact_sha": None,
+                            "rubric": ctx.rubrics["pronunciation-for-word"],
+                            "kind": "pronunciation", "subject_kind": "candidate"},
+                  answer={"value": {"syllables": syllables, "gloss": gloss}})
+
+
+def test_pair_search_drops_a_candidate_whose_fresh_verdict_does_not_corroborate(tmp_path):
+    """I3: a form the engines agree on, whose judge verdict then disagrees
+    with them, is out of the pool -- not kept on its `engines_agree`
+    reading, where it would be selected every run and re-asked for ever as
+    a cache hit."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    _candidate_verdict(ctx, "ไกล",
+                       [{"segments": ["kl", "a", ""], "vowel_length": "short",
+                         "tone": "falling"}], "far")
+
+    result = pair_search_attempt(ctx)
+
+    assert result == AttemptResult(attempted=False)
+    assert ctx.syllabus.pairs == ()
+
+
+def test_pair_search_reads_each_frequency_form_once_across_two_passes(tmp_path):
+    """I6: the engines' reading of a frequency form is memoised on the
+    ctx, so a second pass of the same invocation pays nothing for it."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    calls: list[str] = []
+
+    def g2p(thai: str):
+        calls.append(thai)
+        return {"ไกล": (syl(onset="kl", vowel="a", tone="low"),)}.get(thai)
+
+    ctx.engines = Engines(g2p=(g2p, g2p), tone=lambda thai: None)
+
+    pair_search_attempt(ctx)
+    after_first = len(calls)
+    pair_search_attempt(ctx)
+
+    assert after_first > 0
+    assert len(calls) == after_first
+
+
+def test_pair_search_never_loads_the_engines_for_a_vocabulary_only_deck(tmp_path, monkeypatch):
+    """I6: `default_engines` pulls in pythainlp/torch, so it is resolved
+    only when there is a frequency form to read -- a deck whose pairs come
+    out of the vocabulary never touches it."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))
+    ctx.engines = None
+
+    def boom():
+        raise AssertionError("the engines were loaded for a vocabulary-only pass")
+
+    monkeypatch.setattr(attempts_module, "default_engines", boom)
+
+    assert pair_search_attempt(ctx).adopted_pairs == 1
+
+
+class _ExcludingAssessor:
+    """An assessor that prepares nothing: every ask is excluded, so
+    `collected` is empty though the asks were made."""
+
+    def __init__(self):
+        self.asked: list = []
+
+    def ask_many(self, backend: str, asks):
+        self.asked = list(asks)
+        return ManyResult(resolved={}, collected=[],
+                          excluded={str(i): Excluded(subject=a.subject, artifact_sha=None,
+                                                     reason="no rubric")
+                                    for i, a in enumerate(self.asked)})
+
+
+def test_pair_search_counts_the_asks_it_made_not_the_questions_collected(tmp_path):
+    """`candidate_asks` is what the pass asked the judge about this run
+    (spec 3 r47 §7); a question the assessor could not prepare was still an
+    ask."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    ctx.assessor = _ExcludingAssessor()
+
+    result = pair_search_attempt(ctx)
+
+    assert result.questions == [] and len(result.excluded) == 1
+    assert result.candidate_asks == 1
 
 
 # --- sources_for_need: the roster one need is asked (spec 3 r41 §5) ---------

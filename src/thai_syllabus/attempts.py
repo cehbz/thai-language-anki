@@ -43,9 +43,11 @@ from .derivations import (
     DEFAULT_SENTENCE_NOTHING_CAP,
     DEFAULT_TRANSIENT_CAP,
     GLYPH_SOURCES,
+    CANDIDATE_SUBJECT_PREFIX,
     CurrentBest,
     aged_out,
     available_needs,
+    candidate_adjudications,
     current_best,
     need_sources,
     passing_pictures,
@@ -54,13 +56,14 @@ from .derivations import (
     sentence_exhausted,
     unjudged_candidates,
 )
-from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, Target, Word, clauses_to_json,
-                       element_word, is_corroborated)
+from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
+                       Target, Word, clauses_to_json, element_word, is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
 from .media import Speaker
-from .phonology import Engines, default_engines, engines_pronunciation
+from .pairsearch import Candidate, pair_id_for, select_pairs, wanted
+from .phonology import Engines, corroborates, default_engines, engines_pronunciation
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PARSE_SUBJECT,
                      PHRASE_SUBJECT)
@@ -77,7 +80,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "ChartCell", "chart_cell", "GLYPH_SOURCE",
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
-           "GRAPHEME_NAME_MEANING", "retire_sentence",
+           "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
@@ -144,7 +147,7 @@ def sources_for_need(ctx: Sourcing, need: Need) -> tuple[str, ...]:
                         need.subject_kind)
 
 
-SubjectKind = Literal["word", "pair", "grapheme", "sentence"]
+SubjectKind = Literal["word", "pair", "grapheme", "sentence", "candidate"]
 
 # A recording's or rendition's voice constraint (spec 1 section 1 (r10);
 # spec 3 section 5): "male"/"female" admit that sex's own pool alone,
@@ -264,6 +267,11 @@ class Sourcing:
     search_pairs: bool = True
     pair_search_depth: int = 5000
     pair_search_asks: int = 40
+    # The engines' reading of each frequency form the pair search has
+    # already read (None when they read nothing), so a second pass of the
+    # same invocation pays no engine time for a form the first one read.
+    # Per-Sourcing, not global: it lives exactly as long as the run does.
+    reading_memo: dict[str, Pronunciation | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -314,6 +322,13 @@ class AttemptResult:
     # result first, then takes its judge-death path (spec 3 r30 section
     # 5). A death before anything was written still raises.
     judge_unreachable: bool = False
+    # the pair search (spec 3 r47 section 5): MinimalPairs adopted into
+    # pairs.yaml this run (each also counted in adopted_words above, for
+    # the outside forms it minted as closure Words), and the outside
+    # forms the judge was asked about this run -- events, all outside
+    # the run's needs identity
+    adopted_pairs: int = 0
+    candidate_asks: int = 0
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -1674,6 +1689,210 @@ def grapheme_attempt(ctx: Sourcing, *,
               adopted_graphemes, completed_graphemes, adopted_words)
     return AttemptResult(attempted=True, adopted_graphemes=adopted_graphemes,
                          adopted_words=adopted_words, adoption_skipped=skipped)
+
+
+# --- the pair search: the adoption pass for minimal pairs (spec 3 r47) ------
+
+_PAIR_FILES = ("words.yaml", "pairs.yaml")
+
+# `Sourcing.reading_memo` holds None for a form the engines read nothing
+# for, so "absent" needs a sentinel of its own.
+_MISSING = object()
+
+
+def _forvo_usernames(ctx: Sourcing, word_id: WordId) -> frozenset[str]:
+    """The Forvo speakers the record already holds for a word's recording
+    lookups -- read, never asked (the search makes no lookup)."""
+    names: set[str] = set()
+    for r in record.rows_for(ctx.db, str(word_id), "recording"):
+        if r.port == "provide" and r.backend == "forvo":
+            names.update(i.get("username") for i in r.answer.get("items", [])
+                        if isinstance(i, Mapping) and i.get("username"))
+    return frozenset(names)
+
+
+def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
+    """One pass per run (design 2026-09-12 section 2; spec 3 r47 section 5):
+    for every confusion still short of its weight-proportional pair count,
+    the best exact pairs the vocabulary can form are adopted now, into
+    pairs.yaml; a pair needing an outside form waits until the judge has
+    glossed and the engines corroborated that form (derivations.
+    candidate_adjudications), when the form is minted as a closure Word in
+    words.yaml and the pair adopted; the outside forms still wanted are
+    asked about, at most `ctx.pair_search_asks` per run, riding the run's
+    batch. Both files are rewritten whole from the loaded rows plus the
+    new ones -- rows added, none removed (spec 2 r17). The search never
+    makes a Forvo lookup; a shared speaker on the record is a preference.
+
+    An outside form whose fresh verdict does NOT corroborate the engines
+    leaves the pool altogether rather than falling back to its engine
+    reading: kept, it would be selected every run and re-asked for ever
+    as a cache hit. The engines' reading of a form is memoised on the ctx
+    (`Sourcing.reading_memo`) and the engines themselves are resolved
+    only when there is a frequency form to read.
+    """
+    if ctx.curated_dir is None or not ctx.search_pairs:
+        return AttemptResult(attempted=False)
+    need = wanted(ctx.syllabus.confusions, ctx.syllabus.pairs)
+    if not any(need.values()):
+        return AttemptResult(attempted=False)
+    missing = [name for name in _PAIR_FILES if not (ctx.curated_dir / name).exists()]
+    if missing:
+        _log.warning("pair search: %s absent from %s -- nothing adopted",
+                     ", ".join(missing), ctx.curated_dir)
+        return AttemptResult(attempted=False, adoption_skipped=1)
+    from .curated import save_pairs, save_words
+    engines = ctx.engines
+
+    def resolve_engines() -> Engines:
+        # Resolved on the first frequency form there is to read, never
+        # before: constructing the real engines pulls in pythainlp/torch,
+        # and a deck whose pairs come out of the vocabulary reads none.
+        nonlocal engines
+        if engines is None:
+            engines = default_engines()
+        return engines
+
+    words = list(ctx.syllabus.words)
+    by_thai = {w.thai: w for w in words}
+    by_id = {w.id: w for w in words}
+    rank_of = ctx.syllabus.frequency
+    verdicts = candidate_adjudications(ctx.db, current_rubric=ctx.rubrics)
+    candidates: list[Candidate] = [
+        Candidate(thai=w.thai, pron=w.pron, word_id=w.id, rank=rank_of.get(w.id))
+        for w in words if is_corroborated(w.pron.corroboration)]
+    outside: dict[str, Candidate] = {}
+    uncorroborated = 0
+    for rank, form in enumerate(ctx.frequency_words()[:ctx.pair_search_depth], 1):
+        if form in by_thai:
+            continue
+        reading = ctx.reading_memo.get(form, _MISSING)
+        if reading is _MISSING:
+            reading = engines_pronunciation(form, resolve_engines())
+            ctx.reading_memo[form] = reading
+        if reading is None:
+            continue
+        verdict = verdicts.get(form)
+        if verdict is not None:
+            # The judge has spoken about this form and the engines do not
+            # back it: the form leaves the pool altogether. Falling back
+            # to its `engines_agree` reading would select it again every
+            # run and re-ask the same question as a cache hit for ever.
+            if not corroborates(verdict.syllables, form, resolve_engines()):
+                uncorroborated += 1
+                _log.info("pair search: candidate %s dropped -- its verdict does not "
+                          "corroborate the engines", form)
+                continue
+            pron = Pronunciation(syllables=verdict.syllables, corroboration="adjudicated")
+        elif reading.corroboration == "engines_agree":
+            pron = reading
+        else:
+            continue
+        outside[form] = Candidate(thai=form, pron=pron, word_id=None, rank=rank)
+    candidates += outside.values()
+    usernames = {w.id: _forvo_usernames(ctx, w.id) for w in words}
+
+    def shares(a: Candidate, b: Candidate) -> bool:
+        return bool(a.word_id and b.word_id
+                    and usernames[a.word_id] & usernames[b.word_id])
+
+    to_ask: list[str] = []
+    new_words: list[Word] = []
+    new_pairs: list[MinimalPair] = []
+    taken_ids = {str(w.id) for w in words}
+    for confusion in sorted(ctx.syllabus.confusions, key=lambda c: (-c.weight, c.id)):
+        count = need[confusion.id]
+        if count <= 0:
+            continue
+        taken = {by_id[m].thai for p in ctx.syllabus.pairs if p.confusion == confusion.id
+                for m in p.members if m in by_id}
+        taken |= {w.thai for w in new_words}
+        for a, b in select_pairs(confusion, candidates, wanted=count, taken=taken, shares=shares):
+            resolved: list[tuple[Candidate, Word]] = []
+            unresolved: list[str] = []
+            for m in (a, b):
+                if m.word_id is not None:
+                    resolved.append((m, by_id[m.word_id]))
+                    continue
+                verdict = verdicts.get(m.thai)
+                if verdict is None or m.pron.corroboration != "adjudicated":
+                    unresolved.append(m.thai)
+                    continue
+                try:
+                    word_id = slug_id(verdict.gloss, taken_ids)
+                except ValueError as e:
+                    # The gloss is the judge's, not ours: one that names
+                    # no id leaves the form unresolved rather than killing
+                    # the pass. `candidate_adjudications` already skips
+                    # such a verdict; this is the belt under that brace.
+                    _log.warning("pair search: %s keeps no id from its gloss (%s) -- skipped",
+                                 m.thai, e)
+                    unresolved.append(m.thai)
+                    continue
+                new = Word(id=word_id, thai=m.thai, pron=m.pron, meaning=verdict.gloss)
+                taken_ids.add(str(new.id))
+                resolved.append((m, new))
+            if unresolved:
+                # Both outside forms of a pair the run cannot yet complete
+                # are collected -- the pair itself waits, and stays out of
+                # taken/new_pairs, for a later pass once every member is
+                # adjudicated (r47: a pair is adopted whole or not at all).
+                for thai in unresolved:
+                    if thai not in to_ask:
+                        to_ask.append(thai)
+                continue
+            (ca, word_a), (cb, word_b) = resolved
+            candidate_a = replace(ca, word_id=word_a.id)
+            candidate_b = replace(cb, word_id=word_b.id)
+            try:
+                pair = MinimalPair.create(
+                    id=pair_id_for(confusion, candidate_a, candidate_b), confusion=confusion,
+                    members=(word_a, word_b))
+            except ValueError as e:
+                _log.warning("pair search: %s/%s is not a valid pair for %s (%s) -- skipped",
+                             word_a.thai, word_b.thai, confusion.id, e)
+                continue
+            for w in (word_a, word_b):
+                if w.thai not in by_thai:
+                    new_words.append(w)
+                by_thai.setdefault(w.thai, w)
+                by_id.setdefault(w.id, w)
+            new_pairs.append(pair)
+    if new_pairs:
+        rows = [(w, ctx.syllabus.category_of(w.id)) for w in words] + [(w, None) for w in new_words]
+        save_words(ctx.curated_dir / "words.yaml", rows)
+        save_pairs(ctx.curated_dir / "pairs.yaml", list(ctx.syllabus.pairs) + new_pairs)
+        ctx.syllabus = ctx.syllabus.with_adoptions(
+            words=[w for w, _ in rows], targets=ctx.syllabus.targets,
+            graphemes=ctx.syllabus.graphemes, categories=ctx.syllabus.categories,
+            pairs=list(ctx.syllabus.pairs) + new_pairs)
+    if new_pairs or uncorroborated:
+        _log.info("pair search: %d pair(s) adopted, %d outside word(s) minted, "
+                  "%d candidate(s) dropped on a verdict the engines do not corroborate",
+                  len(new_pairs), len(new_words), uncorroborated)
+    questions: list = []
+    excluded: dict = {}
+    spend: dict[str, Spend] = {}
+    asked = 0
+    if to_ask:
+        role = role_for("pronunciation")
+        asks = [AssessQuestion(subject=f"{CANDIDATE_SUBJECT_PREFIX}{form}", role=role,
+                               artifact_sha=None, rubric=ctx.rubrics[role],
+                               params={"thai": form, "meaning": "(unknown: give the gloss)"},
+                               kind="pronunciation", subject_kind="candidate")
+                for form in to_ask[:ctx.pair_search_asks]]
+        asked = len(asks)
+        result = ctx.assessor.ask_many("judge", asks)
+        _count_verdicts(spend, "judge", result)
+        questions, excluded = list(result.collected), dict(result.excluded)
+    if not new_pairs and not asked:
+        return AttemptResult(attempted=False)
+    # `candidate_asks` is what the pass asked about, not what came back to
+    # ride the batch: a cache hit and a question that could not be
+    # prepared were both asks.
+    return AttemptResult(attempted=True, questions=questions, excluded=excluded, spend=spend,
+                         adopted_pairs=len(new_pairs), adopted_words=len(new_words),
+                         candidate_asks=asked)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

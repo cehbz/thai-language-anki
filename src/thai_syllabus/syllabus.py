@@ -549,18 +549,24 @@ class Syllabus:
 
     def with_adoptions(self, *, words: Sequence[Word], targets: Sequence[Target],
                        graphemes: Sequence[Grapheme],
-                       categories: Sequence[Category]) -> "Syllabus":
+                       categories: Sequence[Category],
+                       pairs: Sequence[MinimalPair] | None = None) -> "Syllabus":
         """This Syllabus over the curated rows a run's adoption pass has
         just written (spec 2 r17, spec 3 r40 section 5) -- the whole list
         of each, in its own order, not an addition, exactly as
         `with_words` takes the whole word list. A category's membership
         comes along because a name word carries one (spec 1 r16) and
-        `category_of` is what reads it. A fresh instance, so
+        `category_of` is what reads it. `pairs` is the pair search's own
+        addition (spec 3 r47 section 5): the whole list it wrote to
+        pairs.yaml, or None to keep this Syllabus's own (a caller outside
+        that pass never touches pairs.yaml). A fresh instance, so
         `_word_index`, `name_word_ids` and every other cached_property is
         recomputed rather than carried over stale.
         """
-        return dataclasses.replace(self, words=tuple(words), targets=tuple(targets),
-                                   graphemes=tuple(graphemes), categories=tuple(categories))
+        return dataclasses.replace(
+            self, words=tuple(words), targets=tuple(targets),
+            graphemes=tuple(graphemes), categories=tuple(categories),
+            pairs=tuple(pairs) if pairs is not None else self.pairs)
 
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
               ) -> list[tuple[Sentence, tuple[Target, ...]]]:
