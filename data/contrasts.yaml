@@ -33,19 +33,11 @@
 - {id: "aspiration:velar",           kind: aspiration, weight: 3}  # k vs kʰ
 - {id: "aspiration:affricate",       kind: aspiration, weight: 2}  # tɕ vs tɕʰ
 
-# Vowel length is phonemic across the inventory; one axis gave three pairs where
-# aspiration got six axes and fifteen. Split three ways by vowel height.
-# KNOWN LIMITATION: all three carry sounds [short, long], so
-# exact_confusion_violation cannot tell them apart, and thai_deck_gen's
-# producers/pairs.py:37 predicate branches on the confusion's kind alone,
-# ignoring the rest of the id -- find_pair is deterministic over
-# sorted(lexicon), so as things stand the split yields the identical word
-# pair three times, not three different pairs. Making it useful needs a
-# SoundConfusion field so the pair search can restrict each axis to its own
-# vowel group (spec 1). Tracked in TODO.
-- {id: "vowel_length:low",  kind: vowel_length, weight: 4}
-- {id: "vowel_length:mid",  kind: vowel_length, weight: 4}
-- {id: "vowel_length:high", kind: vowel_length, weight: 4}
+# One row: exact_confusion_violation matches on dimension and sound
+# values, so three rows split by vowel height yielded the identical pair
+# set three times (measured 2026-09-18). Height coverage, if ever wanted,
+# is a SoundConfusion field, not three ids.
+- {id: "vowel_length:short-long", kind: vowel_length, weight: 4}
 
 - {id: "consonant:ng-onset", kind: consonant,    weight: 2}  # production, not perception
 - {id: "vowel_quality:e-ɛ",  kind: vowel_quality, weight: 3}
