@@ -29,6 +29,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import ipa
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey
 from .compile import (CARD_CSS, CARD_MEANINGS, build_deck, card_kind_of, field_values,
@@ -190,6 +191,20 @@ def _question_shown(kind: str, subject: str, subject_kind: str, current_sha: str
             "syllabus_state_id": syllabus_state_id}
 
 
+def _rendition_member_map(d: "Derivations", subject: str, artifact_sha: str | None
+                          ) -> dict[str, str]:
+    """member word id -> recording sha off the newest "rendition" assess
+    row naming `artifact_sha` (cachekeys.rendition_identity); empty when
+    there is no such row."""
+    if artifact_sha is None:
+        return {}
+    rows = [r for r in d.db.assessments_of(subject) if r.port == "assess"
+           and r.backend == "rendition" and r.question.get("artifact_sha") == artifact_sha]
+    if not rows:
+        return {}
+    return dict(rows[-1].question.get("params", {}).get("members", {}) or {})
+
+
 def _rendition_member_shas(d: "Derivations", subject: str, artifact_sha: str | None) -> list[str]:
     """A rendition's own artifacts (spec 5 r9): its member recording
     shas, in the pair's own member order -- the same params["members"]
@@ -199,18 +214,46 @@ def _rendition_member_shas(d: "Derivations", subject: str, artifact_sha: str | N
     question names what the learner actually heard, never the identity
     sha itself. Empty when there is no such row, or no pair to order by.
     """
-    if artifact_sha is None:
+    members = _rendition_member_map(d, subject, artifact_sha)
+    if not members:
         return []
-    rows = [r for r in d.db.assessments_of(subject) if r.port == "assess"
-           and r.backend == "rendition" and r.question.get("artifact_sha") == artifact_sha]
-    if not rows:
-        return []
-    members = rows[-1].question.get("params", {}).get("members", {}) or {}
     try:
         pair = d.syllabus.pair(PairId(subject))
     except KeyError:
         return list(members.values())
     return [members[m] for m in pair.members if m in members]
+
+
+def _rendition_members(d: "Derivations", subject: str, artifact_sha: str | None
+                       ) -> list[dict[str, Any]]:
+    """What a rendition question shows per member (spec 5 r14): the
+    member's Thai, IPA and gloss, and its own recording (sha, url,
+    speaker id) under the current rendition, in the pair's member order.
+    A member with no recording under it carries None for those three."""
+    try:
+        pair = d.syllabus.pair(PairId(subject))
+    except KeyError:
+        return []
+    shas = _rendition_member_map(d, subject, artifact_sha)
+    out: list[dict[str, Any]] = []
+    for member in pair.members:
+        w = d.syllabus.find_word(member)
+        sha = shas.get(member)
+        prov = d.db.media_provenance(sha) if sha else None
+        speaker = prov.get("speaker") if prov else None
+        out.append({"id": str(member), "thai": w.thai if w else None,
+                    "ipa": ipa.render(w.pron) if w else None,
+                    "gloss": w.meaning if w else None,
+                    "sha": sha, "url": f"/media/{sha}" if sha else None,
+                    "speaker": speaker.id if speaker else None})
+    return out
+
+
+def _confusion_of(syllabus: Syllabus, subject: str) -> str | None:
+    try:
+        return str(syllabus.pair(PairId(subject)).confusion)
+    except KeyError:
+        return None
 
 
 def _comment_views(rows: Sequence[Answer]) -> list[dict[str, Any]]:
@@ -303,7 +346,7 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                              current_rubric=d.current_rubric))
         current["source"] = best.source
     rejected = _rejected(d, subject, kind, rows, best.artifact_sha)
-    return {
+    item = {
         "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role,
         # The criterion the judge's verdicts under it were given: the
@@ -333,6 +376,10 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                         if kind == "rendition" else ())),
         "comments": _comment_views(d.db.assessments_of(subject)),
     }
+    if kind == "rendition":
+        item["members"] = _rendition_members(d, subject, best.artifact_sha)
+        item["confusion"] = _confusion_of(d.syllabus, subject)
+    return item
 
 
 def _tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
@@ -428,7 +475,7 @@ def _reask_questions(d: "Derivations", study: StudyReader,
     for found in reasks(d.db, study, d.syllabus, lapse_threshold=threshold):
         best = _best(d, found.subject, found.kind)
         role = role_for(found.kind, found.subject_kind)
-        out.append({
+        item = {
             "type": "reask", "subject": found.subject, "kind": found.kind,
             "subject_kind": found.subject_kind,
             "role": role,
@@ -445,7 +492,11 @@ def _reask_questions(d: "Derivations", study: StudyReader,
                 member_shas=(_rendition_member_shas(d, found.subject, best.artifact_sha)
                             if found.kind == "rendition" else ())),
             "comments": _comment_views(d.db.assessments_of(found.subject)),
-        })
+        }
+        if found.kind == "rendition":
+            item["members"] = _rendition_members(d, found.subject, best.artifact_sha)
+            item["confusion"] = _confusion_of(d.syllabus, found.subject)
+        out.append(item)
     return out
 
 
@@ -1526,6 +1577,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     padding: 4px 12px; border-radius: 8px; font-size: 18px; background: #10262a;
   }
   .current-artifact { max-width: min(90vw, 640px); }
+  .rendition-members .member { margin: 6px 0; }
   .verdict { color: #9aa4b1; font-size: 14px; }
   .provenance { font-size: 11px; color: #9aa4b1; text-transform: uppercase; letter-spacing: 0.04em; }
   .subject-cards { display: flex; flex-direction: column; gap: 14px; width: 100%; }
@@ -1889,6 +1941,28 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     });
   }
 
+  // Spec 5 §4: a rendition names no single artifact of its own -- this
+  // renders its members instead (confusion, speaker, and one row per
+  // member with its Thai, IPA, gloss and its own recording player, or
+  // an empty note where a member has none). Shared by renderRate's
+  // current-artifact slot and renderReask's, so neither renders the
+  // identity sha through artifactView as a broken image.
+  function renderRenditionMembers(q, box) {
+    var mem = el("div", { "class": "current-artifact card rendition-members" });
+    mem.appendChild(el("div", { "class": "query" },
+      "confusion: " + (q.confusion || "?") + " · speaker: "
+      + ((q.members || []).map(function (m) { return m.speaker; }).filter(Boolean)[0] || "?")));
+    (q.members || []).forEach(function (m) {
+      var row = el("div", { "class": "member" });
+      row.appendChild(el("div", { "class": "thai" }, m.thai || m.id));
+      row.appendChild(el("div", { "class": "query" }, (m.ipa || "") + (m.gloss ? " · " + m.gloss : "")));
+      if (m.url) { row.appendChild(artifactView("recording", { url: m.url, sha: m.sha }, null)); }
+      else { row.appendChild(el("div", { "class": "empty" }, "no recording under this rendition")); }
+      mem.appendChild(row);
+    });
+    box.appendChild(mem);
+  }
+
   function renderRate(q, box) {
     box.appendChild(subjectHeader(q));
     if (q.gloss) { box.appendChild(el("div", { "class": "query" }, "gloss: " + q.gloss)); }
@@ -1904,7 +1978,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     cards.appendChild(el("div", { "class": "empty" }, "loading the subject's cards"));
     box.appendChild(cards);
     ensureCards(function () { fillSubjectCards(cards, q.subject); });
-    if (q.current) {
+    if (q.current && q.kind === "rendition") {
+      renderRenditionMembers(q, box);
+      if (q.current.verdict) { box.appendChild(el("div", { "class": "verdict" }, q.current.verdict)); }
+    } else if (q.current) {
       // "card" carries compile.CARD_CSS's own sizing (F4: judge the
       // artifact at the size the card will actually show it).
       var cur = el("div", { "class": "current-artifact card" });
@@ -1921,7 +1998,14 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     }
     if (q.rejected && q.rejected.length) {
       var thumbs = el("div", { "class": "thumbs" });
-      q.rejected.forEach(function (art) { thumbs.appendChild(artifactView(q.kind, art, art.verdict || "no verdict yet", true)); });
+      q.rejected.forEach(function (art) {
+        if (q.kind === "rendition") {
+          thumbs.appendChild(el("div", { "class": "artifact artifact-thumb" },
+            "rendition " + art.sha.slice(0, 8) + (art.verdict ? " — " + art.verdict : "")));
+        } else {
+          thumbs.appendChild(artifactView(q.kind, art, art.verdict || "no verdict yet", true));
+        }
+      });
       box.appendChild(thumbs);
     }
     renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
@@ -2039,7 +2123,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   function renderReask(q, box) {
     box.appendChild(subjectHeader(q, " — lapse evidence contradicts a past rating"));
     box.appendChild(el("div", { "class": "verdict" }, "original answer: " + q.original_answer));
-    if (q.current) {
+    if (q.current && q.kind === "rendition") {
+      renderRenditionMembers(q, box);
+    } else if (q.current) {
       var cur = el("div", { "class": "current-artifact" });
       cur.appendChild(artifactView(q.kind, q.current, null, true));
       box.appendChild(cur);

@@ -833,6 +833,49 @@ def test_build_queue_reask_kind_on_study_lapse_contradicting_learner_rating(
     assert reasks[0]["evidence"][0]["card_kind"] == "recognition"
 
 
+def test_a_rendition_reask_item_carries_each_members_facts_and_confusion(
+        derivations, db, w1, w2, pair, media_store):
+    """Same as the rate item (Design §4): a reask on a rendition names
+    each member's own facts and recording, in pair order, and the
+    pair's confusion -- never the identity sha."""
+    from thai_syllabus import ipa
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+    sha1 = media_store.write(b"ID3-w1", "mp3")
+    sha2 = media_store.write(b"ID3-w2", "mp3")
+    db.add_speaker(Speaker(id="tts:th-M-a", kind="synthetic", sex="male"))
+    for sha in (sha1, sha2):
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="tts", origin="th-M-a",
+                     licence="generated", acquired=date(2026, 9, 19), speaker_id="tts:th-M-a")
+    shas = {w1.id: sha1, w2.id: sha2}
+    identity = rendition_identity(shas)
+    db.append(port="attempt", backend="tts",
+             key=AttemptOutcomeKey(subject=pair.id, kind="rendition", source="tts"),
+             subject=pair.id,
+             question={"kind": "rendition", "subject_kind": "pair", "source": "tts"},
+             answer={"outcome": "candidates", "candidates": [identity]})
+    db.append(port="assess", backend="rendition",
+             key=MechanicalKey(check="rendition", params="v1", subject=pair.id,
+                              artifact_sha=identity),
+             subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": identity,
+                      "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                      "params": {"members": shas}},
+             answer={"value": True})
+    db.append_study(_pair_study_row(pair))
+    _learner(db, pair.id, "rendition", identity, "acceptable")
+
+    items = rs.build_queue(derivations, study=db, budget=50)
+    (reask,) = [i for i in items if i["type"] == "reask" and i["subject"] == pair.id]
+    assert reask["confusion"] == pair.confusion
+    assert [m["id"] for m in reask["members"]] == [w1.id, w2.id]
+    assert reask["members"] == [
+        {"id": w1.id, "thai": w1.thai, "ipa": ipa.render(w1.pron), "gloss": w1.meaning,
+         "sha": sha1, "url": f"/media/{sha1}", "speaker": "tts:th-M-a"},
+        {"id": w2.id, "thai": w2.thai, "ipa": ipa.render(w2.pron), "gloss": w2.meaning,
+         "sha": sha2, "url": f"/media/{sha2}", "speaker": "tts:th-M-a"}]
+
+
 def _word_study_row(word_id: str, **overrides) -> StudyRecord:
     fields = {"family": "word", "anchor": word_id, "card_kind": "production",
              "compile_id": "c1", "ts": 1, "grade": 1, "time_ms": 900}
@@ -2947,6 +2990,52 @@ def test_a_rendition_rate_items_shown_carries_the_member_recording_shas(
                if i["type"] == "rate" and i["subject"] == pair.id and i["kind"] == "rendition"]
     assert item["shown"]["recordings"] == [shas[w1.id], shas[w2.id]]
     assert item["shown"]["picture"] is None
+
+
+def test_a_rendition_rate_item_carries_each_members_facts_and_recording(
+        derivations, db, w1, w2, pair, media_store):
+    """Design §4: the question shows the members (Thai, IPA, gloss), the
+    confusion and the speaker, with a player per member -- so the item
+    names each member's own recording, never the identity sha."""
+    from thai_syllabus import ipa
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+    sha1 = media_store.write(b"ID3-w1", "mp3")
+    sha2 = media_store.write(b"ID3-w2", "mp3")
+    db.add_speaker(Speaker(id="tts:th-M-a", kind="synthetic", sex="male"))
+    for sha in (sha1, sha2):
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="tts", origin="th-M-a",
+                     licence="generated", acquired=date(2026, 9, 19), speaker_id="tts:th-M-a")
+    shas = {w1.id: sha1, w2.id: sha2}
+    db.append(port="attempt", backend="tts",
+             key=AttemptOutcomeKey(subject=pair.id, kind="rendition", source="tts"),
+             subject=pair.id,
+             question={"kind": "rendition", "subject_kind": "pair", "source": "tts"},
+             answer={"outcome": "candidates", "candidates": [rendition_identity(shas)]})
+    db.append(port="assess", backend="rendition",
+             key=MechanicalKey(check="rendition", params="v1", subject=pair.id,
+                              artifact_sha=rendition_identity(shas)),
+             subject=pair.id,
+             question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(shas),
+                      "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                      "params": {"members": shas}},
+             answer={"value": True})
+
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == pair.id and i["kind"] == "rendition"]
+    assert item["confusion"] == pair.confusion
+    assert item["members"] == [
+        {"id": w1.id, "thai": w1.thai, "ipa": ipa.render(w1.pron), "gloss": w1.meaning,
+         "sha": sha1, "url": f"/media/{sha1}", "speaker": "tts:th-M-a"},
+        {"id": w2.id, "thai": w2.thai, "ipa": ipa.render(w2.pron), "gloss": w2.meaning,
+         "sha": sha2, "url": f"/media/{sha2}", "speaker": "tts:th-M-a"}]
+
+
+def test_a_picture_rate_item_carries_no_members(derivations, db, w1):
+    _provide(db, w1.id, "picture", items=[{"sha": "pic-1"}])
+    (item,) = [i for i in rs.build_queue(derivations, budget=50)
+               if i["type"] == "rate" and i["subject"] == w1.id]
+    assert "members" not in item and "confusion" not in item
 
 
 # --- a chart cell's need has one source on the screen too (spec 3 r41) ------
