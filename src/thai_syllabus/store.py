@@ -231,6 +231,17 @@ class SyllabusDb:
             (port, backend, since_ts)).fetchall()
         return [_row_to_answer(r) for r in rows]
 
+    def subjects(self, prefix: str = "") -> list[str]:
+        """`prefix` names a literal subject prefix, not a SQL LIKE pattern:
+        a `%` or `_` in it is a SQL wildcard, not a literal character (the
+        one caller, derivations.CANDIDATE_SUBJECT_PREFIX, passes "candidate:",
+        which has neither).
+        """
+        rows = self._con.execute(
+            "select distinct subject from cache where subject like ? || '%' "
+            "order by subject", (prefix,)).fetchall()
+        return [r[0] for r in rows]
+
     # --- convenience writers ------------------------------------------------
 
     def append_waiver(self, *, rule_id: str, note_id: str,

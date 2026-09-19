@@ -212,6 +212,16 @@ class CacheReader(Protocol):
         """
         ...
 
+    def subjects(self, prefix: str = "") -> list[str]:
+        """Every distinct subject with a cache row, starting with `prefix`
+        (the empty string matches all) -- the enumeration a fold over a
+        whole subject family (e.g. `candidate:` outside forms) needs when
+        there is no other index of the family's members. `prefix` is a
+        literal subject prefix, not a SQL LIKE pattern -- a caller must
+        not pass one containing `%` or `_`.
+        """
+        ...
+
 
 @runtime_checkable
 class StudyReader(Protocol):

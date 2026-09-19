@@ -166,6 +166,23 @@ def test_rows_since_returns_that_port_and_backend_from_the_window_onward(db):
     assert [r.subject for r in db.rows_since("provide", "forvo", 0)] == ["rice", "fish"]
 
 
+def test_subjects_lists_distinct_subjects_matching_the_prefix(db):
+    _append_judge_verdict(db, rule_id="pronunciation-for-word", note_id="candidate:ก่า",
+                          verdict=True)
+    _append_judge_verdict(db, rule_id="pronunciation-for-word", note_id="candidate:ตา",
+                          verdict=True)
+    _append_judge_verdict(db, rule_id="pronunciation-for-word", note_id="candidate:ตา",
+                          verdict=False)  # re-judged -- subjects() is distinct, not a count
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k1"), subject="rice",
+              question={}, answer={"items": []})
+    db.append(port="provide", backend="forvo",
+              key=ProvideKey(source="forvo", kind="", query="k2"), subject="candidate",
+              question={}, answer={"items": []})  # no colon -- not under the prefix
+    assert db.subjects("candidate:") == ["candidate:ก่า", "candidate:ตา"]
+    assert db.subjects() == ["candidate", "candidate:ก่า", "candidate:ตา", "rice"]
+
+
 def test_newest_ts_is_minus_one_on_an_empty_cache(db):
     assert db.newest_ts() == -1
 

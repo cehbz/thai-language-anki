@@ -21,6 +21,7 @@ is a pure fold over an injected CacheReader.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -42,6 +43,7 @@ __all__ = [
     "role_of", "adoptable_drafts", "refused_drafts",
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
     "pending", "adjudications",
+    "CANDIDATE_SUBJECT_PREFIX", "CandidateVerdict", "candidate_adjudications",
     "attempts_since_change", "tried_sources", "next_source",
     "GLYPH_SOURCES", "ALPHABET_SOURCES", "need_sources",
     "ExhaustedStatus", "exhausted", "sentence_exhausted",
@@ -522,6 +524,53 @@ def adjudications(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, 
         value = max(rows, key=lambda r: r.ts).answer.get("value")
         if isinstance(value, Mapping) and value.get("syllables"):
             out[w.id] = syllables_from_verdict(value)
+    return out
+
+
+CANDIDATE_SUBJECT_PREFIX = "candidate:"
+
+# The characters `ids.slug_id` keeps: a gloss holding none of them
+# names no Word id at all.
+_ID_CHARACTER = re.compile(r"[A-Za-z0-9]")
+
+
+@dataclass(frozen=True)
+class CandidateVerdict:
+    """The judge's pronunciation and gloss for an outside form the pair
+    search asked about (spec 3 r47 section 5): what the run needs to mint
+    it as a closure Word once the engines corroborate the syllables."""
+    thai: str
+    syllables: tuple[Syllable, ...]
+    gloss: str
+
+
+def candidate_adjudications(cache: CacheReader, *,
+                            current_rubric: Mapping[str, str]) -> dict[str, CandidateVerdict]:
+    """Per outside form the pair search asked the judge about (subject
+    `candidate:<thai>`, role pronunciation-for-word), the newest fresh
+    verdict carrying syllables and a gloss, keyed by the form. A verdict
+    under a superseded rubric is not fresh; a glossless one names no Word
+    id and is skipped (the form is re-asked by the search), and so is one
+    whose gloss holds no ASCII alphanumeric at all -- `ids.slug_id` keeps
+    only those, so such a gloss names no id either and would raise where
+    the search mints the closure Word (I4)."""
+    out: dict[str, CandidateVerdict] = {}
+    for subject in cache.subjects(CANDIDATE_SUBJECT_PREFIX):
+        rows = [r for r in cache.assessments_of(subject)
+                if r.port == "assess" and r.backend == "judge"
+                and r.question.get("role") == "pronunciation-for-word"
+                and not _stale(r, current_rubric)]
+        if not rows:
+            continue
+        value = max(rows, key=lambda r: r.ts).answer.get("value")
+        if not (isinstance(value, Mapping) and value.get("syllables") and value.get("gloss")):
+            continue
+        gloss = str(value["gloss"])
+        if not _ID_CHARACTER.search(gloss):
+            continue
+        thai = subject[len(CANDIDATE_SUBJECT_PREFIX):]
+        out[thai] = CandidateVerdict(thai=thai, syllables=syllables_from_verdict(value),
+                                     gloss=gloss)
     return out
 
 
