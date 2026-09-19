@@ -144,7 +144,7 @@ def old_deck(tmp_path):
     ])
 
     _write_yaml(d / "waivers.yaml", [
-        {"rule": "pair/exact-confusion", "note_id": "mp-1", "reason": "known issue"},
+        {"rule": "pair/rendition-required", "note_id": "mp-1", "reason": "known issue"},
     ])
 
     return d
@@ -285,7 +285,7 @@ def test_waiver_row_is_readable_via_is_waived(old_deck, old_data, tmp_path):
     new_root = tmp_path / "new_root"
     migrate(old_deck, old_data, new_root)
     db = SyllabusDb(new_root / "syllabus.db")
-    finding = Finding(rule="pair/exact-confusion", note_id="mp-1", evidence="x")
+    finding = Finding(rule="pair/rendition-required", note_id="mp-1", evidence="x")
     assert db.is_waived(finding) is True
 
 

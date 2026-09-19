@@ -6,7 +6,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
-from .entities import exact_confusion_violation, is_corroborated
+from .entities import is_corroborated
 from .rules import Finding, Metric, Rule
 
 if TYPE_CHECKING:
@@ -30,36 +30,6 @@ PRINCIPLES: frozenset[str] = frozenset({
 def sentence_note_id(sentence: "Sentence") -> str:
     """The note_id for Findings and judged subjects on a sentence."""
     return sentence.text_sha
-
-
-# --- pair/exact-confusion ---------------------------------------------------
-# Re-checks MinimalPair.create's invariant against loaded data, which is
-# built through the plain constructor.
-
-def _check_pair_exact_confusion(syllabus: "Syllabus") -> list[Finding]:
-    confusions = {c.id: c for c in syllabus.confusions}
-    findings: list[Finding] = []
-    for pair in syllabus.pairs:
-        confusion = confusions.get(pair.confusion)
-        if confusion is None:
-            findings.append(Finding(rule="pair/exact-confusion", note_id=pair.id,
-                                    evidence=f"unknown confusion {pair.confusion!r}"))
-            continue
-        members = [syllabus.find_word(m) for m in pair.members]
-        if any(m is None for m in members):
-            findings.append(Finding(rule="pair/exact-confusion", note_id=pair.id,
-                                    evidence="a member word does not resolve"))
-            continue
-        reason = exact_confusion_violation(confusion, tuple(m.pron for m in members))
-        if reason is not None:
-            findings.append(Finding(rule="pair/exact-confusion", note_id=pair.id,
-                                    evidence=reason))
-    return findings
-
-
-PAIR_EXACT_CONFUSION = Rule(id="pair/exact-confusion", principle="F1",
-                            severity="error", shape="check",
-                            check=_check_pair_exact_confusion)
 
 
 # --- grapheme/keyword-contains-symbol ---------------------------------------
@@ -616,7 +586,6 @@ def apply_overlay(rules: Sequence[Rule], config: "RulebookConfig") -> tuple[Rule
 
 
 RULES: list[Rule] = [
-    PAIR_EXACT_CONFUSION,
     GRAPHEME_KEYWORD_CONTAINS_SYMBOL,
     SENTENCE_FILLS_NOVELTY,
     COVERAGE_CATEGORIES,

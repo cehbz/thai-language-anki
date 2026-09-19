@@ -149,7 +149,7 @@ def test_rulebook_id_is_stable_for_identical_rulebook_text_and_rules():
 def test_rulebook_id_changes_when_the_rulebook_text_changes_but_content_does_not():
     rice = word("rice", "ข้าว")  # rice
     a = Syllabus(words=(rice,), rulebook_text="severities: {}")
-    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/exact-confusion: warn}")
+    b = Syllabus(words=(rice,), rulebook_text="severities: {pair/rendition-required: warn}")
     assert a.state_id() == b.state_id()          # same content
     assert a.rulebook_id() != b.rulebook_id()     # different rulebook
 

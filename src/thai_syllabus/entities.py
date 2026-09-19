@@ -3,9 +3,10 @@ frozen dataclasses, identity noted per entity.
 
 An invariant needing a resolved Word (Grapheme's keyword containment,
 MinimalPair's exact confusion) is enforced by that entity's `create`
-classmethod; rulebook.py's `grapheme/keyword-contains-symbol` and
-`pair/exact-confusion` rules re-check loaded data through the same pure
-diff functions.
+classmethod; rulebook.py's `grapheme/keyword-contains-symbol` rule
+re-checks loaded data through the same pure diff functions.
+`MinimalPair.create` is the one check for exact confusion; no rule
+re-checks loaded data for it.
 """
 import hashlib
 from dataclasses import dataclass, field

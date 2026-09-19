@@ -219,13 +219,13 @@ def test_assessments_of_orders_newest_last(db):
 
 def test_verdict_is_exact_key_newest_row(db):
     # two different (rule, note_id) pairs must not collide
-    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1", verdict=False)
-    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1",
+    _append_judge_verdict(db, rule_id="pair/rendition-required", note_id="mp-1", verdict=False)
+    _append_judge_verdict(db, rule_id="pair/rendition-required", note_id="mp-1",
                           verdict=True)  # re-judged, newest wins
-    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-2", verdict=False)
-    assert db.verdict("judge", _judge_key("pair/exact-confusion", "mp-1")).answer["value"] is True
-    assert db.verdict("judge", _judge_key("pair/exact-confusion", "mp-2")).answer["value"] is False
-    assert db.verdict("judge", _judge_key("pair/exact-confusion", "unknown")) is None
+    _append_judge_verdict(db, rule_id="pair/rendition-required", note_id="mp-2", verdict=False)
+    assert db.verdict("judge", _judge_key("pair/rendition-required", "mp-1")).answer["value"] is True
+    assert db.verdict("judge", _judge_key("pair/rendition-required", "mp-2")).answer["value"] is False
+    assert db.verdict("judge", _judge_key("pair/rendition-required", "unknown")) is None
 
 
 def test_verdict_distinguishes_notes_with_no_artifact_sha(db):
@@ -245,16 +245,16 @@ def test_verdict_key_matches_the_spec_3_judge_backend_convention(db):
     # artifact_sha-or-subject) land on the SAME cache row (one convention).
     from thai_syllabus.assessor import AssessQuestion, JudgeBackend
     backend = JudgeBackend(model="m", transport="cli", complete=lambda p: "true")
-    q = AssessQuestion(subject="mp-1", role="pair/exact-confusion",
+    q = AssessQuestion(subject="mp-1", role="pair/rendition-required",
                        artifact_sha="aaa", rubric="is this pair exact?")
     expected_key = backend.cache_key(q)
-    _append_judge_verdict(db, rule_id="pair/exact-confusion", note_id="mp-1",
+    _append_judge_verdict(db, rule_id="pair/rendition-required", note_id="mp-1",
                           artifact_sha="aaa", verdict=True,
                           rubric="is this pair exact?")
     row = db._con.execute(  # white-box: confirm it landed under the shared key
         "select key from cache where port='assess' and backend='judge'").fetchone()
     assert row[0] == expected_key.encode()
-    answer = db.verdict("judge", _judge_key("pair/exact-confusion", "mp-1", "aaa",
+    answer = db.verdict("judge", _judge_key("pair/rendition-required", "mp-1", "aaa",
                                             rubric="is this pair exact?"))
     assert answer.answer["value"] is True
 
@@ -270,20 +270,20 @@ def test_verdict_keys_on_artifact_sha_too(db):
 
 
 def test_is_waived_reads_learner_waiver_rows(db):
-    finding = Finding(rule="pair/exact-confusion", note_id="mp-1",
+    finding = Finding(rule="pair/rendition-required", note_id="mp-1",
                       evidence="bad pair")
     assert db.is_waived(finding) is False
-    db.append_waiver(rule_id="pair/exact-confusion", note_id="mp-1",
+    db.append_waiver(rule_id="pair/rendition-required", note_id="mp-1",
                      artifact_sha=None, waived=True, reason="known issue")
     assert db.is_waived(finding) is True
 
 
 def test_is_waived_newest_wins(db):
-    finding = Finding(rule="pair/exact-confusion", note_id="mp-1",
+    finding = Finding(rule="pair/rendition-required", note_id="mp-1",
                       evidence="bad pair")
-    db.append_waiver(rule_id="pair/exact-confusion", note_id="mp-1",
+    db.append_waiver(rule_id="pair/rendition-required", note_id="mp-1",
                      artifact_sha=None, waived=True, reason="waived")
-    db.append_waiver(rule_id="pair/exact-confusion", note_id="mp-1",
+    db.append_waiver(rule_id="pair/rendition-required", note_id="mp-1",
                      artifact_sha=None, waived=False, reason="reopened")
     assert db.is_waived(finding) is False
 

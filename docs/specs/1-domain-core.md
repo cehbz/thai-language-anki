@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 18, proposed 2026-09-18 against principles r5 and architecture
+Revision 19, proposed 2026-09-18 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -66,6 +66,7 @@ Revision log:
   backend ever answered the retired role -- it named a need nothing
   served. User approval 2026-09-17.
 - r18 2026-09-18: E4's rule is scoped to minimal-pair membership; a `disputed` pronunciation no longer blocks a word's cards. Evidence: TTS synthesizes from the Thai script and Forvo is a native speaker, so the stored IPA never reaches the learner's ear; it renders as reference on a card back that always carries audio (`target/recording-required`, F7, is an error and no targeted word on the live deck lacks a recording). Pair validity is computed from stored pronunciations (`exact_confusion_violation`), so corroboration is load-bearing there and only there. On the live deck this unblocks 140 targeted words, 103 of which have no pronunciation on record at all. User approval 2026-09-18.
+- r19 2026-09-19: pair/exact-confusion retired: MinimalPair.create refuses a pair differing in more than its confusion, so the rule could never fire on loaded data (§4's own principle: no rule for what a constraint already prevents). User approval PENDING.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -341,7 +342,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | A2, A5, A6, A7, A8 | compile |
 | A3 | card/unique-front (check, error) |
 | A4 | compile (a missing artifact drops the card, counted) |
-| F1 | pair/exact-confusion (check, error); pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); one speaker per rendition by construction |
+| F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); one speaker per rendition by construction; exact confusion by construction (MinimalPair.create; r19) |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |

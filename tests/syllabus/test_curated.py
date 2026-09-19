@@ -399,7 +399,7 @@ def test_profile_productive_cutoff_zero_refuses_naming_the_field(tmp_path):
 def test_rulebook_config_round_trip(tmp_path):
     path = tmp_path / "rulebook.yaml"
     cfg = curated.RulebookConfig(
-        severities={"pair/exact-confusion": "error"},
+        severities={"pair/rendition-required": "error"},
         thresholds={"coverage/categories": 0.1},
         rubrics={"sentence/register-natural": "Is this natural?"})
     curated.save_rulebook_config(path, cfg)
@@ -409,7 +409,7 @@ def test_rulebook_config_round_trip(tmp_path):
 def test_rulebook_config_validation_rejects_bad_severity(tmp_path):
     path = tmp_path / "rulebook.yaml"
     path.write_text(yaml.safe_dump({
-        "severities": {"pair/exact-confusion": "not-a-severity"},
+        "severities": {"pair/rendition-required": "not-a-severity"},
         "thresholds": {}, "rubrics": {},
     }))
     with pytest.raises(curated.CuratedValidationError):
@@ -514,8 +514,8 @@ def test_load_curated_bundle_from_a_directory(tmp_path):
 
 def test_rulebook_file_text_returns_the_raw_file_contents(tmp_path):
     path = tmp_path / "rulebook.yaml"
-    path.write_text("severities:\n  pair/exact-confusion: warn\n", encoding="utf-8")
-    assert curated.rulebook_file_text(path) == "severities:\n  pair/exact-confusion: warn\n"
+    path.write_text("severities:\n  pair/rendition-required: warn\n", encoding="utf-8")
+    assert curated.rulebook_file_text(path) == "severities:\n  pair/rendition-required: warn\n"
 
 
 def test_rulebook_file_text_is_empty_when_the_file_is_absent(tmp_path):
@@ -1622,3 +1622,42 @@ def test_providers_judge_roles_must_be_a_mapping_of_mappings(tmp_path):
     with pytest.raises(curated.CuratedValidationError,
                        match=r"judge.roles.pronunciation-for-word"):
         curated.load_providers_config(path)
+
+
+def test_load_frequency_words_is_the_ranked_list(tmp_path):
+    p = tmp_path / "frequency_th.txt"
+    p.write_text("# header\nข้าว\nกิน\n\nข้าว\nน้ำ\n", encoding="utf-8")
+    from thai_syllabus.curated import load_frequency_words
+    assert load_frequency_words(p) == ("ข้าว", "กิน", "น้ำ")
+
+
+def test_load_frequency_words_of_a_missing_file_is_empty(tmp_path):
+    from thai_syllabus.curated import load_frequency_words
+    assert load_frequency_words(tmp_path / "none.txt") == ()
+
+
+def test_providers_pair_search_settings_default_and_load(tmp_path):
+    from thai_syllabus.curated import load_providers_config
+    p = tmp_path / "providers.yaml"
+    p.write_text("imgfetch_path: /x\naudiofetch_path: /y\n"
+                 "secrets: {anthropic: op://S/A}\n"
+                 "judge: {transport: api, model: m, price_per_mtok: {input: 1, output: 1}}\n",
+                 encoding="utf-8")
+    cfg = load_providers_config(p)
+    assert (cfg.pair_search_depth, cfg.pair_search_asks) == (5000, 40)
+    p.write_text(p.read_text() + "pair_search_depth: 800\npair_search_asks: 5\n",
+                 encoding="utf-8")
+    cfg = load_providers_config(p)
+    assert (cfg.pair_search_depth, cfg.pair_search_asks) == (800, 5)
+
+
+def test_providers_pair_search_settings_refuse_non_positive(tmp_path):
+    from thai_syllabus.curated import CuratedValidationError, load_providers_config
+    p = tmp_path / "providers.yaml"
+    p.write_text("imgfetch_path: /x\naudiofetch_path: /y\n"
+                 "secrets: {anthropic: op://S/A}\n"
+                 "judge: {transport: api, model: m, price_per_mtok: {input: 1, output: 1}}\n"
+                 "pair_search_depth: 0\n", encoding="utf-8")
+    with pytest.raises(CuratedValidationError) as refusal:
+        load_providers_config(p)
+    assert "pair_search_depth" in str(refusal.value)

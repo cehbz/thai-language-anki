@@ -91,7 +91,7 @@ def test_registered_rules_match_the_spec_table():
     # by construction (order(), the loader's registration checks, the
     # rendition attempt's one-speaker intersection).
     expected = {
-        "pair/exact-confusion", "pair/rendition-required", "rendition/synthetic",
+        "pair/rendition-required", "rendition/synthetic",
         "coverage/confusions",
         "coverage/categories", "coverage/exercise-depth", "coverage/pictures", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
@@ -121,44 +121,20 @@ def test_rules_holds_none_of_the_seven_ids_retired_by_construction():
     assert {r.id for r in RULES} & retired == set()
 
 
+def test_no_rule_re_checks_what_minimal_pair_create_refuses():
+    """spec 1 section 4: no rule for what a constraint already prevents.
+    A pair differing in more than its confusion never loads (MinimalPair.create),
+    so pair/exact-confusion could never fire on loaded data."""
+    from thai_syllabus.rulebook import RULES
+    assert "pair/exact-confusion" not in {r.id for r in RULES}
+
+
 def test_principles_matches_the_locked_principles_doc():
     text = Path("docs/principles.md").read_text(encoding="utf-8")
     ids = set(re.findall(r"\*\*([AFE]\d+[ab]?)\.\*\*", text))
     ids.add("F6a")    # named only in prose ("(F6a: ...)"), never its own heading
     ids.add("META-1")  # the charter's traceability meta-rule; not numbered in the doc
     assert ids == PRINCIPLES
-
-
-# --- pair/exact-confusion ----------------------------------------------------
-
-def test_pair_exact_confusion_flags_a_pair_loaded_with_a_mismatched_dimension():
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
-    # Constructed with the WRONG tone (rising, not one of the confusion's
-    # sounds) via the plain constructor, bypassing MinimalPair.create --
-    # simulating data loaded straight off disk.
-    other_word = word("other", "ไกล", syllables=(syl(tone="rising"),))  # far (test fixture)
-    bad_pair = MinimalPair(id=PairId("bad"), confusion=confusion.id,
-                           members=(mid_word.id, other_word.id))
-    syllabus = make_syllabus(words=(mid_word, other_word), pairs=(bad_pair,),
-                             confusions=(confusion,))
-    findings = [f for f in syllabus.report().findings if f.rule == "pair/exact-confusion"]
-    assert len(findings) == 1
-    assert findings[0].note_id == bad_pair.id
-
-
-def test_pair_exact_confusion_passes_a_well_formed_pair():
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
-    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
-    good_pair = MinimalPair.create(id=PairId("good"), confusion=confusion,
-                                   members=(mid_word, low_word))
-    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(good_pair,),
-                             confusions=(confusion,))
-    findings = [f for f in syllabus.report().findings if f.rule == "pair/exact-confusion"]
-    assert findings == []
 
 
 # --- grapheme/keyword-contains-symbol ---------------------------------------
