@@ -23,6 +23,7 @@ from thai_syllabus.entities import (
     clauses_from_json,
     clauses_to_json,
     element_word,
+    exact_confusion_violation,
     is_corroborated,
     pronunciation_diff,
     render,
@@ -144,6 +145,107 @@ def test_onset_diff_different_clusters_is_consonant():
     a = pron(syl("kʰw", "a", ""))
     b = pron(syl("kl", "a", ""))
     assert pronunciation_diff(a, b) == {"consonant"}
+
+
+# --- coda diff classification: a final-place confusion (e.g. p vs t) reads
+# the coda as "final", not "consonant" -- "consonant" is the onset alone
+# (spec 1 r20: the three final:place-* confusions were declared on
+# `consonant`, whose value is the onset, so no pair could ever be exact
+# for them).
+
+def test_coda_diff_is_final_not_consonant():
+    a = pron(syl("t", "a", "p"))
+    b = pron(syl("t", "a", "t"))
+    assert pronunciation_diff(a, b) == {"final"}
+
+
+def test_exact_confusion_violation_accepts_a_coda_only_pair_under_final():
+    confusion = SoundConfusion(id=ConfusionId("final:place-p-t"), dimension="final",
+                               sounds=("p", "t"))
+    a = pron(syl("t", "a", "p"))
+    b = pron(syl("t", "a", "t"))
+    assert exact_confusion_violation(confusion, (a, b)) is None
+
+
+def test_exact_confusion_violation_needs_the_bare_codas_the_engines_store():
+    """C1: the live deck declared the three final:place-* confusions with
+    the unreleased diacritic (p̚/t̚/k̚), which no engine ever stores --
+    engines._CODAS is bare p/t/k -- so no candidate's coda could match
+    their sounds and the three formed no pair at all. The bare sounds
+    accept the engines' own codas; the diacritic ones refuse them.
+    """
+    bare = SoundConfusion(id=ConfusionId("final:place-p-t"), dimension="final",
+                          sounds=("p", "t"))
+    diacritic = SoundConfusion(id=ConfusionId("final:place-p-t"), dimension="final",
+                               sounds=("p̚", "t̚"))
+    a = pron(syl("t", "a", "p"))
+    b = pron(syl("t", "a", "t"))
+    assert exact_confusion_violation(bare, (a, b)) is None
+    assert exact_confusion_violation(diacritic, (a, b)) is not None
+
+
+def test_exact_confusion_violation_rejects_the_same_coda_only_pair_under_consonant():
+    confusion = SoundConfusion(id=ConfusionId("consonant:place-p-t"), dimension="consonant",
+                               sounds=("p", "t"))
+    a = pron(syl("t", "a", "p"))
+    b = pron(syl("t", "a", "t"))
+    assert exact_confusion_violation(confusion, (a, b)) is not None
+
+
+def test_exact_confusion_violation_still_accepts_an_onset_only_pair_under_consonant():
+    confusion = SoundConfusion(id=ConfusionId("consonant:ng-onset"), dimension="consonant",
+                               sounds=("ŋ", "n"))
+    a = pron(syl("ŋ", "a", ""))
+    b = pron(syl("n", "a", ""))
+    assert exact_confusion_violation(confusion, (a, b)) is None
+
+
+# --- polysyllabic pairs: the confusion's sounds are read at the syllable
+# the members differ on, not at the last one (I2). Reading the last
+# syllable accepted a pair whose differing sounds are not the confusion's
+# (live: ดังนั้น/ยังงั้น, "so"/"like that", passed under consonant:ng-onset
+# on its last syllable's n/ŋ, while its first syllable's onsets, d and
+# j, are neither of the confusion's sounds) and refused a pair whose
+# differing sounds are.
+
+def test_exact_confusion_violation_reads_the_syllable_that_differs_not_the_last():
+    """Two syllables, the tone difference in the first; the last syllable
+    reads `falling` for both members, which is not one of the confusion's
+    sounds -- the values that matter are the first syllable's."""
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    a = pron(syl("m", "a", "", tone="mid"), syl("n", "a", "", tone="falling"))
+    b = pron(syl("m", "a", "", tone="low"), syl("n", "a", "", tone="falling"))
+    assert exact_confusion_violation(confusion, (a, b)) is None
+
+
+def test_exact_confusion_violation_refuses_a_last_syllable_that_only_looks_right():
+    """The last syllable reads `mid` for both members -- one of the
+    confusion's sounds -- but the syllable that differs reads falling and
+    rising, neither of them the confusion's. The pair is not exact."""
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    a = pron(syl("m", "a", "", tone="falling"), syl("n", "a", "", tone="mid"))
+    b = pron(syl("m", "a", "", tone="rising"), syl("n", "a", "", tone="mid"))
+    assert exact_confusion_violation(confusion, (a, b)) is not None
+
+
+def test_exact_confusion_violation_refuses_a_polysyllabic_pair_under_other_sounds():
+    confusion = SoundConfusion(id=ConfusionId("tone:high-rising"), dimension="tone",
+                               sounds=("high", "rising"))
+    a = pron(syl("m", "a", "", tone="mid"), syl("n", "a", "", tone="mid"))
+    b = pron(syl("m", "a", "", tone="low"), syl("n", "a", "", tone="mid"))
+    assert exact_confusion_violation(confusion, (a, b)) is not None
+
+
+def test_exact_confusion_violation_refuses_a_difference_in_two_syllables():
+    """Both syllables differ on the dimension: that is two differences,
+    not a minimal pair, whatever the values are."""
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    a = pron(syl("m", "a", "", tone="mid"), syl("n", "a", "", tone="mid"))
+    b = pron(syl("m", "a", "", tone="low"), syl("n", "a", "", tone="low"))
+    assert exact_confusion_violation(confusion, (a, b)) is not None
 
 
 # --- Grapheme: keyword-containment invariant -------------------------------

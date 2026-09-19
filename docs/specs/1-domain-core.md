@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 19, proposed 2026-09-18 against principles r5 and architecture
+Revision 20, proposed 2026-09-19 against principles r5 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -66,7 +66,8 @@ Revision log:
   backend ever answered the retired role -- it named a need nothing
   served. User approval 2026-09-17.
 - r18 2026-09-18: E4's rule is scoped to minimal-pair membership; a `disputed` pronunciation no longer blocks a word's cards. Evidence: TTS synthesizes from the Thai script and Forvo is a native speaker, so the stored IPA never reaches the learner's ear; it renders as reference on a card back that always carries audio (`target/recording-required`, F7, is an error and no targeted word on the live deck lacks a recording). Pair validity is computed from stored pronunciations (`exact_confusion_violation`), so corroboration is load-bearing there and only there. On the live deck this unblocks 140 targeted words, 103 of which have no pronunciation on record at all. User approval 2026-09-18.
-- r19 2026-09-19: pair/exact-confusion retired: MinimalPair.create refuses a pair differing in more than its confusion, so the rule could never fire on loaded data (§4's own principle: no rule for what a constraint already prevents). User approval PENDING.
+- r19 2026-09-19: pair/exact-confusion retired: MinimalPair.create refuses a pair differing in more than its confusion, so the rule could never fire on loaded data (§4's own principle: no rule for what a constraint already prevents). User approval 2026-09-19.
+- r20 2026-09-19: Dimension gains `final`: a coda difference is a final difference and its value is the coda; `consonant` is the onset alone. Evidence: the three final-place confusions were declared on `consonant`, whose value is the onset, and the sounds were written with the unreleased diacritic the engines never store (`p̚`/`t̚`/`k̚`; `engines._CODAS` is bare `p`/`t`/`k`), so no pair could ever be exact for them on either count. User approval 2026-09-19.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -107,7 +108,7 @@ Pronunciation
 
 SoundConfusion                      # language model
   id: ConfusionId                   # e.g. "tone:mid-low"
-  dimension: Literal[tone, length, aspiration, vowel_quality, consonant]
+  dimension: Literal[tone, length, aspiration, vowel_quality, consonant, final]
   sounds: tuple[str, str]           # the two opposed values
   weight: int = 1                   # F1 seed; pairs per confusion 5→4,
                                     # 4→3, 3→2, else 1
@@ -162,7 +163,9 @@ MinimalPair
   confusion: ConfusionId
   members: tuple[WordId, ...]       # 2..3
   # invariant (constructed): members' pronunciations differ in exactly
-  # the confusion's dimension and values; loaded data re-checked by rule
+  # the confusion's dimension, at one syllable, and both values there are
+  # the confusion's; `MinimalPair.create` is the one check and no rule
+  # re-checks loaded data for it (r19)
 
 Sentence                            # artifact
   clauses: tuple[tuple[Element, ...], ...]
@@ -296,7 +299,7 @@ storage dependency.
 
 ```
 Rule
-  id: str                           # e.g. "pair/exact-confusion"
+  id: str                           # e.g. "pair/rendition-required"
   principle: str                    # e.g. "F1" — traceability, required
   severity: Literal[error, warn, info]
   shape: check | measure | judged

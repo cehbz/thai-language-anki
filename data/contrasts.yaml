@@ -52,11 +52,13 @@
 # identification in unreleased Thai finals. Previously omitted on the grounds
 # that three finals do not fit a two-valued dimension -- but tone's five-way set
 # and the stop triples were already decomposed the same way. These three carry
-# kind: consonant (place, like ng-onset), not kind: final -- "final" has no
-# member in this inventory at all.
-- {id: "final:place-p-t", kind: consonant, weight: 4}
-- {id: "final:place-t-k", kind: consonant, weight: 4}
-- {id: "final:place-p-k", kind: consonant, weight: 3}
+# kind: final -- a coda contrast (spec 1 r20: the dimension "final" reads the
+# coda; "consonant" is the onset alone). Their sounds are the bare codas the
+# engines store, p/t/k (engines._CODAS): a sound written with the unreleased
+# diacritic (p̚) matches no candidate at all.
+- {id: "final:place-p-t", kind: final, weight: 4}
+- {id: "final:place-t-k", kind: final, weight: 4}
+- {id: "final:place-p-k", kind: final, weight: 3}
 
 # DROPPED 2026-09-18: consonant:r-l. English already has the contrast, so there
 # is no L1 deficit; colloquial Thai neutralises initial /r/ to [l]; and reading a

@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .media import Provenance
 
-Dimension = Literal["tone", "length", "aspiration", "vowel_quality", "consonant"]
+Dimension = Literal["tone", "length", "aspiration", "vowel_quality", "consonant", "final"]
 Skill = Literal["receptive", "productive"]
 Introduction = Literal["picture_card", "sentence"]
 Voice = Literal["learner_voice", "other_voice"]
@@ -120,6 +120,8 @@ def _dimension_value(syllable: Syllable, dimension: Dimension) -> str:
         return syllable.onset
     if dimension == "vowel_quality":
         return syllable.vowel
+    if dimension == "final":
+        return syllable.coda
     raise ValueError(f"unknown dimension: {dimension!r}")
 
 
@@ -144,14 +146,14 @@ def _segment_diff(a: Syllable, b: Syllable) -> set[Dimension]:
     if a.vowel != b.vowel:
         diffs.add("vowel_quality")
     if a.coda != b.coda:
-        diffs.add("consonant")
+        diffs.add("final")
     return diffs
 
 
 def pronunciation_diff(a: Pronunciation, b: Pronunciation) -> set[Dimension]:
     """Every dimension on which two Pronunciations differ, across syllables."""
     if len(a.syllables) != len(b.syllables):
-        return {"tone", "length", "aspiration", "vowel_quality", "consonant"}
+        return {"tone", "length", "aspiration", "vowel_quality", "consonant", "final"}
     diffs: set[Dimension] = set()
     for sa, sb in zip(a.syllables, b.syllables):
         diffs |= _segment_diff(sa, sb)
@@ -161,26 +163,47 @@ def pronunciation_diff(a: Pronunciation, b: Pronunciation) -> set[Dimension]:
 def exact_confusion_violation(confusion: SoundConfusion,
                                pronunciations: tuple[Pronunciation, ...]) -> str | None:
     """None if every pair of `pronunciations` differs in exactly
-    `confusion.dimension`, using only `confusion.sounds`' two values.
-    Otherwise a human-readable reason.
+    `confusion.dimension`, at exactly one syllable, and both members'
+    values at that syllable are `confusion.sounds`' two values. Otherwise
+    a human-readable reason.
+
+    The values are read at the syllable the two members actually differ
+    on, never at a fixed one (I2). Reading the last syllable accepted a
+    pair whose differing sounds are not the confusion's -- live, ดังนั้น
+    /ยังงั้น ("so"/"like that") passed under `consonant:ng-onset` on its
+    last syllable's n/ŋ while its first syllable's onsets, d and j, are
+    neither of the confusion's sounds -- and refused a pair whose
+    differing sounds are. Differing on the dimension in more than one
+    syllable (as that pair does) is more than one difference, so it is no
+    minimal pair either.
     """
     if len(pronunciations) < 2:
         return "a minimal pair needs at least two members"
+    allowed = set(confusion.sounds)
     for i in range(len(pronunciations)):
         for j in range(i + 1, len(pronunciations)):
-            diff = pronunciation_diff(pronunciations[i], pronunciations[j])
+            a, b = pronunciations[i], pronunciations[j]
+            diff = pronunciation_diff(a, b)
             if diff != {confusion.dimension}:
                 return (f"members {i} and {j} differ in {sorted(diff)}, "
                         f"not exactly {{{confusion.dimension!r}}}")
-    allowed = set(confusion.sounds)
-    for i, p in enumerate(pronunciations):
-        # Compare against the first member that actually differs on this
-        # dimension, so the check works even for a syllable count mismatch
-        # (pronunciation_diff already rejected those above).
-        value = _dimension_value(p.syllables[-1], confusion.dimension)
-        if value not in allowed:
-            return (f"member {i}'s {confusion.dimension} value {value!r} "
-                    f"is not one of the confusion's sounds {confusion.sounds!r}")
+            # The syllable counts match: pronunciation_diff returns every
+            # dimension for a mismatch, which `diff` just rejected.
+            at = [k for k, (sa, sb) in enumerate(zip(a.syllables, b.syllables))
+                  if confusion.dimension in _segment_diff(sa, sb)]
+            if len(at) != 1:
+                return (f"members {i} and {j} differ in {confusion.dimension!r} at "
+                        f"{len(at)} syllables {at}, not at exactly one")
+            k = at[0]
+            for m, p in ((i, a), (j, b)):
+                # The two values necessarily differ -- that is what
+                # `_segment_diff` reported at this syllable -- so each
+                # being one of the confusion's two sounds is enough.
+                value = _dimension_value(p.syllables[k], confusion.dimension)
+                if value not in allowed:
+                    return (f"member {m}'s {confusion.dimension} value {value!r} at "
+                            f"syllable {k} is not one of the confusion's sounds "
+                            f"{confusion.sounds!r}")
     return None
 
 
