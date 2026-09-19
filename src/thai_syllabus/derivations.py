@@ -38,7 +38,7 @@ from .syllabus import Syllabus
 _log = logging.getLogger(__name__)
 
 __all__ = [
-    "CurrentBest", "current_best", "learner_ranks", "vetoed",
+    "CurrentBest", "current_best", "learner_ranks", "vetoed", "superseded_cells",
     "role_of", "adoptable_drafts", "refused_drafts",
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
     "pending", "adjudications",
@@ -328,6 +328,25 @@ def vetoed(cache: CacheReader, subject: str, role: str, artifact_sha: str | None
     return max(on_sha, key=lambda r: r.ts).answer.get("value") == "unacceptable-none"
 
 
+def superseded_cells(rows: Sequence[Answer]) -> frozenset[str]:
+    """Chart cells an older glyph draw produced (spec 3 r46): only the
+    newest glyph provide row's cells are candidates of a name word's
+    picture need. A cell is composed from its keyword's picture, so a
+    redraw -- the run's chart-cell pass, once the keyword's picture has
+    changed -- retires the stale cell by itself, judge pass or not, with
+    no veto needed; until the new cell is judged the name word has no
+    picture (nothing unjudged reaches a card).
+    """
+    draws = sorted((r for r in rows if r.port == "provide" and r.backend == "glyph"),
+                   key=lambda r: r.ts)
+    if len(draws) < 2:
+        return frozenset()
+    newest = {item.get("sha") for item in draws[-1].answer.get("items", [])}
+    return frozenset(item.get("sha") for r in draws[:-1]
+                     for item in r.answer.get("items", [])
+                     if item.get("sha") and item.get("sha") not in newest)
+
+
 def current_best(cache: CacheReader, subject: str, kind: str, *,
                  current_rubric: Mapping[str, str], prior: Sequence[str] = (),
                  provenance_source: Callable[[str], str | None]) -> CurrentBest:
@@ -350,6 +369,8 @@ def current_best(cache: CacheReader, subject: str, kind: str, *,
     rating_rows = record.ratings_for_role(cache.assessments_of(subject), role)
     learner_ratings = _ratings_by_artifact(rating_rows)
     machine_ranks, machine_sources = _machine_ranks(rows, kind, role, current_rubric)
+    for sha_ in superseded_cells(rows):
+        machine_ranks.pop(sha_, None)
 
     if not learner_ranks(role):
         # r8: the learner vetoes on this role and never ranks -- an

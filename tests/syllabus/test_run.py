@@ -3030,6 +3030,55 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
 
 # --- the chart cell's own roster (spec 3 r41 §5) ----------------------------
 
+def test_a_chart_cell_drawn_from_a_superseded_keyword_picture_is_redrawn(tmp_path, fake_search,
+                                                                          fake_batch):
+    """Spec 3 r46: the run's chart-cell pass. name-chicken's cell was drawn
+    from sha-old and the judge passed it, so the name word has a picture
+    and no need is open -- but chicken's picture is now sha-chicken. The
+    run asks glyph for the cell again anyway; the new draw supersedes the
+    old cell (derivations.superseded_cells), so the stale cell is off the
+    name word before its replacement is even judged.
+    """
+    chicken = word("chicken", "ไก่", "chicken")
+    name = word("name-chicken", "กอ ไก่", "the letter ก's recited name")
+    root = _deck(tmp_path, (chicken, name, RICE),
+                 (target("chicken/receptive", "chicken"),
+                  target("name-chicken/receptive", "name-chicken"),
+                  target("rice/receptive", "rice")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    drawn = []
+
+    class _Glyph(GlyphBackend):
+        def fetch(self, q):
+            drawn.append((q.subject, q.params["query"]))
+            return super().fetch(q)
+
+    ctx.provider._backends["glyph"] = _Glyph(media=ctx.media_store,
+                                             font_path="/nowhere/Fake.ttf")
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    ctx.syllabus = dataclasses.replace(ctx.syllabus, graphemes=(g,))
+    ctx.db.add_media(sha="sha-chicken", kind="picture", ext="jpg", source="pexels",
+                     origin="https://x/c.jpg", licence="by", acquired=date(2026, 9, 17))
+    _pass_picture(ctx, "chicken", "sha-chicken")
+    # The stale cell: drawn from sha-old, judged, current.
+    ctx.db.add_media(sha="cell-old", kind="picture", ext="png", source="glyph", origin="ก",
+                     licence="generated", acquired=date(2026, 9, 17))
+    ctx.db.append(port="provide", backend="glyph", key=ProvideKey(source="glyph", kind="",
+                  query="sha-old:ก"), subject="name-chicken",
+                  question={"kind": "picture", "provides": "picture", "subject_kind": "word",
+                            "params": {"cell_picture": "sha-old", "cell_picture_ext": "jpg",
+                                       "query": "ก"}},
+                  answer={"items": [{"sha": "cell-old", "ext": "png", "source": "glyph"}]})
+    _pass_picture(ctx, "name-chicken", "cell-old")
+    assert ctx.syllabus.media.picture_sha("name-chicken") == "cell-old"
+
+    run(ctx, {})
+
+    assert ("name-chicken", "ก") in drawn
+    assert ctx.syllabus.media.picture_sha("name-chicken") != "cell-old"
+
+
 def test_a_name_words_picture_need_is_attempted_at_the_glyph_source(tmp_path, fake_search,
                                                                     fake_batch):
     """R4 end to end: the run asks glyph and nothing else for a chart

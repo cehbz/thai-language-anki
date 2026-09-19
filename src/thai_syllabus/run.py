@@ -638,6 +638,42 @@ def _maybe_retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -
     _retire_exhausted_sentence(ctx, need, tally)
 
 
+def _redraw_stale_cells(ctx: Sourcing, budgets: Mapping[str, Budget],
+                        carried: Mapping[str, Spend], tally: _Tally) -> int:
+    """The chart-cell pass (spec 3 r46): a name word whose newest cell was
+    drawn from a picture that is no longer its keyword's current picture
+    is asked at glyph again this run, whatever the queue says -- its need
+    is closed by the stale cell, so the queue would never reach it. The
+    new draw's row supersedes the old cell (derivations.superseded_cells);
+    the cell's own judge question rides this run's batch. A name word
+    never drawn is left to its own need. Skipped under a spent glyph
+    budget (a `--backend-cap glyph=0` run draws nothing). Returns how
+    many were redrawn.
+    """
+    budget = budgets.get("glyph")
+    if budget is not None and budget.exceeded_by(_spent_on("glyph", carried, tally)):
+        return 0
+    redrawn = 0
+    for g in ctx.syllabus.graphemes:
+        if g.name_word is None:
+            continue
+        keyword_sha = current_best_of(ctx, g.keyword, "picture").artifact_sha
+        if keyword_sha is None:
+            continue
+        draws = [r for r in rows_for(ctx.db, g.name_word, "picture")
+                 if r.port == "provide" and r.backend == "glyph"]
+        newest = max(draws, key=lambda r: r.ts, default=None)
+        if newest is None:
+            continue
+        if newest.question.get("params", {}).get("cell_picture") == keyword_sha:
+            continue
+        tally.collect(attempt(ctx, Need(g.name_word, "picture", "word"), "glyph"))
+        redrawn += 1
+    if redrawn:
+        _log.info("chart cells: %d redrawn from a changed keyword picture", redrawn)
+    return redrawn
+
+
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally, *, now_ns: int) -> int:
     """Assess-first, then one Source per need: the fit questions a
@@ -1002,6 +1038,7 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         tally.deferred += len(needs.entries)
         return _finish(ctx, tally, needs, batch_id=None, pending=0)
 
+    _redraw_stale_cells(ctx, budgets, carried, tally)
     needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
     # One snapshot of the need keys `available` counts, read here beside
     # the queue itself: `available`, `pending` and `preferences` are all

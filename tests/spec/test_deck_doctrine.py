@@ -460,6 +460,25 @@ def test_a_grapheme_card_shows_its_keywords_own_picture(tmp_path):
     assert backs and b.seeded[("chicken", 0)] in backs[0]
 
 
+def test_a_chart_cell_drawn_from_a_superseded_keyword_picture_is_not_the_name_words_picture(
+        tmp_path):
+    """One picture per word, everywhere: the name word's chart cell is
+    composed from its keyword's picture, so a cell drawn from a picture
+    the keyword no longer has is nobody's picture once a newer draw
+    exists -- judge pass or not -- and the name word is a gap until the
+    redrawn cell is judged.
+    """
+    b = DeckBuilder(tmp_path)
+    b.stale_cell_from = "0" * 64
+    d = deck(b)
+    rep = d.syllabus.report()
+    assert any(f.rule == "target/picture-required" and f.note_id == "name-chicken"
+               for f in rep.findings)
+    shown = "".join(front + back for _, front, back in cards(d, "Production"))
+    assert b.seeded[("name-chicken", 0)] not in shown
+    assert b.seeded[("name-chicken", 1)] not in shown
+
+
 # --- Doctrine: sounds, then words, then their sentences; receptive before
 # productive (E1, F8) ---
 

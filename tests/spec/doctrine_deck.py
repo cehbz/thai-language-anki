@@ -177,6 +177,10 @@ class DeckBuilder:
     raw_curated: dict[str, str] = field(default_factory=dict)
     # shas whose media object is deleted from the store after seeding.
     orphan_media: bool = False
+    # the name word's picture is a chart cell drawn from `stale_cell_from`
+    # (a keyword picture sha that is not the keyword's current one), judge-
+    # passed, then redrawn from the current one and left unjudged.
+    stale_cell_from: str | None = None
 
     @property
     def root(self) -> Path:
@@ -217,6 +221,15 @@ class DeckBuilder:
                             gloss=s.gloss, voice=s.voice, source="test", origin="fixture",
                             licence="cc0", acquired=ACQUIRED)
         for subject in self.pictures:
+            if subject == NAME_CHICKEN.id and self.stale_cell_from is not None:
+                old_cell = self._seed_cell(db, media, subject, self.stale_cell_from,
+                                           judged=True)
+                self.seeded[(subject, 0)] = old_cell
+                new_cell = self._seed_cell(db, media, subject, self.seeded[(CHICKEN.id, 0)],
+                                           judged=False)
+                self.seeded[(subject, 1)] = new_cell
+                shas += [(old_cell, "png"), (new_cell, "png")]
+                continue
             sha = self._seed_picture(db, media, subject,
                                      judged=subject not in self.unjudged_pictures)
             shas.append((sha, "jpg"))
@@ -279,6 +292,24 @@ class DeckBuilder:
                   answer={"items": [{"sha": sha}]})
         if judged:
             self._pass_judge(db, subject, "picture", sha, verdict=verdict)
+        return sha
+
+    def _seed_cell(self, db: SyllabusDb, media: MediaStore, subject: str,
+                   cell_picture: str, *, judged: bool) -> str:
+        """A chart cell (spec 3 r41): a glyph provide row under the name
+        word whose params name the keyword picture it was composed from."""
+        sha = media.write(f"cell:{subject}:{cell_picture}".encode(), ext="png")
+        db.add_media(sha=sha, kind="picture", ext="png", source="glyph", origin="ก",
+                     licence="generated", acquired=ACQUIRED)
+        db.append(port="provide", backend="glyph",
+                  key=ProvideKey(source="glyph", kind="", query=f"{cell_picture}:ก"),
+                  subject=subject,
+                  question={"provides": "picture", "kind": "picture", "subject_kind": "word",
+                            "params": {"cell_picture": cell_picture, "cell_picture_ext": "jpg",
+                                       "query": "ก"}},
+                  answer={"items": [{"sha": sha, "ext": "png", "source": "glyph"}]})
+        if judged:
+            self._pass_judge(db, subject, "picture", sha)
         return sha
 
     def _seed_recording(self, db: SyllabusDb, media: MediaStore, subject: str,

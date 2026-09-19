@@ -319,6 +319,38 @@ def test_current_best_carries_the_speaker_a_provide_item_names(cache):
     assert best.speaker.sex == "male"
 
 
+def glyph_row(subject, cell_sha, cell_picture, ts=None):
+    """A chart-cell draw (spec 3 r41): a provide row under the name word
+    whose params name the keyword picture the cell was composed from."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="provide", backend="glyph", key=f"glyph:{cell_picture}:k",
+                 key_sha="x", subject=subject,
+                 question={"kind": "picture", "provides": "picture", "subject_kind": "word",
+                           "params": {"cell_picture": cell_picture, "query": "k"}},
+                 answer={"items": [{"sha": cell_sha, "ext": "png", "source": "glyph"}]},
+                 cost=0.0, ts=ts)
+
+
+def test_only_the_newest_glyph_draws_cell_is_a_candidate(cache):
+    """Spec 3 r46: a chart cell an older draw produced is superseded by the
+    newest draw's cell -- it never ranks again, judge pass or not -- so a
+    redraw from the keyword's new picture retires the stale cell without
+    a veto. Until the new cell is judged the name word has no picture.
+    """
+    cache.rows += [
+        glyph_row("name-k", "cell-old", "kw-old"),
+        judge_row("name-k", "picture", "cell-old", True),
+    ]
+    assert current_best(cache, "name-k", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance).artifact_sha == "cell-old"
+    cache.rows.append(glyph_row("name-k", "cell-new", "kw-new"))
+    assert current_best(cache, "name-k", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance).artifact_sha is None
+    cache.rows.append(judge_row("name-k", "picture", "cell-new", True))
+    assert current_best(cache, "name-k", "picture", current_rubric={}, prior=(),
+                        provenance_source=_no_provenance).artifact_sha == "cell-new"
+
+
 def test_current_best_learner_choice_wins_outright_over_judge(cache):
     cache.rows += [
         judge_row("rice", "picture", "sha-a", True),
