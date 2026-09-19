@@ -41,6 +41,7 @@ from .curated import (
     ProvidersConfig,
     load_curated,
     load_frequency_map,
+    load_frequency_words,
     load_providers_config,
     rulebook_file_text,
 )
@@ -632,6 +633,9 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,
         sentence_targets_per_sentence=cfg.sentence_targets_per_sentence,
         nothing_ttl=derivations.nothing_ttl,
+        frequency_words=lambda: load_frequency_words(root / "curated" / "frequency_th.txt"),
+        pair_search_depth=cfg.pair_search_depth,
+        pair_search_asks=cfg.pair_search_asks,
         # The deck's own curated store, so run._materialize_adjudications
         # can write words.yaml back (spec 2 r14 section 1; spec 3 r28
         # section 5). `engines` stays None: the run resolves

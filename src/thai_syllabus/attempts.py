@@ -257,6 +257,13 @@ class Sourcing:
     # and, through it, the real engines -- is never read.
     adopt_graphemes: bool = True
     consonants: Callable[[], Sequence[ConsonantRow]] = field(default=repo_consonants)
+    # The pair search's pool beyond the vocabulary: the frequency list in
+    # rank order (curated.load_frequency_words), read at most
+    # `pair_search_depth` deep; `search_pairs` turns the pass off.
+    frequency_words: Callable[[], Sequence[str]] = field(default=lambda: ())
+    search_pairs: bool = True
+    pair_search_depth: int = 5000
+    pair_search_asks: int = 40
 
 
 @dataclass(frozen=True)

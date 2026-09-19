@@ -584,6 +584,27 @@ def load_frequency_map(path: str | Path) -> TextFrequencyMap:
     return TextFrequencyMap(rank_by_word)
 
 
+def load_frequency_words(path: str | Path) -> tuple[str, ...]:
+    """The corpus as a ranked tuple of Thai forms (rank 1 first), the
+    pair search's pool beyond the vocabulary (spec 3 r47 section 5).
+    Same file and rules as load_frequency_map: header lines skipped,
+    blanks skipped, a repeated form kept at its first rank. Empty when
+    the file is absent.
+    """
+    path = Path(path)
+    if not path.exists():
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line in seen:
+            continue
+        seen.add(line)
+        out.append(line)
+    return tuple(out)
+
+
 # --- rulebook.yaml raw text (spec 3 section 6: Report.rulebook_id) --------
 #
 # rulebook_id hashes the file's contents plus the registry's rule ids, so
@@ -732,6 +753,8 @@ class ProvidersConfig:
     # the rest of the handed batch is the next non-introduced open Targets
     sentence_introducible_per_ask: int = 5
     sentence_targets_per_sentence: int = 3
+    pair_search_depth: int = 5000   # forms of the frequency list the pair search reads (spec 3 r47 section 8)
+    pair_search_asks: int = 40      # outside candidates the judge is asked about per run
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -1023,6 +1046,14 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_targets_per_sentence: "
                       f"{sentence_targets_per_sentence!r} must be a positive integer")
 
+    pair_search_depth = data.get("pair_search_depth", 5000)
+    if not isinstance(pair_search_depth, int) or pair_search_depth < 1:
+        errors.append(f"providers.pair_search_depth: {pair_search_depth!r} must be a positive integer")
+
+    pair_search_asks = data.get("pair_search_asks", 40)
+    if not isinstance(pair_search_asks, int) or pair_search_asks < 1:
+        errors.append(f"providers.pair_search_asks: {pair_search_asks!r} must be a positive integer")
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -1084,7 +1115,9 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         sentence_nothing_cap=sentence_nothing_cap,
         sentence_max_clauses=sentence_max_clauses,
         sentence_introducible_per_ask=sentence_introducible_per_ask,
-        sentence_targets_per_sentence=sentence_targets_per_sentence)
+        sentence_targets_per_sentence=sentence_targets_per_sentence,
+        pair_search_depth=pair_search_depth,
+        pair_search_asks=pair_search_asks)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -1134,6 +1167,8 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "sentence_max_clauses": config.sentence_max_clauses,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
         "sentence_targets_per_sentence": config.sentence_targets_per_sentence,
+        "pair_search_depth": config.pair_search_depth,
+        "pair_search_asks": config.pair_search_asks,
     })
 
 
