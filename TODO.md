@@ -8,9 +8,9 @@ still run against them.
 
 ## Priority (user, 2026-09-17): by value to learning
 
-1. Sound stage part 2 (steps 4 to 7 below): graphemes, then pairs; the
-   pronunciation-judge experiment first, since pair membership needs
-   adjudicated pronunciations (178 words disputed).
+1. Sound stage part 2 (steps 5 to 7 below): pairs first (hearing before
+   reading), then vowel signs and tone marks. 57 words stay disputed after
+   the second engine; a pair member must be corroborated, nothing else.
 2. Cutover to Anki: nothing built since the redesign is in the study
    deck yet.
 3. Sentences for the 319 unfilled targets: the drafter's cached answer
@@ -138,16 +138,20 @@ Still open:
 ## Sound stage (design approved 2026-09-12)
 
 Design: docs/superpowers/specs/2026-09-12-sound-stage-design.md
-(gitignored; rulings, sections, sequencing). Steps 1 to 3 are in (spec 5
+(gitignored; rulings, sections, sequencing). Steps 1 to 4 are in (spec 5
 r7; spec 3 r28 with spec 1 r13 and spec 2 r14; spec 1 r14 with the
-inventories). Next act: the part 2 plan for steps 4 to 7.
+inventories; step 4: 42 consonant graphemes with illustrator keyword
+pictures and judged chart cells, spec 3 r41/r46). Next act: the step 6
+plan.
 
-4. Consonant graphemes: rows, acrophonic keyword Words, name Words with
-   both Targets ordered after their grapheme, the `glyph` backend's
-   chart cell (spec 1, spec 3).
-5. Keyword search for vowel signs and tone marks (spec 3).
+5. Keyword search for vowel signs and tone marks (spec 3): 22 rows in
+   `data/thai_vowels.yaml`, one LLM ask proposing a picturable word per
+   sign, containment checked, then the keyword-picture and chart-cell
+   pipeline the consonants went through.
 6. Pair search (weight-proportional, vocabulary first, recordability
-   through Forvo), the retire key, coverage/sound-stage (spec 3, spec 5).
+   through Forvo): in (spec 3 r47). Part 2 holds the retire key,
+   coverage/sound-stage, and the screen's pair question (1 vetoes the
+   rendition, r retires the pair) (spec 3, spec 5).
    Ruling 2026-09-18: TTS renditions are allowed for pairs, one voice
    across both members (`_tts_rendition`), `rendition/synthetic` stays
    warn. Measured on the live deck: of the 61 pairs the weights want, the
@@ -155,10 +159,39 @@ inventories). Next act: the part 2 plan for steps 4 to 7.
    any Forvo, 61 with TTS; 453 of the 543 Forvo-covered words have one
    speaker. Improve later: a native same-speaker rendition replaces a
    synthetic one when found, and see the hired-recordings item below.
-   Before the search: revert the `vowel_length` three-way split (three
-   rows yield the same pair set three times) and retire
-   `pair/exact-confusion` (re-checks what `MinimalPair.create` refuses).
+   Before the search: done -- the `vowel_length` three-way split is
+   reverted to one `vowel_length:short-long` row (Task 1) and
+   `pair/exact-confusion` is retired (Task 2, spec 1 r19: re-checked what
+   `MinimalPair.create` already refuses).
 7. Principles F6: the recited names are learned as speech.
+
+Run and screen, found while seating the alphabet (2026-09-19):
+- **No resolve-only run mode.** Resolving an outstanding batch takes a
+  full cycle; the workaround is every source capped to 0
+  (`--backend-cap X=0` for pexels openverse wikimedia brave illustrator
+  glyph forvo tts llm-sentence). Assess-first still collects questions on
+  unjudged candidates, so a "resolve" cycle can submit a new batch; loop
+  until it submits nothing. A `--resolve-only` flag is the fix.
+- **A need the learner is meant to decide is still the machine's.** A
+  vetoed picture need with a judge-passed candidate is open, so every
+  cycle re-sources it and its new questions hide it from the screen
+  (`queue()` skips a subject with a question in flight) until the batch
+  resolves. F4 says that need is the learner's: stop sourcing a need whose
+  newest candidates passed and await the rating.
+- **The adjudication ask re-asks the same 57 disputed words every cycle**
+  (~$0.40, zero yield since the second engine landed). Cap it, or skip a
+  word already asked under the current engines, until Task 7's curated
+  rows exist.
+- **Chart-cell rubric clause** (spec 3 r41 follow-up): the judge failed
+  ฌ's cell once claiming the glyph was ถม, and 21 of 48 cells drawn from
+  corpus photos; the cell should be judged as a composition (symbol
+  legible, keyword picture is the keyword's), not as "a picture of the
+  recited name".
+- **Doctrine divergences** (tests/spec/test_deck_doctrine.py, DIVERGENCE):
+  F7 (TTS on a productive sentence ships, warn), E3 (a female-marked word
+  in a male voice ships; marking enforced at sourcing only), F12 (no
+  productive-specific new-card cap). Each closes by a rule or by editing
+  the principle.
 
 Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
 words corroborated, 205 stay disputed):

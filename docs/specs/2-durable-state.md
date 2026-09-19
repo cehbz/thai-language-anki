@@ -100,8 +100,9 @@ reference data, versioned with the deck and never hand-edited.
                                # name_word. Learner-owned; the run adds
                                # a row per adopted grapheme (r17)
     confusions.yaml            # id, dimension, sounds + profile seed weight
-    pairs.yaml                 # adopted MinimalPairs (machine-proposed,
-                               # human-kept; small)
+    pairs.yaml                 # adopted MinimalPairs (written by the
+                               # run's pair search, spec 3 r47; removed
+                               # by retirement -- part 2)
     profile.yaml               # register, emphasis, productive_cutoff
     rulebook.yaml              # rule config: severities, thresholds,
                                # judged-rule rubric text

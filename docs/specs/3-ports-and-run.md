@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 46, proposed 2026-09-19 against principles r6 and architecture
+Revision 47, proposed 2026-09-19 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -240,6 +240,7 @@ Revision log:
 - r44 2026-09-18: a reading the engines return is refused as degenerate -- more syllables than the form has Thai consonant letters, or the same syllable three times over -- and the caller treats it as no reading at all, so the row is logged and not adopted (r43's path). Evidence: thaig2p's decoder loops on the live deck today, reading ภาพวาด (four consonant letters) as eleven syllables and ษอ ฤๅษี as eleven; seventeen deck words carry a looped pronunciation, two of them minted by r40's own adoption pass on 2026-09-17 (`name-chain`, `name-hermit`). On the deck's 890 words neither check fires on a word that is not corrupt; two identical syllables in a row stay legal, since ๆ reduplication and ตุ๊กตุ๊ก produce exactly two. User approval 2026-09-18.
 - r45 2026-09-18: `Engines.g2p` is an ordered tuple of segmental engines (thaig2p, then tltk's rule-based g2p); a judge verdict is corroborated when it matches ANY of them on segments and vowel length, with the single-syllable tone fallback to the rule engine unchanged, and two engines agreeing on a whole reading is `engines_agree` without a judge at all. The one-syllable rule-tone fallback to `engines_agree` applies only where no other engine read the form: once a second engine has produced a differing reading, the tone rule would be overriding that disagreement rather than confirming anything, and `engines_agree` is terminal (`is_corroborated`, so the word is never adjudicated again). `corroborates` keeps the unrestricted per-reading fallback, since it only ever accepts a verdict the judge already produced. On the live deck this demotes 15 seeds from `engines_agree` to `disputed`, every one of them a vowel-length disagreement thaig2p gets wrong (ข้าว, เล่น, แถว, แห่ง) that would otherwise have been sealed with a wrong length. A tltk reading whose empty syllable slot marks a truncation (`สิบเอ็ด` -> `si2.`, `ชานมไข่มุก` -> `cʰaːn1..muk4`) is refused as no reading: 2 of the deck's 875 forms, both genuine, no false positives. A `ʔ` coda on a dead open syllable is normalized away in every engine reading and every judge verdict, so the two conventions can meet. Evidence: with one segmental oracle the run logged `adjudication: 141 of 141 verdicts not corroborated by an engine` on five consecutive cycles, having paid for every verdict; 78 of the 140 stuck verdicts on record corroborate against tltk, at no further judge cost. tltk converts 888 of the deck's 890 words (803 without the consonant-cluster merge thaig2p's converter already makes; the last two are `th2ipa` raising on the phrases ธอ ธง and ฝอ ฝา). The engines fail in opposite directions -- thaig2p loops, tltk truncates ชานมไข่มุก from five syllables to two -- so agreement is the evidence, not either engine alone. The deck stored a `ʔ` coda in 19 of 1456 syllables; 16 are the convention and 3 hid a lost coda (เอี๊ยม is `ʔiam`, ซีอิ๊ว `siː.ʔiw`, รถกระบะ `rot.kra.ba`). User approval 2026-09-19.
 - r46 2026-09-19: the chart cell follows its keyword's picture by itself (r41's "automatic redraw" follow-up). Two rules. Supersession: of a name word's glyph provide rows only the newest row's cells are candidates (`derivations.superseded_cells`, applied in `current_best` at every site -- run, queue, screen, compile, media index), so a redraw retires the stale cell without a veto, judge pass or not, and until the new cell is judged the name word has no picture. The chart-cell pass: each run, before the queue, a name word whose newest cell was drawn from a picture that is no longer its keyword's current picture is asked at glyph again (`run._redraw_stale_cells`), whatever the queue says -- its need was closed by the stale cell; the new cell's judge question rides the run's batch; a spent glyph budget skips the pass; a name word never drawn is left to its own need. Evidence: after 41 keyword pictures changed to the illustrator's, 26 chart cells stayed current with the corpus photo the keyword no longer had, contradicting F6a, and nothing on the record could reopen them. User approval 2026-09-19.
+- r47 2026-09-19: the pair search (design 2026-09-12 section 2), one pass per run after the grapheme pass and before the queue: for every SoundConfusion short of `pair_count`, `pairsearch.select_pairs` buckets candidates by the pronunciation with the confusion's dimension masked and ranks the exact pairs within a bucket (linear, not a scan of every pair) -- corroborated vocabulary Words first, then the first `pair_search_depth` (§8, 5000) forms of the frequency list read by the engines, those whose two engines agree or whose fresh judge verdict corroborates the engines (a verdict that does not corroborate drops the form from the pool: keeping its engine reading would select and re-ask it every run) -- both members Words first, then a shared Forvo speaker already on the record, then the lower rank sum; no form is a member twice for one confusion. A pair of Words is adopted at once into pairs.yaml (id `<confusion>/<x>-<y>`, members' ids sorted). An outside form is asked about first (subject `candidate:<thai>`, subject_kind `candidate`, role pronunciation-for-word, at most `pair_search_asks` (§8, 40) per run, riding the batch) and, once the judge's syllables corroborate the engines (`phonology.corroborates`), is minted as a closure Word (id `slug_id(gloss)`, `adjudicated`, the judge's gloss as meaning) in words.yaml and its pair adopted. The search makes no Forvo lookup of its own (permitted, not required); renditions are the rendition attempt's (Forvo same-speaker, else TTS in one voice, ruling 2026-09-18). RunReport gains `adopted_pairs` and `candidate_asks`. `pair/exact-confusion` is retired (spec 1 r19). Evidence: measured 2026-09-18, the vocabulary alone fills 3 of 61 wanted pairs same-speaker, 28 any-Forvo, 61 with TTS, so recordability is a preference and the frequency list the pool; the three `final:place-*` confusions, moved under the domain's new `final` dimension (spec 1 r20), could form no pair before it existed. User approval 2026-09-19.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -494,6 +495,28 @@ row standing with no name word, and compile() drops its Reading card,
 counted. The pass is idempotent: a second run finds every symbol present
 and adopts nothing. Curated rows are not needs: no bucket counts them,
 and the queue built after the pass already sees what it added.
+
+**Pair search (SoundConfusion).** The pair search (design 2026-09-12
+section 2), one pass per run after the grapheme pass and before the
+queue: for every SoundConfusion short of `pair_count`,
+`pairsearch.select_pairs` buckets candidates by the pronunciation with
+the confusion's dimension masked and ranks the exact pairs within a
+bucket (linear, not a scan of every pair) -- corroborated vocabulary
+Words first, then the first `pair_search_depth` (§8, 5000) forms of the
+frequency list read by the engines: forms whose two engines agree, or
+whose fresh judge verdict corroborates the engines. A form whose fresh
+verdict does not corroborate them drops out of the pool altogether --
+falling back to its engine reading would select it again every run and
+re-ask the same question as a cache hit for ever. Then both members
+Words first, then a shared Forvo speaker already on the record, then the
+lower rank sum; no form is a member twice for one confusion. A pair of
+Words is adopted at once into pairs.yaml (id `<confusion>/<x>-<y>`,
+members' ids sorted). An outside form is asked about first (subject
+`candidate:<thai>`, subject_kind `candidate`, role pronunciation-for-word,
+at most `pair_search_asks` (§8, 40) per run, riding the batch) and, once
+the judge's syllables corroborate the engines (`phonology.corroborates`),
+is minted as a closure Word (id `slug_id(gloss)`, `adjudicated`, the
+judge's gloss as meaning) in words.yaml and its pair adopted.
 
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
@@ -871,6 +894,8 @@ always. The remaining fields count events, not needs.
 | adopted_graphemes | Grapheme rows this run adopted from the repo inventory (r40) |
 | adopted_words | Words those adoptions added: keywords the vocabulary lacked, and the recited names |
 | adoption_skipped | inventory rows, and recited-name Words, the pass could not adopt (a row adopted without its name word counts one adoption and one skip), each logged with its reason (r40) |
+| adopted_pairs | MinimalPairs the pair search adopted into pairs.yaml this run, its outside members' closure Words counted under `adopted_words` (r47) |
+| candidate_asks | outside forms the pair search asked the judge about this run (r47) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
@@ -915,7 +940,8 @@ openverse 60, pexels 60, others 0: a challenge is a plain transport
 failure, and brave answers 402/429 rather than a challenge page),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
 `sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
-(3). `secrets.brave` names a reference to the Brave Search API subscription
+(3), `pair_search_depth` (5000) and `pair_search_asks` (40).
+`secrets.brave` names a reference to the Brave Search API subscription
 key, sent as `X-Subscription-Token` on every search. `secrets.openverse` names a
 reference to one line `client_id:client_secret` from Openverse's
 application registration; when set, the backend fetches an OAuth2
