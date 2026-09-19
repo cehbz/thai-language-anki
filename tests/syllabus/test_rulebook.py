@@ -3,6 +3,7 @@ every registered rule, the locked principles, and the traceability measure
 derived from both.
 """
 import re
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from thai_syllabus.curated import RulebookConfig
 from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion, Word
 from thai_syllabus.ids import ConfusionId, PairId
-from thai_syllabus.media import Speaker
+from thai_syllabus.media import Provenance, Recording, Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
@@ -23,6 +24,8 @@ from thai_syllabus.syllabus import Syllabus
 
 from .builders import pron, sentence, syl, target, thai_of, word
 from .fakes import FakeAssessmentReader, FakeMediaIndex
+
+_PROV = Provenance(source="forvo", origin="x", licence="cc", acquired=date(2026, 1, 1))
 
 
 def make_syllabus(**kwargs):
@@ -481,21 +484,25 @@ def test_pair_rendition_required_flags_a_pair_with_no_rendition():
     assert [f.note_id for f in findings] == [pair.id]
 
 
-def test_pair_rendition_required_flags_a_half_recorded_pair():
+def test_pair_rendition_required_flags_a_pair_whose_members_are_recorded_but_not_as_a_rendition():
+    """Each member has its own current-best recording (the media index's
+    provenance fallback sees two rows) but no one-speaker rendition row
+    names the pair: compile drops it, so the rule must say so."""
     confusion, mid_word, low_word, pair = _mid_low_pair()
-    media = FakeMediaIndex(rendition_provenance={
-        pair.id: ({"speaker_id": "a", "speaker": Speaker("a", "native")},)})
+    media = FakeMediaIndex(rendition_provenance={pair.id: (
+        {"speaker_id": "a", "speaker": Speaker("a", "native")},
+        {"speaker_id": "b", "speaker": Speaker("b", "native")})})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]
     assert [f.note_id for f in findings] == [pair.id]
 
 
-def test_pair_rendition_required_is_silent_when_every_member_has_a_recording():
+def test_pair_rendition_required_is_silent_when_the_pair_has_a_rendition():
     confusion, mid_word, low_word, pair = _mid_low_pair()
-    media = FakeMediaIndex(rendition_provenance={pair.id: (
-        {"speaker_id": "a", "speaker": Speaker("a", "native")},
-        {"speaker_id": "b", "speaker": Speaker("b", "native")})})
+    rendition = (Recording(sha="a", provenance=_PROV, speaker=Speaker("s", "native")),
+                 Recording(sha="b", provenance=_PROV, speaker=Speaker("s", "native")))
+    media = FakeMediaIndex(renditions={pair.id: rendition})
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,), confusions=(confusion,),
                              media=media)
     findings = [f for f in syllabus.report().findings if f.rule == "pair/rendition-required"]

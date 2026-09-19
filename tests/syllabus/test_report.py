@@ -3,16 +3,19 @@ judged-rule verdicts and waivers from the AssessmentReader (never calls a
 judge), gates on unwaived error findings, and stamps a content hash that
 goes stale the moment the aggregate's content changes (spec 1, section 3).
 """
-import pytest
+from datetime import date
 
+from thai_syllabus.media import Provenance, Recording, Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import (COVERAGE_CONFUSIONS, SENTENCE_RECORDING_REQUIRED,
                                     TARGET_PICTURE_REQUIRED)
 from thai_syllabus.rules import Finding, Metric, Rule
 from thai_syllabus.syllabus import Syllabus
 
-from .builders import sentence, target, thai_of, word
+from .builders import sentence, syl, target, thai_of, word
 from .fakes import FakeAssessmentReader, FakeMediaIndex
+
+_PROV = Provenance(source="forvo", origin="x", licence="cc", acquired=date(2026, 1, 1))
 
 
 def always_fails(syllabus) -> list[Finding]:
@@ -163,10 +166,10 @@ def test_rulebook_id_changes_when_the_registrys_rule_ids_change():
 # --- gaps(): derived from report()'s findings, never recomputed beside them
 # (spec 1, section 3) -------------------------------------------------------
 
-def make_gaps_syllabus(words=(), targets=(), sentences=(), confusions=(), rules=(), media=None):
-    # coverage/confusions always runs: gaps() reads missing_renditions from
-    # its measure and refuses when that rule is absent.
+def make_gaps_syllabus(words=(), targets=(), sentences=(), confusions=(), pairs=(), rules=(),
+                       media=None):
     return Syllabus(words=words, targets=targets, sentences=sentences, confusions=confusions,
+                    pairs=pairs,
                     profile=Profile(register="male_colloquial"),
                     rules=(COVERAGE_CONFUSIONS, *rules),
                     media=media or FakeMediaIndex(),
@@ -210,23 +213,29 @@ def test_gaps_omits_a_sentence_that_already_has_a_scene_picture():
     assert syl.gaps().scene_pictures == ()
 
 
-def test_gaps_lists_a_confusion_with_no_registered_pairs():
-    from thai_syllabus.entities import SoundConfusion
-    from thai_syllabus.ids import ConfusionId
+def test_gaps_lists_every_pair_without_a_rendition_by_pair_id():
+    from thai_syllabus.entities import MinimalPair, SoundConfusion
+    from thai_syllabus.ids import ConfusionId, PairId
+    from thai_syllabus.rulebook import PAIR_RENDITION_REQUIRED
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
-    # A speaker is on file for the confusion, but no pair names it -- the
-    # zero-pairs branch alone must still mark it a gap.
-    media = FakeMediaIndex(rendition_speakers={confusion.id: frozenset({"speaker-a"})})
-    syl = make_gaps_syllabus(confusions=(confusion,), media=media)
-    assert confusion.id in syl.gaps().missing_renditions
-
-
-def test_gaps_raises_when_coverage_confusions_is_not_registered():
-    syl = Syllabus(profile=Profile(register="male_colloquial"),
-                  rules=(), media=FakeMediaIndex(), assessments=FakeAssessmentReader())
-    with pytest.raises(RuntimeError, match="coverage/confusions"):
-        syl.gaps()
+    near = word("near", "ใกล้", syllables=(syl(tone="mid"),))   # ใกล้: near
+    far = word("far", "ไกล", syllables=(syl(tone="low"),))      # ไกล: far
+    bear = word("bear", "หมี", syllables=(syl(onset="m", vowel="i", tone="mid"),))  # หมี: bear
+    have = word("have", "มี", syllables=(syl(onset="m", vowel="i", tone="low"),))   # มี: have
+    p1 = MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=confusion,
+                            members=(near, far))
+    p2 = MinimalPair.create(id=PairId("tone:mid-low/mi"), confusion=confusion,
+                            members=(bear, have))
+    # p1 has a rendition; p2 does not. The confusion is "covered" by p1
+    # under coverage/confusions, and p2 must still be a gap.
+    rendition = (Recording(sha="a", provenance=_PROV, speaker=Speaker("s", "native")),
+                 Recording(sha="b", provenance=_PROV, speaker=Speaker("s", "native")))
+    media = FakeMediaIndex(renditions={p1.id: rendition},
+                           rendition_speakers={confusion.id: frozenset({"s"})})
+    syl_ = make_gaps_syllabus(words=(near, far, bear, have), confusions=(confusion,),
+                              pairs=(p1, p2), rules=(PAIR_RENDITION_REQUIRED,), media=media)
+    assert syl_.gaps().pairs_missing_renditions == (p2.id,)
 
 
 # --- compile: spec 4 -- see tests/syllabus/test_compile.py for the real

@@ -1019,11 +1019,7 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
     candidates += [(w, "picture", "word") for w in gaps.words_missing_pictures]
     candidates += [(w, "recording", "word") for w in gaps.words_missing_recordings]
     candidates += [(target_word.get(t, t), "sentence", "word") for t in gaps.unfilled_targets]
-    # gaps.missing_renditions names ConfusionIds; attempts._rendition_attempt
-    # looks a pair up by PairId. The need's subject is the pair's own id,
-    # not the confusion it covers.
-    candidates += [(p.id, "rendition", "pair") for p in syllabus.pairs
-                  if p.confusion in gaps.missing_renditions]
+    candidates += [(p, "rendition", "pair") for p in gaps.pairs_missing_renditions]
     candidates += [(s, "recording", "sentence") for s in gaps.sentence_recordings]
     candidates += [(s, "picture", "sentence") for s in gaps.scene_pictures]
     # Spec 3 r42: a grapheme's keyword picture is the keyword WORD's own

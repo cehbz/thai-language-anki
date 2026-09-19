@@ -640,17 +640,10 @@ class Syllabus:
         def note_ids(rule_id: str) -> tuple[str, ...]:
             return tuple(f.note_id for f in report.findings if f.rule == rule_id)
 
-        coverage = next((m for m in report.metrics if m.rule == "coverage/confusions"), None)
-        if coverage is None:
-            raise RuntimeError("gaps() needs the coverage/confusions rule registered")
-        missing_renditions = tuple(
-            confusion_id for confusion_id, detail in coverage.detail.items()
-            if not detail["covered"]
-        )
         scene_pictures = tuple(
             s.text_sha for s in self.sentences if self.media.picture_sha(s.text_sha) is None
         )
-        return Gaps(missing_renditions=missing_renditions,
+        return Gaps(pairs_missing_renditions=note_ids("pair/rendition-required"),
                     unfilled_targets=note_ids("target/sentence-required"),
                     words_missing_pictures=note_ids("target/picture-required"),
                     words_missing_recordings=note_ids("target/recording-required"),

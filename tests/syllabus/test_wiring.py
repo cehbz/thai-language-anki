@@ -38,7 +38,7 @@ from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import GlyphBackend, IllustratorBackend, Provider, Question
-from thai_syllabus.rulebook import sentence_note_id
+from thai_syllabus.rulebook import COVERAGE_CONFUSIONS, PAIR_RENDITION_REQUIRED, sentence_note_id
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
@@ -932,9 +932,11 @@ def test_db_media_index_picture_sha_and_recording_provenance_reflect_current_bes
 # that row's params["members"] names which per-member recording actually
 # backs it. Only absent a pair-level rendition row does rendition_provenance
 # fall back to each member's own current-best recording -- and
-# rendition_speakers deliberately skips that fallback (class docstring), so
-# a mixed-speaker/partial pair stays in Syllabus.gaps().missing_renditions
-# even though the deck still compiles with a warning.
+# rendition_speakers deliberately skips that fallback (class docstring).
+# pair/rendition-required and Syllabus.gaps() read rendition() instead,
+# which takes no fallback, so a mixed-speaker/partial pair stays a need
+# for the run to source even though the deck still compiles with a
+# warning.
 
 def _tone_pair(db=None):
     from thai_syllabus.entities import MinimalPair, SoundConfusion
@@ -1069,7 +1071,7 @@ def test_speakers_of_an_unknown_corpus_raises_value_error_naming_it(db):
         media.speakers_of("bogus")
 
 
-def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_the_fallback(db):
+def test_syllabus_gaps_pairs_missing_renditions_distinguishes_a_real_rendition_from_the_fallback(db):
     real_confusion, real_pair = _tone_pair(db)
     _seed_member_recording(db, "near", "sha-near-own", "somchai")
     _seed_member_recording(db, "far", "sha-far-own", "somchai")
@@ -1095,10 +1097,11 @@ def test_syllabus_gaps_missing_renditions_distinguishes_a_real_rendition_from_th
 
     media = _DbMediaIndex(db=db, pairs=(real_pair, fallback_pair))
     syllabus = Syllabus(confusions=(real_confusion, fallback_confusion),
-                        pairs=(real_pair, fallback_pair), media=media)
+                        pairs=(real_pair, fallback_pair), media=media,
+                        rules=(PAIR_RENDITION_REQUIRED, COVERAGE_CONFUSIONS))
     gaps = syllabus.gaps()
-    assert real_confusion.id not in gaps.missing_renditions
-    assert fallback_confusion.id in gaps.missing_renditions
+    assert real_pair.id not in gaps.pairs_missing_renditions
+    assert fallback_pair.id in gaps.pairs_missing_renditions
 
 
 def test_load_syllabus_refuses_a_deck_without_a_frequency_corpus(tmp_path):

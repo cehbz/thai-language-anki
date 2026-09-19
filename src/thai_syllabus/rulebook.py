@@ -305,11 +305,10 @@ TARGET_SENTENCE_REQUIRED = Rule(id="target/sentence-required", principle="F5",
 
 
 def _check_pair_rendition(syllabus: "Syllabus") -> list[Finding]:
-    # A half-recorded pair (fewer rows than members) has no rendition either
-    # -- every member needs its own current-best recording.
+    # compile's own predicate (MediaIndex.rendition is None): a pair whose
+    # members are each recorded but by no one speaker has no rendition.
     return [Finding(rule="pair/rendition-required", note_id=p.id, evidence="no rendition")
-           for p in syllabus.pairs
-           if len(syllabus.media.rendition_provenance(p.id)) < len(p.members)]
+           for p in syllabus.pairs if syllabus.media.rendition(p.id) is None]
 
 
 PAIR_RENDITION_REQUIRED = Rule(id="pair/rendition-required", principle="F1",

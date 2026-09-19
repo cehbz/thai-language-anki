@@ -374,7 +374,7 @@ def test_learner_good_on_a_rendition_with_no_backend_verdict_is_not_current_best
     artifact -- the need stays open, in available_needs and in queued().
     """
     pair = _FakePair(id="p-rice-near", confusion="tone:mid-low")
-    syllabus = _FakeSyllabus(_FakeGaps(missing_renditions=("tone:mid-low",)), pairs=[pair])
+    syllabus = _FakeSyllabus(_FakeGaps(pairs_missing_renditions=("p-rice-near",)), pairs=[pair])
     cache.rows.append(learner_row("p-rice-near", "rendition", "a" * 64, "good",
                                   role="rendition-for-pair", subject_kind="pair"))
 
@@ -1125,13 +1125,13 @@ def test_directed_false_with_no_flags_at_all(cache):
 
 class _FakeGaps:
     def __init__(self, words_missing_pictures=(), words_missing_recordings=(),
-                unfilled_targets=(), missing_renditions=(),
+                unfilled_targets=(), pairs_missing_renditions=(),
                 graphemes_missing_keyword_data=(), sentence_recordings=(),
                 scene_pictures=()):
         self.words_missing_pictures = words_missing_pictures
         self.words_missing_recordings = words_missing_recordings
         self.unfilled_targets = unfilled_targets
-        self.missing_renditions = missing_renditions
+        self.pairs_missing_renditions = pairs_missing_renditions
         self.graphemes_missing_keyword_data = graphemes_missing_keyword_data
         self.sentence_recordings = sentence_recordings
         self.scene_pictures = scene_pictures
@@ -1636,7 +1636,7 @@ def test_available_needs_names_each_gap_with_its_subject_kind():
     pair = _FakePair(id="p-rice-near", confusion="tone:mid-low")
     syllabus = _FakeSyllabus(_FakeGaps(words_missing_pictures=("rice",),
                                        words_missing_recordings=("rice",),
-                                       missing_renditions=("tone:mid-low",),
+                                       pairs_missing_renditions=("p-rice-near",),
                                        graphemes_missing_keyword_data=("k",),
                                        sentence_recordings=("s1",),
                                        scene_pictures=("s1",)),
@@ -1676,13 +1676,14 @@ def test_a_grapheme_gaps_does_not_name_raises_no_need():
     assert available_needs(syllabus) == []
 
 
-def test_available_needs_ignores_a_pair_whose_confusion_is_covered():
-    """A pair not named in gaps.missing_renditions (its confusion is
-    already covered) never becomes a rendition need.
-    """
-    pair = _FakePair(id="p-covered", confusion="tone:high-low")
-    syllabus = _FakeSyllabus(_FakeGaps(missing_renditions=()), pairs=[pair])
-    assert available_needs(syllabus) == []
+def test_available_needs_opens_a_rendition_need_per_listed_pair():
+    """gaps().pairs_missing_renditions names pairs, not confusions: a
+    second pair on an already-covered confusion is its own need."""
+    covered = _FakePair(id="p-covered", confusion="tone:high-low")
+    open_ = _FakePair(id="p-open", confusion="tone:high-low")
+    syllabus = _FakeSyllabus(_FakeGaps(pairs_missing_renditions=("p-open",)),
+                             pairs=[covered, open_])
+    assert available_needs(syllabus) == [("p-open", "rendition", "pair")]
 
 
 # --- all_needs -----------------------------------------------------------

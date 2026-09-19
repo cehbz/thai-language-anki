@@ -75,7 +75,7 @@ class Gaps:
     drafter and judge every other word's picture gets, and folds into the
     keyword's need where it already has one.
     """
-    missing_renditions: tuple[str, ...]        # ConfusionId, undercovered
+    pairs_missing_renditions: tuple[str, ...]  # PairId, no current-best rendition
     unfilled_targets: tuple[str, ...]           # TargetId
     words_missing_pictures: tuple[str, ...]     # WordId
     words_missing_recordings: tuple[str, ...]   # WordId

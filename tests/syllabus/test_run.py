@@ -1028,7 +1028,7 @@ class _Gaps:
     def __init__(self, pictures=(), recordings=(), sentences=(), graphemes=(),
                 sentence_recordings=()):
         self.words_missing_pictures, self.words_missing_recordings = pictures, recordings
-        self.unfilled_targets, self.missing_renditions = sentences, ()
+        self.unfilled_targets, self.pairs_missing_renditions = sentences, ()
         self.graphemes_missing_keyword_data = graphemes
         self.sentence_recordings, self.scene_pictures = sentence_recordings, ()
 
