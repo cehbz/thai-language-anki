@@ -508,6 +508,17 @@ def test_gloss_for_an_unknown_sentence_or_pair_is_none(syllabus):
     assert rs._gloss_for(syllabus, "no-such-pair", "pair") is None
 
 
+def test_build_queue_rate_item_carries_the_roles_rubric(derivations, db, w1):
+    """A rate question names the criterion the judge answered under -- the
+    role's current rubric -- so the page can show it beside the verdicts.
+    """
+    _provide(db, w1.id, "picture", items=[{"sha": "sA"}])
+    items = rs.build_queue(derivations, budget=50)
+    rated = next(i for i in items if i["type"] == "rate" and i["subject"] == w1.id)
+    assert rated["rubric"] == derivations.current_rubric.get("picture-for-word")
+    assert 'gloss: " + q.gloss' in rs.INDEX_HTML and "judge's criterion" in rs.INDEX_HTML
+
+
 def test_build_queue_rate_item_lists_excluded_candidates_and_card_flags(derivations, db, w1):
     """spec 5 section 1 kind 1 / section 3: the rate question carries the
     candidates the judge could never even prepare (this run's own
@@ -2030,6 +2041,30 @@ def test_http_index_serves_html(live_server):
     status, body = _get(port, "/")
     assert status == 200
     assert b"<title>Review</title>" in body
+
+
+def test_http_api_queue_first_puts_that_subject_ahead(live_server, w1, w2):
+    """?first=SUBJECT leads the session with that subject's questions; the
+    rest keep their order. The page forwards its own ?first=."""
+    seed_db = SyllabusDb(db_path := live_server[1])
+    _provide(seed_db, w1.id, "picture", items=[{"sha": "p1"}])
+    _provide(seed_db, w2.id, "picture", items=[{"sha": "p2"}])
+    seed_db.close()
+    port = live_server[0]
+    _, body = _get(port, "/api/queue")
+    plain = [i["subject"] for i in json.loads(body)]
+    assert set(plain) >= {w1.id, w2.id}
+    last = plain[-1]
+    _, body = _get(port, f"/api/queue?first={last}")
+    reordered = [i["subject"] for i in json.loads(body)]
+    assert reordered[0] == last
+    assert [s for s in reordered if s != last] == [s for s in plain if s != last]
+    # The page honours it too: ?first= opens the session view at the top,
+    # whatever mode and position localStorage kept from the last visit
+    # (observed: a page left in gallery mode showed card 19 of 2947 and
+    # ignored ?first= entirely).
+    assert 'var mode = firstSubject ? "session"' in rs.INDEX_HTML
+    assert "qIdx = firstSubject ? 0 :" in rs.INDEX_HTML
 
 
 def test_http_api_queue_returns_json_list(live_server, w1):

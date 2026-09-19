@@ -306,6 +306,11 @@ def _rate_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
     return {
         "type": "rate", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role,
+        # The criterion the judge's verdicts under it were given: the
+        # role's current rubric text, so the learner reads the same
+        # question the machine answered (F4: the presentation is part of
+        # the question).
+        "rubric": d.current_rubric.get(role),
         # spec 5 section 1 kind 1 (r8): whether this role's rating orders
         # current_best (picture/scene/sentence roles) or only vetoes
         # (recording and rendition roles) -- the client labels "acceptable"/
@@ -1318,6 +1323,13 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/api/queue":
                 items = ctx.questions(int((qs.get("budget") or [ctx.learner_budget])[0]))
+                # ?first=SUBJECT: that subject's questions lead the session
+                # (the learner came to judge one thing); the order behind
+                # them is untouched.
+                first = (qs.get("first") or [None])[0]
+                if first:
+                    items = ([i for i in items if i.get("subject") == first]
+                             + [i for i in items if i.get("subject") != first])
                 ctx.session.queued = len(items)
                 self._send_json(items)
             elif parsed.path == "/api/cards":
@@ -1626,7 +1638,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   // (spec 4 section 2's entity-identity vocabulary, _ENTITY_TAG_PREFIX).
   var SUBJECT_KIND_OF_FAMILY = { word: "word", minimal_pair: "pair", grapheme: "grapheme", sentence: "sentence" };
 
-  var mode = localStorage.getItem(MODE_KEY) || "session";
+  // ?first=SUBJECT is a session request: it opens the queue at that
+  // subject whatever mode and position the last visit left behind.
+  var firstSubject = new URLSearchParams(window.location.search).get("first");
+  var mode = firstSubject ? "session" : (localStorage.getItem(MODE_KEY) || "session");
   var glossOn = (localStorage.getItem(GLOSS_KEY) ?? "1") === "1";
 
   var queueItems = [];
@@ -1753,7 +1768,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   // --- session (question queue) ------------------------------------------
 
   function loadQueue() {
-    fetch("/api/queue").then(function (r) { return r.json(); }).then(function (items) {
+    // The page's own ?first=SUBJECT is forwarded so that subject leads.
+    var url = "/api/queue" + (firstSubject ? "?first=" + encodeURIComponent(firstSubject) : "");
+    fetch(url).then(function (r) { return r.json(); }).then(function (items) {
       queueItems = items;
       if (qIdx >= queueItems.length) { qIdx = 0; }
       renderSession();
@@ -1870,7 +1887,15 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
   function renderRate(q, box) {
     box.appendChild(subjectHeader(q));
+    if (q.gloss) { box.appendChild(el("div", { "class": "query" }, "gloss: " + q.gloss)); }
     if (q.query) { box.appendChild(el("div", { "class": "query" }, "query: " + q.query)); }
+    if (q.rubric) {
+      // The judge's criterion, folded: the rubric its verdicts below answer.
+      var crit = el("details", { "class": "query" });
+      crit.appendChild(el("summary", {}, "judge's criterion (" + q.role + ")"));
+      crit.appendChild(el("div", {}, q.rubric));
+      box.appendChild(crit);
+    }
     var cards = el("div", { "class": "subject-cards" });
     cards.appendChild(el("div", { "class": "empty" }, "loading the subject's cards"));
     box.appendChild(cards);
@@ -2335,7 +2360,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   // restore position (localStorage: position only, spec 5 section 2)
   try {
     var pos = JSON.parse(localStorage.getItem(POS_KEY) || "{}");
-    qIdx = pos.session || 0;
+    qIdx = firstSubject ? 0 : (pos.session || 0);
     gIdx = pos.gallery || 0;
   } catch (e) {}
 
