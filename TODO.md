@@ -141,17 +141,15 @@ Design: docs/superpowers/specs/2026-09-12-sound-stage-design.md
 (gitignored; rulings, sections, sequencing). Steps 1 to 4 are in (spec 5
 r7; spec 3 r28 with spec 1 r13 and spec 2 r14; spec 1 r14 with the
 inventories; step 4: 42 consonant graphemes with illustrator keyword
-pictures and judged chart cells, spec 3 r41/r46). Next act: the step 6
-plan.
+pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
 
 5. Keyword search for vowel signs and tone marks (spec 3): 22 rows in
    `data/thai_vowels.yaml`, one LLM ask proposing a picturable word per
    sign, containment checked, then the keyword-picture and chart-cell
    pipeline the consonants went through.
 6. Pair search (weight-proportional, vocabulary first, recordability
-   through Forvo): in (spec 3 r47). Part 2 holds the retire key,
-   coverage/sound-stage, and the screen's pair question (1 vetoes the
-   rendition, r retires the pair) (spec 3, spec 5).
+   through Forvo): in (spec 3 r47). Part 2 in (spec 1 r21, spec 3 r48,
+   spec 5 r14).
    Ruling 2026-09-18: TTS renditions are allowed for pairs, one voice
    across both members (`_tts_rendition`), `rendition/synthetic` stays
    warn. Measured on the live deck: of the 61 pairs the weights want, the
@@ -192,6 +190,11 @@ Run and screen, found while seating the alphabet (2026-09-19):
   in a male voice ships; marking enforced at sourcing only), F12 (no
   productive-specific new-card cap). Each closes by a rule or by editing
   the principle.
+- **A vetoed TTS word recording is re-synthesized in the same voice.**
+  `_recording_attempt`'s tts branch picks `pick_voice(need.subject, pool)`
+  with no veto filter, so `1` on a word's TTS clip dead-ends the need the
+  way a pair's rendition did before spec 3 r48; give it the same
+  next-unvetoed-voice rule.
 
 Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
 words corroborated, 205 stay disputed):
@@ -208,8 +211,7 @@ words corroborated, 205 stay disputed):
   dominate the segment set (วันอังคาร Tuesday: thaig2p assimilates the
   coda; กุมภาพันธ์ February: syllabification). A per-word curated
   exception stays the learner's path.
-- `artifactView` renders a rendition as an image (bites in step 6).
-  `derivations.confusion_weights(seed)` is a second home for
+- `derivations.confusion_weights(seed)` is a second home for
   `SoundConfusion.weight` and has no caller. `curated.py` imports
   `run.parse_day_starts` (move it out so `run.py` can import
   `save_words` at the top). `pair_count` above weight 5 yields one pair.

@@ -89,6 +89,13 @@ Revision log:
   offered the first five of 50+ candidates, the oldest corpus rejects,
   and never the illustration drawn to the learner's own direction. User
   approval 2026-09-18.
+- r14 2026-09-19: a rendition question renders a player per member with
+  the member's Thai, IPA and gloss, the confusion and the speaker; 1 is
+  the veto, 3/4 a note, and no key retires a pair (a pair is exact by
+  construction and the learner cannot hear the contrast it drills; the
+  learner's evidence on pairs is the drill log). Evidence: the identity
+  sha a rendition ranks by reached the page as a picture and rendered
+  as a broken image with nothing to hear. User approval 2026-09-19.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -136,7 +143,12 @@ stops; unanswered questions stay queued. Question kinds:
    as well, current or rejected (r11), and an alphabet-chart cell
    (spec 3 §3's glyph) `glyph` (r12); a recording
    renders as a player wherever a picture would be a thumbnail, the
-   query read-only. Actions: 1
+   query read-only. A rendition question shows each member (Thai, IPA,
+   gloss) with a player for that member's own recording under the
+   current rendition, the confusion and the speaker (r14); on its
+   veto-only role 1 is the veto (a TTS rendition then takes another
+   voice, spec 3 r48), 3/4 a note; there is no learner act on the pair
+   itself. Actions: 1
    unacceptable-none / 2 unacceptable-use-this (then pick a thumbnail) /
    3 acceptable / 4 good; optional one-line note (the Direction). With
    no current artifact only 1 (none of these) and 2 (use the picked
