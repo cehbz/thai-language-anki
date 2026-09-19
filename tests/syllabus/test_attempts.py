@@ -1049,6 +1049,44 @@ def test_rendition_attempt_falls_to_one_tts_voice_across_the_members(tmp_path):
     assert {i["speaker"]["kind"] for i in provided[-1].answer["items"]} == {"synthetic"}
 
 
+def test_a_vetoed_tts_rendition_is_resynthesized_in_a_voice_not_yet_vetoed(tmp_path):
+    """Design §4 (2026-09-19): 1 on a TTS rendition means "another
+    voice", not the same bytes again. pick_voice is deterministic per
+    pair, so the pool handed to it must exclude the vetoed voice."""
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.learner import append_rating
+    ctx, tts = _recording_ctx(tmp_path, _pair_syllabus())
+    attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+    first = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"][-1]
+    shas = {i["member"]: i["sha"] for i in first.answer["items"]}
+    first_voice = first.answer["items"][0]["speaker"]["id"].removeprefix("tts:")
+    append_rating(ctx.db, subject="p1", role="rendition-for-pair", rating="unacceptable-none",
+                  artifact_sha=rendition_identity(shas), subject_kind="pair")
+
+    attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+
+    second = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"][-1]
+    voices = {i["speaker"]["id"].removeprefix("tts:") for i in second.answer["items"]}
+    assert len(voices) == 1 and first_voice not in voices
+    assert voices == {pick_voice("p1", [v for v in list(_MALE) + list(_FEMALE) if v != first_voice])}
+
+
+def test_a_tts_rendition_answers_empty_once_every_voice_is_vetoed(tmp_path):
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.learner import append_rating
+    ctx, tts = _recording_ctx(tmp_path, _pair_syllabus())
+    for _ in range(len(_MALE) + len(_FEMALE)):
+        attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+        last = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"][-1]
+        shas = {i["member"]: i["sha"] for i in last.answer["items"]}
+        append_rating(ctx.db, subject="p1", role="rendition-for-pair",
+                      rating="unacceptable-none", artifact_sha=rendition_identity(shas),
+                      subject_kind="pair")
+    attempt(ctx, Need("p1", "rendition", "pair"), "tts")
+    last = [r for r in rows_for(ctx.db, "p1", "rendition") if r.port == "provide"][-1]
+    assert last.answer["items"] == []
+
+
 class _PairForvo:
     """Two members share one speaker; each member's own lookup counts its
     own re-asks (spec 3 section 5: one lookup per member, shared with the

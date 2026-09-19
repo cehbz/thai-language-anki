@@ -55,6 +55,7 @@ from .derivations import (
     refused_drafts,
     sentence_exhausted,
     unjudged_candidates,
+    vetoed,
 )
 from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
                        Target, Word, clauses_to_json, element_word, is_corroborated)
@@ -2265,16 +2266,43 @@ def _forvo_rendition(ctx: Sourcing, pair, words, constraint: VoiceConstraint,
     return {}
 
 
+def _vetoed_tts_voices(ctx: Sourcing, pair) -> frozenset[str]:
+    """The TTS voices of `pair`'s renditions the learner vetoed
+    (`unacceptable-none` on the rendition identity, spec 3 section 4):
+    read off the pair's own tts provide rows, whose items carry the
+    speaker id `tts:<voice>`."""
+    role = role_for("rendition", "pair")
+    voices: set[str] = set()
+    for row in record.rows_for(ctx.db, pair.id, "rendition"):
+        if row.port != "provide" or row.backend != "tts":
+            continue
+        items = row.answer.get("items") or []
+        shas = {i["member"]: i["sha"] for i in items}
+        if len(shas) != len(pair.members):
+            continue
+        if not vetoed(ctx.db, pair.id, role, rendition_identity(shas)):
+            continue
+        for item in items:
+            speaker_id = str((item.get("speaker") or {}).get("id") or "")
+            if speaker_id.startswith("tts:"):
+                voices.add(speaker_id.removeprefix("tts:"))
+    return frozenset(voices)
+
+
 def _tts_rendition(ctx: Sourcing, pair, words, constraint: VoiceConstraint,
                    spend: dict[str, Spend],
                    fetches: _Fetches) -> dict[str, tuple[str, Speaker]]:
-    """One voice across the members. A member's synthesis that fails on
-    the wire raises out of the loop; a member's synthesis the service
-    refuses ends the loop with no member set for the rest, without
-    asking them. An earlier member's own success stays recorded on
-    `fetches` either way.
+    """One voice across the members, the first of the constraint's pool
+    not vetoed on this pair (design §4, 2026-09-19); every voice vetoed
+    answers empty. A member's synthesis that fails on the wire raises
+    out of the loop; a member's synthesis the service refuses ends the
+    loop with no member set for the rest, without asking them. An
+    earlier member's own success stays recorded on `fetches` either way.
     """
-    voice = pick_voice(pair.id, _pool(ctx, constraint))
+    pool = [v for v in _pool(ctx, constraint) if v not in _vetoed_tts_voices(ctx, pair)]
+    if not pool:
+        return {}
+    voice = pick_voice(pair.id, pool)
     speaker = _tts_speaker(ctx, voice)
     members: dict[str, tuple[str, Speaker]] = {}
     for member in pair.members:
