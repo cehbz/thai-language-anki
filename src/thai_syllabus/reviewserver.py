@@ -982,11 +982,12 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     """One run's history row: the runreport answer as it was recorded,
     with the fields a row older than the field itself would be missing
     filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`, r30's
-    three comment counts, r34's `covered_new`, r35's `requeried`), plus
-    `spend_per_covered_new` (spec 5 r11, decision 12): the run's judge
-    and illustrator dollars over `covered_new`, None when nothing was
-    newly covered. The page reads its columns off the oldest row, so a
-    field missing there is a column missing for every run.
+    three comment counts, r34's `covered_new`, r35's `requeried`, r47's
+    `adopted_pairs`/`candidate_asks`), plus `spend_per_covered_new` (spec
+    5 r11, decision 12): the run's judge and illustrator dollars over
+    `covered_new`, None when nothing was newly covered. The page reads
+    its columns off the oldest row, so a field missing there is a column
+    missing for every run.
     """
     covered_new = answer.get("covered_new", 0)
     spend = answer.get("spend") or {}
@@ -994,6 +995,8 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     return {**answer,
             "adjudicated": answer.get("adjudicated", 0),
             "stayed_disputed": answer.get("stayed_disputed", 0),
+            "adopted_pairs": answer.get("adopted_pairs", 0),
+            "candidate_asks": answer.get("candidate_asks", 0),
             "comments_read": answer.get("comments_read", 0),
             "comment_actions": answer.get("comment_actions", 0),
             "comment_unactionable": answer.get("comment_unactionable", 0),
@@ -1022,11 +1025,12 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
     and the comment pass's three counts -- `comments_read`,
     `comment_actions`, `comment_unactionable` (spec 3 r30) -- and
-    `covered_new` (spec 3 r34) and `requeried` (spec 3 r35) -- whether or
-    not the row itself recorded them: a row written before any of them
-    reads 0 for its fields, so all seven are columns of every run in the
-    history and not only of the runs since (the page takes the history's
-    columns from its oldest row).
+    `covered_new` (spec 3 r34) and `requeried` (spec 3 r35) -- and
+    `adopted_pairs`/`candidate_asks` (spec 3 r47) -- whether or not the
+    row itself recorded them: a row written before any of them reads 0
+    for its fields, so all nine are columns of every run in the history
+    and not only of the runs since (the page takes the history's columns
+    from its oldest row).
     Each row also carries `spend_per_covered_new`, derived not stored
     (spec 5 r11): the run's judge and illustrator dollars over
     `covered_new`, None when nothing was newly covered.

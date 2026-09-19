@@ -38,6 +38,7 @@ from .attempts import (
     current_best_of,
     draft_refusal,
     grapheme_attempt,
+    pair_search_attempt,
     phrase_attempt,
     picture_query_for,
     preference_attempt,
@@ -146,6 +147,11 @@ class RunReport:
     adopted_graphemes: int = 0
     adopted_words: int = 0
     adoption_skipped: int = 0
+    # the pair search (spec 3 r47 section 5): MinimalPairs adopted into
+    # pairs.yaml this run, and the outside forms the judge was asked about
+    # this run -- events, not needs, outside the identity above
+    adopted_pairs: int = 0
+    candidate_asks: int = 0
     # picture needs that gained a first accepted picture this run (spec 3
     # r34 section 7): open before the run's resolve, covered by its end
     # -- an event count outside the identity; with a batch judge the
@@ -197,6 +203,8 @@ class _Tally:
     adopted_graphemes: int = 0
     adopted_words: int = 0
     adoption_skipped: int = 0
+    adopted_pairs: int = 0
+    candidate_asks: int = 0
     covered_new: int = 0
     requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
@@ -267,6 +275,10 @@ class _Tally:
         self.adopted_graphemes += result.adopted_graphemes
         self.adopted_words += result.adopted_words
         self.adoption_skipped += result.adoption_skipped
+        # The pair search's own counts (spec 3 r47 section 5): every other
+        # attempt leaves these at 0, as the grapheme counts above.
+        self.adopted_pairs += result.adopted_pairs
+        self.candidate_asks += result.candidate_asks
         self.comments_read += result.comments_read
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
@@ -1011,6 +1023,22 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     if ctx.adopt_graphemes:
         tally.collect(grapheme_attempt(ctx))
 
+    # The pair search (spec 3 r47 section 5): after the grapheme pass (a
+    # newly adopted keyword may be a member) and before the queue is
+    # built, so an adopted pair's rendition need is attempted this run.
+    # Its candidate asks ride the run's batch, so a dead judge stops the
+    # run here exactly as it does at the adjudication ask below: the pass
+    # owns no need bucket, and every queued need is deferred.
+    if ctx.search_pairs:
+        try:
+            tally.collect(pair_search_attempt(ctx))
+        except JudgeUnreachable:
+            tally.unreachable = True
+            needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
+            _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
+            tally.deferred += len(needs.entries)
+            return _finish(ctx, tally, needs, batch_id=None, pending=0)
+
     # One drafting ask per run (spec 3 r24 section 5), after sentence
     # drafting and before the need loop: every open picture need -- word
     # or scene, this pass's newly adopted sentences included -- lacking a
@@ -1157,7 +1185,8 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
         drafted=tally.drafted, retired=tally.retired,
         adopted_graphemes=tally.adopted_graphemes, adopted_words=tally.adopted_words,
-        adoption_skipped=tally.adoption_skipped, covered_new=tally.covered_new,
+        adoption_skipped=tally.adoption_skipped, adopted_pairs=tally.adopted_pairs,
+        candidate_asks=tally.candidate_asks, covered_new=tally.covered_new,
         requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
         comment_unactionable=tally.comment_unactionable,
@@ -1188,6 +1217,8 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adopted_graphemes": report.adopted_graphemes,
                 "adopted_words": report.adopted_words,
                 "adoption_skipped": report.adoption_skipped,
+                "adopted_pairs": report.adopted_pairs,
+                "candidate_asks": report.candidate_asks,
                 "covered_new": report.covered_new,
                 "requeried": report.requeried,
                 "comments_read": report.comments_read,

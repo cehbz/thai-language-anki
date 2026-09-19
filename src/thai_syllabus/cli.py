@@ -129,6 +129,7 @@ def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
          f"adopted_graphemes={report.adopted_graphemes} "
          f"adopted_words={report.adopted_words} "
          f"adoption_skipped={report.adoption_skipped} "
+         f"adopted_pairs={report.adopted_pairs} candidate_asks={report.candidate_asks} "
          f"comments_read={report.comments_read} "
          f"comment_actions={report.comment_actions} "
          f"comment_unactionable={report.comment_unactionable} "
@@ -203,7 +204,8 @@ def _cmd_run(args: argparse.Namespace, *,
                 print("run: the judge is unreachable; stopped early",
                      file=sys.stderr, flush=True)
                 return 1
-            adopted = bool(report.adopted_graphemes or report.adopted_words)
+            adopted = bool(report.adopted_graphemes or report.adopted_words
+                          or report.adopted_pairs)
             if (report.batch_id is None and not adopted
                     and ctx.db.newest_ts(excluding_port="run") == mark):
                 print("nothing left to do: the pass appended nothing to the record "

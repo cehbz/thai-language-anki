@@ -1121,10 +1121,11 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
            preference=AttemptResult(attempted=False), assess=None,
            phrase_result=AttemptResult(attempted=False), query="q",
            adjudication_result=AttemptResult(attempted=False),
-           comment_result=AttemptResult(attempted=False)):
+           comment_result=AttemptResult(attempted=False),
+           pair_search_result=AttemptResult(attempted=False)):
     """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
-    adjudication_attempt/comment_attempt/preference_attempt/
-    adoptable_drafts/picture_query_for. A `results`
+    adjudication_attempt/pair_search_attempt/comment_attempt/
+    preference_attempt/adoptable_drafts/picture_query_for. A `results`
     entry that is an exception class is raised instead of returned.
     `assess` is assess_first's fixed return for every need -- None keeps
     the fall-through to the source. `query` is every picture need's
@@ -1160,6 +1161,12 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
             raise comment_result("no reader")
         return comment_result
 
+    def fake_pair_search_attempt(ctx):
+        if isinstance(pair_search_result, type) and issubclass(pair_search_result, Exception):
+            raise pair_search_result("no judge")
+        return pair_search_result
+
+    monkeypatch.setattr(run_mod, "pair_search_attempt", fake_pair_search_attempt)
     monkeypatch.setattr(run_mod, "comment_attempt", fake_comment_attempt)
     monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
@@ -1926,6 +1933,20 @@ def test_an_unreachable_adjudication_attempt_stops_the_run_with_the_identity_int
             + report.unserved + report.budgeted + report.deferred)
 
 
+def test_an_unreachable_pair_search_stops_the_run_with_the_identity_intact(db, monkeypatch):
+    """Spec 3 r47: the pair search's candidate ask rides the run's batch
+    like the adjudication ask, so a judge that dies there stops the run
+    and defers every queued need -- and the pass owns no bucket of its
+    own, so the identity still holds."""
+    assessor = _Assessor()
+    calls = _patch(monkeypatch, {}, pair_search_result=JudgeUnreachable)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
+    assert calls == [] and report.unreachable is True and assessor.submitted == []
+    assert report.deferred == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
 def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch):
     assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {})
@@ -2605,7 +2626,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "excluded_items", "unreachable", "batch_id", "source_failures",
                            "spend", "unserved", "budgeted", "deferred", "preferences",
                            "requeried", "adopted_graphemes", "adopted_words",
-                           "adoption_skipped"}
+                           "adoption_skipped", "adopted_pairs", "candidate_asks"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,
@@ -3026,6 +3047,32 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
         ("ก", "chicken", "name-chicken"), ("ง", "snake", "name-snake")]
     assert ctx.syllabus.name_word_ids == frozenset({"name-chicken", "name-snake"})
+
+
+def test_the_run_adopts_a_vocabulary_pair_and_queues_its_rendition(tmp_path, fake_search,
+                                                                     fake_batch):
+    """Spec 3 r47: the pair search runs each pass, after the grapheme
+    pass and before the queue, so a pair adopted this run has its
+    rendition need attempted this same run."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))
+    tone = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                          sounds=("mid", "low"), weight=2)
+    root = _deck(tmp_path, (near, far, RICE),
+                 (target("near/receptive", "near"), target("rice/receptive", "rice")),
+                 confusions=(tone,))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    # No outside (non-vocabulary) form is needed for this pair -- both
+    # members are already in the deck -- but the pass resolves its
+    # Engines unconditionally once any confusion is short, so a test
+    # confusion still needs one injected (conftest.real_default_engines
+    # refuses the real thing).
+    ctx.engines = Engines(g2p=(lambda thai: (),), tone=lambda thai: "mid")
+    report = run(ctx, {})
+    assert report.adopted_pairs == 1
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/far-near"]
+    assert any(k == ("tone:mid-low/far-near", "rendition", "pair")
+              for k in available_needs(ctx.syllabus))
 
 
 # --- the chart cell's own roster (spec 3 r41 §5) ----------------------------
