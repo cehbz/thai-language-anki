@@ -242,6 +242,7 @@ Revision log:
 - r46 2026-09-19: the chart cell follows its keyword's picture by itself (r41's "automatic redraw" follow-up). Two rules. Supersession: of a name word's glyph provide rows only the newest row's cells are candidates (`derivations.superseded_cells`, applied in `current_best` at every site -- run, queue, screen, compile, media index), so a redraw retires the stale cell without a veto, judge pass or not, and until the new cell is judged the name word has no picture. The chart-cell pass: each run, before the queue, a name word whose newest cell was drawn from a picture that is no longer its keyword's current picture is asked at glyph again (`run._redraw_stale_cells`), whatever the queue says -- its need was closed by the stale cell; the new cell's judge question rides the run's batch; a spent glyph budget skips the pass; a name word never drawn is left to its own need. Evidence: after 41 keyword pictures changed to the illustrator's, 26 chart cells stayed current with the corpus photo the keyword no longer had, contradicting F6a, and nothing on the record could reopen them. User approval 2026-09-19.
 - r47 2026-09-19: the pair search (design 2026-09-12 section 2), one pass per run after the grapheme pass and before the queue: for every SoundConfusion short of `pair_count`, `pairsearch.select_pairs` buckets candidates by the pronunciation with the confusion's dimension masked and ranks the exact pairs within a bucket (linear, not a scan of every pair) -- corroborated vocabulary Words first, then the first `pair_search_depth` (§8, 5000) forms of the frequency list read by the engines, those whose two engines agree or whose fresh judge verdict corroborates the engines (a verdict that does not corroborate drops the form from the pool: keeping its engine reading would select and re-ask it every run) -- both members Words first, then a shared Forvo speaker already on the record, then the lower rank sum; no form is a member twice for one confusion. A pair of Words is adopted at once into pairs.yaml (id `<confusion>/<x>-<y>`, members' ids sorted). An outside form is asked about first (subject `candidate:<thai>`, subject_kind `candidate`, role pronunciation-for-word, at most `pair_search_asks` (§8, 40) per run, riding the batch) and, once the judge's syllables corroborate the engines (`phonology.corroborates`), is minted as a closure Word (id `slug_id(gloss)`, `adjudicated`, the judge's gloss as meaning) in words.yaml and its pair adopted. The search makes no Forvo lookup of its own (permitted, not required); renditions are the rendition attempt's (Forvo same-speaker, else TTS in one voice, ruling 2026-09-18). RunReport gains `adopted_pairs` and `candidate_asks`. `pair/exact-confusion` is retired (spec 1 r19). Evidence: measured 2026-09-18, the vocabulary alone fills 3 of 61 wanted pairs same-speaker, 28 any-Forvo, 61 with TTS, so recordability is a preference and the frequency list the pool; the three `final:place-*` confusions, moved under the domain's new `final` dimension (spec 1 r20), could form no pair before it existed. User approval 2026-09-19.
 - r48 2026-09-19: a pair's rendition need is the pair's own -- `Syllabus.gaps().pairs_missing_renditions` lists every pair `pair/rendition-required` finds, and that rule fires on compile's predicate (no current-best rendition), not on the members' provenance; a vetoed TTS rendition is re-synthesized in the next voice of the pool not vetoed on the pair, and answers empty once every voice is; RunReport gains `candidates_dropped`; the pair-search key row is struck (the search asks only judge questions) and §5's "adoption into curated pairs is the learner's act" is replaced (r47 made adoption the run's; the learner vetoes a rendition, never a pair). Evidence: measured 2026-09-19 on 30 adopted pairs, 23 lacked a rendition, 16 had an open need and the rule saw 2 -- a confusion "covered" by one pair's rendition hid its others and the provenance fallback counted two member recordings as a rendition; pick_voice is deterministic per pair, so a veto re-sourced the same bytes. User approval 2026-09-19.
+- r49 2026-09-20: a Forvo item is a candidate of the asked form only when its recorded word (item `word`, NFC, zero-width marks removed) equals it; the recorded word rides the download (audiofetch params); the mechanical recording check is one composite (duration, and for a Forvo clip the recorded word equals the subject's own form, read from the bytes row or by joining the media origin to the lookup items); the rendition check (v2) requires distinct member artifacts; a re-verification pass each run, after the pair search and before the queue, re-asks the mechanical check on every current-best recording and rendition whose newest verdict is not under the check's current key, so a check change reaches satisfied needs (F13) -- RunReport gains `reverified` and `demoted`. Evidence: Forvo's lookup ignores tone marks (ห่า returns หา, ห่า, ห้า); measured 2026-09-20, 47 of 443 current Forvo word recordings play a different word (แม่/แม้, เขา/เข้า, หมอ/หม้อ) and 3 of 5 Forvo renditions play one clip for both members. User approval 2026-09-20.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -324,7 +325,7 @@ one speaker answers empty.
 | openverse, pexels | picture (search hits with url) | source:query | free HTTP | new query = new key; re-asked once per attempt when every hit is refused by its server (§6a) |
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo; gsrsearch carries `filetype:bitmap`; imageinfo asks `iiurlwidth` = providers.yaml `image_width`, default 1600, and the hit's url is the scaled `thumburl`, origin the file page) | wikimedia:query | free HTTP | same |
 | imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
-| forvo | recording; rendition (intersection of members' lookups: same username across members) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
+| forvo | recording; rendition (intersection of members' lookups: same username across members); an item is a candidate of the asked form only when its recorded `word` is that form (NFC, zero-width marks removed; r49) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
 | tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
 | llm | sentence (per run over open targets), parse (clauses for given texts), phrase (a picture need's image query in two forms, r36), comment (readings of learner comments, per run), entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
@@ -338,7 +339,7 @@ one speaker answers empty.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording duration/format; media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:duration:0.2-5.0:SUBJECT:sha | ground truth for what it checks |
+| mechanical | recording: duration, and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -518,22 +519,37 @@ the judge's syllables corroborate the engines (`phonology.corroborates`),
 is minted as a closure Word (id `slug_id(gloss)`, `adjudicated`, the
 judge's gloss as meaning) in words.yaml and its pair adopted.
 
+**Re-verification (recordings and renditions).** One pass per run, after
+the pair search and before the queue (r49): every current-best recording
+(word and sentence needs) and rendition whose newest mechanical verdict is
+not under the check's current key is asked the check again, cache-first,
+so a key on record is never re-asked and a new key runs once; an artifact
+whose check cannot be prepared is excluded, as any unpreparable question
+is (§7), not asked; a verdict that fails ranks the artifact out of
+current-best on §6's newest-verdict rule and the need is a gap the same
+run sources. This is F13 for the mechanical checks: assess-first sees open
+needs only. `RunReport.reverified` counts the checks asked,
+`RunReport.demoted` the artifacts current before the ask whose new verdict
+is False; both are events outside the needs identity.
+
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
 word need's marking is its Word's `speaker`; a sentence need's marking is
-`Syllabus.marking(sentence)`. Marking female → female; male → male;
-empty → male when the recording plays on a productive back (a productive
-Target on the word, or a productive Target in the sentence's fill set),
-any sex otherwise. Within the constraint the pick spreads over the pool
-(TTS pools per sex in providers.yaml; a Forvo item is admitted only when
-the sex Forvo states matches). A marking holding both sexes never reaches
+`Syllabus.marking(sentence)`. Marking female → female; male → male; empty
+→ male when the recording plays on a productive back (a productive Target
+on the word, or a productive Target in the sentence's fill set), any sex
+otherwise. Within the constraint the pick spreads over the pool (TTS pools
+per sex in providers.yaml; a Forvo item is admitted only when the sex
+Forvo states matches). A marking holding both sexes never reaches
 sourcing: the Sentence invariant refuses it. No rulebook rule: the
-constraint holds at sourcing time; a recording on record that
-contradicts it is vetoed once through the learner path (an
-`unacceptable-none` rating on that sha, role recording-for-word or
-recording-for-sentence) and re-sourced under the constraint. Forvo
-attempt: lookup (cached; the §6a re-ask rule on an expired url), download
-each item's mp3, mechanical duration/format on each; the item's sex and
+constraint holds at sourcing time; a recording on record that contradicts
+it is vetoed once through the learner path (an `unacceptable-none` rating
+on that sha, role recording-for-word or recording-for-sentence) and
+re-sourced under the constraint. Forvo attempt: lookup (cached; the §6a
+re-ask rule on an expired url; only items recording the asked form are
+candidates, r49), download each candidate's mp3 with its recorded word on
+the bytes row, the mechanical recording check on each (duration; a Forvo
+clip's recorded word is the subject's own form); the item's sex and
 country are recorded on the speaker (spec 2); current-best by authority
 then provenance prior. TTS attempt: synthesize with a pool voice (the
 roster's sex is recorded on the speaker), then mechanical. TTS supplies
@@ -541,21 +557,21 @@ sex and timbre only; Forvo and commissions supply age and accent.
 `recording/synthetic` warns when current-best is TTS.
 
 **Rendition (MinimalPair).** Source order: forvo (intersection of members'
-lookups by username; one lookup per member, shared with the recording
-need and re-asked per member under the same rule), tts (one voice, the
-first of the constraint's pool not vetoed on this pair (r48); every
-voice vetoed answers empty), commission. The attempt appends its ask under
-the pair, the need's own subject, even though the lookups are cached per
-member: exhausted() counts attempts per need. The answer row carries the
+lookups by username; one lookup per member, shared with the recording need
+and re-asked per member under the same rule), tts (one voice, the first of
+the constraint's pool not vetoed on this pair (r48); every voice vetoed
+answers empty), commission. The attempt appends its ask under the pair,
+the need's own subject, even though the lookups are cached per member:
+exhausted() counts attempts per need. The answer row carries the
 per-member shas and the speaker; a rendition is that artifact set, and
 compile resolves the pair's current-best rendition from it (a pair with
-none does not compile). Mechanical checks one speaker across
-members and duration. Findings: none for native one-speaker;
-`rendition/synthetic` (warn) for TTS (one speaker across members holds
-by construction of the rendition answer; spec 1 r10 retired the check).
-A pair's rendition need is open while `MediaIndex.rendition(pair)` is
-None (`pair/rendition-required` per pair), whatever its confusion's
-other pairs have.
+none does not compile). Mechanical checks one speaker across members,
+distinct member artifacts (v2, r49) and each member's own recording check.
+Findings: none for native one-speaker; `rendition/synthetic` (warn) for
+TTS (one speaker across members holds by construction of the rendition
+answer; spec 1 r10 retired the check). A pair's rendition need is open
+while `MediaIndex.rendition(pair)` is None (`pair/rendition-required` per
+pair), whatever its confusion's other pairs have.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
 target. The handed targets are the next open Targets in order, at most
@@ -824,7 +840,9 @@ never a failed check.
 **Keys over mutable state name its version.** An answer computed from
 mutable reference data carries a version of that data in its key, as a
 judge key carries the rubric's sha and a glyph key the keyword picture's
-sha.
+sha. A mechanical check's params are its version: a change is a new key,
+and the re-verification pass (§5) re-asks current-best artifacts under
+it.
 
 ## 7. Budget and the run
 
@@ -903,6 +921,8 @@ always. The remaining fields count events, not needs.
 | adopted_pairs | MinimalPairs the pair search adopted into pairs.yaml this run, its outside members' closure Words counted under `adopted_words` (r47) |
 | candidate_asks | outside forms the pair search asked the judge about this run (r47) |
 | candidates_dropped | outside forms the pair search dropped from its pool this run: the judge's syllables do not corroborate the engines (r48) |
+| reverified | mechanical checks the re-verification pass asked this run: current-best recordings and renditions whose newest verdict was not under the check's current key (r49) |
+| demoted | artifacts current before the re-verification pass whose new verdict is False; their needs are gaps this same run (r49) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |

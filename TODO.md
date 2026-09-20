@@ -197,6 +197,10 @@ Run and screen, found while seating the alphabet (2026-09-19):
   with no veto filter, so `1` on a word's TTS clip dead-ends the need the
   way a pair's rendition did before spec 3 r48; give it the same
   next-unvetoed-voice rule.
+- **First run after spec 3 r49:** the cycle line's `demoted` should be
+  about 50 (47 wrong-word recordings and 3 one-clip renditions measured
+  2026-09-20); re-run the join script from that session (recorded word
+  vs the deck's word over current Forvo recordings) and expect 0.
 
 Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
 words corroborated, 205 stay disputed):
