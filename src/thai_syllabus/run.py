@@ -412,7 +412,7 @@ def _materialize_adjudications(ctx: Sourcing) -> _Adjudicated:
     found = adjudications(ctx.db, ctx.syllabus, current_rubric=ctx.rubrics)
     if not found or ctx.curated_dir is None:
         return _Adjudicated()
-    engines = ctx.engines or default_engines()
+    engines = ctx.engines or default_engines(ctx.dictionary)
     updated: dict[WordId, Word] = {}
     not_corroborated = 0
     for word_id, syllables in found.items():

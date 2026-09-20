@@ -703,6 +703,23 @@ def test_providers_config_round_trip(tmp_path):
     assert loaded == config
 
 
+def test_wiktionary_contact_loads_and_a_non_string_refuses_naming_the_field(tmp_path):
+    """providers.yaml `wiktionary.contact` (design 2026-09-20 §2): the one
+    thing about the deck's owner that reaches Wiktionary, appended to the
+    user agent as Wikimedia's policy asks. Absent is the default."""
+    write_providers(tmp_path, wiktionary={"contact": "someone@example.org"})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.wiktionary_contact == "someone@example.org"
+
+    write_providers(tmp_path)
+    assert curated.load_providers_config(tmp_path / "providers.yaml").wiktionary_contact is None
+
+    write_providers(tmp_path, wiktionary={"contact": 3})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.wiktionary\.contact"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
 def test_providers_config_has_no_k_field():
     assert not hasattr(curated.ProvidersConfig(), "k")
 

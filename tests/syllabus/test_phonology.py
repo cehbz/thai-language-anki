@@ -385,3 +385,93 @@ def test_default_engines_wires_both_segmental_oracles():
         assert all(len(r) == 2 for r in eng.readings("ภาพวาด"))
     finally:
         real.cache_clear()
+
+
+# --- the dictionary is consulted lazily (design 2026-09-20 §2) -------------
+
+def _counting_dictionary(readings):
+    calls = []
+    def dictionary(thai):
+        calls.append(thai)
+        return readings
+    return dictionary, calls
+
+
+A = (S("k", "a", "", "short", "mid"),)
+B = (S("k", "a", "", "long", "mid"),)
+
+
+def test_the_dictionary_is_not_consulted_when_the_local_engines_agree():
+    d, calls = _counting_dictionary((B,))
+    eng = Engines(g2p=(lambda t: A, lambda t: A), tone=lambda t: None, dictionary=d)
+    assert engines_pronunciation("กะ", eng) == Pronunciation(syllables=A, corroboration="engines_agree")
+    assert calls == []
+
+
+def test_the_dictionary_settles_a_local_disagreement_by_agreeing_with_one_engine():
+    d, calls = _counting_dictionary((B,))
+    eng = Engines(g2p=(lambda t: A, lambda t: B), tone=lambda t: None, dictionary=d)
+    assert engines_pronunciation("กะ", eng) == Pronunciation(syllables=B, corroboration="engines_agree")
+    assert calls == ["กะ"]
+
+
+def test_a_dictionary_reading_alone_is_written_disputed_when_no_engine_reads():
+    d, calls = _counting_dictionary((B,))
+    eng = Engines(g2p=(lambda t: None,), tone=lambda t: None, dictionary=d)
+    assert engines_pronunciation("ชานมไข่มุก", eng) == Pronunciation(syllables=B, corroboration="disputed")
+
+
+def test_the_dictionary_is_not_consulted_when_a_local_reading_corroborates():
+    d, calls = _counting_dictionary((B,))
+    eng = Engines(g2p=(lambda t: A,), tone=lambda t: None, dictionary=d)
+    assert corroborates(A, "กะ", eng) is True
+    assert calls == []
+
+
+def test_the_dictionary_corroborates_a_verdict_no_local_engine_matches():
+    d, calls = _counting_dictionary((A, B))
+    eng = Engines(g2p=(lambda t: A,), tone=lambda t: None, dictionary=d)
+    assert corroborates(B, "กะ", eng) is True
+    assert calls == ["กะ"]
+    assert corroborates((S("k", "o", "", "short", "mid"),), "กะ", eng) is False
+
+
+def test_the_dictionary_reading_is_normalized_and_degeneracy_checked():
+    glottal = (S("tɕ", "a", "ʔ", "short", "low"),)
+    d, _ = _counting_dictionary((glottal,))
+    eng = Engines(g2p=(lambda t: None,), tone=lambda t: None, dictionary=d)
+    assert eng.dictionary_readings("จะ") == ((S("tɕ", "a", "", "short", "low"),),)
+    loop = (S("w", "a", "", "short", "mid"),) * 4
+    d2, _ = _counting_dictionary((loop,))
+    eng2 = Engines(g2p=(lambda t: None,), tone=lambda t: None, dictionary=d2)
+    assert eng2.dictionary_readings("วา") == ()
+
+
+def test_a_phrase_never_reaches_the_dictionary():
+    d, calls = _counting_dictionary((B,))
+    eng = Engines(g2p=(lambda t: None,), tone=lambda t: None, dictionary=d)
+    assert eng.dictionary_readings("งอ งู") == ()
+    assert calls == []
+
+
+def test_engines_without_a_dictionary_behave_as_before():
+    eng = Engines(g2p=(lambda t: A, lambda t: B), tone=lambda t: None)
+    assert eng.dictionary is None
+    assert engines_pronunciation("กะ", eng) == Pronunciation(syllables=A, corroboration="disputed")
+
+
+def test_two_dictionary_spans_that_collapse_to_one_reading_do_not_agree_with_each_other():
+    """The dictionary's own variants are ONE opinion. English Wiktionary
+    lists several IPA spans per entry, and two of them can normalize to
+    the same reading (a /tɕaʔ/ and a /tɕa/ span collapse under the ʔ-coda
+    convention). `_agreed` returns any reading two entries of the tuple
+    share, so an undeduplicated pair would seal `engines_agree` -- which
+    is terminal (`is_corroborated`) -- on the dictionary's say-so alone,
+    with no local engine involved. It stays `disputed`, for the judge."""
+    d, _ = _counting_dictionary(((S("tɕ", "a", "ʔ", "short", "low"),),
+                                 (S("tɕ", "a", "", "short", "low"),)))
+    eng = Engines(g2p=(lambda t: None,), tone=lambda t: None, dictionary=d)
+    one = (S("tɕ", "a", "", "short", "low"),)
+    assert eng.dictionary_readings("จะ") == (one,)
+    assert engines_pronunciation("จะ", eng) == Pronunciation(syllables=one,
+                                                             corroboration="disputed")

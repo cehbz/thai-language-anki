@@ -47,6 +47,7 @@ from .curated import (
     rulebook_file_text,
 )
 from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best, need_sources
+from .dictionary import DEFAULT_USER_AGENT, Wiktionary
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
@@ -99,9 +100,13 @@ _DEFAULT_NOTHING_TTL: dict[str, int] = {"forvo": 180}
 # quotas.<source> configures otherwise. Brave is metered against a small
 # monthly credit: 1 s between requests, and no challenge wait (it
 # answers 402/429, never a challenge page).
+# Wiktionary is free and unmetered, but Wikimedia's API etiquette asks
+# for serial requests: 1 s between lookups, and no challenge wait (it
+# answers plainly, never with a challenge page).
 _DEFAULT_PACING: dict[str, tuple[float, float]] = {"openverse": (1.0, 60.0),
                                                    "pexels": (1.0, 60.0),
-                                                   "brave": (1.0, 0.0)}
+                                                   "brave": (1.0, 0.0),
+                                                   "wiktionary": (1.0, 0.0)}
 
 
 # Brave's own default cap (spec 3 section 8, `quotas.<source>`): the $5
@@ -680,10 +685,25 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         # The deck's own curated store, so run._materialize_adjudications
         # can write words.yaml back (spec 2 r14 section 1; spec 3 r28
         # section 5). `engines` stays None: the run resolves
-        # phonology.default_engines() itself, on the first verdict there
-        # is to check, so wiring a deck never loads pythainlp/torch.
-        curated_dir=root / "curated", engines=None)
+        # phonology.default_engines(ctx.dictionary) itself, on the first
+        # verdict there is to check, so wiring a deck never loads
+        # pythainlp/torch. The dictionary IS wired here -- it holds no
+        # model, only this deck's record and a `requests` session.
+        curated_dir=root / "curated", engines=None,
+        dictionary=_wiktionary(cfg, db))
     return ctx
+
+
+def _wiktionary(cfg: ProvidersConfig, db: SyllabusDb) -> Wiktionary:
+    """The dictionary oracle on this deck's record (design 2026-09-20 §2).
+    Free and secret-less; paced by quotas.wiktionary.min_interval_seconds
+    (default 1 s). `wiktionary.contact`, when set in providers.yaml, is
+    appended to the user agent as Wikimedia's policy asks; nothing about
+    the user is sent otherwise."""
+    interval, _wait = pacing_for(cfg, "wiktionary")
+    contact = cfg.wiktionary_contact
+    agent = f"{DEFAULT_USER_AGENT} ({contact})" if contact else DEFAULT_USER_AGENT
+    return Wiktionary(db, min_interval_s=interval, user_agent=agent)
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------

@@ -1213,6 +1213,30 @@ def test_build_sourcing_threads_caps_and_pools(tmp_path):
     assert ctx.voices["male"] and ctx.voices["female"]
 
 
+def test_build_sourcing_wires_the_wiktionary_dictionary(tmp_path):
+    from thai_syllabus.dictionary import DEFAULT_USER_AGENT, Wiktionary
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas: {wiktionary: {min_interval_seconds: 2}}\n"
+        "wiktionary: {contact: someone@example.org}\n", encoding="utf-8")
+    ctx = build_sourcing(root)
+    assert isinstance(ctx.dictionary, Wiktionary)
+    assert ctx.dictionary._min_interval_s == 2.0
+    assert ctx.dictionary._user_agent == f"{DEFAULT_USER_AGENT} (someone@example.org)"
+    assert ctx.engines is None
+
+
+def test_build_sourcing_paces_the_dictionary_at_one_second_by_default(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    ctx = build_sourcing(root)
+    assert ctx.dictionary._min_interval_s == 1.0
+    assert ctx.dictionary._user_agent == "thai-syllabus/0.1"
+
+
 def test_load_derivations_carries_the_parameters_build_sourcing_runs_under(tmp_path):
     root = _minimal_deck(tmp_path)
     (root / "curated" / "providers.yaml").write_text(

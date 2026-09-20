@@ -13,11 +13,17 @@ from .entities import Pronunciation, Syllable, Tone, without_glottal_coda
 
 @dataclass(frozen=True)
 class Engines:
-    """The segmental oracles, in order, plus the tone-rule engine
-    (design 2026-09-18 §1). `g2p` is a tuple because corroboration is
-    "the judge's verdict plus one engine" -- which engine is not fixed.
+    """The local segmental oracles, in order; the tone-rule engine
+    (design 2026-09-18 §1); and an optional dictionary (design
+    2026-09-20 §2). `g2p` is a tuple because corroboration is "the
+    judge's verdict plus one engine" -- which engine is not fixed.
     Order decides only which reading is written when they disagree, and a
     word they disagree on is `disputed` and blocked anyway.
+
+    Engines compute, a dictionary looks up -- so the dictionary is
+    consulted lazily, only where the local engines fail to agree
+    (`engines_pronunciation`) or to corroborate a verdict
+    (`corroborates`).
 
     `engines_pronunciation`'s whole-reading agreement check (below) is
     real pairwise agreement (`_agreed`, design 2026-09-20 §3): any two
@@ -26,6 +32,7 @@ class Engines:
     """
     g2p: tuple[Callable[[str], tuple[Syllable, ...] | None], ...]
     tone: Callable[[str], Tone | None]
+    dictionary: Callable[[str], tuple[tuple[Syllable, ...], ...]] | None = None
 
     def readings(self, thai: str) -> tuple[tuple[Syllable, ...], ...]:
         """Each local engine's reading of `thai`, in order, with the ʔ-coda
@@ -56,6 +63,34 @@ class Engines:
             if reading is not None and not is_degenerate(reading, thai):
                 out.append(reading)
         return tuple(out)
+
+    def dictionary_readings(self, thai: str) -> tuple[tuple[Syllable, ...], ...]:
+        """The dictionary's readings of `thai`, normalized and
+        degeneracy-checked exactly as any engine's are (design 2026-09-20
+        §2): a looked-up reading is no more trusted than a computed one.
+
+        `()` when this Engines has no dictionary, and `()` for a phrase:
+        a phrase is its tokens (design 2026-09-20 §3), and a dictionary
+        has no entry for a token sequence, so it is never asked one.
+
+        DEDUPLICATED, order preserved, and that is load-bearing: an entry
+        lists several IPA spans, two of which can normalize to the same
+        reading (a /tɕaʔ/ span and a /tɕa/ span collapse under the ʔ-coda
+        convention). `_agreed` returns any reading two entries of the
+        tuple share, so an undeduplicated pair would pairwise-agree with
+        ITSELF and seal `engines_agree` -- which is terminal
+        (`is_corroborated`) -- on the dictionary's say-so alone. The
+        dictionary's variants are one opinion, and it may reach
+        `engines_agree` only by agreeing with a local engine.
+        """
+        if self.dictionary is None or " " in thai:
+            return ()
+        out = []
+        for got in self.dictionary(thai):
+            reading = without_glottal_coda(tuple(got))
+            if reading and not is_degenerate(reading, thai):
+                out.append(reading)
+        return tuple(dict.fromkeys(out))
 
 
 def _read_tokens(engine, tokens: list[str]) -> tuple[Syllable, ...] | None:
@@ -109,8 +144,22 @@ def corroborates(judge: tuple[Syllable, ...], thai: str, engines: Engines) -> bo
     `syllables_from_verdict`, which normalizes on the way in; an
     unnormalized verdict silently fails to corroborate against a dead
     open syllable rather than raising.
+
+    The dictionary is consulted only when no local reading corroborates
+    (design 2026-09-20 §2): a verdict the engines already back costs no
+    lookup.
     """
-    for reading in engines.readings(thai):
+    if _matches_any(judge, thai, engines.readings(thai), engines):
+        return True
+    return _matches_any(judge, thai, engines.dictionary_readings(thai), engines)
+
+
+def _matches_any(judge: tuple[Syllable, ...], thai: str,
+                 readings: tuple[tuple[Syllable, ...], ...], engines: Engines) -> bool:
+    """Whether any of `readings` corroborates `judge` under the rule
+    above -- the same test for a local engine's reading and the
+    dictionary's."""
+    for reading in readings:
         if len(reading) != len(judge):
             continue
         if not all(_same_segments(a, b) for a, b in zip(judge, reading)):
@@ -182,13 +231,23 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     deliberate: `engines_agree` is terminal (`is_corroborated`, so the
     word is never adjudicated again), while `corroborates` only accepts a
     verdict the judge already produced.
+
+    A form no local engine reads but the dictionary does is written with
+    the dictionary's first reading, `disputed` (design 2026-09-20 §2),
+    for the judge to corroborate against -- a seed where there was none,
+    never a reading that stands on the dictionary's say-so alone.
     """
     readings = engines.readings(thai)
-    if not readings:
-        return None
     agreed = _agreed(readings)
+    if agreed is None:
+        # Local engines did not agree (or did not read): the dictionary is
+        # consulted now, and only now (design 2026-09-20 §2).
+        readings = readings + engines.dictionary_readings(thai)
+        agreed = _agreed(readings)
     if agreed is not None:
         return Pronunciation(syllables=agreed, corroboration="engines_agree")
+    if not readings:
+        return None
     first = readings[0]
     # The rule-tone fallback is single-engine behaviour: it only ever
     # confirms a reading no other engine was there to contradict.
@@ -199,7 +258,8 @@ def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
 
 
 @functools.cache
-def default_engines() -> Engines:
+def default_engines(dictionary: Callable[[str], tuple[tuple[Syllable, ...], ...]] | None = None
+                    ) -> Engines:
     """The real engines (spec 3 r28 section 5): pythainlp's thaig2p and
     tltk's rule-based g2p for segments/length/tone, and the deterministic
     tone-rule engine as the second opinion on a monosyllabic tone
@@ -207,12 +267,20 @@ def default_engines() -> Engines:
     so it happens inside this function -- unit tests inject fake Engines
     and never reach here.
 
+    `dictionary` is the deck's Wiktionary backend
+    (wiring.build_sourcing), threaded through by every caller as
+    `default_engines(ctx.dictionary)`; None leaves the Engines with no
+    dictionary at all.
+
     Memoised: every caller reads its own injected Engines first and falls
-    back to this (`ctx.engines or default_engines()`, the seam that stays
-    as it is), so a run with none injected would otherwise load the model
-    once per call site -- the adjudication pass and the grapheme pass at
-    least. The engines are stateless callables, so one instance serves
-    the whole process.
+    back to this (`ctx.engines or default_engines(ctx.dictionary)`, the
+    seam that stays as it is), so a run with none injected would
+    otherwise load the model once per call site -- the adjudication pass
+    and the grapheme pass at least. Memoised PER DICTIONARY OBJECT: one
+    run has one backend, so its call sites share one Engines, and a
+    second deck in the same process gets its own rather than the first
+    deck's record. The engines are stateless callables, so one instance
+    serves the whole process.
     """
     from .engines import Thaig2p, Tltk, rule_tone
-    return Engines(g2p=(Thaig2p(), Tltk()), tone=rule_tone)
+    return Engines(g2p=(Thaig2p(), Tltk()), tone=rule_tone, dictionary=dictionary)

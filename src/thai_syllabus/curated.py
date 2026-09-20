@@ -755,6 +755,12 @@ class ProvidersConfig:
     sentence_targets_per_sentence: int = 3
     pair_search_depth: int = 5000   # forms of the frequency list the pair search reads (spec 3 r47 section 8)
     pair_search_asks: int = 40      # outside candidates the judge is asked about per run
+    # providers.yaml `wiktionary.contact` (design 2026-09-20 §2): an
+    # address Wikimedia can reach this deck's owner at, appended to the
+    # dictionary's user agent as their API etiquette asks. The ONLY thing
+    # about the user that reaches Wiktionary; None -- the default --
+    # sends the bare `thai-syllabus/0.1`.
+    wiktionary_contact: str | None = None
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -1054,6 +1060,20 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if not isinstance(pair_search_asks, int) or pair_search_asks < 1:
         errors.append(f"providers.pair_search_asks: {pair_search_asks!r} must be a positive integer")
 
+    # The dictionary oracle's contact (design 2026-09-20 §2). Absent is
+    # the default -- a bare user agent; anything but a string is a
+    # half-written setting, not "no contact", since it would go out on
+    # every request.
+    wiktionary_cfg = data.get("wiktionary") or {}
+    if not isinstance(wiktionary_cfg, Mapping):
+        errors.append(f"providers.wiktionary: {wiktionary_cfg!r} must be a mapping (contact)")
+        wiktionary_cfg = {}
+    wiktionary_contact = wiktionary_cfg.get("contact")
+    if wiktionary_contact is not None and not isinstance(wiktionary_contact, str):
+        errors.append(f"providers.wiktionary.contact: {wiktionary_contact!r} must be a "
+                      "string (an address Wikimedia can reach this deck's owner at)")
+        wiktionary_contact = None
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -1117,7 +1137,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         sentence_introducible_per_ask=sentence_introducible_per_ask,
         sentence_targets_per_sentence=sentence_targets_per_sentence,
         pair_search_depth=pair_search_depth,
-        pair_search_asks=pair_search_asks)
+        pair_search_asks=pair_search_asks,
+        wiktionary_contact=wiktionary_contact)
 
 
 def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
@@ -1169,6 +1190,8 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "sentence_targets_per_sentence": config.sentence_targets_per_sentence,
         "pair_search_depth": config.pair_search_depth,
         "pair_search_asks": config.pair_search_asks,
+        **({"wiktionary": {"contact": config.wiktionary_contact}}
+           if config.wiktionary_contact is not None else {}),
     })
 
 

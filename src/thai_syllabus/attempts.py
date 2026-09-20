@@ -59,7 +59,8 @@ from .derivations import (
     vetoed,
 )
 from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
-                       Target, Word, _same_form, clauses_to_json, element_word, is_corroborated)
+                       Syllable, Target, Word, _same_form, clauses_to_json, element_word,
+                       is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
@@ -255,6 +256,12 @@ class Sourcing:
     # the first verdict there is to check -- pythainlp/torch never load
     # for a run with nothing to materialize, and a test injects fakes.
     engines: Engines | None = None
+    # The deck's dictionary oracle (design 2026-09-20 §2), handed to
+    # default_engines when no Engines are injected: the Engines it builds
+    # consult it lazily, only where the local engines fail to agree or to
+    # corroborate. None -- a test, or a deck wired without one -- leaves
+    # the engines exactly as they were.
+    dictionary: Callable[[str], tuple[tuple[Syllable, ...], ...]] | None = None
     # The adoption pass (spec 3 r40 section 5): whether this run adopts
     # the repo's consonant inventory at all, and the table it reads. A
     # caller that does not want the 44 rows written into its deck (a test
@@ -1538,7 +1545,7 @@ def grapheme_attempt(ctx: Sourcing, *,
         _log.warning("grapheme pass: %s absent from %s -- %d row(s) not adopted",
                      ", ".join(missing), ctx.curated_dir, len(rows))
         return AttemptResult(attempted=False, adoption_skipped=len(rows))
-    engines = ctx.engines or default_engines()
+    engines = ctx.engines or default_engines(ctx.dictionary)
     # Deferred: curated.py imports run.py, which imports this module, so a
     # top-level import here would be a cycle (the same reason
     # run._materialize_adjudications defers its own).
@@ -1760,7 +1767,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
         # and a deck whose pairs come out of the vocabulary reads none.
         nonlocal engines
         if engines is None:
-            engines = default_engines()
+            engines = default_engines(ctx.dictionary)
         return engines
 
     words = list(ctx.syllabus.words)
