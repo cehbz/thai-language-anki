@@ -900,13 +900,13 @@ class RenditionBackend:
     members named in `params["members"]` (member -> artifact sha), and
     every one of those members passing its own mechanical checks, whose
     verdicts the asker hands over in `params["member_checks"]` (member ->
-    bool). The artifact they form is the member set, identified by
-    cachekeys.rendition_identity. Keyed
-    mech:rendition:CODE_VERSION:SUBJECT:ARTIFACT_SHA -- SUBJECT is the
-    pair id (question.subject).
+    bool), and no two members share an artifact (r49). The artifact they
+    form is the member set, identified by cachekeys.rendition_identity.
+    Keyed mech:rendition:CODE_VERSION:SUBJECT:ARTIFACT_SHA -- SUBJECT is
+    the pair id (question.subject).
     """
     speaker_of: Callable[[str], str | None]
-    code_version: str = "v1"
+    code_version: str = "v2"
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         return MechanicalKey(check="rendition", params=self.code_version,
@@ -932,8 +932,11 @@ class RenditionBackend:
                               evidence=f"no speaker recorded for: {', '.join(unattributed)}")
         distinct = sorted(set(speakers.values()))
         failing = sorted(m for m in members if not checks[m])
+        shared = len(set(members.values())) < len(members)
         evidence = (f"speaker {distinct[0]}" if len(distinct) == 1
                     else f"speakers {distinct}")
         if failing:
             evidence = f"{evidence}; failing: {', '.join(failing)}"
-        return RawVerdict(value=len(distinct) == 1 and not failing, evidence=evidence)
+        if shared:
+            evidence = f"{evidence}; members share one artifact: {', '.join(sorted(members))}"
+        return RawVerdict(value=len(distinct) == 1 and not failing and not shared, evidence=evidence)

@@ -1317,12 +1317,27 @@ def test_the_rendition_key_encodes_check_version_subject_and_identity():
     backend = _rendition({})
     members = {"near": "a", "far": "b"}
     key = backend.cache_key(_rendition_question(members))
-    assert key.encode() == f"mech:rendition:v1:p1:{rendition_identity(members)}"
+    assert key.encode() == f"mech:rendition:v2:p1:{rendition_identity(members)}"
 
 
 def test_a_rendition_with_no_members_cannot_be_prepared():
     with pytest.raises(PreparationError):
         _rendition({}).fetch(_rendition_question({}))
+
+
+def test_a_rendition_whose_members_share_one_clip_fails():
+    """Forvo's tone-blind lookup matched one clip to both members of
+    ห่า/ห้า (a classifier / "five"): one speaker, both members passing,
+    and no contrast to hear."""
+    backend = _rendition({"a": "forvo:master0z"})
+    verdict = backend.fetch(_rendition_question({"classifier:ห่า": "a", "five": "a"}))
+    assert verdict.value is False and "share one artifact" in verdict.evidence
+
+
+def test_the_rendition_check_key_is_v2():
+    backend = _rendition({"a": "forvo:somchai", "b": "forvo:somchai"})
+    key = backend.cache_key(_rendition_question({"near": "a", "far": "b"}))
+    assert key.encode().startswith("mech:rendition:v2:")
 
 
 # --- the judge's sentence prompt puts the gloss to the judge ---------------
