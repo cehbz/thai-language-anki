@@ -46,6 +46,7 @@ from .derivations import (
     CANDIDATE_SUBJECT_PREFIX,
     CurrentBest,
     aged_out,
+    all_needs,
     available_needs,
     candidate_adjudications,
     current_best,
@@ -82,6 +83,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "ChartCell", "chart_cell", "GLYPH_SOURCE",
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
            "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
+           "reverify_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
@@ -333,6 +335,10 @@ class AttemptResult:
     # outside forms the pair search dropped from its pool this run because
     # the judge's syllables do not corroborate the engines (r48)
     candidates_dropped: int = 0
+    # the re-verification pass (spec 3 r49 section 5): checks asked and
+    # artifacts demoted -- events outside the needs identity
+    reverified: int = 0
+    demoted: int = 0
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -2645,6 +2651,76 @@ def _assess_recordings(ctx: Sourcing, need: Need, shas: Sequence[str],
     result = _check(ctx, questions, spend)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend)
+
+
+def reverify_attempt(ctx: Sourcing) -> AttemptResult:
+    """One pass per run (spec 3 r49 section 5; F13 for the mechanical
+    checks): every current-best recording (word and sentence needs) and
+    rendition whose newest mechanical verdict is not under the check's
+    current key is asked the check again -- cache-first, so a key on
+    record is never re-asked and a new key runs once. An artifact whose
+    file cannot be read (PreparationError -- a media row with nothing on
+    disk) is excluded, not asked: no verdict row lands under the current
+    key, so the same stale key is offered again next run, and the
+    exclusion rides RunReport.excluded like any other. A verdict that
+    fails ranks the artifact out of current-best on the newest-verdict
+    rule; the need is then a gap the queue built after this pass
+    sources. `reverified` counts the checks that resolved (not the
+    excluded ones), `demoted` the artifacts current before the ask whose
+    new verdict is False; both are events outside the needs identity.
+    """
+    spend: dict[str, Spend] = {}
+    asked = demoted = 0
+    excluded: dict[str, Excluded] = {}
+    seen: set[tuple[str, str]] = set()
+    for subject, kind, subject_kind in all_needs(ctx.syllabus):
+        if kind not in ("recording", "rendition") or (subject, kind) in seen:
+            continue
+        seen.add((subject, kind))
+        best = current_best_of(ctx, subject, kind)
+        if best.artifact_sha is None:
+            continue
+        keys_on_record = {r.key for r in ctx.db.assessments_of(subject)
+                          if r.port == "assess" and r.backend in ("mechanical", "rendition")}
+        if kind == "recording":
+            q = AssessQuestion(subject=subject, role=role_for(kind, subject_kind),
+                               artifact_sha=best.artifact_sha, kind=kind, subject_kind=subject_kind)
+            if ctx.assessor.key_of("mechanical", q).encode() in keys_on_record:
+                continue
+            result = _check(ctx, [q], spend)
+            excluded.update(result.excluded)
+            verdict = result.resolved.get(ctx.assessor.key_of("mechanical", q))
+            if verdict is not None:
+                asked += 1
+                if not verdict.value:
+                    demoted += 1
+            continue
+        pair = ctx.syllabus.pair(PairId(subject))
+        recordings = ctx.syllabus.media.rendition(pair.id)
+        if recordings is None:
+            continue
+        members = {member: (rec.sha, rec.speaker) for member, rec in zip(pair.members, recordings)}
+        shas = {member: sha for member, (sha, _s) in members.items()}
+        q = AssessQuestion(subject=pair.id, role=role_for("rendition", "pair"),
+                           artifact_sha=rendition_identity(shas), kind="rendition", subject_kind="pair",
+                           params={"members": shas})
+        if ctx.assessor.key_of("rendition", q).encode() in keys_on_record:
+            continue
+        q = replace(q, params={"members": shas, "member_checks": _check_members(ctx, members, spend)})
+        result = ctx.assessor.ask_many("rendition", [q])
+        _count_verdicts(spend, "rendition", result)
+        excluded.update(result.excluded)
+        verdict = result.resolved.get(ctx.assessor.key_of("rendition", q))
+        if verdict is not None:
+            asked += 1
+            if not verdict.value:
+                demoted += 1
+    if not asked and not excluded:
+        return AttemptResult(attempted=False)
+    _log.info("re-verification: %d check(s) asked, %d artifact(s) demoted, %d excluded",
+             asked, demoted, len(excluded))
+    return AttemptResult(attempted=bool(asked or excluded), excluded=excluded, spend=spend,
+                         reverified=asked, demoted=demoted)
 
 
 # The assessment a kind's assess-first step runs over the candidates

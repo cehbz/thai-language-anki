@@ -5,25 +5,26 @@ import hashlib
 import io
 import json
 import logging
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 
 import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, Excluded, JudgeBackend, JudgeUnreachable,
-                                    ManyResult, RawVerdict, RenditionBackend, deck_field)
+                                    ManyResult, RawVerdict, RecordingCheckBackend,
+                                    RenditionBackend, deck_field)
 from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
                                     ChartCell, Need, Sourcing,
                                     _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt, chart_cell,
                                     comment_attempt, current_best_of, grapheme_attempt,
                                     pair_search_attempt, phrase_attempt,
-                                    picture_query_for, retire_sentence, sentence_attempt,
-                                    sources_for, sources_for_need)
+                                    picture_query_for, retire_sentence, reverify_attempt,
+                                    sentence_attempt, sources_for, sources_for_need)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
-                                    MechanicalKey, PhraseKey, ProvideKey, RunReportKey,
-                                    rendition_identity, sha)
+                                    MechanicalKey, PhraseKey, ProvideKey, RenditionAskKey,
+                                    RunReportKey, rendition_identity, sha)
 from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
 from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, candidate_shas,
@@ -52,6 +53,7 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused,
                                      TransportError)
 from thai_syllabus.tts import pick_voice
+from thai_syllabus.wiring import _DbMediaIndex, _recorded_form_of
 
 from .builders import sentence as compose_sentence
 from .builders import syl, target, thai_of, word
@@ -177,17 +179,18 @@ class _Llm:
         return RawAnswer(items=(self.text,))
 
 
-class _Mechanical:
-    """A duration-shaped mechanical backend passing every artifact but
-    `failing_subject`'s.
+@dataclass
+class _Mechanical(RecordingCheckBackend):
+    """A backend passing every artifact but `failing_subject`'s. A
+    RecordingCheckBackend subclass, not a bespoke fake: its `cache_key`
+    is inherited, so it keys under the real current mechanical key (spec
+    3 r49's mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha) -- what
+    reverify_attempt compares a stale row's key string against. `fetch`
+    is overridden outright: no file, no duration, no own-word clause,
+    `ok`/`failing_subject` the only say in the verdict.
     """
-
-    def __init__(self, ok=True, failing_subject=None):
-        self.ok, self.failing_subject = ok, failing_subject
-
-    def cache_key(self, q):
-        return MechanicalKey(check="duration", params="0.2-5.0", subject=q.subject,
-                             artifact_sha=q.artifact_sha)
+    ok: bool = True
+    failing_subject: str | None = None
 
     def fetch(self, q):
         passes = self.ok and q.subject != self.failing_subject
@@ -195,7 +198,7 @@ class _Mechanical:
 
 
 def _mechanical(ok=True, failing_subject=None):
-    return _Mechanical(ok=ok, failing_subject=failing_subject)
+    return _Mechanical(resolve_path=lambda s: None, ok=ok, failing_subject=failing_subject)
 
 
 def _rendition_backend(db):
@@ -267,15 +270,45 @@ def _seed_phrase(ctx, subject, phrase, subject_kind="word"):
 
 
 def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None):
+    """A recording-sourcing ctx over one word or pair syllabus. The
+    default "mechanical" backend is the real RecordingCheckBackend (spec
+    3 r49), `duration_of` faked so no file is ever ffprobed, `form_of`/
+    `recorded_form_of` wired the same way wiring.build_assessor wires
+    them -- so a stale-key row's re-check (reverify_attempt) exercises
+    the real duration/own-word clauses, not a bespoke stand-in. The
+    syllabus's `media` is likewise the real _DbMediaIndex over `db`, so
+    ctx.syllabus.media.rendition() reads back what the rendition checks
+    below actually wrote.
+    """
     media = MediaStore(tmp_path / "media")
     tts = _Tts()
     db = SyllabusDb(tmp_path / "syllabus.db")
+
+    def resolve(s):
+        prov = db.media_provenance(s)
+        return media.path_for(s, prov["ext"]) if prov else None
+
+    def form_of(subject):
+        word = syllabus.find_word(WordId(subject))
+        if word is not None:
+            return word.thai
+        try:
+            return syllabus.sentence(subject).text
+        except KeyError:
+            return None
+
+    default_mechanical = RecordingCheckBackend(
+        resolve_path=resolve, duration_of=lambda path: 1.0,
+        form_of=form_of, recorded_form_of=_recorded_form_of(db))
+    syllabus = replace(syllabus, media=_DbMediaIndex(
+        db=db, pairs=syllabus.pairs, words=syllabus.words, sentences=syllabus.sentences,
+        rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts")))
     ctx = _sourcing(tmp_path, syllabus, media=media, backends={
         "forvo": _Forvo(forvo_items),
         "audiofetch": FetchBackend(media=media, fetcher=lambda url: (url.encode(), "mp3")),
         "tts": TtsBackend(tts=tts, voices=list(_MALE) + list(_FEMALE), media=media,
                           pick_voice=pick_voice)},
-        assess={"mechanical": mechanical or _mechanical(),
+        assess={"mechanical": mechanical or default_mechanical,
                 "rendition": _rendition_backend(db)})
     return ctx, tts
 
@@ -599,7 +632,7 @@ def test_assess_first_asks_mechanical_for_an_unjudged_recording_candidate_and_no
 
 
 def test_assess_first_is_none_once_every_recording_candidate_is_judged(tmp_path):
-    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus())
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus(), mechanical=_mechanical())
     _seed_current_recording(ctx, "rice")
     assert assess_first(ctx, Need("rice", "recording")) is not None
     assert assess_first(ctx, Need("rice", "recording")) is None
@@ -1039,6 +1072,137 @@ def test_a_rendition_intersection_ignores_items_recording_other_words(tmp_path):
     attempt(ctx, Need("p-haa", "rendition", "pair"), "forvo")
     provided = [r for r in rows_for(ctx.db, "p-haa", "rendition") if r.port == "provide"]
     assert provided[-1].answer["items"] == []
+
+
+# --- reverify_attempt: the per-run re-verification pass (spec 3 r49) -------
+
+def test_reverify_re_asks_a_current_recording_under_a_stale_key_and_demotes_a_wrong_word(tmp_path):
+    """A clip checked under the old duration-only key is current-best. The
+    pass asks the current check once; a Forvo clip that records another
+    word fails and stops being current (F13 for mechanical checks)."""
+    syllabus = Syllabus(words=(word("five", "ห้า", "five"),),
+                        targets=(target("five/receptive", "five"),))   # ห้า: five
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, {
+        "ห้า": [{"username": "master0z", "word": "หา", "pathmp3": "https://f/haa.mp3"}]})  # หา: to look for
+    # Seed the pre-r49 state by hand: the lookup answer, the bytes row, a
+    # passing verdict under the OLD key, all as the old code wrote them.
+    sha_ = ctx.media_store.write(b"ID3-haa", "mp3")
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query="ห้า"), subject="five",
+                 question={"provides": "recording", "kind": "recording", "subject_kind": "word",
+                          "params": {"word": "ห้า"}},
+                 answer={"items": [{"username": "master0z", "word": "หา",
+                                    "pathmp3": "https://f/haa.mp3"}]})
+    ctx.db.append(port="provide", backend="audiofetch",
+                 key=ProvideKey(source="", kind="", query="https://f/haa.mp3"), subject="five",
+                 question={"provides": "recording-bytes", "kind": "recording",
+                          "subject_kind": "word", "params": {"url": "https://f/haa.mp3"}},
+                 answer={"items": [{"sha": sha_, "ext": "mp3"}]})
+    ctx.db.add_speaker(Speaker(id="forvo:master0z", kind="native"))
+    ctx.db.add_media(sha=sha_, kind="recording", ext="mp3", source="forvo",
+                     origin="https://f/haa.mp3", licence="forvo",
+                     acquired=date(2026, 9, 3), speaker_id="forvo:master0z")
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="0.2-5.0", subject="five",
+                                   artifact_sha=sha_),
+                 subject="five",
+                 question={"role": "recording-for-word", "artifact_sha": sha_, "rubric": None,
+                          "kind": "recording"},
+                 answer={"value": True})
+    assert current_best_of(ctx, "five", "recording").artifact_sha == sha_
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (1, 1)
+    assert current_best_of(ctx, "five", "recording").artifact_sha is None
+    # no current-best artifact left to re-check -- the early continue on
+    # best.artifact_sha is None, not the key check
+    assert reverify_attempt(ctx).reverified == 0
+
+
+def test_reverify_excludes_a_recording_with_no_readable_file_instead_of_looping_forever(tmp_path):
+    """A media row on record with nothing behind it on disk (a seed row,
+    as test_run_e2e's sentence-rec-seed is): the check cannot prepare, so
+    no verdict lands under the current key and the artifact stays
+    current-best. The exclusion rides AttemptResult.excluded (spec 3
+    r49) instead of being silently dropped and counted as asked; the
+    next run offers the same stale key again, once more excluded, not a
+    crash."""
+    syllabus = Syllabus(words=(word("five", "ห้า", "five"),),
+                        targets=(target("five/receptive", "five"),))   # ห้า: five
+    ctx, _tts = _recording_ctx(tmp_path, syllabus)
+    sha_ = _seed_current_recording(ctx, "five", sha="seed-no-file")
+    ctx.db.add_speaker(Speaker(id="forvo:master0z", kind="native"))
+    ctx.db.add_media(sha=sha_, kind="recording", ext="mp3", source="forvo",
+                     origin="https://f/haa.mp3", licence="forvo",
+                     acquired=date(2026, 9, 3), speaker_id="forvo:master0z")
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="0.2-5.0", subject="five",
+                                   artifact_sha=sha_),
+                 subject="five",
+                 question={"role": "recording-for-word", "artifact_sha": sha_, "rubric": None,
+                          "kind": "recording"},
+                 answer={"value": True})
+    assert current_best_of(ctx, "five", "recording").artifact_sha == sha_
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (0, 0)
+    assert [e.artifact_sha for e in result.excluded.values()] == [sha_]
+    assert current_best_of(ctx, "five", "recording").artifact_sha == sha_
+
+    again = reverify_attempt(ctx)
+
+    assert (again.reverified, again.demoted) == (0, 0)
+    assert [e.artifact_sha for e in again.excluded.values()] == [sha_]
+
+
+def test_reverify_leaves_a_tts_clip_current_and_asks_once(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, Syllabus(words=(word("white", "ขาว", "white"),),
+                                                   targets=(target("white/receptive", "white"),)))
+    attempt(ctx, Need("white", "recording"), "tts")          # checked under the current key already
+    assert reverify_attempt(ctx).reverified == 0
+
+
+def test_reverify_demotes_a_rendition_of_one_clip_and_reopens_the_pair(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus())
+    sha_ = ctx.media_store.write(b"ID3-one-clip-both-members", "mp3")
+    speaker = Speaker(id="forvo:master0z", kind="native")
+    ctx.db.add_speaker(speaker)
+    ctx.db.add_media(sha=sha_, kind="recording", ext="mp3", source="forvo",
+                     origin="https://f/one.mp3", licence="forvo",
+                     acquired=date(2026, 9, 3), speaker_id="forvo:master0z")
+    members = {"white": sha_, "news": sha_}
+    ctx.db.append(port="provide", backend="forvo",
+                 key=RenditionAskKey(source="forvo", pair_id="p1"), subject="p1",
+                 question={"provides": "rendition", "kind": "rendition", "subject_kind": "pair",
+                          "params": {"members": ["white", "news"]}},
+                 answer={"items": [{"member": "white", "sha": sha_, "speaker": asdict(speaker)},
+                                   {"member": "news", "sha": sha_, "speaker": asdict(speaker)}]})
+    for member in ("white", "news"):
+        ctx.db.append(port="assess", backend="mechanical",
+                     key=MechanicalKey(check="duration", params="0.2-5.0", subject=member,
+                                       artifact_sha=sha_),
+                     subject=member,
+                     question={"role": "recording-for-word", "artifact_sha": sha_,
+                              "rubric": None, "kind": "recording"},
+                     answer={"value": True})
+    ctx.db.append(port="assess", backend="rendition",
+                 key=MechanicalKey(check="rendition", params="v1", subject="p1",
+                                   artifact_sha=rendition_identity(members)),
+                 subject="p1",
+                 question={"role": "rendition-for-pair", "artifact_sha": rendition_identity(members),
+                          "rubric": None, "kind": "rendition", "subject_kind": "pair",
+                          "params": {"members": members}},
+                 answer={"value": True})
+    assert ctx.syllabus.media.rendition("p1") is not None
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha is not None
+
+    result = reverify_attempt(ctx)
+
+    assert result.demoted == 1
+    assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
+    assert "p1" in ctx.syllabus.gaps().pairs_missing_renditions
 
 
 def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):

@@ -1948,6 +1948,24 @@ def test_an_unreachable_pair_search_stops_the_run_with_the_identity_intact(db, m
             + report.unserved + report.budgeted + report.deferred)
 
 
+def test_an_unreachable_reverify_pass_stops_the_run_with_the_identity_intact(db, monkeypatch):
+    """Spec 3 r49: the re-verification pass asks the same mechanical/
+    rendition backends as everything else, so a dead one there must stop
+    the run exactly like the pair search right above it in run.py --
+    not raise JudgeUnreachable past run() uncaught. The pass owns no
+    need bucket of its own, so the identity still holds."""
+    def dead(ctx):
+        raise JudgeUnreachable("mechanical unreachable")
+    assessor = _Assessor()
+    calls = _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "reverify_attempt", dead)
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
+    assert calls == [] and report.unreachable is True and assessor.submitted == []
+    assert report.deferred == 2
+    assert (report.available == report.attempted + report.exhausted + report.pending
+            + report.unserved + report.budgeted + report.deferred)
+
+
 def test_a_judge_that_cannot_be_reached_to_resolve_stops_the_run(db, monkeypatch):
     assessor = _DeadResolve(outstanding=("batch-0", frozenset({("a", "picture")})))
     calls = _patch(monkeypatch, {})
@@ -2628,7 +2646,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "spend", "unserved", "budgeted", "deferred", "preferences",
                            "requeried", "adopted_graphemes", "adopted_words",
                            "adoption_skipped", "adopted_pairs", "candidate_asks",
-                           "candidates_dropped"}
+                           "candidates_dropped", "reverified", "demoted"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,

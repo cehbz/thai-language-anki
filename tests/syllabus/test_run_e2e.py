@@ -10,8 +10,8 @@ from PIL import Image as PILImage
 
 from thai_syllabus.assessor import AssessQuestion
 from thai_syllabus.attempts import current_best_of
-from thai_syllabus.cachekeys import (JudgeKey, LearnerKey, LlmPromptKey, MechanicalKey,
-                                    ProvideKey, sha)
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, JudgeKey, LearnerKey, LlmPromptKey,
+                                    MechanicalKey, ProvideKey, sha)
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
 from thai_syllabus.entities import Category, text_sha
 from thai_syllabus.media import Speaker
@@ -216,6 +216,70 @@ def test_two_runs_over_a_batch_judge_resolve_a_picture_and_escalate_a_recording(
     for report in (r1, r2):
         assert (report.available == report.attempted + report.exhausted + report.pending
                + report.unserved + report.budgeted + report.deferred)
+
+
+def test_reverify_demotes_a_stale_word_recording_and_the_same_run_escalates_it_to_tts(
+        tmp_path, fake_search):
+    """Spec 3 r49 section 5, placement: the re-verification pass runs
+    before the queue is built, so a word whose only recording is a
+    Forvo clip that records another word -- current-best under the old
+    duration-only key, from before assess-first covered recording needs
+    at all -- is demoted and the same run's need loop escalates it past
+    the already-tried forvo to tts, closing under the mechanical
+    authority. Before this pass, assess-first only re-checked OPEN
+    needs, so a recording that passed once under an old key was never
+    looked at again."""
+    five = word("five", "ห้า", "five")   # ห้า: five
+    root = _batch_fixture_deck(tmp_path, (five,), (target("five/receptive", "five"),),
+                               transport="api")
+    ctx = _wire(build_sourcing(root), fake_search, complete=_judge_complete)
+    ctx.provider._backends["tts"] = _Tts(ctx.media_store)
+    ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
+
+    # Seed the pre-r49 state by hand: a Forvo clip recording หา ("to look
+    # for"), asked for ห้า ("five"), current-best under the old
+    # duration-only key -- and forvo's own outcome row, so this run's
+    # next_source sees forvo already tried and escalates straight to
+    # tts (spec 3 section 6a: `tried_sources` re-derives from the anchor
+    # of current-best's own producing row, which this outcome row is).
+    old_sha = ctx.media_store.write(b"ID3-haa-old", "mp3")
+    ctx.db.add_speaker(Speaker(id="forvo:master0z", kind="native"))
+    ctx.db.add_media(sha=old_sha, kind="recording", ext="mp3", source="forvo",
+                     origin="https://f/haa.mp3", licence="forvo",
+                     acquired=date(2026, 1, 1), speaker_id="forvo:master0z")
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query="ห้า"), subject="five",
+                 question={"provides": "recording", "kind": "recording", "subject_kind": "word",
+                          "params": {"word": "ห้า"}},
+                 answer={"items": [{"username": "master0z", "word": "หา",
+                                    "pathmp3": "https://f/haa.mp3"}]})
+    ctx.db.append(port="provide", backend="audiofetch",
+                 key=ProvideKey(source="", kind="", query="https://f/haa.mp3"), subject="five",
+                 question={"provides": "recording-bytes", "kind": "recording",
+                          "subject_kind": "word", "params": {"url": "https://f/haa.mp3"}},
+                 answer={"items": [{"sha": old_sha, "ext": "mp3"}]})
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="0.2-5.0", subject="five",
+                                   artifact_sha=old_sha),
+                 subject="five",
+                 question={"role": "recording-for-word", "artifact_sha": old_sha, "rubric": None,
+                          "kind": "recording"},
+                 answer={"value": True})
+    ctx.db.append(port="attempt", backend="forvo",
+                 key=AttemptOutcomeKey(subject="five", kind="recording", source="forvo"),
+                 subject="five",
+                 question={"kind": "recording", "subject_kind": "word", "source": "forvo"},
+                 answer={"outcome": "candidates", "candidates": [old_sha], "tried": []})
+    assert current_best_of(ctx, "five", "recording").artifact_sha == old_sha
+
+    report = run(ctx, budgets={})
+
+    assert report.demoted == 1
+    best = current_best_of(ctx, "five", "recording")
+    assert best.artifact_sha is not None and best.artifact_sha != old_sha
+    assert best.source == "mechanical"
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batch(

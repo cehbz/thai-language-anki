@@ -2039,6 +2039,21 @@ def test_stats_history_carries_adopted_pairs_and_candidate_asks_per_run(derivati
             for r in hist] == [(0, 0, 0), (3, 7, 2)]
 
 
+def test_stats_history_carries_reverified_and_demoted_per_run(derivations, db):
+    """Spec 3 r49: both counts are per-run columns of the run history,
+    and a row written before r49 reads as 0 rather than dropping the
+    column for every run (the page takes its columns from the oldest
+    row).
+    """
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"}, answer=_run_report_answer(), cost=0.0)
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"},
+             answer=_run_report_answer(reverified=5, demoted=2), cost=0.0)
+    hist = rs.compute_stats(derivations)["run_report_history"]
+    assert [(r["reverified"], r["demoted"]) for r in hist] == [(0, 0), (5, 2)]
+
+
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
 
 @pytest.fixture

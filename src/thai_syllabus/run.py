@@ -44,6 +44,7 @@ from .attempts import (
     preference_attempt,
     provenance_source_for,
     retire_sentence,
+    reverify_attempt,
     sentence_attempt,
     sources_for_need,
 )
@@ -155,6 +156,13 @@ class RunReport:
     adopted_pairs: int = 0
     candidate_asks: int = 0
     candidates_dropped: int = 0
+    # the re-verification pass (spec 3 r49 section 5): current-best
+    # recordings/renditions this run asked the mechanical check again
+    # (their newest verdict was under a stale key) and the ones a fresh
+    # False verdict demoted out of current-best -- events, not needs,
+    # outside the identity above
+    reverified: int = 0
+    demoted: int = 0
     # picture needs that gained a first accepted picture this run (spec 3
     # r34 section 7): open before the run's resolve, covered by its end
     # -- an event count outside the identity; with a batch judge the
@@ -209,6 +217,8 @@ class _Tally:
     adopted_pairs: int = 0
     candidate_asks: int = 0
     candidates_dropped: int = 0
+    reverified: int = 0
+    demoted: int = 0
     covered_new: int = 0
     requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
@@ -284,6 +294,11 @@ class _Tally:
         self.adopted_pairs += result.adopted_pairs
         self.candidate_asks += result.candidate_asks
         self.candidates_dropped += result.candidates_dropped
+        # The re-verification pass's own counts (spec 3 r49 section 5):
+        # every other attempt leaves these at 0, as the pair search
+        # counts above.
+        self.reverified += result.reverified
+        self.demoted += result.demoted
         self.comments_read += result.comments_read
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
@@ -1044,6 +1059,20 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             tally.deferred += len(needs.entries)
             return _finish(ctx, tally, needs, batch_id=None, pending=0)
 
+    # The re-verification pass (spec 3 r49 section 5): before the queue is
+    # built, so an artifact demoted here is a gap this same run sources.
+    # A dead mechanical/rendition backend stops the run here exactly as
+    # the pair search above does: the pass owns no need bucket, and
+    # every queued need is deferred.
+    try:
+        tally.collect(reverify_attempt(ctx))
+    except JudgeUnreachable:
+        tally.unreachable = True
+        needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
+        _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
+        tally.deferred += len(needs.entries)
+        return _finish(ctx, tally, needs, batch_id=None, pending=0)
+
     # One drafting ask per run (spec 3 r24 section 5), after sentence
     # drafting and before the need loop: every open picture need -- word
     # or scene, this pass's newly adopted sentences included -- lacking a
@@ -1192,6 +1221,7 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         adopted_graphemes=tally.adopted_graphemes, adopted_words=tally.adopted_words,
         adoption_skipped=tally.adoption_skipped, adopted_pairs=tally.adopted_pairs,
         candidate_asks=tally.candidate_asks, candidates_dropped=tally.candidates_dropped,
+        reverified=tally.reverified, demoted=tally.demoted,
         covered_new=tally.covered_new,
         requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
@@ -1226,6 +1256,8 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "adopted_pairs": report.adopted_pairs,
                 "candidate_asks": report.candidate_asks,
                 "candidates_dropped": report.candidates_dropped,
+                "reverified": report.reverified,
+                "demoted": report.demoted,
                 "covered_new": report.covered_new,
                 "requeried": report.requeried,
                 "comments_read": report.comments_read,
