@@ -220,6 +220,20 @@ class ProvideKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class DictionaryKey(CacheKey):
+    """dictionary:SOURCE:FORM -- one dictionary lookup of one Thai form
+    (design 2026-09-20 §2). `source` is the dictionary's own name
+    (wiktionary); `form` the exact form asked. The answer row holds the
+    readings found, or absence.
+    """
+    source: str
+    form: str
+
+    def encode(self) -> str:
+        return f"dictionary:{self.source}:{self.form}"
+
+
+@dataclass(frozen=True)
 class LlmPromptKey(CacheKey):
     """llm:PRODUCER:MODEL:PROMPT_SHA -- one drafting ask. The prompt text
     is the whole contract, so it goes in as sha() of itself.

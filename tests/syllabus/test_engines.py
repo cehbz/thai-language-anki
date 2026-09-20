@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from thai_syllabus.engines import (Thaig2p, Tltk, _convert, _convert_tltk,
+                                    _convert_wiktionary, extract_standard_ipa,
                                     rule_tone, tone_of)
 from thai_syllabus.entities import Syllable, without_glottal_coda
 
@@ -594,3 +595,60 @@ def test_thaig2p_and_tltk_agree_once_the_glottal_coda_is_normalized():
     """thaig2p emits the coda, tltk does not; both must land on the same
     Syllable or no dead open syllable could ever be corroborated."""
     assert _convert("t͡ɕ a ʔ ˨˩") == _convert_tltk("ca2")
+
+
+# --- Wiktionary's rendered IPA -> Syllable (design 2026-09-20 §2) ----------
+# Observed 2026-09-20 on en.wiktionary.org (Template:th-pron output).
+
+def test_wiktionary_chao_letters_and_length():
+    assert _convert_wiktionary("/ma˦˥.ka˨˩.raː˧/") == (
+        Syllable(segments=("m", "a", ""), vowel_length="short", tone="high"),
+        Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"),
+        Syllable(segments=("r", "a", ""), vowel_length="long", tone="mid"))
+
+
+def test_wiktionary_rising_falling_and_unreleased_stops():
+    assert _convert_wiktionary("/sip̚˨˩.ʔet̚˨˩/") == (
+        Syllable(segments=("s", "i", "p"), vowel_length="short", tone="low"),
+        Syllable(segments=("ʔ", "e", "t"), vowel_length="short", tone="low"))
+    assert _convert_wiktionary("/huŋ˩˩˦/")[0].tone == "rising"
+    assert _convert_wiktionary("/t͡ɕaːw˥˩/") == (
+        Syllable(segments=("tɕ", "a", "w"), vowel_length="long", tone="falling"),)
+
+
+def test_wiktionary_diphthong_is_long_and_the_glide_mark_is_dropped():
+    assert _convert_wiktionary("/klua̯j˥˩/") == (
+        Syllable(segments=("kl", "ua", "j"), vowel_length="long", tone="falling"),)
+    assert _convert_wiktionary("/sɯa̯˩˩˦/")[0].segments == ("s", "ɯa", "")
+
+
+def test_wiktionary_glottal_coda_is_normalized_away():
+    assert _convert_wiktionary("/t͡ɕaʔ˨˩/") == (
+        Syllable(segments=("tɕ", "a", ""), vowel_length="short", tone="low"),)
+
+
+def test_wiktionary_affricate_aspirated_and_cluster():
+    assert _convert_wiktionary("/t͡ɕʰaːŋ˦˥/")[0].segments == ("tɕʰ", "a", "ŋ")
+    assert _convert_wiktionary("/pʰon˩˩˦.la˦˥.maːj˦˥/")[1].segments == ("l", "a", "")
+
+
+def test_wiktionary_unmappable_is_no_reading():
+    assert _convert_wiktionary("") is None
+    assert _convert_wiktionary("/ma/") is None          # no tone letters
+    assert _convert_wiktionary("/zz˧/") is None         # unknown onset
+
+
+_ROW = ('<tr><th colspan="2">(<i><a href="x">standard</a></i>) <a href="y">IPA</a>'
+        '<sup>(<a href="z">key</a>)</sup></th>'
+        '<td><span class="IPA">/ma˦˥.ka˨˩.raː˧/</span><sup>(R)</sup></td>'
+        '<td><span class="IPA">/mok̚˦˥.ka˨˩.raː˧/</span></td></tr>')
+
+
+def test_extract_standard_ipa_reads_every_reading_in_the_standard_row():
+    html = '<table><tr><th>Royal Institute</th><td><span class="tr">ma-ka-ra</span></td></tr>' + _ROW + '</table>'
+    assert extract_standard_ipa(html) == ["ma˦˥.ka˨˩.raː˧", "mok̚˦˥.ka˨˩.raː˧"]
+
+
+def test_extract_standard_ipa_is_empty_without_the_row():
+    assert extract_standard_ipa('<table><tr><th>Paiboon</th><td>má-gà-raa</td></tr></table>') == []
+    assert extract_standard_ipa("") == []

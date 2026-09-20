@@ -230,14 +230,13 @@ def _take(s: str, options: tuple[str, ...]) -> tuple[str | None, str]:
     return None, s
 
 
-def _convert_tltk_syllable(group: str) -> Syllable:
-    tone = _TLTK_TONES.get(group[-1:])
-    if tone is None:
-        raise _ConvertError(f"no tone digit in {group!r}")
-    s = group[:-1]
-    for old, new in _TLTK_SUBSTITUTIONS:
-        s = s.replace(old, new)
-
+def _convert_compact_syllable(body: str, tone: Tone, group: str) -> Syllable:
+    """One compact syllable string (no separators between phones), matched
+    longest-first: onset [cluster] vowel [ː] [coda]. `group` is the raw
+    text for error messages only. Shared by the tltk and Wiktionary
+    converters, whose notations meet here once each has mapped its own
+    tone marks and spellings."""
+    s = body
     onset, s = _take(s, _ONSETS_LONGEST_FIRST)
     if onset is None:
         raise _ConvertError(f"unknown onset in {group!r}")
@@ -252,16 +251,27 @@ def _convert_tltk_syllable(group: str) -> Syllable:
         raise _ConvertError(f"unknown vowel in {group!r}")
     length: VowelLength = "long" if s.startswith(_LONG_MARK) else "short"
     s = s.removeprefix(_LONG_MARK)
-    # tltk writes the diphthongs with the length mark inside: iːa, ɯːa,
-    # uːa. The deck spells them ia/ɯa/ua, long (design 2026-09-20 §1).
+    # tltk writes the diphthongs with the length mark inside (iːa); the
+    # deck spells them ia/ɯa/ua, long (design 2026-09-20 §1).
     if s.startswith("a") and vowel in _DIPHTHONG_HEADS:
-        vowel, s, length = vowel + "a", s[1:], "long"
+        vowel, s = vowel + "a", s[1:]
+    if vowel in DIPHTHONGS:
+        length = "long"
 
     coda, s = _take(s, _CODAS_LONGEST_FIRST)
     if s:
         raise _ConvertError(f"trailing {s!r} in {group!r}")
-    return Syllable(segments=(onset, vowel, coda or ""),
-                    vowel_length=length, tone=tone)
+    return Syllable(segments=(onset, vowel, coda or ""), vowel_length=length, tone=tone)
+
+
+def _convert_tltk_syllable(group: str) -> Syllable:
+    tone = _TLTK_TONES.get(group[-1:])
+    if tone is None:
+        raise _ConvertError(f"no tone digit in {group!r}")
+    s = group[:-1]
+    for old, new in _TLTK_SUBSTITUTIONS:
+        s = s.replace(old, new)
+    return _convert_compact_syllable(s, tone, group)
 
 
 def _convert_tltk(raw: str) -> tuple[Syllable, ...] | None:
@@ -280,6 +290,64 @@ def _convert_tltk(raw: str) -> tuple[Syllable, ...] | None:
         return without_glottal_coda(tuple(_convert_tltk_syllable(g) for g in groups))
     except _ConvertError:
         return None
+
+
+# --- Wiktionary's rendered IPA -> Syllable (design 2026-09-20 §2) ----------
+#
+# Observed on en.wiktionary.org 2026-09-20 (Template:th-pron):
+#
+#     มกรา     -> /ma˦˥.ka˨˩.raː˧/ and /mok̚˦˥.ka˨˩.raː˧/ (two readings)
+#     กล้วย    -> /klua̯j˥˩/
+#     สิบเอ็ด  -> /sip̚˨˩.ʔet̚˨˩/
+#     จะ       -> /t͡ɕaʔ˨˩/
+#     หุง      -> /huŋ˩˩˦/
+#
+# Syllables separated by "."; tone as Chao letters at the end of the
+# syllable (the same five strings thaig2p uses); affricates with a tie
+# bar; unreleased stops with the no-release mark; the diphthong offglide
+# with the non-syllabic mark; a ʔ coda on a dead open syllable.
+
+_WIKTIONARY_TONE_LETTERS = "˥˦˧˨˩"
+_WIKTIONARY_SYLLABLE_SEP = re.compile(r"\.")
+
+
+def _convert_wiktionary_syllable(group: str) -> Syllable:
+    body = group.rstrip(_WIKTIONARY_TONE_LETTERS)
+    tone_letters = group[len(body):]
+    tone = _TONE_MAP.get(tone_letters)
+    if tone is None:
+        raise _ConvertError(f"unknown tone letters {tone_letters!r} in {group!r}")
+    body = _strip_marks(body).replace(_NONSYLLABIC, "")
+    return _convert_compact_syllable(body, tone, group)
+
+
+def _convert_wiktionary(ipa: str) -> tuple[Syllable, ...] | None:
+    """Convert one Wiktionary IPA string (with or without the enclosing
+    slashes) to Syllables. Never raises: None for anything unmappable."""
+    cleaned = ipa.strip().strip("/").strip()
+    groups = [g for g in _WIKTIONARY_SYLLABLE_SEP.split(cleaned) if g]
+    if not groups:
+        return None
+    try:
+        return without_glottal_coda(tuple(_convert_wiktionary_syllable(g) for g in groups))
+    except _ConvertError:
+        return None
+
+
+_WIKTIONARY_ROW = re.compile(r"<tr>.*?</tr>", re.DOTALL)
+_WIKTIONARY_IPA_SPAN = re.compile(r'<span class="IPA">/([^/<]+)/</span>')
+
+
+def extract_standard_ipa(html: str) -> list[str]:
+    """The IPA readings of the "(standard) IPA" row of a rendered Thai
+    entry's pronunciation table, in page order, without the slashes; []
+    when the page has no such row (an entry with no th-pron table, or a
+    layout this does not recognize)."""
+    for row in _WIKTIONARY_ROW.findall(html):
+        head, _, _cells = row.partition("</th>")
+        if ">standard<" in head and ">IPA<" in head:
+            return _WIKTIONARY_IPA_SPAN.findall(row)
+    return []
 
 
 class Thaig2p:

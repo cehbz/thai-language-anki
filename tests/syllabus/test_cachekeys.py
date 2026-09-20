@@ -12,6 +12,7 @@ from thai_syllabus.cachekeys import (
     CacheKey,
     CommentReadingKey,
     CommentVetoKey,
+    DictionaryKey,
     DrillKey,
     FlagKey,
     JudgeKey,
@@ -246,3 +247,11 @@ def test_comment_reading_and_veto_keys_encode_the_comment_and_prompt_version():
     assert CommentVetoKey("abcd" * 4, "1").encode() == f"comment-veto:{'abcd' * 4}:1"
     assert CommentReadingKey("abcd" * 4, "1") != CommentReadingKey("abcd" * 4, "2")
     assert isinstance(CommentVetoKey("a", "1"), CacheKey)
+
+
+def test_dictionary_key_encodes_source_and_form():
+    assert DictionaryKey(source="wiktionary", form="มกรา").encode() == "dictionary:wiktionary:มกรา"
+
+
+def test_dictionary_key_is_a_cache_key():
+    assert isinstance(DictionaryKey(source="wiktionary", form="x"), CacheKey)
