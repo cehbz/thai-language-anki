@@ -243,7 +243,9 @@ PRONUNCIATION_RUBRIC = (
     "the dictionary form over a colloquial reduction. Take vowel length from the spelling: "
     "the long-vowel signs (-า, -ี, -ือ, -ู, เ-, แ-, โ-, -อ, เ-อ, -ัว, เ-ีย, เ-ือ) are long, "
     "the short signs and the unwritten inherent vowel are short, and a long vowel stays long "
-    "in an unstressed syllable. Give a two- or three-word English gloss.")
+    "in an unstressed syllable -- except a word written with a short sign but said long "
+    "when spoken alone (น้ำ, ได้, ไม้, เจ้า, เก้า and the like), which is long in isolation "
+    "and keeps its own length inside a compound. Give a two- or three-word English gloss.")
 
 SCENE_FIT_RUBRIC = (
     "This picture will sit beside the sentence on its cards; on the "

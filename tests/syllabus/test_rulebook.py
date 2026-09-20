@@ -857,3 +857,6 @@ def test_the_pronunciation_rubric_names_the_vowel_length_rule():
     assert PRONUNCIATION_RUBRIC.index("Take vowel length") < PRONUNCIATION_RUBRIC.index(
         "Give a two- or three-word English gloss.")
     assert PRONUNCIATION_RUBRIC.endswith("Give a two- or three-word English gloss.")
+    assert "said long when spoken alone" in PRONUNCIATION_RUBRIC
+    assert "น้ำ" in PRONUNCIATION_RUBRIC and "ได้" in PRONUNCIATION_RUBRIC
+    assert "keeps its own length inside a compound" in PRONUNCIATION_RUBRIC
