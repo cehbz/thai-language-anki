@@ -1443,3 +1443,24 @@ def test_recorded_forms_origin_join_prefers_the_newest_lookup_row():
                    cost=1.0, ts=2)
     assert recorded_form([older, newer], "unstored-sha", origin="https://f/five.mp3") == "ห้า"
     assert recorded_form([newer, older], "unstored-sha", origin="https://f/five.mp3") == "ห้า"
+
+
+def test_recorded_form_joins_the_bytes_rows_own_url_when_the_origin_is_another_subjects():
+    """The same bytes downloaded twice: the media row was written under
+    the subject that got there first, so its `origin` is that subject's
+    url (Forvo serves a different obfuscated url per lookup). This
+    subject's own bytes row names the sha under this subject's url, and
+    this subject's lookup carries that url with the recorded word -- the
+    join goes through the bytes row's url, not the media origin alone.
+    """
+    lookup = Answer(port="provide", backend="forvo", key="k1", key_sha="x", subject="five",
+                    question={"kind": "recording", "subject_kind": "word", "params": {"word": "ห้า"}},
+                    answer={"items": [{"word": "หา", "username": "master0z",   # หา: to look for
+                                       "pathmp3": "https://f/five-url.mp3"}]},
+                    cost=1.0, ts=1)
+    own_bytes = Answer(port="provide", backend="audiofetch", key="k2", key_sha="y", subject="five",
+                       question={"kind": "recording", "subject_kind": "word",
+                                 "params": {"url": "https://f/five-url.mp3"}},
+                       answer={"items": [{"sha": "shared-sha", "ext": "mp3"}]}, cost=0.0, ts=2)
+    assert recorded_form([lookup, own_bytes], "shared-sha",
+                         origin="https://f/other-subjects-url.mp3") == "หา"

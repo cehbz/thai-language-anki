@@ -1233,7 +1233,9 @@ def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
     when no mechanical verdict row under this subject names its sha --
     mechanical asks about the artifact itself, not a rubric, so a role
     absent from `current_rubric` still gets assessed here, and a params
-    change is its own cache miss (re-asks by itself, nothing to track).
+    change is its own cache miss (re-asks by itself, nothing to track),
+    for an open need; a satisfied need's current-best is re-asked under a
+    new key by the run's re-verification pass (spec 3 r49).
 
     Every other role is judge-decided: empty for a role absent from
     `current_rubric` (the judge ranks nothing there); else a candidate

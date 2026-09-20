@@ -269,7 +269,7 @@ def _seed_phrase(ctx, subject, phrase, subject_kind="word"):
                   answer={"phrase": phrase})
 
 
-def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None):
+def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None, duration_of=None):
     """A recording-sourcing ctx over one word or pair syllabus. The
     default "mechanical" backend is the real RecordingCheckBackend (spec
     3 r49), `duration_of` faked so no file is ever ffprobed, `form_of`/
@@ -298,7 +298,7 @@ def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None):
             return None
 
     default_mechanical = RecordingCheckBackend(
-        resolve_path=resolve, duration_of=lambda path: 1.0,
+        resolve_path=resolve, duration_of=duration_of or (lambda path: 1.0),
         form_of=form_of, recorded_form_of=_recorded_form_of(db))
     syllabus = replace(syllabus, media=_DbMediaIndex(
         db=db, pairs=syllabus.pairs, words=syllabus.words, sentences=syllabus.sentences,
@@ -1203,6 +1203,132 @@ def test_reverify_demotes_a_rendition_of_one_clip_and_reopens_the_pair(tmp_path)
     assert result.demoted == 1
     assert current_best_of(ctx, "p1", "rendition").artifact_sha is None
     assert "p1" in ctx.syllabus.gaps().pairs_missing_renditions
+
+
+def _seed_forvo_lookup(ctx, subject, asked, items):
+    """The forvo lookup row the pre-r49 code wrote: every item Forvo
+    named for `asked`, each with the word it records and its pathmp3."""
+    ctx.db.append(port="provide", backend="forvo",
+                 key=ProvideKey(source="forvo", kind="", query=asked), subject=subject,
+                 question={"provides": "recording", "kind": "recording", "subject_kind": "word",
+                          "params": {"word": asked}},
+                 answer={"items": list(items)})
+
+
+def _seed_pre_r49_candidate(ctx, subject, *, data, url, username):
+    """One Forvo candidate as the pre-r49 code left it: the bytes row
+    naming the download url but not the recorded word, the media row,
+    and a passing verdict under the old duration-only key."""
+    sha_ = ctx.media_store.write(data, "mp3")
+    ctx.db.append(port="provide", backend="audiofetch",
+                 key=ProvideKey(source="", kind="", query=url), subject=subject,
+                 question={"provides": "recording-bytes", "kind": "recording",
+                          "subject_kind": "word", "params": {"url": url}},
+                 answer={"items": [{"sha": sha_, "ext": "mp3"}]})
+    ctx.db.add_speaker(Speaker(id=f"forvo:{username}", kind="native"))
+    ctx.db.add_media(sha=sha_, kind="recording", ext="mp3", source="forvo",
+                    origin=url, licence="forvo", acquired=date(2026, 9, 3),
+                    speaker_id=f"forvo:{username}")
+    ctx.db.append(port="assess", backend="mechanical",
+                 key=MechanicalKey(check="duration", params="0.2-5.0", subject=subject,
+                                   artifact_sha=sha_),
+                 subject=subject,
+                 question={"role": "recording-for-word", "artifact_sha": sha_, "rubric": None,
+                          "kind": "recording"},
+                 answer={"value": True})
+    return sha_
+
+
+def _five_syllabus():
+    return Syllabus(words=(word("five", "ห้า", "five"),),
+                    targets=(target("five/receptive", "five"),))   # ห้า: five
+
+
+def test_reverify_checks_the_next_candidate_a_demotion_promotes(tmp_path):
+    """Two candidates on record, both checked under the old duration-only
+    key; the current-best records another word. Demoting it promotes the
+    runner-up, which is under the old key too -- so the pass checks that
+    one in turn, and the subject leaves with a current-best under the
+    current key."""
+    ctx, _tts = _recording_ctx(tmp_path, _five_syllabus())
+    _seed_forvo_lookup(ctx, "five", "ห้า", [
+        {"username": "master0z", "word": "หา",          # หา: to look for
+         "pathmp3": "https://f/haa.mp3"},
+        {"username": "deepindark", "word": "ห้า",
+         "pathmp3": "https://f/five.mp3"}])
+    wrong = _seed_pre_r49_candidate(ctx, "five", data=b"ID3-wrong-word-clip",
+                                    url="https://f/haa.mp3", username="master0z")
+    right = _seed_pre_r49_candidate(ctx, "five", data=b"ID3-right-word-clip",
+                                    url="https://f/five.mp3", username="deepindark")
+    assert current_best_of(ctx, "five", "recording").artifact_sha == wrong
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (2, 1)
+    assert current_best_of(ctx, "five", "recording").artifact_sha == right
+    assert reverify_attempt(ctx).reverified == 0
+
+
+def test_reverify_demotes_every_candidate_when_none_records_the_asked_word(tmp_path):
+    """The inverse: each promotion is checked in turn and fails too, so
+    the subject leaves the pass with no current-best -- a gap the queue
+    built after the pass sources afresh."""
+    ctx, _tts = _recording_ctx(tmp_path, _five_syllabus())
+    _seed_forvo_lookup(ctx, "five", "ห้า", [
+        {"username": "master0z", "word": "หา",          # หา: to look for
+         "pathmp3": "https://f/haa.mp3"},
+        {"username": "deepindark", "word": "ห่า",  # ห่า: cholera
+         "pathmp3": "https://f/haa2.mp3"}])
+    wrong = _seed_pre_r49_candidate(ctx, "five", data=b"ID3-wrong-word-clip",
+                                    url="https://f/haa.mp3", username="master0z")
+    _seed_pre_r49_candidate(ctx, "five", data=b"ID3-right-word-clip",
+                            url="https://f/haa2.mp3", username="deepindark")
+    assert current_best_of(ctx, "five", "recording").artifact_sha == wrong
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (2, 2)
+    assert current_best_of(ctx, "five", "recording").artifact_sha is None
+    assert "five" in ctx.syllabus.gaps().words_missing_recordings
+
+
+def test_reverify_asks_the_first_round_in_one_call_so_one_dead_check_does_not_stop_it(tmp_path):
+    """Assessor.ask_many raises JudgeUnreachable only when every question
+    it put on the wire failed, so one question per call turns a single
+    unparseable ffprobe output into an aborted run. The first round is
+    one ask over every subject instead: the dropped question is logged
+    and dropped by ask_many -- not excluded -- so its subject is neither
+    reverified nor demoted and keeps its stale key for the next run,
+    while the other subject's verdict lands."""
+    dead: list[str] = []
+
+    def duration_of(path):
+        if dead and dead[0] in str(path):
+            raise TransportError("ffprobe: unparseable output")
+        return 1.0
+
+    syllabus = Syllabus(words=(word("five", "ห้า", "five"),      # ห้า: five
+                               word("rice", "ข้าว", "rice (cooked)")),
+                        targets=(target("five/receptive", "five"),
+                                 target("rice/receptive", "rice")))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, duration_of=duration_of)
+    _seed_forvo_lookup(ctx, "five", "ห้า", [
+        {"username": "master0z", "word": "ห้า", "pathmp3": "https://f/five.mp3"}])
+    _seed_forvo_lookup(ctx, "rice", "ข้าว", [
+        {"username": "deepindark", "word": "ข้าว",
+         "pathmp3": "https://f/rice.mp3"}])
+    five = _seed_pre_r49_candidate(ctx, "five", data=b"ID3-five-clip",
+                                   url="https://f/five.mp3", username="master0z")
+    rice = _seed_pre_r49_candidate(ctx, "rice", data=b"ID3-rice-clip",
+                                   url="https://f/rice.mp3", username="deepindark")
+    dead.append(five)
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (1, 0)
+    assert result.excluded == {}
+    assert current_best_of(ctx, "rice", "recording").artifact_sha == rice
+    assert current_best_of(ctx, "five", "recording").artifact_sha == five
 
 
 def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):

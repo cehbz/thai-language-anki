@@ -525,12 +525,15 @@ the pair search and before the queue (r49): every current-best recording
 not under the check's current key is asked the check again, cache-first,
 so a key on record is never re-asked and a new key runs once; an artifact
 whose check cannot be prepared is excluded, as any unpreparable question
-is (§7), not asked; a verdict that fails ranks the artifact out of
+is (§6a), not asked; a verdict that fails ranks the artifact out of
 current-best on §6's newest-verdict rule and the need is a gap the same
 run sources. This is F13 for the mechanical checks: assess-first sees open
 needs only. `RunReport.reverified` counts the checks asked,
 `RunReport.demoted` the artifacts current before the ask whose new verdict
-is False; both are events outside the needs identity.
+is False; both are events outside the needs identity. A demotion promotes
+the next candidate, which is checked in turn, so a subject leaves the pass
+with a current-best under the current key or with none; the first round's
+questions are asked in one call.
 
 **Recording (Word).** Source order: forvo, tts, commission. Voice
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A

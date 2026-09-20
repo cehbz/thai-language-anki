@@ -197,10 +197,15 @@ Run and screen, found while seating the alphabet (2026-09-19):
   with no veto filter, so `1` on a word's TTS clip dead-ends the need the
   way a pair's rendition did before spec 3 r48; give it the same
   next-unvetoed-voice rule.
-- **First run after spec 3 r49:** the cycle line's `demoted` should be
-  about 50 (47 wrong-word recordings and 3 one-clip renditions measured
-  2026-09-20); re-run the join script from that session (recorded word
-  vs the deck's word over current Forvo recordings) and expect 0.
+- **First run after spec 3 r49:** on the live deck the pass re-verifies
+  every current-best recording (about 1,300: every word and sentence clip
+  is under the old duration-only key) and demotes about 51 word recordings
+  plus 4 renditions; re-sourcing goes to TTS (every right-word Forvo clip
+  was already downloaded as a candidate by the old code, so a demoted word
+  with one keeps it and one without has nothing left at Forvo). Then
+  re-run the join script (recorded word vs the deck's word over current
+  Forvo recordings) and expect 0; `coat` (เสื้อโค้ท) is the one false
+  demotion, a doubled tone mark in Forvo's headword.
 
 Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
 words corroborated, 205 stay disputed):

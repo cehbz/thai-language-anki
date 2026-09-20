@@ -2136,8 +2136,9 @@ def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str, spend: dict[
 
 
 def _check(ctx: Sourcing, questions: Sequence[AssessQuestion], spend: dict[str, Spend]):
-    """The mechanical duration/format check: ground truth for what it
-    checks, and the authority that ranks a recording."""
+    """The mechanical recording check (duration, and a Forvo clip's own
+    word): ground truth for what it checks, and the authority that ranks
+    a recording."""
     result = ctx.assessor.ask_many("mechanical", questions)
     _count_verdicts(spend, "mechanical", result)
     return result
@@ -2653,68 +2654,170 @@ def _assess_recordings(ctx: Sourcing, need: Need, shas: Sequence[str],
                          excluded=dict(result.excluded), spend=spend)
 
 
+def _keys_on_record(ctx: Sourcing, subject: str) -> set[str]:
+    """Every mechanical/rendition key the subject already has a verdict
+    under -- what the re-verification pass compares the current key
+    against, cache-first."""
+    return {r.key for r in ctx.db.assessments_of(subject)
+            if r.port == "assess" and r.backend in ("mechanical", "rendition")}
+
+
+def _stale_recording(ctx: Sourcing, subject: str, subject_kind: str) -> AssessQuestion | None:
+    """The current check on the subject's current-best recording, or None
+    when there is no current-best or its verdict under the current key is
+    already on record."""
+    best = current_best_of(ctx, subject, "recording")
+    if best.artifact_sha is None:
+        return None
+    q = AssessQuestion(subject=subject, role=role_for("recording", subject_kind),
+                       artifact_sha=best.artifact_sha, kind="recording",
+                       subject_kind=subject_kind)
+    if ctx.assessor.key_of("mechanical", q).encode() in _keys_on_record(ctx, subject):
+        return None
+    return q
+
+
+def _stale_rendition(ctx: Sourcing, subject: str,
+                     spend: dict[str, Spend]) -> AssessQuestion | None:
+    """The current check on the pair's current-best rendition, member
+    checks and all, or None when there is no current-best rendition or
+    its verdict under the current key is already on record. The member
+    set is re-read each time it is asked for: a demotion promotes
+    another rendition, whose members -- and so whose identity -- are
+    another set.
+    """
+    best = current_best_of(ctx, subject, "rendition")
+    if best.artifact_sha is None:
+        return None
+    pair = ctx.syllabus.pair(PairId(subject))
+    recordings = ctx.syllabus.media.rendition(pair.id)
+    if recordings is None:
+        return None
+    members = {member: (rec.sha, rec.speaker) for member, rec in zip(pair.members, recordings)}
+    shas = {member: sha for member, (sha, _s) in members.items()}
+    q = AssessQuestion(subject=pair.id, role=role_for("rendition", "pair"),
+                       artifact_sha=rendition_identity(shas), kind="rendition",
+                       subject_kind="pair", params={"members": shas})
+    if ctx.assessor.key_of("rendition", q).encode() in _keys_on_record(ctx, subject):
+        return None
+    return replace(q, params={"members": shas,
+                              "member_checks": _check_members(ctx, members, spend)})
+
+
+def _until_stable(ctx: Sourcing, ask: Callable[[], tuple[int, int, Mapping[str, Excluded]]],
+                  ) -> tuple[int, int, dict[str, Excluded]]:
+    """`ask` re-asked until it reports nothing more to ask or a verdict
+    that holds: a demotion promotes the next candidate, which is checked
+    in turn, so a subject leaves the pass with a current-best under the
+    current key or with none. Terminates because every ask writes its
+    key on record, so no artifact is offered twice.
+    """
+    asked = demoted = 0
+    excluded: dict[str, Excluded] = {}
+    while True:
+        one_asked, one_demoted, one_excluded = ask()
+        asked += one_asked
+        demoted += one_demoted
+        excluded.update(one_excluded)
+        if not one_demoted:
+            return asked, demoted, excluded
+
+
+def _ask_recording(ctx: Sourcing, subject: str, subject_kind: str,
+                   spend: dict[str, Spend]) -> tuple[int, int, dict[str, Excluded]]:
+    """One re-check of the subject's current-best recording: (asked,
+    demoted, excluded), all zero/empty when there is nothing stale to ask
+    or the question did not resolve."""
+    q = _stale_recording(ctx, subject, subject_kind)
+    if q is None:
+        return 0, 0, {}
+    result = _check(ctx, [q], spend)
+    verdict = result.resolved.get(ctx.assessor.key_of("mechanical", q))
+    if verdict is None:
+        return 0, 0, dict(result.excluded)
+    return 1, 0 if verdict.value else 1, dict(result.excluded)
+
+
+def _ask_rendition(ctx: Sourcing, subject: str,
+                   spend: dict[str, Spend]) -> tuple[int, int, dict[str, Excluded]]:
+    """One re-check of the pair's current-best rendition, the same
+    (asked, demoted, excluded) shape _ask_recording returns."""
+    q = _stale_rendition(ctx, subject, spend)
+    if q is None:
+        return 0, 0, {}
+    result = ctx.assessor.ask_many("rendition", [q])
+    _count_verdicts(spend, "rendition", result)
+    verdict = result.resolved.get(ctx.assessor.key_of("rendition", q))
+    if verdict is None:
+        return 0, 0, dict(result.excluded)
+    return 1, 0 if verdict.value else 1, dict(result.excluded)
+
+
 def reverify_attempt(ctx: Sourcing) -> AttemptResult:
     """One pass per run (spec 3 r49 section 5; F13 for the mechanical
     checks): every current-best recording (word and sentence needs) and
     rendition whose newest mechanical verdict is not under the check's
     current key is asked the check again -- cache-first, so a key on
-    record is never re-asked and a new key runs once. An artifact whose
-    file cannot be read (PreparationError -- a media row with nothing on
-    disk) is excluded, not asked: no verdict row lands under the current
-    key, so the same stale key is offered again next run, and the
-    exclusion rides RunReport.excluded like any other. A verdict that
-    fails ranks the artifact out of current-best on the newest-verdict
-    rule; the need is then a gap the queue built after this pass
-    sources. `reverified` counts the checks that resolved (not the
-    excluded ones), `demoted` the artifacts current before the ask whose
-    new verdict is False; both are events outside the needs identity.
+    record is never re-asked and a new key runs once. The first round's
+    recording questions are asked in one call: `ask_many` raises
+    JudgeUnreachable only when every question it put on the wire failed,
+    so one question per call would let a single unreadable clip abort
+    the run. An artifact whose file cannot be read (PreparationError --
+    a media row with nothing on disk) is excluded, not asked: no verdict
+    row lands under the current key, so the same stale key is offered
+    again next run, and the exclusion rides RunReport.excluded like any
+    other. A verdict that fails ranks the artifact out of current-best
+    on the newest-verdict rule; a demotion promotes the next candidate,
+    which is checked in turn, so a subject leaves the pass with a
+    current-best under the current key or with none. The need a demotion
+    opens is then a gap the queue built after this pass sources.
+    `reverified` counts the checks that resolved (not the excluded
+    ones), `demoted` the artifacts current before the ask whose new
+    verdict is False; both are events outside the needs identity.
     """
     spend: dict[str, Spend] = {}
     asked = demoted = 0
     excluded: dict[str, Excluded] = {}
+    recordings: list[tuple[str, str]] = []
+    pairs: list[str] = []
     seen: set[tuple[str, str]] = set()
     for subject, kind, subject_kind in all_needs(ctx.syllabus):
         if kind not in ("recording", "rendition") or (subject, kind) in seen:
             continue
         seen.add((subject, kind))
-        best = current_best_of(ctx, subject, kind)
-        if best.artifact_sha is None:
-            continue
-        keys_on_record = {r.key for r in ctx.db.assessments_of(subject)
-                          if r.port == "assess" and r.backend in ("mechanical", "rendition")}
         if kind == "recording":
-            q = AssessQuestion(subject=subject, role=role_for(kind, subject_kind),
-                               artifact_sha=best.artifact_sha, kind=kind, subject_kind=subject_kind)
-            if ctx.assessor.key_of("mechanical", q).encode() in keys_on_record:
-                continue
-            result = _check(ctx, [q], spend)
-            excluded.update(result.excluded)
-            verdict = result.resolved.get(ctx.assessor.key_of("mechanical", q))
-            if verdict is not None:
-                asked += 1
-                if not verdict.value:
-                    demoted += 1
-            continue
-        pair = ctx.syllabus.pair(PairId(subject))
-        recordings = ctx.syllabus.media.rendition(pair.id)
-        if recordings is None:
-            continue
-        members = {member: (rec.sha, rec.speaker) for member, rec in zip(pair.members, recordings)}
-        shas = {member: sha for member, (sha, _s) in members.items()}
-        q = AssessQuestion(subject=pair.id, role=role_for("rendition", "pair"),
-                           artifact_sha=rendition_identity(shas), kind="rendition", subject_kind="pair",
-                           params={"members": shas})
-        if ctx.assessor.key_of("rendition", q).encode() in keys_on_record:
-            continue
-        q = replace(q, params={"members": shas, "member_checks": _check_members(ctx, members, spend)})
-        result = ctx.assessor.ask_many("rendition", [q])
-        _count_verdicts(spend, "rendition", result)
+            recordings.append((subject, subject_kind))
+        else:
+            pairs.append(subject)
+    first = {subject: q for subject, subject_kind in recordings
+             if (q := _stale_recording(ctx, subject, subject_kind)) is not None}
+    failed: list[tuple[str, str]] = []
+    if first:
+        result = _check(ctx, list(first.values()), spend)
         excluded.update(result.excluded)
-        verdict = result.resolved.get(ctx.assessor.key_of("rendition", q))
-        if verdict is not None:
+        for subject, subject_kind in recordings:
+            q = first.get(subject)
+            if q is None:
+                continue
+            verdict = result.resolved.get(ctx.assessor.key_of("mechanical", q))
+            if verdict is None:
+                continue
             asked += 1
             if not verdict.value:
                 demoted += 1
+                failed.append((subject, subject_kind))
+    for subject, subject_kind in failed:
+        more_asked, more_demoted, more_excluded = _until_stable(
+            ctx, functools.partial(_ask_recording, ctx, subject, subject_kind, spend))
+        asked += more_asked
+        demoted += more_demoted
+        excluded.update(more_excluded)
+    for subject in pairs:
+        more_asked, more_demoted, more_excluded = _until_stable(
+            ctx, functools.partial(_ask_rendition, ctx, subject, spend))
+        asked += more_asked
+        demoted += more_demoted
+        excluded.update(more_excluded)
     if not asked and not excluded:
         return AttemptResult(attempted=False)
     _log.info("re-verification: %d check(s) asked, %d artifact(s) demoted, %d excluded",

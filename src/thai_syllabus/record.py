@@ -165,27 +165,38 @@ LEARNER_RANK: dict[str, float] = {
 def recorded_form(rows: Sequence[Answer], sha: str, *, origin: str | None) -> str | None:
     """The Thai form a Forvo clip records, off the subject's own provide
     rows: the audiofetch bytes row naming `sha` carries it in
-    params["word"] (r49); a row written before r49 does not, so the
-    media row's `origin` (the item's pathmp3 at download) is joined to
-    the forvo lookup rows' items instead -- the newest lookup row's item
-    wins when more than one names `origin` (a re-lookup can rename what
-    an id resolves to), the same newest-row-wins convention latest_query/
-    latest_phrase read their own rows under. None when neither names it.
+    params["word"] (r49). A row written before r49 does not, so the urls
+    the clip was downloaded under are joined to the forvo lookup rows'
+    items instead -- this subject's own bytes rows' params["url"] first,
+    then the media row's `origin`. The two differ whenever the same
+    bytes were downloaded under another subject as well: Forvo serves a
+    different obfuscated url per lookup, and the media row is the first
+    writer's, so `origin` names a url this subject's lookup rows have
+    never seen. The newest lookup row's item wins when more than one
+    names a url (a re-lookup can rename what an id resolves to), the
+    same newest-row-wins convention latest_query/latest_phrase read
+    their own rows under. None when nothing names the form.
     """
+    urls: list[str] = []
     for r in rows:
         if r.port != "provide" or r.backend != "audiofetch":
             continue
-        if any(i.get("sha") == sha for i in (r.answer.get("items") or [])):
-            word = (r.question.get("params") or {}).get("word")
-            if word:
-                return str(word)
-    if not origin:
+        if not any(i.get("sha") == sha for i in (r.answer.get("items") or [])):
+            continue
+        params = r.question.get("params") or {}
+        if (word := params.get("word")):
+            return str(word)
+        if (url := params.get("url")):
+            urls.append(str(url))
+    if origin:
+        urls.append(str(origin))
+    if not urls:
         return None
     forvo_rows = sorted((r for r in rows if r.port == "provide" and r.backend == "forvo"),
                         key=lambda r: r.ts, reverse=True)
     for r in forvo_rows:
         for item in (r.answer.get("items") or []):
-            if item.get("pathmp3") == origin and item.get("word"):
+            if item.get("pathmp3") in urls and item.get("word"):
                 return str(item["word"])
     return None
 
