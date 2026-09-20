@@ -35,7 +35,7 @@ from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnrea
                        PreparedQuestion, deck_field)
 from .authority import role_for
 from .cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
-                        RenditionAskKey, RetirementKey, rendition_identity, sha)
+                        RenditionAskKey, RetirementKey, RunReportKey, rendition_identity, sha)
 from .compile import card_meaning
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
@@ -1767,6 +1767,13 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
         for w in words if is_corroborated(w.pron.corroboration)]
     outside: dict[str, Candidate] = {}
     uncorroborated = 0
+    # candidates_dropped is a per-run delta (spec 3 r48's RunReport row:
+    # "dropped from its pool this run"), not a standing gauge: a form
+    # only counts when its verdict is newer than the previous run's own
+    # RunReport row, so a form the last run already counted is not
+    # counted again just for still sitting on a disagreeing verdict.
+    prev = ctx.db.latest("run", "runreport", RunReportKey())
+    since = prev.ts if prev is not None else 0
     for rank, form in enumerate(ctx.frequency_words()[:ctx.pair_search_depth], 1):
         if form in by_thai:
             continue
@@ -1783,7 +1790,8 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
             # to its `engines_agree` reading would select it again every
             # run and re-ask the same question as a cache hit for ever.
             if not corroborates(verdict.syllables, form, resolve_engines()):
-                uncorroborated += 1
+                if verdict.ts > since:
+                    uncorroborated += 1
                 _log.info("pair search: candidate %s dropped -- its verdict does not "
                           "corroborate the engines", form)
                 continue
@@ -1894,6 +1902,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     # `candidate_asks` is what the pass asked about, not what came back to
     # ride the batch: a cache hit and a question that could not be
     # prepared were both asks.
+    # the pass owns no need bucket: attempted is effort on needs; a dropped candidate is neither
     return AttemptResult(attempted=bool(new_pairs or asked), questions=questions,
                          excluded=excluded, spend=spend,
                          adopted_pairs=len(new_pairs), adopted_words=len(new_words),

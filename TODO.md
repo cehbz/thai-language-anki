@@ -162,6 +162,8 @@ pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
    `pair/exact-confusion` is retired (Task 2, spec 1 r19: re-checked what
    `MinimalPair.create` already refuses).
 7. Principles F6: the recited names are learned as speech.
+- Design §5's "stats shows sound-stage coverage" is unimplemented: nothing reads `coverage/sound-stage` (not `compute_stats`, the CLI, or the page).
+- `rendition/synthetic` warns about a rendition that does not exist: with no pair-level rendition row, `_DbMediaIndex.rendition_provenance` falls back to the members' own word recordings, so a pair with no rendition and TTS member clips gets a synthetic-rendition finding, and `speakers_of("rendition")` counts speakers who gave none.
 
 Run and screen, found while seating the alphabet (2026-09-19):
 - **No resolve-only run mode.** Resolving an outstanding batch takes a

@@ -148,8 +148,10 @@ class RunReport:
     adopted_words: int = 0
     adoption_skipped: int = 0
     # the pair search (spec 3 r47 section 5): MinimalPairs adopted into
-    # pairs.yaml this run, and the outside forms the judge was asked about
-    # this run -- events, not needs, outside the identity above
+    # pairs.yaml this run, the outside forms the judge was asked about
+    # this run, and the forms whose fresh verdict the engines did not
+    # corroborate (candidates_dropped, r48) -- events, not needs, outside
+    # the identity above
     adopted_pairs: int = 0
     candidate_asks: int = 0
     candidates_dropped: int = 0

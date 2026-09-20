@@ -22,7 +22,8 @@ from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, Att
                                     picture_query_for, retire_sentence, sentence_attempt,
                                     sources_for, sources_for_need)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
-                                    MechanicalKey, PhraseKey, ProvideKey, rendition_identity, sha)
+                                    MechanicalKey, PhraseKey, ProvideKey, RunReportKey,
+                                    rendition_identity, sha)
 from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
 from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, candidate_shas,
@@ -4272,8 +4273,8 @@ def test_pair_search_resolves_a_homograph_by_word_id_not_thai(tmp_path):
 
 def _candidate_verdict(ctx, thai, syllables, gloss):
     """A fresh judge verdict on an outside form, as the pair search's own
-    ask records it."""
-    ctx.db.append(port="assess", backend="judge",
+    ask records it. Returns the row's ts."""
+    return ctx.db.append(port="assess", backend="judge",
                   key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
                                         f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
                                         "pronunciation-for-word"),
@@ -4301,6 +4302,33 @@ def test_pair_search_drops_a_candidate_whose_fresh_verdict_does_not_corroborate(
 
     assert result == AttemptResult(attempted=False, candidates_dropped=1)
     assert ctx.syllabus.pairs == ()
+
+
+def test_pair_search_candidates_dropped_is_a_per_run_delta(tmp_path):
+    """spec 3's RunReport row: candidates_dropped is what this run's pool
+    dropped, not a standing gauge. A form whose disagreeing verdict a
+    previous run already reported (its row's ts at or before that run's
+    RunReport row) does not count again just for still sitting there --
+    it still leaves the pool (the `continue` stays)."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    verdict_ts = _candidate_verdict(ctx, "ไกล",
+                       [{"segments": ["kl", "a", ""], "vowel_length": "short",
+                         "tone": "falling"}], "far")
+
+    first = pair_search_attempt(ctx)
+
+    assert first == AttemptResult(attempted=False, candidates_dropped=1)
+
+    ctx.db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+                 question={"kind": "runreport"}, answer={"attempted": False},
+                 ts=verdict_ts + 1)
+
+    second = pair_search_attempt(ctx)
+
+    assert second == AttemptResult(attempted=False, candidates_dropped=0)
 
 
 def test_pair_search_reads_each_frequency_form_once_across_two_passes(tmp_path):

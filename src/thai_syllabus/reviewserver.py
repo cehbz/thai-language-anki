@@ -250,6 +250,7 @@ def _rendition_members(d: "Derivations", subject: str, artifact_sha: str | None
 
 
 def _confusion_of(syllabus: Syllabus, subject: str) -> str | None:
+    """The ConfusionId of the pair `subject` names, or None when the syllabus holds no such pair."""
     try:
         return str(syllabus.pair(PairId(subject)).confusion)
     except KeyError:

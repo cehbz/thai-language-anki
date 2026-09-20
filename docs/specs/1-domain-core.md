@@ -69,6 +69,7 @@ Revision log:
 - r19 2026-09-19: pair/exact-confusion retired: MinimalPair.create refuses a pair differing in more than its confusion, so the rule could never fire on loaded data (§4's own principle: no rule for what a constraint already prevents). User approval 2026-09-19.
 - r20 2026-09-19: Dimension gains `final`: a coda difference is a final difference and its value is the coda; `consonant` is the onset alone. Evidence: the three final-place confusions were declared on `consonant`, whose value is the onset, and the sounds were written with the unreleased diacritic the engines never store (`p̚`/`t̚`/`k̚`; `engines._CODAS` is bare `p`/`t`/`k`), so no pair could ever be exact for them on either count. User approval 2026-09-19.
 - r21 2026-09-19: `coverage/sound-stage` (measure, F1): the share of confusions at their weight-proportional pair count, of graphemes whose keyword has a picture, and of recited-name words with a chart cell, value the least of the three (the stage is a gate, F1: its least-built part is how built it is; design 2026-09-12 section 5 said "graphemes with a keyword"; every Grapheme row carries one by construction, so the part that varies is the keyword's picture). Evidence: coverage/confusions reads one pair and one speaker per confusion and cannot say whether the stage is built (25 confusions want 55 pairs; 13 full at the first search). User approval 2026-09-19.
+- r22 2026-09-19: `Syllabus.gaps()` lists every pair without a current-best rendition (`pairs_missing_renditions`, from `pair/rendition-required`) in place of the confusions `coverage/confusions` marked uncovered; the measure keeps its reading and no longer gates sourcing. Evidence: spec 3 r48 (a confusion covered by one pair's rendition hid its other pairs; 7 of 30 on the live deck). User approval 2026-09-19.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -286,8 +287,8 @@ from the live aggregate and rulebook steers nothing (staleness is
 structural, not advisory). gate = no unwaived error findings.
 
 **gaps() -> Gaps** — derived from the report's completeness findings
-and measures, never recomputed beside them: missing renditions per
-confusion (count × distinct speakers vs targets), unfilled targets, words
+and measures, never recomputed beside them: every pair without a
+current-best rendition (`pair/rendition-required`), unfilled targets, words
 lacking pictures/recordings, sentences lacking recordings, sentences
 lacking an (optional, budget-prioritized) scene picture, graphemes
 lacking keyword data. Input to the batch run (spec 3).

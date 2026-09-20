@@ -337,8 +337,7 @@ TARGET_SENTENCE_REQUIRED = Rule(id="target/sentence-required", principle="F5",
 
 
 def _check_pair_rendition(syllabus: "Syllabus") -> list[Finding]:
-    # compile's own predicate (MediaIndex.rendition is None): a pair whose
-    # members are each recorded but by no one speaker has no rendition.
+    # compile's own predicate (MediaIndex.rendition is None): the media index's docstring owns the None cases.
     return [Finding(rule="pair/rendition-required", note_id=p.id, evidence="no rendition")
            for p in syllabus.pairs if syllabus.media.rendition(p.id) is None]
 

@@ -538,10 +538,13 @@ _ID_CHARACTER = re.compile(r"[A-Za-z0-9]")
 class CandidateVerdict:
     """The judge's pronunciation and gloss for an outside form the pair
     search asked about (spec 3 r47 section 5): what the run needs to mint
-    it as a closure Word once the engines corroborate the syllables."""
+    it as a closure Word once the engines corroborate the syllables.
+    `ts` is the deciding row's (candidates_dropped's per-run delta, spec
+    3 r48, reads it against the previous run's RunReport ts)."""
     thai: str
     syllables: tuple[Syllable, ...]
     gloss: str
+    ts: int
 
 
 def candidate_adjudications(cache: CacheReader, *,
@@ -562,7 +565,8 @@ def candidate_adjudications(cache: CacheReader, *,
                 and not _stale(r, current_rubric)]
         if not rows:
             continue
-        value = max(rows, key=lambda r: r.ts).answer.get("value")
+        deciding = max(rows, key=lambda r: r.ts)
+        value = deciding.answer.get("value")
         if not (isinstance(value, Mapping) and value.get("syllables") and value.get("gloss")):
             continue
         gloss = str(value["gloss"])
@@ -570,7 +574,7 @@ def candidate_adjudications(cache: CacheReader, *,
             continue
         thai = subject[len(CANDIDATE_SUBJECT_PREFIX):]
         out[thai] = CandidateVerdict(thai=thai, syllables=syllables_from_verdict(value),
-                                     gloss=gloss)
+                                     gloss=gloss, ts=deciding.ts)
     return out
 
 
