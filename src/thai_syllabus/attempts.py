@@ -24,6 +24,7 @@ import functools
 import json
 import time
 import logging
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -1972,6 +1973,19 @@ def _forvo_speaker(item: Mapping) -> Speaker:
                    region=str(item.get("country") or "unknown"))
 
 
+_ZERO_WIDTH = str.maketrans("", "", "​‎‏")
+
+
+def _same_form(a: str | None, b: str | None) -> bool:
+    """Two Thai forms are the same after NFC normalization with the
+    zero-width marks (U+200B, U+200E, U+200F) removed -- how a Forvo
+    item's recorded `word` is compared to the form asked for."""
+    if a is None or b is None:
+        return False
+    return (unicodedata.normalize("NFC", a).translate(_ZERO_WIDTH)
+            == unicodedata.normalize("NFC", b).translate(_ZERO_WIDTH))
+
+
 def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend],
                   *, subject_kind: SubjectKind = "word",
                   constraint: VoiceConstraint = "any", fresh: bool = False) -> list[Mapping]:
@@ -1979,7 +1993,9 @@ def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend
     "male" or "female" constraint only speakers Forvo states are that
     sex are admitted (spec 1 section 1 (r10); E2: a productive back
     plays in the learner's register); "any" admits every item. `fresh`
-    re-asks over the cached answer (spec 3 section 6a's re-ask rule)."""
+    re-asks over the cached answer (spec 3 section 6a's re-ask rule).
+    Only an item whose recorded `word` is the asked form (`_same_form`)
+    is returned."""
     ask = ctx.provider.reask if fresh else ctx.provider.ask
     answer = ask("forvo", Question(subject=subject, provides="recording",
                                    params={"word": thai}, kind="recording",
@@ -1987,6 +2003,10 @@ def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend
     _count(spend, "forvo", answer)
     items = [i for i in answer.items
              if isinstance(i, Mapping) and i.get("pathmp3") and i.get("username")]
+    # Forvo's lookup ignores tone marks (ห่า answers หา, ห่า and ห้า, each
+    # item naming the word it records): only an item recording the asked
+    # form is a candidate of it (spec 3 r49).
+    items = [i for i in items if _same_form(i.get("word"), thai)]
     if constraint == "any":
         return items
     return [i for i in items if _forvo_speaker(i).sex == constraint]

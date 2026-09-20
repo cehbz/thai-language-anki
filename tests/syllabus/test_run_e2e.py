@@ -69,7 +69,8 @@ class _Forvo:
         return ProvideKey(source="forvo", kind="", query=q.params["word"])
 
     def fetch(self, q):
-        return RawAnswer(items=({"pathmp3": f"https://f/{q.params['word']}.mp3", "username": "kris"},), cost=1.0)
+        return RawAnswer(items=({"pathmp3": f"https://f/{q.params['word']}.mp3", "username": "kris",
+                                 "word": q.params["word"]},), cost=1.0)
 
 
 class _Llm:

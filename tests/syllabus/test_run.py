@@ -810,7 +810,8 @@ class _LookupOnceForvo:
 
     def fetch(self, q):
         self.calls += 1
-        return RawAnswer(items=(self.item,), cost=1.0)
+        item = {**self.item, "word": self.item.get("word", q.params["word"])}
+        return RawAnswer(items=(item,), cost=1.0)
 
 
 class _DeadAudiofetch:

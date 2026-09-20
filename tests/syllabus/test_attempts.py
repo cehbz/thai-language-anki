@@ -135,7 +135,11 @@ class _Forvo:
         return ProvideKey(source="forvo", kind="", query=q.params["word"])
 
     def fetch(self, q):
-        return RawAnswer(items=tuple(self.items_by_word.get(q.params["word"], ())), cost=1.0)
+        # An item that names no `word` is one Forvo recorded as the asked
+        # form -- the fixtures' default; a test about a tone sibling sets it.
+        items = tuple({**i, "word": i.get("word", q.params["word"])}
+                      for i in self.items_by_word.get(q.params["word"], ()))
+        return RawAnswer(items=items, cost=1.0)
 
 
 class _QuotaForvo:
@@ -959,6 +963,52 @@ def test_rendition_attempt_appends_under_the_pair(tmp_path):
                      transient_cap=ctx.transient_cap).attempts == 0
 
 
+def test_a_forvo_item_recorded_as_a_tone_sibling_is_not_a_candidate(tmp_path):
+    """Forvo's lookup ignores tone marks: asking for ห่า (a classifier)
+    returns หา ("to look for") and ห้า ("five") too, each item naming the
+    word it records. Only the item recording the asked form is a
+    candidate; the others are never downloaded."""
+    syllabus = Syllabus(words=(word("classifier:ห่า", "ห่า", "classifier"),),
+                        targets=(target("classifier:ห่า/receptive", "classifier:ห่า"),))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, {
+        "ห่า": [{"username": "master0z", "word": "หา", "pathmp3": "https://f/haa.mp3"},
+                {"username": "skyton", "word": "ห่า", "pathmp3": "https://f/haa-low.mp3"},
+                {"username": "deepindark", "word": "ห้า", "pathmp3": "https://f/haa-falling.mp3"}]})
+    attempt(ctx, Need("classifier:ห่า", "recording"), "forvo")
+    fetched = [r for r in rows_for(ctx.db, "classifier:ห่า", "recording")
+               if r.port == "provide" and r.backend == "audiofetch"]
+    assert [r.question["params"]["url"] for r in fetched] == ["https://f/haa-low.mp3"]
+
+
+def test_a_forvo_item_differing_only_by_a_zero_width_mark_is_a_candidate(tmp_path):
+    syllabus = Syllabus(words=(word("date", "วันที่", "date"),),   # วันที่: date
+                        targets=(target("date/receptive", "date"),))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, {
+        "วันที่": [{"username": "mattissa", "word": "วันที่‎", "pathmp3": "https://f/d.mp3"}]})
+    attempt(ctx, Need("date", "recording"), "forvo")
+    fetched = [r for r in rows_for(ctx.db, "date", "recording")
+               if r.port == "provide" and r.backend == "audiofetch"]
+    assert len(fetched) == 1
+
+
+def test_a_rendition_intersection_ignores_items_recording_other_words(tmp_path):
+    """Both members' lookups hold master0z, but his items record หา for
+    both asks; the filtered lookups share no speaker and forvo answers
+    empty (a rendition of one clip for both members was the live defect)."""
+    confusion = SoundConfusion(id="tone:low-falling", dimension="tone", sounds=("low", "falling"))
+    syllabus = Syllabus(
+        words=(word("classifier:ห่า", "ห่า", "classifier", syllables=(syl(onset="h", vowel="a", length="long", tone="low"),)),
+               word("five", "ห้า", "five", syllables=(syl(onset="h", vowel="a", length="long", tone="falling"),))),
+        confusions=(confusion,),
+        pairs=(MinimalPair(id="p-haa", confusion=confusion.id, members=("classifier:ห่า", "five")),))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, {
+        "ห่า": [{"username": "master0z", "word": "หา", "pathmp3": "https://f/1.mp3"}],
+        "ห้า": [{"username": "master0z", "word": "หา", "pathmp3": "https://f/1.mp3"}]})
+    attempt(ctx, Need("p-haa", "rendition", "pair"), "forvo")
+    provided = [r for r in rows_for(ctx.db, "p-haa", "rendition") if r.port == "provide"]
+    assert provided[-1].answer["items"] == []
+
+
 def test_rendition_attempt_ranks_the_member_set_by_the_one_speaker_check(tmp_path):
     ctx, _tts = _recording_ctx(tmp_path, _pair_syllabus(), {
         "ขาว": [{"username": "somchai", "pathmp3": "https://f/a.mp3"}],   # ขาว: white
@@ -1105,7 +1155,7 @@ class _PairForvo:
         self.lookups[member] = self.lookups.get(member, 0) + 1
         n = self.lookups[member]
         return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m",
-                                 "country": "Thailand",
+                                 "country": "Thailand", "word": thai,
                                  "pathmp3": f"https://forvo/{member}/{n}.mp3"},), cost=1.0)
 
 
@@ -2149,6 +2199,7 @@ class _ExpiringForvo:
     def fetch(self, q):
         self.lookups += 1
         return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m", "country": "Thailand",
+                                 "word": q.params["word"],
                                  "pathmp3": f"https://forvo/audio/{self.lookups}.mp3"},), cost=1.0)
 
 
@@ -2233,6 +2284,7 @@ class _NoIdForvo:
     def fetch(self, q):
         self.lookups += 1
         return RawAnswer(items=({"username": "somchai", "sex": "m", "country": "Thailand",
+                                 "word": q.params["word"],
                                  "pathmp3": f"https://forvo/audio/{self.lookups}.mp3"},), cost=1.0)
 
 
@@ -2267,9 +2319,9 @@ class _TwoItemForvoThenDead:
             raise TransportError("forvo lookup failed")
         return RawAnswer(items=(
             {"id": 1, "username": "a", "sex": "m", "country": "Thailand",
-             "pathmp3": "https://forvo/audio/1.mp3"},
+             "word": q.params["word"], "pathmp3": "https://forvo/audio/1.mp3"},
             {"id": 2, "username": "b", "sex": "m", "country": "Thailand",
-             "pathmp3": "https://forvo/audio/2.mp3"}), cost=1.0)
+             "word": q.params["word"], "pathmp3": "https://forvo/audio/2.mp3"}), cost=1.0)
 
 
 class _FirstOkSecondRefusedAudiofetch:
@@ -2323,7 +2375,7 @@ class _QuotaOnRelookupForvo:
         if self.lookups > 1:
             raise QuotaExhausted("forvo")
         return RawAnswer(items=({"id": 7, "username": "somchai", "sex": "m",
-                                 "country": "Thailand",
+                                 "country": "Thailand", "word": q.params["word"],
                                  "pathmp3": "https://forvo/audio/1.mp3"},), cost=1.0)
 
 
