@@ -116,50 +116,83 @@ def test_a_monosyllable_the_tone_engine_disagrees_with_stays_disputed():
     assert got == Pronunciation(syllables=(one,), corroboration="disputed")
 
 
-def test_a_phrase_of_several_syllables_is_disputed_and_waits_for_the_judge():
-    """The rule tone engine settles one syllable's tone only, so a recited
-    name ("กอ ไก่", the name of ก) is never corroborated here: the
-    adjudication pass asks the judge next run (spec 3 r28)."""
-    two = (Syllable(segments=("k", "ɔ", ""), vowel_length="long", tone="mid"),
-           Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"))
-    got = engines_pronunciation("กอ ไก่", _engines(two, "mid"))   # กอ ไก่: the name of ก
-    assert got == Pronunciation(syllables=two, corroboration="disputed")
-
-
 def test_nothing_read_is_no_pronunciation_at_all():
     assert engines_pronunciation("ๆ", _engines(None)) is None
     assert engines_pronunciation("ๆ", _engines(())) is None
 
 
-# --- the token-wise fallback (2026-09-17 evidence: thaig2p reads "ปอ" and
-# "ปลา" but not "ปอ ปลา" as one phrase) -------------------------------------
+# --- a phrase is its tokens (design 2026-09-20 §3): thaig2p reads "ปอ" and
+# "ปลา" but not "ปอ ปลา", and reads "งอ งู" as ŋɔŋ.ŋu while "งอ" alone is ŋɔ.
 
 def _token_engines(readings: dict, tone_result="mid"):
     """g2p keyed by the exact string asked: `readings[thai]`, None for any
-    thai not in the map -- so a phrase-level miss and a per-token hit are
-    both under the caller's control."""
+    thai not in the map."""
     return Engines(g2p=(lambda thai: readings.get(thai),), tone=lambda thai: tone_result)
 
 
-def test_a_phrase_no_engine_reads_whole_is_read_token_by_token_and_concatenated():
-    po = (Syllable(segments=("p", "ɔ", ""), vowel_length="long", tone="mid"),)
-    pla = (Syllable(segments=("p", "l", "a"), vowel_length="short", tone="mid"),)
-    eng = _token_engines({"ปอ": po, "ปลา": pla})   # "ปอ ปลา" itself: no entry -> None
-    got = engines_pronunciation("ปอ ปลา", eng)
-    assert got == Pronunciation(syllables=po + pla, corroboration="disputed")
+PO = (Syllable(segments=("p", "ɔ", ""), vowel_length="long", tone="mid"),)
+PLA = (Syllable(segments=("pl", "a", ""), vowel_length="long", tone="mid"),)
+WRONG = (Syllable(segments=("p", "ɔ", "ŋ"), vowel_length="long", tone="mid"),) + PLA
 
 
-def test_a_phrase_with_one_unreadable_token_is_no_pronunciation_at_all():
-    po = (Syllable(segments=("p", "ɔ", ""), vowel_length="long", tone="mid"),)
-    eng = _token_engines({"ปอ": po})   # "ปลา" has no entry -> None
+def test_a_phrase_is_read_token_by_token_never_whole():
+    eng = _token_engines({"ปอ ปลา": WRONG, "ปอ": PO, "ปลา": PLA})
+    assert eng.readings("ปอ ปลา") == (PO + PLA,)
+    assert engines_pronunciation("ปอ ปลา", eng) == Pronunciation(
+        syllables=PO + PLA, corroboration="disputed")
+
+
+def test_a_phrase_with_one_unreadable_token_is_no_reading_for_that_engine():
+    eng = _token_engines({"ปอ": PO})   # "ปลา" has no entry -> None
+    assert eng.readings("ปอ ปลา") == ()
     assert engines_pronunciation("ปอ ปลา", eng) is None
 
 
-def test_a_single_token_phrase_the_engine_cannot_read_is_still_no_pronunciation():
-    """No whitespace to split on: the token-wise fallback never applies,
-    exactly as before this fix."""
-    eng = _token_engines({})
-    assert engines_pronunciation("ๆ", eng) is None
+def test_two_engines_agreeing_token_wise_is_engines_agree():
+    eng = Engines(g2p=(lambda t: {"ปอ": PO, "ปลา": PLA}.get(t),
+                       lambda t: {"ปอ": PO, "ปลา": PLA}.get(t)),
+                  tone=lambda t: None)
+    assert engines_pronunciation("ปอ ปลา", eng) == Pronunciation(
+        syllables=PO + PLA, corroboration="engines_agree")
+
+
+def test_a_verdict_matching_the_token_wise_reading_corroborates():
+    eng = _token_engines({"ปอ ปลา": WRONG, "ปอ": PO, "ปลา": PLA})
+    assert corroborates(PO + PLA, "ปอ ปลา", eng) is True
+    assert corroborates(WRONG, "ปอ ปลา", eng) is False
+
+
+def test_a_single_token_form_the_engine_cannot_read_is_still_no_pronunciation():
+    assert engines_pronunciation("ๆ", _token_engines({})) is None
+
+
+def test_a_whitespace_only_form_is_no_reading_even_when_engines_would_agree():
+    """`thai.split()` on an all-whitespace form is `[]` -- no tokens, not
+    one empty token -- so this must not read as an empty reading both
+    engines "agree" on: a Word is never written with an empty syllable
+    tuple."""
+    eng = Engines(g2p=(lambda t: PO, lambda t: PO), tone=lambda t: None)
+    assert eng.readings("  ") == ()
+    assert engines_pronunciation("  ", eng) is None
+
+
+# --- agreement is pairwise (design 2026-09-20 §3) ---------------------------
+
+def test_agreement_between_the_second_and_third_engines_is_engines_agree():
+    a = (S("k", "a", "", "short", "mid"),)
+    b = (S("k", "a", "", "long", "mid"),)
+    eng = Engines(g2p=(lambda t: a, lambda t: b, lambda t: b), tone=lambda t: None)
+    assert engines_pronunciation("กะ", eng) == Pronunciation(
+        syllables=b, corroboration="engines_agree")
+
+
+def test_three_engines_all_differing_write_the_first_as_disputed():
+    a = (S("k", "a", "", "short", "mid"),)
+    b = (S("k", "a", "", "long", "mid"),)
+    c = (S("k", "a", "", "long", "low"),)
+    eng = Engines(g2p=(lambda t: a, lambda t: b, lambda t: c), tone=lambda t: "mid")
+    assert engines_pronunciation("กะ", eng) == Pronunciation(
+        syllables=a, corroboration="disputed")
 
 
 # --- degenerate readings: the neural g2p's decoder loop (2026-09-18) --------

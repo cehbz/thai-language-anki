@@ -3972,10 +3972,9 @@ def _engines(g2p=None, tone=None):
 def _reads_normally_except(*unreadable_thai: str):
     """A g2p that reads the same monosyllable as `_engines`'s own default
     for anything but the given strings -- which it reads as thaig2p reads
-    a form it cannot read at all. Naming both a phrase and one of its own
-    whitespace-separated tokens blocks phonology.py's token-wise fallback
-    too (spec 3 r43), so a test can still make a recited name unreadable
-    end to end."""
+    a form it cannot read at all. A phrase is read token by token (design
+    2026-09-20 §3), so naming one of a recited name's own tokens makes the
+    whole phrase unreadable too."""
     one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
 
     def g2p(thai: str):
@@ -4086,8 +4085,12 @@ def test_a_multi_syllable_recited_name_is_written_disputed(tmp_path):
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
                         categories=(Category(name="Animals", members=frozenset({"chicken"})),))
+    # "กอ ไก่" is read token by token (design 2026-09-20 §3): "กอ" reads as
+    # `two`'s first syllable, "ไก่" as its second -- concatenated, the
+    # engine's own reading of the phrase is `two`.
+    tokens = {"กอ": two[:1], "ไก่": two[1:]}
     ctx = _grapheme_ctx(tmp_path, syllabus,
-                        engines=_engines(g2p=lambda thai: two if " " in thai else two[:1]))
+                        engines=_engines(g2p=lambda thai: tokens.get(thai, two[:1])))
 
     grapheme_attempt(ctx, consonants=[KO])
 
@@ -4157,14 +4160,12 @@ def test_a_keyword_that_does_not_contain_the_symbol_is_skipped_and_counted(tmp_p
 def test_a_name_no_engine_reads_leaves_the_row_with_no_name_word(tmp_path):
     """R2: a Word is never written with an empty syllable tuple. The
     grapheme row still stands (compile drops its Reading card, counted)
-    and the skip is reported. Both the phrase and one of its own tokens
-    ("งอ") are unreadable, so phonology.py's token-wise fallback (r43)
-    cannot read it either -- this is genuinely no engine reading, not the
-    two-token case r43 fixes."""
+    and the skip is reported. A phrase is read token by token (design
+    2026-09-20 §3): one of "งอ งู"'s own tokens ("งอ") is unreadable, so
+    the engine cannot read the phrase at all."""
     one = (Syllable(segments=("ŋ", "u", ""), vowel_length="long", tone="mid"),)
     ctx = _grapheme_ctx(tmp_path, Syllabus(),
-                        engines=_engines(g2p=lambda thai: None if " " in thai or thai == "งอ"
-                                         else one))
+                        engines=_engines(g2p=lambda thai: None if thai == "งอ" else one))
 
     result = grapheme_attempt(ctx, consonants=[NGO])
 
@@ -4243,7 +4244,7 @@ def test_a_grapheme_on_file_without_a_name_word_that_still_does_not_read_survive
                               keyword_word=chicken)          # ก: k, no name word on file
     syllabus = Syllabus(words=(chicken,), graphemes=(already,))
     ctx = _grapheme_ctx(tmp_path, syllabus,
-                        engines=_engines(g2p=_reads_normally_except("กอ ไก่", "กอ")))
+                        engines=_engines(g2p=_reads_normally_except("กอ")))
 
     result = grapheme_attempt(ctx, consonants=[KO, NGO])
 

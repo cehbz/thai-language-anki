@@ -20,23 +20,25 @@ class Engines:
     word they disagree on is `disputed` and blocked anyway.
 
     `engines_pronunciation`'s whole-reading agreement check (below) is
-    defined for exactly two engines: it compares every other reading only
-    against `readings[0]`, so a third oracle is NOT free to add as-is --
-    with three engines where the first is unique and the other two agree
-    with each other but not the first, that pairwise agreement would go
-    undetected and the word would stay `disputed`. `corroborates`, which
-    checks a judge verdict against every reading in turn, has no such
-    limit. Widening the first check to real pairwise agreement is
-    speculative generality with no second consumer today (YAGNI); add it
-    when a third engine actually arrives.
+    real pairwise agreement (`_agreed`, design 2026-09-20 §3): any two
+    readings equal, whichever positions they hold, so a third oracle is
+    free to add as-is.
     """
     g2p: tuple[Callable[[str], tuple[Syllable, ...] | None], ...]
     tone: Callable[[str], Tone | None]
 
     def readings(self, thai: str) -> tuple[tuple[Syllable, ...], ...]:
-        """Each engine's reading of `thai`, in order, with the ʔ-coda
+        """Each local engine's reading of `thai`, in order, with the ʔ-coda
         convention (design 2026-09-18 §5) applied and the empty and the
         degenerate ones (spec 3 r44) dropped.
+
+        A form containing whitespace is a phrase and is read token by
+        token (design 2026-09-20 §3): the engine's reading is the
+        concatenation of its token readings, and a token it cannot read
+        makes the phrase unread by it. No whole-form read of a phrase is
+        ever made: thaig2p reads "ปอ" and "ปลา" but not "ปอ ปลา", and
+        reads "งอ งู" with a spurious ŋ coda that "งอ" alone does not
+        have.
 
         `without_glottal_coda` is applied here, at the port boundary, not
         only inside `_convert`/`_convert_tltk`: those converters already
@@ -47,15 +49,40 @@ class Engines:
         dead-open-syllable word -- a failure that looks exactly like "the
         engines disagree" and is very hard to diagnose from the outside.
         """
+        tokens = thai.split() if " " in thai else [thai]
         out = []
         for engine in self.g2p:
-            got = engine(thai)
-            if not got:
-                continue
-            reading = without_glottal_coda(tuple(got))
-            if not is_degenerate(reading, thai):
+            reading = _read_tokens(engine, tokens)
+            if reading is not None and not is_degenerate(reading, thai):
                 out.append(reading)
         return tuple(out)
+
+
+def _read_tokens(engine, tokens: list[str]) -> tuple[Syllable, ...] | None:
+    if not tokens:
+        # A whitespace-only (or all-separator) form splits to no tokens at
+        # all -- not a form with one empty token, a form with none. An
+        # empty `combined` here would read as "the engine agreed on
+        # nothing", so this is no reading, not an empty one (a Word is
+        # never written with an empty syllable tuple).
+        return None
+    combined: list[Syllable] = []
+    for token in tokens:
+        got = engine(token)
+        if not got:
+            return None
+        combined.extend(without_glottal_coda(tuple(got)))
+    return tuple(combined)
+
+
+def _agreed(readings: tuple[tuple[Syllable, ...], ...]) -> tuple[Syllable, ...] | None:
+    """The first reading some later reading equals -- pairwise agreement
+    (design 2026-09-20 §3), so two oracles agreeing is found whichever
+    positions they hold."""
+    for i, reading in enumerate(readings):
+        if any(other == reading for other in readings[i + 1:]):
+            return reading
+    return None
 
 
 def syllables_from_verdict(value: Mapping) -> tuple[Syllable, ...]:
@@ -139,73 +166,36 @@ def is_degenerate(syllables: tuple[Syllable, ...], thai: str) -> bool:
 def engines_pronunciation(thai: str, engines: Engines) -> Pronunciation | None:
     """The engines' own reading of `thai`, the seed every Word the run
     adopts is written with (spec 3 r40/r43 section 5; design 2026-09-12
-    §2, 2026-09-18 §3): the first engine's syllables in tuple order,
-    corroboration `engines_agree` when a second engine's whole reading
-    matches it, or -- only when no other engine produced a reading at all
-    -- when the rule tone engine agrees with a monosyllable's tone; and
-    `disputed` otherwise, including every multi-syllable form no other
+    §2, 2026-09-18 §3, 2026-09-20 §3): pairwise agreement between any two
+    of `engines.readings(thai)` is `engines_agree` (the first such
+    reading found); otherwise, only when no other engine produced a
+    reading at all, a lone monosyllable the rule tone engine agrees with
+    is also `engines_agree`; else the first reading in tuple order is
+    written, `disputed` -- including every multi-syllable form no other
     engine confirms, which the adjudication pass then asks the judge
-    about (r28) while E4 blocks that word's cards.
+    about (r28) while E4 blocks that word's cards. None when no engine
+    reads `thai` at all: a Word is never written with an empty syllable
+    tuple, and the caller reports the row it could not adopt.
 
     That tone fallback is NARROWER here than in `corroborates`, which
     applies it per reading however many engines spoke. The asymmetry is
     deliberate: `engines_agree` is terminal (`is_corroborated`, so the
     word is never adjudicated again), while `corroborates` only accepts a
     verdict the judge already produced.
-
-    Two engines agreeing is `engines_agree` (design 2026-09-18 §3) --
-    evidence a single engine plus the one-syllable tone rule could never
-    give for a multi-syllable form. Otherwise the first sound reading in
-    tuple order is written, `engines_agree` when the rule tone engine
-    settles its single syllable's tone, else `disputed`.
-
-    A recited name the engines cannot read as a phrase is read token by
-    token (r43, 2026-09-17 evidence: thaig2p reads "ปอ" and "ปลา" but not
-    "ปอ ปลา"): when no engine yields anything for the whole of `thai` and
-    `thai` contains whitespace, each whitespace-separated token is read on
-    its own (its first engine reading) and the syllables concatenated in
-    order, always `disputed` -- a token-wise reading is never
-    engine-agreed, the phrase having failed the whole-form ask that
-    `corroborates` itself would still make.
-
-    A reading `is_degenerate` condemns is treated as no reading at all
-    (2026-09-18): the whole-form loop falls through to the token-wise
-    path, and a loop in the combined result is refused too.
-
-    None when no engine reads anything and there is no token to fall back
-    on, when any one token itself reads nothing, or when every reading it
-    could build is degenerate: a Word is never written with an empty
-    syllable tuple, and the caller reports the row it could not adopt.
     """
     readings = engines.readings(thai)
-    if readings:
-        first = readings[0]
-        if any(other == first for other in readings[1:]):
-            return Pronunciation(syllables=first, corroboration="engines_agree")
-        # The rule-tone fallback is single-engine behaviour: it only ever
-        # confirms a reading no other engine was there to contradict. Once
-        # a second reading exists it necessarily differs from `first` (the
-        # whole-match check above already failed), so it IS a differing
-        # engine reading of the same word -- and the tone rule agreeing
-        # with `first` on its own would not be confirmation, it would be
-        # overriding that disagreement on the rule engine's say-so alone.
-        # (design 2026-09-18: this is what would let a truncated tltk
-        # reading be promoted to engines_agree.)
-        agrees = (len(readings) == 1 and len(first) == 1
-                 and engines.tone(thai) == first[0].tone)
-        return Pronunciation(syllables=first,
-                             corroboration="engines_agree" if agrees else "disputed")
-    if " " not in thai:
+    if not readings:
         return None
-    combined: list[Syllable] = []
-    for token in thai.split():
-        token_readings = engines.readings(token)
-        if not token_readings:
-            return None
-        combined.extend(token_readings[0])
-    if is_degenerate(tuple(combined), thai):
-        return None
-    return Pronunciation(syllables=tuple(combined), corroboration="disputed")
+    agreed = _agreed(readings)
+    if agreed is not None:
+        return Pronunciation(syllables=agreed, corroboration="engines_agree")
+    first = readings[0]
+    # The rule-tone fallback is single-engine behaviour: it only ever
+    # confirms a reading no other engine was there to contradict.
+    settles = (len(readings) == 1 and len(first) == 1
+               and engines.tone(thai) == first[0].tone)
+    return Pronunciation(syllables=first,
+                         corroboration="engines_agree" if settles else "disputed")
 
 
 @functools.cache
