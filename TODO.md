@@ -55,7 +55,7 @@ Still open:
   height coverage matters.
 - **The aspiration reweight rests on labials only.** Nagle et al. 2023 tested
   /b p pʰ/; the extension to alveolars and velars is theoretically motivated and
-  untested. If it is wrong, `aspiration:alveolar-voiced` at w5 is over-weighted.
+  untested. If it is wrong, `consonant:d-t` at w5 is over-weighted.
 - **Liu et al. 2022 tone atlas** is in `docs/references/` but its per-pair
   English-listener numbers live in a figure, not the text. If the figure's bars
   can be read they would corroborate or challenge the 1992 table.

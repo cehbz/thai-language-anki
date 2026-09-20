@@ -26,8 +26,8 @@
 # Thai PLAIN is ambiguous and leans /b/. So voiced-vs-plain is Single-Category
 # (hardest) and plain-vs-aspirated is Two-Category (easier). Caveat: they tested
 # labials only; the extension to alveolars and velars is motivated but untested.
-- {id: "aspiration:labial-voiced",   kind: aspiration, weight: 5}  # b vs p
-- {id: "aspiration:alveolar-voiced", kind: aspiration, weight: 5}  # d vs t
+- {id: "consonant:b-p",              kind: consonant,  weight: 5}  # b vs p: voicing, not aspiration
+- {id: "consonant:d-t",              kind: consonant,  weight: 5}  # d vs t: voicing, not aspiration
 - {id: "aspiration:labial",          kind: aspiration, weight: 3}  # p vs pʰ
 - {id: "aspiration:alveolar",        kind: aspiration, weight: 3}  # t vs tʰ
 - {id: "aspiration:velar",           kind: aspiration, weight: 3}  # k vs kʰ
