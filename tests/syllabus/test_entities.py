@@ -462,3 +462,8 @@ def test_every_syllable_of_a_phrase_is_normalized():
         (Syllable(segments=("k", "a", "ʔ"), vowel_length="short", tone="low"),
          Syllable(segments=("tʰ", "i", "ʔ"), vowel_length="short", tone="high")))
     assert [s.segments[2] for s in got] == ["", ""]
+
+
+def test_the_centering_diphthongs_are_named_once():
+    from thai_syllabus.entities import DIPHTHONGS
+    assert DIPHTHONGS == frozenset({"ia", "ɯa", "ua"})

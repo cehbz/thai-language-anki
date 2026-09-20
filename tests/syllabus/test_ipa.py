@@ -41,3 +41,10 @@ def test_ipa_joins_syllables_with_a_dot():
 ])
 def test_ipa_tone_letters_match_the_deck_convention(tone, letters):
     assert render(_pron(_syl("k", "a", "", tone=tone))) == f"ka{letters}"
+
+
+def test_ipa_writes_no_length_mark_on_a_diphthong():
+    """The standard notation writes a centering diphthong unmarked
+    (design 2026-09-20 §1): กล้วย is kluaj˥˩, not kluaːj˥˩."""
+    assert render(_pron(_syl("kl", "ua", "j", length="long", tone="falling"))) == "kluaj˥˩"
+    assert render(_pron(_syl("s", "ɯa", "", length="long", tone="rising"))) == "sɯa˨˩˦"

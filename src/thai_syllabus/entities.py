@@ -33,6 +33,12 @@ def is_corroborated(c: Corroboration) -> bool:
     return c != "disputed"
 
 
+# The three centering diphthongs. Standard Thai phonology treats them as
+# long and the standard notation writes them unmarked (design 2026-09-20
+# §1); every converter records them `long` and ipa.render writes no ː.
+DIPHTHONGS = frozenset({"ia", "ɯa", "ua"})
+
+
 @dataclass(frozen=True)
 class Syllable:
     """One syllable's segments, vowel length, and Chao tone. `segments` is

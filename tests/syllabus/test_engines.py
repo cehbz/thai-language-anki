@@ -70,9 +70,18 @@ def test_convert_multisyllable_word():
 
 def test_convert_merges_diphthong_glide():
     # เมีย (wife) -> "ia" vowel: head "i" + non-syllabic "a" (combining
-    # inverted breve below) merge into a single "ia" phone.
+    # inverted breve below) merge into a single "ia" phone. A centering
+    # diphthong is long (design 2026-09-20 §1): thaig2p writes no ː on it.
     syl = _convert("m i a̯ ˧")[0]
     assert syl.vowel == "ia" and syl.coda == ""
+    assert syl.vowel_length == "long"
+
+
+def test_every_converter_marks_a_diphthong_long():
+    for raw in ("k l u a̯ j ˥˩", "h ɯ a̯ j ˥˩", "s ɯ a̯ ˩˩˦"):
+        assert _convert(raw)[0].vowel_length == "long", raw
+    for raw in ("kluːaj3", "hɯːaj3", "sɯːa5"):
+        assert _convert_tltk(raw)[0].vowel_length == "long", raw
 
 
 def test_convert_strips_affricate_tie_bar():
@@ -479,9 +488,10 @@ def test_tltks_open_o_and_affricates_become_the_decks_spelling():
 
 
 def test_a_diphthong_is_written_with_the_length_mark_inside():
-    """เมีย is 'miːa1': the deck spells that vowel 'ia', short."""
+    """เมีย is 'miːa1': the deck spells that vowel 'ia', long (design
+    2026-09-20 §1) -- tltk's own length mark now stands."""
     assert _convert_tltk("miːa1") == (
-        Syllable(segments=("m", "ia", ""), vowel_length="short", tone="mid"),)
+        Syllable(segments=("m", "ia", ""), vowel_length="long", tone="mid"),)
     assert _convert_tltk("sɯːa5")[0].segments == ("s", "ɯa", "")
     assert _convert_tltk("wuːa1")[0].segments == ("w", "ua", "")
 

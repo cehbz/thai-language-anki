@@ -36,8 +36,8 @@ Shape of the raw string:
   * The ia/ɯa/ua diphthongs are emitted as TWO tokens: the head vowel
     (i/ɯ/u) followed by a non-syllabic "a" carrying a COMBINING INVERTED
     BREVE BELOW (a̯, U+032F) marking it as an offglide, e.g. "i a̯" for
-    the vowel of เมีย. These two tokens are merged into a single
-    "ia"/"ɯa"/"ua" phone.
+    the vowel of เมีย. These two tokens are merged into a single ia/ɯa/ua
+    phone, long.
   * Vowel-initial syllables (อา, เอา) get an explicit "ʔ" onset token;
     dead syllables with no written final consonant (จะ) get an explicit
     "ʔ" coda token. Both are in the onset/coda inventories below, so no
@@ -60,7 +60,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from .entities import Syllable, Tone, VowelLength, without_glottal_coda
+from .entities import DIPHTHONGS, Syllable, Tone, VowelLength, without_glottal_coda
 
 # --- thaig2p's raw output -> Syllable ------------------------------------
 
@@ -144,8 +144,9 @@ def _convert_syllable(group: str) -> Syllable:
         raise _ConvertError(f"missing vowel in {group!r}")
     vowel_tok, *coda_toks = rest
 
-    length: VowelLength = "long" if vowel_tok.endswith(_LONG_MARK) else "short"
     vowel = vowel_tok.removesuffix(_LONG_MARK)
+    length: VowelLength = ("long" if vowel_tok.endswith(_LONG_MARK) or vowel in DIPHTHONGS
+                           else "short")
     if vowel not in _VOWELS:
         raise _ConvertError(f"unknown vowel {vowel!r}")
 
@@ -252,9 +253,9 @@ def _convert_tltk_syllable(group: str) -> Syllable:
     length: VowelLength = "long" if s.startswith(_LONG_MARK) else "short"
     s = s.removeprefix(_LONG_MARK)
     # tltk writes the diphthongs with the length mark inside: iːa, ɯːa,
-    # uːa. The deck spells them ia/ɯa/ua and calls them short.
+    # uːa. The deck spells them ia/ɯa/ua, long (design 2026-09-20 §1).
     if s.startswith("a") and vowel in _DIPHTHONG_HEADS:
-        vowel, s, length = vowel + "a", s[1:], "short"
+        vowel, s, length = vowel + "a", s[1:], "long"
 
     coda, s = _take(s, _CODAS_LONGEST_FIRST)
     if s:

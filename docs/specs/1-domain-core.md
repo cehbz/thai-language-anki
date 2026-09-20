@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 20, proposed 2026-09-19 against principles r5 and architecture
+Revision 23, proposed 2026-09-20 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -70,6 +70,7 @@ Revision log:
 - r20 2026-09-19: Dimension gains `final`: a coda difference is a final difference and its value is the coda; `consonant` is the onset alone. Evidence: the three final-place confusions were declared on `consonant`, whose value is the onset, and the sounds were written with the unreleased diacritic the engines never store (`p̚`/`t̚`/`k̚`; `engines._CODAS` is bare `p`/`t`/`k`), so no pair could ever be exact for them on either count. User approval 2026-09-19.
 - r21 2026-09-19: `coverage/sound-stage` (measure, F1): the share of confusions at their weight-proportional pair count, of graphemes whose keyword has a picture, and of recited-name words with a chart cell, value the least of the three (the stage is a gate, F1: its least-built part is how built it is; design 2026-09-12 section 5 said "graphemes with a keyword"; every Grapheme row carries one by construction, so the part that varies is the keyword's picture). Evidence: coverage/confusions reads one pair and one speaker per confusion and cannot say whether the stage is built (25 confusions want 55 pairs; 13 full at the first search). User approval 2026-09-19.
 - r22 2026-09-19: `Syllabus.gaps()` lists every pair without a current-best rendition (`pairs_missing_renditions`, from `pair/rendition-required`) in place of the confusions `coverage/confusions` marked uncovered; the measure keeps its reading and no longer gates sourcing. Evidence: spec 3 r48 (a confusion covered by one pair's rendition hid its other pairs; 7 of 30 on the live deck). User approval 2026-09-19.
+- r23 2026-09-20: the centering diphthongs ia, ɯa, ua carry `vowel_length: long`, the standard convention; `Ipa` writes them unmarked. Evidence: 68 of 68 corroborated diphthong syllables on the live deck were `short`, an artifact of thaig2p emitting the diphthong with no length mark and the tltk converter overriding tltk's own `iːa`; 37 of the 57 disputed words were judge verdicts that differed from the engines on diphthong length alone. User approval 2026-09-20.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -101,7 +102,9 @@ Word                                # language model
                                     # marking()
 
 Pronunciation
-  syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone
+  syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone;
+                                    # the centering diphthongs ia ɯa ua are
+                                    # long (r23), written unmarked by Ipa
   corroboration: Corroboration      # engines_agree | curated_exception |
                                     # adjudicated (r13: the judge plus one
                                     # engine, spec 3 r28) | disputed; see

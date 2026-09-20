@@ -75,7 +75,7 @@
           "ia",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -110,7 +110,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -121,7 +121,7 @@
           "ɯa",
           "j"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ]
@@ -241,7 +241,7 @@
           "ua",
           "j"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -307,7 +307,7 @@
           "ia",
           "p"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -318,7 +318,7 @@
           "ia",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -329,7 +329,7 @@
           "ia",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -541,7 +541,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -660,7 +660,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -1299,7 +1299,7 @@
           "ua",
           "t"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -1391,7 +1391,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -1422,7 +1422,7 @@
           "ua",
           "j"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -1710,7 +1710,7 @@
           "ia",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -1733,7 +1733,7 @@
           "ɯa",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -1956,7 +1956,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "high"
       }
     ],
@@ -2224,7 +2224,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -2235,7 +2235,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       },
       {
@@ -2277,7 +2277,7 @@
           "ɯa",
           "t"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -2475,7 +2475,7 @@
           "ɯa",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -2544,7 +2544,7 @@
           "ɯa",
           "j"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -2566,7 +2566,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -2617,7 +2617,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -2628,7 +2628,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -2658,7 +2658,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -2678,7 +2678,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -2698,7 +2698,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -2719,7 +2719,7 @@
           "ia",
           "ʔ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "high"
       }
     ],
@@ -2739,7 +2739,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -2985,7 +2985,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -3025,7 +3025,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -3085,7 +3085,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -3669,7 +3669,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -3689,7 +3689,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -4192,7 +4192,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -4285,7 +4285,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       },
       {
@@ -4305,7 +4305,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "high"
       }
     ],
@@ -4632,7 +4632,7 @@
           "ia",
           "p"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -4801,7 +4801,7 @@
           "ua",
           "j"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       },
       {
@@ -4810,7 +4810,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -4910,7 +4910,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -4950,7 +4950,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -5076,7 +5076,7 @@
           "ia",
           "p"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -5295,7 +5295,7 @@
           "ua",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -5506,7 +5506,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "high"
       }
     ],
@@ -5723,7 +5723,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -5866,7 +5866,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -5987,7 +5987,7 @@
           "ua",
           "t"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -6077,7 +6077,7 @@
           "ia",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -6097,7 +6097,7 @@
           "ia",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -6146,7 +6146,7 @@
           "ua",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -6228,7 +6228,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       },
       {
@@ -6762,7 +6762,7 @@
           "ɯa",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -6904,7 +6904,7 @@
           "ia",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -6955,7 +6955,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -7257,7 +7257,7 @@
           "ua",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -7607,7 +7607,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -7618,7 +7618,7 @@
           "ia",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -8159,7 +8159,7 @@
           "ɯa",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -8179,7 +8179,7 @@
           "ua",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -9244,7 +9244,7 @@
           "ɯa",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -9328,7 +9328,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       },
       {
@@ -9414,7 +9414,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -9434,7 +9434,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -9454,7 +9454,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -9474,7 +9474,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -9494,7 +9494,7 @@
           "ua",
           "k"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -9683,7 +9683,7 @@
           "ua",
           "m"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -10379,7 +10379,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "high"
       }
     ],
@@ -10433,7 +10433,7 @@
           "ua",
           "p"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "low"
       }
     ],
@@ -10467,7 +10467,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -10622,7 +10622,7 @@
           "ia",
           "w"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -10633,7 +10633,7 @@
           "ɯa",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -10644,7 +10644,7 @@
           "ia",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -10655,7 +10655,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       },
       {
@@ -10727,7 +10727,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       }
     ],
@@ -10925,7 +10925,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -11125,7 +11125,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -11451,7 +11451,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "rising"
       },
       {
@@ -11504,7 +11504,7 @@
           "ua",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -11570,7 +11570,7 @@
           "ɯa",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -11667,7 +11667,7 @@
           "ua",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -11755,7 +11755,7 @@
           "ɯa",
           "n"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -12120,7 +12120,7 @@
           "ua",
           "ŋ"
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "falling"
       }
     ],
@@ -13239,7 +13239,7 @@
           "ɯa",
           ""
         ],
-        "vowel_length": "short",
+        "vowel_length": "long",
         "tone": "mid"
       }
     ],
@@ -13535,5 +13535,6 @@
     "หอ หีบ": null,
     "ฮอ นกฮูก": null
   },
-  "deck_sweep_source": "/Users/haynes/decks/thai-ff/curated/words.yaml"
+  "deck_sweep_source": "/Users/haynes/decks/thai-ff/curated/words.yaml",
+  "_transformed_2026-09-20": "diphthongs ia/ɯa/ua recorded long (design 2026-09-20 §1); 84 syllables flipped from the frozen legacy short"
 }
