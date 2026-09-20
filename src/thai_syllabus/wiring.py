@@ -33,7 +33,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from .assessor import AssessBackend, Assessor, DurationBackend, JudgeBackend, Price, RenditionBackend
+from .assessor import (
+    AssessBackend, Assessor, JudgeBackend, Price, RecordingCheckBackend, RenditionBackend)
 from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
@@ -406,12 +407,31 @@ def _speaker_of(db: SyllabusDb) -> Callable[[str], str | None]:
     return speaker_of
 
 
+def _recorded_form_of(db: SyllabusDb) -> Callable[[str, str], str | None]:
+    """(subject, sha) -> the Thai form a Forvo clip records
+    (record.recorded_form over the subject's rows and the media origin);
+    None for an artifact whose media row is missing or not sourced from
+    forvo -- the own-word clause is about Forvo's lookup alone."""
+    def recorded_form_of(subject: str, sha: str) -> str | None:
+        prov = db.media_provenance(sha)
+        if prov is None or prov.get("source") != "forvo":
+            return None
+        return record.recorded_form(db.assessments_of(subject), sha, origin=prov.get("origin"))
+    return recorded_form_of
+
+
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
-                   *, secret_store=None) -> Assessor:
+                   *, form_of: Callable[[str], str | None] | None = None,
+                   secret_store=None) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge",
-    "mechanical" (the duration check), "rendition". Fills is membership
-    (Syllabus.fills), not an Assess backend (spec 1 section 3 r8; spec 3
-    r16).
+    "mechanical" (the recording check: duration plus the own-word
+    clause, `form_of` supplying the asked form), "rendition". Fills is
+    membership (Syllabus.fills), not an Assess backend (spec 1 section 3
+    r8; spec 3 r16). `form_of` is None outside `build_sourcing` (most
+    callers ask about roster shape, not the own-word clause); a backend
+    built with no `form_of` -- or one whose `form_of` cannot resolve this
+    subject -- passes the own-word clause with evidence ending "; no
+    subject form": there is no asked form to fail it against.
     """
     secrets = secret_store if secret_store is not None else cfg.secret_store()
     resolve = _resolver(db, media_store)
@@ -421,7 +441,8 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
-        "mechanical": DurationBackend(resolve_path=resolve),
+        "mechanical": RecordingCheckBackend(resolve_path=resolve, form_of=form_of,
+                                            recorded_form_of=_recorded_form_of(db)),
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     return Assessor(record=db, cache=db, backends=backends)
@@ -618,9 +639,29 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         cfg = load_providers_config(root / "curated" / "providers.yaml")
     derivations = load_derivations(root, cfg)
     db, media_store = derivations.db, derivations.media_store
+
+    def form_of(subject: str) -> str | None:
+        # Reads ctx.syllabus, not derivations.syllabus, at call time: a
+        # sentence adopted mid-run (run.py's `ctx.syllabus =
+        # ctx.syllabus.with_sentences(...)`) must be visible here the
+        # moment its own recording is asked for -- the same run that
+        # drafts and adopts a sentence also fetches and checks its audio
+        # (spec 3 r49), so a form_of closed over the syllabus this
+        # function loaded before adoption would never find it. `ctx` is
+        # assigned below and never rebound after, so this closure keeps
+        # seeing every later mutation of the one Sourcing it names.
+        syllabus = ctx.syllabus
+        word = syllabus.find_word(WordId(subject))
+        if word is not None:
+            return word.thai
+        try:
+            return syllabus.sentence(subject).text
+        except KeyError:
+            return None
+
     ctx = Sourcing(
         syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
-        assessor=build_assessor(cfg, db, media_store),
+        assessor=build_assessor(cfg, db, media_store, form_of=form_of),
         db=db, media_store=media_store, rubrics=derivations.current_rubric,
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,

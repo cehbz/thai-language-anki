@@ -20,7 +20,7 @@ import requests
 import yaml
 
 from thai_syllabus import secrets as secrets_mod
-from thai_syllabus.assessor import AssessQuestion, Assessor, Price
+from thai_syllabus.assessor import AssessQuestion, Assessor, Price, RecordingCheckBackend
 from thai_syllabus.attempts import DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK, DEFAULT_SENTENCE_MAX_CLAUSES
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
@@ -45,6 +45,7 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import (
     ILLUSTRATOR_DEFAULT_DAILY_BUDGET,
     _DbMediaIndex,
+    _recorded_form_of,
     build_assessor,
     build_provider,
     build_sourcing,
@@ -1102,6 +1103,53 @@ def test_syllabus_gaps_pairs_missing_renditions_distinguishes_a_real_rendition_f
     gaps = syllabus.gaps()
     assert real_pair.id not in gaps.pairs_missing_renditions
     assert fallback_pair.id in gaps.pairs_missing_renditions
+
+
+# --- _recorded_form_of: the own-word clause's closure over the record -----
+
+def test_recorded_form_of_wires_a_forvo_clips_recorded_word_into_the_own_word_clause(db, tmp_path):
+    """The live wiring, `build_assessor` minus the roster (per the task
+    brief's own decision: no ProvidersConfig/secret_store needed to prove
+    this): a Forvo clip whose lookup item records หา, stored under the
+    word ห่า, fails the mechanical recording check through
+    `wiring._recorded_form_of(db)` wired straight into a
+    RecordingCheckBackend."""
+    media = MediaStore(tmp_path / "media")
+    sha = media.write(b"ID3-x", "mp3")
+    db.add_speaker(Speaker(id="forvo:master0z", kind="native"))
+    db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo", origin="https://f/haa.mp3",
+                licence="forvo", acquired=date(2026, 9, 20), speaker_id="forvo:master0z")
+    db.append(port="provide", backend="forvo", key=ProvideKey(source="forvo", kind="", query="ห่า"),
+             subject="classifier:ห่า",
+             question={"kind": "recording", "subject_kind": "word", "params": {"word": "ห่า"}},
+             answer={"items": [{"word": "หา", "username": "master0z", "pathmp3": "https://f/haa.mp3"}]},
+             cost=1.0)
+    backend = RecordingCheckBackend(resolve_path=lambda s: str(media.path_for(sha, "mp3")),
+                                    duration_of=lambda path: 1.0,
+                                    form_of=lambda subject: {"classifier:ห่า": "ห่า"}.get(subject),
+                                    recorded_form_of=_recorded_form_of(db))
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha=sha))
+    assert raw.value is False and "recorded หา" in raw.evidence
+
+
+def test_recorded_form_of_is_none_for_an_artifact_not_sourced_from_forvo(db, tmp_path):
+    media = MediaStore(tmp_path / "media")
+    sha = media.write(b"ID3-x", "mp3")
+    db.add_media(sha=sha, kind="recording", ext="mp3", source="tts", origin="en-US-Standard-A",
+                licence="google-tts", acquired=date(2026, 9, 20))
+    assert _recorded_form_of(db)("classifier:ห่า", sha) is None
+
+
+def test_build_assessor_wires_form_of_into_the_mechanical_backends_own_word_clause(cfg, db,
+                                                                                   media_store):
+    """`build_assessor`'s `form_of` keyword reaches the roster's
+    "mechanical" backend (RecordingCheckBackend.form_of), and defaults to
+    None for a caller that does not pass one."""
+    a = build_assessor(cfg, db, media_store, form_of=lambda s: "ห่า")
+    assert a._backends["mechanical"].form_of("classifier:ห่า") == "ห่า"
+    b = build_assessor(cfg, db, media_store)
+    assert b._backends["mechanical"].form_of is None
 
 
 def test_load_syllabus_refuses_a_deck_without_a_frequency_corpus(tmp_path):

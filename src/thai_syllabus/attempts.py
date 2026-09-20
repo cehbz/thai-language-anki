@@ -24,7 +24,6 @@ import functools
 import json
 import time
 import logging
-import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -59,7 +58,7 @@ from .derivations import (
     vetoed,
 )
 from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
-                       Target, Word, clauses_to_json, element_word, is_corroborated)
+                       Target, Word, _same_form, clauses_to_json, element_word, is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
@@ -1973,19 +1972,6 @@ def _forvo_speaker(item: Mapping) -> Speaker:
                    region=str(item.get("country") or "unknown"))
 
 
-_ZERO_WIDTH = str.maketrans("", "", "​‎‏")
-
-
-def _same_form(a: str | None, b: str | None) -> bool:
-    """Two Thai forms are the same after NFC normalization with the
-    zero-width marks (U+200B, U+200E, U+200F) removed -- how a Forvo
-    item's recorded `word` is compared to the form asked for."""
-    if a is None or b is None:
-        return False
-    return (unicodedata.normalize("NFC", a).translate(_ZERO_WIDTH)
-            == unicodedata.normalize("NFC", b).translate(_ZERO_WIDTH))
-
-
 def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend],
                   *, subject_kind: SubjectKind = "word",
                   constraint: VoiceConstraint = "any", fresh: bool = False) -> list[Mapping]:
@@ -2078,11 +2064,12 @@ def _fetch_forvo_item(ctx: Sourcing, subject: str, item: Mapping, fetches: _Fetc
     where that body is told apart from every other served refusal and
     raised typed instead of counted and logged."""
     url = item["pathmp3"]
+    base = {"url": url, "speaker": item["username"], "speaker_kind": "native", "source": "forvo"}
+    params = {**base, **({"word": item["word"]} if item.get("word") else {})}
     try:
         return ctx.provider.ask("audiofetch", Question(
             subject=subject, provides="recording-bytes",
-            params={"url": url, "speaker": item["username"], "speaker_kind": "native",
-                    "source": "forvo"}, kind="recording", subject_kind=subject_kind))
+            params=params, kind="recording", subject_kind=subject_kind))
     except FetchRefused as e:
         if e.reason == "content-type" and _forvo_limit_refusal(e):
             raise QuotaExhausted("forvo") from e

@@ -25,7 +25,7 @@ from thai_syllabus.assessor import (
     Price,
     RawVerdict,
     Verdict,
-    DurationBackend,
+    RecordingCheckBackend,
     FormatBackend,
     RenditionBackend,
     UNTRUSTED,
@@ -303,19 +303,19 @@ def test_an_unparseable_inline_answer_caches_no_verdict(db):
     assert db.latest("assess", "judge", jb.cache_key(q)) is None
 
 
-# --- mechanical: duration/format checks ---------------------------------
+# --- mechanical: the recording check (duration + own-word) --------------
 
-def test_duration_mechanical_key_is_parameter_explicit():
-    backend = DurationBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
+def test_recording_mechanical_key_is_parameter_explicit():
+    backend = RecordingCheckBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: sha)
     key = backend.cache_key(AssessQuestion(subject="s", role="recording-for-word",
                                            artifact_sha="deadbeef"))
-    assert key.encode() == "mech:duration:0.2-5.0:s:deadbeef"
+    assert key.encode() == "mech:recording:0.2-5.0;own-word-v1:s:deadbeef"
 
 
-def test_duration_mechanical_passes_within_range(tmp_path):
+def test_recording_mechanical_passes_within_range(tmp_path):
     f = tmp_path / "deadbeef.mp3"
     f.write_bytes(b"x")
-    backend = DurationBackend(
+    backend = RecordingCheckBackend(
         lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
         duration_of=lambda path: 1.5)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
@@ -323,15 +323,77 @@ def test_duration_mechanical_passes_within_range(tmp_path):
     assert raw.value is True
 
 
-def test_duration_mechanical_fails_outside_range(tmp_path):
+def test_recording_mechanical_fails_outside_range(tmp_path):
     f = tmp_path / "deadbeef.mp3"
     f.write_bytes(b"x")
-    backend = DurationBackend(
+    backend = RecordingCheckBackend(
         lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
         duration_of=lambda path: 9.9)
     raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word",
                                        artifact_sha="deadbeef"))
     assert raw.value is False
+
+
+def _recording_backend(tmp_path, *, duration=1.5, form_of=None, recorded_form_of=None):
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
+    return RecordingCheckBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
+                                 duration_of=lambda path: duration,
+                                 form_of=form_of, recorded_form_of=recorded_form_of)
+
+
+def test_a_forvo_clip_recording_another_word_fails_the_recording_check(tmp_path):
+    backend = _recording_backend(tmp_path, form_of=lambda s: "ห่า",
+                                 recorded_form_of=lambda s, sha: "ห้า")   # ห่า: classifier; ห้า: five
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha="deadbeef"))
+    assert raw.value is False and "recorded ห้า" in raw.evidence and "asked ห่า" in raw.evidence
+
+
+def test_a_forvo_clip_recording_its_own_word_passes_the_recording_check(tmp_path):
+    backend = _recording_backend(tmp_path, form_of=lambda s: "ห่า",
+                                 recorded_form_of=lambda s, sha: "ห่า‎")
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha="deadbeef"))
+    assert raw.value is True
+
+
+def test_a_clip_with_no_recorded_form_on_record_passes_the_own_word_clause(tmp_path):
+    """TTS, learner-supplied and commissioned clips, and a Forvo clip whose
+    lookup items are not on the record, carry no recorded form: the clause
+    is about Forvo's lookup and says so in the evidence."""
+    backend = _recording_backend(tmp_path, form_of=lambda s: "ห่า",
+                                 recorded_form_of=lambda s, sha: None)
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha="deadbeef"))
+    assert raw.value is True and "no recorded form" in raw.evidence
+
+
+def test_the_recording_check_fails_duration_before_the_own_word_clause(tmp_path):
+    backend = _recording_backend(tmp_path, duration=9.9, form_of=lambda s: "x",
+                                 recorded_form_of=lambda s, sha: "x")
+    raw = backend.fetch(AssessQuestion(subject="s", role="recording-for-word", artifact_sha="deadbeef"))
+    assert raw.value is False and "duration=9.900s" in raw.evidence
+
+
+def test_the_own_word_clause_passes_with_no_subject_form_when_form_of_is_none(tmp_path):
+    """No `form_of` at all (build_assessor's default) means there is no
+    asked form to compare against -- the clause passes, not fails, and
+    says so rather than rendering "asked None"."""
+    backend = _recording_backend(tmp_path, form_of=None, recorded_form_of=lambda s, sha: "ห้า")
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha="deadbeef"))
+    assert raw.value is True and raw.evidence.endswith("; no subject form")
+
+
+def test_the_own_word_clause_passes_with_no_subject_form_when_form_of_resolves_none(tmp_path):
+    """`form_of` given but unable to resolve this subject (word/sentence
+    not found) is the same case as no `form_of` at all."""
+    backend = _recording_backend(tmp_path, form_of=lambda s: None,
+                                 recorded_form_of=lambda s, sha: "ห้า")
+    raw = backend.fetch(AssessQuestion(subject="classifier:ห่า", role="recording-for-word",
+                                       artifact_sha="deadbeef"))
+    assert raw.value is True and raw.evidence.endswith("; no subject form")
 
 
 def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
@@ -349,7 +411,7 @@ def test_format_mechanical_evaluates_extension_match():
 
 
 def test_duration_check_on_a_nonexistent_path_is_a_preparation_error_and_uncached(db):
-    backend = DurationBackend(resolve_path=lambda sha: "/nope.mp3")
+    backend = RecordingCheckBackend(resolve_path=lambda sha: "/nope.mp3")
     assessor = Assessor(record=db, cache=db, backends={"mechanical": backend})
     with pytest.raises(PreparationError):
         assessor.ask("mechanical", AssessQuestion(subject="s", role="recording-for-word",
@@ -358,7 +420,7 @@ def test_duration_check_on_a_nonexistent_path_is_a_preparation_error_and_uncache
 
 
 def test_duration_check_excludes_a_missing_artifact_instead_of_failing_the_run(db):
-    backend = DurationBackend(resolve_path=lambda sha: None)
+    backend = RecordingCheckBackend(resolve_path=lambda sha: None)
     a = Assessor(record=db, cache=db, backends={"mechanical": backend})
     q = AssessQuestion(subject="w", role="recording-for-word", artifact_sha="s1", kind="recording")
     res = a.ask_many("mechanical", [q])
@@ -373,7 +435,7 @@ def test_a_mechanical_verdict_is_keyed_by_subject_as_well_as_artifact(db, tmp_pa
     """
     f = tmp_path / "shared.mp3"
     f.write_bytes(b"x")
-    backend = DurationBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
+    backend = RecordingCheckBackend(lo=0.2, hi=5.0, resolve_path=lambda sha: str(f),
                               duration_of=lambda path: 1.0)
     assessor = Assessor(record=db, cache=db, backends={"mechanical": backend})
     q_a = AssessQuestion(subject="a", role="recording-for-word", artifact_sha="shared")

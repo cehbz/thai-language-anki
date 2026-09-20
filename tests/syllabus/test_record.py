@@ -13,6 +13,7 @@ from thai_syllabus.cachekeys import (AttemptOutcomeKey, CommentReadingKey, Comme
                                      LearnerKey, PhraseKey, ProvideKey, RetirementKey,
                                      comment_identity, sha)
 from thai_syllabus.ids import WordId
+from thai_syllabus.ports import Answer
 from thai_syllabus.record import (
     COMMENT_ACTIONS,
     DRAFT_SUBJECT,
@@ -54,6 +55,7 @@ from thai_syllabus.record import (
     parses_in,
     query_form,
     QUERY_FORMS,
+    recorded_form,
     search_form,
     ratings_for_role,
     reading_of,
@@ -1399,3 +1401,45 @@ def test_latest_phrase_ignores_a_suggestion_from_a_non_picture_judge_role(cache)
                 sha, {"role": "scene-for-sentence", "kind": "picture"},
                 {"value": False, "suggestion": "a single sugar lump beside a teacup"}, 0, ts=3)
     assert latest_phrase(cache.assessments_of(sha)) == "a single sugar lump beside a teacup"
+
+
+# --- recorded_form: the Thai form a Forvo clip records (spec 3 r49) -------
+
+def test_recorded_form_reads_the_bytes_rows_word_then_joins_the_lookup_by_origin():
+    lookup = Answer(port="provide", backend="forvo", key="k1", key_sha="x", subject="five",
+                    question={"kind": "recording", "subject_kind": "word", "params": {"word": "ห้า"}},
+                    answer={"items": [{"word": "หา", "username": "master0z", "pathmp3": "https://f/old.mp3"},
+                                      {"word": "ห้า", "username": "deepindark", "pathmp3": "https://f/five.mp3"}]},
+                    cost=1.0, ts=1)
+    new_bytes = Answer(port="provide", backend="audiofetch", key="k2", key_sha="y", subject="five",
+                       question={"kind": "recording", "subject_kind": "word",
+                                 "params": {"url": "https://f/five.mp3", "word": "ห้า"}},
+                       answer={"items": [{"sha": "newsha", "ext": "mp3"}]}, cost=0.0, ts=2)
+    old_bytes = Answer(port="provide", backend="audiofetch", key="k3", key_sha="z", subject="five",
+                       question={"kind": "recording", "subject_kind": "word",
+                                 "params": {"url": "https://f/old.mp3"}},
+                       answer={"items": [{"sha": "oldsha", "ext": "mp3"}]}, cost=0.0, ts=3)
+    rows = [lookup, new_bytes, old_bytes]
+    assert recorded_form(rows, "newsha", origin="https://f/five.mp3") == "ห้า"
+    assert recorded_form(rows, "oldsha", origin="https://f/old.mp3") == "หา"
+    assert recorded_form(rows, "unknown", origin="https://f/none.mp3") is None
+
+
+def test_recorded_forms_origin_join_prefers_the_newest_lookup_row():
+    """Two forvo lookup rows both carry an item recording the same
+    pathmp3 url under different words (a re-lookup can rename what an id
+    resolves to) -- the newest row's word wins, the same
+    newest-row-wins convention latest_query/latest_phrase read their own
+    rows under."""
+    older = Answer(port="provide", backend="forvo", key="k1", key_sha="x", subject="five",
+                   question={"kind": "recording", "subject_kind": "word", "params": {"word": "ห้า"}},
+                   answer={"items": [{"word": "WRONG", "username": "master0z",
+                                      "pathmp3": "https://f/five.mp3"}]},
+                   cost=1.0, ts=1)
+    newer = Answer(port="provide", backend="forvo", key="k2", key_sha="y", subject="five",
+                   question={"kind": "recording", "subject_kind": "word", "params": {"word": "ห้า"}},
+                   answer={"items": [{"word": "ห้า", "username": "deepindark",
+                                      "pathmp3": "https://f/five.mp3"}]},
+                   cost=1.0, ts=2)
+    assert recorded_form([older, newer], "unstored-sha", origin="https://f/five.mp3") == "ห้า"
+    assert recorded_form([newer, older], "unstored-sha", origin="https://f/five.mp3") == "ห้า"

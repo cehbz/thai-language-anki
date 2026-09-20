@@ -19,6 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from . import record
 from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, rendition_identity, sha
+from .entities import _same_form
 from .ports import CacheReader, RecordWriter
 from .transport import Completion, RequestParams, TransportError, strip_fences
 
@@ -30,7 +31,7 @@ __all__ = [
     "UNTRUSTED", "deck_field",
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "pronunciation_prompt", "parse_preference", "parse_pronunciation", "last_json_object",
-    "DurationBackend", "FormatBackend", "RenditionBackend",
+    "RecordingCheckBackend", "FormatBackend", "RenditionBackend",
     "ffprobe_duration_seconds",
 ]
 
@@ -85,7 +86,7 @@ class LearnerAskNotSupported(RuntimeError):
 
 class PreparationError(Exception):
     """Raised by a backend's prompt builder or attachment resolver, and by
-    DurationBackend.fetch, ffprobe_duration_seconds and
+    RecordingCheckBackend.fetch, ffprobe_duration_seconds and
     RenditionBackend.fetch: the question cannot be asked (a missing or
     unreadable artifact). Never cached: the candidate is unusable, the
     backend is not unreachable.
@@ -828,33 +829,48 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 
 
 @dataclass
-class DurationBackend:
-    """A recording's duration lies within [lo, hi] seconds. Keyed
-    mech:duration:LO-HI:SUBJECT:ARTIFACT_SHA. `duration_of`, when given,
-    replaces the ffprobe lookup. `fetch` requires a readable artifact
-    file (a missing or unreadable one is a PreparationError) before
-    `duration_of` or ffprobe runs.
+class RecordingCheckBackend:
+    """The mechanical recording check (spec 3 section 4, r49): the clip's
+    duration lies within [lo, hi] seconds, and a Forvo clip records the
+    subject's own form -- `recorded_form_of(subject, sha)` against
+    `form_of(subject)`, compared by entities._same_form; a clip with no
+    recorded form on record (TTS, learner, commission, or a Forvo clip
+    whose lookup is not on the record) passes that clause, the evidence
+    saying so. Keyed mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha.
+    `fetch` requires a readable artifact file (PreparationError otherwise).
     """
     resolve_path: Callable[[str | None], str | Path | None]
     lo: float = 0.2
     hi: float = 5.0
     duration_of: Callable[[str], float] | None = None
     runner: Callable[..., Any] = subprocess.run
+    form_of: Callable[[str], str | None] | None = None
+    recorded_form_of: Callable[[str, str], str | None] | None = None
+    code_version: str = "own-word-v1"
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="duration", params=f"{self.lo}-{self.hi}",
-                             subject=question.subject,
-                             artifact_sha=question.artifact_sha or "-")
+        return MechanicalKey(check="recording", params=f"{self.lo}-{self.hi};{self.code_version}",
+                             subject=question.subject, artifact_sha=question.artifact_sha or "-")
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         path = self.resolve_path(question.artifact_sha)
         if not path or not Path(path).is_file():
-            raise PreparationError(
-                f"duration: no readable artifact for {question.artifact_sha!r}")
+            raise PreparationError(f"recording: no readable artifact for {question.artifact_sha!r}")
         duration = (self.duration_of(str(path)) if self.duration_of is not None
                     else ffprobe_duration_seconds(str(path), runner=self.runner))
-        return RawVerdict(value=self.lo <= duration <= self.hi,
-                          evidence=f"duration={duration:.3f}s")
+        evidence = f"duration={duration:.3f}s"
+        if not (self.lo <= duration <= self.hi):
+            return RawVerdict(value=False, evidence=evidence)
+        recorded = (self.recorded_form_of(question.subject, question.artifact_sha or "")
+                    if self.recorded_form_of is not None else None)
+        if recorded is None:
+            return RawVerdict(value=True, evidence=f"{evidence}; no recorded form on record")
+        asked = self.form_of(question.subject) if self.form_of is not None else None
+        if asked is None:
+            return RawVerdict(value=True, evidence=f"{evidence}; no subject form")
+        if _same_form(recorded, asked):
+            return RawVerdict(value=True, evidence=f"{evidence}; recorded {recorded}")
+        return RawVerdict(value=False, evidence=f"{evidence}; recorded {recorded}, asked {asked}")
 
 
 @dataclass

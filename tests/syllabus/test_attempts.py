@@ -991,6 +991,38 @@ def test_a_forvo_item_differing_only_by_a_zero_width_mark_is_a_candidate(tmp_pat
     assert len(fetched) == 1
 
 
+def test_the_recorded_word_rides_the_download(tmp_path):
+    """attempts._fetch_forvo_item's audiofetch params now carry the
+    item's own recorded word (r49): the download row can be joined back
+    to which Thai form the clip records without re-reading the lookup
+    (record.recorded_form)."""
+    syllabus = Syllabus(words=(word("classifier:ห่า", "ห่า", "classifier"),),
+                        targets=(target("classifier:ห่า/receptive", "classifier:ห่า"),))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus, {
+        "ห่า": [{"username": "skyton", "word": "ห่า", "pathmp3": "https://f/haa-low.mp3"}]})
+    attempt(ctx, Need("classifier:ห่า", "recording"), "forvo")
+    fetched = [r for r in rows_for(ctx.db, "classifier:ห่า", "recording")
+              if r.port == "provide" and r.backend == "audiofetch"]
+    assert fetched[0].question["params"]["word"] == "ห่า"
+
+
+def test_an_item_naming_no_word_downloads_with_no_word_param(tmp_path):
+    """An item with no `word` at all (a lookup row written before r49,
+    or a served item Forvo answered with none) downloads with no "word"
+    key in the audiofetch params at all -- never a literal None. Called
+    directly: _forvo_lookup's own same-form filter (Task 1, spec 3 r49)
+    would drop a wordless item before it ever reaches a download."""
+    syllabus = Syllabus(words=(word("classifier:ห่า", "ห่า", "classifier"),),
+                        targets=(target("classifier:ห่า/receptive", "classifier:ห่า"),))
+    ctx, _tts = _recording_ctx(tmp_path, syllabus)
+    item = {"username": "skyton", "pathmp3": "https://f/haa-low.mp3"}
+    fetches = attempts_module._Fetches()
+    attempts_module._fetch_forvo_item(ctx, "classifier:ห่า", item, fetches, subject_kind="word")
+    fetched = [r for r in rows_for(ctx.db, "classifier:ห่า", "recording")
+              if r.port == "provide" and r.backend == "audiofetch"]
+    assert len(fetched) == 1 and "word" not in fetched[0].question["params"]
+
+
 def test_a_rendition_intersection_ignores_items_recording_other_words(tmp_path):
     """Both members' lookups hold master0z, but his items record หา for
     both asks; the filtered lookups share no speaker and forvo answers

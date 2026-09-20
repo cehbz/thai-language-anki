@@ -27,7 +27,8 @@ from .transport import strip_fences
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["LEARNER_RANK", "rows_for", "source_asks", "last_source_ask_ts", "candidate_shas",
+__all__ = ["LEARNER_RANK", "recorded_form", "rows_for", "source_asks", "last_source_ask_ts",
+          "candidate_shas",
           "learner_ratings",
           "ratings_for_role", "latest_rating", "directions", "judge_verdicts",
           "latest_query", "tried_urls", "latest_nothing_reason",
@@ -159,6 +160,34 @@ LEARNER_RANK: dict[str, float] = {
     "unacceptable-use-this": 40.0,
     "unacceptable-none": -1.0,
 }
+
+
+def recorded_form(rows: Sequence[Answer], sha: str, *, origin: str | None) -> str | None:
+    """The Thai form a Forvo clip records, off the subject's own provide
+    rows: the audiofetch bytes row naming `sha` carries it in
+    params["word"] (r49); a row written before r49 does not, so the
+    media row's `origin` (the item's pathmp3 at download) is joined to
+    the forvo lookup rows' items instead -- the newest lookup row's item
+    wins when more than one names `origin` (a re-lookup can rename what
+    an id resolves to), the same newest-row-wins convention latest_query/
+    latest_phrase read their own rows under. None when neither names it.
+    """
+    for r in rows:
+        if r.port != "provide" or r.backend != "audiofetch":
+            continue
+        if any(i.get("sha") == sha for i in (r.answer.get("items") or [])):
+            word = (r.question.get("params") or {}).get("word")
+            if word:
+                return str(word)
+    if not origin:
+        return None
+    forvo_rows = sorted((r for r in rows if r.port == "provide" and r.backend == "forvo"),
+                        key=lambda r: r.ts, reverse=True)
+    for r in forvo_rows:
+        for item in (r.answer.get("items") or []):
+            if item.get("pathmp3") == origin and item.get("word"):
+                return str(item["word"])
+    return None
 
 
 def rows_for(cache: CacheReader, subject: str, kind: str) -> list[Answer]:

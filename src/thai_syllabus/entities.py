@@ -9,6 +9,7 @@ re-checks loaded data through the same pure diff functions.
 re-checks loaded data for it.
 """
 import hashlib
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -290,6 +291,22 @@ class MinimalPair:
 def text_sha(text: str) -> str:
     """sha256 hex digest of text, the one sentence id."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+_ZERO_WIDTH = str.maketrans("", "", "​‎‏")
+
+
+def _same_form(a: str | None, b: str | None) -> bool:
+    """Two Thai forms are the same after NFC normalization with the
+    zero-width marks (U+200B, U+200E, U+200F) removed -- how a Forvo
+    item's recorded `word` is compared to the form asked for. Lives here
+    (not attempts.py or assessor.py) because both modules need it and
+    attempts.py imports assessor.py, so neither can own it without a
+    cycle."""
+    if a is None or b is None:
+        return False
+    return (unicodedata.normalize("NFC", a).translate(_ZERO_WIDTH)
+            == unicodedata.normalize("NFC", b).translate(_ZERO_WIDTH))
 
 
 REPEAT_MARK = "ๆ"  # U+0E46, the Thai repetition mark
