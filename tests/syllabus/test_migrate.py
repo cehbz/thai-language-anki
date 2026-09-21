@@ -764,3 +764,19 @@ def test_an_honest_old_deck_ipa_is_still_the_curators_ruling(old_deck, old_data,
     bundle = curated.load_curated(new_root / "curated")
     chicken = next(w for w in bundle.words if w.id == "chicken")
     assert chicken.pron.corroboration == "curated_exception"
+
+
+def test_a_diphthong_round_trips_from_render_back_through_the_parser():
+    """The centering diphthongs are long and written unmarked (design
+    2026-09-20 §1), so `ipa.render` emits no ː for one -- and the parser
+    must read that back as `long`, not as the `short` the missing mark
+    would otherwise mean. Without this the old deck's own IPA parses to
+    a syllable the engines can never corroborate, and migrate is no
+    longer the inverse of render."""
+    from thai_syllabus import ipa
+    from thai_syllabus.entities import Pronunciation, Syllable
+    from thai_syllabus.migrate import _parse_ipa
+    one = Syllable(segments=("s", "ɯa", ""), vowel_length="long", tone="rising")
+    rendered = ipa.render(Pronunciation(syllables=(one,), corroboration="disputed"))
+    assert rendered == "sɯa˨˩˦"               # no length mark, by convention
+    assert _parse_ipa(rendered) == (one,)

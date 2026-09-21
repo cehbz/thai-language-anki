@@ -3189,3 +3189,33 @@ def test_a_name_words_picture_need_is_attempted_at_the_glyph_source(tmp_path, fa
     assert ("rice", "pexels") in fake_search.asks
     assert report.available == (report.attempted + report.exhausted + report.pending
                                 + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_run_starts_the_dictionary_s_run(db, monkeypatch):
+    """The dictionary's back-off, its dead flag and its per-run fetch cap
+    are per-RUN state, and one invocation runs many passes (cli's cycle
+    loop): each pass says so (design 2026-09-20 §2). Without this a 429
+    in cycle 1 would still slow cycle 9, and an oracle killed by one
+    transport failure would stay dead for the whole invocation."""
+    _patch(monkeypatch, {})
+
+    class _Dictionary:
+        def __init__(self):
+            self.runs = 0
+
+        def begin_run(self):
+            self.runs += 1
+
+        def __call__(self, thai):
+            return ()
+
+    dictionary = _Dictionary()
+    ctx = _ctx(db, _Syl(_Gaps(recordings=("a",))))
+    ctx.dictionary = dictionary
+    # injected so the real engines can never load (conftest refuses them)
+    ctx.engines = Engines(g2p=(lambda t: None,), tone=lambda t: None,
+                          dictionary=dictionary)
+    run(ctx, {})
+    assert dictionary.runs == 1
+    run(ctx, {})
+    assert dictionary.runs == 2

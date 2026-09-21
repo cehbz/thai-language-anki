@@ -39,6 +39,17 @@ def is_corroborated(c: Corroboration) -> bool:
 DIPHTHONGS = frozenset({"ia", "ɯa", "ua"})
 
 
+def is_phrase(thai: str) -> bool:
+    """Whether `thai` is a phrase rather than one word (design 2026-09-20
+    §3): any whitespace at all, not the ASCII space alone -- a tab or a
+    no-break space separates tokens just as visibly, and a form carrying
+    one must not be looked up as a single dictionary headword. The
+    engines read a phrase token by token (`phonology.Engines.readings`);
+    the dictionary refuses it outright.
+    """
+    return any(c.isspace() for c in thai)
+
+
 @dataclass(frozen=True)
 class Syllable:
     """One syllable's segments, vowel length, and Chao tone. `segments` is

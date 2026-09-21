@@ -475,3 +475,23 @@ def test_two_dictionary_spans_that_collapse_to_one_reading_do_not_agree_with_eac
     assert eng.dictionary_readings("จะ") == (one,)
     assert engines_pronunciation("จะ", eng) == Pronunciation(syllables=one,
                                                              corroboration="disputed")
+
+
+def test_the_lone_engine_tone_fallback_survives_an_empty_dictionary_not_a_disagreeing_one():
+    """The arc moved the dictionary in front of the rule-tone fallback
+    (design 2026-09-20 §2): the fallback is single-engine behaviour --
+    it may confirm a reading no other oracle was there to contradict.
+    A dictionary with no entry leaves it exactly as it was; a dictionary
+    that reads the word differently is that other oracle, so there are
+    two readings, no pairwise agreement, and the word is `disputed` for
+    the judge rather than sealed `engines_agree` on one engine's word."""
+    silent, calls = _counting_dictionary(())
+    eng = Engines(g2p=(lambda t: A,), tone=lambda t: "mid", dictionary=silent)
+    assert engines_pronunciation("กะ", eng) == Pronunciation(syllables=A,
+                                                             corroboration="engines_agree")
+    assert calls == ["กะ"]                    # consulted first, and it had nothing
+
+    speaking, _ = _counting_dictionary((B,))
+    eng2 = Engines(g2p=(lambda t: A,), tone=lambda t: "mid", dictionary=speaking)
+    assert engines_pronunciation("กะ", eng2) == Pronunciation(syllables=A,
+                                                              corroboration="disputed")

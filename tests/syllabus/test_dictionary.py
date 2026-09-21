@@ -1,7 +1,9 @@
 """dictionary.Wiktionary (design 2026-09-20 §2): the record is read before
 the wire, one row per form ever, readings converted through
-engines._convert_wiktionary; a wire failure kills the source for the rest
-of the process and writes nothing.
+engines.convert_wiktionary; a transport failure kills the source for the
+rest of the run and writes nothing, while a 429 or a 5xx only backs off;
+at most `max_asks` wire fetches per run, and `begin_run()` starts the
+count, the back-off and `dead` over.
 """
 from types import SimpleNamespace
 
@@ -52,7 +54,7 @@ def test_a_form_is_fetched_once_and_its_readings_recorded(db):
     assert "text" in params["prop"] and "revid" in params["prop"]
     assert headers["User-Agent"].startswith("thai-syllabus/")
     row = db.latest("provide", "wiktionary", DictionaryKey(source="wiktionary", form="มกรา"))
-    assert row.subject == "มกรา" and row.cost == 0
+    assert row.subject == "dictionary:มกรา" and row.cost == 0
     assert row.answer == {"revid": 64969808, "ipa": ["ma˦˥.ka˨˩.raː˧", "mok̚˦˥.ka˨˩.raː˧"]}
 
 
@@ -100,9 +102,10 @@ def test_a_wire_failure_kills_the_source_and_writes_nothing(db, caplog):
     assert "wiktionary" in caplog.text.lower()
 
 
-def test_a_non_200_answer_is_a_wire_failure(db):
-    w = Wiktionary(db, get=lambda *a, **k: SimpleNamespace(status_code=503, json=lambda: {}),
-                   min_interval_s=0)
+def test_an_unexpected_status_is_a_wire_failure(db):
+    """A 404 (or any 4xx but 429) is the request itself being wrong, not
+    the server asking for patience: it kills the source as before."""
+    w = Wiktionary(db, get=lambda *a, **k: _status(404), min_interval_s=0)
     assert w("มกรา") == ()
     assert w.dead is True
 
@@ -139,3 +142,77 @@ def test_a_phrase_is_never_looked_up(db):
         raise AssertionError("no lookup for a phrase")
     w = Wiktionary(db, get=get, min_interval_s=0)
     assert w("งอ งู") == ()
+
+
+def _status(code, headers=None):
+    return SimpleNamespace(status_code=code, headers=headers or {}, json=lambda: {})
+
+
+def test_a_429_backs_off_without_dying_and_the_next_form_is_still_fetched(db, caplog):
+    """The live probe hit a 429 after about 19 lookups at one request a
+    second (2026-09-21): Wikimedia asking for patience, not a broken
+    source. Nothing is recorded (a 429 carries no readings) and the
+    oracle stays alive, so the run's later forms are still looked up --
+    at a doubled interval."""
+    seen = []
+    def get(*a, **k):
+        seen.append(k["params"]["page"])
+        return _status(429) if len(seen) == 1 else _page("<table>" + _ROW + "</table>")
+    slept, now = [], [0.0]
+    w = Wiktionary(db, get=get, min_interval_s=1.0,
+                   sleep=lambda s: slept.append(s), clock=lambda: now[0])
+    assert w("น้ำ") == ()
+    assert w.dead is False
+    assert db.latest("provide", "wiktionary", DictionaryKey(source="wiktionary", form="น้ำ")) is None
+    assert w("มกรา") == (MA, MOK)
+    assert seen == ["น้ำ", "มกรา"]
+    assert slept == [2.0]                     # the interval doubled for the next ask
+    assert "429" in caplog.text
+
+
+def test_a_numeric_retry_after_sets_the_next_wait(db):
+    slept, now = [], [0.0]
+    w = Wiktionary(db, get=lambda *a, **k: _status(429, {"Retry-After": "5"}),
+                   min_interval_s=1.0, sleep=lambda s: slept.append(s), clock=lambda: now[0])
+    assert w("น้ำ") == ()
+    assert w("มกรา") == ()
+    assert slept and slept[0] >= 5.0
+
+
+def test_a_5xx_backs_off_without_dying(db):
+    w = Wiktionary(db, get=lambda *a, **k: _status(503), min_interval_s=0)
+    assert w("มกรา") == ()
+    assert w.dead is False
+
+
+def test_the_run_s_wire_fetches_are_capped(db, caplog):
+    """A per-run ceiling on how much of the run's time the dictionary may
+    spend on the wire (and how hard the run leans on Wikimedia): past it
+    a record miss is simply no reading, with no request and no row."""
+    calls = []
+    def get(*a, **k):
+        calls.append(k["params"]["page"])
+        return _page("<table>" + _ROW + "</table>")
+    w = Wiktionary(db, get=get, min_interval_s=0, max_asks=2)
+    assert w("มกรา") == (MA, MOK)
+    assert w("หุง") == (MA, MOK)
+    assert w("น้ำ") == ()
+    assert calls == ["มกรา", "หุง"]
+    assert db.latest("provide", "wiktionary", DictionaryKey(source="wiktionary", form="น้ำ")) is None
+    assert "max_asks" in caplog.text or "cap" in caplog.text
+    assert w("มกรา") == (MA, MOK)             # the record still answers
+    assert calls == ["มกรา", "หุง"]
+
+
+def test_begin_run_starts_the_count_the_backoff_and_dead_over(db):
+    import requests
+    calls = []
+    def get(*a, **k):
+        calls.append(1); raise requests.ConnectionError("down")
+    w = Wiktionary(db, get=get, min_interval_s=0)
+    assert w("มกรา") == ()
+    assert w.dead is True
+    w.begin_run()
+    assert w.dead is False
+    assert w("มกรา") == ()
+    assert len(calls) == 2

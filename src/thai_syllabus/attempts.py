@@ -58,8 +58,9 @@ from .derivations import (
     unjudged_candidates,
     vetoed,
 )
+from .dictionary import Wiktionary
 from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
-                       Syllable, Target, Word, _same_form, clauses_to_json, element_word,
+                       Target, Word, _same_form, clauses_to_json, element_word,
                        is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
@@ -261,7 +262,11 @@ class Sourcing:
     # consult it lazily, only where the local engines fail to agree or to
     # corroborate. None -- a test, or a deck wired without one -- leaves
     # the engines exactly as they were.
-    dictionary: Callable[[str], tuple[tuple[Syllable, ...], ...]] | None = None
+    #
+    # The backend itself, not a bare `Callable[[str], ...]`: run() calls
+    # its `begin_run()` at the top of every pass, so what goes here owes
+    # more than a lookup, and a test's stand-in must offer both.
+    dictionary: "Wiktionary | None" = None
     # The adoption pass (spec 3 r40 section 5): whether this run adopts
     # the repo's consonant inventory at all, and the table it reads. A
     # caller that does not want the 44 rows written into its deck (a test

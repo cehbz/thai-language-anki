@@ -1064,10 +1064,15 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     # the default -- a bare user agent; anything but a string is a
     # half-written setting, not "no contact", since it would go out on
     # every request.
-    wiktionary_cfg = data.get("wiktionary") or {}
-    if not isinstance(wiktionary_cfg, Mapping):
-        errors.append(f"providers.wiktionary: {wiktionary_cfg!r} must be a mapping (contact)")
-        wiktionary_cfg = {}
+    wiktionary_cfg: Mapping = {}
+    if "wiktionary" in data:
+        wiktionary_cfg = data["wiktionary"]
+        if not isinstance(wiktionary_cfg, Mapping):
+            # A bare `wiktionary:` (None) is a half-written setting, not
+            # "no block": reading it as {} would silently drop whatever
+            # the curator meant to put under it.
+            errors.append(f"providers.wiktionary: {wiktionary_cfg!r} must be a mapping (contact)")
+            wiktionary_cfg = {}
     wiktionary_contact = wiktionary_cfg.get("contact")
     if wiktionary_contact is not None and not isinstance(wiktionary_contact, str):
         errors.append(f"providers.wiktionary.contact: {wiktionary_contact!r} must be a "
@@ -1117,6 +1122,19 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                                       or not isinstance(value, (int, float)) or value < 0):
                 errors.append(f"providers.quotas.{source}.{pacing_field}: "
                               f"{value!r} must be a non-negative number of seconds")
+        # quotas.wiktionary.max_asks (design 2026-09-20 §2, spec 3
+        # section 8): the dictionary's own per-run ceiling on wire
+        # fetches -- not a daily Budget, so it is checked here rather
+        # than by default_budgets. An explicit null lifts the cap, the
+        # convention every other uncapped source follows; zero would
+        # mean "configured, and never ask", which naming no dictionary
+        # at all already says.
+        if source == "wiktionary" and "max_asks" in quota:
+            max_asks = quota["max_asks"]
+            if max_asks is not None and (isinstance(max_asks, bool)
+                                         or not isinstance(max_asks, int) or max_asks < 1):
+                errors.append(f"providers.quotas.wiktionary.max_asks: {max_asks!r} "
+                              "must be a positive integer, or null to lift the cap")
 
     if errors:
         raise CuratedValidationError(errors)

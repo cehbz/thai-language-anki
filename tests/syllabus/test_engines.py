@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from thai_syllabus.engines import (Thaig2p, Tltk, _convert, _convert_tltk,
-                                    _convert_wiktionary, extract_standard_ipa,
+                                    convert_wiktionary, extract_standard_ipa,
                                     rule_tone, tone_of)
 from thai_syllabus.entities import Syllable, without_glottal_coda
 
@@ -601,41 +601,41 @@ def test_thaig2p_and_tltk_agree_once_the_glottal_coda_is_normalized():
 # Observed 2026-09-20 on en.wiktionary.org (Template:th-pron output).
 
 def test_wiktionary_chao_letters_and_length():
-    assert _convert_wiktionary("/ma˦˥.ka˨˩.raː˧/") == (
+    assert convert_wiktionary("/ma˦˥.ka˨˩.raː˧/") == (
         Syllable(segments=("m", "a", ""), vowel_length="short", tone="high"),
         Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"),
         Syllable(segments=("r", "a", ""), vowel_length="long", tone="mid"))
 
 
 def test_wiktionary_rising_falling_and_unreleased_stops():
-    assert _convert_wiktionary("/sip̚˨˩.ʔet̚˨˩/") == (
+    assert convert_wiktionary("/sip̚˨˩.ʔet̚˨˩/") == (
         Syllable(segments=("s", "i", "p"), vowel_length="short", tone="low"),
         Syllable(segments=("ʔ", "e", "t"), vowel_length="short", tone="low"))
-    assert _convert_wiktionary("/huŋ˩˩˦/")[0].tone == "rising"
-    assert _convert_wiktionary("/t͡ɕaːw˥˩/") == (
+    assert convert_wiktionary("/huŋ˩˩˦/")[0].tone == "rising"
+    assert convert_wiktionary("/t͡ɕaːw˥˩/") == (
         Syllable(segments=("tɕ", "a", "w"), vowel_length="long", tone="falling"),)
 
 
 def test_wiktionary_diphthong_is_long_and_the_glide_mark_is_dropped():
-    assert _convert_wiktionary("/klua̯j˥˩/") == (
+    assert convert_wiktionary("/klua̯j˥˩/") == (
         Syllable(segments=("kl", "ua", "j"), vowel_length="long", tone="falling"),)
-    assert _convert_wiktionary("/sɯa̯˩˩˦/")[0].segments == ("s", "ɯa", "")
+    assert convert_wiktionary("/sɯa̯˩˩˦/")[0].segments == ("s", "ɯa", "")
 
 
 def test_wiktionary_glottal_coda_is_normalized_away():
-    assert _convert_wiktionary("/t͡ɕaʔ˨˩/") == (
+    assert convert_wiktionary("/t͡ɕaʔ˨˩/") == (
         Syllable(segments=("tɕ", "a", ""), vowel_length="short", tone="low"),)
 
 
 def test_wiktionary_affricate_aspirated_and_cluster():
-    assert _convert_wiktionary("/t͡ɕʰaːŋ˦˥/")[0].segments == ("tɕʰ", "a", "ŋ")
-    assert _convert_wiktionary("/pʰon˩˩˦.la˦˥.maːj˦˥/")[1].segments == ("l", "a", "")
+    assert convert_wiktionary("/t͡ɕʰaːŋ˦˥/")[0].segments == ("tɕʰ", "a", "ŋ")
+    assert convert_wiktionary("/pʰon˩˩˦.la˦˥.maːj˦˥/")[1].segments == ("l", "a", "")
 
 
 def test_wiktionary_unmappable_is_no_reading():
-    assert _convert_wiktionary("") is None
-    assert _convert_wiktionary("/ma/") is None          # no tone letters
-    assert _convert_wiktionary("/zz˧/") is None         # unknown onset
+    assert convert_wiktionary("") is None
+    assert convert_wiktionary("/ma/") is None          # no tone letters
+    assert convert_wiktionary("/zz˧/") is None         # unknown onset
 
 
 _ROW = ('<tr><th colspan="2">(<i><a href="x">standard</a></i>) <a href="y">IPA</a>'
@@ -652,3 +652,63 @@ def test_extract_standard_ipa_reads_every_reading_in_the_standard_row():
 def test_extract_standard_ipa_is_empty_without_the_row():
     assert extract_standard_ipa('<table><tr><th>Paiboon</th><td>má-gà-raa</td></tr></table>') == []
     assert extract_standard_ipa("") == []
+
+
+def test_wiktionary_an_empty_syllable_group_is_no_reading():
+    """Wiktionary marks a compound-linking variant with a TRAILING "."
+    (observed live 2026-09-21: น้ำ lists /naːm˦˥/, /naːm˦˥./ and
+    /nam˦˥./; นรก lists /na˦˥.rok̚˦˥./). The dot means "this form links
+    onward", not "a syllable follows", so the reading is incomplete as
+    written -- the same refusal `_tltk_has_empty_slot` makes for tltk's
+    own empty slot. Dropping the empty group instead would record a
+    short reading as if it were the whole word."""
+    assert convert_wiktionary("/nam˦˥./") is None
+    assert convert_wiktionary("/na˦˥.rok̚˦˥.ka˨˩./") is None
+    assert convert_wiktionary("/ma..ka/") is None
+    assert convert_wiktionary("/.naːm˦˥/") is None
+    assert convert_wiktionary("/naːm˦˥/") == (
+        Syllable(segments=("n", "a", "m"), vowel_length="long", tone="high"),)
+
+
+_ISAN_ROW = ('<tr><th colspan="2">(<i><a href="x">standard</a></i>) <a href="y">IPA</a>'
+             '<sup>(<a href="z">key</a>)</sup></th>'
+             '<td><span class="IPA">/nam˦˥/</span></td></tr>')
+
+
+def test_extract_standard_ipa_reads_the_thai_section_only():
+    """A Wiktionary page is one page per spelling, not per language: น้ำ
+    carries Northern Thai, Nyaw and Isan sections beside the Thai one,
+    each with its own "(standard) IPA" row. Only the Thai section's
+    readings are this deck's."""
+    html = ('<div class="mw-heading mw-heading2"><h2 id="Isan">Isan</h2></div>'
+            '<table>' + _ISAN_ROW + '</table>'
+            '<div class="mw-heading mw-heading2"><h2 id="Thai">Thai</h2></div>'
+            '<table>' + _ROW + '</table>')
+    assert extract_standard_ipa(html) == ["ma˦˥.ka˨˩.raː˧", "mok̚˦˥.ka˨˩.raː˧"]
+
+
+def _wiktionary_fixture(name: str) -> str:
+    return (Path(__file__).parent / "fixtures" / "wiktionary"
+            / f"{name}.html").read_text(encoding="utf-8")
+
+
+def test_the_captured_makara_page_yields_both_readings():
+    """The real markup, captured from en.wiktionary.org 2026-09-21 (the
+    Thai section's pronunciation table, unedited)."""
+    ipa = extract_standard_ipa(_wiktionary_fixture("มกรา"))
+    assert ipa == ["ma˦˥.ka˨˩.raː˧", "mok̚˦˥.ka˨˩.raː˧"]
+    assert [convert_wiktionary(one) for one in ipa] == [
+        (S("m", "a", "", "short", "high"), S("k", "a", "", "short", "low"),
+         S("r", "a", "", "long", "mid")),
+        (S("m", "o", "k", "short", "high"), S("k", "a", "", "short", "low"),
+         S("r", "a", "", "long", "mid"))]
+
+
+def test_the_captured_nam_page_keeps_only_the_reading_that_is_whole():
+    """น้ำ's row lists the compound-linking variants beside the plain
+    reading; only the plain one converts (B1), so the entry contributes
+    one reading, not three."""
+    ipa = extract_standard_ipa(_wiktionary_fixture("น้ำ"))
+    assert ipa == ["naːm˦˥", "naːm˦˥.", "nam˦˥."]
+    assert [convert_wiktionary(one) for one in ipa] == [
+        (S("n", "a", "m", "long", "high"),), None, None]

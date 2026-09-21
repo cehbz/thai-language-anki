@@ -1235,6 +1235,24 @@ def test_build_sourcing_paces_the_dictionary_at_one_second_by_default(tmp_path):
     ctx = build_sourcing(root)
     assert ctx.dictionary._min_interval_s == 1.0
     assert ctx.dictionary._user_agent == "thai-syllabus/0.1"
+    assert ctx.dictionary._max_asks == 200
+
+
+def test_build_sourcing_caps_the_dictionary_s_fetches_per_run(tmp_path):
+    """`quotas.wiktionary.max_asks` (design 2026-09-20 §2): how many wire
+    lookups one run may make. An explicit null lifts the cap, as it does
+    for every other quota."""
+    root = _minimal_deck(tmp_path)
+    providers = root / "curated" / "providers.yaml"
+    providers.write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas: {wiktionary: {max_asks: 7}}\n", encoding="utf-8")
+    assert build_sourcing(root).dictionary._max_asks == 7
+
+    providers.write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas: {wiktionary: {max_asks: null}}\n", encoding="utf-8")
+    assert build_sourcing(root).dictionary._max_asks is None
 
 
 def test_load_derivations_carries_the_parameters_build_sourcing_runs_under(tmp_path):

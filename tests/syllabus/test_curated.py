@@ -697,7 +697,10 @@ def test_providers_config_round_trip(tmp_path):
                                   price_per_mtok=(2.0, 10.0)),
         image_candidates=7,
         batch={"max_requests": 1000}, quotas={"forvo": {"max_asks": 450}},
-        attempt_cap=10)
+        attempt_cap=10,
+        # the saver writes this block only when it is set, so the round
+        # trip pins that branch too (design 2026-09-20 §2)
+        wiktionary_contact="someone@example.org")
     curated.save_providers_config(path, config)
     loaded = curated.load_providers_config(path)
     assert loaded == config
@@ -1678,3 +1681,36 @@ def test_providers_pair_search_settings_refuse_non_positive(tmp_path):
     with pytest.raises(CuratedValidationError) as refusal:
         load_providers_config(p)
     assert "pair_search_depth" in str(refusal.value)
+
+
+def test_a_bare_wiktionary_key_refuses_naming_the_block(tmp_path):
+    """`wiktionary:` with nothing under it is a half-written setting, not
+    "no wiktionary block": the house presence check says so rather than
+    quietly reading None as an empty mapping."""
+    write_providers(tmp_path, wiktionary=None)
+    with pytest.raises(curated.CuratedValidationError, match=r"providers\.wiktionary\b"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_the_dictionary_s_per_run_fetch_cap_must_be_a_positive_int_or_null(tmp_path):
+    """`quotas.wiktionary.max_asks` (spec 3 section 8): the run's ceiling
+    on wire lookups. Explicit null lifts it, the codebase's convention
+    for an uncapped source; zero would mean "configured, and never ask",
+    which is what leaving the source out already says."""
+    write_providers(tmp_path, quotas={"wiktionary": {"max_asks": 0}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.wiktionary\.max_asks"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+    write_providers(tmp_path, quotas={"wiktionary": {"max_asks": "many"}})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"providers\.quotas\.wiktionary\.max_asks"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+    write_providers(tmp_path, quotas={"wiktionary": {"max_asks": None}})
+    cfg = curated.load_providers_config(tmp_path / "providers.yaml")
+    assert cfg.quotas["wiktionary"]["max_asks"] is None
+
+    write_providers(tmp_path, quotas={"wiktionary": {"max_asks": 50}})
+    assert curated.load_providers_config(
+        tmp_path / "providers.yaml").quotas["wiktionary"]["max_asks"] == 50

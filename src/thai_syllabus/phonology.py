@@ -8,7 +8,8 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from .entities import Pronunciation, Syllable, Tone, without_glottal_coda
+from .entities import (Pronunciation, Syllable, Tone, is_phrase,
+                       without_glottal_coda)
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,10 @@ class Engines:
         makes the phrase unread by it. No whole-form read of a phrase is
         ever made: thaig2p reads "ปอ" and "ปลา" but not "ปอ ปลา", and
         reads "งอ งู" with a spurious ŋ coda that "งอ" alone does not
-        have.
+        have. `str.split()` alone is the tokenizer -- it is the same
+        whitespace `entities.is_phrase` tests, it leaves a one-word form
+        one token, and a whitespace-only form splits to none, which
+        `_read_tokens` refuses.
 
         `without_glottal_coda` is applied here, at the port boundary, not
         only inside `_convert`/`_convert_tltk`: those converters already
@@ -56,7 +60,7 @@ class Engines:
         dead-open-syllable word -- a failure that looks exactly like "the
         engines disagree" and is very hard to diagnose from the outside.
         """
-        tokens = thai.split() if " " in thai else [thai]
+        tokens = thai.split()
         out = []
         for engine in self.g2p:
             reading = _read_tokens(engine, tokens)
@@ -83,7 +87,7 @@ class Engines:
         dictionary's variants are one opinion, and it may reach
         `engines_agree` only by agreeing with a local engine.
         """
-        if self.dictionary is None or " " in thai:
+        if self.dictionary is None or is_phrase(thai):
             return ()
         out = []
         for got in self.dictionary(thai):

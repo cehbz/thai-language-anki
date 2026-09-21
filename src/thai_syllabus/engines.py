@@ -321,12 +321,22 @@ def _convert_wiktionary_syllable(group: str) -> Syllable:
     return _convert_compact_syllable(body, tone, group)
 
 
-def _convert_wiktionary(ipa: str) -> tuple[Syllable, ...] | None:
+def convert_wiktionary(ipa: str) -> tuple[Syllable, ...] | None:
     """Convert one Wiktionary IPA string (with or without the enclosing
-    slashes) to Syllables. Never raises: None for anything unmappable."""
+    slashes) to Syllables. Never raises: None for anything unmappable,
+    including a reading with an empty syllable slot -- the same refusal
+    `_tltk_has_empty_slot` makes for tltk.
+
+    An empty slot here is Wiktionary's own notation, not a defect:
+    a compound-linking variant is written with a TRAILING "." (observed
+    2026-09-21: น้ำ lists /naːm˦˥/, /naːm˦˥./ and /nam˦˥./; นรก lists
+    /na˦˥.rok̚˦˥./ and /na˦˥.rok̚˦˥.ka˨˩./). The dot says the form links
+    onward into a compound, so the string is not a whole word's reading;
+    dropping the empty group would record it as one.
+    """
     cleaned = ipa.strip().strip("/").strip()
-    groups = [g for g in _WIKTIONARY_SYLLABLE_SEP.split(cleaned) if g]
-    if not groups:
+    groups = _WIKTIONARY_SYLLABLE_SEP.split(cleaned)
+    if any(not g for g in groups):
         return None
     try:
         return without_glottal_coda(tuple(_convert_wiktionary_syllable(g) for g in groups))
@@ -336,14 +346,38 @@ def _convert_wiktionary(ipa: str) -> tuple[Syllable, ...] | None:
 
 _WIKTIONARY_ROW = re.compile(r"<tr>.*?</tr>", re.DOTALL)
 _WIKTIONARY_IPA_SPAN = re.compile(r'<span class="IPA">/([^/<]+)/</span>')
+# The rendered page's language headings: `<h2 id="Thai">`, inside a
+# `<div class="mw-heading mw-heading2">` wrapper in today's markup.
+_WIKTIONARY_THAI_HEADING = re.compile(r'<h2 id="Thai"')
+_WIKTIONARY_LANGUAGE_HEADING = re.compile(r"<h2")
+
+
+def _thai_section(html: str) -> str:
+    """The Thai language section of a rendered Wiktionary page -- from its
+    `<h2 id="Thai">` heading to the next `<h2` (or the end). The whole
+    page when it has no such heading, which is what a fragment (a
+    fixture's bare table) is.
+    """
+    heading = _WIKTIONARY_THAI_HEADING.search(html)
+    if heading is None:
+        return html
+    following = _WIKTIONARY_LANGUAGE_HEADING.search(html, heading.end())
+    return html[heading.start():following.start()] if following else html[heading.start():]
 
 
 def extract_standard_ipa(html: str) -> list[str]:
     """The IPA readings of the "(standard) IPA" row of a rendered Thai
     entry's pronunciation table, in page order, without the slashes; []
     when the page has no such row (an entry with no th-pron table, or a
-    layout this does not recognize)."""
-    for row in _WIKTIONARY_ROW.findall(html):
+    layout this does not recognize).
+
+    One Wiktionary page is one spelling, not one language: น้ำ carries
+    Northern Thai, Nyaw and Isan sections beside the Thai one, each with
+    its own "(standard) IPA" row. Only the Thai section is read
+    (`_thai_section`); a page with no language heading at all is read
+    whole.
+    """
+    for row in _WIKTIONARY_ROW.findall(_thai_section(html)):
         head, _, _cells = row.partition("</th>")
         if ">standard<" in head and ">IPA<" in head:
             return _WIKTIONARY_IPA_SPAN.findall(row)

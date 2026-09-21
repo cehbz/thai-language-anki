@@ -47,7 +47,7 @@ from .curated import (
     rulebook_file_text,
 )
 from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best, need_sources
-from .dictionary import DEFAULT_USER_AGENT, Wiktionary
+from .dictionary import DEFAULT_MAX_ASKS, DEFAULT_USER_AGENT, Wiktionary
 from .entities import MinimalPair, Sentence, Word
 from .ids import ConfusionId, PairId, WordId
 from .media import Provenance, Recording, Speaker
@@ -697,13 +697,16 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
 def _wiktionary(cfg: ProvidersConfig, db: SyllabusDb) -> Wiktionary:
     """The dictionary oracle on this deck's record (design 2026-09-20 §2).
     Free and secret-less; paced by quotas.wiktionary.min_interval_seconds
-    (default 1 s). `wiktionary.contact`, when set in providers.yaml, is
-    appended to the user agent as Wikimedia's policy asks; nothing about
-    the user is sent otherwise."""
+    (default 1 s) and capped at quotas.wiktionary.max_asks wire fetches
+    per run (default 200; an explicit null lifts the cap, as it does for
+    every other quota). `wiktionary.contact`, when set in providers.yaml,
+    is appended to the user agent as Wikimedia's policy asks; nothing
+    about the user is sent otherwise."""
     interval, _wait = pacing_for(cfg, "wiktionary")
+    max_asks = cfg.quotas.get("wiktionary", {}).get("max_asks", DEFAULT_MAX_ASKS)
     contact = cfg.wiktionary_contact
     agent = f"{DEFAULT_USER_AGENT} ({contact})" if contact else DEFAULT_USER_AGENT
-    return Wiktionary(db, min_interval_s=interval, user_agent=agent)
+    return Wiktionary(db, min_interval_s=interval, max_asks=max_asks, user_agent=agent)
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------

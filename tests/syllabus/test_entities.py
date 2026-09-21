@@ -25,6 +25,7 @@ from thai_syllabus.entities import (
     element_word,
     exact_confusion_violation,
     is_corroborated,
+    is_phrase,
     pronunciation_diff,
     render,
     without_glottal_coda,
@@ -467,3 +468,14 @@ def test_every_syllable_of_a_phrase_is_normalized():
 def test_the_centering_diphthongs_are_named_once():
     from thai_syllabus.entities import DIPHTHONGS
     assert DIPHTHONGS == frozenset({"ia", "ɯa", "ua"})
+
+
+def test_any_whitespace_makes_a_form_a_phrase():
+    """A phrase is read token by token and never looked up (design
+    2026-09-20 §3); one predicate names that, so the dictionary, the
+    engines and the record all draw the line in the same place."""
+    assert is_phrase("\u0e07\u0e2d \u0e07\u0e39") is True      # ngo ngu, a two-word phrase
+    assert is_phrase("\u0e07\u0e2d\t\u0e07\u0e39") is True    # a tab is whitespace too
+    assert is_phrase("\u0e07\u0e2d\u00a0\u0e07\u0e39") is True  # and a no-break space
+    assert is_phrase("\u0e1b\u0e25\u0e32") is False            # plaa, one word
+    assert is_phrase("") is False

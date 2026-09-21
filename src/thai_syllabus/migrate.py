@@ -69,7 +69,8 @@ from .curated import (
     CURATED_FILES,
     RulebookConfig,
 )
-from .entities import Clauses, Pronunciation, Sentence, Syllable, Target, Word
+from .entities import (DIPHTHONGS, Clauses, Pronunciation, Sentence, Syllable,
+                       Target, Word)
 from .ids import TargetId, WordId
 from .media import Provenance
 from .phonology import is_degenerate
@@ -135,6 +136,12 @@ def _parse_ipa_syllable(s: str) -> Syllable:
         raise IpaParseError(f"unknown vowel in {s!r}")
     long = s.startswith("ː")
     s = s[1:] if long else s
+    # A centering diphthong is long by convention and written unmarked
+    # (design 2026-09-20 §1), which is exactly what `ipa.render` emits --
+    # so reading the missing mark as `short` here would stop this parser
+    # being render's inverse, and would hand the adjudication pass a
+    # length no engine can ever corroborate.
+    long = long or vowel in DIPHTHONGS
     coda, s = _take(s, _CODAS)
     if s:
         raise IpaParseError(f"trailing {s!r}")
