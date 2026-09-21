@@ -178,10 +178,6 @@ Run and screen, found while seating the alphabet (2026-09-19):
   (`queue()` skips a subject with a question in flight) until the batch
   resolves. F4 says that need is the learner's: stop sourcing a need whose
   newest candidates passed and await the rating.
-- **The adjudication ask re-asks the same 57 disputed words every cycle**
-  (~$0.40, zero yield since the second engine landed). Cap it, or skip a
-  word already asked under the current engines, until Task 7's curated
-  rows exist.
 - **Chart-cell rubric clause** (spec 3 r41 follow-up): the judge failed
   ฌ's cell once claiming the glyph was ถม, and 21 of 48 cells drawn from
   corpus photos; the cell should be judged as a composition (symbol
@@ -207,21 +203,39 @@ Run and screen, found while seating the alphabet (2026-09-19):
   Forvo recordings) and expect 0; `coat` (เสื้อโค้ท) is the one false
   demotion, a doubled tone mark in Forvo's headword.
 
-Adjudication follow-ups (first cycle 2026-09-12: 41 of 246 disputed
-words corroborated, 205 stay disputed):
-- thaig2p model defects leave 28 deck words with no analysis (loops or
-  truncates on long compounds, an `a̯` offglide in coda position, the
-  tone letters `˩˩`); those words stay disputed unless a curated
-  exception names their pronunciation.
-- 29 of 246 judge answers were refused by `parse_pronunciation` (one
-  carried `vowel_length: mid`); they re-ask next run. Pull the batch
-  results (msgbatch_01Ls9edB6cgm1hVDXp2HS9aM) to see the refused shapes
-  before widening the parser.
-- Length (32) and segment (29) disagreements between judge and thaig2p
-  are unresolved by design (no third oracle). Weekday and month names
-  dominate the segment set (วันอังคาร Tuesday: thaig2p assimilates the
-  coda; กุมภาพันธ์ February: syllabification). A per-word curated
-  exception stays the learner's path.
+Adjudication follow-ups (2026-09-21, after the dictionary oracle arc:
+54 of 57 disputed words corroborated in one cycle, 3 stay disputed;
+Wiktionary was consulted for 5 forms, 1 absent):
+- **The adjudication pass never seals a disputed word on the oracles'
+  own agreement.** It tests only the judge's verdict against the
+  engines and the dictionary; for a newly adopted word two oracles
+  agreeing on a whole reading is `engines_agree` without a judge (spec 3
+  r45), but an existing disputed word gets no such check. พลาสติก
+  (thaig2p and Wiktionary agree, judge's tone wrong) and ฤดูใบไม้ผลิ
+  (tltk and Wiktionary agree, judge's tone wrong) stay disputed for
+  that reason alone. One spec 3 revision to the Adjudication paragraph:
+  materialize `engines_pronunciation` for every disputed word first and
+  accept `engines_agree`; ask the judge only for what is left.
+- **Rung 2: component reading against the dictionary** for a compound
+  Wiktionary lacks (น้ำแข็งเปล่า: the judge reads เปล่า long, correctly;
+  both engines read it short; the dictionary has เปล่า but not the
+  compound). Segment into dictionary entries (longest match, or the
+  space where there is one), concatenate, and let it corroborate the
+  judge only when the syllable counts agree. Designed 2026-09-20, not
+  built; measured need on the live deck: 1 word.
+- **Rung 3: a second LLM family as a corroborating judge** is a
+  principles revision (corroboration is the judge plus one engine); the
+  residue it would serve is zero today. Not planned.
+- The `wiktionary` line in the run's per-backend spend table is minted
+  by `default_budgets` from `quotas.wiktionary` and never charged
+  (asks=0 while rows are written); cosmetic. A deck paced at 0 s never
+  backs off from a 429 without a Retry-After header (the wiring default
+  is 1 s). An `absent` dictionary row is final; Wiktionary grows, so a
+  `nothing_ttl_days` for it may be wanted. Spec 3 §5's grapheme-adoption
+  paragraph still describes a single engine.
+- The run's batch wait is 21600 s; a 57-request Message Batch took
+  6 h 38 min on 2026-09-21 and the run gave up one poll short. The next
+  run resolved it. Raise `--max-wait-seconds` or make the resolve free.
 - `derivations.confusion_weights(seed)` is a second home for
   `SoundConfusion.weight` and has no caller. `curated.py` imports
   `run.parse_day_starts` (move it out so `run.py` can import
