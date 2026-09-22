@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/mediafetch
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: tools/mediafetch/go.mod
+          cache-dependency-path: tools/mediafetch/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-groups
+      # pyproject addopts already exclude the 'integration' and 'live' markers.
+      - run: uv run pytest -q
