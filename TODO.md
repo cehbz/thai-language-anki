@@ -286,3 +286,25 @@ Wiktionary was consulted for 5 forms, 1 absent):
 - The legacy thai_deck_gen GoogleTts (src/thai_deck_gen/media/tts.py) still
   sends its API key as a `?key=` query parameter and interpolates wire
   errors unredacted; the thai_syllabus backend was fixed 2026-09-10.
+
+## Dependabot cleanup (2026-09-22)
+
+- CI's python job is red. `requests[socks]` is declared only in the `gen`
+  optional-dependency extra, and `uv sync --frozen --all-groups` does not
+  install extras — `--all-groups` covers dependency-groups only. requests is
+  imported by src/thai_syllabus/{provider,tts,dictionary}.py and by four test
+  modules, so collection fails with 16 errors. Adding `--extra gen` to
+  .github/workflows/ci.yml fixes it (measured: 2286 passed, 5 deselected, 72 s).
+- With `--extra gen`, one test still fails:
+  tests/syllabus/test_phonology.py::test_default_engines_builds_the_engines_once.
+  It fakes Thaig2p through the deferred import, but `default_engines()` also
+  builds Tltk, which is not faked, and `Tltk.__init__` does `from tltk import
+  nlp` — tltk lives in the `nlp` extra alongside torch and pandas. So the test
+  reaches a real tltk despite its docstring's "nothing here loads torch".
+  Either fake Tltk too (matches the stated intent) or mark it `integration`
+  (the marker is defined as "real pythainlp/tltk", and two other tests in that
+  file already carry it). `--all-extras` would work but drags torch into every
+  CI run.
+- The one open Dependabot alert is nltk <= 3.10.3 (model-artifact APIs bypass
+  pathsec and touch files outside the allowed root). No patched version exists
+  upstream, so it stays open rather than being dismissed.
