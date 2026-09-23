@@ -693,7 +693,7 @@ def test_providers_config_round_trip(tmp_path):
         search_proxy="https://proxy.example", imgfetch_path="/usr/bin/curl",
         audiofetch_path="/usr/bin/wget",
         tts_male_voices=("v1",), tts_female_voices=("v2",),
-        judge=curated.JudgeConfig(transport="batch", model="claude-opus-5",
+        judge=curated.JudgeConfig(transport="batch", model="claude-opus-5-5",
                                   price_per_mtok=(2.0, 10.0)),
         image_candidates=7,
         batch={"max_requests": 1000}, quotas={"forvo": {"max_asks": 450}},
@@ -1038,6 +1038,23 @@ def test_providers_rejects_an_unknown_judge_thinking(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "thinking": "deep"})))
     with pytest.raises(curated.CuratedValidationError, match="judge.thinking"):
+        curated.load_providers_config(path)
+
+
+def test_providers_judge_effort_defaults_to_none_and_round_trips(tmp_path):
+    assert curated.JudgeConfig().effort is None
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "effort": "high"})))
+    cfg = curated.load_providers_config(path)
+    assert cfg.judge.effort == "high"
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+def test_providers_rejects_an_unknown_judge_effort(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(judge={"transport": "cli", "effort": "extreme"})))
+    with pytest.raises(curated.CuratedValidationError, match="providers.judge.effort"):
         curated.load_providers_config(path)
 
 
@@ -1473,9 +1490,9 @@ def test_judge_roles_default_to_empty():
 
 
 def test_a_judge_role_config_inherits_by_leaving_a_field_none():
-    role = curated.JudgeRoleConfig(model="claude-opus-5", thinking="adaptive",
+    role = curated.JudgeRoleConfig(model="claude-opus-5-5", thinking="adaptive",
                                    max_tokens=16000, price_per_mtok=(5.0, 25.0))
-    assert role.model == "claude-opus-5" and role.thinking == "adaptive"
+    assert role.model == "claude-opus-5-5" and role.thinking == "adaptive"
     assert curated.JudgeRoleConfig() == curated.JudgeRoleConfig(
         model=None, thinking=None, max_tokens=None, price_per_mtok=None)
 
@@ -1484,10 +1501,10 @@ def test_judge_config_stays_hashable_and_frozen_with_roles():
     cfg = curated.JudgeConfig(transport="batch", model="claude-sonnet-5",
                               price_per_mtok=(2.0, 10.0),
                               roles={"pronunciation-for-word":
-                                     curated.JudgeRoleConfig(model="claude-opus-5")})
+                                     curated.JudgeRoleConfig(model="claude-opus-5-5")})
     assert hash(cfg) == hash(curated.JudgeConfig(
         transport="batch", model="claude-sonnet-5", price_per_mtok=(2.0, 10.0),
-        roles={"pronunciation-for-word": curated.JudgeRoleConfig(model="claude-opus-5")}))
+        roles={"pronunciation-for-word": curated.JudgeRoleConfig(model="claude-opus-5-5")}))
     with pytest.raises(TypeError):
         cfg.roles["picture-for-word"] = curated.JudgeRoleConfig()
 
@@ -1503,13 +1520,13 @@ def test_providers_judge_roles_load(tmp_path):
           model: claude-sonnet-5
           price_per_mtok: {input: 2, output: 10}
           roles:
-            pronunciation-for-word: {model: claude-opus-5, thinking: adaptive,
+            pronunciation-for-word: {model: claude-opus-5-5, thinking: adaptive,
                                      max_tokens: 16000,
                                      price_per_mtok: {input: 5, output: 25}}
     """), encoding="utf-8")
     cfg = curated.load_providers_config(path)
     role = cfg.judge.roles["pronunciation-for-word"]
-    assert role == curated.JudgeRoleConfig(model="claude-opus-5", thinking="adaptive",
+    assert role == curated.JudgeRoleConfig(model="claude-opus-5-5", thinking="adaptive",
                                            max_tokens=16000, price_per_mtok=(5.0, 25.0))
 
 
@@ -1521,10 +1538,33 @@ def test_providers_judge_roles_round_trip(tmp_path):
         judge=curated.JudgeConfig(
             transport="batch", model="claude-sonnet-5", price_per_mtok=(2.0, 10.0),
             roles={"pronunciation-for-word": curated.JudgeRoleConfig(
-                model="claude-opus-5", thinking="adaptive", max_tokens=16000,
+                model="claude-opus-5-5", thinking="adaptive", max_tokens=16000,
                 price_per_mtok=(5.0, 25.0))}))
     curated.save_providers_config(path, config)
     assert curated.load_providers_config(path) == config
+
+
+def test_providers_judge_role_effort_round_trips(tmp_path):
+    path = tmp_path / "providers.yaml"
+    config = curated.ProvidersConfig(
+        secrets={"anthropic": "op://Shared/Anthropic/API Key"},
+        imgfetch_path="/opt/bin/imgfetch", audiofetch_path="/opt/bin/audiofetch",
+        judge=curated.JudgeConfig(
+            transport="batch", model="claude-sonnet-5", effort="high",
+            price_per_mtok=(2.0, 10.0),
+            roles={"pronunciation-for-word": curated.JudgeRoleConfig(effort="xhigh")}))
+    curated.save_providers_config(path, config)
+    assert curated.load_providers_config(path) == config
+    assert curated.load_providers_config(path).judge.roles[
+        "pronunciation-for-word"].effort == "xhigh"
+
+
+def test_providers_rejects_an_unknown_effort_inside_a_judge_role(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_role_providers({"effort": 3})), encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"judge.roles.pronunciation-for-word.effort"):
+        curated.load_providers_config(path)
 
 
 def test_providers_judge_roles_round_trip_a_partly_inherited_role(tmp_path):
@@ -1544,7 +1584,7 @@ def test_providers_judge_roles_round_trip_a_partly_inherited_role(tmp_path):
 
 def test_providers_rejects_an_unknown_judge_role_name(tmp_path):
     path = tmp_path / "providers.yaml"
-    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5"})).replace(
+    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5-5"})).replace(
         "pronunciation-for-word", "pronounciation-for-word"), encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError,
                        match="judge.roles.pronounciation-for-word"):
@@ -1553,7 +1593,7 @@ def test_providers_rejects_an_unknown_judge_role_name(tmp_path):
 
 def test_providers_rejects_an_unknown_key_inside_a_judge_role(tmp_path):
     path = tmp_path / "providers.yaml"
-    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5",
+    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5-5",
                                                     "price_per_mtok": {"input": 5, "output": 25},
                                                     "temperature": 0.7})), encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError, match="temperature"):
@@ -1598,7 +1638,7 @@ def test_providers_role_naming_another_model_needs_its_own_price(tmp_path):
     """Spec 3 section 2's cost contract: tokens are priced against the
     model that answered, so a role on another model states its price."""
     path = tmp_path / "providers.yaml"
-    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5"})), encoding="utf-8")
+    path.write_text(yaml.safe_dump(_role_providers({"model": "claude-opus-5-5"})), encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError,
                        match=r"judge.roles.pronunciation-for-word.price_per_mtok"):
         curated.load_providers_config(path)
@@ -1619,15 +1659,15 @@ def test_providers_cli_judge_role_naming_another_model_needs_no_price(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(judge={
         "transport": "cli", "model": "claude-sonnet-5",
-        "roles": {"pronunciation-for-word": {"model": "claude-opus-5"}}})), encoding="utf-8")
+        "roles": {"pronunciation-for-word": {"model": "claude-opus-5-5"}}})), encoding="utf-8")
     cfg = curated.load_providers_config(path)
-    assert cfg.judge.roles["pronunciation-for-word"].model == "claude-opus-5"
+    assert cfg.judge.roles["pronunciation-for-word"].model == "claude-opus-5-5"
 
 
 def test_providers_role_price_must_be_a_mapping_of_numbers(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(
-        _role_providers({"model": "claude-opus-5", "price_per_mtok": {"input": 5}})),
+        _role_providers({"model": "claude-opus-5-5", "price_per_mtok": {"input": 5}})),
         encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError,
                        match=r"judge.roles.pronunciation-for-word.price_per_mtok"):
@@ -1638,7 +1678,7 @@ def test_providers_judge_roles_must_be_a_mapping_of_mappings(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(judge={
         "transport": "cli", "model": "m",
-        "roles": {"pronunciation-for-word": "claude-opus-5"}})), encoding="utf-8")
+        "roles": {"pronunciation-for-word": "claude-opus-5-5"}})), encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError,
                        match=r"judge.roles.pronunciation-for-word"):
         curated.load_providers_config(path)

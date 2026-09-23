@@ -667,6 +667,7 @@ class JudgeRoleConfig:
     """
     model: str | None = None
     thinking: str | None = None          # "disabled" | "adaptive"
+    effort: str | None = None            # "low" | "medium" | "high" | "xhigh" | "max"
     max_tokens: int | None = None
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
 
@@ -677,6 +678,10 @@ class JudgeConfig:
     model: str = ""
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
     thinking: str = "disabled"  # "disabled" | "adaptive"; sent by the api and batch transports
+    # "low" | "medium" | "high" | "xhigh" | "max"; sent by the api and batch
+    # transports as `output_config.effort` when set, None sends nothing so
+    # the model's own default applies
+    effort: str | None = None
     max_tokens: int = 4096      # output token cap; sent by the api and batch transports
     # role -> that role's own setting (spec 3 r43): frozen at
     # construction and hashed by its sorted items, so JudgeConfig stays
@@ -688,7 +693,7 @@ class JudgeConfig:
 
     def __hash__(self) -> int:
         return hash((self.transport, self.model, self.price_per_mtok, self.thinking,
-                     self.max_tokens, tuple(sorted(self.roles.items()))))
+                     self.effort, self.max_tokens, tuple(sorted(self.roles.items()))))
 
 
 @dataclass(frozen=True)
@@ -787,7 +792,9 @@ def _price_per_mtok(price_cfg: Any, label: str, errors: list[str]) -> tuple[floa
     return (float(input_price), float(output_price))
 
 
-_JUDGE_ROLE_KEYS = ("model", "thinking", "max_tokens", "price_per_mtok")
+_JUDGE_ROLE_KEYS = ("model", "thinking", "effort", "max_tokens", "price_per_mtok")
+
+_EFFORT_VALUES = ("low", "medium", "high", "xhigh", "max")
 
 
 def _judge_roles(roles_cfg: Any, *, transport: str, judge_model: str, judge_max_tokens: int,
@@ -824,6 +831,11 @@ def _judge_roles(roles_cfg: Any, *, transport: str, judge_model: str, judge_max_
             errors.append(f"{label}.thinking: {role_thinking!r} is not one of "
                           "'disabled', 'adaptive'")
             continue
+        role_effort = role_cfg.get("effort")
+        if role_effort is not None and role_effort not in _EFFORT_VALUES:
+            errors.append(f"{label}.effort: {role_effort!r} is not one of "
+                          + ", ".join(repr(v) for v in _EFFORT_VALUES))
+            continue
         role_max_tokens = role_cfg.get("max_tokens")
         if role_max_tokens is not None and (not isinstance(role_max_tokens, int)
                                             or isinstance(role_max_tokens, bool)
@@ -852,7 +864,8 @@ def _judge_roles(roles_cfg: Any, *, transport: str, judge_model: str, judge_max_
                           f"{transport!r} transport spends cash per token")
             continue
         roles[name] = JudgeRoleConfig(model=role_model, thinking=role_thinking,
-                                      max_tokens=role_max_tokens, price_per_mtok=role_price)
+                                      effort=role_effort, max_tokens=role_max_tokens,
+                                      price_per_mtok=role_price)
     return roles
 
 
@@ -893,6 +906,10 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
     if thinking not in ("disabled", "adaptive"):
         errors.append(f"providers.judge.thinking: {thinking!r} is not one of "
                       "'disabled', 'adaptive'")
+    effort = judge_cfg.get("effort")
+    if effort is not None and effort not in _EFFORT_VALUES:
+        errors.append(f"providers.judge.effort: {effort!r} is not one of "
+                      + ", ".join(repr(v) for v in _EFFORT_VALUES))
     max_tokens = judge_cfg.get("max_tokens", 4096)
     if not isinstance(max_tokens, int) or max_tokens < 1:
         errors.append(f"providers.judge.max_tokens: {max_tokens!r} must be a positive integer")
@@ -904,7 +921,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                          judge_model=judge_model, judge_max_tokens=max_tokens, errors=errors)
     judge = JudgeConfig(transport=transport, model=judge_model,
                         price_per_mtok=price_per_mtok, thinking=thinking,
-                        max_tokens=max_tokens, roles=roles)
+                        effort=effort, max_tokens=max_tokens, roles=roles)
 
     # A loaded config describes a run that can happen: both mediafetch
     # paths are required, pictures and recordings always being in scope.
@@ -1163,6 +1180,8 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
     judge: dict[str, Any] = {"transport": config.judge.transport, "model": config.judge.model,
                              "thinking": config.judge.thinking,
                              "max_tokens": config.judge.max_tokens}
+    if config.judge.effort is not None:
+        judge["effort"] = config.judge.effort
     if config.judge.price_per_mtok is not None:
         input_price, output_price = config.judge.price_per_mtok
         judge["price_per_mtok"] = {"input": input_price, "output": output_price}
@@ -1173,6 +1192,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         judge["roles"] = {name: {key: value for key, value in (
                                     ("model", role.model),
                                     ("thinking", role.thinking),
+                                    ("effort", role.effort),
                                     ("max_tokens", role.max_tokens),
                                     ("price_per_mtok",
                                      None if role.price_per_mtok is None else

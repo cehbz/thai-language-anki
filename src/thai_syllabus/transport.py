@@ -102,6 +102,7 @@ class RequestParams:
     model: str
     max_tokens: int
     thinking: str
+    effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,12 +134,13 @@ def image_block(path: Path) -> dict:
 
 
 def _request_fields(params: "RequestParams | None", model: str, max_tokens: int,
-                    thinking: str) -> tuple[str, int, str]:
-    """The (model, max_tokens, thinking) one request goes out under: the
-    override when there is one, else the transport's own fields."""
+                    thinking: str, effort: str | None) -> tuple[str, int, str, str | None]:
+    """The (model, max_tokens, thinking, effort) one request goes out
+    under: the override when there is one, else the transport's own
+    fields."""
     if params is None:
-        return model, max_tokens, thinking
-    return params.model, params.max_tokens, params.thinking
+        return model, max_tokens, thinking, effort
+    return params.model, params.max_tokens, params.thinking, params.effort
 
 
 def _content(prompt: str, attachments: Sequence[Path]) -> list[dict] | str:
@@ -214,6 +216,7 @@ class ClaudeApiTransport:
     model: str
     max_tokens: int = 4096
     thinking: str = "disabled"
+    effort: str | None = None
     client_factory: Callable[[], Any] | None = None
 
     def _client(self) -> Any:
@@ -225,16 +228,20 @@ class ClaudeApiTransport:
     def complete(self, prompt: str, attachments: Sequence[Path] = (), *,
                  params: RequestParams | None = None) -> Completion:
         """`params`, when given, replaces this transport's own model,
-        max_tokens and thinking for this one request (spec 3 r43's
+        max_tokens, thinking and effort for this one request (spec 3 r43's
         per-role judge setting)."""
-        model, max_tokens, thinking = _request_fields(
-            params, self.model, self.max_tokens, self.thinking)
+        model, max_tokens, thinking, effort = _request_fields(
+            params, self.model, self.max_tokens, self.thinking, self.effort)
+        kwargs: dict[str, Any] = {}
+        if effort is not None:
+            kwargs["output_config"] = {"effort": effort}
         try:
             client = self._client()
             response = client.messages.create(
                 model=model, max_tokens=max_tokens,
                 thinking={"type": thinking},
-                messages=[{"role": "user", "content": _content(prompt, attachments)}])
+                messages=[{"role": "user", "content": _content(prompt, attachments)}],
+                **kwargs)
         except Exception as e:  # noqa: BLE001 -- any SDK exception is a transport error
             raise TransportError(f"api transport failed: {e}") from e
         completion = _completion_of(response)
@@ -260,6 +267,7 @@ class ClaudeBatchTransport:
     api_key: str = ""
     max_tokens: int = 4096
     thinking: str = "disabled"
+    effort: str | None = None
     client_factory: Callable[[], Any] | None = None
 
     def _client(self) -> Any:
@@ -291,9 +299,13 @@ class ClaudeBatchTransport:
         return batch.id
 
     def _params_block(self, params: RequestParams | None) -> dict[str, Any]:
-        model, max_tokens, thinking = _request_fields(
-            params, self.model, self.max_tokens, self.thinking)
-        return {"model": model, "max_tokens": max_tokens, "thinking": {"type": thinking}}
+        model, max_tokens, thinking, effort = _request_fields(
+            params, self.model, self.max_tokens, self.thinking, self.effort)
+        block: dict[str, Any] = {"model": model, "max_tokens": max_tokens,
+                                 "thinking": {"type": thinking}}
+        if effort is not None:
+            block["output_config"] = {"effort": effort}
+        return block
 
     def status(self, batch_id: str) -> str:
         """"in_progress" | "canceling" | "ended" (anthropic's

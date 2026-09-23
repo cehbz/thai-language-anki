@@ -103,15 +103,15 @@ class _FakeApiClient:
 
 def test_api_transport_returns_the_text_block():
     client = _FakeApiClient(response=_FakeApiResponse("hello"))
-    t = ClaudeApiTransport(api_key="k", model="claude-opus-5",
+    t = ClaudeApiTransport(api_key="k", model="claude-opus-5-5",
                            client_factory=lambda: client)
     assert t.complete("prompt").text == "hello"
-    assert client.messages.calls[0]["model"] == "claude-opus-5"
+    assert client.messages.calls[0]["model"] == "claude-opus-5-5"
 
 
 def test_api_transport_wraps_sdk_exceptions_as_transport_error():
     client = _FakeApiClient(raises=RuntimeError("rate limited"))
-    t = ClaudeApiTransport(api_key="k", model="claude-opus-5",
+    t = ClaudeApiTransport(api_key="k", model="claude-opus-5-5",
                            client_factory=lambda: client)
     with pytest.raises(TransportError, match="rate limited"):
         t.complete("prompt")
@@ -176,7 +176,7 @@ class _FakeBatchClient:
 
 def test_batch_submit_returns_the_batch_id():
     client = _FakeBatchClient()
-    t = ClaudeBatchTransport(model="claude-opus-5", client_factory=lambda: client)
+    t = ClaudeBatchTransport(model="claude-opus-5-5", client_factory=lambda: client)
     batch_id = t.submit({"c1": ("prompt one", ()), "c2": ("prompt two", ())})
     assert batch_id == "batch_123"
     submitted = client.messages.batches.created_with
@@ -186,7 +186,7 @@ def test_batch_submit_returns_the_batch_id():
 def test_batch_status_reports_processing_status():
     client = _FakeBatchClient()
     client.messages.batches._batch.processing_status = "ended"
-    t = ClaudeBatchTransport(model="claude-opus-5", client_factory=lambda: client)
+    t = ClaudeBatchTransport(model="claude-opus-5-5", client_factory=lambda: client)
     assert t.status("batch_123") == "ended"
 
 
@@ -197,7 +197,7 @@ def test_batch_results_maps_custom_id_to_completion_on_success():
         _FakeBatchResult("c2", _FakeResultWrapper("errored")),
         _FakeBatchResult("c3", _FakeResultWrapper("succeeded", _FakeResultMessage([]))),
     ]
-    t = ClaudeBatchTransport(model="claude-opus-5", client_factory=lambda: client)
+    t = ClaudeBatchTransport(model="claude-opus-5-5", client_factory=lambda: client)
     results = t.results("batch_123")
     assert results == {"c1": Completion(text="ok"), "c2": None, "c3": None}
 
@@ -394,6 +394,44 @@ def test_batch_transport_sends_thinking_on_every_request():
         {"type": "adaptive"}, {"type": "adaptive"}]
 
 
+# --- effort (Claude Opus 5.5's depth control) ---------------------------
+
+def test_api_transport_sends_no_output_config_when_effort_is_none():
+    client = _FakeClient("hello")
+    ClaudeApiTransport(api_key="k", model="m", client_factory=lambda: client).complete("q")
+    assert "output_config" not in client.messages.calls[0]
+
+
+def test_api_transport_sends_the_configured_effort():
+    client = _FakeClient("hello")
+    ClaudeApiTransport(api_key="k", model="m", effort="high",
+                       client_factory=lambda: client).complete("q")
+    assert client.messages.calls[0]["output_config"] == {"effort": "high"}
+
+
+def test_api_transport_request_params_effort_wins_over_the_transports_own():
+    client = _FakeClient("hello")
+    t = ClaudeApiTransport(api_key="k", model="m", effort="high", client_factory=lambda: client)
+    t.complete("q", params=RequestParams(model="m", max_tokens=4096, thinking="disabled",
+                                         effort="low"))
+    assert client.messages.calls[0]["output_config"] == {"effort": "low"}
+
+
+def test_batch_transport_puts_output_config_into_every_request_when_effort_is_set():
+    client = _FakeBatchClient()
+    t = ClaudeBatchTransport(model="m", effort="high", client_factory=lambda: client)
+    t.submit({"c1": ("p1", ()), "c2": ("p2", ())})
+    assert [r["params"]["output_config"] for r in client.messages.batches.created_with] == [
+        {"effort": "high"}, {"effort": "high"}]
+
+
+def test_batch_transport_omits_output_config_when_effort_is_not_set():
+    client = _FakeBatchClient()
+    t = ClaudeBatchTransport(model="m", client_factory=lambda: client)
+    t.submit({"c1": ("p1", ())})
+    assert "output_config" not in client.messages.batches.created_with[0]["params"]
+
+
 class _ThinkingOnlyResponse:
     """A response whose whole output budget went to thinking: one thinking
     block, no text block, stop_reason max_tokens."""
@@ -421,10 +459,10 @@ def test_api_transport_sends_the_request_params_when_given():
     client = _FakeClient("hello")
     t = ClaudeApiTransport(api_key="k", model="claude-sonnet-5", max_tokens=4096,
                            thinking="disabled", client_factory=lambda: client)
-    t.complete("q", params=RequestParams(model="claude-opus-5", max_tokens=16000,
+    t.complete("q", params=RequestParams(model="claude-opus-5-5", max_tokens=16000,
                                          thinking="adaptive"))
     call = client.messages.calls[0]
-    assert call["model"] == "claude-opus-5"
+    assert call["model"] == "claude-opus-5-5"
     assert call["max_tokens"] == 16000
     assert call["thinking"] == {"type": "adaptive"}
 
@@ -444,11 +482,11 @@ def test_batch_submit_sends_a_requests_params_per_request():
     client = _FakeBatchClient()
     t = ClaudeBatchTransport(model="claude-sonnet-5", max_tokens=4096, thinking="disabled",
                             client_factory=lambda: client)
-    t.submit({"c1": ("p1", (), RequestParams(model="claude-opus-5", max_tokens=16000,
+    t.submit({"c1": ("p1", (), RequestParams(model="claude-opus-5-5", max_tokens=16000,
                                              thinking="adaptive")),
               "c2": ("p2", (), None)})
     by_id = {r["custom_id"]: r["params"] for r in client.messages.batches.created_with}
-    assert by_id["c1"]["model"] == "claude-opus-5"
+    assert by_id["c1"]["model"] == "claude-opus-5-5"
     assert by_id["c1"]["max_tokens"] == 16000
     assert by_id["c1"]["thinking"] == {"type": "adaptive"}
     assert by_id["c2"]["model"] == "claude-sonnet-5"

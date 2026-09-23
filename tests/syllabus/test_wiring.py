@@ -1470,12 +1470,13 @@ def test_build_sourcing_and_load_derivations_use_the_configured_source_order(tmp
 
 # --- a judge role's own setting reaches the backend (spec 3 r43) ----------
 
-def _role_cfg(secret_paths, role):
+def _role_cfg(secret_paths, role, *, effort=None):
     from thai_syllabus.curated import JudgeConfig
     return ProvidersConfig(
         secrets={name: str(path) for name, path in secret_paths.items()},
         imgfetch_path="curl", audiofetch_path="curl",
         judge=JudgeConfig(transport="batch", model="claude-sonnet-5", thinking="disabled",
+                          effort=effort,
                           max_tokens=4096, price_per_mtok=(2.0, 10.0),
                           roles={"pronunciation-for-word": role}))
 
@@ -1484,12 +1485,12 @@ def test_build_assessor_gives_the_pronunciation_role_its_own_params_and_price(
         db, media_store, secret_paths):
     from thai_syllabus.curated import JudgeRoleConfig
     from thai_syllabus.transport import RequestParams
-    cfg = _role_cfg(secret_paths, JudgeRoleConfig(model="claude-opus-5", thinking="adaptive",
+    cfg = _role_cfg(secret_paths, JudgeRoleConfig(model="claude-opus-5-5", thinking="adaptive",
                                                   max_tokens=16000,
                                                   price_per_mtok=(5.0, 25.0)))
     jb = build_assessor(cfg, db, media_store)._backends["judge"]
     assert jb.role_params == {"pronunciation-for-word": RequestParams(
-        model="claude-opus-5", max_tokens=16000, thinking="adaptive")}
+        model="claude-opus-5-5", max_tokens=16000, thinking="adaptive")}
     assert jb.role_prices == {"pronunciation-for-word": Price(5.0, 25.0)}
     # the picture roles are asked and priced as the judge itself is
     assert jb.request_params(AssessQuestion(subject="rice", role="picture-for-word")) is None
@@ -1509,6 +1510,25 @@ def test_a_judge_role_inherits_every_field_it_does_not_name(db, media_store, sec
 def test_a_judge_with_no_roles_carries_no_role_params(cfg, db, media_store):
     jb = build_assessor(cfg, db, media_store)._backends["judge"]
     assert dict(jb.role_params) == {} and dict(jb.role_prices) == {}
+
+
+def test_a_judge_role_without_effort_inherits_the_judges(db, media_store, secret_paths):
+    from thai_syllabus.curated import JudgeRoleConfig
+    from thai_syllabus.transport import RequestParams
+    cfg = _role_cfg(secret_paths, JudgeRoleConfig(thinking="adaptive"), effort="high")
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert jb.role_params == {"pronunciation-for-word": RequestParams(
+        model="claude-sonnet-5", max_tokens=4096, thinking="adaptive", effort="high")}
+
+
+def test_a_judge_role_with_its_own_effort_keeps_it(db, media_store, secret_paths):
+    from thai_syllabus.curated import JudgeRoleConfig
+    from thai_syllabus.transport import RequestParams
+    cfg = _role_cfg(secret_paths, JudgeRoleConfig(thinking="adaptive", effort="xhigh"),
+                    effort="high")
+    jb = build_assessor(cfg, db, media_store)._backends["judge"]
+    assert jb.role_params == {"pronunciation-for-word": RequestParams(
+        model="claude-sonnet-5", max_tokens=4096, thinking="adaptive", effort="xhigh")}
 
 
 def test_a_cli_judge_still_answers_through_the_wrapped_complete(db, media_store, secret_paths,

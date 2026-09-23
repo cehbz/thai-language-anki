@@ -134,7 +134,7 @@ def test_listener_backend_is_not_implemented(db):
 # --- judge: key = judge:sha(RUBRIC):ARTIFACT_SHA:ROLE -------------------
 
 def test_judge_cache_key_shape():
-    backend = JudgeBackend(model="claude-opus-5", transport="cli",
+    backend = JudgeBackend(model="claude-opus-5-5", transport="cli",
                            complete=lambda p: "true")
     q = AssessQuestion(subject="s", role="picture-for-word",
                        artifact_sha="deadbeef", rubric="does this fit?")
@@ -1536,7 +1536,7 @@ def pronunciation_question(subject: str) -> AssessQuestion:
                           params={"thai": "ข้าว", "meaning": "rice"})
 
 
-OPUS_PARAMS = RequestParams(model="claude-opus-5", max_tokens=16000, thinking="adaptive")
+OPUS_PARAMS = RequestParams(model="claude-opus-5-5", max_tokens=16000, thinking="adaptive")
 
 def _answer_for(prompt: str) -> str:
     """The answer shape the asked role's parser expects, chosen from the

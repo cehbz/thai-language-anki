@@ -21,7 +21,7 @@ metric_weights:  # Weights for metric calculations
   speakers/minimal_pairs: 1.0  # Minimal pairs speaker weight
 judge:  # Judge configuration for AI-based evaluations
   backend: cli  # Backend type (cli, api, batch, or fake)
-  model: claude-opus-5  # AI model to use for judging
+  model: claude-opus-5-5  # AI model to use for judging
   effort: medium  # Effort level (low, medium, high)
   confidence_floor: 0.6  # Minimum confidence threshold
   prompt_version: "1"  # Judge prompt version

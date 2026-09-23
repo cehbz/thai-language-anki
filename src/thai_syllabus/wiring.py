@@ -155,7 +155,8 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     if kind == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
+            thinking=cfg.judge.thinking, effort=cfg.judge.effort,
+            max_tokens=cfg.judge.max_tokens))
     return None
 
 
@@ -167,7 +168,8 @@ def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
     if cfg.drafter.transport == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
+            thinking=cfg.judge.thinking, effort=cfg.judge.effort,
+            max_tokens=cfg.judge.max_tokens))
     return _Lazy(lambda: ClaudeCliTransport())
 
 
@@ -187,7 +189,8 @@ def _role_params(cfg: ProvidersConfig) -> dict[str, RequestParams]:
                 model=role.model if role.model is not None else cfg.judge.model,
                 max_tokens=(role.max_tokens if role.max_tokens is not None
                             else cfg.judge.max_tokens),
-                thinking=role.thinking if role.thinking is not None else cfg.judge.thinking)
+                thinking=role.thinking if role.thinking is not None else cfg.judge.thinking,
+                effort=role.effort if role.effort is not None else cfg.judge.effort)
             for name, role in cfg.judge.roles.items()}
 
 
@@ -460,7 +463,8 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
     if kind == "batch":
         batch_transport = _Lazy(lambda: ClaudeBatchTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
-            thinking=cfg.judge.thinking, max_tokens=cfg.judge.max_tokens))
+            thinking=cfg.judge.thinking, effort=cfg.judge.effort,
+            max_tokens=cfg.judge.max_tokens))
     else:
         transport = _claude_transport(cfg, secrets)
         if transport is not None:

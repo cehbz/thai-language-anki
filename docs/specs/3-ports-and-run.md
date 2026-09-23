@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 51, proposed 2026-09-20 against principles r6 and architecture
+Revision 52, proposed 2026-09-23 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -245,6 +245,7 @@ Revision log:
 - r49 2026-09-20: a Forvo item is a candidate of the asked form only when its recorded word (item `word`, NFC, zero-width marks removed) equals it; the recorded word rides the download (audiofetch params); the mechanical recording check is one composite (duration, and for a Forvo clip the recorded word equals the subject's own form, read from the bytes row or by joining the media origin to the lookup items); the rendition check (v2) requires distinct member artifacts; a re-verification pass each run, after the pair search and before the queue, re-asks the mechanical check on every current-best recording and rendition whose newest verdict is not under the check's current key, so a check change reaches satisfied needs (F13) -- RunReport gains `reverified` and `demoted`. Evidence: Forvo's lookup ignores tone marks (ห่า returns หา, ห่า, ห้า); measured 2026-09-20, 47 of 443 current Forvo word recordings play a different word (แม่/แม้, เขา/เข้า, หมอ/หม้อ) and 3 of 5 Forvo renditions play one clip for both members. User approval 2026-09-20.
 - r50 2026-09-20: `Engines` gains an optional dictionary oracle, consulted lazily -- in the adoption seed when the local engines do not agree, in corroboration when no local reading matches the verdict -- with agreement pairwise over every reading in hand; the oracle is English Wiktionary's "(standard) IPA" for the exact form, several readings where the entry lists them, one `DictionaryKey(source, form)` row per form under port Provide and backend `wiktionary` (revision id and readings, or absence), read before the wire so a form is fetched once ever, one request per `quotas.wiktionary.min_interval_seconds` (1) and at most `quotas.wiktionary.max_asks` (200) fetches per run, a 429 or 5xx backing off without a row (Quota, §6a), a transport failure logged once and the oracle dead for the rest of the run; the row's subject is `dictionary:<form>`; a reading with an empty syllable slot (Wiktionary's trailing-dot compound-linking variant) is no reading, as for tltk. A form containing whitespace is read token by token by every local engine, always, and never looked up: r43's whole-form-then-token fallback and its never-engine-agreed clause are retired, so two engines agreeing token-wise is `engines_agree`. Evidence: 57 words disputed on the live deck with every verdict on record and re-folded free each cycle; after the diphthong convention (spec 1 r23) 20 remain, of which Wiktionary settles มกรา and พลาสติก for the judge, กระดูก, กระเทียม, กระจก, ประเทศ, หุง and ตอนนี้ for the engines, and reads ชานมไข่มุก that neither engine can; the four recited names งอ งู, ธอ ธง, บอ ใบไม้, สอ เสือ read correctly token by token and wrongly whole. English Wiktionary has an entry for 795 of the deck's 897 forms. User approval 2026-09-20.
 - r51 2026-09-20: the pronunciation rubric's spelling-length sentence names the isolation-form exception -- a word written with a short sign but said long when spoken alone (น้ำ, ได้, ไม้, เจ้า, เก้า and the like) is long in isolation and keeps its own length inside a compound; the rubric sha changes, so the still-disputed words are re-asked once. Evidence: the judge, following the sentence, read น้ำ and ได้ short where both engines and Wiktionary read them long (Wikipedia: náːm, dâːj) and read น้ำ short inside น้ำมะพร้าว where Wiktionary agrees; 7 of the 57 disputed words. User approval 2026-09-20.
+- r52 2026-09-23: `judge.effort` and `judge.roles.<role>.effort` (§8; low | medium | high | xhigh | max, inherited from the judge where unset, sent by the api and batch transports as `output_config.effort`, nothing sent when unset). Evidence: the pronunciation role moves to Claude Opus 5.5 ($4/$20 per MTok against Opus 5's $5/$25), which rejects `thinking: disabled` and controls depth by effort alone with a default of `medium` where Opus 5's was `high`; the role's 47% corroboration was measured at Opus 5's default, so the deck pins the role at `high`. User approval 2026-09-23.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -942,9 +943,10 @@ Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 ## 8. Configuration
 
 providers.yaml adds `judge.price_per_mtok: {input, output}`,
-`judge.thinking` (disabled | adaptive), `judge.max_tokens` (4096; at least
+`judge.thinking` (disabled | adaptive), `judge.effort` (low | medium | high |
+xhigh | max; unset sends nothing), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`),
-`judge.roles.<role>.{model, thinking, max_tokens, price_per_mtok}` (r43: a
+`judge.roles.<role>.{model, thinking, effort, max_tokens, price_per_mtok}` (r43: a
 role's own setting, each field inherited from `judge` when unset; a role
 whose model differs from the judge's states its own price),
 `drafter.transport` (cli | api),

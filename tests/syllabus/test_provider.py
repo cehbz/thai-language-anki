@@ -1316,11 +1316,11 @@ class _FakeTransport:
 
 
 def test_llm_cache_key_is_stable_for_the_same_prompt():
-    backend = LlmBackend(producer="sentence-drafter", model="claude-opus-5",
+    backend = LlmBackend(producer="sentence-drafter", model="claude-opus-5-5",
                          transport=_FakeTransport())
     q = Question(subject="s", provides="sentence", params={"prompt": "write a sentence"})
     assert backend.cache_key(q) == backend.cache_key(q)
-    assert backend.cache_key(q).encode().startswith("llm:sentence-drafter:claude-opus-5:")
+    assert backend.cache_key(q).encode().startswith("llm:sentence-drafter:claude-opus-5-5:")
 
 
 def test_llm_cache_key_changes_when_the_prompt_text_changes():

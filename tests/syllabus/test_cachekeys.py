@@ -177,9 +177,9 @@ def test_a_provide_key_encode_is_injective_over_which_field_is_empty():
 
 
 def test_an_llm_prompt_key_names_producer_model_and_prompt_sha():
-    assert LlmPromptKey(producer="sentence-drafter", model="claude-opus-5",
+    assert LlmPromptKey(producer="sentence-drafter", model="claude-opus-5-5",
                         prompt_sha=sha("write a sentence")).encode() == (
-        f"llm:sentence-drafter:claude-opus-5:{sha('write a sentence')}")
+        f"llm:sentence-drafter:claude-opus-5-5:{sha('write a sentence')}")
 
 
 def test_a_pair_search_key_names_its_confusion_and_dictionary_version():
