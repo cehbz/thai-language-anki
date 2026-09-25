@@ -319,9 +319,11 @@ class _Resolver:
 
 @dataclass
 class _Positions:
-    """Where each order() entry's due block starts, in STRIDE units, plus
-    one block per adopted sentence. A block is `width` units wide (a
-    pair: len(members); everything else: 1); blocks never overlap.
+    """Where each order() entry's due block starts, in STRIDE units --
+    an adopted sentence's own block included: order() deals it among
+    the word targets (r24), so it shares their one block sequence and
+    is due at its own order() position. A block is `width` units wide
+    (a pair: len(members); everything else: 1); blocks never overlap.
     """
     entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
     target_index: dict[str, int]          # target id -> block start

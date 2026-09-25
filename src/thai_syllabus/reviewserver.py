@@ -1485,9 +1485,10 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 return
 
             # Spec 5 r15 fix round 1: dispatch only PRODUCES `result`/
-            # `status` (or sends its own 404 and returns) -- it never
-            # sends the response itself. That keeps exactly one send per
-            # request, at the bottom, through `_send_json_safely`: a
+            # `status` (`result` None for an unknown path, 404'd after the
+            # `try`) -- it never sends the response itself. That keeps
+            # exactly one send per request, at the bottom, through
+            # `_send_json_safely` or the 404's `send_error`: a
             # business-logic failure caught below still only reaches
             # that one call, so a send failure (the client already gone)
             # is never mistaken for a business error and answered with a
@@ -1544,8 +1545,7 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                                              correct=bool(payload.get("correct")))
                     result = {"ok": True, "ts": ts}
                 else:
-                    self.send_error(404, "not found")
-                    return
+                    result = None
             except (KeyError, ValueError) as e:
                 result = {"ok": False, "error": str(e)}
                 status = 400
@@ -1557,6 +1557,13 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 status = 500
 
+            if result is None:
+                # An unknown path: the 404 is sent here, outside the
+                # business `try`, so a send failure (the client already
+                # gone) can never reach its `except Exception` and be
+                # answered with a second response.
+                self.send_error(404, "not found")
+                return
             self._send_json_safely(result, status)
 
     return Handler
@@ -1787,6 +1794,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
   var queueItems = [];
   var qIdx = 0;
+  // True while an action post is in flight (withStatus): the action
+  // buttons are disabled then, and every keyboard shortcut is gated on
+  // this too, so a key can't race the post the way a click can't.
+  var busy = false;
   var galleryCards = [];
   var gIdx = 0;
   var revealed = false;
@@ -1837,9 +1848,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   // the input box's own show/hide, since a failure there must keep the
   // typed value for retry rather than reload the queue).
   function withStatus(promise, onOk) {
+    busy = true;
     setActionsDisabled(true);
     setStatus("working…");
     return promise.then(function (result) {
+      busy = false;
       if (result && result.ok) {
         setStatus("");
         onOk(result);
@@ -1955,6 +1968,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       queueItems = items;
       if (qIdx >= queueItems.length) { qIdx = 0; }
       renderSession();
+    }).catch(function () {
+      // The reload after an action (or at start) found no server: say
+      // so, and give the learner the buttons back to retry.
+      setStatus("server unreachable", true);
+      setActionsDisabled(false);
     });
   }
 
@@ -2579,6 +2597,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   document.addEventListener("keydown", function (e) {
     var active = document.activeElement;
     if (active && active.tagName === "INPUT") { return; }
+    if (busy) { return; }
     if (!document.getElementById("overlay").hidden) {
       document.getElementById("overlay").hidden = true;
       return;

@@ -1559,11 +1559,16 @@ def _role_rank(rows: Sequence[Answer], role: str,
 
 
 def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
+                     sentence_max_clauses: int, sentence_max_words: int,
                      model: str = "llm", today: Callable[[], date] = date.today
                      ) -> list[tuple[Sentence, tuple[Target, ...]]]:
     """Every unadopted sentence draft with a gloss, accepted by the
     Sentence invariant (Syllabus.check_sentence -- a refused draft is
-    logged and skipped), that fills at least one still-open Target
+    logged and skipped), within the clause cap `sentence_max_clauses`
+    (spec 3 section 5) and the deck-word cap `sentence_max_words` (r53)
+    -- a draft judged before a cap existed, or under a higher one, is
+    never adopted only for the run to retire it -- that fills at least
+    one still-open Target
     (Syllabus.fill_set, spec 1 section 3) and whose sentence-for-target
     assessment passes (authority order deciding), with those Targets.
     `model` and `today` go on the Sentence's provenance. A text F13 has
@@ -1588,6 +1593,9 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
             syllabus.check_sentence(sentence)
         except ValueError as e:
             _log.warning("adoptable_drafts: draft refused: %s", e)
+            continue
+        if (len(sentence.clauses) > sentence_max_clauses
+                or sentence.word_count > sentence_max_words):
             continue
         fills = syllabus.fill_set(sentence)
         filled = tuple(t for t in syllabus.targets if t.id in unfilled and t in fills)

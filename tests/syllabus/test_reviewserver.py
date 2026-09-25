@@ -516,6 +516,34 @@ def test_every_action_post_shows_working_then_the_servers_error_on_failure():
     assert "input.value = val;\n          input.focus();" in rs.INDEX_HTML
 
 
+def test_keyboard_shortcuts_do_nothing_while_a_post_is_in_flight():
+    """Fix wave (final review): `withStatus` disables the action buttons,
+    but keys 1-4 called answerRate straight past them -- a second rate
+    could race the first. A module-level `busy` flag, set by withStatus
+    for the life of the post, gates every key-driven action."""
+    assert "var busy = false;" in rs.INDEX_HTML
+    with_status = rs.INDEX_HTML[rs.INDEX_HTML.index("function withStatus(promise, onOk)"):]
+    with_status = with_status[:with_status.index("\n  }\n")]
+    assert "busy = true;" in with_status
+    assert "busy = false;" in with_status
+    keydown = rs.INDEX_HTML[rs.INDEX_HTML.index('document.addEventListener("keydown"'):]
+    busy_gate = keydown.index("if (busy) { return; }")
+    assert busy_gate < keydown.index('if (e.key === "n")')
+    assert busy_gate < keydown.index('["1", "2", "3", "4"]')
+    assert busy_gate < keydown.index('e.key === "ArrowRight"')
+
+
+def test_a_failed_queue_load_says_server_unreachable_and_re_enables_the_actions():
+    """Fix wave (final review): loadQueue's fetch had no `.catch`, so a
+    dead server after an action left the page silent with its buttons
+    disabled."""
+    load_queue = rs.INDEX_HTML[rs.INDEX_HTML.index("function loadQueue()"):]
+    load_queue = load_queue[:load_queue.index("\n  }\n")]
+    assert ".catch(function () {" in load_queue
+    assert 'setStatus("server unreachable", true);' in load_queue
+    assert "setActionsDisabled(false);" in load_queue
+
+
 def test_openbox_ignores_a_stale_reply_after_escape_cancels_it():
     """Fix round 1 (Minor): a reply for an Enter pressed just before
     Escape cancels the box can still arrive late. Without a per-open
@@ -2784,6 +2812,54 @@ def test_http_post_send_failure_is_logged_and_not_answered_with_a_second_respons
 
     assert len(calls) == 1
     assert "BrokenPipeError" in capsys.readouterr().err
+
+
+def test_http_post_404_send_failure_is_not_answered_as_a_business_error(
+        monkeypatch, derivations, syllabus, tmp_path, w1):
+    """Fix wave (final review): the unknown-path 404 is sent outside the
+    business `try`, so a send failure there (the client already gone)
+    never reaches the `except Exception` that answers a business bug --
+    which would send a second, JSON 500 response on the dead connection.
+    """
+    json_sends = []
+
+    def failing_send_error(self, code, message=None, explain=None):
+        raise BrokenPipeError("client gone")
+
+    def recording_send_json(self, obj, status=200):
+        json_sends.append((obj, status))
+
+    ready = threading.Event()
+    state: dict = {}
+
+    def run() -> None:
+        db_local = SyllabusDb(tmp_path / "syllabus.db")
+        server_syllabus = dataclasses.replace(syllabus, assessments=db_local)
+        server_derivations = dataclasses.replace(derivations, syllabus=server_syllabus,
+                                                 db=db_local)
+        ctx = rs.ReviewContext(derivations=server_derivations, study=db_local)
+        handler_cls = rs.build_app(ctx)
+        monkeypatch.setattr(handler_cls, "send_error", failing_send_error)
+        monkeypatch.setattr(handler_cls, "_send_json", recording_send_json)
+        httpd = HTTPServer(("127.0.0.1", 0), handler_cls)
+        state["httpd"] = httpd
+        state["port"] = httpd.server_address[1]
+        ready.set()
+        httpd.serve_forever()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert ready.wait(5), "server thread did not start in time"
+    try:
+        try:
+            _post(state["port"], "/api/no-such-endpoint", {"subject": w1.id})
+        except (http.client.RemoteDisconnected, ConnectionResetError, OSError):
+            pass  # expected: the (faked) 404 never reached the client
+    finally:
+        state["httpd"].shutdown()
+        thread.join(timeout=5)
+
+    assert json_sends == []
 
 
 # --- the screen derives what the run derives (spec 5 section 3) ------------

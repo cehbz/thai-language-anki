@@ -413,3 +413,12 @@ class Sentence:
     def elements(self) -> tuple[Element, ...]:
         """The clauses flattened, clause order."""
         return tuple(e for clause in self.clauses for e in clause)
+
+    @property
+    def word_count(self) -> int:
+        """Deck words summed across the clauses (spec 3 r53), a repeated
+        element counting like any other: the one count the word cap
+        (drafting, acceptance, adoption, the run's retirement) and
+        order()'s within-group placement read.
+        """
+        return sum(len(clause) for clause in self.clauses)

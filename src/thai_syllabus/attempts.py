@@ -1179,13 +1179,12 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
         # like the Sentence invariant above -- local and mechanical, the
         # provide row keeping it.
         return f"{len(sentence.clauses)} clauses (cap {ctx.sentence_max_clauses})"
-    word_count = sum(len(clause) for clause in sentence.clauses)
-    if word_count > ctx.sentence_max_words:
+    if sentence.word_count > ctx.sentence_max_words:
         # spec 3 r53 section 5: more deck words, summed across the
         # clauses, than the cap refuses the draft the same way -- a
         # sentence this long was daunting to a learner at the start of
         # study.
-        return f"{word_count} words (cap {ctx.sentence_max_words})"
+        return f"{sentence.word_count} words (cap {ctx.sentence_max_words})"
     if open_targets is None:
         open_ids = set(ctx.syllabus.gaps().unfilled_targets)
         open_targets = [t for t in ctx.syllabus.targets if t.id in open_ids]

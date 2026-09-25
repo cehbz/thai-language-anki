@@ -6,6 +6,7 @@ CacheReader built directly from Answer rows the test constructs; a handful
 of current_best cases exercise the real SyllabusDb for genuine
 assessments_of ordering.
 """
+import json
 import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -2271,6 +2272,14 @@ _DRAFT_JSON = '{"sentences": [{"clauses": [["eat"]], "text": "กิน", "gloss
 _DRAFT_SHA = text_sha("กิน")                # กิน: eat
 
 
+def _adoptable_drafts(cache, syllabus, **kwargs):
+    """adoptable_drafts under the shipped caps (spec 3 section 5: two
+    clauses, r53: eight deck words) unless a test names its own."""
+    kwargs.setdefault("sentence_max_clauses", 2)
+    kwargs.setdefault("sentence_max_words", 8)
+    return adoptable_drafts(cache, syllabus, **kwargs)
+
+
 def _draft_syllabus(sentences=()):
     return Syllabus(words=(_EAT, _TASTY),
                     targets=(target("eat/receptive", "eat"),),
@@ -2300,18 +2309,60 @@ def _drafted(cache, item=_DRAFT_JSON):
 def test_adoptable_drafts_offers_a_draft_that_fills_and_the_judge_passed(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
-    adoptable = adoptable_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
+    adoptable = _adoptable_drafts(cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})
     assert [(s.text, tuple(t.id for t in ts)) for s, ts in adoptable] == [
         ("กิน", ("eat/receptive",))]        # กิน: eat
     assert adoptable[0][0].gloss == "eat"
     assert adoptable[0][0].clauses == ((WordId("eat"),),)
 
 
+def _n_word_draft(count: int, *, clauses: int = 1):
+    """A syllabus of `count` targeted words and one draft on record using
+    each once, split across `clauses` clauses (joined by a space), with
+    a passing judge verdict under rubric "R"."""
+    words = tuple(word(f"n{i}", f"คำ{i}", f"word{i}") for i in range(count))
+    syllabus = Syllabus(words=words,
+                        targets=tuple(target(f"n{i}/receptive", f"n{i}") for i in range(count)))
+    ids = [w.id for w in words]
+    size = -(-count // clauses)
+    split = tuple(tuple(ids[i:i + size]) for i in range(0, count, size))
+    drafted = sentence(split, thai_of(*words), gloss=f"{count} words")
+    item = json.dumps({"sentences": [{"clauses": [list(c) for c in split],
+                                      "text": drafted.text, "gloss": drafted.gloss}]},
+                      ensure_ascii=False)
+    return syllabus, drafted, item
+
+
+def test_a_passing_draft_over_the_word_cap_is_not_adoptable(cache):
+    """Fix wave (final review): adoption applies spec 3 r53's word cap --
+    a judge-passed draft on record of 9 deck words is not adopted even
+    though every Target it fills is open, so a draft judged before the
+    cap existed (or under a higher one) never lands."""
+    syllabus, drafted, item = _n_word_draft(9)
+    _drafted(cache, item)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=drafted.text_sha)]
+    assert syllabus.fill_set(drafted)
+    assert _adoptable_drafts(cache, syllabus, current_rubric={"sentence-for-target": "R"}) == []
+    assert len(_adoptable_drafts(cache, syllabus, current_rubric={"sentence-for-target": "R"},
+                                 sentence_max_words=9)) == 1
+
+
+def test_a_passing_draft_over_the_clause_cap_is_not_adoptable(cache):
+    """The clause cap (spec 3 section 5) at adoption the same way."""
+    syllabus, drafted, item = _n_word_draft(3, clauses=3)
+    _drafted(cache, item)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=drafted.text_sha)]
+    assert len(drafted.clauses) == 3
+    assert _adoptable_drafts(cache, syllabus, current_rubric={"sentence-for-target": "R"}) == []
+    assert len(_adoptable_drafts(cache, syllabus, current_rubric={"sentence-for-target": "R"},
+                                 sentence_max_clauses=3)) == 1
+
+
 def test_an_adopted_draft_carries_the_drafting_model_and_the_runs_clock(cache):
     from datetime import date as _date
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
-    adopted, _targets = adoptable_drafts(cache, _draft_syllabus(),
+    adopted, _targets = _adoptable_drafts(cache, _draft_syllabus(),
                                          current_rubric={"sentence-for-target": "R"},
                                          model="claude-x", today=lambda: _date(2026, 9, 5))[0]
     assert adopted.provenance.origin == "claude-x"
@@ -2321,7 +2372,7 @@ def test_an_adopted_draft_carries_the_drafting_model_and_the_runs_clock(cache):
 def test_a_draft_the_judge_failed_is_not_adoptable(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", False, rubric="R")]
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2331,7 +2382,7 @@ def test_a_learner_rating_outranks_the_judge_on_a_draft(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", False, rubric="R"),
                    _sentence_verdict("learner", "acceptable")]
-    assert len(adoptable_drafts(cache, _draft_syllabus(),
+    assert len(_adoptable_drafts(cache, _draft_syllabus(),
                                 current_rubric={"sentence-for-target": "R"})) == 1
 
 
@@ -2339,7 +2390,7 @@ def test_a_learner_rejection_outranks_a_judge_pass_on_a_draft(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R"),
                    _sentence_verdict("learner", "unacceptable-none")]
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2355,7 +2406,7 @@ def test_a_draft_that_fills_nothing_is_not_adoptable(cache):
                                   items=[]))
     cache.rows[-1].answer["items"] = ['{"sentences": [' + _UNFILLING_DRAFT_JSON + ']}']
     cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=_UNFILLING_DRAFT_SHA)]
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2368,7 +2419,7 @@ def test_adoptable_drafts_skips_a_draft_naming_an_unregistered_word_and_logs(cac
                                   items=[]))
     cache.rows[-1].answer["items"] = ['{"sentences": [' + bad_json + ']}']
     with caplog.at_level(logging.WARNING):
-        adoptable = adoptable_drafts(cache, _draft_syllabus(),
+        adoptable = _adoptable_drafts(cache, _draft_syllabus(),
                                      current_rubric={"sentence-for-target": "R"})
     assert adoptable == []
     assert "draft refused" in caplog.text and "ghost" in caplog.text
@@ -2396,7 +2447,7 @@ def test_a_draft_is_offered_only_for_the_targets_still_open(cache):
                                   items=[]))
     cache.rows[-1].answer["items"] = [_TWO_TARGET_DRAFT_JSON]
     cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=_TWO_TARGET_DRAFT_SHA)]
-    adoptable = adoptable_drafts(cache, _two_target_draft_syllabus([already]),
+    adoptable = _adoptable_drafts(cache, _two_target_draft_syllabus([already]),
                                  current_rubric={"sentence-for-target": "R"})
     assert [(s.text, tuple(t.id for t in ts)) for s, ts in adoptable] == [
         ("กินข้าว", ("rice/receptive",))]   # กินข้าว: eat rice -- only the still-open Target
@@ -2406,14 +2457,14 @@ def test_a_draft_already_adopted_is_not_offered_again(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
     adopted = sentence(((_EAT.id,),), thai_of(_EAT), gloss="eat")   # กิน: eat
-    assert adoptable_drafts(cache, _draft_syllabus([adopted]),
+    assert _adoptable_drafts(cache, _draft_syllabus([adopted]),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
 def test_a_stale_judge_verdict_does_not_make_a_draft_adoptable(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="old-R")]
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2426,7 +2477,7 @@ def test_adoptable_drafts_drops_a_draft_with_an_empty_gloss(cache):
                                   items=[]))
     cache.rows[-1].answer["items"] = [_GLOSSLESS_DRAFT_JSON]
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2447,7 +2498,7 @@ def test_adoptable_drafts_never_re_adopts_a_retired_text(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
     cache.rows.append(_retirement_row(_DRAFT_SHA))
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2472,10 +2523,10 @@ def test_a_replacement_draft_is_unadoptable_once_its_reading_is_struck(cache):
     _drafted(cache)
     cache.rows[-1].question.update({"comment_sha": "c1c1c1c1c1c1c1c1", "prompt_version": "1"})
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
-    assert len(adoptable_drafts(cache, _draft_syllabus(),
+    assert len(_adoptable_drafts(cache, _draft_syllabus(),
                                 current_rubric={"sentence-for-target": "R"})) == 1
     cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
-    assert adoptable_drafts(cache, _draft_syllabus(),
+    assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
 
 
@@ -2485,7 +2536,7 @@ def test_a_drafters_draft_survives_a_strike_on_some_other_reading(cache):
     _drafted(cache)
     cache.rows += [_sentence_verdict("judge", True, rubric="R")]
     cache.rows.append(_comment_veto_row("rice", "c1c1c1c1c1c1c1c1"))
-    assert [s.text for s, _ in adoptable_drafts(
+    assert [s.text for s, _ in _adoptable_drafts(
         cache, _draft_syllabus(), current_rubric={"sentence-for-target": "R"})] == ["กิน"]  # กิน: eat
 
 

@@ -385,6 +385,16 @@ def test_sentence_elements_flattens_clauses_in_clause_order():
     assert s.elements == (dog, big, run, (dog, REPEAT_MARK))
 
 
+def test_sentence_word_count_sums_every_clauses_elements():
+    """Spec 3 r53: a sentence's deck words, summed across its clauses --
+    a repeated element counts, the one count the drafting cap, the
+    acceptance test, the run's retirement and order() all read."""
+    dog, big, run = WordId("dog"), WordId("big"), WordId("run")
+    clauses: Clauses = ((dog, big), (run, (dog, REPEAT_MARK)))
+    s = Sentence(clauses=clauses, text="", gloss="", voice="learner_voice", provenance=PROV)
+    assert s.word_count == 4
+
+
 def test_element_word_returns_the_word_id_for_a_plain_element():
     dog = WordId("dog")
     assert element_word(dog) == dog

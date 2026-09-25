@@ -311,7 +311,9 @@ def _adopt_sentences(ctx: Sourcing) -> int:
     written to the sentences table and applied to `ctx.syllabus`.
     """
     chosen = ctx.syllabus.cover(adoptable_drafts(
-        ctx.db, ctx.syllabus, current_rubric=ctx.rubrics, model=ctx.judge_model,
+        ctx.db, ctx.syllabus, current_rubric=ctx.rubrics,
+        sentence_max_clauses=ctx.sentence_max_clauses,
+        sentence_max_words=ctx.sentence_max_words, model=ctx.judge_model,
         today=ctx.today))
     for sentence, _targets in chosen:
         ctx.db.add_sentence(text_sha=sentence.text_sha, text=sentence.text,
@@ -690,15 +692,13 @@ def _retire_over_cap_sentences(ctx: Sourcing, tally: _Tally) -> None:
     `_try_each_need` skips the sentence's other still-queued needs, and
     `tally.retired` counts it like any other retirement.
     """
-    over_cap = [s for s in ctx.syllabus.sentences
-               if sum(len(clause) for clause in s.clauses) > ctx.sentence_max_words]
+    over_cap = [s for s in ctx.syllabus.sentences if s.word_count > ctx.sentence_max_words]
     for sentence in over_cap:
         need = Need(sentence.text_sha, "recording", "sentence")
         if _learner_outlives_the_rule(ctx, need):
             continue
-        word_count = sum(len(clause) for clause in sentence.clauses)
         retire_sentence(ctx, sentence.text_sha,
-                        reason=f"{word_count} words (cap {ctx.sentence_max_words})")
+                        reason=f"{sentence.word_count} words (cap {ctx.sentence_max_words})")
         tally.retired_subjects.add(sentence.text_sha)
         tally.retired += 1
 

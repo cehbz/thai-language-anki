@@ -217,10 +217,13 @@ class Syllabus:
 
         # r24: a sentence is dealt directly after its last used word's last
         # Target -- interleaved into the word_target block, not appended
-        # after every word. Sentences sharing a last word are ordered
-        # shorter first (fewer clause elements), tied sentences by
-        # text_sha; a sentence naming no targeted word (last_used_word
-        # raises) is placed after every other entry.
+        # after every word. A last-word group is sorted by
+        # `_placement_key` -- (last word's position, word count,
+        # text_sha): shorter first, ties by text_sha -- the one key the
+        # fill set's placement (clause 3's novelty rule) reads too, so the
+        # two can never disagree about which sentence comes first. A
+        # sentence naming no targeted word (last_used_word raises) is
+        # placed after every other entry, sorted by that same key.
         by_last_word: dict[WordId, list[Sentence]] = {}
         orphaned: list[Sentence] = []
         for s in self.sentences:
@@ -231,12 +234,8 @@ class Syllabus:
                 continue
             by_last_word.setdefault(word, []).append(s)
 
-        def sentence_length(s: Sentence) -> int:
-            return sum(len(clause) for clause in s.clauses)
-
         def sentences_after(word: WordId) -> list[OrderEntry]:
-            group = sorted(by_last_word.get(word, ()),
-                           key=lambda s: (sentence_length(s), s.text_sha))
+            group = sorted(by_last_word.get(word, ()), key=self._placement_key)
             return [OrderEntry("sentence", s.text_sha) for s in group]
 
         body: list[OrderEntry] = []
@@ -258,7 +257,7 @@ class Syllabus:
             if self._word_last_position[t.word] == i:
                 body += sentences_after(t.word)
 
-        orphaned_sorted = sorted(orphaned, key=lambda s: (sentence_length(s), s.text_sha))
+        orphaned_sorted = sorted(orphaned, key=self._placement_key)
         body += [OrderEntry("sentence", s.text_sha) for s in orphaned_sorted]
 
         return [*sounds, *body]
@@ -305,8 +304,10 @@ class Syllabus:
 
         A name word's Targets are not in _ordered_targets (spec 1 r16:
         order() places them in the sounds block, before every word
-        target), so every name word is seeded at -1, the position
-        sentence_after uses for a sentence with no placed word at all.
+        target), so every name word is seeded at -1: a sentence whose
+        last used word is a name word follows the sounds block, ahead of
+        every word_target entry. A sentence using no targeted word at all
+        has no entry here and goes after every other order() entry.
         """
         positions: dict[WordId, int] = {word_id: -1 for word_id in self.name_word_ids}
         for i, t in enumerate(self._ordered_targets):
@@ -352,8 +353,9 @@ class Syllabus:
         (each target belongs to one word; every word's own last
         position is a distinct index), but the (position, word) key
         still orders any hypothetical tie to the greater word id.
-        order()'s sentence_after shares this computation to place the
-        sentence. Raises ValueError naming the sentence's text_sha when
+        order() groups sentences by this word to deal each one right
+        after the word's last Target, and `_placement_key` reads its
+        position. Raises ValueError naming the sentence's text_sha when
         it uses no targeted word.
         """
         used = frozenset(sentence.words)
@@ -422,20 +424,22 @@ class Syllabus:
                 used, sentence.voice, t, last_used_word, admits_learner)),
             key=lambda t: t.id))
 
-    def _sentence_order_key(self, sentence: Sentence) -> tuple[int, str] | None:
-        """(last_used_word's order() position, text_sha): the key
-        order()'s own sentence_after sorts sentences by, and clause 3's
-        novelty rule compares to place one adopted sentence at or before
-        another. None when the sentence uses no targeted word at all.
+    def _sentence_order_key(self, sentence: Sentence) -> tuple[int, int, str] | None:
+        """(last_used_word's `_word_last_position`, word_count,
+        text_sha): the key order() sorts a last-word group by, and clause
+        3's novelty rule compares to place one adopted sentence at or
+        before another -- one key, so order() and the fill set agree on
+        which of two sentences sharing a last word comes first. None
+        when the sentence uses no targeted word at all.
         """
         try:
             word = self.last_used_word(sentence)
         except ValueError:
             return None
-        return (self._word_last_position[word], sentence.text_sha)
+        return (self._word_last_position[word], sentence.word_count, sentence.text_sha)
 
     @cached_property
-    def _adopted_order_keys(self) -> dict[str, tuple[int, str] | None]:
+    def _adopted_order_keys(self) -> dict[str, tuple[int, int, str] | None]:
         """Every adopted sentence's own `_sentence_order_key`, computed
         once per instance and keyed by text_sha -- `_order_key_of` reads
         this for an adopted sentence instead of recomputing
@@ -444,7 +448,7 @@ class Syllabus:
         """
         return {s.text_sha: self._sentence_order_key(s) for s in self.sentences}
 
-    def _order_key_of(self, sentence: Sentence) -> tuple[int, str] | None:
+    def _order_key_of(self, sentence: Sentence) -> tuple[int, int, str] | None:
         """`_sentence_order_key`, from `_adopted_order_keys` for an
         adopted sentence, computed fresh for any other sentence.
         """
@@ -452,17 +456,26 @@ class Syllabus:
             return self._adopted_order_keys[sentence.text_sha]
         return self._sentence_order_key(sentence)
 
+    def _placement_key(self, sentence: Sentence) -> tuple[int, int, str]:
+        """`_order_key_of`, or -- for a sentence using no targeted word --
+        (len(_ordered_targets), word_count, text_sha), past every placed
+        word's position, as order() deals such a sentence after every
+        other entry. A strict total order over any finite set of
+        sentences: order()'s sort key and `_adopted_placement_order`'s.
+        """
+        key = self._order_key_of(sentence)
+        if key is not None:
+            return key
+        return (len(self._ordered_targets), sentence.word_count, sentence.text_sha)
+
     @cached_property
     def _adopted_placement_order(self) -> tuple[Sentence, ...]:
         """self.sentences sorted by placement order (spec 1 section 3,
-        clause 3): `_order_key_of`, or (-1, text_sha) for a sentence
-        with no order key at all (order()'s own fallback) -- a strict
-        total order over a finite set, the basis the fill-set recursion
-        below is well-founded on.
+        clause 3): `_placement_key`, the key order() deals sentences by
+        -- a strict total order over a finite set, the basis the
+        fill-set recursion below is well-founded on.
         """
-        def key(s: Sentence) -> tuple[int, str]:
-            return self._order_key_of(s) or (-1, s.text_sha)
-        return tuple(sorted(self.sentences, key=key))
+        return tuple(sorted(self.sentences, key=self._placement_key))
 
     @cached_property
     def _adopted_fill_sets(self) -> dict[str, tuple[Target, ...]]:

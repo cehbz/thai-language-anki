@@ -1,6 +1,8 @@
 """Syllabus.order(): sounds before words; receptive before productive per
-word; ties by frequency rank / emphasis weight; a sentence after every
-word it uses (spec 1, section 3).
+word; ties by frequency rank / emphasis weight; a sentence dealt right
+after its last used word's last Target, a last-word group shorter first
+then by text_sha -- the key the fill set's placement reads too; a
+sentence using no targeted word last (spec 1, section 3, r24).
 """
 import pytest
 
@@ -155,6 +157,42 @@ def test_sentences_tied_on_length_sharing_a_last_word_tie_on_text_sha():
     entries = syllabus.order()
     sentence_shas = [e.id for e in entries if e.kind == "sentence"]
     assert sentence_shas == sorted([a.text_sha, b.text_sha])
+
+
+def test_order_and_the_fill_set_placement_share_one_key_within_a_last_word_group():
+    """Fix wave (final review): order() deals a last-word group shorter
+    first, so the fill set's placement (spec 1 section 3 clause 3's "an
+    adopted sentence placed at or before this one") must read the same
+    (last-word position, word count, text_sha) key. A (long, lower
+    text_sha) and B (short) share last word w and both use the
+    sentence-introduced x; B also uses the sentence-introduced y. B is
+    dealt first, so A cannot have met x for B: B carries two unmet
+    sentence-introduced Targets and fills nothing, and A -- placed
+    after B, whose fill set is empty -- fills x alone.
+    """
+    x = word("a_x", "ข้าว")  # rice
+    y = word("b_y", "ปลา")  # fish
+    f = word("c_f", "หมา")  # dog
+    g = word("d_g", "แมว")  # cat
+    w = word("z_w", "กิน")  # eat
+    t_x = target("x", "a_x", introduction="sentence")
+    t_y = target("y", "b_y", introduction="sentence")
+    t_f = target("f", "c_f")
+    t_g = target("g", "d_g")
+    t_w = target("w", "z_w")
+    to = thai_of(x, y, f, g, w)
+    long_a = sentence(((f.id, x.id, g.id, w.id),), to, gloss="A")
+    short_b = sentence(((y.id, x.id, w.id),), to, gloss="B")
+    syllabus = Syllabus(words=(x, y, f, g, w), targets=(t_x, t_y, t_f, t_g, t_w),
+                        sentences=(long_a, short_b))
+    assert long_a.text_sha < short_b.text_sha
+    assert syllabus.last_used_word(long_a) == syllabus.last_used_word(short_b) == w.id
+
+    sentence_shas = [e.id for e in syllabus.order() if e.kind == "sentence"]
+    assert sentence_shas == [short_b.text_sha, long_a.text_sha]
+    assert t_x not in syllabus.fill_set(short_b)
+    assert syllabus.fill_set(short_b) == ()
+    assert t_x in syllabus.fill_set(long_a)
 
 
 def test_a_sentence_whose_last_used_word_has_no_target_is_placed_last():

@@ -30,6 +30,7 @@ from thai_syllabus.attempts import AttemptResult, Sourcing, Spend, sources_for
 from thai_syllabus.curated import (CuratedBundle, RulebookConfig, load_graphemes, load_targets,
                                    load_words, save_curated)
 from thai_syllabus.derivations import (
+    adoptable_drafts,
     available_need_keys,
     available_needs,
     current_best,
@@ -55,6 +56,7 @@ from thai_syllabus.run import (
     run,
 )
 from thai_syllabus.store import MediaStore, SyllabusDb
+from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
 from thai_syllabus.wiring import build_sourcing
 
@@ -2721,6 +2723,92 @@ def test_an_over_cap_directed_sentence_is_untouched(db, monkeypatch):
     assert report.retired == 0
     assert over_cap.text_sha in {s.text_sha for s in db.all_sentences()}
     assert ctx.guard.removals == {}
+
+
+# --- fix wave (final review): the caps at adoption, over a real Syllabus
+# and the real adoptable_drafts ---------------------------------------------
+
+def _n_words(count: int, tag: str):
+    return tuple(word(f"{tag}{i}", f"คำ{tag}{i}", f"word{tag}{i}") for i in range(count))
+
+
+def _targeted_syllabus(words, sentences=()):
+    return Syllabus(words=words,
+                    targets=tuple(target(f"{w.id}/receptive", w.id) for w in words),
+                    sentences=tuple(sentences))
+
+
+def _seed_passing_draft(db, s) -> None:
+    """A judge-passed draft on record, in the drafting ask's own shape."""
+    _seed_draft(db, clauses=[list(c) for c in s.clauses], text=s.text, gloss=s.gloss)
+    db.append(port="assess", backend="judge",
+              key=JudgeKey(rubric_sha="r", subject=s.text_sha, identity="",
+                           role="sentence-for-target"),
+              subject=s.text_sha,
+              question={"role": "sentence-for-target", "artifact_sha": None, "rubric": None,
+                        "kind": "sentence", "subject_kind": "sentence"},
+              answer={"value": True})
+
+
+def _observe_sentence_attempt(monkeypatch):
+    """What the sentence attempt is handed: the Targets open on its
+    ctx.syllabus when it is called."""
+    handed: list[tuple[str, ...]] = []
+
+    def fake_sentence_attempt(ctx, max_targets=40):
+        handed.append(tuple(ctx.syllabus.gaps().unfilled_targets))
+        return AttemptResult(attempted=False)
+
+    monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
+    return handed
+
+
+def test_a_passing_draft_over_the_word_cap_is_never_adopted_by_the_run(db, monkeypatch):
+    """Fix wave (final review): a judge-passed 9-word draft on record is
+    not adopted even though every Target it fills is open -- the run
+    threads Sourcing.sentence_max_words into adoptable_drafts, so the
+    draft is never adopted just to be retired by the same run."""
+    words = _n_words(9, "a")
+    draft = sentence((tuple(w.id for w in words),), thai_of(*words), gloss="9 words")
+    _seed_passing_draft(db, draft)
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "adoptable_drafts", adoptable_drafts)
+    ctx = _ctx(db, _targeted_syllabus(words))
+    ctx.guard = Guard()
+    assert ctx.syllabus.fill_set(draft)
+
+    report = run(ctx, {})
+
+    assert report.sentences_adopted == 0
+    assert report.retired == 0
+    assert db.all_sentences() == []
+
+
+def test_an_over_cap_sentence_retired_by_the_run_reopens_its_targets_for_the_same_run(
+        db, monkeypatch):
+    """Fix wave (final review): an adopted 9-word sentence is retired by
+    the run, and the Targets it alone filled are handed to that same
+    run's sentence attempt; the adoption after the attempt does not put
+    another passing 9-word draft filling those Targets straight back."""
+    words = _n_words(9, "r")
+    ids = tuple(w.id for w in words)
+    adopted = sentence((ids,), thai_of(*words), gloss="9 words")
+    rival = sentence((tuple(reversed(ids)),), thai_of(*words), gloss="9 words reversed")
+    _seed_adopted_sentence(db, adopted)
+    _seed_passing_draft(db, rival)
+    _patch(monkeypatch, {})
+    monkeypatch.setattr(run_mod, "adoptable_drafts", adoptable_drafts)
+    handed = _observe_sentence_attempt(monkeypatch)
+    ctx = _ctx(db, _targeted_syllabus(words, sentences=(adopted,)))
+    ctx.guard = Guard()
+    assert not ctx.syllabus.gaps().unfilled_targets
+
+    report = run(ctx, {})
+
+    assert report.retired == 1
+    assert handed and set(handed[0]) == {f"{w}/receptive" for w in ids}
+    assert report.sentences_adopted == 0
+    assert db.all_sentences() == []
 
 
 # --- RunReport persistence: /stats history needs a source ----------------
