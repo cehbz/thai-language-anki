@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 52, proposed 2026-09-23 against principles r6 and architecture
+Revision 53, proposed 2026-09-25 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -246,6 +246,7 @@ Revision log:
 - r50 2026-09-20: `Engines` gains an optional dictionary oracle, consulted lazily -- in the adoption seed when the local engines do not agree, in corroboration when no local reading matches the verdict -- with agreement pairwise over every reading in hand; the oracle is English Wiktionary's "(standard) IPA" for the exact form, several readings where the entry lists them, one `DictionaryKey(source, form)` row per form under port Provide and backend `wiktionary` (revision id and readings, or absence), read before the wire so a form is fetched once ever, one request per `quotas.wiktionary.min_interval_seconds` (1) and at most `quotas.wiktionary.max_asks` (200) fetches per run, a 429 or 5xx backing off without a row (Quota, §6a), a transport failure logged once and the oracle dead for the rest of the run; the row's subject is `dictionary:<form>`; a reading with an empty syllable slot (Wiktionary's trailing-dot compound-linking variant) is no reading, as for tltk. A form containing whitespace is read token by token by every local engine, always, and never looked up: r43's whole-form-then-token fallback and its never-engine-agreed clause are retired, so two engines agreeing token-wise is `engines_agree`. Evidence: 57 words disputed on the live deck with every verdict on record and re-folded free each cycle; after the diphthong convention (spec 1 r23) 20 remain, of which Wiktionary settles มกรา and พลาสติก for the judge, กระดูก, กระเทียม, กระจก, ประเทศ, หุง and ตอนนี้ for the engines, and reads ชานมไข่มุก that neither engine can; the four recited names งอ งู, ธอ ธง, บอ ใบไม้, สอ เสือ read correctly token by token and wrongly whole. English Wiktionary has an entry for 795 of the deck's 897 forms. User approval 2026-09-20.
 - r51 2026-09-20: the pronunciation rubric's spelling-length sentence names the isolation-form exception -- a word written with a short sign but said long when spoken alone (น้ำ, ได้, ไม้, เจ้า, เก้า and the like) is long in isolation and keeps its own length inside a compound; the rubric sha changes, so the still-disputed words are re-asked once. Evidence: the judge, following the sentence, read น้ำ and ได้ short where both engines and Wiktionary read them long (Wikipedia: náːm, dâːj) and read น้ำ short inside น้ำมะพร้าว where Wiktionary agrees; 7 of the 57 disputed words. User approval 2026-09-20.
 - r52 2026-09-23: `judge.effort` and `judge.roles.<role>.effort` (§8; low | medium | high | xhigh | max, inherited from the judge where unset, sent by the api and batch transports as `output_config.effort`, nothing sent when unset). Evidence: the pronunciation role moves to Claude Opus 5.5 ($4/$20 per MTok against Opus 5's $5/$25), which rejects `thinking: disabled` and controls depth by effort alone with a default of `medium` where Opus 5's was `high`; the role's 47% corroboration was measured at Opus 5's default, so the deck pins the role at `high`. User approval 2026-09-23.
+- r53 2026-09-25: a sentence has at most `sentence_max_words` (§8, 8) deck words across its clauses: the drafter is asked for it, a longer draft is refused at acceptance, and an adopted sentence over it is retired by the run (F13) unless a learner recording or direction keeps it. Evidence: 41 of 410 adopted sentences exceed 8 words (the longest 13, two clauses: "this morning I sip a cup of hot tea, in the afternoon I sip a cup of coffee"), 83 Targets filled by them alone; the learner found them daunting at the start of study. User ruling 2026-09-25.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -599,7 +600,9 @@ takes to cover the handed targets, each filling at most
 that fills more is a word list in disguise) and free to use any other
 listed vocabulary as filler, each of at most `sentence_max_clauses`
 clauses (§8, default 2: a longer sentence outruns the 5 s recording
-cap), and states the rendering rule (spec 1 §1:
+cap) and at most `sentence_max_words` deck words summed across them
+(§8, default 8, r53: a longer sentence was daunting to a learner at the
+start of study), and states the rendering rule (spec 1 §1:
 clauses of word ids, ๆ after a repeated word, clauses separated by one
 space, standard spelling, numbers as words, no punctuation), requiring
 vocabulary ids exactly as listed, suffix included, with one worked
@@ -609,9 +612,10 @@ example item showing a suffixed id and a repeated word.
 ["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
 Acceptance is the Sentence invariant, local and mechanical: an
 unregistered id, a rendering that differs from text, more clauses than
-the cap, or more open Targets filled than `sentence_targets_per_sentence`
-(r27; met words do not count) refuses the draft, logged with the reason,
-the provide row keeping it. Each distinct
+the cap, more deck words summed across the clauses than
+`sentence_max_words` (r53), or more open Targets filled than
+`sentence_targets_per_sentence` (r27; met words do not count) refuses the
+draft, logged with the reason, the provide row keeping it. Each distinct
 accepted text is one candidate: a text listed twice is one candidate;
 differing clauses reject it; differing glosses keep the first, since the
 verdict is keyed by the text and was given on that gloss. A draft
@@ -636,15 +640,20 @@ sentence's recording (voice constraint from the marking as for a word,
 above; tts allowed for receptive-only, a productive fill wants native,
 warn otherwise) and an optional scene picture. A refused draft and a
 draft filling nothing are rejected drafts in the record. An adopted
-Sentence whose recording need is exhausted with no passing candidate is
+Sentence whose recording need is exhausted with no passing candidate, or
+whose total deck words summed across its clauses exceed
+`sentence_max_words` (r53: a config lowered after adoption, or a comment
+pass replacement drafted under a since-lowered cap), is
 retired by the run (F13: nothing is grandfathered): a retirement row is
 appended under the sentence (typed key, port attempt, backend run), the
 row is deleted and reported by id (spec 2 §6), its drafts stay in the
-record, and its Targets reopen. A retired text is never re-adopted and
-the drafting prompt lists it among the sentences not to propose. A
+record, and its Targets reopen. The word-cap check runs before the
+sentence attempt (r53), so a Target the retired sentence alone filled is
+handed to the drafter the same run. A retired text is never re-adopted
+and the drafting prompt lists it among the sentences not to propose. A
 learner-supplied or learner-nominated recording, or a learner direction
-on the sentence, keeps the sentence (F9); the screen shows it as
-exhausted.
+on the sentence, keeps the sentence (F9) whichever check retired it; the
+screen shows it as exhausted.
 
 **Adjudication (Word).** One judge ask per run over every Word whose
 pronunciation is not corroborated: role pronunciation-for-word, text
@@ -980,7 +989,8 @@ openverse 1, pexels 1, brave 1, others 0) and
 (the one wait before the single retry of a challenge page, §6a;
 openverse 60, pexels 60, others 0: a challenge is a plain transport
 failure, and brave answers 402/429 rather than a challenge page),
-`sentence_nothing_cap` (3), `sentence_max_clauses` (2) and
+`sentence_nothing_cap` (3), `sentence_max_clauses` (2),
+`sentence_max_words` (8, r53) and
 `sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
 (3), `pair_search_depth` (5000) and `pair_search_asks` (40).
 `secrets.brave` names a reference to the Brave Search API subscription

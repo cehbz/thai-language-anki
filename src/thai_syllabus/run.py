@@ -670,6 +670,39 @@ def _maybe_retire_exhausted_sentence(ctx: Sourcing, need: Need, tally: _Tally) -
     _retire_exhausted_sentence(ctx, need, tally)
 
 
+def _retire_over_cap_sentences(ctx: Sourcing, tally: _Tally) -> None:
+    """Spec 3 r53 section 5: an adopted Sentence whose total deck words
+    (summed across its clauses) exceed `ctx.sentence_max_words` is
+    retired -- nothing is grandfathered (F13), the same principle F13's
+    recording-exhaustion retirement above cites, applied here to a config
+    change (or an earlier run's now-lowered cap) rather than an exhausted
+    recording. A learner row outlives the rule the same way (F9,
+    `_learner_outlives_the_rule`, checked against the sentence's own
+    recording need, the only role it names): a nominated or
+    learner-supplied recording, or a learner direction, keeps the
+    sentence. Runs before `sentence_attempt` (run._run_pass) so a Target
+    the retired sentence alone filled reopens and is handed to the very
+    same drafting ask -- the reason the comment pass's own retirement
+    (r30) runs before it too. Reuses attempts.retire_sentence, the one
+    mechanism every retirement goes through: the retirement row, the
+    sentences-row delete, the Guard report and the `ctx.syllabus`
+    replacement. `tally.retired_subjects` is updated so
+    `_try_each_need` skips the sentence's other still-queued needs, and
+    `tally.retired` counts it like any other retirement.
+    """
+    over_cap = [s for s in ctx.syllabus.sentences
+               if sum(len(clause) for clause in s.clauses) > ctx.sentence_max_words]
+    for sentence in over_cap:
+        need = Need(sentence.text_sha, "recording", "sentence")
+        if _learner_outlives_the_rule(ctx, need):
+            continue
+        word_count = sum(len(clause) for clause in sentence.clauses)
+        retire_sentence(ctx, sentence.text_sha,
+                        reason=f"{word_count} words (cap {ctx.sentence_max_words})")
+        tally.retired_subjects.add(sentence.text_sha)
+        tally.retired += 1
+
+
 def _redraw_stale_cells(ctx: Sourcing, budgets: Mapping[str, Budget],
                         carried: Mapping[str, Spend], tally: _Tally) -> int:
     """The chart-cell pass (spec 3 r46): a name word whose newest cell was
@@ -985,6 +1018,14 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         tally.collect(comments)
         if comments.judge_unreachable:
             return _judge_died_before_the_loop(ctx, tally, collected_at_resolve, now_ns=now_ns)
+
+    # Spec 3 r53 section 5: an adopted Sentence over ctx.sentence_max_words
+    # is retired before the sentence attempt below (the same reason the
+    # comment pass's own retirement, just above, runs before it): a
+    # Target it alone filled reopens and is handed to this same run's
+    # drafting ask, so `open_words_before` -- read right after -- already
+    # counts it open.
+    _retire_over_cap_sentences(ctx, tally)
 
     # An open Target's need is its word's, one however many Targets that
     # word has (derivations.available_needs), and that is the unit every

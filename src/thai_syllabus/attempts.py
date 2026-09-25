@@ -87,7 +87,8 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
            "reverify_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
-           "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
+           "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_MAX_WORDS",
+           "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK",
            "DEFAULT_SENTENCE_TARGETS_PER_SENTENCE"]
 
 _log = logging.getLogger(__name__)
@@ -97,6 +98,14 @@ _log = logging.getLogger(__name__)
 # so the cure is at drafting -- Sourcing.sentence_max_clauses, wired from
 # providers.yaml's own sentence_max_clauses (wiring.build_sourcing).
 DEFAULT_SENTENCE_MAX_CLAUSES = 2
+
+# The drafting prompt's own word cap default (spec 3 r53 section 5/8): a
+# sentence's total deck words, summed across its clauses, over this many
+# was daunting to a learner at the start of study, so the cure is at
+# drafting -- Sourcing.sentence_max_words, wired from providers.yaml's own
+# sentence_max_words (wiring.build_sourcing) -- and at acceptance; an
+# adopted sentence already over it is retired by the run (run.py, F13).
+DEFAULT_SENTENCE_MAX_WORDS = 8
 
 # sentence_attempt's own cap default (spec 3 r24 section 5/8) on how many
 # sentence-introduced, unmet Targets one drafting ask is handed -- a batch
@@ -230,6 +239,11 @@ class Sourcing:
     # draft over this many clauses is refused like an invariant failure
     # (sentence_attempt's acceptance loop), never adopted.
     sentence_max_clauses: int = DEFAULT_SENTENCE_MAX_CLAUSES
+    # A sentence's own word cap (spec 3 r53 section 5/8): the drafting
+    # prompt's own total deck-word cap, summed across its clauses -- a
+    # draft over this many is refused like the clause cap, and an adopted
+    # sentence already over it is retired by the run (run.py, F13).
+    sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS
     # sentence_attempt's own cap (spec 3 r24 section 5/8) on how many
     # sentence-introduced, unmet Targets one drafting ask is handed; the
     # rest of the handed batch is the next non-introduced open Targets.
@@ -1165,6 +1179,13 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
         # like the Sentence invariant above -- local and mechanical, the
         # provide row keeping it.
         return f"{len(sentence.clauses)} clauses (cap {ctx.sentence_max_clauses})"
+    word_count = sum(len(clause) for clause in sentence.clauses)
+    if word_count > ctx.sentence_max_words:
+        # spec 3 r53 section 5: more deck words, summed across the
+        # clauses, than the cap refuses the draft the same way -- a
+        # sentence this long was daunting to a learner at the start of
+        # study.
+        return f"{word_count} words (cap {ctx.sentence_max_words})"
     if open_targets is None:
         open_ids = set(ctx.syllabus.gaps().unfilled_targets)
         open_targets = [t for t in ctx.syllabus.targets if t.id in open_ids]
@@ -2413,6 +2434,7 @@ def _example_clause_ids(vocabulary: Sequence[Word]) -> tuple[str, str]:
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
                      *, sentence_max_clauses: int,
+                     sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS,
                      sentence_targets_per_sentence: int = DEFAULT_SENTENCE_TARGETS_PER_SENTENCE) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary once as
     id/thai/meaning lines, a Targets line per picture-introduced handed
@@ -2422,7 +2444,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
     clauses per sentence (spec 3 r23 section 5/8: a longer sentence outruns
-    the 5 s recording cap). When `refused` (derivations.refused_drafts) is
+    the 5 s recording cap) and at most `sentence_max_words` deck words
+    across them (spec 3 r53 section 5/8). When `refused` (derivations.refused_drafts) is
     non-empty, a block lists those texts as sentences not to propose
     again, each with the verdict's evidence delimited the way the
     assessor prompts delimit deck fields (assessor.deck_field, over the
@@ -2469,6 +2492,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             "introduce at most one word from the Introducible list and must otherwise use only "
             "the vocabulary below.\n"
             f"Each sentence has at most {sentence_max_clauses} clauses.\n"
+            f"Each sentence has at most {sentence_max_words} words, its clauses' words summed.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
             + (f"Avoid starting with any of: {', '.join(openings)}.\n" if openings else "")
             + sections
@@ -2500,7 +2524,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     `draft_refusal` -- the Sentence invariant (Syllabus.check_sentence),
     the clause cap `ctx.sentence_max_clauses` (spec 3 section 5: "more
     clauses than the cap refuses the draft"; the drafting prompt itself
-    already asks for at most that many), at least one still-open Target
+    already asks for at most that many), the word cap `ctx.sentence_max_words`
+    (spec 3 r53 section 5, checked the same way), at least one still-open Target
     filled (Syllabus.fill_set), and the per-sentence Target cap (r27) --
     the same test the comment pass's replacement and the run's D2
     recovery apply. A refused draft is logged ("draft refused: %s: %s",
@@ -2558,6 +2583,7 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
         params={"prompt": _sentence_prompt(
             syllabus, targets, refused, sentence_max_clauses=ctx.sentence_max_clauses,
+            sentence_max_words=ctx.sentence_max_words,
             sentence_targets_per_sentence=ctx.sentence_targets_per_sentence)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)

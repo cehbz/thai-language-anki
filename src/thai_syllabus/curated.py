@@ -753,6 +753,12 @@ class ProvidersConfig:
     # the drafting prompt's own clause cap default (spec 3 r23 section 5/8):
     # a longer sentence outruns the 5 s recording cap
     sentence_max_clauses: int = 2
+    # spec 3 r53 section 5/8: the drafting prompt's and acceptance's own
+    # cap on a sentence's total deck words, summed across its clauses -- a
+    # sentence over it was daunting to a learner at the start of study,
+    # and one already adopted is retired by the run (F13) unless a
+    # learner keeps it.
+    sentence_max_words: int = 8
     # sentence_attempt's own cap default (spec 3 r24 section 5/8) on how
     # many sentence-introduced, unmet Targets one drafting ask is handed;
     # the rest of the handed batch is the next non-introduced open Targets
@@ -1054,6 +1060,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_max_clauses: {sentence_max_clauses!r} "
                       "must be a positive integer")
 
+    sentence_max_words = data.get("sentence_max_words", 8)
+    if not isinstance(sentence_max_words, int) or sentence_max_words < 1:
+        errors.append(f"providers.sentence_max_words: {sentence_max_words!r} "
+                      "must be a positive integer")
+
     sentence_introducible_per_ask = data.get("sentence_introducible_per_ask", 5)
     if (not isinstance(sentence_introducible_per_ask, int)
             or sentence_introducible_per_ask < 1):
@@ -1169,6 +1180,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         attempt_cap=attempt_cap, transient_cap=transient_cap, requery_cap=requery_cap,
         sentence_nothing_cap=sentence_nothing_cap,
         sentence_max_clauses=sentence_max_clauses,
+        sentence_max_words=sentence_max_words,
         sentence_introducible_per_ask=sentence_introducible_per_ask,
         sentence_targets_per_sentence=sentence_targets_per_sentence,
         pair_search_depth=pair_search_depth,
@@ -1224,6 +1236,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "requery_cap": config.requery_cap,
         "sentence_nothing_cap": config.sentence_nothing_cap,
         "sentence_max_clauses": config.sentence_max_clauses,
+        "sentence_max_words": config.sentence_max_words,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
         "sentence_targets_per_sentence": config.sentence_targets_per_sentence,
         "pair_search_depth": config.pair_search_depth,

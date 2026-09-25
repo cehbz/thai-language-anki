@@ -1976,6 +1976,48 @@ def test_sentence_attempt_refuses_a_draft_over_the_clause_cap(tmp_path, caplog):
     assert "draft refused" in caplog.text and "3 clauses" in caplog.text and "cap 2" in caplog.text
 
 
+def _nine_word_syllabus():
+    # nine one-word vocabulary entries, each an open receptive Target, so
+    # a nine-word single-clause draft fills all of them and only the word
+    # cap (not the target-per-sentence cap, raised to admit it) refuses it.
+    ids = [f"w{i}" for i in range(9)]
+    thai = ["กิน", "ข้าว", "อร่อย", "มาก", "น้ำ", "ดื่ม", "ช้า", "เร็ว", "ดี"]
+    return Syllabus(
+        words=tuple(word(i, t, i) for i, t in zip(ids, thai)),
+        targets=tuple(target(f"{i}/receptive", i) for i in ids),
+        frequency={i: n for n, i in enumerate(ids)})
+
+
+def test_sentence_attempt_refuses_a_draft_over_the_word_cap(tmp_path, caplog):
+    """Spec 3 r53 section 5: a draft with more deck words (summed across
+    its clauses) than `ctx.sentence_max_words` is refused like the clause
+    cap -- logged and skipped, never reaching the judge -- though it is
+    otherwise a valid, target-filling draft."""
+    syllabus = _nine_word_syllabus()
+    ids = [t.word for t in syllabus.targets]
+    text = _draft_json(ids, "".join(w.thai for w in syllabus.words), "nine words")
+    ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
+    ctx.sentence_targets_per_sentence = 9   # only the word cap is under test
+    assert ctx.sentence_max_words == 8
+    with caplog.at_level(logging.WARNING):
+        res = sentence_attempt(ctx)
+    assert res.questions == [] and res.drafted == 0
+    assert ctx.db.all_sentences() == []
+    assert "draft refused" in caplog.text and "9 words" in caplog.text and "cap 8" in caplog.text
+
+
+def test_sentence_attempt_accepts_a_draft_at_the_word_cap(tmp_path):
+    """The same shape at exactly eight words is accepted."""
+    syllabus = _nine_word_syllabus()
+    ids = [t.word for t in syllabus.targets][:8]
+    words = [w for w in syllabus.words if w.id in ids]
+    text = _draft_json(ids, "".join(w.thai for w in words), "eight words")
+    ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
+    ctx.sentence_targets_per_sentence = 8
+    res = sentence_attempt(ctx)
+    assert res.drafted == 1
+
+
 def _four_word_syllabus():
     # กิน eat, ข้าว rice, อร่อย tasty, มาก very -- four open receptive Targets
     return Syllabus(
@@ -3026,6 +3068,19 @@ def test_sentence_prompt_states_the_clause_cap_from_the_given_value():
     assert "Each sentence has at most 2 clauses." in prompt
     prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=3)
     assert "Each sentence has at most 3 clauses." in prompt
+
+
+def test_sentence_prompt_states_the_word_cap_beside_the_clause_cap():
+    """Spec 3 r53 section 5/8: the drafting prompt asks for at most
+    `sentence_max_words` deck words, the value the ctx hands it, beside
+    the clause cap line."""
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
+                              sentence_max_clauses=2, sentence_max_words=8)
+    assert "at most 8 words" in prompt
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets),
+                              sentence_max_clauses=2, sentence_max_words=6)
+    assert "at most 6 words" in prompt
 
 
 def _glue_word_syllabus():

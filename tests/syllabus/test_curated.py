@@ -1259,6 +1259,33 @@ def test_providers_sentence_max_clauses_rejects_a_non_integer(tmp_path):
         curated.load_providers_config(path)
 
 
+def test_providers_sentence_max_words_defaults_to_eight_and_round_trips(tmp_path):
+    """Spec 3 r53 section 5/8: a sentence has at most `sentence_max_words`
+    deck words across its clauses -- the drafter is asked for it, and a
+    longer draft is refused at acceptance."""
+    assert curated.ProvidersConfig().sentence_max_words == 8
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_words=6)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.sentence_max_words == 6
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path).sentence_max_words == 6
+
+
+def test_providers_sentence_max_words_rejects_zero(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_words=0)))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_max_words"):
+        curated.load_providers_config(path)
+
+
+def test_providers_sentence_max_words_rejects_a_non_integer(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_max_words="8")))
+    with pytest.raises(curated.CuratedValidationError, match="providers.sentence_max_words"):
+        curated.load_providers_config(path)
+
+
 def test_providers_sentence_introducible_per_ask_defaults_to_five_and_round_trips(tmp_path):
     """Spec 3 r24 section 5/8: the drafting ask's own cap on how many
     sentence-introduced, unmet targets it is handed per ask."""

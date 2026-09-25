@@ -35,6 +35,7 @@ from thai_syllabus.derivations import (
     current_best,
     next_source,
     open_words,
+    refused_drafts,
 )
 from thai_syllabus.entities import (Category, Grapheme, MinimalPair, SoundConfusion,
                                     text_sha)
@@ -2613,6 +2614,113 @@ def test_a_same_pass_retirement_skips_the_sentences_other_still_queued_needs(
                               if r.port == "attempt"])
     assert attempt_rows_after == attempt_rows_before
     assert not [n for n in available_needs(ctx.syllabus) if n[0] == sentence_sha]
+
+
+# --- r53: an adopted sentence over the deck-word cap is retired the same
+# way, before the sentence attempt (spec 3 section 5) -----------------------
+
+def _n_word_sentence(count: int, tag: str) -> "Sentence":
+    words = tuple(word(f"{tag}{i}", f"คำ{tag}{i}", f"word{tag}{i}") for i in range(count))
+    clauses = (tuple(w.id for w in words),)
+    return sentence(clauses, thai_of(*words), gloss=f"{count} words")
+
+
+def _seed_adopted_sentence(db, s) -> None:
+    db.add_sentence(text_sha=s.text_sha, text=s.text, clauses=s.clauses, gloss=s.gloss,
+                    voice=s.voice, source=s.provenance.source, origin=s.provenance.origin,
+                    licence=s.provenance.licence, acquired=s.provenance.acquired)
+
+
+def test_run_retires_an_adopted_sentence_over_the_word_cap(db, monkeypatch):
+    """Spec 3 r53: an adopted Sentence whose total deck words (summed
+    across its clauses) exceed the default cap (8) is retired before the
+    sentence attempt: a RetirementKey row, the sentence row deleted,
+    reported through the writing command's Guard, RunReport.retired
+    counts it, and its text is in the drafter's not-to-propose list
+    (derivations.refused_drafts).
+    """
+    over_cap = _n_word_sentence(9, "o")
+    _seed_adopted_sentence(db, over_cap)
+    _patch(monkeypatch, {})
+    ctx = _ctx(db, _Syl(_Gaps(), sentences=(over_cap,)))
+    ctx.guard = Guard()
+    assert ctx.sentence_max_words == 8
+
+    report = run(ctx, {})
+
+    assert report.retired == 1
+    assert over_cap.text_sha not in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {"sentences": 1}
+    row = next(r for r in db.assessments_of(over_cap.text_sha)
+              if r.question.get("kind") == "retirement")
+    assert row.question["reason"] == "9 words (cap 8)"
+    not_to_propose = refused_drafts(db, ctx.syllabus, current_rubric={})
+    assert over_cap.text in [text for text, _evidence in not_to_propose]
+    assert (report.available == report.attempted + report.exhausted + report.pending
+           + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_sentence_at_the_word_cap_is_untouched(db, monkeypatch):
+    at_cap = _n_word_sentence(8, "a")
+    _seed_adopted_sentence(db, at_cap)
+    _patch(monkeypatch, {})
+    ctx = _ctx(db, _Syl(_Gaps(), sentences=(at_cap,)))
+    ctx.guard = Guard()
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert at_cap.text_sha in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+def test_an_over_cap_sentence_with_a_learner_supplied_recording_is_untouched(db, monkeypatch):
+    """F9's other shape (spec 3 section 5): a provide row the learner
+    supplied directly (backend "learner") keeps the sentence, on its own,
+    the same carve-out F13's recording-exhaustion retirement honors.
+    """
+    over_cap = _n_word_sentence(9, "l")
+    _seed_adopted_sentence(db, over_cap)
+    db.append(port="provide", backend="learner",
+             key=ProvideKey(source="learner", kind="", query="supplied.mp3"),
+             subject=over_cap.text_sha,
+             question={"provides": "recording-bytes", "kind": "recording",
+                      "subject_kind": "sentence", "params": {"path": "supplied.mp3"}},
+             answer={"items": [{"sha": "s" * 64, "ext": "mp3"}]})
+    _patch(monkeypatch, {})
+    ctx = _ctx(db, _Syl(_Gaps(), sentences=(over_cap,)))
+    ctx.guard = Guard()
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert over_cap.text_sha in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
+
+
+def test_an_over_cap_directed_sentence_is_untouched(db, monkeypatch):
+    """I1 (F9): a directed sentence (a learner direction row) keeps the
+    sentence, the same carve-out F13's recording-exhaustion retirement
+    honors.
+    """
+    over_cap = _n_word_sentence(9, "d")
+    _seed_adopted_sentence(db, over_cap)
+    db.append(port="assess", backend="learner",
+             key=DirectionKey(subject=over_cap.text_sha, role="recording-for-sentence",
+                              text_sha=sha("supply a recording")),
+             subject=over_cap.text_sha,
+             question={"kind": "direction", "role": "recording-for-sentence",
+                      "subject_kind": "sentence"},
+             answer={"direction": "supply a recording"})
+    _patch(monkeypatch, {})
+    ctx = _ctx(db, _Syl(_Gaps(), sentences=(over_cap,)))
+    ctx.guard = Guard()
+
+    report = run(ctx, {})
+
+    assert report.retired == 0
+    assert over_cap.text_sha in {s.text_sha for s in db.all_sentences()}
+    assert ctx.guard.removals == {}
 
 
 # --- RunReport persistence: /stats history needs a source ----------------
