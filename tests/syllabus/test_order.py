@@ -99,6 +99,78 @@ def test_order_places_a_sentence_after_every_word_it_uses():
     assert pos[("sentence", s.id)] > max(pos[("word_target", "t1")], pos[("word_target", "t2")])
 
 
+def test_sentence_is_dealt_directly_after_its_last_used_words_last_target():
+    """Three words, one sentence using the first two: the sentence lands
+    right after its last used word's own last Target entry, and before
+    the next word's first entry (r24) -- no longer after every word."""
+    w1 = word("w1", "หนึ่ง")  # one
+    w2 = word("w2", "สอง")  # two
+    w3 = word("w3", "สาม")  # three
+    t1 = target("t1", "w1")
+    t2 = target("t2", "w2")
+    t3 = target("t3", "w3")
+    to = thai_of(w1, w2, w3)
+    s = sentence(((w1.id, w2.id),), to, gloss="one two")
+    syllabus = Syllabus(words=(w1, w2, w3), targets=(t1, t2, t3), sentences=(s,))
+    entries = syllabus.order()
+    positions = {(e.kind, e.id): i for i, e in enumerate(entries)}
+    assert syllabus.last_used_word(s) == w2.id
+    assert positions[("sentence", s.text_sha)] == positions[("word_target", "t2")] + 1
+    assert positions[("sentence", s.text_sha)] < positions[("word_target", "t3")]
+
+
+def test_sentences_sharing_a_last_word_place_the_shorter_first():
+    # These thai strings are chosen so that the *long* sentence's text_sha
+    # sorts before the short one's -- a text_sha-only tie-break would put
+    # long first, so this only passes when length is compared first.
+    w1 = word("w1", "หมา")  # dog
+    w2 = word("w2", "แมว")  # cat
+    w3 = word("w3", "สอง")  # two
+    t1 = target("t1", "w1")
+    t2 = target("t2", "w2")
+    t3 = target("t3", "w3")
+    to = thai_of(w1, w2, w3)
+    short = sentence(((w1.id, w3.id),), to, gloss="dog two")  # length 2
+    long = sentence(((w1.id, w2.id, w3.id),), to, gloss="dog cat two")  # length 3
+    syllabus = Syllabus(words=(w1, w2, w3), targets=(t1, t2, t3), sentences=(long, short))
+    assert syllabus.last_used_word(short) == w3.id
+    assert syllabus.last_used_word(long) == w3.id
+    entries = syllabus.order()
+    sentence_shas = [e.id for e in entries if e.kind == "sentence"]
+    assert sentence_shas == [short.text_sha, long.text_sha]
+
+
+def test_sentences_tied_on_length_sharing_a_last_word_tie_on_text_sha():
+    w1 = word("w1", "หนึ่ง")  # one
+    w2 = word("w2", "สอง")  # two
+    t1 = target("t1", "w1")
+    t2 = target("t2", "w2")
+    to = thai_of(w1, w2)
+    a = sentence(((w1.id, w2.id),), to, gloss="one two")
+    b = sentence(((w2.id, w1.id),), to, gloss="two one")
+    syllabus = Syllabus(words=(w1, w2), targets=(t1, t2), sentences=(a, b))
+    assert syllabus.last_used_word(a) == w2.id
+    assert syllabus.last_used_word(b) == w2.id
+    assert a.text_sha != b.text_sha
+    entries = syllabus.order()
+    sentence_shas = [e.id for e in entries if e.kind == "sentence"]
+    assert sentence_shas == sorted([a.text_sha, b.text_sha])
+
+
+def test_a_sentence_whose_last_used_word_has_no_target_is_placed_last():
+    w1 = word("w1", "หนึ่ง")  # one
+    orphan = word("orphan", "เอก")  # a word with no Target
+    t1 = target("t1", "w1")
+    to = thai_of(w1, orphan)
+    s = sentence(((orphan.id,),), to, gloss="orphan only")
+    syllabus = Syllabus(words=(w1, orphan), targets=(t1,), sentences=(s,))
+    with pytest.raises(ValueError, match=s.text_sha):
+        syllabus.last_used_word(s)
+    entries = syllabus.order()
+    assert entries[-1].kind == "sentence"
+    assert entries[-1].id == s.text_sha
+
+
 # --- Syllabus.last_used_word ------------------------------------------------
 
 def test_last_used_word_picks_the_word_with_the_greatest_last_target_position():
@@ -200,3 +272,36 @@ def test_a_sentence_using_a_name_word_is_still_placed():
     positions = {(e.kind, e.id): i for i, e in enumerate(ordering)}
     assert ("sentence", s.text_sha) in positions
     assert syllabus._word_last_position["name-chicken"] == -1
+
+
+def test_two_name_words_sentence_groups_are_ordered_by_word_id_not_hash_order():
+    """`_word_last_position` seeds every name word at -1 from
+    `name_word_ids`, a frozenset, so iterating `_word_last_position.items()`
+    to find the -1 words visits them in the frozenset's hash-dependent
+    order (varies with PYTHONHASHSEED). order() must instead visit them in
+    a fixed (sorted-by-word-id) order, so two sentences each keyed to a
+    different name word always land in the same relative order."""
+    keyword_a = word("keyword-a", "กา")
+    keyword_b = word("keyword-b", "ขา")
+    name_a = word("name-a", "กอ ไก่", "the letter ก's recited name")
+    name_b = word("name-b", "ขอ ไข่", "the letter ข's recited name")
+    g_a = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                          keyword_word=keyword_a, name_word=name_a)
+    g_b = Grapheme.create(symbol="ข", kind="consonant", sound="kh", consonant_class="high",
+                          keyword_word=keyword_b, name_word=name_b)
+    to = thai_of(keyword_a, keyword_b, name_a, name_b)
+    # Built out of word-id order (b before a) so a hash-order bug would
+    # not be masked by construction order coinciding with the fix.
+    s_b = sentence(((name_b.id,),), to, gloss="name b only")
+    s_a = sentence(((name_a.id,),), to, gloss="name a only")
+    syllabus = Syllabus(
+        words=(keyword_a, keyword_b, name_a, name_b), graphemes=(g_a, g_b),
+        sentences=(s_b, s_a),
+        targets=(target("name-a/receptive", "name-a"),
+                 target("name-b/receptive", "name-b")),
+        profile=Profile(register="male_colloquial"))
+    assert syllabus._word_last_position["name-a"] == -1
+    assert syllabus._word_last_position["name-b"] == -1
+    entries = syllabus.order()
+    sentence_shas = [e.id for e in entries if e.kind == "sentence"]
+    assert sentence_shas == [s_a.text_sha, s_b.text_sha]

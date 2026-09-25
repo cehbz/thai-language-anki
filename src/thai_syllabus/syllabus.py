@@ -215,19 +215,53 @@ class Syllabus:
             sounds += [OrderEntry("word_target", t.id)
                       for t in self._name_targets.get(g.name_word, ())]
 
-        target_entries = [OrderEntry("word_target", t.id) for t in self._ordered_targets]
-
-        def sentence_after(sentence: Sentence) -> int:
+        # r24: a sentence is dealt directly after its last used word's last
+        # Target -- interleaved into the word_target block, not appended
+        # after every word. Sentences sharing a last word are ordered
+        # shorter first (fewer clause elements), tied sentences by
+        # text_sha; a sentence naming no targeted word (last_used_word
+        # raises) is placed after every other entry.
+        by_last_word: dict[WordId, list[Sentence]] = {}
+        orphaned: list[Sentence] = []
+        for s in self.sentences:
             try:
-                word = self.last_used_word(sentence)
+                word = self.last_used_word(s)
             except ValueError:
-                return -1
-            return self._word_last_position[word]
+                orphaned.append(s)
+                continue
+            by_last_word.setdefault(word, []).append(s)
 
-        ordered_sentences = sorted(self.sentences, key=lambda s: (sentence_after(s), s.text_sha))
-        sentence_entries = [OrderEntry("sentence", s.text_sha) for s in ordered_sentences]
+        def sentence_length(s: Sentence) -> int:
+            return sum(len(clause) for clause in s.clauses)
 
-        return [*sounds, *target_entries, *sentence_entries]
+        def sentences_after(word: WordId) -> list[OrderEntry]:
+            group = sorted(by_last_word.get(word, ()),
+                           key=lambda s: (sentence_length(s), s.text_sha))
+            return [OrderEntry("sentence", s.text_sha) for s in group]
+
+        body: list[OrderEntry] = []
+        # A name word's Targets sit in the sounds block, not this one
+        # (spec 1 r16), so _word_last_position seeds it at -1: a sentence
+        # whose last used word is a name word is dealt before any
+        # word_target entry. `_word_last_position`'s -1 keys come from
+        # `name_word_ids`, a frozenset, so its dict iteration order is not
+        # deterministic across runs (PYTHONHASHSEED) -- sort the words
+        # explicitly so two name words' sentence groups always land in
+        # the same relative order.
+        name_words_at_minus_one = sorted(
+            word for word, position in self._word_last_position.items() if position == -1)
+        for word in name_words_at_minus_one:
+            body += sentences_after(word)
+
+        for i, t in enumerate(self._ordered_targets):
+            body.append(OrderEntry("word_target", t.id))
+            if self._word_last_position[t.word] == i:
+                body += sentences_after(t.word)
+
+        orphaned_sorted = sorted(orphaned, key=lambda s: (sentence_length(s), s.text_sha))
+        body += [OrderEntry("sentence", s.text_sha) for s in orphaned_sorted]
+
+        return [*sounds, *body]
 
     @cached_property
     def _name_targets(self) -> dict[WordId, tuple[Target, ...]]:

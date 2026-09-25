@@ -363,20 +363,28 @@ def _positions(syllabus: "Syllabus") -> _Positions:
         block += _order_entry_width(entry, pairs_by_id)
     total_blocks = block
 
-    # One entry per adopted sentence with at least one filled target
-    # (the note it compiles into), due block from the sentence's own
-    # order() position -- a sentence with no order position keeps the
-    # total_blocks fallback, as fills_entries did before.
-    unsorted_entries: list[tuple[Sentence, tuple[Target, ...], int]] = []
+    # One entry per adopted sentence with at least one filled target (the
+    # note it compiles into). Its due block is its own order() position
+    # (r24: order() already deals it directly after its last used word's
+    # last Target, its own block of width 1) -- not a block after every
+    # word. A sentence with no order() position (should not arise: order()
+    # covers every syllabus.sentences entry, but this stays a defensive
+    # fallback) is due after every other block, such sentences sorted by
+    # id for a deterministic (if arbitrary) relative order among them.
+    positioned: list[tuple[Sentence, tuple[Target, ...], int]] = []
+    unpositioned: list[tuple[Sentence, tuple[Target, ...]]] = []
     for s in syllabus.sentences:
         filled = syllabus.fill_set(s)   # already sorted by target id
         if not filled:
             continue
-        position = sentence_position.get(sentence_note_id(s), total_blocks)
-        unsorted_entries.append((s, filled, position))
-    unsorted_entries.sort(key=lambda e: (e[2], sentence_note_id(e[0])))
-    sentence_entries = [(s, filled, total_blocks + i)
-                        for i, (s, filled, _) in enumerate(unsorted_entries)]
+        position = sentence_position.get(sentence_note_id(s))
+        if position is None:
+            unpositioned.append((s, filled))
+        else:
+            positioned.append((s, filled, position))
+    unpositioned.sort(key=lambda sf: sentence_note_id(sf[0]))
+    sentence_entries = positioned + [
+        (s, filled, total_blocks + i) for i, (s, filled) in enumerate(unpositioned)]
 
     return _Positions(entry_index=entry_index, target_index=target_index,
                       word_index=word_index, sentence_entries=sentence_entries,

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 23, proposed 2026-09-20 against principles r6 and architecture
+Revision 24, proposed 2026-09-25 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -71,6 +71,7 @@ Revision log:
 - r21 2026-09-19: `coverage/sound-stage` (measure, F1): the share of confusions at their weight-proportional pair count, of graphemes whose keyword has a picture, and of recited-name words with a chart cell, value the least of the three (the stage is a gate, F1: its least-built part is how built it is; design 2026-09-12 section 5 said "graphemes with a keyword"; every Grapheme row carries one by construction, so the part that varies is the keyword's picture). Evidence: coverage/confusions reads one pair and one speaker per confusion and cannot say whether the stage is built (25 confusions want 55 pairs; 13 full at the first search). User approval 2026-09-19.
 - r22 2026-09-19: `Syllabus.gaps()` lists every pair without a current-best rendition (`pairs_missing_renditions`, from `pair/rendition-required`) in place of the confusions `coverage/confusions` marked uncovered; the measure keeps its reading and no longer gates sourcing. Evidence: spec 3 r48 (a confusion covered by one pair's rendition hid its other pairs; 7 of 30 on the live deck). User approval 2026-09-19.
 - r23 2026-09-20: the centering diphthongs ia, ɯa, ua carry `vowel_length: long`, the standard convention; `Ipa` writes them unmarked. Evidence: 68 of 68 corroborated diphthong syllables on the live deck were `short`, an artifact of thaig2p emitting the diphthong with no length mark and the tltk converter overriding tltk's own `iːa`; 37 of the 57 disputed words were judge verdicts that differed from the engines on diphthong length alone. User approval 2026-09-20.
+- r24 2026-09-25: order() deals each sentence directly after its last used word's last Target (the entry position §3 clause 3 already names), shorter first among sentences sharing that word, a sentence with no placed word last. Evidence: order() appended every sentence after every word Target, so no sentence card reached the learner until all ~900 word cards had been introduced; the principle (F8) is a sentence after its words. User ruling 2026-09-25.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -249,7 +250,7 @@ cross-entity behavior:
 learner meets. Constraints, each also stated as a rule: sounds stage
 (pairs, graphemes) before words; a grapheme's name-word Targets
 (receptive then productive) directly after that grapheme, inside the
-sounds stage, and nowhere else (r16); a sentence after every word it uses;
+sounds stage, and nowhere else (r16); a sentence directly after its last used word's last Target, shorter sentences first (r24);
 receptive target before productive target per word, so productive
 Targets enter in frequency order like their words. Ties: frequency rank
 ÷ emphasis weight; the loader resolves ranks through the FrequencyMap

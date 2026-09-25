@@ -1048,12 +1048,30 @@ def test_graphemes_are_due_before_any_word(fx):
 
 
 def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
-    # Mirrors test_graphemes_are_due_before_any_word: the fixture sentence
-    # "ผมกินข้าว" (I eat rice) uses pom, gin and rice, each of which has a
-    # Target -- a sentence note's due comes straight from its order()
-    # entry's position (compile._positions no longer derives it), which
-    # sits after every word_target entry, including theirs.
-    syllabus = _fully_seeded(fx)
+    # r24: a sentence note's due comes straight from its own order() entry
+    # position -- directly after its last used word's last Target, and
+    # before the next word's first Target -- not after every word target
+    # in the deck. "ผมกินข้าว" (I eat rice) uses pom, gin and rice; rice is
+    # its last used word (all three tie on frequency, so word id order
+    # gin < pom < rice decides). An extra word "zzz", sorting after rice,
+    # gives this fixture a "next word" to bound the sentence against.
+    syllabus = _small_syllabus(extra_targets=(
+        Target(id=TargetId("zzz/receptive"), word=WordId("zzz"), skill="receptive"),))
+    zzz = _word("zzz", "อื่น", "other word, sorts after rice")
+    syllabus = dataclasses.replace(syllabus, words=(*syllabus.words, zzz))
+
+    fx.seed_picture("rice", "cooked rice")
+    fx.seed_recording("rice", "cooked rice")
+    fx.seed_recording("pom", "I")
+    fx.seed_recording("gin", "eat")
+    fx.seed_picture("chicken", "chicken")
+    fx.seed_recording("letter-name:ko", "gɔɔ")
+    fx.seed_recording("near", "near")
+    fx.seed_recording("far", "far")
+    fx.seed_recording("zzz", "other")
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    fx.seed_recording(text_sha, "ผมกินข้าว")
+
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
@@ -1068,11 +1086,13 @@ def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
         return min(c["due"] for c in pkg["cards"] if c["nid"] == note["id"])
 
     used_dues = [word_due(thai) for thai in ("ผม", "กิน", "ข้าว")]  # pom, gin, rice
+    next_word_due = word_due("อื่น")  # zzz: sorts right after rice
 
     s_notes = [n for n in pkg["notes"] if str(n["mid"]) == s_model["id"]]
     sentence_dues = [c["due"] for n in s_notes for c in pkg["cards"] if c["nid"] == n["id"]]
     assert sentence_dues
     assert all(used < s for used in used_dues for s in sentence_dues)
+    assert all(s < next_word_due for s in sentence_dues)
 
 
 def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
@@ -1081,9 +1101,11 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     # One note per adopted Sentence (spec 4 r5): each sentence compiles to
     # ONE note carrying BOTH its filled targets' target:: tags -- so both
     # its cards SHARE that one note's due position, and the two SENTENCE
-    # notes land in order() position order: "หมาวิ่ง"'s note (clozed on
-    # run, the later of dog/run) due before "กินข้าว"'s note (clozed on
-    # rice, the later of eat/rice), one STRIDE apart.
+    # notes land in order() position order: "หมาวิ่ง" (r24: dealt directly
+    # after run, the later of dog/run) due before "กินข้าว" (dealt directly
+    # after rice, the later of eat/rice) -- two STRIDEs apart, not one,
+    # because rice/receptive's own word_target block sits between them
+    # (frequency order is eat, dog, run, rice).
     eat = _word("eat", "กิน", "to eat")
     dog = _word("dog", "หมา", "dog")
     run = _word("run", "วิ่ง", "to run")
@@ -1142,7 +1164,7 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     eat_due = due_for(sentence_note_id(eat_rice))
     dog_due = due_for(sentence_note_id(dog_runs))
     assert dog_due < eat_due
-    assert eat_due - dog_due == STRIDE
+    assert eat_due - dog_due == 2 * STRIDE
 
 
 def test_shipped_deck_options_group_already_buries_siblings(fx):
