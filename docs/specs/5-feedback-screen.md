@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 13, proposed 2026-09-18 against principles r6 and architecture
+Revision 15, proposed 2026-09-25 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -96,6 +96,13 @@ Revision log:
   learner's evidence on pairs is the drill log). Evidence: the identity
   sha a rendition ranks by reached the page as a picture and rendered
   as a broken image with nothing to hear. User approval 2026-09-19.
+- r15 2026-09-25: every action post shows a working state and, on failure,
+  the server's error on the item, which stays open for retry; the server
+  answers every failed post with a JSON error; a supplied path expands `~`
+  and accepts a `file:` URL. Evidence: two supplies (`~/Downloads/…`,
+  `file:/Users/…`) crashed the handler, the connection dropped, and the
+  page reloaded the queue with no message; the learner retried by
+  guesswork. User ruling 2026-09-25.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives

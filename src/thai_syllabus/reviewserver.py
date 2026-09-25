@@ -21,7 +21,9 @@ import http.server
 import json
 import mimetypes
 import re
+import sys
 import time
+import traceback
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -872,6 +874,44 @@ def _guessed_ext(value: str, payload: Mapping[str, Any], kind: str) -> str:
     return suffix or _DEFAULT_EXT[kind]
 
 
+def _resolve_supply_path(value: str) -> Path:
+    """A supplied path value (spec 5 r15), read the way a shell or a
+    file manager would: `~` expands to the caller's home directory, and
+    a `file:` URL -- both the ordinary triple-slash `file:///abs/x.jpg`
+    and the schema-only `file:/abs/x.jpg` some clients send -- resolves
+    to the plain filesystem path it names, percent-decoded either way
+    (`urlparse` puts the whole remainder in `.path` for both shapes, so
+    one `unquote` covers both -- fix round 1: the schema-only form used
+    to skip it, so `file:/abs/my%20file.jpg` resolved to the literal,
+    still-encoded name instead of the file it named). Anything else is
+    read as an ordinary (relative or absolute) path. Bare
+    `Path(value).read_bytes()` took either shape literally and raised
+    FileNotFoundError, which escaped do_POST's (KeyError, ValueError)
+    clause and dropped the connection outright (two supplies seen live
+    in the review log).
+    """
+    if value.startswith("file:"):
+        parsed = urllib.parse.urlparse(value)
+        path = Path(urllib.parse.unquote(parsed.path))
+    else:
+        path = Path(value)
+    return path.expanduser()
+
+
+def _read_supplied_bytes(value: str) -> bytes:
+    """The bytes at a supplied path value, resolved through
+    `_resolve_supply_path`. A path that resolves to nothing is refused
+    as a ValueError naming the resolved path -- do_POST's existing
+    (KeyError, ValueError) clause turns that into a 400 and appends no
+    row, rather than a FileNotFoundError escaping as a dropped
+    connection (spec 5 r15).
+    """
+    path = _resolve_supply_path(value)
+    if not path.is_file():
+        raise ValueError(f"no such file: {path}")
+    return path.read_bytes()
+
+
 def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
                              source: str, value: str) -> tuple[str, str]:
     """A picture always normalizes (spec 4 section 3): a URL's bytes
@@ -891,7 +931,7 @@ def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], s
         item = answer.items[0]
         return str(item["sha"]), str(item["ext"])
     if source == "path":
-        data = Path(value).read_bytes()
+        data = _read_supplied_bytes(value)
         ingest = ctx.media_store.add_image(data, _guessed_ext(value, payload, "picture"))
         _append_supply_provide_row(ctx, subject=subject, value=value, kind="picture",
                                    provides="picture-bytes", sha=ingest.sha, ext=ingest.ext,
@@ -934,7 +974,7 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
         item = answer.items[0]
         return str(item["sha"]), str(item["ext"])
     if source == "path":
-        data = Path(value).read_bytes()
+        data = _read_supplied_bytes(value)
         ext = _guessed_ext(value, payload, "recording")
         sha = ctx.media_store.write(data, ext)
         _append_supply_provide_row(ctx, subject=subject, value=value, kind="recording",
@@ -1362,6 +1402,23 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             self._send_bytes(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                             "application/json; charset=utf-8", status)
 
+        def _send_json_safely(self, obj: Any, status: int = 200) -> None:
+            """do_POST's one response send (spec 5 r15 fix round 1): a
+            write that fails because the client already went away
+            (BrokenPipeError/ConnectionResetError, or another OSError on
+            the socket) is logged and dropped -- never answered with a
+            second response on the same, already-dead connection. This
+            must be the only place do_POST calls `_send_json`, and it
+            must sit outside any except clause that also produces the
+            JSON body: the old code's single `except Exception` wrapped
+            its own `_send_json` call, so a send failure was caught as
+            if it were a business error and retried as a second send.
+            """
+            try:
+                self._send_json(obj, status)
+            except OSError:
+                traceback.print_exc(file=sys.stderr)
+
         def _read_json(self) -> Mapping[str, Any]:
             """The POST body as the object every handler reads fields
             off. A body that parses but is not an object (a list, a
@@ -1418,14 +1475,24 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             try:
                 payload = self._read_json()
             except (json.JSONDecodeError, UnicodeDecodeError):
-                self._send_json({"ok": False, "error": "invalid json"}, status=400)
+                self._send_json_safely({"ok": False, "error": "invalid json"}, status=400)
                 return
             except ValueError as e:
                 # `_read_json`'s own shape check: valid JSON, wrong kind
                 # of value. (JSONDecodeError is a ValueError, so this
                 # clause must stay second.)
-                self._send_json({"ok": False, "error": str(e)}, status=400)
+                self._send_json_safely({"ok": False, "error": str(e)}, status=400)
                 return
+
+            # Spec 5 r15 fix round 1: dispatch only PRODUCES `result`/
+            # `status` (or sends its own 404 and returns) -- it never
+            # sends the response itself. That keeps exactly one send per
+            # request, at the bottom, through `_send_json_safely`: a
+            # business-logic failure caught below still only reaches
+            # that one call, so a send failure (the client already gone)
+            # is never mistaken for a business error and answered with a
+            # second response on the same connection.
+            status = 200
             try:
                 if parsed.path == "/api/answer":
                     refusal = _refuses_stale_rejection(ctx, payload)
@@ -1433,11 +1500,9 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                         raise ValueError(refusal)
                     result = append_answer(ctx.record, payload)
                     ctx.session.answered += 1
-                    self._send_json(result)
                 elif parsed.path == "/api/supply":
                     result = append_supply(ctx, payload)
                     ctx.session.answered += 1
-                    self._send_json(result)
                 elif parsed.path == "/api/note":
                     card_id = str(payload.get("card_id", payload.get("id")))
                     subject = payload.get("subject") or card_id
@@ -1455,7 +1520,7 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                                                  "subject_kind", _SUBJECT_KINDS),
                                              question_kind=question_kind,
                                              artifact_kind=artifact_kind)
-                    self._send_json({"ok": True, "ts": ts})
+                    result = {"ok": True, "ts": ts}
                 elif parsed.path == "/api/veto":
                     # Spec 5 r10: the strike names one whole reading --
                     # both halves of the (comment_sha, prompt_version)
@@ -1472,16 +1537,27 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                         prompt_version=_validated_version(payload.get("prompt_version")),
                         subject_kind=_validated_kind(payload.get("subject_kind"),
                                                      "subject_kind", _SUBJECT_KINDS) or "word")
-                    self._send_json({"ok": True, "ts": ts})
+                    result = {"ok": True, "ts": ts}
                 elif parsed.path == "/api/drill":
                     ts = append_drill_result(ctx.record, confusion=payload["confusion"],
                                              pair_id=payload["pair"],
                                              correct=bool(payload.get("correct")))
-                    self._send_json({"ok": True, "ts": ts})
+                    result = {"ok": True, "ts": ts}
                 else:
                     self.send_error(404, "not found")
+                    return
             except (KeyError, ValueError) as e:
-                self._send_json({"ok": False, "error": str(e)}, status=400)
+                result = {"ok": False, "error": str(e)}
+                status = 400
+            except Exception as e:  # noqa: BLE001 -- deliberate (spec 5 r15): every
+                # failed post answers JSON instead of dropping the connection the
+                # way an uncaught exception in BaseHTTPRequestHandler otherwise
+                # does; the traceback still goes to stderr for the operator.
+                traceback.print_exc(file=sys.stderr)
+                result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                status = 500
+
+            self._send_json_safely(result, status)
 
     return Handler
 
@@ -1646,6 +1722,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     border-radius: 4px; padding: 6px 10px; font-size: 15px;
   }
   #noteError, .save-error { color: #d9534f; font-size: 13px; }
+  #status { text-align: center; padding: 6px 0 0; font-size: 13px; color: #b9c2cd; }
+  #status.error { color: #d9534f; }
   #overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex;
     align-items: center; justify-content: center; z-index: 10; cursor: zoom-out;
@@ -1674,6 +1752,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     </div>
   </div>
   <div id="main"></div>
+  <div id="status" hidden></div>
   <div id="noteInput" hidden>
     <input id="noteText" placeholder="comment (Enter to save, Esc to cancel)">
     <span id="noteError" hidden></span>
@@ -1730,6 +1809,46 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }).then(function (r) { return r.json(); }).catch(function () { return { ok: false }; });
+  }
+
+  // Spec 5 r15: every action post (rate, keep/switch, direction, supply)
+  // shows a working state on the shared #status element and disables the
+  // action buttons until the reply, so a second click can't race the
+  // first; on failure it re-enables and shows the server's own `error`,
+  // or "server unreachable" for postJson's own synthesized {ok: false}
+  // (an actually unreachable server, not a real 4xx/5xx response).
+  // Evidence: two supplies crashed the handler, the connection dropped,
+  // and the page reloaded the queue with no message -- the learner
+  // retried by guesswork.
+  function setStatus(text, isError) {
+    var status = document.getElementById("status");
+    status.hidden = !text;
+    status.textContent = text || "";
+    status.classList.toggle("error", !!isError);
+  }
+
+  function setActionsDisabled(disabled) {
+    document.querySelectorAll("#main .actions button").forEach(function (b) { b.disabled = disabled; });
+  }
+
+  // Shared by every action post: the working state and button-disable
+  // are common to all of them, and only `onOk` differs (advanceQueue
+  // for rate/keep/switch, or -- for direction/supply, via openBox --
+  // the input box's own show/hide, since a failure there must keep the
+  // typed value for retry rather than reload the queue).
+  function withStatus(promise, onOk) {
+    setActionsDisabled(true);
+    setStatus("working…");
+    return promise.then(function (result) {
+      if (result && result.ok) {
+        setStatus("");
+        onOk(result);
+      } else {
+        setActionsDisabled(false);
+        setStatus((result && result.error) || "server unreachable", true);
+      }
+      return result;
+    });
   }
 
   // --- shared: card type label, subject header, comments ------------------
@@ -2053,7 +2172,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function finishAnswer(payload) {
-    postJson("/api/answer", payload).then(function () { advanceQueue(); });
+    withStatus(postJson("/api/answer", payload), function () { advanceQueue(); });
   }
 
   function renderDirection(q, box) {
@@ -2109,17 +2228,16 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     var actions = el("div", { "class": "actions" });
     var keepBtn = el("button", { "class": "good" }, "keep");
     keepBtn.addEventListener("click", function () {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+      withStatus(postJson("/api/answer", { subject: q.subject, kind: q.kind,
                                 subject_kind: q.subject_kind, role: q.role,
-                                action: "keep" })
-        .then(function () { advanceQueue(); });
+                                action: "keep" }), function () { advanceQueue(); });
     });
     var switchBtn = el("button", { "class": "bad" }, "switch");
     switchBtn.addEventListener("click", function () {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+      withStatus(postJson("/api/answer", { subject: q.subject, kind: q.kind,
                                 subject_kind: q.subject_kind, role: q.role,
-                                action: "switch", artifact_sha: q.challenger.sha })
-        .then(function () { advanceQueue(); });
+                                action: "switch", artifact_sha: q.challenger.sha }),
+        function () { advanceQueue(); });
     });
     actions.appendChild(keepBtn);
     actions.appendChild(switchBtn);
@@ -2243,21 +2361,55 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
   // --- note / direction / supply input boxes --------------------------------
 
-  function openBox(id, inputId, onSave) {
+  // `doSave(val)` must return the postJson promise (not fire-and-forget):
+  // spec 5 r15 requires a failed direction/supply post to keep the box
+  // open with the typed value for correction and retry, rather than
+  // hide it unconditionally the way this used to on every Enter -- the
+  // note box's own r5 model, extended here. `onOk()` runs only once the
+  // server actually confirmed the save.
+  function openBox(id, inputId, doSave, onOk) {
     var box = document.getElementById(id);
     var input = document.getElementById(inputId);
     box.hidden = false;
     input.value = "";
     input.focus();
+    // Spec 5 r15 fix round 1 (minor): a reply for an Enter pressed
+    // before Escape cancels the box can still arrive late -- without a
+    // per-open token it reopened the box and refocused it, resurrecting
+    // something the learner already dismissed. Every open, and every
+    // Escape, bumps the box's own token.
+    //
+    // Fix round 3: the token gates only the reopen-on-FAILURE, never
+    // success. A save that actually succeeded must still advance the
+    // queue (`onOk`) whether or not the box was since cancelled -- round
+    // 1's guard covered both branches, so a success arriving after
+    // Escape left `onOk` uncalled: the buttons `withStatus` disabled
+    // stayed disabled (nothing re-rendered `#main`) and the queue never
+    // advanced until a page reload.
+    var token = (box._openToken || 0) + 1;
+    box._openToken = token;
     input.onkeydown = function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
         var val = input.value;
-        box.hidden = true;
-        onSave(val);
+        withStatus(doSave(val), function () {
+          box.hidden = true;
+          onOk();
+        }).then(function (result) {
+          if (result && result.ok) { return; }
+          // A stale (cancelled) box stays closed -- the error still
+          // shows on the shared status line, which is correct: the
+          // save did fail. Only the CURRENT box reopens for retry.
+          if (box._openToken !== token) { return; }
+          box.hidden = false;
+          input.value = val;
+          input.focus();
+        });
       } else if (e.key === "Escape") {
         e.preventDefault();
         box.hidden = true;
+        box._openToken = (box._openToken || 0) + 1;
+        setStatus("");
       }
     };
   }
@@ -2329,21 +2481,19 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     // section 1 kind 2): no action, no rating -- append_answer's own
     // "direction" branch.
     openBox("directionInput", "directionText", function (text) {
-      postJson("/api/answer", { subject: q.subject, kind: q.kind,
+      return postJson("/api/answer", { subject: q.subject, kind: q.kind,
                                 subject_kind: q.subject_kind, role: q.role,
-                                direction: text })
-        .then(function () { advanceQueue(); });
-    });
+                                direction: text });
+    }, advanceQueue);
   }
 
   function openSupplyBox(q) {
     openBox("supplyInput", "supplyValue", function (val) {
       var source = /^https?:\\/\\//.test(val) ? "url" : "path";
-      postJson("/api/supply", { subject: q.subject, kind: q.kind,
+      return postJson("/api/supply", { subject: q.subject, kind: q.kind,
                                 subject_kind: q.subject_kind, role: q.role,
-                                source: source, value: val })
-        .then(function () { advanceQueue(); });
-    });
+                                source: source, value: val });
+    }, advanceQueue);
   }
 
   // --- overlay / stats -------------------------------------------------------

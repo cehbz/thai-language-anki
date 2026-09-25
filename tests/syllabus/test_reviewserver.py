@@ -17,6 +17,7 @@ import threading
 import time
 from datetime import date
 from http.server import HTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -488,6 +489,69 @@ def test_n_in_a_session_comments_on_the_current_questions_subject():
     assert "n leaves a comment on this question (the machine reads it next run)" \
         in rs.INDEX_HTML
     assert "n gives the next search a direction" not in rs.INDEX_HTML
+
+
+def test_every_action_post_shows_working_then_the_servers_error_on_failure():
+    """Spec 5 r15: rate, keep/switch, direction and supply all disable
+    the action buttons and show a working state on the shared #status
+    element until the reply; on failure they re-enable and show the
+    server's error (or "server unreachable" for postJson's own
+    synthesized {ok: false}, an actually unreachable server); a
+    direction/supply box stays open with the typed value for retry --
+    the note box's own r5 model, extended to every other action post.
+    Evidence: two supplies (a `~/...` path and a `file:` URL) crashed
+    the handler, the connection dropped, and the page reloaded the
+    queue with no message -- the learner retried by guesswork.
+    """
+    assert '<div id="status" hidden></div>' in rs.INDEX_HTML
+    assert "function setActionsDisabled(disabled)" in rs.INDEX_HTML
+    assert 'document.querySelectorAll("#main .actions button")' in rs.INDEX_HTML
+    assert "function withStatus(promise, onOk)" in rs.INDEX_HTML
+    assert 'setStatus("working…")' in rs.INDEX_HTML
+    assert '(result && result.error) || "server unreachable"' in rs.INDEX_HTML
+    # finishAnswer (rate/reask), keep, switch each route through withStatus.
+    assert rs.INDEX_HTML.count("withStatus(postJson(") >= 3
+    # direction/supply keep the box open and the typed value on failure.
+    assert "function openBox(id, inputId, doSave, onOk)" in rs.INDEX_HTML
+    assert "input.value = val;\n          input.focus();" in rs.INDEX_HTML
+
+
+def test_openbox_ignores_a_stale_reply_after_escape_cancels_it():
+    """Fix round 1 (Minor): a reply for an Enter pressed just before
+    Escape cancels the box can still arrive late. Without a per-open
+    token, `openBox`'s Enter handler would reopen the box and refocus
+    it on that late reply, resurrecting something the learner already
+    dismissed. Every open, and every Escape, bumps the box's own
+    `_openToken`; the pending reply is applied only if its captured
+    token still matches.
+    """
+    assert "var token = (box._openToken || 0) + 1;" in rs.INDEX_HTML
+    assert "box._openToken = token;" in rs.INDEX_HTML
+    assert "if (box._openToken !== token) { return; }" in rs.INDEX_HTML
+    assert "box._openToken = (box._openToken || 0) + 1;" in rs.INDEX_HTML
+
+
+def test_openbox_still_advances_on_a_success_that_arrives_after_a_cancel():
+    """Fix round 3 (Important): round 1's `_openToken` guard covered
+    BOTH outcomes, so a save that actually succeeded -- but whose reply
+    arrived after the learner pressed Escape -- never called the real
+    `onOk` (advanceQueue): `withStatus` had been given a no-op instead,
+    so the disabled action buttons stayed disabled and the queue never
+    advanced until a page reload (before round 1 this case self-
+    recovered). The token must gate only the reopen-on-failure: success
+    always calls the real `onOk`, cancelled or not; only the failure
+    branch consults `box._openToken`.
+    """
+    assert ('withStatus(doSave(val), function () {\n'
+           '          box.hidden = true;\n'
+           '          onOk();\n'
+           '        }).then(function (result) {\n'
+           '          if (result && result.ok) { return; }') in rs.INDEX_HTML
+    # the token check comes strictly after the unconditional-success
+    # return, i.e. only the failure path ever reaches it.
+    success_return = rs.INDEX_HTML.index('if (result && result.ok) { return; }')
+    token_check = rs.INDEX_HTML.index('if (box._openToken !== token) { return; }')
+    assert success_return < token_check
 
 
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
@@ -1145,6 +1209,35 @@ def _png_bytes() -> bytes:
     buf = io.BytesIO()
     PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="PNG")
     return buf.getvalue()
+
+
+# --- supplied-path resolution (spec 5 r15) -----------------------------------
+
+def test_resolve_supply_path_expands_the_home_directory():
+    assert rs._resolve_supply_path("~/x.jpg") == Path.home() / "x.jpg"
+
+
+@pytest.mark.parametrize("value", ["file:///abs/x.jpg", "file:/abs/x.jpg"])
+def test_resolve_supply_path_accepts_a_file_url(value):
+    """Both shapes seen live in the review log (a triple-slash URL and
+    the schema-only form some clients send) resolve to the same plain
+    path.
+    """
+    assert rs._resolve_supply_path(value) == Path("/abs/x.jpg")
+
+
+def test_resolve_supply_path_leaves_an_ordinary_path_alone(tmp_path):
+    assert rs._resolve_supply_path(str(tmp_path / "x.jpg")) == tmp_path / "x.jpg"
+
+
+@pytest.mark.parametrize("value", ["file:/abs/my%20file.jpg", "file:///abs/my%20file.jpg"])
+def test_resolve_supply_path_percent_decodes_both_file_url_shapes(value):
+    """Fix round 1 (Important): the schema-only `file:/abs/...` form
+    used to skip percent-decoding (only the triple-slash form went
+    through `unquote`), so `file:/abs/my%20file.jpg` resolved to the
+    literal, still-encoded name rather than the file it named.
+    """
+    assert rs._resolve_supply_path(value) == Path("/abs/my file.jpg")
 
 
 # --- append_supply: path and url flows --------------------------------------
@@ -2579,6 +2672,118 @@ def test_http_refuses_a_body_that_is_not_a_json_object(live_server, body):
     status, out = _post(port, "/api/veto", body)
     assert status == 400 and json.loads(out)["ok"] is False
     assert record_mod.vetoed_readings_all(SyllabusDb(db_path)) == frozenset()
+
+
+def test_http_supply_of_a_missing_home_relative_path_answers_400_and_writes_nothing(
+        live_server, w1):
+    """Spec 5 r15: a supplied path expands `~` before it is read, and a
+    path that still resolves to nothing is a 400 naming the resolved
+    path, not a 500 -- two live supplies in this shape (a `~/...` path
+    and a `file:` URL) crashed the handler outright, the connection
+    dropped, and the page reloaded the queue with no message.
+    """
+    port, db_path = live_server
+    value = "~/thai-language-anki-test-missing-file-does-not-exist.jpg"
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
+                                               "source": "path", "value": value})
+    assert status == 400
+    resolved = Path(value).expanduser()
+    assert json.loads(body) == {"ok": False, "error": f"no such file: {resolved}"}
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []
+
+
+def test_http_supply_of_a_missing_file_url_answers_400_with_the_plain_path(live_server, w1):
+    port, db_path = live_server
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
+                                               "source": "path",
+                                               "value": "file:/no/such/path.jpg"})
+    assert status == 400
+    assert json.loads(body) == {"ok": False, "error": "no such file: /no/such/path.jpg"}
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []
+
+
+def test_http_post_answers_500_instead_of_dropping_the_connection_on_a_bug(
+        live_server, monkeypatch, w1, capsys):
+    """Spec 5 r15: any exception a POST handler raises that is not the
+    handlers' own (KeyError, ValueError) 400 vocabulary must still
+    answer JSON -- never drop the connection the way an uncaught
+    exception in BaseHTTPRequestHandler otherwise does -- and the
+    traceback is still logged to stderr for the operator.
+    """
+    def boom(record, payload):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(rs, "append_answer", boom)
+    port, _db_path = live_server
+    status, body = _post(port, "/api/answer", {"subject": w1.id, "kind": "picture",
+                                               "action": 4, "artifact_sha": "sA"})
+    assert status == 500
+    assert json.loads(body) == {"ok": False, "error": "RuntimeError: kaboom"}
+    assert "RuntimeError: kaboom" in capsys.readouterr().err
+
+
+def test_http_post_send_failure_is_logged_and_not_answered_with_a_second_response(
+        monkeypatch, derivations, syllabus, tmp_path, media_store, w1, capsys):
+    """Fix round 1 (Important): the old do_POST wrapped its own
+    `_send_json` calls in the same `except Exception` that answers a
+    business-logic bug -- so if the client already went away
+    (BrokenPipeError/ConnectionResetError) partway through a *successful*
+    send, that clause caught it as if it were a business failure and
+    sent a SECOND response on the same, already-dead connection. The
+    send is now the one call `_send_json_safely` makes, outside every
+    business-logic except clause: a failure there is logged and dropped.
+
+    The db connection is opened INSIDE the server-thread `run()`
+    function, the `live_server` fixture's own pattern (fix round 2):
+    sqlite3 connections are single-thread, and a connection built on the
+    test thread but used from the server thread raises its own
+    sqlite3.ProgrammingError -- caught by the generic `except Exception`
+    before the success-path `_send_json` is ever reached, which made
+    this test pass on the pre-fix code for the wrong reason (one send,
+    but because the request never reached the success path at all, not
+    because the fix was in place).
+    """
+    calls = []
+
+    def flaky_send_json(self, obj, status=200):
+        calls.append((obj, status))
+        raise BrokenPipeError("client gone")
+
+    ready = threading.Event()
+    state: dict = {}
+
+    def run() -> None:
+        db_local = SyllabusDb(tmp_path / "syllabus.db")
+        server_syllabus = dataclasses.replace(syllabus, assessments=db_local)
+        server_derivations = dataclasses.replace(derivations, syllabus=server_syllabus,
+                                                 db=db_local)
+        ctx = rs.ReviewContext(derivations=server_derivations, study=db_local)
+        handler_cls = rs.build_app(ctx)
+        monkeypatch.setattr(handler_cls, "_send_json", flaky_send_json)
+        httpd = HTTPServer(("127.0.0.1", 0), handler_cls)
+        state["httpd"] = httpd
+        state["port"] = httpd.server_address[1]
+        ready.set()
+        httpd.serve_forever()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert ready.wait(5), "server thread did not start in time"
+    port = state["port"]
+    try:
+        try:
+            _post(port, "/api/answer", {"subject": w1.id, "kind": "picture",
+                                        "action": 4, "artifact_sha": "sA"})
+        except (http.client.RemoteDisconnected, ConnectionResetError, OSError):
+            pass  # expected: the (faked) send never actually reached the client
+    finally:
+        state["httpd"].shutdown()
+        thread.join(timeout=5)
+
+    assert len(calls) == 1
+    assert "BrokenPipeError" in capsys.readouterr().err
 
 
 # --- the screen derives what the run derives (spec 5 section 3) ------------
