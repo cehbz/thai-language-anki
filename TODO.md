@@ -8,14 +8,16 @@ still run against them.
 
 ## Priority (user, 2026-09-17): by value to learning
 
-1. Sound stage part 2 (steps 5 to 7 below): pairs first (hearing before
-   reading), then vowel signs and tone marks. 57 words stay disputed after
-   the second engine; a pair member must be corroborated, nothing else.
-2. Cutover to Anki: nothing built since the redesign is in the study
-   deck yet.
-3. Sentences for the 319 unfilled targets: the drafter's cached answer
+1. Sound stage part 2 (steps 5 to 7 below): pairs are in; vowel signs
+   and tone marks next. 3 words stay disputed; a pair member must be
+   corroborated, nothing else.
+2. Cutover to Anki: delete the study deck and import a fresh compile.
+   The sentence order (spec 1 r24) reaches Anki only this way: cards
+   already imported keep their due position.
+3. Sentences for the 363 unfilled targets (280, plus 83 reopened when
+   the 8-word cap retired 40 sentences); the drafter's cached answer
    yields the same refused drafts every pass (198 and 126 refusals of
-   two drafts in one night); fix the re-ask, then a drafting run.
+   two drafts in one night); fix the re-ask.
 4. The six open picture needs: learner direction from the review screen
    re-opens them; no engineering.
 
