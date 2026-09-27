@@ -519,7 +519,7 @@ def test_every_action_post_shows_working_then_the_servers_error_on_failure():
     the handler, the connection dropped, and the page reloaded the
     queue with no message -- the learner retried by guesswork.
     """
-    assert '<div id="status" hidden></div>' in rs.INDEX_HTML
+    assert '<div id="status">loading the queue…</div>' in rs.INDEX_HTML
     assert "function setActionsDisabled(disabled)" in rs.INDEX_HTML
     assert 'document.querySelectorAll("#main .actions button")' in rs.INDEX_HTML
     assert "function withStatus(promise, onOk)" in rs.INDEX_HTML
@@ -3505,3 +3505,131 @@ def test_a_photograph_is_marked_neither(derivations, db):
                  acquired=date(2026, 9, 17))
     art = rs._artifact(derivations, "photo-sha")
     assert art["glyph"] is False and art["generated"] is False
+
+
+# --- the queue build reads the record once (review-screen speed) ------------
+#
+# Profiled on the live deck: one queue build ran Syllabus.gaps() (via
+# derivations.available_needs) three times and read and JSON-decoded every
+# subject's rows tens of thousands of times over. A build computes its
+# needs once and reads each subject once, through a read cache that lives
+# for that one build only.
+
+def _seed_every_question_kind(db, w1, w2, pair):
+    """One of each question kind build_queue asks, under current_rubric
+    {"picture-for-word": "rubric-v2"}: a rate (w2's picture candidates),
+    a direction (w1's recording, every source said nothing), a
+    challenger (w1's accepted picture outranked under rubric-v2) and a
+    re-ask (the pair's accepted rendition, since lapsed)."""
+    _provide(db, w2.id, "picture", query="near", items=[{"sha": "sA"}, {"sha": "sB"}])
+    _judge(db, w2.id, "picture", "sA", True, rubric="rubric-v2", evidence="clear")
+    for source in ("forvo", "tts"):
+        db.append(port="attempt", backend=source,
+                  key=AttemptOutcomeKey(subject=w1.id, kind="recording", source=source),
+                  subject=w1.id, question={"kind": "recording", "subject_kind": "word",
+                                           "source": source},
+                  answer={"outcome": "nothing", "candidates": []})
+    _learner(db, w1.id, "picture", "s-old", "acceptable")
+    _judge(db, w1.id, "picture", "s-new", True, rubric="rubric-v2")
+    db.append_study(_pair_study_row(pair))
+    _learner(db, pair.id, "rendition", "rend-sha", "acceptable")
+
+
+def test_build_queue_computes_the_available_needs_once(derivations, db, w1, w2, pair,
+                                                       monkeypatch):
+    """queue(), the direction pass and challengers() each asked
+    available_needs -- each a whole Syllabus.gaps(), hence report() --
+    for the same unchanged syllabus. One build computes it once."""
+    from thai_syllabus import derivations as derivations_mod
+
+    _seed_every_question_kind(db, w1, w2, pair)
+    original = derivations_mod.available_needs
+    calls = []
+
+    def spy(syllabus):
+        calls.append(syllabus)
+        return original(syllabus)
+
+    monkeypatch.setattr(derivations_mod, "available_needs", spy)
+    monkeypatch.setattr(rs, "available_needs", spy)
+    d = dataclasses.replace(derivations, current_rubric={"picture-for-word": "rubric-v2"})
+    items = rs.build_queue(d, study=db, budget=50)
+    assert {i["type"] for i in items} == {"rate", "direction", "challenger", "reask"}
+    assert len(calls) == 1
+
+
+def test_a_queue_build_reads_each_subjects_rows_once(deck_with_history, monkeypatch):
+    """Over a loaded deck -- its Syllabus's own media index and
+    assessment reader included -- a build reads one subject's rows from
+    the db at most once."""
+    from collections import Counter
+
+    reads: Counter[str] = Counter()
+    original = SyllabusDb.assessments_of
+
+    def counting(self, subject):
+        reads[subject] += 1
+        return original(self, subject)
+
+    monkeypatch.setattr(SyllabusDb, "assessments_of", counting)
+    ctx = rs.load_context(deck_with_history)
+    ctx.questions()
+    assert reads, "the build read no subject at all"
+    assert max(reads.values()) == 1, reads
+
+
+def _uncached(monkeypatch):
+    """Every build over the Derivations it is handed, not a per-build
+    read cache in front of it."""
+    monkeypatch.setattr(Derivations, "for_one_build", lambda self: self)
+
+
+def test_the_per_build_cache_asks_the_same_questions_as_the_uncached_path(
+        derivations, db, w1, w2, pair, monkeypatch):
+    d = dataclasses.replace(derivations, current_rubric={"picture-for-word": "rubric-v2"})
+    _seed_every_question_kind(db, w1, w2, pair)
+    ctx = rs.ReviewContext(derivations=d, study=db)
+    cached = ctx.questions(50)
+    assert {i["type"] for i in cached} == {"rate", "direction", "challenger", "reask"}
+    _uncached(monkeypatch)
+    assert ctx.questions(50) == cached
+
+
+def test_the_per_build_cache_asks_the_same_questions_over_a_loaded_deck(
+        deck_with_history, monkeypatch):
+    ctx = rs.load_context(deck_with_history, learner_budget=50)
+    cached = ctx.questions()
+    assert cached
+    _uncached(monkeypatch)
+    assert ctx.questions() == cached
+
+
+def test_an_answer_posted_between_two_builds_is_in_the_second(derivations, db, w2):
+    """The read cache lives for one build: a rating appended after one
+    build is read by the next, so the rated need leaves the queue."""
+    _provide(db, w2.id, "picture", query="near", items=[{"sha": "sA"}])
+    ctx = rs.ReviewContext(derivations=derivations, study=db)
+    assert (w2.id, "picture") in {(i["subject"], i["kind"]) for i in ctx.questions(50)
+                                  if i["type"] == "rate"}
+    rs.append_answer(db, {"subject": w2.id, "kind": "picture", "action": 4,
+                          "artifact_sha": "sA"})
+    assert (w2.id, "picture") not in {(i["subject"], i["kind"]) for i in ctx.questions(50)
+                                      if i["type"] == "rate"}
+
+
+def test_the_page_says_it_is_loading_the_queue_from_first_paint():
+    """The first build takes seconds on a real deck; until the queue
+    arrives the status line says so -- in the served markup itself, and
+    again at the start of every loadQueue(), before its fetch."""
+    assert '<div id="status">loading the queue…</div>' in rs.INDEX_HTML
+    load_queue = rs.INDEX_HTML[rs.INDEX_HTML.index("function loadQueue()"):]
+    load_queue = load_queue[:load_queue.index("\n  }\n")]
+    assert load_queue.index('setStatus("loading the queue…");') < load_queue.index("fetch(url)")
+
+
+def test_the_gallery_clears_the_loading_the_queue_status():
+    """A page opened in gallery mode never loads the queue, so the
+    markup's own "loading the queue…" is cleared when it switches."""
+    set_mode = rs.INDEX_HTML[rs.INDEX_HTML.index("function setMode(next)"):]
+    set_mode = set_mode[:set_mode.index("\n  }\n")]
+    assert 'setStatus("");' in set_mode

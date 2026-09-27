@@ -1123,14 +1123,16 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          nothing_ttl: Mapping[str, int] = {},
          now_ns: int | None = None,
          requery_cap: int = DEFAULT_REQUERY_CAP,
-         sources_for_need: Callable[..., Sequence[str]] | None = None) -> list[QueueEntry]:
+         sources_for_need: Callable[..., Sequence[str]] | None = None,
+         needs: Sequence[tuple[str, str, str]] | None = None) -> list[QueueEntry]:
     return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
                   transient_cap=transient_cap,
                   provenance_source=provenance_source,
                   collected_this_run=collected_this_run,
                   nothing_ttl=nothing_ttl, now_ns=now_ns,
-                  requery_cap=requery_cap, sources_for_need=sources_for_need).entries
+                  requery_cap=requery_cap, sources_for_need=sources_for_need,
+                  needs=needs).entries
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
@@ -1140,7 +1142,8 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
           nothing_ttl: Mapping[str, int] = {},
           now_ns: int | None = None,
           requery_cap: int = DEFAULT_REQUERY_CAP,
-          sources_for_need: Callable[..., Sequence[str]] | None = None) -> QueuedNeeds:
+          sources_for_need: Callable[..., Sequence[str]] | None = None,
+          needs: Sequence[tuple[str, str, str]] | None = None) -> QueuedNeeds:
     """queue()'s entries plus the counts the same pass left out.
     `collected_this_run` names the (subject, kind) needs this run already
     collected a question for; each is skipped like an already-pending
@@ -1157,9 +1160,13 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
     exactly one, the chart-cell source -- so the queue's exhausted() and
     untried-lever folds agree with the run's own attempt loop. Absent, the
     roster is the kind's, as before.
+
+    `needs`, when given, is `available_needs(syllabus)` already computed
+    by a caller that asks it more than once over the same syllabus (the
+    review screen's queue build); absent, it is computed here.
     """
     entries: list[QueueEntry] = []
-    candidates = available_needs(syllabus)
+    candidates = available_needs(syllabus) if needs is None else needs
     out_of_options = 0
     unserved = 0
     for subject, kind, subject_kind in candidates:
@@ -1350,12 +1357,15 @@ class Challenger:
 
 def challengers(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                 prior: Sequence[str],
-                provenance_source: Callable[[str], str | None]) -> list[Challenger]:
+                provenance_source: Callable[[str], str | None],
+                needs: Sequence[tuple[str, str, str]] | None = None) -> list[Challenger]:
     """Every need where a machine-ranked candidate under `current_rubric`
     outranks a learner-accepted artifact; presented, never auto-switched.
+    `needs` is `available_needs(syllabus)` when the caller already has it.
     """
     out: list[Challenger] = []
-    for subject, kind, subject_kind in available_needs(syllabus):
+    for subject, kind, subject_kind in (available_needs(syllabus) if needs is None
+                                        else needs):
         best = current_best(cache, subject, kind, current_rubric=current_rubric, prior=prior,
                             provenance_source=provenance_source)
         if best.source != "learner" or best.artifact_sha is None:

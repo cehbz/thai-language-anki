@@ -511,15 +511,24 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     learner_budget). The F10-ordered rate questions fill it first; direction
     requests, challenger comparisons and re-asks fill what is left. A
     kind with no derivation input yields no questions.
+
+    One build reads the record once: every derivation below goes through
+    `d.for_one_build()`, a read cache in front of the db that lives for
+    this call only (an answer posted after it returns is read by the
+    next build), and the syllabus's needs are computed once and handed to
+    queue() and challengers() rather than each re-deriving
+    Syllabus.gaps().
     """
+    d = d.for_one_build()
     now_ns = time.time_ns()   # one clock read per session build (spec 3 r19 section 6a/9)
     syllabus_state_id = d.syllabus.state_id()
+    needs = available_needs(d.syllabus)
     entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
                     sources_for=d.sources_for, sources_for_need=d.sources_for_need,
                     attempt_cap=d.attempt_cap,
                     transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                     provenance_source=d.provenance_source,
-                    nothing_ttl=d.nothing_ttl, now_ns=now_ns)
+                    nothing_ttl=d.nothing_ttl, now_ns=now_ns, needs=needs)
     items: list[dict[str, Any]] = []
     for e in entries:
         rows = rows_for(d.db, e.subject, e.kind)
@@ -543,7 +552,7 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     queued = {(i["subject"], i["kind"]) for i in items}
 
     if len(items) < budget:
-        for subject, kind, subject_kind in available_needs(d.syllabus):
+        for subject, kind, subject_kind in needs:
             if (subject, kind) in queued:
                 continue
             status = _exhausted(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
@@ -556,7 +565,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
 
     if len(items) < budget:
         for challenger in challengers(d.db, d.syllabus, current_rubric=d.current_rubric,
-                                      prior=d.prior, provenance_source=d.provenance_source):
+                                      prior=d.prior, provenance_source=d.provenance_source,
+                                      needs=needs):
             items.append(_challenger_question(d, challenger, syllabus_state_id=syllabus_state_id))
             if len(items) >= budget:
                 break
@@ -1764,7 +1774,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     </div>
   </div>
   <div id="main"></div>
-  <div id="status" hidden></div>
+  <div id="status">loading the queue…</div>
   <div id="noteInput" hidden>
     <input id="noteText" placeholder="comment (Enter to save, Esc to cancel)">
     <span id="noteError" hidden></span>
@@ -1969,6 +1979,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   function loadQueue() {
     // The page's own ?first=SUBJECT is forwarded so that subject leads.
     var url = "/api/queue" + (firstSubject ? "?first=" + encodeURIComponent(firstSubject) : "");
+    // A build takes seconds on a real deck: say so until it arrives (the
+    // markup already says it from first paint; this covers every reload).
+    setStatus("loading the queue…");
     fetch(url).then(function (r) { return r.json(); }).then(function (items) {
       // A load that succeeds clears any "server unreachable" a previous
       // failed load left showing -- otherwise it lingers even once the
@@ -2621,7 +2634,14 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
     document.getElementById("modeSession").classList.toggle("active", mode === "session");
     document.getElementById("modeGallery").classList.toggle("active", mode === "gallery");
-    if (mode === "session") { loadQueue(); } else { loadGallery(); }
+    if (mode === "session") {
+      loadQueue();
+    } else {
+      // The gallery never loads the queue: drop the markup's "loading
+      // the queue…" (or a queue load's own status) on the way in.
+      setStatus("");
+      loadGallery();
+    }
   }
 
   document.getElementById("modeSession").addEventListener("click", function () { setMode("session"); });

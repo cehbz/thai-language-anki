@@ -428,6 +428,81 @@ class SyllabusDb:
         return result
 
 
+class BuildReadCache:
+    """A read-only view of one SyllabusDb for the life of one derivation
+    pass (the review screen's queue build): the same reader surface
+    (CacheReader, AssessmentReader, StudyReader and the media/sentence
+    reads the folds take), with one subject's rows and one sha's media
+    row each read from the db once and served from memory after.
+
+    It holds no write method -- a pass that reads through it appends
+    nothing, and a row appended to the db behind it is not seen, so a
+    caller builds a fresh one per pass and drops it at the end (wiring.
+    Derivations.for_one_build).
+    """
+
+    def __init__(self, db: SyllabusDb) -> None:
+        self._db = db
+        self._rows: dict[str, tuple[Answer, ...]] = {}
+        self._media: dict[str, dict[str, Any] | None] = {}
+
+    # --- CacheReader -----------------------------------------------------
+
+    def assessments_of(self, subject: str) -> list[Answer]:
+        rows = self._rows.get(subject)
+        if rows is None:
+            rows = self._rows[subject] = tuple(self._db.assessments_of(subject))
+        return list(rows)   # a fresh list: a caller's own sort never reaches the cache
+
+    def latest(self, port: str, backend: str, key: "CacheKey") -> Answer | None:
+        return self._db.latest(port, backend, key)
+
+    def rows_since(self, port: str, backend: str, since_ts: int) -> list[Answer]:
+        return self._db.rows_since(port, backend, since_ts)
+
+    def subjects(self, prefix: str = "") -> list[str]:
+        return self._db.subjects(prefix)
+
+    def newest_ts(self, *, excluding_port: str | None = None) -> int:
+        return self._db.newest_ts(excluding_port=excluding_port)
+
+    # --- AssessmentReader ------------------------------------------------
+
+    def verdict(self, backend: str, key: "CacheKey") -> Answer | None:
+        return self._db.verdict(backend, key)
+
+    def is_waived(self, finding: "Finding") -> bool:
+        return self._db.is_waived(finding)
+
+    # --- StudyReader -----------------------------------------------------
+
+    def records(self, family: str, anchor: str, card_kind: str) -> list[StudyRecord]:
+        return self._db.records(family, anchor, card_kind)
+
+    def study_rows(self) -> list[StudyRecord]:
+        return self._db.study_rows()
+
+    # --- media / sentences ---------------------------------------------
+
+    def media_provenance(self, sha: str) -> dict[str, Any] | None:
+        if sha not in self._media:
+            self._media[sha] = self._db.media_provenance(sha)
+        row = self._media[sha]
+        return dict(row) if row is not None else None
+
+    def has_media(self, sha: str) -> bool:
+        return self._db.has_media(sha)
+
+    def speaker(self, speaker_id: str) -> Speaker | None:
+        return self._db.speaker(speaker_id)
+
+    def all_sentences(self) -> list[Sentence]:
+        return self._db.all_sentences()
+
+    def sentences_without_clauses(self) -> list[tuple[str, str]]:
+        return self._db.sentences_without_clauses()
+
+
 IMAGE_MAX_LONG_EDGE = 800  # px (spec 4 section 3)
 
 # Pillow format name -> file extension MediaStore stores it under.

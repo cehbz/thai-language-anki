@@ -27,6 +27,7 @@ mis-rendered (spec 2 section 2).
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -73,7 +74,7 @@ from .provider import (
 from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
                        rubrics_for, sentence_note_id)
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
-from .store import MediaStore, SyllabusDb
+from .store import BuildReadCache, MediaStore, SyllabusDb
 from .syllabus import Syllabus, derive_productive_targets, name_word_ids_of
 from .transport import (ClaudeApiTransport, ClaudeBatchTransport, ClaudeCliTransport,
                         RequestParams, TransportError)
@@ -604,6 +605,29 @@ class Derivations:
     # to `sources_for(kind)` for every need, which is what a Derivations
     # built by hand in a test gets.
     sources_for_need: Callable[..., Sequence[str]] | None = None
+
+    def for_one_build(self) -> "Derivations":
+        """This bundle over a store.BuildReadCache in front of `db`, for one
+        derivation pass that reads the record many times over and writes
+        none of it (reviewserver.build_queue): each subject's rows are read
+        once. The Syllabus's own ports that read this same db -- its
+        assessment reader and its _DbMediaIndex, what gaps() folds over --
+        read through the cache too; a port over anything else is kept as
+        is. Every parameter is unchanged, so a fold over the result
+        derives what it derives over this bundle.
+
+        The cache is never refreshed: the caller drops the result at the
+        end of its pass and builds a fresh one for the next.
+        """
+        reader = BuildReadCache(self.db)
+        syllabus = self.syllabus
+        media = syllabus.media
+        if isinstance(media, _DbMediaIndex) and media.db is self.db:
+            media = dataclasses.replace(media, db=reader)
+        assessments = reader if syllabus.assessments is self.db else syllabus.assessments
+        return dataclasses.replace(
+            self, db=reader,
+            syllabus=dataclasses.replace(syllabus, media=media, assessments=assessments))
 
 
 def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) -> Derivations:
