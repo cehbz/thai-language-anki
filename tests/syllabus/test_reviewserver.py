@@ -318,6 +318,22 @@ def test_rate_button_label_text_covers_the_veto_and_ranking_variants(derivations
     assert rs.INDEX_HTML.count("rateLabels(q.learner_ranks)") == 2
 
 
+def test_render_rate_offers_supply_for_a_picture_or_recording_need():
+    """Spec 5 r16: "supply an artifact" is not only a direction-request
+    (exhausted-need) action -- a rate question about a picture or
+    recording offers it too, so a learner who has a ready artifact for a
+    need that still has machine sources left need not wait it out.
+    renderDirection's button (openSupplyBox(q): the box, path handling,
+    busy guard and error display) is factored into one helper both views
+    call, not duplicated."""
+    assert "function supplyButton(q)" in rs.INDEX_HTML
+    assert rs.INDEX_HTML.count("actions.appendChild(supplyButton(q));") == 2
+    # offered on picture/recording, never on a rendition or a sentence's
+    # own text -- renderRate gates the call by kind.
+    assert ('if (q.kind === "picture" || q.kind === "recording") '
+            '{ actions.appendChild(supplyButton(q)); }') in rs.INDEX_HTML
+
+
 # --- the page: card type labels, subject headers, comments (spec 5 r9) -----
 
 def test_the_page_embeds_the_card_meaning_table_from_compile():
@@ -1468,6 +1484,46 @@ def test_a_supplied_picture_from_local_path_also_appends_a_provide_row(
     assert out["ok"] is True
     sha = out["artifact_sha"]
     assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "picture"))
+
+
+def test_http_supply_of_a_picture_overrides_a_non_exhausted_machine_current_best(
+        live_server, syllabus, media_store, tmp_path, w1):
+    """Spec 5 r16: the supply action is honoured on a need that is not
+    exhausted -- one source tried and a judge-passed candidate already
+    makes sA current-best, and sources remain (not exhausted), so this
+    would otherwise be a rate question, not a direction request. A
+    learner-supplied artifact is still final (F9): it becomes the new
+    current-best, via the same derivations fold (`ctx.current_best`) the
+    other supply tests check against -- this must not change (F9's
+    precedence is a ruling, not something to adjust here)."""
+    port, db_path = live_server
+    seed_db = SyllabusDb(db_path)
+    _provide(seed_db, w1.id, "picture", backend="openverse", items=[{"sha": "sA"}])
+    _judge(seed_db, w1.id, "picture", "sA", True)
+    seed_derivations = _derivations_for(
+        dataclasses.replace(syllabus, assessments=seed_db), seed_db, media_store)
+    seed_ctx = rs.ReviewContext(derivations=seed_derivations)
+    assert seed_ctx.current_best(w1.id, "picture").artifact_sha == "sA"
+    assert seed_ctx.exhausted(w1.id, "picture").exhausted is False
+    seed_db.close()
+
+    src = tmp_path / "candidate.jpg"
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
+    src.write_bytes(buf.getvalue())
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
+                                               "source": "path", "value": str(src)})
+    assert status == 200
+    result = json.loads(body)
+    assert result["ok"] is True
+    sha = result["artifact_sha"]
+    assert sha != "sA"
+
+    verify_db = SyllabusDb(db_path)
+    verify_derivations = _derivations_for(
+        dataclasses.replace(syllabus, assessments=verify_db), verify_db, media_store)
+    verify_ctx = rs.ReviewContext(derivations=verify_derivations)
+    assert verify_ctx.current_best(w1.id, "picture").artifact_sha == sha
 
 
 # --- gallery / notes / drills ------------------------------------------------

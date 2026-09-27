@@ -2170,6 +2170,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       btn.addEventListener("click", function () { answerRate(q, n); });
       actions.appendChild(btn);
     });
+    // Spec 5 r16: the supply action is not only a direction-request
+    // (exhausted-need) action -- a learner-supplied artifact is final
+    // whatever sources remain (F9), so it is offered here too, on a
+    // picture or recording need (never a rendition, which names no
+    // artifact of its own, nor a sentence's own text).
+    if (q.kind === "picture" || q.kind === "recording") { actions.appendChild(supplyButton(q)); }
     box.appendChild(actions);
   }
 
@@ -2202,6 +2208,16 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     withStatus(postJson("/api/answer", payload), function () { advanceQueue(); });
   }
 
+  // Spec 5 r16: shared by renderDirection's exhausted-need view and
+  // renderRate's picture/recording view -- one button wired to
+  // openSupplyBox(q), so the box, path handling, busy guard and error
+  // display are never duplicated.
+  function supplyButton(q) {
+    var btn = el("button", {}, "supply an artifact");
+    btn.addEventListener("click", function () { openSupplyBox(q); });
+    return btn;
+  }
+
   function renderDirection(q, box) {
     box.appendChild(subjectHeader(q, " — exhausted, attempts=" + q.attempts));
     // The source's own words for declining, where it stated any (spec 3
@@ -2232,10 +2248,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     var actions = el("div", { "class": "actions" });
     var dirBtn = el("button", {}, "type a direction");
     dirBtn.addEventListener("click", function () { openDirectionBox(q); });
-    var supplyBtn = el("button", {}, "supply an artifact");
-    supplyBtn.addEventListener("click", function () { openSupplyBox(q); });
     actions.appendChild(dirBtn);
-    actions.appendChild(supplyBtn);
+    actions.appendChild(supplyButton(q));
     box.appendChild(actions);
   }
 

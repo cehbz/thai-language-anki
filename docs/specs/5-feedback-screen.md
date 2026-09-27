@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 15, proposed 2026-09-25 against principles r6 and architecture
+Revision 16, proposed 2026-09-27 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -103,6 +103,11 @@ Revision log:
   `file:/Users/…`) crashed the handler, the connection dropped, and the
   page reloaded the queue with no message; the learner retried by
   guesswork. User ruling 2026-09-25.
+- r16 2026-09-27: the supply action is offered on every question about a
+  picture or recording, not only on an exhausted need: a learner-supplied
+  artifact is final whatever sources remain (F9). Evidence: a learner who
+  had vetted a generated picture for a sentence whose need still had
+  sources could not give it. User ruling 2026-09-27.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -175,7 +180,9 @@ stops; unanswered questions stay queued. Question kinds:
    direction, or supply an artifact (file path or URL; a URL is fetched
    by kind, imgfetch for pictures and audiofetch for recordings; the
    bytes go through the media ingest path, normalized, with a
-   provenance row source=learner, and an implicit use-this). A typed
+   provenance row source=learner, and an implicit use-this). The supply
+   action also appears on every rating question about a picture or
+   recording, not only here once exhausted (r16). A typed
    direction is recorded as a direction, not as a rating.
 3. **Challenger comparison** (rubric change produced a candidate ranked
    above a learner-accepted artifact): side-by-side, keep or switch;
