@@ -904,11 +904,16 @@ def _read_supplied_bytes(value: str) -> bytes:
     as a ValueError naming the resolved path -- do_POST's existing
     (KeyError, ValueError) clause turns that into a 400 and appends no
     row, rather than a FileNotFoundError escaping as a dropped
-    connection (spec 5 r15).
+    connection (spec 5 r15). A path that DOES exist but names something
+    other than a regular file (a directory, most likely) gets its own
+    distinct "not a file" message rather than the misleading "no such
+    file" -- the path is right there, it just isn't readable as one.
     """
     path = _resolve_supply_path(value)
-    if not path.is_file():
+    if not path.exists():
         raise ValueError(f"no such file: {path}")
+    if not path.is_file():
+        raise ValueError(f"not a file: {path}")
     return path.read_bytes()
 
 
@@ -1965,6 +1970,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     // The page's own ?first=SUBJECT is forwarded so that subject leads.
     var url = "/api/queue" + (firstSubject ? "?first=" + encodeURIComponent(firstSubject) : "");
     fetch(url).then(function (r) { return r.json(); }).then(function (items) {
+      // A load that succeeds clears any "server unreachable" a previous
+      // failed load left showing -- otherwise it lingers even once the
+      // server answers again.
+      setStatus("");
       queueItems = items;
       if (qIdx >= queueItems.length) { qIdx = 0; }
       renderSession();
@@ -2369,10 +2378,14 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   }
 
   function next() {
+    // A stale error/working message from the previous item must not
+    // follow the learner to this one.
+    setStatus("");
     if (mode === "session") { qIdx = Math.min(qIdx + 1, queueItems.length - 1); renderSession(); }
     else { gIdx = Math.min(gIdx + 1, galleryCards.length - 1); renderGallery(); }
   }
   function prev() {
+    setStatus("");
     if (mode === "session") { qIdx = Math.max(qIdx - 1, 0); renderSession(); }
     else { gIdx = Math.max(gIdx - 1, 0); renderGallery(); }
   }
@@ -2409,6 +2422,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     input.onkeydown = function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
+        // A save already in flight (withStatus set busy) must not be
+        // raced by a second Enter -- the global keydown handler's own
+        // `if (busy) { return; }` never sees this keydown at all (it
+        // returns early on `active.tagName === "INPUT"`), so this
+        // handler must gate on `busy` itself.
+        if (busy) { return; }
         var val = input.value;
         withStatus(doSave(val), function () {
           box.hidden = true;

@@ -582,6 +582,51 @@ def test_openbox_still_advances_on_a_success_that_arrives_after_a_cancel():
     assert success_return < token_check
 
 
+def test_openbox_enter_does_nothing_while_a_post_is_already_in_flight():
+    """Defect: openBox's own `input.onkeydown` Enter handler bypassed the
+    module-level `busy` flag that `withStatus` sets and the global
+    keydown handler checks -- the global handler never sees a keydown
+    that lands in the box's own `<input>` (it returns early on
+    `active.tagName === "INPUT"`), so a second Enter while a supply or
+    direction post is in flight raced the first and sent it twice,
+    ingesting the same file twice and writing two learner rows. The
+    Enter branch must check `busy` before calling `doSave`/`withStatus`
+    at all.
+    """
+    open_box = rs.INDEX_HTML[rs.INDEX_HTML.index("function openBox(id, inputId, doSave, onOk)"):]
+    open_box = open_box[:open_box.index("\n  }\n")]
+    enter_branch = open_box[open_box.index('if (e.key === "Enter")'):]
+    enter_branch = enter_branch[:enter_branch.index('} else if (e.key === "Escape")')]
+    busy_check = enter_branch.index("if (busy) { return; }")
+    do_save_call = enter_branch.index("doSave(val)")
+    with_status_call = enter_branch.index("withStatus(")
+    assert busy_check < do_save_call
+    assert busy_check < with_status_call
+
+
+def test_navigation_clears_a_stale_status_line():
+    """Defect: `#status` was not cleared on next/previous navigation, so
+    an error from a failed action on one item followed the learner to
+    the next/previous item, still shown as if it were about the new
+    one."""
+    next_fn = rs.INDEX_HTML[rs.INDEX_HTML.index("function next()"):]
+    next_fn = next_fn[:next_fn.index("\n  }\n")]
+    assert 'setStatus("");' in next_fn
+    prev_fn = rs.INDEX_HTML[rs.INDEX_HTML.index("function prev()"):]
+    prev_fn = prev_fn[:prev_fn.index("\n  }\n")]
+    assert 'setStatus("");' in prev_fn
+
+
+def test_loadqueue_success_clears_a_stale_server_unreachable_status():
+    """Defect: loadQueue's `.catch` sets #status to "server unreachable",
+    but nothing cleared it on a later successful load -- the message
+    lingered on screen even once the server answered again."""
+    load_queue = rs.INDEX_HTML[rs.INDEX_HTML.index("function loadQueue()"):]
+    load_queue = load_queue[:load_queue.index("\n  }\n")]
+    success_then = load_queue[:load_queue.index(".catch(function () {")]
+    assert 'setStatus("");' in success_then
+
+
 # --- _gloss_for: sentence gloss on a scene question (spec 5 section 1 kind 1) ---
 
 def test_gloss_for_a_sentence_subject_is_the_sentences_own_gloss(syllabus):
@@ -2728,6 +2773,25 @@ def test_http_supply_of_a_missing_file_url_answers_400_with_the_plain_path(live_
                                                "value": "file:/no/such/path.jpg"})
     assert status == 400
     assert json.loads(body) == {"ok": False, "error": "no such file: /no/such/path.jpg"}
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []
+
+
+def test_http_supply_of_a_directory_path_answers_400_distinctly_from_missing(
+        live_server, w1, tmp_path):
+    """Defect: a path that EXISTS but is not a regular file (a directory)
+    hit the same `is_file()` check as a path that resolves to nothing at
+    all, and got the same "no such file" message -- misleading, since the
+    path is right there. It must be a distinct 400 naming the resolved
+    path as "not a file", and write nothing.
+    """
+    port, db_path = live_server
+    value = str(tmp_path)
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
+                                               "source": "path", "value": value})
+    assert status == 400
+    resolved = Path(value).expanduser()
+    assert json.loads(body) == {"ok": False, "error": f"not a file: {resolved}"}
     verify_db = SyllabusDb(db_path)
     assert verify_db.assessments_of(w1.id) == []
 
