@@ -24,7 +24,7 @@ import functools
 import json
 import time
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
@@ -60,7 +60,7 @@ from .derivations import (
 )
 from .dictionary import Wiktionary
 from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
-                       Target, Word, _same_form, clauses_to_json, element_word,
+                       Sentence, Target, Word, _same_form, clauses_to_json, element_word,
                        is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
@@ -578,21 +578,34 @@ def picture_query_for(ctx: Sourcing, need: Need, source: str | None = None) -> s
                                 form=record.query_form(source)) or None
 
 
+def target_words_of(syllabus: Syllabus, sentence: Sentence) -> list[Word]:
+    """The sentence's target words (Syllabus.target_words, spec 3 r54) as
+    Words, in target-id order: what a judge question or the phrase prompt
+    names for a sentence."""
+    return [syllabus.word(w) for w in syllabus.target_words(sentence)]
+
+
+def joined(parts: Iterable[str]) -> str:
+    """Several target words, or their glosses, as one param value."""
+    return ", ".join(parts)
+
+
 def _picture_params(ctx: Sourcing, need: Need, query: str | None) -> dict[str, Any]:
     """What the judge's fit prompt reads back: the thing the picture is for,
     its gloss, and the phrase it was searched for (None for a candidate
     already on record, assess-first). A sentence adds `target` and
-    `target_gloss`, the word its production card blanks (spec 3 r33): the
-    scene picture is judged as the cue that supplies that word, so the
-    judge is told which one it is."""
+    `target_gloss`, its target words and their glosses, each joined
+    (spec 3 r33, r54): the scene picture is judged as the cue that
+    supplies them, so the judge is told which they are."""
     if need.subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(need.subject)
-        target = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence))
+        targets = target_words_of(ctx.syllabus, sentence)
         # No `gloss_shown`: the scene prompt's shape has no "gloss shown
         # on the card" line -- the sentence's own gloss is always beside
         # it (fix round 1).
         return {"word": sentence.text, "meaning": sentence.gloss,
-                "target": target.thai, "target_gloss": target.meaning, "phrase": query}
+                "target": joined(t.thai for t in targets),
+                "target_gloss": joined(t.meaning for t in targets), "phrase": query}
     word = _word_of(ctx, need.subject)
     return {"word": word.thai, "meaning": word.meaning, "gloss_shown": word.meaning,
             "phrase": query}
@@ -803,28 +816,31 @@ def preference_attempt(ctx: Sourcing, subjects: Sequence[str]) -> AttemptResult:
 
 def _phrase_item(ctx: Sourcing, subject: str, subject_kind: str) -> str:
     """One item line of `_phrase_prompt` (spec 3 r36 section 5): a
-    sentence's text and gloss with its target word and that word's gloss
-    (the word its production card blanks, Syllabus.last_used_word -- the
-    cue must point at what it contributes); a word's Thai form, meaning
-    and category. Every deck field delimited as data (assessor.deck_field).
+    sentence's text and gloss with its target words, each with its gloss
+    (Syllabus.target_words, spec 3 r54 -- the cue must point at what they
+    contribute); a word's Thai form, meaning and category. Every deck
+    field delimited as data (assessor.deck_field).
 
-    A sentence with no target word to name -- `last_used_word` raises
-    ValueError when it uses no targeted word, `word` KeyError when that
-    target names a word this Syllabus does not register -- falls back to
-    the pre-r36 line, text and gloss alone (fix round 1). The scene still
-    deserves a query, and one such sentence must not abort the whole
-    batch ask: `run._run_pass` catches only TransportError.
+    A sentence with no target word to name -- it fills nothing, or `word`
+    raises KeyError for a target naming a word this Syllabus does not
+    register -- falls back to the pre-r36 line, text and gloss alone (fix
+    round 1). The scene still deserves a query, and one such sentence
+    must not abort the whole batch ask: `run._run_pass` catches only
+    TransportError.
     """
     if subject_kind == "sentence":
         sentence = ctx.syllabus.sentence(subject)
         line = (f"- subject: {subject}  kind: sentence  text: {deck_field(sentence.text)}  "
                 f"gloss: {deck_field(sentence.gloss)}")
         try:
-            target = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence))
-        except (ValueError, KeyError):
+            targets = target_words_of(ctx.syllabus, sentence)
+        except KeyError:
+            targets = []
+        if not targets:
             _log.debug("scene %r has no target word to name in the phrase prompt", subject)
             return line
-        return f"{line}  target: {deck_field(target.thai)} ({deck_field(target.meaning)})"
+        named = joined(f"{deck_field(t.thai)} ({deck_field(t.meaning)})" for t in targets)
+        return f"{line}  target: {named}"
     word = _word_of(ctx, subject)
     category = ctx.syllabus.category_of(word.id) or "(none)"
     return (f"- subject: {subject}  kind: word  thai: {deck_field(word.thai)}  "
@@ -1238,10 +1254,10 @@ def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
                       {"clauses": clauses_to_json(clauses), "text": text, "gloss": draft.gloss}]},
                       ensure_ascii=False)]})
     role = role_for("sentence")
-    last_word = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence)).thai
+    words = joined(t.thai for t in target_words_of(ctx.syllabus, sentence))
     questions.append(AssessQuestion(
         subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
-        params={"text": text, "gloss": draft.gloss, "word": last_word},
+        params={"text": text, "gloss": draft.gloss, "word": words},
         kind="sentence", subject_kind="sentence"))
     return _done(action)
 
@@ -2529,8 +2545,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     the same test the comment pass's replacement and the run's D2
     recovery apply. A refused draft is logged ("draft refused: %s: %s",
     the reason and the text) and skipped, nothing else. The judge
-    question carries the text, gloss, and the sentence's own last used
-    word (Syllabus.last_used_word). Adoption is the run's, after the
+    question carries the text, gloss, and the sentence's target words
+    joined (Syllabus.target_words, spec 3 r54). Adoption is the run's, after the
     verdicts land. The drafting prompt also names the texts the judge
     has already failed (derivations.refused_drafts, spec 3 r19 section
     5) so the drafter does not propose them again.
@@ -2616,11 +2632,11 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         if refusal is not None:
             _log.warning("draft refused: %s: %s", refusal, draft.text)
             continue
-        last_word = syllabus.word(syllabus.last_used_word(sentence)).thai
+        words = joined(t.thai for t in target_words_of(syllabus, sentence))
         questions.append(AssessQuestion(
             subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
             rubric=ctx.rubrics[role_for("sentence")],
-            params={"text": draft.text, "gloss": draft.gloss, "word": last_word},
+            params={"text": draft.text, "gloss": draft.gloss, "word": words},
             kind="sentence", subject_kind="sentence"))
     result = ctx.assessor.ask_many("judge", questions)
     _count_verdicts(spend, "judge", result)

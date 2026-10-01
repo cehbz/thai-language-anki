@@ -93,11 +93,7 @@ def test_other_voice_does_not_fill_a_productive_target():
 
 
 def test_learner_voice_fills_a_productive_target():
-    """dog is also the sentence's last used word (frequency puts its
-    Target after i's and have's) -- clause 2's last-word requirement
-    (§3 clause 2, r10) holds here, distinct from the tests below that
-    exercise it directly."""
-    dog = word("dog", "หมา")  # dog -- last used word
+    dog = word("dog", "หมา")  # dog
     i_word = word("i", "ผม")  # registered with a Target so it doesn't empty the fill set
     have = word("have", "มี")  # registered with a Target so it doesn't empty the fill set
     t = target("dog/productive", "dog", "productive")
@@ -106,16 +102,16 @@ def test_learner_voice_fills_a_productive_target():
     syllabus = base_syllabus((dog, i_word, have),
                              (t, target("i/receptive", "i"), target("have/receptive", "have")),
                              frequency={i_word.id: 1, have.id: 1, dog.id: 2})
-    assert syllabus.last_used_word(s) == dog.id
     assert syllabus.fills(s, t) is True
 
 
-# --- clause 2: the productive fill's last-word and marking conditions (r10) -
+# --- clause 2: a productive fill's voice and marking conditions (r10, r25) --
 
-def test_a_productive_target_fills_only_from_the_sentences_last_used_word():
-    """Spec 1 section 3, clause 2 (r10): a productive Target is filled
-    only when the sentence's last used word is the target's own word --
-    here rice (b), not eat (a); today (before this rule) both fill."""
+def test_a_productive_target_fills_from_any_word_the_sentence_uses():
+    """Spec 1 section 3, clause 2 (r25): a productive Target is filled by a
+    learner-voice sentence using its word, wherever that word falls in
+    order -- eat is not the sentence's last used word (rice is), and
+    eat/productive fills all the same."""
     a = word("eat", "กิน")  # eat
     b = word("rice", "ข้าว")  # rice -- last used word
     t_a_r = target("eat/receptive", "eat", "receptive")
@@ -126,9 +122,21 @@ def test_a_productive_target_fills_only_from_the_sentences_last_used_word():
     s = sentence(((a.id, b.id),), to, voice="learner_voice")  # eat rice
     syllabus = base_syllabus((a, b), (t_a_r, t_a_p, t_b_r, t_b_p),
                              frequency={a.id: 1, b.id: 2})
-    assert syllabus.last_used_word(s) == b.id
+    assert syllabus.last_used_word(s) == b.id   # the fixture's own premise
+    assert syllabus.fills(s, t_a_p) is True
     assert syllabus.fills(s, t_b_p) is True
+
+
+def test_other_voice_fills_no_productive_target_off_the_last_used_word():
+    a = word("eat", "กิน")  # eat
+    b = word("rice", "ข้าว")  # rice -- last used word
+    t_a_p = target("eat/productive", "eat", "productive")
+    t_b_r = target("rice/receptive", "rice", "receptive")
+    to = thai_of(a, b)
+    s = sentence(((a.id, b.id),), to, voice="other_voice")  # eat rice
+    syllabus = base_syllabus((a, b), (t_a_p, t_b_r), frequency={a.id: 1, b.id: 2})
     assert syllabus.fills(s, t_a_p) is False
+    assert syllabus.fills(s, t_b_r) is True
 
 
 def test_marking_that_does_not_admit_the_learner_fills_no_productive_target():
@@ -138,7 +146,7 @@ def test_marking_that_does_not_admit_the_learner_fills_no_productive_target():
     productive Target fills, but both receptive Targets still do (clause
     2's voice-satisfies-skill test alone, unaffected by marking)."""
     a = word("eat", "กิน")  # eat
-    b = word("rice", "ข้าว")  # rice -- last used word among a/b
+    b = word("rice", "ข้าว")  # rice
     kha = word("kha", "ค่ะ", "female politeness particle", speaker="female")
     t_a_r = target("eat/receptive", "eat", "receptive")
     t_a_p = target("eat/productive", "eat", "productive")
@@ -150,19 +158,17 @@ def test_marking_that_does_not_admit_the_learner_fills_no_productive_target():
     syllabus = base_syllabus((a, b, kha), (t_a_r, t_a_p, t_b_r, t_b_p, t_kha_r),
                              frequency={a.id: 1, kha.id: 2, b.id: 3})
     assert syllabus.marking(s) == frozenset({"female"})
-    assert syllabus.last_used_word(s) == b.id
     assert syllabus.fills(s, t_a_p) is False
     assert syllabus.fills(s, t_b_p) is False
     assert syllabus.fills(s, t_a_r) is True
     assert syllabus.fills(s, t_b_r) is True
 
 
-def test_marking_that_admits_the_learner_fills_the_last_words_productive_target():
+def test_marking_that_admits_the_learner_fills_every_used_words_productive_target():
     """ครับ marks a male speaker, the male_colloquial profile's own sex
-    (r10): admitted, so the productive Target on the sentence's last
-    used word still fills."""
+    (r10): admitted, so both used words' productive Targets fill."""
     a = word("eat", "กิน")  # eat
-    b = word("rice", "ข้าว")  # rice -- last used word among a/b
+    b = word("rice", "ข้าว")  # rice
     khrap = word("khrap", "ครับ", "male politeness particle", speaker="male")
     t_a_r = target("eat/receptive", "eat", "receptive")
     t_a_p = target("eat/productive", "eat", "productive")
@@ -174,14 +180,14 @@ def test_marking_that_admits_the_learner_fills_the_last_words_productive_target(
     syllabus = base_syllabus((a, b, khrap), (t_a_r, t_a_p, t_b_r, t_b_p, t_khrap_r),
                              frequency={a.id: 1, khrap.id: 2, b.id: 3})
     assert syllabus.marking(s) == frozenset({"male"})
-    assert syllabus.last_used_word(s) == b.id
+    assert syllabus.fills(s, t_a_p) is True
     assert syllabus.fills(s, t_b_p) is True
 
 
-def test_gaps_unfilled_targets_reflects_the_last_word_condition():
-    """gaps().unfilled_targets (spec 1 section 3, clause 2/r10 via
-    fill_set): eat's productive Target stays unfilled because eat is not
-    the sentence's last used word, even though the sentence is adopted."""
+def test_gaps_counts_a_productive_target_off_the_last_used_word_as_filled():
+    """gaps().unfilled_targets (spec 1 section 3, clause 2/r25 via
+    fill_set): the adopted sentence fills eat/productive though eat is
+    not its last used word, so nothing stays open."""
     a = word("eat", "กิน")  # eat
     b = word("rice", "ข้าว")  # rice -- last used word
     t_a_r = target("eat/receptive", "eat", "receptive")
@@ -192,15 +198,15 @@ def test_gaps_unfilled_targets_reflects_the_last_word_condition():
     s = sentence(((a.id, b.id),), to, voice="learner_voice")  # eat rice
     syllabus = base_syllabus((a, b), (t_a_r, t_a_p, t_b_r, t_b_p),
                              frequency={a.id: 1, b.id: 2}).with_sentences([s])
-    assert syllabus.gaps().unfilled_targets == ("eat/productive",)
+    assert syllabus.gaps().unfilled_targets == ()
 
 
 # --- candidate_targets: clauses 1-2 alone, apart from clause 3 -------------
 
 def test_candidate_targets_returns_the_clause_1_and_2_targets_in_id_order():
-    """candidate_targets (spec 1 section 3, clauses 1-2): eat/productive
-    fails clause 2 -- rice, not eat, is the sentence's last used word --
-    so it is not a candidate; the rest pass, in target-id order."""
+    """candidate_targets (spec 1 section 3, clauses 1-2): every Target on
+    a used word passes in a learner-voice sentence admitting the
+    learner, in target-id order."""
     a = word("eat", "กิน")  # eat
     b = word("rice", "ข้าว")  # rice -- last used word
     t_a_r = target("eat/receptive", "eat", "receptive")
@@ -211,12 +217,11 @@ def test_candidate_targets_returns_the_clause_1_and_2_targets_in_id_order():
     s = sentence(((a.id, b.id),), to, voice="learner_voice")  # eat rice
     syllabus = base_syllabus((a, b), (t_a_r, t_a_p, t_b_r, t_b_p),
                              frequency={a.id: 1, b.id: 2})
-    assert syllabus.candidate_targets(s) == (t_a_r, t_b_p, t_b_r)
+    assert syllabus.candidate_targets(s) == (t_a_p, t_a_r, t_b_p, t_b_r)
 
 
 def test_candidate_targets_is_empty_when_the_sentence_uses_no_targeted_word():
-    """() when the sentence uses no targeted word at all -- last_used_word
-    would raise (spec 1 section 3)."""
+    """() when the sentence uses no targeted word at all (spec 1 section 3)."""
     untargeted = word("untargeted", "จาน")  # plate -- registered, no Target
     to = thai_of(untargeted)
     s = sentence(((untargeted.id,),), to, voice="learner_voice")  # plate
@@ -264,6 +269,26 @@ def test_two_unmet_sentence_introduced_targets_empty_the_fill_set():
     assert syllabus.fill_set(s) == ()
     assert syllabus.fills(s, t_rice) is False
     assert syllabus.fills(s, t_spoon) is False
+
+
+def test_two_unmet_sentence_introduced_productive_targets_off_the_last_word_empty_the_fill_set():
+    """The novelty rule (spec 1 section 3, clause 3) counts every
+    candidate: with productive Targets filled off the last used word
+    (r25), two unmet sentence-introduced ones -- on eat and rice, neither
+    the last used word (fish is) -- still empty the fill set."""
+    eat = word("eat", "กิน")  # eat -- sentence-introduced
+    rice = word("rice", "ข้าว")  # rice -- sentence-introduced
+    fish = word("fish", "ปลา")  # fish -- last used word
+    t_eat = target("eat/productive", "eat", "productive", introduction="sentence")
+    t_rice = target("rice/productive", "rice", "productive", introduction="sentence")
+    t_fish = target("fish/receptive", "fish", "receptive")
+    to = thai_of(eat, rice, fish)
+    s = sentence(((eat.id, rice.id, fish.id),), to,
+                 voice="learner_voice")  # eat rice (and) fish
+    syllabus = base_syllabus((eat, rice, fish), (t_eat, t_rice, t_fish),
+                             frequency={eat.id: 1, rice.id: 2, fish.id: 3})
+    assert syllabus.last_used_word(s) == fish.id   # the fixture's own premise
+    assert syllabus.fill_set(s) == ()
 
 
 def test_one_unmet_sentence_introduced_target_fills_all_its_candidates():
@@ -380,6 +405,52 @@ def test_a_word_targeted_anywhere_in_the_order_still_lets_the_sentence_fill():
     syllabus = base_syllabus((rice, spoon, with_word), (t_rice, t_spoon, t_with),
                              frequency={rice.id: 1, with_word.id: 2, spoon.id: 99})
     assert syllabus.fills(s, t_rice) is True
+
+
+# --- target_words: the words of the Targets a sentence fills --------------
+
+def test_target_words_are_the_words_of_its_productive_fills_in_target_id_order():
+    """Syllabus.target_words (spec 3 r54): the word of each productive
+    Target in the fill set, once each, in target-id order -- eat and
+    rice, both filled productively, eat first though rice is the last
+    used word and leads the sentence; i, filled only receptively, is
+    not named."""
+    a = word("eat", "กิน")  # eat
+    b = word("rice", "ข้าว")  # rice -- last used word
+    i_word = word("i", "ผม")  # I -- receptive only
+    to = thai_of(a, b, i_word)
+    s = sentence(((b.id, i_word.id, a.id),), to, voice="learner_voice")  # rice, I eat
+    syllabus = base_syllabus(
+        (a, b, i_word),
+        (target("rice/productive", "rice", "productive"), target("rice/receptive", "rice"),
+         target("i/receptive", "i"), target("eat/receptive", "eat"),
+         target("eat/productive", "eat", "productive")),
+        frequency={a.id: 1, i_word.id: 1, b.id: 2})
+    assert syllabus.target_words(s) == (a.id, b.id)
+
+
+def test_target_words_fall_back_to_every_filled_targets_word_with_no_productive_fill():
+    """An other-voice sentence fills no productive Target: its target
+    words are the words of every Target it fills, in target-id order."""
+    a = word("eat", "กิน")  # eat
+    b = word("rice", "ข้าว")  # rice
+    to = thai_of(a, b)
+    s = sentence(((b.id, a.id),), to, voice="other_voice")  # rice, eat
+    syllabus = base_syllabus(
+        (a, b),
+        (target("rice/receptive", "rice"), target("eat/receptive", "eat"),
+         target("eat/productive", "eat", "productive")),
+        frequency={a.id: 1, b.id: 2})
+    assert syllabus.target_words(s) == (a.id, b.id)
+
+
+def test_target_words_are_empty_when_the_sentence_fills_nothing():
+    rice = word("rice", "ข้าว")  # rice
+    untargeted = word("untargeted", "จาน")  # plate -- registered, no Target
+    to = thai_of(rice, untargeted)
+    s = sentence(((rice.id, untargeted.id),), to, voice="learner_voice")  # rice, plate
+    syllabus = base_syllabus((rice, untargeted), (target("rice/receptive", "rice"),))
+    assert syllabus.target_words(s) == ()
 
 
 # --- check_sentence: the vocabulary-dependent half of the Sentence invariant

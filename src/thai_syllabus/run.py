@@ -38,6 +38,7 @@ from .attempts import (
     current_best_of,
     draft_refusal,
     grapheme_attempt,
+    joined,
     pair_search_attempt,
     phrase_attempt,
     picture_query_for,
@@ -47,6 +48,7 @@ from .attempts import (
     reverify_attempt,
     sentence_attempt,
     sources_for_need,
+    target_words_of,
 )
 from .derivations import (
     QueuedNeeds,
@@ -346,7 +348,7 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     The question is the one `sentence_attempt` (and
     `attempts._draft_replacement`) raises for a draft: role
     sentence-for-target, the current rubric, `{text, gloss, word}` with
-    the sentence's own last used word. A draft is asked about only when
+    the sentence's target words joined (spec 3 r54). A draft is asked about only when
     it could still be adopted: `attempts.draft_refusal`, the one
     acceptance test both of those passes apply (the Sentence invariant,
     the clause cap, at least one still-open Target filled, the
@@ -370,13 +372,13 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
             _log.debug("orphaned draft not asked about: %s: %s", refusal, draft.text)
             continue
         try:
-            last_word = ctx.syllabus.word(ctx.syllabus.last_used_word(sentence)).thai
-        except (KeyError, ValueError) as e:
+            words = joined(t.thai for t in target_words_of(ctx.syllabus, sentence))
+        except KeyError as e:
             _log.debug("orphaned draft not asked about: %s: %s", e, draft.text)
             continue
         questions.append(AssessQuestion(
             subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
-            params={"text": draft.text, "gloss": draft.gloss, "word": last_word},
+            params={"text": draft.text, "gloss": draft.gloss, "word": words},
             kind="sentence", subject_kind="sentence"))
     if not questions:
         return AttemptResult(attempted=False)

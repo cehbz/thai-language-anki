@@ -215,11 +215,10 @@ def test_sentence_fills_novelty_is_silent_when_the_sentence_fills_its_target():
 
 
 def test_sentence_fills_novelty_does_not_flag_a_productive_target_off_the_last_used_word():
-    """Spec 1 section 3, clause 2 (r10): eat/productive is not a
-    candidate at all (rice, not eat, is the sentence's last used word) --
-    the rule flags a candidate_targets() member not in the fill set,
-    never re-implementing clauses 1-2 to catch a Target clause 2 itself
-    already excludes."""
+    """Spec 1 section 3, clause 2 (r25): eat/productive is a candidate
+    and in the fill set though rice, not eat, is the sentence's last
+    used word -- the rule flags a candidate_targets() member not in the
+    fill set, so it is silent here."""
     eat = word("eat", "กิน")  # eat
     rice = word("rice", "ข้าว")  # rice -- last used word
     t_eat_r = target("eat/receptive", "eat", "receptive")

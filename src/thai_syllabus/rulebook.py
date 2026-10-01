@@ -65,9 +65,9 @@ GRAPHEME_KEYWORD_CONTAINS_SYMBOL = Rule(id="grapheme/keyword-contains-symbol",
 #
 # Clauses 1-2 (Syllabus.candidate_targets) decide which Targets are
 # candidates at all, before clause 3 (above) ever runs: the target's word
-# among the sentence's own words, and -- for a productive Target -- r10's
-# own conditions (spec 1 section 1): the sentence's last used word must be
-# the target's own word, and its marking must admit the learner's voice.
+# among the sentence's own words, and -- for a productive Target -- a
+# learner-voice sentence whose marking admits the learner's voice (r10,
+# r25).
 
 def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []

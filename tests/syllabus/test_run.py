@@ -22,7 +22,7 @@ import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
-from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict
+from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict, deck_field
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, DirectionKey, JudgeKey,
                                     LearnerKey, LlmPromptKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, sha)
@@ -3087,6 +3087,18 @@ def test_a_draft_with_no_verdict_has_its_judge_question_collected_again(
     # drafts are not needs: no bucket of their own, and the identity holds
     assert (report.available == report.attempted + report.exhausted + report.pending
             + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_recovered_drafts_judge_question_names_its_target_words(
+        ctx_orphaned_draft, fake_batch):
+    """Spec 3 r54: the recovered question names the draft's target words
+    (Syllabus.target_words), joined in target-id order -- eat, then rice
+    -- as `sentence_attempt` does."""
+    report = run(ctx_orphaned_draft, budgets={})
+    prompts = [prompt for prompt, _attachments
+               in fake_batch._requests[report.batch_id].values() if EAT_RICE in prompt]
+    assert len(prompts) == 1
+    assert f"Target words: {deck_field(EAT.thai + ', ' + RICE.thai)}" in prompts[0]
 
 
 def test_a_draft_with_a_fresh_verdict_collects_nothing(ctx_orphaned_draft, fake_batch):

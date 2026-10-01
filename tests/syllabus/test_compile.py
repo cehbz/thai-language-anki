@@ -962,16 +962,15 @@ def test_receptive_sentence_note_gets_no_cloze_card(fx):
     assert generated == {"Listening"}
 
 
-def test_a_productive_target_off_the_last_used_word_is_neither_filled_nor_a_cloze(fx):
+def test_a_productive_target_off_the_last_used_word_is_filled_and_tagged(fx):
     # eat's Target is BOTH receptive and productive; rice's is receptive
     # only. Frequency puts eat's two targets first, so rice -- the LATER
     # of the two used words -- is the sentence's last used word (spec 4
-    # section 1: TargetWord is the sentence's last used word). Under r10
-    # (spec 1 section 3, clause 2), a productive Target fills only from
-    # the sentence it clozes on its own word: eat is not the last used
-    # word, so eat/productive is NOT filled and NOT tagged -- only
-    # eat/receptive and rice/receptive tag the note, and with no filled
-    # productive Target on rice, the note gets no Cloze card either.
+    # section 1: TargetWord is the sentence's last used word). Under r25
+    # (spec 1 section 3, clause 2), a productive Target is filled by any
+    # learner-voice sentence using its word: eat/productive is filled and
+    # tags the note. Productive still reads the last used word's Targets,
+    # and rice has no productive one.
     eat = _word("eat", "กิน", "to eat")
     rice = _word("rice", "ข้าว", "cooked rice")
     eat_receptive = Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive")
@@ -1002,11 +1001,11 @@ def test_a_productive_target_off_the_last_used_word_is_neither_filled_nor_a_cloz
 
     tags = note["tags"].split(" ")
     target_ids = {t.split("::", 1)[1] for t in tags if t.startswith("target::")}
-    assert target_ids == {"eat/receptive", "rice/receptive"}
+    assert target_ids == {"eat/productive", "eat/receptive", "rice/receptive"}
 
     fields = dict(zip(field_names, note["flds"]))
     assert fields["TargetWord"] == "ข้าว"  # rice: the last used word
-    assert fields["Productive"] == ""       # eat/productive is off the last used word: unfilled
+    assert fields["Productive"] == ""       # rice, the last used word, has no productive Target
 
     tmpl_names = [t["name"] for t in s_model["tmpls"]]
     cards = [c for c in pkg["cards"] if c["nid"] == note["id"]]

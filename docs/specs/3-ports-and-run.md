@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 53, proposed 2026-09-25 against principles r6 and architecture
+Revision 54, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -247,6 +247,7 @@ Revision log:
 - r51 2026-09-20: the pronunciation rubric's spelling-length sentence names the isolation-form exception -- a word written with a short sign but said long when spoken alone (น้ำ, ได้, ไม้, เจ้า, เก้า and the like) is long in isolation and keeps its own length inside a compound; the rubric sha changes, so the still-disputed words are re-asked once. Evidence: the judge, following the sentence, read น้ำ and ได้ short where both engines and Wiktionary read them long (Wikipedia: náːm, dâːj) and read น้ำ short inside น้ำมะพร้าว where Wiktionary agrees; 7 of the 57 disputed words. User approval 2026-09-20.
 - r52 2026-09-23: `judge.effort` and `judge.roles.<role>.effort` (§8; low | medium | high | xhigh | max, inherited from the judge where unset, sent by the api and batch transports as `output_config.effort`, nothing sent when unset). Evidence: the pronunciation role moves to Claude Opus 5.5 ($4/$20 per MTok against Opus 5's $5/$25), which rejects `thinking: disabled` and controls depth by effort alone with a default of `medium` where Opus 5's was `high`; the role's 47% corroboration was measured at Opus 5's default, so the deck pins the role at `high`. User approval 2026-09-23.
 - r53 2026-09-25: a sentence has at most `sentence_max_words` (§8, 8) deck words across its clauses: the drafter is asked for it, a longer draft is refused at acceptance, and an adopted sentence over it is retired by the run (F13) unless a learner recording or direction keeps it. Evidence: 41 of 410 adopted sentences exceed 8 words (the longest 13, two clauses: "this morning I sip a cup of hot tea, in the afternoon I sip a cup of coffee"), 83 Targets filled by them alone; the learner found them daunting at the start of study. User ruling 2026-09-25.
+- r54 2026-10-01: the sentence-for-target judge, the scene-picture fit judge and the phrase prompt name the sentence's target words (the words of the Targets it fills productively, else of every Target it fills) instead of its last used word (spec 1 r25). User ruling 2026-10-01.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -386,7 +387,8 @@ need, word or scene, that has none on record and no direction, an
 English image query in two forms (r36): `phrase`, a description of the
 photograph that would cue the item (at most ten words, no proper nouns),
 and `keywords`, at most three head terms; the item hands the drafter a
-sentence's text, gloss and target word with its gloss, or a word's form,
+sentence's text, gloss and the sentence's target words, each with its
+gloss (r54), or a word's form,
 meaning and category, and states the cue criteria (§4's scene rubric: a
 picture a learner who knows the item would take as its picture, pointing
 at what the target contributes, by any route); each source consumes the
@@ -424,7 +426,7 @@ re-asked, its hits having just been served (r19)),
 judge *fit* on each
 (pass/fail; the question carries the thing the picture is for, its gloss
 and the phrase searched for, and for a sentence also `target` and
-`target_gloss`, the word its production card blanks, r33),
+`target_gloss`, the sentence's target words, r33, r54),
 and if more than one passes
 judge *preference* once over the passing set; then current-best. A judge
 `suggestion` becomes the next attempt's phrase (a search phrase of at

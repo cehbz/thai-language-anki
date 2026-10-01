@@ -507,8 +507,8 @@ def deck_field(v) -> str:
 def picture_fit_prompt(q: AssessQuestion) -> str:
     """The fit prompt in two shapes. A `target` in the params makes it
     sentence-shaped (spec 3 r33): the scene picture is judged as the cue
-    that supplies the word the production card blanks, so the judge is
-    told which word that is, and the suggestion it asks for is a short
+    that supplies the sentence's target words (spec 3 r54), so the judge
+    is told which they are, and the suggestion it asks for is a short
     search phrase for the cue picture, not a description (spec 3 r38).
     Without a `target` the subject is a word and the prompt is otherwise
     unchanged -- the word rubric follows in a later revision.
@@ -519,7 +519,7 @@ def picture_fit_prompt(q: AssessQuestion) -> str:
                f"attached).\n{UNTRUSTED}\n"
                f"Sentence: {deck_field(p.get('word', q.subject))}\n"
                f"Gloss: {deck_field(p.get('meaning', ''))}\n"
-               f"Target word (blanked on the production card): {deck_field(p['target'])} — "
+               f"Target words (blanked on the production cards): {deck_field(p['target'])} — "
                f"{deck_field(p.get('target_gloss', ''))}\n"
                f"Phrase the picture was searched for: "
                f"{deck_field(p.get('phrase') or '(none given)')}\n\n"
@@ -560,7 +560,7 @@ def sentence_prompt(q: AssessQuestion) -> str:
            f"for a flashcard.\n{UNTRUSTED}\n"
            f"Sentence: {deck_field(p.get('text', ''))}\n"
            f"English gloss offered for it: {deck_field(p.get('gloss') or '(none given)')}\n"
-           f"Target word: {deck_field(p.get('word', ''))}\n\n"
+           f"Target words: {deck_field(p.get('word', ''))}\n\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
            '"suggestion": <string or null>}. Respond with only that JSON object and no other '

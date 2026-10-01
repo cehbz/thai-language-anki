@@ -808,8 +808,8 @@ def test_scene_picture_attempt_searches_the_scene_s_drafted_phrase(tmp_path):
 
 
 def test_scene_fit_params_carry_the_sentences_target_word_and_its_gloss(tmp_path):
-    """Spec 3 r33: the scene fit question names the word the production
-    card blanks -- the last used word (the one the sentence introduces)."""
+    """Spec 3 r33/r54: the scene fit question names the sentence's
+    target word -- here its only one."""
     sentence = _sentence()
     ctx, _search, _judge = _picture_ctx(
         tmp_path, _word_syllabus().with_sentences([sentence]))
@@ -817,6 +817,33 @@ def test_scene_fit_params_carry_the_sentences_target_word_and_its_gloss(tmp_path
     assert params["word"] == sentence.text and params["meaning"] == sentence.gloss
     assert params["target"] == "ข้าว"            # ข้าว: rice
     assert params["target_gloss"] == "rice (cooked)"
+
+
+def _eat_rice_syllabus() -> Syllabus:
+    # eat/productive off the last used word (rice): a target word all the
+    # same (spec 1 r25); both words are filled productively
+    return Syllabus(words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice (cooked)")),
+                    targets=(target("eat/productive", "eat", "productive"),
+                             target("rice/productive", "rice", "productive"),
+                             target("rice/receptive", "rice")),
+                    categories=(Category(name="Food", members=frozenset({"rice"})),),
+                    frequency={"eat": 1, "rice": 2})
+
+
+def _eat_rice_scene() -> Sentence:
+    return _sentence(text="กินข้าว", gloss="eat rice",   # กินข้าว: eat rice
+                     clauses=((WordId("eat"), WordId("rice")),))
+
+
+def test_scene_fit_params_name_every_target_word_joined(tmp_path):
+    """Spec 3 r54: `target` and `target_gloss` are the sentence's target
+    words (Syllabus.target_words) and their glosses, each joined in
+    target-id order."""
+    scene = _eat_rice_scene()
+    ctx, _search, _judge = _picture_ctx(tmp_path, _eat_rice_syllabus().with_sentences([scene]))
+    params = _picture_params(ctx, Need(scene.text_sha, "picture", "sentence"), "a rice meal")
+    assert params["target"] == "กิน, ข้าว"            # กิน: eat, ข้าว: rice
+    assert params["target_gloss"] == "eat, rice (cooked)"
 
 
 def test_word_fit_params_carry_no_target(tmp_path):
@@ -1849,14 +1876,15 @@ def test_sentence_attempt_checks_an_open_target_beyond_the_handed_batch(tmp_path
     assert res.drafted == 1          # the draft fills rice/receptive, beyond the handed batch
 
 
-def test_the_judge_question_names_the_last_used_word(tmp_path):
-    """params["word"] is the last used word (Syllabus.last_used_word),
-    not the first-mentioned target's word: "rice" is ordered after "eat"
-    (frequency), so it is the sentence's last used word."""
+def test_the_judge_question_names_the_sentences_target_words(tmp_path):
+    """params["word"] is the sentence's target words (Syllabus.target_words,
+    spec 3 r54) joined: no productive Target here, so the words of
+    eat/receptive and rice/receptive, in target-id order -- not the last
+    used word (rice) alone."""
     ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "rice"), "กินข้าว", "eat rice"),
                         batch=True)   # กินข้าว: eat rice
     res = sentence_attempt(ctx)
-    assert res.questions[0].question.params["word"] == "ข้าว"   # ข้าว: rice -- the last used word
+    assert res.questions[0].question.params["word"] == "กิน, ข้าว"   # กิน: eat, ข้าว: rice
 
 
 def test_sentence_attempt_merges_a_duplicated_draft_into_one_judge_question(tmp_path):
@@ -2048,6 +2076,25 @@ def test_sentence_attempt_accepts_the_same_draft_at_a_raised_target_cap(tmp_path
     ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
     ctx.sentence_targets_per_sentence = 4
     assert sentence_attempt(ctx).drafted == 1
+
+
+def test_productive_targets_off_the_last_used_word_count_against_the_target_cap(tmp_path, caplog):
+    """Spec 1 r25 with spec 3 r27: eat/productive is filled though rice
+    is the last used word, so "eat rice" fills four open Targets and the
+    cap of 3 refuses it."""
+    syllabus = Syllabus(
+        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),   # กิน: eat, ข้าว: rice
+        targets=(target("eat/receptive", "eat"), target("eat/productive", "eat", "productive"),
+                 target("rice/receptive", "rice"),
+                 target("rice/productive", "rice", "productive")),
+        frequency={"eat": 1, "rice": 2})
+    text = _draft_json(("eat", "rice"), "กินข้าว", "eat rice")   # กินข้าว: eat rice
+    ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
+    assert ctx.sentence_targets_per_sentence == 3
+    with caplog.at_level(logging.WARNING):
+        res = sentence_attempt(ctx)
+    assert res.questions == [] and res.drafted == 0
+    assert "draft refused" in caplog.text and "4 targets" in caplog.text and "cap 3" in caplog.text
 
 
 def test_sentence_attempt_counts_only_open_targets_against_the_cap(tmp_path):
@@ -3376,13 +3423,14 @@ def test_phrase_prompt_names_the_target_word_the_category_and_asks_for_two_forms
     topic -- it is told what the target word contributes (a sentence)
     or the category (a word), the cue criteria, and answers a phrase
     and keywords."""
-    scene = _sentence()                       # its target word is the last used word
-    syllabus = _word_syllabus().with_sentences([scene])
+    scene = _eat_rice_scene()
+    syllabus = _eat_rice_syllabus().with_sentences([scene])
     ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
     phrase_attempt(ctx)
     prompt = _phrase_drafter(ctx).prompts[0]
-    target = syllabus.word(syllabus.last_used_word(scene))
-    assert f"target: {deck_field(target.thai)} ({deck_field(target.meaning)})" in prompt
+    # the sentence's target words (spec 3 r54), each with its gloss, in target-id order
+    assert (f"target: {deck_field('กิน')} ({deck_field('eat')}), "      # กิน: eat
+            f"{deck_field('ข้าว')} ({deck_field('rice (cooked)')})") in prompt   # ข้าว: rice
     assert f"kind: word  thai: {deck_field('ข้าว')}" in prompt       # ข้าว: rice
     assert f"category: {deck_field('Food')}" in prompt
     assert "memory cue" in prompt and "keywords" in prompt and "at most ten words" in prompt
@@ -3391,18 +3439,17 @@ def test_phrase_prompt_names_the_target_word_the_category_and_asks_for_two_forms
 
 
 def test_a_scene_using_no_targeted_word_is_still_asked_for_a_query(tmp_path):
-    """Fix round 1: Syllabus.last_used_word raises for a sentence using
-    no targeted word (as `candidate_targets` and `_sentence_order_key`
-    already tolerate). Its item line falls back to text and gloss with no
-    `target:` clause -- the scene still deserves a query -- and the ask
-    still goes out for every other need beside it."""
+    """A sentence using no targeted word fills nothing, so it has no
+    target words (Syllabus.target_words). Its item line falls back to
+    text and gloss with no `target:` clause -- the scene still deserves
+    a query -- and the ask still goes out for every other need beside
+    it."""
     orphan = _sentence(text="กิน", gloss="someone eats",   # กิน: eat
                        clauses=((WordId("eat"),),))
     syllabus = _word_syllabus().with_words(
         (word("rice", "ข้าว", "rice (cooked)"), word("eat", "กิน", "eat"))
     ).with_sentences([orphan])
-    with pytest.raises(ValueError):                        # the fixture's own premise
-        syllabus.last_used_word(orphan)
+    assert syllabus.target_words(orphan) == ()            # the fixture's own premise
     ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
     assert phrase_attempt(ctx).attempted
     prompt = _phrase_drafter(ctx).prompts[0]
@@ -3646,6 +3693,8 @@ def test_retire_sentence_action_retires_with_reason_and_hint_and_a_replacement_i
     (q,) = res.questions
     assert q.question.role == "sentence-for-target" and q.question.params["text"] == "กินข้าวครับ"
     assert q.question.params["gloss"] == "eat rice (polite)"
+    # the replacement's target words (spec 3 r54), target-id order: eat, polite-particle, rice
+    assert q.question.params["word"] == "กิน, ครับ, ข้าว"   # กิน: eat, ครับ: kráp, ข้าว: rice
     (retire, replaced) = reading_of(ctx.db.assessments_of(s.text_sha),
                                     c.comment_sha).answer["actions"]
     assert retire["outcome"] == "done" and replaced["outcome"] == "done"

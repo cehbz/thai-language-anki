@@ -378,31 +378,27 @@ class Syllabus:
     # --- fills() -----------------------------------------------------------
 
     def _target_satisfies_clauses_1_and_2(self, words: frozenset[WordId], voice: str,
-                                          target: Target, last_used_word: WordId,
-                                          admits_learner: bool) -> bool:
+                                          target: Target, admits_learner: bool) -> bool:
         """Clauses 1 and 2 alone: the target's word among `words` (a
         sentence's own words as a set), the voice satisfying the skill --
         the "contains" test a fill set is built from, distinct from
-        membership in one (spec 1 section 3). Clause 2 (r10): a
-        productive Target also needs the sentence's last used word to be
-        the target's own word (the word the Cloze card is on, spec 4)
-        and the sentence's marking to admit the learner's voice, i.e. be
-        empty or the Profile's own sex -- `last_used_word` and
-        `admits_learner` are the caller's own sentence, computed once
-        per `candidate_targets` call rather than per candidate.
+        membership in one (spec 1 section 3). Clause 2 (r10, r25): a
+        productive Target also needs the sentence's marking to admit the
+        learner's voice, i.e. be empty or the Profile's own sex --
+        `admits_learner` is the caller's own sentence, computed once per
+        `candidate_targets` call rather than per candidate.
         """
         if target.word not in words:
             return False
         if target.skill != "productive":
             return True
-        return voice == "learner_voice" and target.word == last_used_word and admits_learner
+        return voice == "learner_voice" and admits_learner
 
     def candidate_targets(self, sentence: Sentence) -> tuple[Target, ...]:
         """The Targets passing clauses 1 and 2 alone (spec 1 section 3,
         clauses 1-2), in target-id order -- distinct from clause 3's
         fill set (`fill_set`), which the novelty rule (F5) compares
-        this against rather than re-deriving. () when the sentence uses
-        no targeted word at all (`last_used_word` would raise).
+        this against rather than re-deriving.
         """
         return self._candidate_targets_over(sentence, frozenset(sentence.words))
 
@@ -413,15 +409,10 @@ class Syllabus:
         needs that same set for its own sentence-level gate and passes
         it straight through instead of building it twice.
         """
-        try:
-            last_used_word = self.last_used_word(sentence)
-        except ValueError:
-            return ()
         admits_learner = self.marking(sentence) <= {self.profile.learner_speaker}
         return tuple(sorted(
             (t for t in self.targets
-            if self._target_satisfies_clauses_1_and_2(
-                used, sentence.voice, t, last_used_word, admits_learner)),
+            if self._target_satisfies_clauses_1_and_2(used, sentence.voice, t, admits_learner)),
             key=lambda t: t.id))
 
     def _sentence_order_key(self, sentence: Sentence) -> tuple[int, int, str] | None:
@@ -554,6 +545,16 @@ class Syllabus:
 
     def fills(self, sentence: Sentence, target: Target) -> bool:
         return target in self.fill_set(sentence)
+
+    def target_words(self, sentence: Sentence) -> tuple[WordId, ...]:
+        """The sentence's target words (spec 3 r54): the word of each
+        productive Target in its fill set, else -- when it fills none
+        productively -- of every Target in it; once each, in target-id
+        order. () when it fills nothing.
+        """
+        filled = self.fill_set(sentence)
+        productive = [t for t in filled if t.skill == "productive"]
+        return tuple(dict.fromkeys(t.word for t in (productive or filled)))
 
     def met_sentence_introduced_targets(self) -> frozenset[TargetId]:
         """Every sentence-introduced Target some adopted sentence's own

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 24, proposed 2026-09-25 against principles r6 and architecture
+Revision 25, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -72,6 +72,7 @@ Revision log:
 - r22 2026-09-19: `Syllabus.gaps()` lists every pair without a current-best rendition (`pairs_missing_renditions`, from `pair/rendition-required`) in place of the confusions `coverage/confusions` marked uncovered; the measure keeps its reading and no longer gates sourcing. Evidence: spec 3 r48 (a confusion covered by one pair's rendition hid its other pairs; 7 of 30 on the live deck). User approval 2026-09-19.
 - r23 2026-09-20: the centering diphthongs ia, ɯa, ua carry `vowel_length: long`, the standard convention; `Ipa` writes them unmarked. Evidence: 68 of 68 corroborated diphthong syllables on the live deck were `short`, an artifact of thaig2p emitting the diphthong with no length mark and the tltk converter overriding tltk's own `iːa`; 37 of the 57 disputed words were judge verdicts that differed from the engines on diphthong length alone. User approval 2026-09-20.
 - r24 2026-09-25: order() deals each sentence directly after its last used word's last Target (the entry position §3 clause 3 already names); a sentence whose last used word is a letter-name word follows the sounds block; sentences sharing a last word are ordered by word count then text_sha, the same key the fill-set placement (§3 clause 3) reads; a sentence with no placed word last. Evidence: order() appended every sentence after every word Target, so no sentence card reached the learner until all ~900 word cards had been introduced; the principle (F8) is a sentence after its words. User ruling 2026-09-25.
+- r25 2026-10-01: a productive Target is filled by any learner-voice sentence using its word whose marking admits the learner; last_used_word is the placement key only. Evidence: 620 of 650 drafts refused as filling no open Target used an open productive word that was not their last word in order; with spec 1 r24 dealing a sentence after its last word, every word it uses is known when its cards arrive. User ruling 2026-10-01.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -269,10 +270,8 @@ Targets (E7).
 **fills(sentence, target) -> bool** — the single definition:
 1. target.word is in sentence.clauses (a repeated word counts once),
 2. sentence.voice satisfies target.skill (other_voice fills receptive
-   only); a productive Target is filled only when the sentence's last
-   used word is the target's word (the word the Cloze card is on, spec
-   4) and the sentence's marking admits the learner's voice, i.e. is
-   empty or the Profile's own sex,
+   only); a productive Target is filled only when the sentence's marking
+   admits the learner's voice, i.e. is empty or the Profile's own sex,
 3. at the sentence's entry position (after its last word's target):
    every word it uses has a Target, and at most one filled Target is
    sentence-introduced and unmet, no adopted sentence placed at or

@@ -591,7 +591,7 @@ def test_picture_fit_prompt_for_a_sentence_names_the_target_word_and_its_gloss()
     assert "You are evaluating the picture for a Thai sentence flashcard (image attached)." in p
     assert f"Sentence: {deck_field('ฉันกินข้าว')}" in p
     assert f"Gloss: {deck_field('I eat rice')}" in p
-    assert ("Target word (blanked on the production card): "
+    assert ("Target words (blanked on the production cards): "
             f"{deck_field('ข้าว')} — {deck_field('rice (cooked)')}") in p
     assert f"Phrase the picture was searched for: {deck_field('a bowl of rice')}" in p
     assert "Word:" not in p and "RUBRIC" in p and '"value"' in p
@@ -1348,6 +1348,14 @@ def test_the_sentence_prompt_renders_the_gloss_it_asks_about():
         subject_kind="sentence",
         params={"text": "กินข้าว", "gloss": "eat rice", "word": "กิน"}))   # กินข้าว: eat rice
     assert "eat rice" in prompt and "กินข้าว" in prompt
+
+
+def test_the_sentence_prompt_labels_the_target_words_it_carries():
+    """Spec 3 r54: `word` carries the sentence's target words, joined."""
+    prompt = sentence_prompt(AssessQuestion(
+        subject="sha1", role="sentence-for-target", artifact_sha=None, rubric="RUBRIC",
+        params={"text": "กินข้าว", "gloss": "eat rice", "word": "กิน, ข้าว"}))  # กินข้าว: eat rice
+    assert f"Target words: {deck_field('กิน, ข้าว')}" in prompt
 
 
 def test_the_sentence_prompt_says_so_when_no_gloss_was_offered():
