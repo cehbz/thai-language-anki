@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from . import record
+from .assessor import MechanicalKeyOf, mechanical_question
 from .authority import AUTHORITY_ORDER, role_for
 from .entities import Sentence, Syllable, Target, is_corroborated
 from .ids import WordId, sentence_cloze_key
@@ -973,7 +974,7 @@ def directed(cache: CacheReader, subject: str) -> bool:
 
 def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequence[Answer],
                        current_rubric: Mapping[str, str], sources: Sequence[str], *,
-                       transient_cap: int, nothing_ttl: Mapping[str, int] = {},
+                       mechanical_key: MechanicalKeyOf, transient_cap: int, nothing_ttl: Mapping[str, int] = {},
                        now_ns: int | None = None,
                        requery_cap: int = DEFAULT_REQUERY_CAP) -> bool:
     """A candidate has no verdict under the current rubric, a judge
@@ -987,7 +988,8 @@ def _has_untried_lever(cache: CacheReader, subject: str, kind: str, rows: Sequen
     drafted after a pending suggestion must not hide it from bucket 2.
     """
     judge_rows = [r for r in rows if r.port == "assess" and r.backend == "judge"]
-    if unjudged_candidates(cache, subject, kind, current_rubric=current_rubric):
+    if unjudged_candidates(cache, subject, kind, current_rubric=current_rubric,
+                           mechanical_key=mechanical_key):
         return True
     provide_ts = record.last_source_ask_ts(rows)
     if any(r.answer.get("suggestion") and r.ts > provide_ts for r in judge_rows):
@@ -1117,7 +1119,7 @@ def available_need_keys(syllabus) -> frozenset[tuple[str, str]]:
 
 
 def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
-         prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
+         mechanical_key: MechanicalKeyOf, prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
          attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
          collected_this_run: frozenset[tuple[str, str]] = frozenset(),
          nothing_ttl: Mapping[str, int] = {},
@@ -1125,7 +1127,8 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
          requery_cap: int = DEFAULT_REQUERY_CAP,
          sources_for_need: Callable[..., Sequence[str]] | None = None,
          needs: Sequence[tuple[str, str, str]] | None = None) -> list[QueueEntry]:
-    return queued(syllabus, cache, current_rubric=current_rubric, prior=prior,
+    return queued(syllabus, cache, current_rubric=current_rubric,
+                  mechanical_key=mechanical_key, prior=prior,
                   sources_for=sources_for, attempt_cap=attempt_cap,
                   transient_cap=transient_cap,
                   provenance_source=provenance_source,
@@ -1136,7 +1139,7 @@ def queue(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
 
 
 def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
-          prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
+          mechanical_key: MechanicalKeyOf, prior: Sequence[str], sources_for: Callable[[str], Sequence[str]],
           attempt_cap: int, transient_cap: int, provenance_source: Callable[[str], str | None],
           collected_this_run: frozenset[tuple[str, str]] = frozenset(),
           nothing_ttl: Mapping[str, int] = {},
@@ -1201,14 +1204,15 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
         attempts = status.attempts
 
         if best.artifact_sha is None or is_vetoed:
-            awaiting = unjudged_candidates(cache, subject, kind, current_rubric=current_rubric)
+            awaiting = unjudged_candidates(cache, subject, kind, current_rubric=current_rubric,
+                                           mechanical_key=mechanical_key)
             if status.exhausted and not is_directed and not awaiting:
                 out_of_options += 1
                 continue  # out of machine options, nothing directs it, no
                           # candidate awaits a verdict -- excluded
             bucket = 1
         elif _has_untried_lever(cache, subject, kind, rows, current_rubric, sources,
-                                transient_cap=transient_cap, nothing_ttl=nothing_ttl,
+                                mechanical_key=mechanical_key, transient_cap=transient_cap, nothing_ttl=nothing_ttl,
                                 now_ns=now_ns, requery_cap=requery_cap):
             bucket = 2
         else:
@@ -1227,6 +1231,7 @@ def queued(syllabus, cache: CacheReader, *, current_rubric: Mapping[str, str],
 
 def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
                         current_rubric: Mapping[str, str],
+                        mechanical_key: MechanicalKeyOf,
                         excluding: Collection[str] = ()) -> tuple[str, ...]:
     """`subject`'s candidates of `kind` with no verdict deciding them yet,
     in record.candidate_shas order (spec 3 section 5 assess-first),
@@ -1237,12 +1242,14 @@ def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
     For a role whose deciding backend is mechanical
     (authority.AUTHORITY_ORDER[role][0] == "mechanical":
     recording-for-word, recording-for-sentence, r23) a candidate awaits
-    when no mechanical verdict row under this subject names its sha --
-    mechanical asks about the artifact itself, not a rubric, so a role
-    absent from `current_rubric` still gets assessed here, and a params
-    change is its own cache miss (re-asks by itself, nothing to track),
-    for an open need; a satisfied need's current-best is re-asked under a
-    new key by the run's re-verification pass (spec 3 r49).
+    when this subject has no mechanical verdict row under the check's
+    current key for it (`mechanical_key` over
+    assessor.mechanical_question; spec 3 r55) -- mechanical asks about
+    the artifact itself, not a rubric, so a role absent from
+    `current_rubric` still gets assessed here, and a verdict under an
+    earlier key (another window, the legacy duration check) decides
+    nothing; a satisfied need's current-best is re-asked under a new key
+    by the run's re-verification pass (spec 3 r49).
 
     Every other role is judge-decided: empty for a role absent from
     `current_rubric` (the judge ranks nothing there); else a candidate
@@ -1266,10 +1273,12 @@ def unjudged_candidates(cache: CacheReader, subject: str, kind: str, *,
     rows = record.rows_for(cache, subject, kind)
     role = role_of(cache, subject, kind, rows)
     if AUTHORITY_ORDER.get(role, ("judge",))[0] == "mechanical":
-        judged = {r.question.get("artifact_sha") for r in rows
-                 if r.port == "assess" and r.backend == "mechanical"}
+        subject_kind = record.subject_kind_of(rows)
+        keys = {r.key for r in rows if r.port == "assess" and r.backend == "mechanical"}
         return tuple(s for s in record.candidate_shas(rows)
-                    if s not in judged and s not in excluding)
+                    if s not in excluding
+                    and mechanical_key(mechanical_question(subject, kind, subject_kind, s)).encode()
+                    not in keys)
     if role not in current_rubric:
         return ()
     candidates = record.candidate_shas(rows)

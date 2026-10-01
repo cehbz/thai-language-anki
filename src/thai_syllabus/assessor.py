@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from . import record
+from .authority import role_for
 from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from .entities import _same_form
 from .ports import CacheReader, RecordWriter
@@ -32,7 +33,7 @@ __all__ = [
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "pronunciation_prompt", "parse_preference", "parse_pronunciation", "last_json_object",
     "RecordingCheckBackend", "FormatBackend", "RenditionBackend",
-    "ffprobe_duration_seconds",
+    "ffprobe_duration_seconds", "MechanicalKeyOf", "mechanical_question",
 ]
 
 _log = logging.getLogger(__name__)
@@ -53,6 +54,21 @@ class AssessQuestion:
     # read both back verbatim; Assessor derives neither from `role`.
     kind: str = ""
     subject_kind: str = "word"
+
+
+# The key the mechanical check answers a question under now: an Assessor's
+# key_of("mechanical", ...) or the check backend's own cache_key.
+MechanicalKeyOf = Callable[[AssessQuestion], CacheKey]
+
+
+def mechanical_question(subject: str, kind: str, subject_kind: str,
+                        artifact_sha: str) -> AssessQuestion:
+    """The mechanical check's question on one candidate of the
+    (subject, kind) need -- the one shape the check is asked and its
+    current key is computed under (derivations.unjudged_candidates, the
+    re-verification pass)."""
+    return AssessQuestion(subject=subject, role=role_for(kind, subject_kind),
+                          artifact_sha=artifact_sha, kind=kind, subject_kind=subject_kind)
 
 
 @dataclass(frozen=True)
@@ -830,37 +846,57 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 
 @dataclass
 class RecordingCheckBackend:
-    """The mechanical recording check (spec 3 section 4, r49): the clip's
-    duration lies within [lo, hi] seconds, and a Forvo clip records the
-    subject's own form -- `recorded_form_of(subject, sha)` against
-    `form_of(subject)`, compared by entities._same_form; a clip with no
-    recorded form on record (TTS, learner, commission, or a Forvo clip
-    whose lookup is not on the record) passes that clause, the evidence
-    saying so. Keyed mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha.
-    `fetch` requires a readable artifact file (PreparationError otherwise).
+    """The mechanical recording check (spec 3 section 4, r49, r55): the
+    clip's duration lies within [lo, hi] seconds for a word subject, and
+    within [lo, sentence_base + sentence_per_word * N] for a sentence
+    subject of N deck words (`word_count_of(subject)`, Sentence.word_count);
+    and a Forvo clip records the subject's own form --
+    `recorded_form_of(subject, sha)` against `form_of(subject)`, compared
+    by entities._same_form; a clip with no recorded form on record (TTS,
+    learner, commission, or a Forvo clip whose lookup is not on the
+    record) passes that clause, the evidence saying so. Keyed
+    mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha for a word subject,
+    mech:recording:LO-BASE+PER_WORDpw;CODE_VERSION:SUBJECT:sha for a
+    sentence. `fetch` requires a readable artifact file, and for a
+    sentence its word count (PreparationError otherwise).
     """
     resolve_path: Callable[[str | None], str | Path | None]
     lo: float = 0.2
     hi: float = 5.0
+    sentence_base: float = 1.0
+    sentence_per_word: float = 1.0
     duration_of: Callable[[str], float] | None = None
     runner: Callable[..., Any] = subprocess.run
     form_of: Callable[[str], str | None] | None = None
     recorded_form_of: Callable[[str, str], str | None] | None = None
+    word_count_of: Callable[[str], int | None] | None = None
     code_version: str = "own-word-v1"
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
-        return MechanicalKey(check="recording", params=f"{self.lo}-{self.hi};{self.code_version}",
+        window = (f"{self.lo}-{self.sentence_base}+{self.sentence_per_word}pw"
+                  if question.subject_kind == "sentence" else f"{self.lo}-{self.hi}")
+        return MechanicalKey(check="recording", params=f"{window};{self.code_version}",
                              subject=question.subject, artifact_sha=question.artifact_sha or "-")
+
+    def _hi(self, question: AssessQuestion) -> float:
+        """The duration ceiling for the question's subject."""
+        if question.subject_kind != "sentence":
+            return self.hi
+        words = self.word_count_of(question.subject) if self.word_count_of is not None else None
+        if words is None:
+            raise PreparationError(f"recording: no word count for sentence {question.subject!r}")
+        return self.sentence_base + self.sentence_per_word * words
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         path = self.resolve_path(question.artifact_sha)
         if not path or not Path(path).is_file():
             raise PreparationError(f"recording: no readable artifact for {question.artifact_sha!r}")
+        hi = self._hi(question)
         duration = (self.duration_of(str(path)) if self.duration_of is not None
                     else ffprobe_duration_seconds(str(path), runner=self.runner))
         evidence = f"duration={duration:.3f}s"
-        if not (self.lo <= duration <= self.hi):
-            return RawVerdict(value=False, evidence=evidence)
+        if not (self.lo <= duration <= hi):
+            return RawVerdict(value=False, evidence=f"{evidence}, window {self.lo}-{hi:g}s")
         recorded = (self.recorded_form_of(question.subject, question.artifact_sha or "")
                     if self.recorded_form_of is not None else None)
         if recorded is None:

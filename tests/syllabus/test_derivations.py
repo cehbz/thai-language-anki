@@ -46,7 +46,8 @@ from thai_syllabus.derivations import (
     unjudged_candidates,
 )
 from thai_syllabus.derivations import _role_row
-from thai_syllabus.assessor import AssessQuestion, Assessor, JudgeBackend
+from thai_syllabus.assessor import (AssessQuestion, Assessor, JudgeBackend, RecordingCheckBackend,
+                                   mechanical_question)
 from thai_syllabus.cachekeys import (BatchMarkerKey, JudgeKey, MechanicalKey, ProvideKey,
                                     preference_identity)
 from thai_syllabus.entities import Grapheme, MinimalPair, SoundConfusion, text_sha
@@ -168,13 +169,23 @@ def reverify_row(subject, role, ts=None):
                  answer={"flagged": True}, cost=0.0, ts=ts)
 
 
+# The recording check's current key (wiring._recording_check's params).
+_MECH_KEY = RecordingCheckBackend(resolve_path=lambda sha: None).cache_key
+
+
 def mechanical_row(subject, role, artifact_sha, value, ts=None, kind="recording",
-                   backend="mechanical"):
+                   backend="mechanical", key=None):
+    """A mechanical verdict row, under the recording check's current key
+    unless `key` names another."""
     ts = ts if ts is not None else _next_ts()
-    return Answer(port="assess", backend=backend, key=f"mech:{subject}:{artifact_sha}:{ts}",
+    subject_kind = "sentence" if role.endswith("-for-sentence") else "word"
+    if key is None:
+        key = (_MECH_KEY(mechanical_question(subject, kind, subject_kind, artifact_sha)).encode()
+               if backend == "mechanical" else f"mech:{subject}:{artifact_sha}:{ts}")
+    return Answer(port="assess", backend=backend, key=key,
                  key_sha="x", subject=subject,
                  question={"role": role, "artifact_sha": artifact_sha, "rubric": None,
-                          "kind": kind},
+                          "kind": kind, "subject_kind": subject_kind},
                  answer={"value": value}, cost=0.0, ts=ts)
 
 
@@ -1162,6 +1173,7 @@ def _one_word_syllabus(subject="rice"):
 
 def _queue(syllabus, cache, **kwargs):
     kwargs.setdefault("current_rubric", {"picture-for-word": R})
+    kwargs.setdefault("mechanical_key", _MECH_KEY)
     kwargs.setdefault("prior", ())
     kwargs.setdefault("sources_for", sources_for)
     kwargs.setdefault("attempt_cap", 8)
@@ -1172,6 +1184,7 @@ def _queue(syllabus, cache, **kwargs):
 
 def _queued(syllabus, cache, **kwargs):
     kwargs.setdefault("current_rubric", {"picture-for-word": R})
+    kwargs.setdefault("mechanical_key", _MECH_KEY)
     kwargs.setdefault("prior", ())
     kwargs.setdefault("sources_for", sources_for)
     kwargs.setdefault("attempt_cap", 8)
@@ -1426,7 +1439,7 @@ def test_unjudged_candidates_names_a_candidate_with_no_verdict_under_the_current
                                   items=[{"sha": "a" * 64, "ext": "jpg"}], ts=1))
     cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="legacy", ts=2))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == ("a" * 64,)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ("a" * 64,)
 
 
 def test_unjudged_candidates_is_empty_once_every_candidate_has_a_current_verdict(cache):
@@ -1435,20 +1448,20 @@ def test_unjudged_candidates_is_empty_once_every_candidate_has_a_current_verdict
     cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric=R, ts=2))
     cache.rows.append(judge_row("rice", "picture", "b" * 64, False, rubric=R, ts=3))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == ()
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ()
 
 
 def test_unjudged_candidates_keeps_first_seen_order(cache):
     cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
                                   items=[{"sha": "b" * 64}, {"sha": "a" * 64}], ts=1))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == ("b" * 64, "a" * 64)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ("b" * 64, "a" * 64)
 
 
 def test_a_verdict_on_a_sha_that_is_not_a_candidate_leaves_nothing_unjudged(cache):
     cache.rows.append(judge_row("rice", "picture", "a" * 64, True, rubric="legacy", ts=1))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == ()
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ()
 
 
 # --- assess-first under a rubric change: the incumbent goes first (r33) -----
@@ -1472,14 +1485,14 @@ def _three_stale_candidates(cache):
 def test_a_rubric_change_re_asks_the_incumbent_alone(cache):
     _three_stale_candidates(cache)
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_B,)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_B,)
 
 
 def test_the_rest_follow_once_the_incumbents_fresh_verdict_failed(cache):
     _three_stale_candidates(cache)
     cache.rows.append(judge_row("rice", "picture", _SHA_B, False, rubric=R, ts=5))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_C)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_C)
 
 
 def test_the_rest_are_never_re_judged_once_the_incumbent_passed_afresh(cache):
@@ -1488,7 +1501,7 @@ def test_the_rest_are_never_re_judged_once_the_incumbent_passed_afresh(cache):
     _three_stale_candidates(cache)
     cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric=R, ts=5))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == ()
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ()
 
 
 def test_a_new_hit_is_asked_beside_an_incumbent_still_awaiting_its_verdict(cache):
@@ -1499,7 +1512,7 @@ def test_a_new_hit_is_asked_beside_an_incumbent_still_awaiting_its_verdict(cache
     cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
                                   items=[{"sha": _SHA_D}], ts=5))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_B, _SHA_D)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_B, _SHA_D)
 
 
 def test_a_new_hit_is_asked_even_while_the_incumbent_holds(cache):
@@ -1511,7 +1524,7 @@ def test_a_new_hit_is_asked_even_while_the_incumbent_holds(cache):
     cache.rows.append(provide_row("rice", "picture", backend="imgfetch",
                                   items=[{"sha": _SHA_D}], ts=6))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_D,)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_D,)
 
 
 def test_every_candidate_awaits_when_no_stale_verdict_passed(cache):
@@ -1522,7 +1535,7 @@ def test_every_candidate_awaits_when_no_stale_verdict_passed(cache):
     for ts, sha in ((2, _SHA_A), (3, _SHA_B), (4, _SHA_C)):
         cache.rows.append(judge_row("rice", "picture", sha, False, rubric="legacy", ts=ts))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_B, _SHA_C)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_A, _SHA_B, _SHA_C)
 
 
 def test_the_incumbent_is_the_newest_passing_stale_verdict(cache):
@@ -1533,7 +1546,7 @@ def test_the_incumbent_is_the_newest_passing_stale_verdict(cache):
     cache.rows.append(judge_row("rice", "picture", _SHA_B, True, rubric="legacy", ts=2))
     cache.rows.append(judge_row("rice", "picture", _SHA_A, True, rubric="legacy", ts=3))
     assert unjudged_candidates(cache, "rice", "picture",
-                               current_rubric={"picture-for-word": R}) == (_SHA_A,)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == (_SHA_A,)
 
 
 def test_unjudged_candidates_names_a_mechanical_candidate_with_no_verdict_under_this_subject(cache):
@@ -1545,7 +1558,7 @@ def test_unjudged_candidates_names_a_mechanical_candidate_with_no_verdict_under_
     cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
                                   items=[{"sha": "a" * 64}], ts=1))
     assert unjudged_candidates(cache, "rice", "recording",
-                               current_rubric={"picture-for-word": R}) == ("a" * 64,)
+                               mechanical_key=_MECH_KEY, current_rubric={"picture-for-word": R}) == ("a" * 64,)
 
 
 def test_unjudged_candidates_excludes_a_recording_candidate_with_a_mechanical_verdict_under_this_subject(
@@ -1553,7 +1566,7 @@ def test_unjudged_candidates_excludes_a_recording_candidate_with_a_mechanical_ve
     cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
                                   items=[{"sha": "a" * 64}], ts=1))
     cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True, ts=2))
-    assert unjudged_candidates(cache, "rice", "recording", current_rubric={}) == ()
+    assert unjudged_candidates(cache, "rice", "recording", mechanical_key=_MECH_KEY, current_rubric={}) == ()
 
 
 def test_unjudged_candidates_ignores_a_mechanical_verdict_under_another_subject(cache):
@@ -1565,7 +1578,83 @@ def test_unjudged_candidates_ignores_a_mechanical_verdict_under_another_subject(
     cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
                                   items=[{"sha": "a" * 64}], ts=1))
     cache.rows.append(mechanical_row("fish", "recording-for-word", "a" * 64, True, ts=2))
-    assert unjudged_candidates(cache, "rice", "recording", current_rubric={}) == ("a" * 64,)
+    assert unjudged_candidates(cache, "rice", "recording", mechanical_key=_MECH_KEY, current_rubric={}) == ("a" * 64,)
+
+
+# --- spec 3 r55: a mechanical verdict decides only under the current key ---
+
+_SENTENCE = "s" * 64
+_CLIP = "c" * 64
+# The recording check's key before r55, which a sentence clip was failed under.
+_OLD_SENTENCE_KEY = f"mech:recording:0.2-5.0;own-word-v1:{_SENTENCE}:{_CLIP}"
+
+
+def _sentence_clip(cache):
+    cache.rows.append(Answer(port="provide", backend="tts", key=f"tts:{_SENTENCE}", key_sha="x",
+                             subject=_SENTENCE,
+                             question={"kind": "recording", "subject_kind": "sentence",
+                                       "params": {}},
+                             answer={"items": [{"sha": _CLIP}]}, cost=0.0, ts=_next_ts()))
+
+
+def test_a_sentence_clip_failed_only_under_an_old_key_awaits_and_is_not_out_of_options(cache):
+    """The 5 s window failed this clip; the check's current key for a
+    sentence differs, so the verdict decides nothing and the need, out of
+    sources, still has a candidate to ask about."""
+    _sentence_clip(cache)
+    cache.rows.append(mechanical_row(_SENTENCE, "recording-for-sentence", _CLIP, False,
+                                     key=_OLD_SENTENCE_KEY))
+    assert unjudged_candidates(cache, _SENTENCE, "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == (_CLIP,)
+    found = _queued(_FakeSyllabus(_FakeGaps(sentence_recordings=(_SENTENCE,))), cache,
+                    attempt_cap=0)
+    assert found.exhausted == 0
+    assert [(e.subject, e.bucket) for e in found.entries] == [(_SENTENCE, 1)]
+
+
+def test_a_passing_verdict_under_the_current_key_satisfies_a_need_its_stale_failure_left_open(
+        cache):
+    _sentence_clip(cache)
+    cache.rows.append(mechanical_row(_SENTENCE, "recording-for-sentence", _CLIP, False,
+                                     key=_OLD_SENTENCE_KEY))
+    assert unjudged_candidates(cache, _SENTENCE, "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == (_CLIP,)
+    cache.rows.append(mechanical_row(_SENTENCE, "recording-for-sentence", _CLIP, True))
+    assert unjudged_candidates(cache, _SENTENCE, "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == ()
+    best = current_best(cache, _SENTENCE, "recording", current_rubric={},
+                        provenance_source=_no_provenance)
+    assert best.artifact_sha == _CLIP and best.source == "mechanical"
+
+
+def test_a_candidate_decided_under_the_current_key_does_not_await(cache):
+    _sentence_clip(cache)
+    cache.rows.append(mechanical_row(_SENTENCE, "recording-for-sentence", _CLIP, False))
+    assert unjudged_candidates(cache, _SENTENCE, "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == ()
+    found = _queued(_FakeSyllabus(_FakeGaps(sentence_recordings=(_SENTENCE,))), cache,
+                    attempt_cap=0)
+    assert found.exhausted == 1 and found.entries == []
+
+
+def test_a_word_clip_decided_under_the_current_word_key_does_not_await(cache):
+    cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
+                                  items=[{"sha": "a" * 64}, {"sha": "b" * 64}]))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "b" * 64, False))
+    assert _MECH_KEY(mechanical_question("rice", "recording", "word", "a" * 64)).encode() == (
+        f"mech:recording:0.2-5.0;own-word-v1:rice:{'a' * 64}")
+    assert unjudged_candidates(cache, "rice", "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == ()
+
+
+def test_a_word_clip_judged_only_under_the_legacy_duration_key_awaits(cache):
+    cache.rows.append(provide_row("rice", "recording", backend="audiofetch",
+                                  items=[{"sha": "a" * 64}]))
+    cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, False,
+                                     key=f"mech:duration:0.2-5.0:rice:{'a' * 64}"))
+    assert unjudged_candidates(cache, "rice", "recording", current_rubric={},
+                               mechanical_key=_MECH_KEY) == ("a" * 64,)
 
 
 def test_unjudged_candidates_for_a_picture_need_is_unaffected_by_the_mechanical_branch(cache):
@@ -1575,7 +1664,7 @@ def test_unjudged_candidates_for_a_picture_need_is_unaffected_by_the_mechanical_
     ranks nothing there and no candidate ever awaits."""
     cache.rows.append(provide_row("rice", "picture", backend="legacy-current",
                                   items=[{"sha": "a" * 64, "ext": "jpg"}], ts=1))
-    assert unjudged_candidates(cache, "rice", "picture", current_rubric={}) == ()
+    assert unjudged_candidates(cache, "rice", "picture", mechanical_key=_MECH_KEY, current_rubric={}) == ()
 
 
 def test_judge_passed_unrated_picture_queues_in_bucket_3(cache):

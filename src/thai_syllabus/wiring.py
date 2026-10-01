@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .assessor import (
-    AssessBackend, Assessor, JudgeBackend, Price, RecordingCheckBackend, RenditionBackend)
+    AssessBackend, Assessor, JudgeBackend, MechanicalKeyOf, Price, RecordingCheckBackend,
+    RenditionBackend)
 from .attempts import Sourcing, provenance_source_for, sources_for
 from .curated import (
     CuratedBundle,
@@ -429,12 +430,26 @@ def _recorded_form_of(db: SyllabusDb) -> Callable[[str, str], str | None]:
     return recorded_form_of
 
 
+def _recording_check(db: SyllabusDb, media_store: MediaStore, *,
+                     form_of: Callable[[str], str | None] | None = None,
+                     word_count_of: Callable[[str], int | None] | None = None
+                     ) -> RecordingCheckBackend:
+    """The deck's mechanical recording check: the run's "mechanical"
+    backend (build_assessor) and the key the review screen's derivations
+    decide a candidate under (load_derivations) are this one check."""
+    return RecordingCheckBackend(resolve_path=_resolver(db, media_store), form_of=form_of,
+                                 recorded_form_of=_recorded_form_of(db),
+                                 word_count_of=word_count_of)
+
+
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, form_of: Callable[[str], str | None] | None = None,
+                   word_count_of: Callable[[str], int | None] | None = None,
                    secret_store=None) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge",
     "mechanical" (the recording check: duration plus the own-word
-    clause, `form_of` supplying the asked form), "rendition". Fills is
+    clause, `form_of` supplying the asked form and `word_count_of` a
+    sentence's deck word count), "rendition". Fills is
     membership (Syllabus.fills), not an Assess backend (spec 1 section 3
     r8; spec 3 r16). `form_of` is None outside `build_sourcing` (most
     callers ask about roster shape, not the own-word clause); a backend
@@ -450,8 +465,8 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
-        "mechanical": RecordingCheckBackend(resolve_path=resolve, form_of=form_of,
-                                            recorded_form_of=_recorded_form_of(db)),
+        "mechanical": _recording_check(db, media_store, form_of=form_of,
+                                       word_count_of=word_count_of),
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     return Assessor(record=db, cache=db, backends=backends)
@@ -578,6 +593,9 @@ class Derivations:
     db: SyllabusDb                     # CacheReader + RecordWriter
     media_store: MediaStore
     current_rubric: Mapping[str, str]  # role -> rubric text
+    # The mechanical check's current key per question (the run's own
+    # check, wiring._recording_check): a candidate is decided only under it.
+    mechanical_key: MechanicalKeyOf
     prior: Sequence[str]               # provenance kinds, most preferred first
     provenance_source: Callable[[str], str | None]
     sources_for: Callable[[str], Sequence[str]]
@@ -648,6 +666,7 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
               "pronunciation-for-word": PRONUNCIATION_RUBRIC}
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric=rubrics,
+                       mechanical_key=_recording_check(db, media_store).cache_key,
                        prior=bundle.rulebook.provenance_prior,
                        provenance_source=provenance_source_for(db),
                        sources_for=sources_for_config(cfg), attempt_cap=cfg.attempt_cap,
@@ -692,9 +711,17 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         except KeyError:
             return None
 
+    def word_count_of(subject: str) -> int | None:
+        # ctx.syllabus at call time, as for form_of.
+        try:
+            return ctx.syllabus.sentence(subject).word_count
+        except KeyError:
+            return None
+
     ctx = Sourcing(
         syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
-        assessor=build_assessor(cfg, db, media_store, form_of=form_of),
+        assessor=build_assessor(cfg, db, media_store, form_of=form_of,
+                                word_count_of=word_count_of),
         db=db, media_store=media_store, rubrics=derivations.current_rubric,
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,

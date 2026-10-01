@@ -1252,8 +1252,7 @@ def test_providers_sentence_nothing_cap_rejects_a_non_integer(tmp_path):
 
 
 def test_providers_sentence_max_clauses_defaults_to_two_and_round_trips(tmp_path):
-    """Spec 3 r23 section 5/8: the drafting prompt's own clause cap -- a
-    longer sentence outruns the 5 s recording cap."""
+    """Spec 3 r23 section 5/8: the drafting prompt's own clause cap."""
     assert curated.ProvidersConfig().sentence_max_clauses == 2
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(sentence_max_clauses=3)))

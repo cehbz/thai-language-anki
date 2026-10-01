@@ -20,7 +20,8 @@ import requests
 import yaml
 
 from thai_syllabus import secrets as secrets_mod
-from thai_syllabus.assessor import AssessQuestion, Assessor, Price, RecordingCheckBackend
+from thai_syllabus.assessor import (AssessQuestion, Assessor, Price, RecordingCheckBackend,
+                                   mechanical_question)
 from thai_syllabus.attempts import (
     DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK,
     DEFAULT_SENTENCE_MAX_CLAUSES,
@@ -1198,6 +1199,14 @@ def test_build_assessor_wires_form_of_into_the_mechanical_backends_own_word_clau
     assert b._backends["mechanical"].form_of is None
 
 
+def test_build_assessor_wires_word_count_of_into_the_mechanical_backend(cfg, db, media_store):
+    a = build_assessor(cfg, db, media_store, word_count_of=lambda s: 3)
+    wired = a._backends["mechanical"].word_count_of
+    assert wired is not None and wired("s") == 3
+    b = build_assessor(cfg, db, media_store)
+    assert b._backends["mechanical"].word_count_of is None
+
+
 def test_load_syllabus_refuses_a_deck_without_a_frequency_corpus(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     (root / "curated" / "frequency_th.txt").unlink()
@@ -1257,6 +1266,42 @@ def test_build_sourcing_threads_caps_and_pools(tmp_path):
     assert ctx.attempt_cap == 3    # value written by the fixture
     assert ctx.transient_cap == 2
     assert ctx.voices["male"] and ctx.voices["female"]
+
+
+def test_build_sourcing_resolves_a_sentences_word_count_for_the_recording_check(tmp_path):
+    """The mechanical backend reads the sentence's deck word count off
+    the ctx's syllabus at call time, so a sentence adopted mid-run is
+    found; a word subject has none."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    ctx = build_sourcing(root)
+    slow = ctx.syllabus.words[0]
+    s = sentence(((slow.id, slow.id),), thai_of(slow))  # slow slow
+    ctx.syllabus = ctx.syllabus.with_sentences([s])
+    word_count_of = ctx.assessor._backends["mechanical"].word_count_of
+    assert word_count_of is not None
+    assert word_count_of(s.text_sha) == 2
+    assert word_count_of("slow") is None
+
+
+def test_the_review_screen_and_the_run_key_the_recording_check_alike(tmp_path):
+    """Derivations.mechanical_key (load_derivations) and
+    Sourcing.mechanical_key (build_sourcing) answer the same key for the
+    same question, word and sentence subject alike."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    ctx = build_sourcing(root)
+    screen = load_derivations(root)
+    keys = []
+    for subject, subject_kind in (("slow", "word"), ("s" * 64, "sentence")):
+        q = mechanical_question(subject, "recording", subject_kind, "a" * 64)
+        assert screen.mechanical_key(q).encode() == ctx.mechanical_key(q).encode()
+        keys.append(ctx.mechanical_key(q).params)
+    assert keys[0] != keys[1]
 
 
 def test_build_sourcing_wires_the_wiktionary_dictionary(tmp_path):

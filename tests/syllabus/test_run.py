@@ -22,7 +22,8 @@ import pytest
 from PIL import Image as PILImage
 
 from thai_syllabus import run as run_mod
-from thai_syllabus.assessor import Excluded, JudgeUnreachable, RawVerdict, deck_field
+from thai_syllabus.assessor import (AssessQuestion, Excluded, JudgeUnreachable, RawVerdict,
+                                   RecordingCheckBackend, deck_field)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, DirectionKey, JudgeKey,
                                     LearnerKey, LlmPromptKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, sha)
@@ -1104,6 +1105,21 @@ class _Assessor:
             return None
         self.submitted.append(list(prepared))
         return f"batch-{len(self.submitted)}"
+
+    def key_of(self, backend, question):
+        """The key `backend` answers `question` under; only the real
+        recording check is registered (KeyError for any other)."""
+        backends = {"mechanical": RecordingCheckBackend(resolve_path=lambda sha: None)}
+        return backends[backend].cache_key(question)
+
+
+def test_the_fake_assessor_keys_only_the_mechanical_backend():
+    q = AssessQuestion(subject="rice", role="recording-for-word", artifact_sha="a" * 64,
+                       kind="recording", subject_kind="word")
+    assert _Assessor().key_of("mechanical", q).encode() == (
+        f"mech:recording:0.2-5.0;own-word-v1:rice:{'a' * 64}")
+    with pytest.raises(KeyError):
+        _Assessor().key_of("judge", q)
 
 
 def _ctx(db, syl, assessor=None):

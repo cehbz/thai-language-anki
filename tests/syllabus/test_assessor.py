@@ -396,6 +396,71 @@ def test_the_own_word_clause_passes_with_no_subject_form_when_form_of_resolves_n
     assert raw.value is True and raw.evidence.endswith("; no subject form")
 
 
+def _sentence_check(tmp_path, *, words, duration):
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
+    backend = RecordingCheckBackend(resolve_path=lambda sha: str(f),
+                                    duration_of=lambda path: duration,
+                                    word_count_of=lambda subject: words)
+    return backend.fetch(AssessQuestion(subject="s", role="recording-for-sentence",
+                                        artifact_sha="deadbeef", kind="recording",
+                                        subject_kind="sentence"))
+
+
+@pytest.mark.parametrize("words,duration,passes", [
+    (2, 2.9, True), (2, 3.1, False),
+    (8, 6.5, True), (8, 9.1, False),
+    (2, 0.1, False),
+])
+def test_a_sentence_recordings_duration_bound_is_one_second_plus_one_per_deck_word(
+        tmp_path, words, duration, passes):
+    """Spec 3 r55: a sentence clip passes from 0.2 s up to 1 s plus 1 s
+    per deck word (Sentence.word_count)."""
+    raw = _sentence_check(tmp_path, words=words, duration=duration)
+    assert raw.value is passes, raw.evidence
+
+
+def test_a_word_recording_keeps_the_five_second_cap(tmp_path):
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
+    backend = RecordingCheckBackend(resolve_path=lambda sha: str(f),
+                                    duration_of=lambda path: 5.5,
+                                    word_count_of=lambda subject: 8)
+    raw = backend.fetch(AssessQuestion(subject="w", role="recording-for-word",
+                                       artifact_sha="deadbeef", kind="recording",
+                                       subject_kind="word"))
+    assert raw.value is False
+
+
+def test_a_sentence_with_no_word_count_is_a_preparation_error(tmp_path):
+    """No bound without the sentence's word count: the question is
+    excluded for the run, not answered under the word window."""
+    f = tmp_path / "deadbeef.mp3"
+    f.write_bytes(b"x")
+    backend = RecordingCheckBackend(resolve_path=lambda sha: str(f),
+                                    duration_of=lambda path: 1.0,
+                                    word_count_of=lambda subject: None)
+    with pytest.raises(PreparationError):
+        backend.fetch(AssessQuestion(subject="s", role="recording-for-sentence",
+                                     artifact_sha="deadbeef", kind="recording",
+                                     subject_kind="sentence"))
+
+
+def test_the_sentence_recording_key_differs_from_the_word_window_key():
+    """A sentence clip checked under the 0.2-5.0 window is re-checked by
+    the run's re-verification pass (spec 3 r49) under its own key; a word
+    clip keeps its key."""
+    backend = RecordingCheckBackend(resolve_path=lambda sha: sha)
+
+    def key(subject_kind):
+        return backend.cache_key(AssessQuestion(
+            subject="s", role=f"recording-for-{subject_kind}", artifact_sha="deadbeef",
+            kind="recording", subject_kind=subject_kind)).encode()
+
+    assert key("word") == "mech:recording:0.2-5.0;own-word-v1:s:deadbeef"
+    assert key("sentence") == "mech:recording:0.2-1.0+1.0pw;own-word-v1:s:deadbeef"
+
+
 def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
     backend = FormatBackend(expected_ext="mp3", code_version="v2",
                             resolve_ext=lambda sha: "mp3")

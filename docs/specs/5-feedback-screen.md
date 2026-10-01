@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 16, proposed 2026-09-27 against principles r6 and architecture
+Revision 17, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -108,6 +108,7 @@ Revision log:
   artifact is final whatever sources remain (F9). Evidence: a learner who
   had vetted a generated picture for a sentence whose need still had
   sources could not give it. User ruling 2026-09-27.
+- r17 2026-10-01: a need with an unvetoed candidate still awaiting its verdict is not a direction request and is not counted exhausted (spec 3 r55). Evidence: a clip that failed an earlier duration window is asked again, and its need was shown as a question the learner cannot answer. User ruling 2026-10-01.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -173,7 +174,8 @@ stops; unanswered questions stay queued. Question kinds:
    question (F4, F9). A need with no candidate on record is not a rate
    question: while it has a source left it is the machine's; exhausted,
    it is kind 2 (r7).
-2. **Direction request** (exhausted subject): what was tried — phrases,
+2. **Direction request** (exhausted subject: no source left and no
+   unvetoed candidate awaiting a verdict, spec 3 §6 and r55): what was tried — phrases,
    sources, best candidates (judge-passed first, then each source's
    newest, newest first, five at most; r13), judge reasons — plus two
    actions: type a
@@ -218,7 +220,8 @@ lives in the browser.
 ## 3. Stats
 
 Per-session: answered/queued, per-confusion drill accuracy, counts of
-exhausted subjects remaining. Per-deck: current-best coverage per need,
+exhausted subjects remaining (no source left and no unvetoed candidate
+awaiting a verdict). Per-deck: current-best coverage per need,
 learner-rated good/acceptable/unacceptable counts, RunReport history
 with every field of spec 3 §7 (the comment counts, r10; `covered_new`
 and the spend per newly covered need, r11: the run's judge plus

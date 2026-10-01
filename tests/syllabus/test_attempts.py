@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, replace
 from datetime import date
+from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
@@ -185,7 +186,7 @@ class _Mechanical(RecordingCheckBackend):
     """A backend passing every artifact but `failing_subject`'s. A
     RecordingCheckBackend subclass, not a bespoke fake: its `cache_key`
     is inherited, so it keys under the real current mechanical key (spec
-    3 r49's mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha) -- what
+    3 r49/r55's mech:recording:WINDOW;CODE_VERSION:SUBJECT:sha) -- what
     reverify_attempt compares a stale row's key string against. `fetch`
     is overridden outright: no file, no duration, no own-word clause,
     `ok`/`failing_subject` the only say in the verdict.
@@ -274,7 +275,7 @@ def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None, durat
     """A recording-sourcing ctx over one word or pair syllabus. The
     default "mechanical" backend is the real RecordingCheckBackend (spec
     3 r49), `duration_of` faked so no file is ever ffprobed, `form_of`/
-    `recorded_form_of` wired the same way wiring.build_assessor wires
+    `recorded_form_of`/`word_count_of` wired the same way wiring.build_assessor wires
     them -- so a stale-key row's re-check (reverify_attempt) exercises
     the real duration/own-word clauses, not a bespoke stand-in. The
     syllabus's `media` is likewise the real _DbMediaIndex over `db`, so
@@ -298,9 +299,15 @@ def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None, durat
         except KeyError:
             return None
 
+    def word_count_of(subject):
+        try:
+            return syllabus.sentence(subject).word_count
+        except KeyError:
+            return None
+
     default_mechanical = RecordingCheckBackend(
         resolve_path=resolve, duration_of=duration_of or (lambda path: 1.0),
-        form_of=form_of, recorded_form_of=_recorded_form_of(db))
+        form_of=form_of, recorded_form_of=_recorded_form_of(db), word_count_of=word_count_of)
     syllabus = replace(syllabus, media=_DbMediaIndex(
         db=db, pairs=syllabus.pairs, words=syllabus.words, sentences=syllabus.sentences,
         rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts")))
@@ -630,6 +637,33 @@ def test_assess_first_asks_mechanical_for_an_unjudged_recording_candidate_and_no
     assert [r.question.get("artifact_sha") for r in verdicts] == [sha]
     assert all(r.port != "attempt" for r in rows_for(ctx.db, "rice", "recording"))
     assert current_best_of(ctx, "rice", "recording").artifact_sha == sha
+
+
+def test_assess_first_re_asks_a_sentence_clip_failed_only_under_an_old_key(tmp_path):
+    """Spec 3 r55: the check's key for a sentence changed, so a clip the
+    5 s window failed is asked again; passing now, it is current-best,
+    and once decided under the current key it is not asked again."""
+    sentence = _sentence()
+    subject, sha_ = sentence.text_sha, "c" * 64
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]),
+                               mechanical=_mechanical())
+    ctx.db.append(port="provide", backend="tts",
+                  key=ProvideKey(source="tts", kind="recording", query=subject), subject=subject,
+                  question={"provides": "recording", "kind": "recording",
+                            "subject_kind": "sentence", "params": {}},
+                  answer={"items": [{"sha": sha_, "ext": "mp3"}]})
+    ctx.db.append(port="assess", backend="mechanical",
+                  key=MechanicalKey(check="recording", params="0.2-5.0;own-word-v1",
+                                    subject=subject, artifact_sha=sha_),
+                  subject=subject,
+                  question={"role": "recording-for-sentence", "artifact_sha": sha_,
+                            "rubric": None, "kind": "recording", "subject_kind": "sentence"},
+                  answer={"value": False, "evidence": "duration=6.500s"})
+    assert current_best_of(ctx, subject, "recording").artifact_sha is None
+    res = assess_first(ctx, Need(subject, "recording", "sentence"))
+    assert res is not None and res.attempted
+    assert current_best_of(ctx, subject, "recording").artifact_sha == sha_
+    assert assess_first(ctx, Need(subject, "recording", "sentence")) is None
 
 
 def test_assess_first_is_none_once_every_recording_candidate_is_judged(tmp_path):
@@ -1294,6 +1328,47 @@ def test_reverify_checks_the_next_candidate_a_demotion_promotes(tmp_path):
 
     assert (result.reverified, result.demoted) == (2, 1)
     assert current_best_of(ctx, "five", "recording").artifact_sha == right
+    assert reverify_attempt(ctx).reverified == 0
+
+
+def test_reverify_demotes_a_sentence_clip_over_its_word_window_and_promotes_the_next(tmp_path):
+    """Spec 3 r55: a 4 s clip on a two-word sentence passed the 0.2-5 s
+    window; under the sentence key its ceiling is 3 s, so the pass demotes
+    it and checks the 1.5 s runner-up it promotes."""
+    rice = word("rice", "ข้าว", "rice (cooked)")   # ข้าว: rice
+    sentence = compose_sentence(((rice.id, rice.id),), thai_of(rice), gloss="rice, rice")
+    subject = sentence.text_sha
+    ctx, _tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]))
+    shas = []
+    for voice in ("th-TH-a", "th-TH-b"):
+        sha_ = ctx.media_store.write(f"ID3-{voice}".encode(), "mp3")
+        ctx.db.append(port="provide", backend="tts",
+                      key=ProvideKey(source="tts", kind="recording", query=f"{subject}:{voice}"),
+                      subject=subject,
+                      question={"provides": "recording", "kind": "recording",
+                                "subject_kind": "sentence", "params": {"voice": voice}},
+                      answer={"items": [{"sha": sha_, "ext": "mp3"}]})
+        ctx.db.add_media(sha=sha_, kind="recording", ext="mp3", source="tts", origin=voice,
+                         licence="google-tts", acquired=date(2026, 9, 3))
+        ctx.db.append(port="assess", backend="mechanical",
+                      key=MechanicalKey(check="recording", params="0.2-5.0;own-word-v1",
+                                        subject=subject, artifact_sha=sha_),
+                      subject=subject,
+                      question={"role": "recording-for-sentence", "artifact_sha": sha_,
+                                "rubric": None, "kind": "recording",
+                                "subject_kind": "sentence"},
+                      answer={"value": True})
+        shas.append(sha_)
+    long_clip = current_best_of(ctx, subject, "recording").artifact_sha
+    short_clip = next(s for s in shas if s != long_clip)
+    seconds = {long_clip: 4.0, short_clip: 1.5}
+    mechanical = ctx.assessor._backends["mechanical"]
+    mechanical.duration_of = lambda path: seconds[Path(path).stem]
+
+    result = reverify_attempt(ctx)
+
+    assert (result.reverified, result.demoted) == (2, 1)
+    assert current_best_of(ctx, subject, "recording").artifact_sha == short_clip
     assert reverify_attempt(ctx).reverified == 0
 
 

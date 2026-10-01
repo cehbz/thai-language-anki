@@ -248,6 +248,7 @@ Revision log:
 - r52 2026-09-23: `judge.effort` and `judge.roles.<role>.effort` (§8; low | medium | high | xhigh | max, inherited from the judge where unset, sent by the api and batch transports as `output_config.effort`, nothing sent when unset). Evidence: the pronunciation role moves to Claude Opus 5.5 ($4/$20 per MTok against Opus 5's $5/$25), which rejects `thinking: disabled` and controls depth by effort alone with a default of `medium` where Opus 5's was `high`; the role's 47% corroboration was measured at Opus 5's default, so the deck pins the role at `high`. User approval 2026-09-23.
 - r53 2026-09-25: a sentence has at most `sentence_max_words` (§8, 8) deck words across its clauses: the drafter is asked for it, a longer draft is refused at acceptance, and an adopted sentence over it is retired by the run (F13) unless a learner recording or direction keeps it. Evidence: 41 of 410 adopted sentences exceed 8 words (the longest 13, two clauses: "this morning I sip a cup of hot tea, in the afternoon I sip a cup of coffee"), 83 Targets filled by them alone; the learner found them daunting at the start of study. User ruling 2026-09-25.
 - r54 2026-10-01: the sentence-for-target judge, the scene-picture fit judge and the phrase prompt name the sentence's target words (the words of the Targets it fills productively, else of every Target it fills) instead of its last used word (spec 1 r25). User ruling 2026-10-01.
+- r55 2026-10-01: a sentence recording fails the duration check only under 0.2 s or over 1 s plus 1 s per deck word; a word recording keeps 0.2-5 s. Evidence: a valid 8-word sentence whose synthesis ran 5.5 s failed the 5 s cap, exhausted its recording need and reached the learner as a question they could not answer; over 799 sentence clips the longest run 2.14 s at two words and 6.46 s at eight (1.07 s per word at most, short sentences highest because of fixed lead-in and tail). Sentence length is the drafting rules' to bound (spec 3 r53). A mechanical verdict decides a candidate only under the check's current key, so a clip that failed an earlier window is re-asked. User ruling 2026-10-01.
 - r56 2026-10-01: the per-sentence Target cap (r27) is retired: the drafter is no longer told a per-sentence Target count and a draft is not refused for filling many; practice is bounded per word instead (spec 1 r26) and sentence length by r53. Evidence: under spec 1 r25 an ordinary four-word sentence fills four open productive Targets and was refused. User ruling 2026-10-01.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
@@ -345,7 +346,7 @@ one speaker answers empty.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording: duration, and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha | ground truth for what it checks |
+| mechanical | recording: duration (a word 0.2-5 s; a sentence at least 0.2 s and at most 1 s plus 1 s per deck word, r55), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.2-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -472,8 +473,11 @@ source is asked only
 once every candidate is judged. If every such question is excluded
 (unpreparable), the source is asked in the same attempt. Scene pictures
 follow the same rule. Recording needs follow it too: a candidate on
-record with no mechanical verdict under this subject is checked before
-any source is asked, at no cost.
+record with no mechanical verdict under this subject under the check's
+current key is checked before any source is asked, at no cost; a verdict
+under an earlier key decides nothing, so a clip an earlier window failed
+is asked again, and its need is not out of options while it awaits
+(r55).
 
 **Graphemes (the consonant inventory).** One pass per run, after the
 sentence attempt and before the phrase and adjudication asks. Every
@@ -534,8 +538,8 @@ so a key on record is never re-asked and a new key runs once; an artifact
 whose check cannot be prepared is excluded, as any unpreparable question
 is (§6a), not asked; a verdict that fails ranks the artifact out of
 current-best on §6's newest-verdict rule and the need is a gap the same
-run sources. This is F13 for the mechanical checks: assess-first sees open
-needs only. `RunReport.reverified` counts the checks asked,
+run sources. This is F13 for the mechanical checks: assess-first covers
+open needs, under the same current key (r55). `RunReport.reverified` counts the checks asked,
 `RunReport.demoted` the artifacts current before the ask whose new verdict
 is False; both are events outside the needs identity. A demotion promotes
 the next candidate, which is checked in turn, so a subject leaves the pass
@@ -558,8 +562,9 @@ on that sha, role recording-for-word or recording-for-sentence) and
 re-sourced under the constraint. Forvo attempt: lookup (cached; the §6a
 re-ask rule on an expired url; only items recording the asked form are
 candidates, r49), download each candidate's mp3 with its recorded word on
-the bytes row, the mechanical recording check on each (duration; a Forvo
-clip's recorded word is the subject's own form); the item's sex and
+the bytes row, the mechanical recording check on each (duration: 0.2-5 s
+for a word, 0.2 s to 1 s plus 1 s per deck word for a sentence, r55; a
+Forvo clip's recorded word is the subject's own form); the item's sex and
 country are recorded on the speaker (spec 2); current-best by authority
 then provenance prior. TTS attempt: synthesize with a pool voice (the
 roster's sex is recorded on the speaker), then mechanical. TTS supplies
@@ -600,8 +605,7 @@ each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
 takes to cover the handed targets (r27), each free to use any other
 listed vocabulary besides, with no per-sentence Target count (r56),
-each of at most `sentence_max_clauses` clauses (§8, default 2: a longer sentence outruns the 5 s recording
-cap) and at most `sentence_max_words` deck words summed across them
+each of at most `sentence_max_clauses` clauses (§8, default 2) and at most `sentence_max_words` deck words summed across them
 (§8, default 8, r53: a longer sentence was daunting to a learner at the
 start of study), and states the rendering rule (spec 1 §1:
 clauses of word ids, ๆ after a repeated word, clauses separated by one

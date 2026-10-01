@@ -32,9 +32,9 @@ from typing import Any, Literal
 
 from . import ipa, record
 from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnreachable,
-                       PreparedQuestion, deck_field)
+                       PreparedQuestion, deck_field, mechanical_question)
 from .authority import role_for
-from .cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
+from .cachekeys import (AttemptOutcomeKey, CacheKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
                         RenditionAskKey, RetirementKey, RunReportKey, rendition_identity, sha)
 from .compile import card_meaning
 from .derivations import (
@@ -92,10 +92,9 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
 
 _log = logging.getLogger(__name__)
 
-# The drafting prompt's own clause cap default (spec 3 r23 section 5/8): a
-# sentence over this many clauses outruns the 5 s recording duration cap,
-# so the cure is at drafting -- Sourcing.sentence_max_clauses, wired from
-# providers.yaml's own sentence_max_clauses (wiring.build_sourcing).
+# The drafting prompt's own clause cap default (spec 3 r23 section 5/8) --
+# Sourcing.sentence_max_clauses, wired from providers.yaml's own
+# sentence_max_clauses (wiring.build_sourcing).
 DEFAULT_SENTENCE_MAX_CLAUSES = 2
 
 # The drafting prompt's own word cap default (spec 3 r53 section 5/8): a
@@ -295,6 +294,12 @@ class Sourcing:
     # same invocation pays no engine time for a form the first one read.
     # Per-Sourcing, not global: it lives exactly as long as the run does.
     reading_memo: dict[str, Pronunciation | None] = field(default_factory=dict)
+
+    def mechanical_key(self, question: AssessQuestion) -> CacheKey:
+        """The key the mechanical check answers `question` under now: what
+        decides a candidate (derivations.unjudged_candidates) and what the
+        re-verification pass compares the record against."""
+        return self.assessor.key_of("mechanical", question)
 
 
 @dataclass(frozen=True)
@@ -753,7 +758,8 @@ def _judge_pictures(ctx: Sourcing, need: Need, query: str | None,
     role = need.role
     params = _picture_params(ctx, need, query)
     if shas is None:
-        shas = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
+        shas = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics,
+                                   mechanical_key=ctx.mechanical_key)
     questions = [AssessQuestion(subject=need.subject, role=role, artifact_sha=sha,
                                 rubric=ctx.rubrics[role], params=params, kind=need.kind,
                                 subject_kind=need.subject_kind)
@@ -2222,9 +2228,7 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
     else:
         raise ValueError(f"no recording source named {source!r}")
     _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
-    result = _check(ctx, [AssessQuestion(subject=need.subject, role=need.role,
-                                         artifact_sha=sha, kind=need.kind,
-                                         subject_kind=need.subject_kind)
+    result = _check(ctx, [mechanical_question(need.subject, need.kind, need.subject_kind, sha)
                           for sha in _candidate_shas(ctx, need)], spend)
     return AttemptResult(attempted=True, questions=list(result.collected),
                          excluded=dict(result.excluded), spend=spend)
@@ -2291,8 +2295,7 @@ def _check_members(ctx: Sourcing, members: Mapping[str, tuple[str, Speaker]],
     resolved is left out; RenditionBackend refuses to judge a member set
     with an unchecked member (PreparationError), which excludes the
     question for the run."""
-    questions = {member: AssessQuestion(subject=member, role=role_for("recording"),
-                                        artifact_sha=sha, kind="recording", subject_kind="word")
+    questions = {member: mechanical_question(member, "recording", "word", sha)
                  for member, (sha, _speaker) in members.items()}
     result = _check(ctx, list(questions.values()), spend)
     return {member: bool(v.value)
@@ -2445,9 +2448,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     sentence-introduced target no adopted sentence fills, the profile
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
-    clauses per sentence (spec 3 r23 section 5/8: a longer sentence outruns
-    the 5 s recording cap) and at most `sentence_max_words` deck words
-    across them (spec 3 r53 section 5/8). When `refused` (derivations.refused_drafts) is
+    clauses per sentence (spec 3 r23 section 5/8) and at most
+    `sentence_max_words` deck words across them (spec 3 r53 section 5/8). When `refused` (derivations.refused_drafts) is
     non-empty, a block lists those texts as sentences not to propose
     again, each with the verdict's evidence delimited the way the
     assessor prompts delimit deck fields (assessor.deck_field, over the
@@ -2682,8 +2684,7 @@ def _assess_recordings(ctx: Sourcing, need: Need, shas: Sequence[str],
     transport -- so every question resolves within the call and
     `questions` always comes back empty.
     """
-    questions = [AssessQuestion(subject=need.subject, role=need.role, artifact_sha=sha,
-                                kind=need.kind, subject_kind=need.subject_kind)
+    questions = [mechanical_question(need.subject, need.kind, need.subject_kind, sha)
                 for sha in shas]
     result = _check(ctx, questions, spend)
     return AttemptResult(attempted=True, questions=list(result.collected),
@@ -2705,10 +2706,8 @@ def _stale_recording(ctx: Sourcing, subject: str, subject_kind: str) -> AssessQu
     best = current_best_of(ctx, subject, "recording")
     if best.artifact_sha is None:
         return None
-    q = AssessQuestion(subject=subject, role=role_for("recording", subject_kind),
-                       artifact_sha=best.artifact_sha, kind="recording",
-                       subject_kind=subject_kind)
-    if ctx.assessor.key_of("mechanical", q).encode() in _keys_on_record(ctx, subject):
+    q = mechanical_question(subject, "recording", subject_kind, best.artifact_sha)
+    if ctx.mechanical_key(q).encode() in _keys_on_record(ctx, subject):
         return None
     return q
 
@@ -2890,7 +2889,8 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     again with the exclusions named lifts that gate: whatever the rule
     then returns is assessed on this same call.
     """
-    awaiting = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics)
+    awaiting = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics,
+                                   mechanical_key=ctx.mechanical_key)
     if not awaiting:
         return None
     assess = _ASSESS_FIRST.get(need.kind)
@@ -2903,7 +2903,7 @@ def assess_first(ctx: Sourcing, need: Need) -> AttemptResult | None:
     if not all(sha in excluded_shas for sha in awaiting):
         return result
     rest = unjudged_candidates(ctx.db, need.subject, need.kind, current_rubric=ctx.rubrics,
-                               excluding=excluded_shas)
+                               mechanical_key=ctx.mechanical_key, excluding=excluded_shas)
     if not rest:
         return _fall_through(result, need, awaiting)
     second = assess(ctx, need, rest, spend)

@@ -55,6 +55,7 @@ from .derivations import (
     learner_ranks,
     queue,
     reasks,
+    unjudged_candidates,
     vetoed,
 )
 from .ids import PairId
@@ -118,6 +119,24 @@ def _exhausted(d: "Derivations", subject: str, kind: str, *, subject_kind: str =
                      sentence_nothing_cap=d.sentence_nothing_cap,
                      nothing_ttl=d.nothing_ttl,
                      now_ns=time.time_ns() if now_ns is None else now_ns)
+
+
+def _out_of_options(d: "Derivations", subject: str, kind: str, *, subject_kind: str,
+                    now_ns: int) -> ExhaustedStatus | None:
+    """The need's exhausted() status when it is exhausted and no unvetoed
+    candidate awaits a verdict (derivations.unjudged_candidates: a
+    candidate whose check is owed under the current rubric or mechanical
+    key is still the machine's; one the learner vetoed is not an option
+    the screen waits on -- spec 5 r17); else None."""
+    status = _exhausted(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
+    if not status.exhausted:
+        return None
+    role = role_for(kind, subject_kind)
+    awaiting = [sha for sha in unjudged_candidates(d.db, subject, kind,
+                                                   current_rubric=d.current_rubric,
+                                                   mechanical_key=d.mechanical_key)
+                if not vetoed(d.db, subject, role, sha)]
+    return None if awaiting else status
 
 
 def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
@@ -523,7 +542,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
     now_ns = time.time_ns()   # one clock read per session build (spec 3 r19 section 6a/9)
     syllabus_state_id = d.syllabus.state_id()
     needs = available_needs(d.syllabus)
-    entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
+    entries = queue(d.syllabus, d.db, current_rubric=d.current_rubric,
+                    mechanical_key=d.mechanical_key, prior=d.prior,
                     sources_for=d.sources_for, sources_for_need=d.sources_for_need,
                     attempt_cap=d.attempt_cap,
                     transient_cap=d.transient_cap, requery_cap=d.requery_cap,
@@ -555,8 +575,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
         for subject, kind, subject_kind in needs:
             if (subject, kind) in queued:
                 continue
-            status = _exhausted(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
-            if status.exhausted:
+            status = _out_of_options(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
+            if status is not None:
                 items.append(_direction_question(d, subject, kind, subject_kind,
                                                  status.attempts,
                                                  syllabus_state_id=syllabus_state_id))
@@ -1129,7 +1149,8 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     better on a role the learner ranks, else (spec 3 section 4 r8, a
     veto-only role) one with a current-best artifact not vetoed
     (see _accepted). `exhausted_remaining` is scoped to available_needs
-    instead -- an outstanding need with no artifact and no source left.
+    instead -- an outstanding need with no source left and no candidate
+    awaiting a verdict (_out_of_options).
 
     `pending`/`sentences_adopted` come from the newest run.py runreport
     row, else 0; `run_report_history` is every such row's answer, oldest
@@ -1170,8 +1191,8 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 
     now_ns = time.time_ns()
     exhausted_count = sum(1 for subject, kind, subject_kind in available_needs(d.syllabus)
-                         if _exhausted(d, subject, kind, subject_kind=subject_kind,
-                                       now_ns=now_ns).exhausted)
+                         if _out_of_options(d, subject, kind, subject_kind=subject_kind,
+                                            now_ns=now_ns) is not None)
 
     runreport = d.db.latest("run", "runreport", RunReportKey())
     runreport_answer = runreport.answer if runreport else {}
@@ -1274,7 +1295,8 @@ class ReviewContext:
 
     def queue(self) -> list[QueueEntry]:
         d = self.derivations
-        return queue(d.syllabus, d.db, current_rubric=d.current_rubric, prior=d.prior,
+        return queue(d.syllabus, d.db, current_rubric=d.current_rubric,
+                     mechanical_key=d.mechanical_key, prior=d.prior,
                      sources_for=d.sources_for, sources_for_need=d.sources_for_need,
                      attempt_cap=d.attempt_cap,
                      transient_cap=d.transient_cap, requery_cap=d.requery_cap,

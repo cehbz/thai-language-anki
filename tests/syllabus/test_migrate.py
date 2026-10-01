@@ -13,6 +13,7 @@ import yaml
 from PIL import Image
 
 from thai_syllabus import curated
+from thai_syllabus.assessor import RecordingCheckBackend
 from thai_syllabus.cachekeys import LegacyVerdictKey, LlmPromptKey, sha
 from thai_syllabus.derivations import current_best, unjudged_candidates
 from thai_syllabus.migrate import LEGACY_PICTURE_RUBRIC, MigrationReport, migrate, parse_sentences
@@ -541,7 +542,9 @@ def test_the_current_picture_awaits_a_verdict_and_does_not_rank(old_deck, old_da
     db = SyllabusDb(tmp_path / "new" / "syllabus.db")
     rubric = {"picture-for-word": PICTURE_FIT_RUBRIC}
     (sha,) = candidate_shas(rows_for(db, "chicken", "picture"))
-    assert unjudged_candidates(db, "chicken", "picture", current_rubric=rubric) == (sha,)
+    assert unjudged_candidates(db, "chicken", "picture", current_rubric=rubric,
+                               mechanical_key=RecordingCheckBackend(
+                                   resolve_path=lambda sha: None).cache_key) == (sha,)
     best = current_best(db, "chicken", "picture", current_rubric=rubric, prior=(),
                         provenance_source=lambda s: None)
     assert best.artifact_sha is None

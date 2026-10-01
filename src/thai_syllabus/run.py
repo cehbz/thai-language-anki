@@ -551,7 +551,7 @@ def _needs(ctx: Sourcing, collected_this_run: frozenset[tuple[str, str]] = froze
     queue and the loop never disagree about what a need has left.
     """
     return queued(ctx.syllabus, ctx.db, current_rubric=ctx.rubrics,
-                  prior=ctx.provenance_prior, sources_for=ctx.sources_for,
+                  mechanical_key=ctx.mechanical_key, prior=ctx.provenance_prior, sources_for=ctx.sources_for,
                   sources_for_need=lambda subject, kind, subject_kind="word":
                       sources_for_need(ctx, Need(subject, kind, subject_kind)),
                   attempt_cap=ctx.attempt_cap, transient_cap=ctx.transient_cap,

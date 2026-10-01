@@ -758,8 +758,7 @@ class ProvidersConfig:
     requery_cap: int = 3       # tried_sources()'s distinct-query cap default (spec 3 r35 section 8)
     # sentence_exhausted()'s no-fit cap default (spec 3 r19 section 5)
     sentence_nothing_cap: int = 3
-    # the drafting prompt's own clause cap default (spec 3 r23 section 5/8):
-    # a longer sentence outruns the 5 s recording cap
+    # the drafting prompt's own clause cap default (spec 3 r23 section 5/8)
     sentence_max_clauses: int = 2
     # spec 3 r53 section 5/8: the drafting prompt's and acceptance's own
     # cap on a sentence's total deck words, summed across its clauses -- a

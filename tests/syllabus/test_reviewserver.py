@@ -25,13 +25,15 @@ from PIL import Image as PILImage
 
 from thai_syllabus import record as record_mod
 from thai_syllabus import reviewserver as rs
+from thai_syllabus.assessor import RecordingCheckBackend, mechanical_question
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, FlagKey,
                                     JudgeKey, LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, comment_identity, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
-from thai_syllabus.derivations import DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP, directed
+from thai_syllabus.derivations import (DEFAULT_ATTEMPT_CAP, DEFAULT_TRANSIENT_CAP, available_needs,
+                                      directed)
 from thai_syllabus.entities import Grapheme, MinimalPair, Sentence, SoundConfusion
 from thai_syllabus.media import Provenance
 from thai_syllabus.ids import ConfusionId, PairId, WordId
@@ -41,6 +43,9 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import Derivations, sources_for_need_of
 
 from .builders import PROV, sentence, syl, pron, target, thai_of, word
+
+# The recording check's current key (wiring._recording_check's params).
+_MECH_KEY = RecordingCheckBackend(resolve_path=lambda sha: None).cache_key
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -123,7 +128,8 @@ def _derivations_for(syllabus, db, media_store, *, sources_for_need=None):
     otherwise carries as None (spec 3 r41 section 5).
     """
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
-                       current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                       current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                       provenance_source=lambda sha: None,
                        sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
                        transient_cap=DEFAULT_TRANSIENT_CAP,
                        sources_for_need=sources_for_need)
@@ -220,6 +226,56 @@ def test_build_queue_threads_its_one_clock_read_so_an_aged_out_nothing_re_offers
     assert [i["type"] for i in items] == ["direction"]
 
 
+def test_a_recording_need_whose_only_verdict_is_under_an_old_key_is_not_out_of_options(
+        derivations, db, w1):
+    """Spec 3 r55: a candidate the recording check decided under an
+    earlier key awaits its current check, so the need is still the
+    machine's -- no direction request, not counted exhausted -- until a
+    verdict under the current key decides it."""
+    out_of_sources = dataclasses.replace(derivations, attempt_cap=0)
+    clip = "r" * 64
+    _provide(db, w1.id, "recording", backend="audiofetch", items=[{"sha": clip}])
+
+    def verdict(key):
+        db.append(port="assess", backend="mechanical", key=key, subject=w1.id,
+                  question={"role": "recording-for-word", "artifact_sha": clip, "rubric": None,
+                            "kind": "recording", "subject_kind": "word"},
+                  answer={"value": False})
+
+    def types():
+        return [i["type"] for i in rs.build_queue(out_of_sources, budget=50)
+                if i["subject"] == w1.id and i["kind"] == "recording"]
+
+    verdict(MechanicalKey(check="duration", params="0.2-5.0", subject=w1.id, artifact_sha=clip))
+    assert types() == ["rate"]
+    stale = rs.compute_stats(out_of_sources)["exhausted_remaining"]
+    verdict(_MECH_KEY(mechanical_question(w1.id, "recording", "word", clip)))
+    assert types() == ["direction"]
+    assert rs.compute_stats(out_of_sources)["exhausted_remaining"] == stale + 1
+
+
+@pytest.mark.parametrize("kind", ["recording", "picture"])
+def test_an_exhausted_need_whose_only_unjudged_candidate_is_vetoed_is_a_direction_request(
+        derivations, db, w1, kind):
+    """A candidate the learner vetoed (unacceptable-none) is no option the
+    screen waits on, judged or not: with every candidate vetoed there is
+    no rate question, so the exhausted need is a direction request and
+    counts in exhausted_remaining (spec 5 r17)."""
+    out_of_sources = dataclasses.replace(derivations, attempt_cap=0,
+                                         current_rubric={"picture-for-word": "rubric-v1"})
+    clip = "v" * 64
+    _provide(db, w1.id, kind, backend="audiofetch" if kind == "recording" else "openverse",
+             items=[{"sha": clip}])
+    _learner(db, w1.id, kind, clip, "unacceptable-none")
+    items = [i["type"] for i in rs.build_queue(out_of_sources, budget=50)
+             if i["subject"] == w1.id and i["kind"] == kind]
+    assert items == ["direction"]
+    exhausted_needs = rs.compute_stats(out_of_sources)["exhausted_remaining"]
+    assert exhausted_needs == sum(
+        1 for subject, need_kind, subject_kind in available_needs(out_of_sources.syllabus)
+        if rs._exhausted(out_of_sources, subject, need_kind, subject_kind=subject_kind).exhausted)
+
+
 def test_build_queue_respects_budget(derivations, syllabus, db):
     """Every word has a picture candidate to rate, so the session has more
     questions than the budget allows and the budget is what caps it.
@@ -245,7 +301,8 @@ def test_build_queue_rate_order_matches_derivations_queue(derivations, syllabus,
         _provide(db, w.id, "recording", items=[{"sha": f"r-{w.id}"}])
     for p in syllabus.pairs:
         _provide(db, p.id, "rendition", items=[{"sha": f"v-{p.id}"}])
-    entries = derive_queue(syllabus, db, current_rubric={}, prior=(), sources_for=sources_for,
+    entries = derive_queue(syllabus, db, current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                           sources_for=sources_for,
                            attempt_cap=DEFAULT_ATTEMPT_CAP, transient_cap=DEFAULT_TRANSIENT_CAP,
                            provenance_source=lambda s: None)
     items = rs.build_queue(derivations, budget=len(entries))
@@ -1637,7 +1694,8 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
     syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
                         media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
     derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
-                              current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                              current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                              provenance_source=lambda sha: None,
                               sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
                               transient_cap=DEFAULT_TRANSIENT_CAP)
 
@@ -1667,7 +1725,8 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial"), assessments=db)
     derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
-                              current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                              current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                              provenance_source=lambda sha: None,
                               sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
                               transient_cap=DEFAULT_TRANSIENT_CAP)
 
@@ -1715,7 +1774,8 @@ def test_compiled_cards_notes_are_scoped_by_anchor_not_just_subject_and_kind(
     syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
                         media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
     pair_derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
-                                   current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                                   current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                                   provenance_source=lambda sha: None,
                                    sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
                                    transient_cap=DEFAULT_TRANSIENT_CAP)
 
@@ -1775,7 +1835,8 @@ def test_compiled_cards_pair_card_names_both_recordings_and_stales_on_the_second
     syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
                         media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
     pair_derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
-                                   current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                                   current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                                   provenance_source=lambda sha: None,
                                    sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
                                    transient_cap=DEFAULT_TRANSIENT_CAP)
 
@@ -3088,7 +3149,8 @@ def test_screen_and_run_agree_on_current_best_queue_and_exhaustion(deck_with_his
 
     assert [(e.subject, e.kind) for e in ctx.queue()] == [
         (e.subject, e.kind) for e in queue(
-            src.syllabus, src.db, current_rubric=src.rubrics, prior=src.provenance_prior,
+            src.syllabus, src.db, current_rubric=src.rubrics,
+            mechanical_key=src.mechanical_key, prior=src.provenance_prior,
             sources_for=src.sources_for, attempt_cap=src.attempt_cap,
             transient_cap=src.transient_cap,
             provenance_source=provenance_source)]
