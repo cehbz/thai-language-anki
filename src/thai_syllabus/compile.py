@@ -2,7 +2,8 @@
 artifacts and media provenance) and a MediaStore into one Anki .apkg.
 
 One note per picture-introduced word, grapheme, and adopted sentence
-that fills a target, one per minimal-pair member; every note tagged,
+that fills a target, one per minimal-pair member, and one per productive
+Target an adopted sentence fills (its Cloze note); every note tagged,
 due-stamped from Syllabus.order(), and stamped with this compile's
 CompileId.
 
@@ -33,7 +34,7 @@ import genanki
 from . import ipa
 from .derivations import current_best
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word, render
-from .ids import WordId
+from .ids import WordId, sentence_cloze_key
 from .rulebook import _picture_introduced_words, sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
 from .syllabus import Syllabus
@@ -160,23 +161,29 @@ GRAPHEME_MODEL = _model(
                '{{Audio}}<div class="ipa">{{Sound}}</div>',
     }])
 
+# The sentence note: its Listening card. TargetWord is the sentence's
+# target words (Syllabus.target_words), joined.
 SENTENCE_MODEL = _model(
     "sentence",
-    ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture", "Gloss",
-     "GrammarNote", "Productive"],
+    ["Thai", "TargetWord", "Audio", "Gloss"],
     [{
-        "name": "Cloze",
-        "qfmt": '{{#Productive}}<div class="cloze">{{ThaiCloze}}</div>'
-               '{{ScenePicture}}{{/Productive}}',
-        "afmt": '{{FrontSide}}<hr id="answer"><div class="target">{{TargetWord}}</div>'
-               '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}'
-               '{{#GrammarNote}}<div class="grammar">{{GrammarNote}}</div>{{/GrammarNote}}',
-    }, {
         "name": "Listening",
         "qfmt": "{{Audio}}",
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
-               '<div class="target"><span class="label">target word</span> {{TargetWord}}</div>'
+               '<div class="target"><span class="label">target words</span> {{TargetWord}}</div>'
                '{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
+    }])
+
+# One note per productive Target a sentence fills (spec 4 r9): the
+# sentence with that Target's word blanked.
+SENTENCE_CLOZE_MODEL = _model(
+    "sentence_cloze",
+    ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture", "Gloss"],
+    [{
+        "name": "Cloze",
+        "qfmt": '<div class="cloze">{{ThaiCloze}}</div>{{ScenePicture}}',
+        "afmt": '{{FrontSide}}<hr id="answer"><div class="target">{{TargetWord}}</div>'
+               '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
     }])
 
 # Spec 5 r9 (design ruling 4): one line per card type -- what the front
@@ -192,7 +199,7 @@ CARD_MEANINGS: dict[tuple[str, str], str] = {
     ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and offers both; back names the one heard, with IPA, and plays the other.",
     ("grapheme", "reading"): "Front shows the letter; back shows its recited name, the keyword picture, the keyword's Thai and gloss, plays it and gives the sound.",
     ("sentence", "cloze"): "Front shows the sentence with the target word blanked, plus the scene picture; back shows the target word, plays the sentence and gives the gloss.",
-    ("sentence", "listening"): "Front plays the sentence; back shows its Thai, names the target word and gives the gloss.",
+    ("sentence", "listening"): "Front plays the sentence; back shows its Thai, names its target words and gives the gloss.",
 }
 
 
@@ -201,7 +208,9 @@ def card_meaning(family: str, kind: str) -> str | None:
 
 
 STRIDE = 100  # due-per-order-position block size; comfortably above the
-             # largest sibling count any family below uses (word: 4).
+             # most cards any one order() entry yields (word: 4; sentence:
+             # its Listening card plus one Cloze card per productive Target,
+             # at most sentence_targets_per_sentence).
 
 
 def _guid(family: str, *parts: str) -> str:
@@ -527,41 +536,57 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
 def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], due_block: int,
                    syllabus: "Syllabus", resolver: _Resolver,
                    compile_id: str) -> tuple[genanki.Note, int]:
-    """One note for `sentence`, `targets` the ones it fills (target-id
-    order). TargetWord/cloze are on syllabus.last_used_word(sentence);
-    Productive is "1" iff one of `targets` on that word is productive
-    (spec 4 section 1).
+    """The sentence note (its Listening card), `targets` the ones it fills
+    (target-id order), due at the start of its order() block.
     """
-    last_used = syllabus.last_used_word(sentence)
-    target_word = syllabus.word(last_used)
-    cloze = thai_cloze(sentence, last_used, lambda w: syllabus.word(w).thai)
     text_sha = sentence_note_id(sentence)
-    productive = any(t.skill == "productive" for t in targets if t.word == last_used)
+    target_words = ", ".join(syllabus.word(w).thai for w in syllabus.target_words(sentence))
 
     # A sentence's audio/picture are resolved by (text_sha, kind), the
     # same artifact kinds a word's audio and picture carry.
     tags = ["family::sentence"]
     tags += [f"target::{t.id}" for t in targets]
-    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::cloze", "kind::listening"]
+    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::listening"]
     tags += resolver.src_tag("audio", text_sha, "recording")
-    tags += resolver.src_tag("img", text_sha, "picture")
 
     fields = [
-        cloze,
         sentence.text,
-        target_word.thai,
+        target_words,
         resolver.sound(text_sha, "recording"),
-        resolver.img(text_sha, "picture"),
         sentence.gloss,
-        "",  # GrammarNote: no curated source yet
-        "1" if productive else "",   # Productive
         "",  # ReviewNote
         compile_id,
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
                         guid=_guid("sentence", text_sha))
-    due = due_block * STRIDE
-    return note, due
+    return note, due_block * STRIDE
+
+
+def _sentence_cloze_note(sentence: Sentence, target: Target,
+                         syllabus: "Syllabus", resolver: _Resolver,
+                         compile_id: str) -> genanki.Note:
+    """`sentence`'s Cloze note for one productive `target` it fills (spec
+    4 r9): the rendering with that target's word blanked, identified by
+    (sentence, target).
+    """
+    text_sha = sentence_note_id(sentence)
+    tags = ["family::sentence", f"sentence::{text_sha}", f"target::{target.id}",
+            f"compile::{compile_id}", "kind::cloze"]
+    tags += resolver.src_tag("audio", text_sha, "recording")
+    tags += resolver.src_tag("img", text_sha, "picture")
+
+    fields = [
+        thai_cloze(sentence, target.word, lambda w: syllabus.word(w).thai),
+        sentence.text,
+        syllabus.word(target.word).thai,
+        resolver.sound(text_sha, "recording"),
+        resolver.img(text_sha, "picture"),
+        sentence.gloss,
+        "",  # ReviewNote
+        compile_id,
+    ]
+    return genanki.Note(model=SENTENCE_CLOZE_MODEL, fields=fields, tags=tags,
+                        guid=_guid("sentence", text_sha, target.id))
 
 
 # --- card/unique-front (A3) -------------------------------------------------
@@ -671,7 +696,8 @@ class _DropCause:
 # One entry per (model name, template name) for word and sentence, whose
 # card presence genanki's own required-field computation decides once the
 # note is built; grapheme and minimal_pair decide their drop reason
-# before building theirs.
+# before building theirs. A sentence Cloze note always yields its card
+# (ThaiCloze holds at least the blank).
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Listening"): _DropCause(None, None, "recording"),
     # gate_field is ProductiveTarget (dropped for "gated: ..." when the
@@ -681,7 +707,6 @@ _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "picture"),
     ("word", "Reading"): _DropCause(None, None, "recording"),
     ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested", "recording"),
-    ("sentence", "Cloze"): _DropCause("Productive", "gated: no productive Target", "recording"),
     ("sentence", "Listening"): _DropCause(None, None, "recording"),
 }
 
@@ -820,10 +845,18 @@ def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
 
 def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
                     compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
+    """Per adopted sentence: its sentence note at the start of its block,
+    then one Cloze note per productive Target it fills, a due apiece
+    after it within the block, target-id order.
+    """
     for sentence, targets, due_block in positions.sentence_entries:
         built = _sentence_note(sentence, targets, due_block, syllabus, resolver, compile_id)
-        subject = sentence_note_id(sentence)
-        yield from _gated_items(built, SENTENCE_MODEL, "sentence", subject)
+        text_sha = sentence_note_id(sentence)
+        yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha)
+        for i, target in enumerate(syllabus.productive_fills(sentence), start=1):
+            note = _sentence_cloze_note(sentence, target, syllabus, resolver, compile_id)
+            yield Built(note, due_block * STRIDE + i, "sentence",
+                        sentence_cloze_key(text_sha, target.id), SENTENCE_CLOZE_MODEL)
 
 
 @dataclass(frozen=True)

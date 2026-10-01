@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 8, proposed 2026-09-11 against principles r4 and architecture
+Revision 9, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -22,6 +22,7 @@ Revision log:
   written against; a Production card needs the picture (§1). Evidence:
   the live collection (schema 18) failed the import before a note was
   read; 23 Production cards compiled with an empty front.
+- r9 2026-10-01: the sentence note carries the Listening card; each Target a sentence fills productively has its own Cloze note on that sentence (identity sentence + Target, blanking that Target's word, due with the sentence). Evidence: spec 1 r25 lets one sentence fill several productive Targets. The sentence notetype's fields and Cloze template changed, a break taken at the cutover's delete-and-reimport; the append-only rule holds from r9 on. User ruling 2026-10-01.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -36,7 +37,9 @@ meaning (word Reading), symbol → sound (grapheme Reading), produce in
 context (sentence Cloze), understand in context (sentence Listening).
 
 Model ids: sha-derived from model name, stable; fields only ever
-append, so an existing collection updates in place (A2). A note's first
+append, so an existing collection updates in place (A2). The sentence
+notetype's fields and Cloze template changed at r9, a break taken at the
+cutover's delete-and-reimport; the rule holds from r9 on. A note's first
 field is its identity, unique within its model (A3). Every model carries the
 card CSS (legible Thai, bounded images, answer distinct, night mode — as
 shipped in the current compiler) and two service fields rendered by no
@@ -82,17 +85,23 @@ KeywordPicture, Audio, ReviewNote, CompileId.
   recording drops the card, counted.
 
 **sentence** (one note per adopted Sentence, at its order position):
-fields ThaiCloze, Thai, TargetWord, Audio, ScenePicture, Gloss,
-GrammarNote, Productive, ReviewNote, CompileId. Gloss = Sentence.gloss;
-TargetWord is the sentence's last used word, the target it enters the
-order after; Productive gates the Cloze card (non-empty iff that target
-is productive). Tags: one target::ID per target the sentence fills, one
+fields Thai, TargetWord, Audio, Gloss, ReviewNote, CompileId. Gloss =
+Sentence.gloss; TargetWord is the sentence's target words (spec 3 r54),
+joined. Tags: one target::ID per target the sentence fills, one
 sentence::SHA.
-- Cloze (productive last used word only): front cloze on that word +
-  optional scene picture; back target word, NATIVE audio (F7), gloss.
-- Listening (receptive): front audio; back full text, target, gloss.
+- Listening (receptive): front audio; back full text, target words,
+  gloss.
+
+**sentence_cloze** (family sentence; one note per productive Target an
+adopted Sentence fills, dealt with that sentence): fields ThaiCloze,
+Thai, TargetWord, Audio, ScenePicture, Gloss, ReviewNote, CompileId.
+TargetWord is that Target's word; Audio, ScenePicture and Gloss are the
+sentence's. Tags: sentence::SHA and that one target::ID. A sentence
+filling no productive Target has no Cloze note.
+- Cloze (productive): front cloze on the Target's word + optional scene
+  picture; back target word, NATIVE audio (F7), gloss.
 ThaiCloze is the sentence's rendering with every element whose word is
-the last used word blanked (a repeated word keeps its ๆ outside the
+the Target's word blanked (a repeated word keeps its ๆ outside the
 blank), never str.replace over the text (the ยา/โรงพยาบาล corruption
 class: blanking "medicine" inside "hospital" cannot arise from
 elements).
@@ -100,13 +109,14 @@ elements).
 ## 2. Identity, tags, order
 
 - guid: word = word id; grapheme = symbol; pair = MemberKey;
-  sentence = text_sha. A replaced sentence resets
-  its scheduling; everything else updates in place.
+  sentence = text_sha; sentence Cloze = (text_sha, target id). A
+  replaced sentence resets its scheduling; everything else updates in
+  place.
 - Tags are atomic, one part per tag, never composed or split: family::,
   kind:: (card kind), word::ID (word notes), pair::ID, confusion::ID,
   member::INDEX and speaker::ID (pair notes), grapheme::SYMBOL,
   target::ID per filled target and sentence::SHA (sentence notes),
-  compile::ID,
+  sentence::SHA and one target::ID (sentence Cloze notes), compile::ID,
   src tags for audio/image provenance. The import reads each tag's
   value by prefix and writes the parts as study columns (spec 2); a word
   card's Target is derived from its kind (Listening receptive, Production
@@ -116,7 +126,8 @@ elements).
   a due; sibling cards of one note get separated due values within the
   block, and the shipped deck options group sets bury-siblings. The two
   member notes of a pair are not siblings: they sit a stride apart inside
-  the pair's block (A5).
+  the pair's block (A5). A sentence's Cloze notes follow its sentence
+  note inside the sentence's block, one due apiece, in target-id order.
 - compile refuses when report().gate fails, unless forced with declared
   warnings; the Compile value records compile id = syllabus state id +
   timestamp, stamped into every note's CompileId field.
@@ -138,7 +149,11 @@ retains only final fit-to-viewport.
   collection (Anki's current schema keeps notetypes in tables) or an
   .apkg's own (the legacy schema keeps them in `col.models`), both read;
   map card -> (card_key, compile id) via tags/CompileId; append study
-  rows. Idempotent by (card_key, ts).
+  rows. Idempotent by (card_key, ts). A sentence Cloze card's anchor is
+  SHA:TARGET_ID, composed from its sentence:: and target:: tags as a
+  pair member's MemberKey is from its three; its study rows and flag
+  rows carry that anchor, and its entity subject stays the text_sha. A
+  Listening card's anchor is the text_sha.
 - **Flag import**: flags become learner assessments (cache rows) on the
   entity's subject (word id, pair id, grapheme symbol, sentence text_sha)
   with role from (family, card kind): word Listening and sentence
@@ -166,8 +181,9 @@ retains only final fit-to-viewport.
 
 - No deck deletion/orphan cleanup in v1 (delete-and-reimport is the
   current practice; AnkiConnect-based cleanup is a later addition).
-- No native Anki cloze type: the two-template design (cloze + listening)
-  stays; corruption is impossible by construction (element replacement).
+- No native Anki cloze type: the sentence note and its Cloze notes are
+  plain notetypes; corruption is impossible by construction (element
+  replacement).
 - Scheduling migration: out of scope, not prohibited. Guid stability
   preserves scheduling across reimports, which covers current needs;
   cross-collection migration (AnkiConnect/colpkg) is possible if ever

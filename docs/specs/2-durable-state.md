@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 19, proposed 2026-09-18 against principles r5 and architecture
+Revision 20, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -65,6 +65,7 @@ Revision log:
   unchanged for every reading that is not degenerate, so a fresh
   migration does not block the ~600 sound rows' cards. User approval
   2026-09-18.
+- r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. Evidence: spec 4 r9 gives each productive Target a sentence fills its own Cloze note. User ruling 2026-10-01.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -163,8 +164,11 @@ study(family, anchor, card_kind, member_index, speaker_id, compile_id,
       ts, grade, time_ms)  -- PK (family, anchor, card_kind, ts)
   -- store 4. The import reads a card's tags once and writes their parts
   -- as columns: family (word|minimal_pair|grapheme|sentence), anchor (the
-  -- entity id: word id, pair id, grapheme symbol, sentence text_sha),
-  -- card_kind, and for a pair card member_index and speaker_id. Nothing
+  -- entity id: word id, pair id, grapheme symbol, sentence text_sha; a
+  -- sentence Cloze card's anchor composes the sentence and its Target,
+  -- TEXT_SHA:TARGET_ID via ids.sentence_cloze_key, as a pair member's
+  -- MemberKey composes its parts, r20), card_kind, and for a pair card
+  -- member_index and speaker_id. Nothing
   -- re-parses an anchor: a pair row's pair id is matched exactly against
   -- the aggregate's pairs, and the Target of a word card is derived from
   -- card_kind. Imported from

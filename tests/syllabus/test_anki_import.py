@@ -409,20 +409,23 @@ def _find_pair_card(conn, pair_id: str):
     raise AssertionError(f"no Recognition card found for pair {pair_id!r}")
 
 
-def _find_sentence_card(conn, sentence_sha: str, template_name: str):
-    """(card_id, note_id) for the given template on the one sentence note
-    tagged sentence::SENTENCE_SHA -- the note's own guid-bearing anchor,
-    one note per adopted Sentence (spec 4 r5)."""
+def _find_sentence_card(conn, sentence_sha: str, template_name: str,
+                        target_id: str | None = None):
+    """(card_id, note_id) for the given template on a note tagged
+    sentence::SENTENCE_SHA: the sentence note for "Listening", or the
+    Cloze note (spec 4 r9) also tagged target::TARGET_ID for "Cloze" --
+    the first one when `target_id` is None."""
     models, notes, cards = _models_notes_cards(conn)
-    sentence_model = next(m for m in models.values() if m["name"] == "sentence")
+    model_name = "sentence_cloze" if template_name == "Cloze" else "sentence"
+    sentence_model = next(m for m in models.values() if m["name"] == model_name)
     tmpl_ord = next(i for i, t in enumerate(sentence_model["tmpls"])
                     if t["name"] == template_name)
-    sentence_tag = f"sentence::{sentence_sha}"
+    wanted = {f"sentence::{sentence_sha}"} | ({f"target::{target_id}"} if target_id else set())
     target_nid = None
     for nid, mid, flds, tags in notes:
         if str(mid) != sentence_model["id"]:
             continue
-        if sentence_tag in [t for t in tags.split(" ") if t]:
+        if wanted <= {t for t in tags.split(" ") if t}:
             target_nid = nid
             break
     assert target_nid is not None
@@ -524,6 +527,42 @@ def test_a_lapsed_sentence_card_imported_into_a_real_db_yields_one_sentence_reas
     found = reasks(fx.db, fx.db, syllabus)
     assert [(r.subject, r.kind, r.subject_kind, r.rating) for r in found] == \
            [(text_sha, "recording", "sentence", "good")]
+
+
+def test_a_lapsed_cloze_card_imported_into_a_real_db_reasks_the_scene_picture(fx):
+    # A Cloze card's study rows land under SENTENCE_SHA:TARGET_ID (spec 4
+    # r9); the scene-picture reask reads every Cloze anchor of the
+    # sentence, so a lapse on one re-asks the sentence's picture rating.
+    from thai_syllabus.cachekeys import LearnerKey
+    from thai_syllabus.derivations import reasks
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_reask_extracted")
+
+    fx.db.append(port="assess", backend="learner",
+                key=LearnerKey(artifact_sha="a" * 64, role="scene-for-sentence"),
+                subject=text_sha,
+                question={"role": "scene-for-sentence", "artifact_sha": "a" * 64,
+                         "rubric": None, "kind": "rating"},
+                answer={"value": "good"})
+
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                (1_700_000_000_000, card_id, 0, 1, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+    found = reasks(fx.db, fx.db, syllabus)
+    assert [(r.subject, r.kind, r.subject_kind, r.rating) for r in found] == \
+           [(text_sha, "picture", "sentence", "good")]
 
 
 # --- ReviewNote harvest ----------------------------------------------------
@@ -658,11 +697,10 @@ def test_pair_member_cards_have_distinct_anchors(fx):
     assert anchors == {"p1:s1:0", "p1:s1:1"}
 
 
-def test_sentence_card_anchor_is_the_text_sha(fx):
-    # One note per adopted Sentence (spec 4 r5): its anchor is the note's
-    # own sentence::TEXT_SHA tag alone, even though several target:: tags
-    # (one per filled target) sit alongside it -- never composed with a
-    # target id, unlike a pair member's MemberKey anchor above.
+def test_sentence_listening_card_anchor_is_the_text_sha(fx):
+    # The sentence note's anchor is its own sentence::TEXT_SHA tag alone,
+    # even though several target:: tags (one per filled target) sit
+    # alongside it.
     from thai_syllabus.rulebook import sentence_note_id
 
     syllabus = _fully_seeded(fx)
@@ -672,11 +710,83 @@ def test_sentence_card_anchor_is_the_text_sha(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_anchor_extracted")
 
     identities = card_identities(collection_path)
-    sentence_identities = [i for i in identities if i.family == "sentence"]
-    assert sentence_identities
-    assert {i.anchor for i in sentence_identities} == {text_sha}
-    assert set(sentence_identities[0].target_ids) == {
+    listening = [i for i in identities if i.family == "sentence" and i.kind_slug == "listening"]
+    assert len(listening) == 1
+    assert listening[0].anchor == text_sha
+    assert listening[0].sentence_sha == text_sha
+    assert set(listening[0].target_ids) == {
         "pom/receptive", "gin/receptive", "rice/receptive", "rice/productive"}
+
+
+def test_sentence_cloze_card_anchor_is_the_sentence_and_its_target(fx):
+    # Spec 4 r9: a Cloze card's anchor is SENTENCE_SHA:TARGET_ID, composed
+    # from its sentence:: and target:: tags the way a pair member's
+    # MemberKey composes its three; its entity subject stays the text_sha.
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_anchor_extracted")
+
+    cloze = [i for i in card_identities(collection_path)
+             if i.family == "sentence" and i.kind_slug == "cloze"]
+    assert [(i.anchor, i.sentence_sha, i.target_ids) for i in cloze] == \
+        [(f"{text_sha}:rice/productive", text_sha, ("rice/productive",))]
+
+
+def test_a_cloze_cards_revlog_lands_under_its_sentence_and_target(fx):
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_revlog_extracted")
+
+    conn = _open_rw(collection_path)
+    cloze_id, _ = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    listening_id, _ = _find_sentence_card(conn, text_sha, "Listening")
+    for ts, card_id in ((1_700_000_000_000, cloze_id), (1_700_000_000_001, listening_id)):
+        conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                     (ts, card_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.revlog_imported == 2
+    assert [r.ts for r in fx.db.records("sentence", f"{text_sha}:rice/productive", "cloze")] == \
+        [1_700_000_000_000]
+    assert fx.db.records("sentence", text_sha, "cloze") == []
+    assert [r.ts for r in fx.db.records("sentence", text_sha, "listening")] == \
+        [1_700_000_000_001]
+
+
+def test_a_flag_on_a_cloze_card_is_keyed_by_its_sentence_and_target(fx):
+    from thai_syllabus.cachekeys import FlagKey
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flagkey_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _ = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    anchor = f"{text_sha}:rice/productive"
+    (row,) = [r for r in fx.db.assessments_of(text_sha) if r.backend == "learner"]
+    assert (row.question["anchor"], row.question["card_kind"]) == (anchor, "cloze")
+    assert fx.db.latest("assess", "learner", FlagKey(family="sentence", anchor=anchor,
+                                                     card_kind="cloze", flags=1)) is not None
 
 
 # --- read-only ---------------------------------------------------------

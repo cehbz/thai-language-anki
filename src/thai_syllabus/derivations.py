@@ -29,7 +29,7 @@ from datetime import date
 from . import record
 from .authority import AUTHORITY_ORDER, role_for
 from .entities import Sentence, Syllable, Target, is_corroborated
-from .ids import WordId
+from .ids import WordId, sentence_cloze_key
 from .media import Provenance, Speaker
 from .phonology import syllables_from_verdict
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
@@ -1458,9 +1458,10 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
     recording or scene picture, a pair's rendition -- rated "acceptable"
     or better whose card has since accumulated at least `lapse_threshold`
     lapses (spec 5 section 1 kind 4). Each need's StudyRecords come from
-    (family, anchor, card_kind); a sentence's anchor is its own text_sha,
-    the entity subject anki_import.py writes study rows under, one Reask
-    per sentence.
+    (family, anchor, card_kind), the anchor anki_import.py writes study
+    rows under: a sentence's Listening rows under its text_sha, its Cloze
+    rows under each productive Target's TEXT_SHA:TARGET_ID (spec 4 r9)
+    and, from a pre-r9 deck, its text_sha. One Reask per sentence need.
     """
     out: list[Reask] = []
     for w in syllabus.words:
@@ -1473,10 +1474,13 @@ def reasks(cache: CacheReader, study: StudyReader, syllabus, *,
                 out.append(found)
 
     for s in syllabus.sentences:
+        cloze_anchors = tuple(sentence_cloze_key(s.text_sha, t.id)
+                              for t in syllabus.productive_fills(s))
         for kind in ("recording", "picture"):
+            anchors = (s.text_sha, *cloze_anchors) if kind == "picture" else (s.text_sha,)
             found = _reask_candidate(cache, study, subject=s.text_sha, kind=kind,
                                      subject_kind="sentence", family="sentence",
-                                     anchors=(s.text_sha,),
+                                     anchors=anchors,
                                      card_kind=_REASK_CARD_KIND[("sentence", kind)],
                                      lapse_threshold=lapse_threshold)
             if found is not None:

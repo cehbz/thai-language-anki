@@ -1650,6 +1650,36 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
     assert {c["stimulus_member"] for c in pair_cards} == {0, 1}
 
 
+def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
+        db, media_store):
+    """Spec 4 r9: the gallery lists each Cloze note the compile writes --
+    one per productive Target the sentence fills, each its own card id
+    (SENTENCE_SHA:TARGET_ID, the anchor a note on it records), all on the
+    sentence's own subject.
+    """
+    from thai_syllabus.profile import Profile
+
+    eat, rice = word("eat", "กิน", "to eat"), word("rice", "ข้าว", "cooked rice")
+    targets = tuple(target(f"{w.id}/{skill}", w.id, skill)
+                    for w in (eat, rice) for skill in ("receptive", "productive"))
+    s = sentence(((eat.id, rice.id),), thai_of(eat, rice), gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(s,),
+                        frequency={eat.id: 1, rice.id: 2},
+                        profile=Profile(register="male_colloquial"), assessments=db)
+    derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                              current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                              sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                              transient_cap=DEFAULT_TRANSIENT_CAP)
+
+    cloze = [c for c in rs.compiled_cards(derivations)
+             if c["family"] == "sentence" and c["kind"] == "cloze"]
+    assert [(c["id"], c["subject"]) for c in cloze] == [
+        (f"{s.text_sha}:eat/productive", s.text_sha),
+        (f"{s.text_sha}:rice/productive", s.text_sha)]
+    assert "___ข้าว" in cloze[0]["front_html"] and "กิน___" in cloze[1]["front_html"]
+    assert all(c["shown"]["text_sha"] == s.text_sha for c in cloze)
+
+
 def test_compiled_cards_notes_are_scoped_by_anchor_not_just_subject_and_kind(
         db, media_store, w1, w2, pair, confusion):
     """spec 5 section 1 r5 (C2 fix): a minimal-pair note's two member

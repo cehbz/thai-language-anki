@@ -17,6 +17,13 @@ GraphemeId = NewType("GraphemeId", str)
 CategoryName = NewType("CategoryName", str)
 
 
+def sentence_cloze_key(text_sha: str, target_id: str) -> str:
+    """A sentence Cloze card's anchor (spec 4 r9): "TEXT_SHA:TARGET_ID",
+    composed like a pair member's MemberKey; nothing parses it back.
+    """
+    return f"{text_sha}:{target_id}"
+
+
 def slug_id(text: str, taken: Collection[str] = ()) -> WordId:
     """The WordId a closure Word takes from its English gloss (design
     2026-09-12 §1): lowercased, every run of non-alphanumerics a single

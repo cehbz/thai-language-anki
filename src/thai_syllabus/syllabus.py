@@ -546,15 +546,20 @@ class Syllabus:
     def fills(self, sentence: Sentence, target: Target) -> bool:
         return target in self.fill_set(sentence)
 
+    def productive_fills(self, sentence: Sentence) -> tuple[Target, ...]:
+        """The productive Targets in `sentence`'s fill set, target-id
+        order: one Cloze card each (spec 4 r9).
+        """
+        return tuple(t for t in self.fill_set(sentence) if t.skill == "productive")
+
     def target_words(self, sentence: Sentence) -> tuple[WordId, ...]:
         """The sentence's target words (spec 3 r54): the word of each
         productive Target in its fill set, else -- when it fills none
         productively -- of every Target in it; once each, in target-id
         order. () when it fills nothing.
         """
-        filled = self.fill_set(sentence)
-        productive = [t for t in filled if t.skill == "productive"]
-        return tuple(dict.fromkeys(t.word for t in (productive or filled)))
+        targets = self.productive_fills(sentence) or self.fill_set(sentence)
+        return tuple(dict.fromkeys(t.word for t in targets))
 
     def met_sentence_introduced_targets(self) -> frozenset[TargetId]:
         """Every sentence-introduced Target some adopted sentence's own

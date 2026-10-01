@@ -6,25 +6,31 @@ Card identity -> (family, anchor, card kind, compile_id) comes from
 compile.py's tag/CompileId convention: family::, word::/pair::/grapheme::/
 target::/sentence::/member::/speaker:: tags, CompileId as a note field.
 Every tag is atomic; a pair member's anchor (MemberKey) composes its three
-tags' values, and a sentence note's target:: tags (one per filled target,
-plural) come along as target_ids beside its own text_sha anchor -- the
-sentence anchor itself is the sentence:: tag's value alone, matching the
-note's guid. The card kind (Listening/Production/.../Cloze, lowered) is
-the card's own template name, via `col.models` and the card's `ord`,
-which names one sibling where a note-level `kind::` tag names them all.
+tags' values, and a sentence Cloze note's anchor (spec 4 r9) composes its
+sentence:: and its one target:: tag's values the same way
+(ids.sentence_cloze_key). The sentence note's target:: tags (one per
+filled target, plural) come along as target_ids beside its text_sha
+anchor, the sentence:: tag's value alone. A note is a Cloze note when
+kind::cloze is its only kind:: tag; a pre-r9 sentence note, carrying
+both kinds, anchors every card on its text_sha. The card kind
+(Listening/Production/.../Cloze, lowered) is the card's own template
+name, via `col.models` and the card's `ord`, which names one sibling
+where a note-level `kind::` tag names them all.
 
 Revlog import appends one `study` row per revlog entry, keyed (spec 2
-section 2) by (family, anchor, card_kind, ts); `anchor` is the family's
-entity id (word id, grapheme symbol, sentence text_sha), or a pair id for
-family "minimal_pair" (the member's speaker/index go in the row's own
-columns). `ts` is the revlog row's own id, stored verbatim, and
-`append_study` is insert-or-ignore on that primary key.
+section 2) by (family, anchor, card_kind, ts); `anchor` is the card's own
+anchor (word id, grapheme symbol, sentence text_sha, a Cloze card's
+TEXT_SHA:TARGET_ID), or a pair id for family "minimal_pair" (the member's
+speaker/index go in the row's own columns). `ts` is the revlog row's own
+id, stored verbatim, and `append_study` is insert-or-ignore on that
+primary key.
 
 Flag import: (family, card kind) resolves to a role through the two
 tables below. A rating or card-flag row's idempotence key is a FlagKey
 over (family, anchor, card_kind, flags), the card-and-flags fact itself.
-A sentence card's flag anchor is its text_sha; a flag keyed under the
-old target:sha shape re-imports once under the text_sha anchor.
+A sentence Listening card's flag anchor is its text_sha, a Cloze card's
+its TEXT_SHA:TARGET_ID; a flag keyed under the old target:sha shape
+re-imports once under the text_sha anchor.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
@@ -53,6 +59,7 @@ from typing import Any
 from .authority import role_for
 from .cachekeys import FlagKey, LearnerNoteKey, ReverifyKey, sha
 from .compile import card_kind_of
+from .ids import sentence_cloze_key
 from .ports import StudyRecord
 from .store import SyllabusDb
 
@@ -157,15 +164,21 @@ def _grapheme_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
 
 
 def _sentence_anchor(tags: list[str]) -> tuple[str, dict[str, Any]] | None:
-    # One note per adopted Sentence (spec 4 section 1): the anchor is its
-    # own text_sha, matching the note's guid; target_ids carries every
-    # target:: tag the note fills (target-id order preserved from the
-    # note's own tags).
+    # The sentence note's anchor is its own text_sha, matching its guid;
+    # target_ids carries every target:: tag the note fills (target-id
+    # order preserved from the note's own tags). A Cloze note (spec 4 r9:
+    # kind::cloze its only kind) has exactly one target:: tag and anchors
+    # on (sentence, Target).
     sentence_sha = _tag_value(tags, "sentence")
     target_ids = _tag_values(tags, "target")
     if sentence_sha is None or not target_ids:
         return None
-    return sentence_sha, {"sentence_sha": sentence_sha, "target_ids": target_ids}
+    parts = {"sentence_sha": sentence_sha, "target_ids": target_ids}
+    if _tag_values(tags, "kind") != ("cloze",):
+        return sentence_sha, parts
+    if len(target_ids) != 1:
+        return None
+    return sentence_cloze_key(sentence_sha, target_ids[0]), parts
 
 
 _ANCHOR_BUILDERS: dict[str, Any] = {
@@ -340,6 +353,14 @@ def _entity_subject(identity: _CardIdentity) -> str | None:
     return getattr(identity, field_name) if field_name is not None else None
 
 
+def _study_anchor(identity: _CardIdentity) -> str | None:
+    """A study row's anchor: the card's own anchor, except a pair
+    member's, whose row carries its pair id and puts the member's
+    speaker/index in their own columns.
+    """
+    return _entity_subject(identity) if identity.family == "minimal_pair" else identity.anchor
+
+
 # --- revlog import -------------------------------------------------------
 
 def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
@@ -354,7 +375,7 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
             skips.append(("revlog", str(card_id),
                           "card not recognized (no family:: tag, or model/template unknown)"))
             continue
-        anchor = _entity_subject(identity)
+        anchor = _study_anchor(identity)
         record = StudyRecord(family=identity.family, anchor=anchor,
                              card_kind=identity.kind_slug, compile_id=identity.compile_id,
                              ts=int(rev_id), grade=int(ease), time_ms=int(time_ms),

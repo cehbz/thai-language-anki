@@ -1959,7 +1959,8 @@ def test_reasks_produces_a_sentence_reask_keyed_by_text_sha(cache):
     """
     rice_word = word("rice", "ข้าว", "rice")   # ข้าว: rice
     s = sentence(((rice_word.id,),), thai_of(rice_word), gloss="rice")
-    syllabus = SimpleNamespace(words=[], pairs=[], confusions=[], sentences=[s], targets=[])
+    syllabus = SimpleNamespace(words=[], pairs=[], confusions=[], sentences=[s], targets=[],
+                               productive_fills=lambda _s: ())
     cache.rows.append(Answer(port="assess", backend="learner", key=f"learner:{s.text_sha}:sha1",
                              key_sha="x", subject=s.text_sha,
                              question={"role": "scene-for-sentence", "artifact_sha": "sha1",
@@ -1977,6 +1978,38 @@ def test_reasks_produces_a_sentence_reask_keyed_by_text_sha(cache):
     found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
     assert [(r.subject, r.kind, r.subject_kind) for r in found] == \
            [(s.text_sha, "picture", "sentence")]
+
+
+def test_reasks_reads_a_sentences_cloze_lapses_under_each_productive_target(cache):
+    """Spec 4 r9: a Cloze card's study rows anchor on SENTENCE_SHA:TARGET_ID,
+    one per productive Target the sentence fills; the scene-picture reask
+    reads every one of them (and the bare text_sha a pre-r9 deck's Cloze
+    card wrote under).
+    """
+    rice_word = word("rice", "ข้าว", "rice")   # ข้าว: rice
+    s = sentence(((rice_word.id,),), thai_of(rice_word), gloss="rice")
+    rice_productive = target("rice/productive", "rice", "productive")
+    syllabus = SimpleNamespace(words=[], pairs=[], confusions=[], sentences=[s], targets=[],
+                               productive_fills=lambda _s: (rice_productive,))
+    cache.rows.append(Answer(port="assess", backend="learner", key=f"learner:{s.text_sha}:sha1",
+                             key_sha="x", subject=s.text_sha,
+                             question={"role": "scene-for-sentence", "artifact_sha": "sha1",
+                                      "rubric": None, "kind": "rating"},
+                             answer={"value": "good"}, cost=0.0, ts=_next_ts()))
+    lapse_anchors = {f"{s.text_sha}:rice/productive": 0, s.text_sha: 1}
+
+    class _Study:
+        def records(self, family, anchor_arg, card_kind):
+            if family == "sentence" and card_kind == "cloze" and anchor_arg in lapse_anchors:
+                return [StudyRecord(family=family, anchor=anchor_arg, card_kind=card_kind,
+                                    compile_id="c1", ts=lapse_anchors[anchor_arg], grade=1,
+                                    time_ms=100)]
+            return []
+
+    found = reasks(cache, _Study(), syllabus, lapse_threshold=2)
+    assert [(r.subject, r.kind, r.subject_kind) for r in found] == \
+           [(s.text_sha, "picture", "sentence")]
+    assert [r.anchor for r in found[0].evidence] == [f"{s.text_sha}:rice/productive", s.text_sha]
 
 
 # --- confusion_weights ----------------------------------------------------
