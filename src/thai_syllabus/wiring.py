@@ -49,8 +49,8 @@ from .curated import (
 )
 from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best, need_sources
 from .dictionary import DEFAULT_MAX_ASKS, DEFAULT_USER_AGENT, Wiktionary
-from .entities import MinimalPair, Sentence, Word
-from .ids import ConfusionId, PairId, WordId
+from .entities import MinimalPair, Sentence, Target, Word
+from .ids import ConfusionId, PairId, TargetId, WordId, sentence_cloze_key
 from .media import Provenance, Recording, Speaker
 from . import record
 from .provider import (
@@ -706,7 +706,6 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sentence_max_clauses=cfg.sentence_max_clauses,
         sentence_max_words=cfg.sentence_max_words,
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,
-        sentence_targets_per_sentence=cfg.sentence_targets_per_sentence,
         nothing_ttl=derivations.nothing_ttl,
         frequency_words=lambda: load_frequency_words(root / "curated" / "frequency_th.txt"),
         pair_search_depth=cfg.pair_search_depth,
@@ -897,6 +896,26 @@ class _DbMediaIndex:
         return tuple(seen.values())
 
 
+def studied_cloze_pairs(db: SyllabusDb, sentences: Sequence[Sentence],
+                        targets: Sequence[Target]) -> frozenset[tuple[str, TargetId]]:
+    """Every (sentence text_sha, productive Target id) pair among
+    `sentences` and `targets` with a study row on its Cloze card (family
+    sentence, card kind cloze, anchor `sentence_cloze_key`, spec 4 r9):
+    the pairs spec 1 r26 keeps filling whatever their placement.
+    """
+    anchors = db.study_anchors("sentence", "cloze")
+    if not anchors:
+        return frozenset()
+    productive: dict[WordId, list[TargetId]] = {}
+    for t in targets:
+        if t.skill == "productive":
+            productive.setdefault(t.word, []).append(t.id)
+    return frozenset(
+        (s.text_sha, target_id)
+        for s in sentences for w in s.words for target_id in productive.get(w, ())
+        if sentence_cloze_key(s.text_sha, target_id) in anchors)
+
+
 def load_syllabus(deck_root: str | Path, *,
                   db: SyllabusDb | None = None,
                   bundle: CuratedBundle | None = None,
@@ -912,7 +931,8 @@ def load_syllabus(deck_root: str | Path, *,
     check_sentence over drafted clauses before they are written). Every
     resulting sentence is checked with Syllabus.check_sentence, whose
     ValueError (an unregistered word id or a text/rendering mismatch)
-    propagates, naming the offending row.
+    propagates, naming the offending row. The study table gives the
+    Syllabus its studied Cloze pairs (`studied_cloze_pairs`, spec 1 r26).
     """
     root = Path(deck_root)
     if bundle is None:
@@ -942,7 +962,8 @@ def load_syllabus(deck_root: str | Path, *,
         words=bundle.words, targets=targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=resolved_sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
-        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules)
+        media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules,
+        studied_cloze_pairs=studied_cloze_pairs(db, resolved_sentences, targets))
 
     syllabus = Syllabus(**kwargs)
     for s in syllabus.sentences:

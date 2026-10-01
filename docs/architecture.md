@@ -1,6 +1,6 @@
 # Architecture
 
-Revision 3, proposed 2026-09-11 (r2 approved 2026-09-04). Written from the
+Revision 4, proposed 2026-10-01 (r3 approved 2026-09-11). Written from the
 entity pass and behavior walk of 2026-09-01/02. The principles
 (docs/principles.md) are the companion: every rule traces to a principle,
 every principle to one of the three charter meta-rules: is it a
@@ -24,6 +24,7 @@ Revision log:
   r12, r21). §8 "what this architecture deletes from the current code"
   retired (that code is gone) and §9 "open at time of writing" moved to
   TODO.md. No other statement changed.
+- r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9. No new decision.
 
 ## 1. Shape of the system
 
@@ -65,9 +66,10 @@ input protected):
 - **Sentence** — the author's parse: clauses of registered Words, rendered
   to its Thai text; a voice constraint (learner-voice/other-voice); a
   gloss; provenance. Its speaker marking is the union of its words'. It
-  fills one or more Targets (derived, never stored). Identity is the
-  text, so replacing a text resets its scheduling while everything else
-  updates in place.
+  fills one or more Targets (derived, never stored). Its cards are a
+  Listening card and one Cloze card per productive Target it fills.
+  Identity is the text, so replacing a text resets its scheduling while
+  everything else updates in place.
 - **Picture / Recording** — bytes (hash = identity) + Provenance (source,
   origin, licence, date); Recording adds a Speaker (kind, sex, age band,
   region; unknown where the source is silent). All learning semantics
@@ -100,9 +102,10 @@ cross-entity behavior lives here:
   future reorders freely, and rules catch what a reorder invalidates.
 - `fills(sentence, target)` — the one definition of "this text serves
   that target": the target's word among the sentence's clauses; the
-  voice satisfying the skill, and for a productive Target the sentence
-  clozed on that word with a marking that admits the learner's voice;
-  vocabulary met at entry. Used identically by generation (acceptance)
+  voice satisfying the skill, and for a productive Target a
+  learner-voice sentence whose marking admits the learner's voice, at
+  most `production_sentences_per_word` of them filling it (the first in
+  placement order, a studied pair kept); vocabulary met at entry. Used identically by generation (acceptance)
   and reporting (coverage). Novelty budget: at most one sentence-introduced
   target unmet per sentence. Strict — no exemption lists; glue words get
   early receptive Targets.
@@ -185,8 +188,9 @@ fills edges.
 
 **Anki** — adopted wholesale (note, card, template, guid, due, tags,
 scheduling); zero re-litigation. `compile()` translates: stable model
-ids; guid from durable identity (the text for sentence cards, the Word
-for word cards); due from order(); sibling separation for renditions;
+ids; guid from durable identity (the text for a sentence's Listening
+card, the text and the Target for its Cloze cards, the Word for word
+cards); due from order(); sibling separation for renditions;
 tags carrying what StudyRecords need to map back (target, confusion,
 card kind, compile id); styled cards (A8); refuses on gate failure. Anki
 adapts scheduling only; content adaptation is regeneration here — the

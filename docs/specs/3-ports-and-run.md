@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 54, proposed 2026-10-01 against principles r6 and architecture
+Revision 56, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -248,6 +248,7 @@ Revision log:
 - r52 2026-09-23: `judge.effort` and `judge.roles.<role>.effort` (§8; low | medium | high | xhigh | max, inherited from the judge where unset, sent by the api and batch transports as `output_config.effort`, nothing sent when unset). Evidence: the pronunciation role moves to Claude Opus 5.5 ($4/$20 per MTok against Opus 5's $5/$25), which rejects `thinking: disabled` and controls depth by effort alone with a default of `medium` where Opus 5's was `high`; the role's 47% corroboration was measured at Opus 5's default, so the deck pins the role at `high`. User approval 2026-09-23.
 - r53 2026-09-25: a sentence has at most `sentence_max_words` (§8, 8) deck words across its clauses: the drafter is asked for it, a longer draft is refused at acceptance, and an adopted sentence over it is retired by the run (F13) unless a learner recording or direction keeps it. Evidence: 41 of 410 adopted sentences exceed 8 words (the longest 13, two clauses: "this morning I sip a cup of hot tea, in the afternoon I sip a cup of coffee"), 83 Targets filled by them alone; the learner found them daunting at the start of study. User ruling 2026-09-25.
 - r54 2026-10-01: the sentence-for-target judge, the scene-picture fit judge and the phrase prompt name the sentence's target words (the words of the Targets it fills productively, else of every Target it fills) instead of its last used word (spec 1 r25). User ruling 2026-10-01.
+- r56 2026-10-01: the per-sentence Target cap (r27) is retired: the drafter is no longer told a per-sentence Target count and a draft is not refused for filling many; practice is bounded per word instead (spec 1 r26) and sentence length by r53. Evidence: under spec 1 r25 an ordinary four-word sentence fills four open productive Targets and was refused. User ruling 2026-10-01.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -597,11 +598,9 @@ one per sentence; the profile register; the existing sentence openings
 to avoid; the unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
-takes to cover the handed targets, each filling at most
-`sentence_targets_per_sentence` of them (§8, default 3; r27: a sentence
-that fills more is a word list in disguise) and free to use any other
-listed vocabulary as filler, each of at most `sentence_max_clauses`
-clauses (§8, default 2: a longer sentence outruns the 5 s recording
+takes to cover the handed targets (r27), each free to use any other
+listed vocabulary besides, with no per-sentence Target count (r56),
+each of at most `sentence_max_clauses` clauses (§8, default 2: a longer sentence outruns the 5 s recording
 cap) and at most `sentence_max_words` deck words summed across them
 (§8, default 8, r53: a longer sentence was daunting to a learner at the
 start of study), and states the rendering rule (spec 1 §1:
@@ -614,11 +613,10 @@ example item showing a suffixed id and a repeated word.
 ["<word id>", "ๆ"], ...], ...], "text": "...", "gloss": "..."}]}`.
 Acceptance is the Sentence invariant, local and mechanical: an
 unregistered id, a rendering that differs from text, more clauses than
-the cap, more deck words summed across the clauses than
-`sentence_max_words` (r53), or more open Targets filled than
-`sentence_targets_per_sentence` (r27; met words do not count) refuses the
-draft, logged with the reason, the provide row keeping it. Each distinct
-accepted text is one candidate: a text listed twice is one candidate;
+the cap, or more deck words summed across the clauses than
+`sentence_max_words` (r53) refuses the draft, logged with the reason,
+the provide row keeping it; a draft filling many open Targets is not
+refused for it (r56). Each distinct accepted text is one candidate: a text listed twice is one candidate;
 differing clauses reject it; differing glosses keep the first, since the
 verdict is keyed by the text and was given on that gloss. A draft
 filling no open target is not judged.
@@ -992,9 +990,9 @@ openverse 1, pexels 1, brave 1, others 0) and
 openverse 60, pexels 60, others 0: a challenge is a plain transport
 failure, and brave answers 402/429 rather than a challenge page),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2),
-`sentence_max_words` (8, r53) and
-`sentence_introducible_per_ask` (5) and `sentence_targets_per_sentence`
-(3), `pair_search_depth` (5000) and `pair_search_asks` (40).
+`sentence_max_words` (8, r53),
+`sentence_introducible_per_ask` (5), `pair_search_depth` (5000) and
+`pair_search_asks` (40).
 `secrets.brave` names a reference to the Brave Search API subscription
 key, sent as `X-Subscription-Token` on every search. `secrets.openverse` names a
 reference to one line `client_id:client_secret` from Openverse's

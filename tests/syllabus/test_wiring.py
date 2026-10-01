@@ -837,6 +837,48 @@ def test_load_syllabus_sentences_come_from_the_db(tmp_path):
     assert any(s.text == "ข้าว" for s in syllabus.sentences)  # rice
 
 
+def test_load_syllabus_hands_the_syllabus_its_studied_cloze_pairs(tmp_path):
+    """Spec 1 r26: a (sentence, productive Target) pair with a study row
+    on its Cloze card (anchor TEXT_SHA:TARGET_ID, spec 4 r9) reaches the
+    Syllabus at load; a Listening row does not name one."""
+    from thai_syllabus.ids import sentence_cloze_key
+    from thai_syllabus.ports import StudyRecord
+    root = _write_curated_dir(tmp_path / "deck")
+    (root / "curated" / "frequency_th.txt").write_text("ข้าว\n", encoding="utf-8")
+    (root / "curated" / "profile.yaml").write_text(yaml.safe_dump(
+        {"register": "male_colloquial", "emphasis": {}, "productive_cutoff": 1}))
+    db = SyllabusDb(root / "syllabus.db")
+    db.add_sentence(text_sha=sha("ข้าว"), text="ข้าว", clauses=(("rice",),), gloss="rice",  # rice
+                    voice="learner_voice", source="llm", origin="draft", licence="n/a",
+                    acquired=date(2026, 1, 1))
+    (adopted,) = load_syllabus(root, db=db).sentences
+    for anchor, kind in ((sentence_cloze_key(adopted.text_sha, "rice/productive"), "cloze"),
+                         (adopted.text_sha, "listening")):
+        db.append_study(StudyRecord(family="sentence", anchor=anchor, card_kind=kind,
+                                    compile_id="c", ts=1, grade=3, time_ms=1000))
+    syllabus = load_syllabus(root, db=db)
+    assert syllabus.studied_cloze_pairs == frozenset({(adopted.text_sha, "rice/productive")})
+
+
+def test_studied_cloze_pairs_reads_only_the_sentence_cloze_anchors(tmp_path, monkeypatch):
+    """`studied_cloze_pairs` reads the sentence-family Cloze anchors, not every study row."""
+    from thai_syllabus.ids import sentence_cloze_key
+    from thai_syllabus.ports import StudyRecord
+    from thai_syllabus.wiring import studied_cloze_pairs
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    rice = word("rice", "ข้าว")  # rice
+    s = sentence(((rice.id,),), thai_of(rice))  # rice
+    db.append_study(StudyRecord(family="sentence", anchor=sentence_cloze_key(s.text_sha, "rice/productive"),
+                                card_kind="cloze", compile_id="c", ts=1, grade=3, time_ms=1000))
+
+    def every_row():
+        raise AssertionError("studied_cloze_pairs read every study row")
+
+    monkeypatch.setattr(db, "study_rows", every_row)
+    assert studied_cloze_pairs(db, (s,), (target("rice/productive", "rice", "productive"),)) \
+        == frozenset({(s.text_sha, "rice/productive")})
+
+
 def test_load_syllabus_refuses_a_sentence_naming_an_unregistered_word(tmp_path):
     from datetime import date
     root = _write_curated_dir(tmp_path / "deck")

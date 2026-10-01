@@ -16,6 +16,9 @@ class Profile:
                                      # rank at or above which a categorized
                                      # Word carries a productive Target
                                      # (Nation's high-frequency line)
+    production_sentences_per_word: int = 3   # spec 1 section 3, r26: the
+                                              # most sentences filling one
+                                              # productive Target
 
     @property
     def learner_speaker(self) -> Literal["male", "female"]:

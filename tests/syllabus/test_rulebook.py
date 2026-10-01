@@ -233,6 +233,25 @@ def test_sentence_fills_novelty_does_not_flag_a_productive_target_off_the_last_u
     assert findings == []
 
 
+def test_sentence_fills_novelty_does_not_flag_a_productive_target_the_production_cap_leaves_out():
+    """Spec 1 r26: four sentences use rice and the cap of three leaves
+    rice/productive out of the fourth's fill set; that is the cap, not a
+    clause 3 failure, so the rule is silent."""
+    rice = word("rice", "ข้าว")      # rice
+    others = (word("chicken", "ไก่"), word("pork", "หมู"), word("fish", "ปลา"))  # chicken, pork, fish
+    to = thai_of(rice, *others)
+    targets = (target("rice/receptive", "rice"), target("rice/productive", "rice", "productive"),
+               *(target(f"{w.id}/receptive", w.id) for w in others))
+    sentences = (sentence(((rice.id,),), to),                       # rice
+                 *(sentence(((rice.id, w.id),), to) for w in others))  # rice (with) ...
+    syllabus = make_syllabus(words=(rice, *others), targets=targets, sentences=sentences,
+                             frequency={"rice": 1, "chicken": 2, "pork": 3, "fish": 4})
+    assert sum(len(syllabus.productive_fills(s)) for s in sentences) == 3   # the premise
+    findings = [f for f in syllabus.report().findings
+               if f.rule == "sentence/fills-novelty"]
+    assert findings == []
+
+
 # --- coverage/categories ---------------------------------------------------
 
 def test_coverage_categories_counts_categories_with_a_target():

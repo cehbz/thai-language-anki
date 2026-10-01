@@ -385,6 +385,18 @@ def test_study_rows_returns_every_row_ordered_by_ts(db):
     assert [r.ts for r in rows] == [1, 2]
 
 
+def test_study_anchors_are_the_distinct_anchors_of_one_family_and_card_kind(db):
+    db.append_study(_study(family="sentence", anchor="a", card_kind="cloze", ts=1,
+                           grade=3, time_ms=100))
+    db.append_study(_study(family="sentence", anchor="a", card_kind="cloze", ts=2,
+                           grade=3, time_ms=100))
+    db.append_study(_study(family="sentence", anchor="b", card_kind="listening", ts=3,
+                           grade=3, time_ms=100))
+    db.append_study(_study(family="word", anchor="c", card_kind="cloze", ts=4,
+                           grade=3, time_ms=100))
+    assert db.study_anchors("sentence", "cloze") == frozenset({"a"})
+
+
 # --- sentences / media provenance --------------------------------------
 
 def test_add_sentence_and_read_back(db):

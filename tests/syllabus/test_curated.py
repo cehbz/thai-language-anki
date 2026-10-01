@@ -374,7 +374,7 @@ def test_pairs_load_validation_collects_all_errors(tmp_path):
 def test_profile_round_trip(tmp_path):
     path = tmp_path / "profile.yaml"
     profile = Profile(register="male_colloquial", emphasis={"Animals": 1.5},
-                      productive_cutoff=1500)
+                      productive_cutoff=1500, production_sentences_per_word=2)
     curated.save_profile(path, profile)
     assert curated.load_profile(path) == profile
 
@@ -391,6 +391,24 @@ def test_profile_productive_cutoff_zero_refuses_naming_the_field(tmp_path):
     path.write_text(yaml.safe_dump({"register": "male_colloquial", "emphasis": {},
                                     "productive_cutoff": 0}), encoding="utf-8")
     with pytest.raises(curated.CuratedValidationError, match="profile.productive_cutoff"):
+        curated.load_profile(path)
+
+
+def test_profile_without_production_sentences_per_word_defaults_to_3(tmp_path):
+    """Spec 1 r26: at most this many sentences fill a productive Target."""
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump({"register": "male_colloquial", "emphasis": {}}),
+                    encoding="utf-8")
+    assert curated.load_profile(path).production_sentences_per_word == 3
+
+
+@pytest.mark.parametrize("bad", [0, -1, "3", True, 2.5])
+def test_profile_production_sentences_per_word_refuses_anything_but_a_positive_int(tmp_path, bad):
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump({"register": "male_colloquial", "emphasis": {},
+                                    "production_sentences_per_word": bad}), encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError,
+                       match="profile.production_sentences_per_word"):
         curated.load_profile(path)
 
 
@@ -1298,25 +1316,16 @@ def test_providers_sentence_introducible_per_ask_defaults_to_five_and_round_trip
     assert curated.load_providers_config(path).sentence_introducible_per_ask == 3
 
 
-def test_providers_sentence_targets_per_sentence_defaults_to_three_and_round_trips(tmp_path):
-    """Spec 3 r27 section 5/8: the most open Targets one drafted sentence
-    may fill."""
-    assert curated.ProvidersConfig().sentence_targets_per_sentence == 3
+def test_providers_no_longer_carries_a_per_sentence_target_cap(tmp_path):
+    """Spec 3 r56: the per-sentence Target cap is retired. A providers.yaml
+    still carrying the key loads (the loader ignores top-level keys it
+    does not read), and saving it drops the key."""
+    assert not hasattr(curated.ProvidersConfig(), "sentence_targets_per_sentence")
     path = tmp_path / "providers.yaml"
-    path.write_text(yaml.safe_dump(_providers(sentence_targets_per_sentence=2)))
+    path.write_text(yaml.safe_dump(_providers(sentence_targets_per_sentence=3)))
     cfg = curated.load_providers_config(path)
-    assert cfg.sentence_targets_per_sentence == 2
     curated.save_providers_config(path, cfg)
-    assert curated.load_providers_config(path).sentence_targets_per_sentence == 2
-
-
-def test_providers_sentence_targets_per_sentence_rejects_zero_and_a_non_integer(tmp_path):
-    path = tmp_path / "providers.yaml"
-    for bad in (0, "3"):
-        path.write_text(yaml.safe_dump(_providers(sentence_targets_per_sentence=bad)))
-        with pytest.raises(curated.CuratedValidationError,
-                           match="providers.sentence_targets_per_sentence"):
-            curated.load_providers_config(path)
+    assert "sentence_targets_per_sentence" not in yaml.safe_load(path.read_text())
 
 
 def test_providers_sentence_introducible_per_ask_rejects_zero(tmp_path):

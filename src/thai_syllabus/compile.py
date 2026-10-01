@@ -207,10 +207,11 @@ def card_meaning(family: str, kind: str) -> str | None:
     return CARD_MEANINGS.get((family, kind))
 
 
-STRIDE = 100  # due-per-order-position block size; comfortably above the
-             # most cards any one order() entry yields (word: 4; sentence:
-             # its Listening card plus one Cloze card per productive Target,
-             # at most sentence_targets_per_sentence).
+STRIDE = 100  # due-per-order-position block size; above the most cards
+             # any one order() entry yields (word: 4; sentence: its
+             # Listening card plus one Cloze card per productive fill, at
+             # most the distinct words it uses). _sentence_items refuses a
+             # sentence whose cards would not fit.
 
 
 def _guid(family: str, *parts: str) -> str:
@@ -847,13 +848,19 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
                     compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
     """Per adopted sentence: its sentence note at the start of its block,
     then one Cloze note per productive Target it fills, a due apiece
-    after it within the block, target-id order.
+    after it within the block, target-id order. A sentence whose cards
+    would overflow its STRIDE-sized block raises ValueError naming it.
     """
     for sentence, targets, due_block in positions.sentence_entries:
         built = _sentence_note(sentence, targets, due_block, syllabus, resolver, compile_id)
         text_sha = sentence_note_id(sentence)
+        productive = syllabus.productive_fills(sentence)
+        if 1 + len(productive) > STRIDE:
+            raise ValueError(
+                f"sentence {text_sha!r} has {1 + len(productive)} cards, more than its "
+                f"due block holds ({STRIDE})")
         yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha)
-        for i, target in enumerate(syllabus.productive_fills(sentence), start=1):
+        for i, target in enumerate(productive, start=1):
             note = _sentence_cloze_note(sentence, target, syllabus, resolver, compile_id)
             yield Built(note, due_block * STRIDE + i, "sentence",
                         sentence_cloze_key(text_sha, target.id), SENTENCE_CLOZE_MODEL)

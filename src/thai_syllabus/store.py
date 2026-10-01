@@ -292,6 +292,13 @@ class SyllabusDb:
             "member_index, speaker_id from study order by ts asc").fetchall()
         return [_row_to_study_record(r) for r in rows]
 
+    def study_anchors(self, family: str, card_kind: str) -> frozenset[str]:
+        """The distinct anchors with a `study` row under `family` and `card_kind`."""
+        rows = self._con.execute(
+            "select distinct anchor from study where family=? and card_kind=?",
+            (family, card_kind)).fetchall()
+        return frozenset(r[0] for r in rows)
+
     # --- sentences ----------------------------------------------------
 
     def add_sentence(self, *, text_sha: str, text: str, clauses: Clauses, gloss: str,

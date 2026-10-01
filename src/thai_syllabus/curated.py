@@ -381,31 +381,39 @@ def load_pairs(path: str | Path, words_by_id: Mapping[str, Word],
 
 def save_profile(path: str | Path, profile: Profile) -> None:
     """Writes profile.yaml (spec 1 section 2)."""
-    _atomic_write_yaml(Path(path), {"register": profile.register,
-                                    "emphasis": dict(profile.emphasis),
-                                    "productive_cutoff": profile.productive_cutoff})
+    _atomic_write_yaml(Path(path), {
+        "register": profile.register,
+        "emphasis": dict(profile.emphasis),
+        "productive_cutoff": profile.productive_cutoff,
+        "production_sentences_per_word": profile.production_sentences_per_word})
 
 
 def load_profile(path: str | Path) -> Profile:
-    """Reads profile.yaml (spec 1 section 2). `productive_cutoff` (r9)
-    is optional, defaulting 2000; anything but a positive int is
-    refused, naming the field.
+    """Reads profile.yaml (spec 1 section 2). `productive_cutoff` (r9,
+    default 2000) and `production_sentences_per_word` (r26, default 3)
+    are optional; anything but a positive int is refused, naming the
+    field.
     """
     path = Path(path)
     _require_exists(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     errors: list[str] = []
-    productive_cutoff = data.get("productive_cutoff", 2000)
-    if (isinstance(productive_cutoff, bool)
-            or not isinstance(productive_cutoff, int) or productive_cutoff <= 0):
-        errors.append(f"profile.productive_cutoff: {productive_cutoff!r} must be "
-                      "a positive int")
-        productive_cutoff = 2000
+
+    def positive_int(name: str, default: int) -> int:
+        value = data.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            errors.append(f"profile.{name}: {value!r} must be a positive int")
+            return default
+        return value
+
+    productive_cutoff = positive_int("productive_cutoff", 2000)
+    production_sentences_per_word = positive_int("production_sentences_per_word", 3)
     if errors:
         raise CuratedValidationError(errors)
     return Profile(register=data.get("register", "male_colloquial"),
                    emphasis=dict(data.get("emphasis") or {}),
-                   productive_cutoff=productive_cutoff)
+                   productive_cutoff=productive_cutoff,
+                   production_sentences_per_word=production_sentences_per_word)
 
 
 # --- rulebook config -------------------------------------------------------
@@ -763,7 +771,6 @@ class ProvidersConfig:
     # many sentence-introduced, unmet Targets one drafting ask is handed;
     # the rest of the handed batch is the next non-introduced open Targets
     sentence_introducible_per_ask: int = 5
-    sentence_targets_per_sentence: int = 3
     pair_search_depth: int = 5000   # forms of the frequency list the pair search reads (spec 3 r47 section 8)
     pair_search_asks: int = 40      # outside candidates the judge is asked about per run
     # providers.yaml `wiktionary.contact` (design 2026-09-20 §2): an
@@ -1071,15 +1078,6 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_introducible_per_ask: "
                       f"{sentence_introducible_per_ask!r} must be a positive integer")
 
-    # spec 3 r27 section 5/8: the most open Targets one drafted sentence
-    # may fill
-    sentence_targets_per_sentence = data.get("sentence_targets_per_sentence", 3)
-    if (isinstance(sentence_targets_per_sentence, bool)
-            or not isinstance(sentence_targets_per_sentence, int)
-            or sentence_targets_per_sentence < 1):
-        errors.append(f"providers.sentence_targets_per_sentence: "
-                      f"{sentence_targets_per_sentence!r} must be a positive integer")
-
     pair_search_depth = data.get("pair_search_depth", 5000)
     if not isinstance(pair_search_depth, int) or pair_search_depth < 1:
         errors.append(f"providers.pair_search_depth: {pair_search_depth!r} must be a positive integer")
@@ -1182,7 +1180,6 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         sentence_max_clauses=sentence_max_clauses,
         sentence_max_words=sentence_max_words,
         sentence_introducible_per_ask=sentence_introducible_per_ask,
-        sentence_targets_per_sentence=sentence_targets_per_sentence,
         pair_search_depth=pair_search_depth,
         pair_search_asks=pair_search_asks,
         wiktionary_contact=wiktionary_contact)
@@ -1238,7 +1235,6 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "sentence_max_clauses": config.sentence_max_clauses,
         "sentence_max_words": config.sentence_max_words,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
-        "sentence_targets_per_sentence": config.sentence_targets_per_sentence,
         "pair_search_depth": config.pair_search_depth,
         "pair_search_asks": config.pair_search_asks,
         **({"wiktionary": {"contact": config.wiktionary_contact}}

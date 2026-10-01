@@ -7,6 +7,7 @@ report() identifies the state it judged so a stale report steers nothing.
 import dataclasses
 import hashlib
 import json
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -106,6 +107,10 @@ class Syllabus:
     # RulebookConfig -- a config change with no severity/threshold/rubric
     # change still edits the file, and that edit must still show up here.
     rulebook_text: str = ""
+    # (sentence text_sha, productive Target id) pairs whose Cloze card has
+    # a study record (spec 1 section 3, r26), handed in at load from the
+    # study table; none without one.
+    studied_cloze_pairs: frozenset[tuple[str, TargetId]] = frozenset()
 
     # --- lookups -------------------------------------------------------
 
@@ -469,8 +474,35 @@ class Syllabus:
         return tuple(sorted(self.sentences, key=self._placement_key))
 
     @cached_property
+    def _studied_counts(self) -> dict[TargetId, int]:
+        """Per productive Target, the studied pairs (`studied_cloze_pairs`)
+        whose adopted sentence's clause-3 fill set before the cap contains
+        it: the places of the production cap (r26) those pairs hold
+        whatever their position. Clause 3 before the cap comes from a
+        fold over the adopted sentences with no cap applied, run only
+        when there are studied pairs.
+        """
+        if not self.studied_cloze_pairs:
+            return {}
+        uncapped: dict[str, tuple[Target, ...]] = {}
+        for s in self._adopted_placement_order:
+            uncapped[s.text_sha] = self._compute_fill_set(s, uncapped)
+        counts: dict[TargetId, int] = {}
+        for sha, target_id in self.studied_cloze_pairs:
+            if any(t.id == target_id and t.skill == "productive" for t in uncapped.get(sha, ())):
+                counts[target_id] = counts.get(target_id, 0) + 1
+        return counts
+
+    @cached_property
     def _adopted_fill_sets(self) -> dict[str, tuple[Target, ...]]:
-        """Every adopted sentence's own fill set (spec 1 section 3,
+        """Every adopted sentence's fill set, keyed by text_sha (`_adopted_fold`)."""
+        return self._adopted_fold[0]
+
+    @cached_property
+    def _adopted_fold(self) -> tuple[dict[str, tuple[Target, ...]],
+                                     dict[str, tuple[Target, ...]]]:
+        """(fill sets, capped out), each keyed by text_sha: every adopted
+        sentence's own fill set (spec 1 section 3,
         clause 3), computed once per instance in placement order
         (`_adopted_placement_order`): each sentence's novelty rule reads
         only the fill sets already computed here for sentences placed
@@ -480,11 +512,44 @@ class Syllabus:
         for the life of this instance (`with_sentences` returns a new
         one -- this cannot go stale); a candidate not itself adopted is
         computed fresh against this completed map.
+
+        The production cap (r26): a productive Target is kept by a
+        studied pair always, and by an unstudied one while fewer than
+        `production_sentences_per_word` less the Target's studied pairs
+        (`_studied_counts`) earlier unstudied sentences have kept it.
+        Capped out: the productive Targets clause 3 admits that the cap
+        leaves out.
         """
+        cap = self.profile.production_sentences_per_word
+        unstudied_kept: dict[TargetId, int] = {}
         computed: dict[str, tuple[Target, ...]] = {}
+        capped_out: dict[str, tuple[Target, ...]] = {}
         for s in self._adopted_placement_order:
-            computed[s.text_sha] = self._compute_fill_set(s, computed)
-        return computed
+            kept: list[Target] = []
+            dropped: list[Target] = []
+            for t in self._compute_fill_set(s, computed):
+                if t.skill == "productive" and (s.text_sha, t.id) not in self.studied_cloze_pairs:
+                    if unstudied_kept.get(t.id, 0) >= cap - self._studied_counts.get(t.id, 0):
+                        dropped.append(t)
+                        continue
+                    unstudied_kept[t.id] = unstudied_kept.get(t.id, 0) + 1
+                kept.append(t)
+            computed[s.text_sha] = tuple(kept)
+            capped_out[s.text_sha] = tuple(dropped)
+        return computed, capped_out
+
+    @cached_property
+    def _unstudied_fill_keys(self) -> dict[TargetId, list[tuple[int, int, str]]]:
+        """Per productive Target, the placement keys of the adopted
+        sentences filling it through an unstudied pair, sorted: what a
+        draft's production cap counts below its own key.
+        """
+        keys: dict[TargetId, list[tuple[int, int, str]]] = {}
+        for s in self._adopted_placement_order:
+            for t in self._adopted_fill_sets[s.text_sha]:
+                if t.skill == "productive" and (s.text_sha, t.id) not in self.studied_cloze_pairs:
+                    keys.setdefault(t.id, []).append(self._placement_key(s))
+        return keys
 
     def _compute_fill_set(self, sentence: Sentence,
                           adopted_fill_sets: Mapping[str, tuple[Target, ...]]
@@ -501,7 +566,7 @@ class Syllabus:
         empties the fill set; zero or one leaves every candidate as the
         fill set. `adopted_fill_sets` carries every sentence placed
         strictly before `sentence` in placement order, when called from
-        `_adopted_fill_sets`'s own recursive build, or the complete map,
+        `_adopted_fold`'s own recursive build, or the complete map,
         for a candidate that is not itself adopted.
         """
         used = frozenset(sentence.words)
@@ -533,15 +598,46 @@ class Syllabus:
 
     def fill_set(self, sentence: Sentence) -> tuple[Target, ...]:
         """Every Target `sentence` fills (spec 1 section 3, clause 3):
-        `_compute_fill_set`'s result, memoized per instance for an
-        adopted sentence (`_adopted_fill_sets`), computed fresh for a
-        candidate that is not itself adopted.
+        `_compute_fill_set`'s result under the production cap (r26),
+        memoized per instance for an adopted sentence
+        (`_adopted_fill_sets`), computed fresh for a candidate that is
+        not itself adopted -- which keeps a productive Target only while
+        the Target's studied pairs (`_studied_counts`) plus the unstudied
+        adopted sentences placed before it filling that Target are fewer
+        than `production_sentences_per_word`.
         """
-        adopted = self._adopted_fill_sets
-        cached = adopted.get(sentence.text_sha)
-        if cached is not None:
-            return cached
-        return self._compute_fill_set(sentence, adopted)
+        return self._capped_fold(sentence)[0]
+
+    def capped_out(self, sentence: Sentence) -> tuple[Target, ...]:
+        """The productive Targets clause 3 admits for `sentence` that the
+        production cap (spec 1 section 3, r26) leaves out of its fill set,
+        target-id order.
+        """
+        return self._capped_fold(sentence)[1]
+
+    def _capped_fold(self, sentence: Sentence) -> tuple[tuple[Target, ...], tuple[Target, ...]]:
+        """(fill set, capped out) for `sentence`: an adopted sentence's
+        from `_adopted_fold`; any other's from clause 3 against the
+        adopted fill sets, a productive Target kept only while its studied
+        pairs plus the unstudied adopted sentences placed before it
+        filling it are fewer than the cap: what the fold gives it once
+        adopted.
+        """
+        fills, capped = self._adopted_fold
+        if sentence.text_sha in fills:
+            return fills[sentence.text_sha], capped[sentence.text_sha]
+        cap = self.profile.production_sentences_per_word
+        key = self._placement_key(sentence)
+        kept: list[Target] = []
+        dropped: list[Target] = []
+        for t in self._compute_fill_set(sentence, fills):
+            if (t.skill == "productive"
+                    and self._studied_counts.get(t.id, 0)
+                    + bisect_left(self._unstudied_fill_keys.get(t.id, ()), key) >= cap):
+                dropped.append(t)
+            else:
+                kept.append(t)
+        return tuple(kept), tuple(dropped)
 
     def fills(self, sentence: Sentence, target: Target) -> bool:
         return target in self.fill_set(sentence)
@@ -748,6 +844,7 @@ class Syllabus:
             "confusions": sorted((canon(c) for c in self.confusions), key=lambda d: d["id"]),
             "categories": sorted((canon(c) for c in self.categories), key=lambda d: d["name"]),
             "profile": canon(self.profile),
+            "studied_cloze_pairs": sorted(list(p) for p in self.studied_cloze_pairs),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()

@@ -789,6 +789,38 @@ def test_a_flag_on_a_cloze_card_is_keyed_by_its_sentence_and_target(fx):
                                                      card_kind="cloze", flags=1)) is not None
 
 
+def test_the_same_review_note_on_a_listening_and_a_cloze_note_harvests_two_rows(fx):
+    """A sentence's Listening note and its Cloze note are two notes: the
+    same ReviewNote text on both is two learner-note rows, each keyed by
+    its note's own anchor (text_sha; TEXT_SHA:TARGET_ID)."""
+    from thai_syllabus.rulebook import sentence_note_id
+
+    syllabus = _fully_seeded(fx)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_note_extracted")
+
+    conn = _open_rw(collection_path)
+    _, listening_nid = _find_sentence_card(conn, text_sha, "Listening")
+    _, cloze_nid = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    _set_review_note(conn, listening_nid, _review_note_field_index(conn, "sentence"),
+                     "the audio is clipped")
+    _set_review_note(conn, cloze_nid, _review_note_field_index(conn, "sentence_cloze"),
+                     "the audio is clipped")
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.notes_harvested == 2
+    rows = [r for r in fx.db.assessments_of(text_sha) if r.backend == "learner-note"]
+    note_sha = sha("the audio is clipped")
+    assert sorted(r.key for r in rows) == sorted(
+        [f"learner-note:{text_sha}:{note_sha}",
+         f"learner-note:{text_sha}:rice/productive:{note_sha}"])
+
+
 # --- read-only ---------------------------------------------------------
 
 def test_import_does_not_modify_the_collection_file(compiled):

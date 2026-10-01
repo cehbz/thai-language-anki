@@ -67,14 +67,16 @@ GRAPHEME_KEYWORD_CONTAINS_SYMBOL = Rule(id="grapheme/keyword-contains-symbol",
 # candidates at all, before clause 3 (above) ever runs: the target's word
 # among the sentence's own words, and -- for a productive Target -- a
 # learner-voice sentence whose marking admits the learner's voice (r10,
-# r25).
+# r25). A productive Target the production cap leaves out
+# (Syllabus.capped_out, r26) is not a clause 3 failure and is not flagged.
 
 def _check_sentence_fills_novelty(syllabus: "Syllabus") -> list[Finding]:
     findings: list[Finding] = []
     for s in syllabus.sentences:
         filled = syllabus.fill_set(s)
+        capped = syllabus.capped_out(s)
         for t in syllabus.candidate_targets(s):
-            if t not in filled:
+            if t not in filled and t not in capped:
                 findings.append(Finding(
                     rule="sentence/fills-novelty", note_id=sentence_note_id(s),
                     evidence=f"not in the fill set: target {t.id!r}"))

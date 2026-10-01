@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 25, proposed 2026-10-01 against principles r6 and architecture
+Revision 26, proposed 2026-10-01 against principles r6 and architecture
 r3. Revision process: docs/principles.md.
 
 Revision log:
@@ -73,6 +73,7 @@ Revision log:
 - r23 2026-09-20: the centering diphthongs ia, ɯa, ua carry `vowel_length: long`, the standard convention; `Ipa` writes them unmarked. Evidence: 68 of 68 corroborated diphthong syllables on the live deck were `short`, an artifact of thaig2p emitting the diphthong with no length mark and the tltk converter overriding tltk's own `iːa`; 37 of the 57 disputed words were judge verdicts that differed from the engines on diphthong length alone. User approval 2026-09-20.
 - r24 2026-09-25: order() deals each sentence directly after its last used word's last Target (the entry position §3 clause 3 already names); a sentence whose last used word is a letter-name word follows the sounds block; sentences sharing a last word are ordered by word count then text_sha, the same key the fill-set placement (§3 clause 3) reads; a sentence with no placed word last. Evidence: order() appended every sentence after every word Target, so no sentence card reached the learner until all ~900 word cards had been introduced; the principle (F8) is a sentence after its words. User ruling 2026-09-25.
 - r25 2026-10-01: a productive Target is filled by any learner-voice sentence using its word whose marking admits the learner; last_used_word is the placement key only. Evidence: 620 of 650 drafts refused as filling no open Target used an open productive word that was not their last word in order; with spec 1 r24 dealing a sentence after its last word, every word it uses is known when its cards arrive. User ruling 2026-10-01.
+- r26 2026-10-01: a productive Target is filled by at most `production_sentences_per_word` (Profile, 3) sentences, the first in placement order, a pair with a study record on its Cloze card kept and counted. Evidence: under r25 the live deck compiled 1,425 Cloze cards, 96 on the male "I" and 33 on "good", median 2 per word; 761 at three per word. User ruling 2026-10-01.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -233,6 +234,8 @@ Profile
   productive_cutoff: int = 2000           # the frequency rank at or above
                                           # which a categorized Word carries
                                           # a productive Target
+  production_sentences_per_word: int = 3  # the most sentences filling one
+                                          # productive Target (§3, r26)
 ```
 
 Confusion training weights are NOT stored here: derived as
@@ -277,6 +280,19 @@ Targets (E7).
    sentence-introduced and unmet, no adopted sentence placed at or
    before this one filling it. That every element is a registered word
    holds by construction (§1).
+4. a productive Target is filled by at most
+   `production_sentences_per_word` sentences (r26): among the adopted
+   sentences clauses 1-3 admit for it, the first in placement order,
+   except that a (sentence, Target) pair with a study record on its Cloze
+   card, clauses 1-3 admitting it, keeps filling it and counts toward the
+   cap whatever its position; a studied pair clause 3 refuses holds no
+   place. A sentence beyond them does not fill that Target and keeps its
+   other fills. A draft (not adopted) fills it only while the studied
+   pairs filling it plus the unstudied adopted sentences placed before
+   the draft that fill it are fewer than the cap, as the fold would
+   place it once adopted. The study records reach the aggregate at
+   load; built without them, none is studied.
+   sentence/fills-novelty does not flag a Target this clause leaves out.
 last_used_word and order() read the clauses. No tokenizer port.
 Used by generation as acceptance and by report() as coverage. Clause 3
 is a rule over the fill set, applied once per sentence, by acceptance

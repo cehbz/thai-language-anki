@@ -1034,6 +1034,59 @@ def test_a_cloze_notes_guid_is_its_sentence_and_target(fx):
     assert s_notes_again[0]["guid"] == s_notes[0]["guid"]
 
 
+def _four_rice_sentences(fx):
+    """rice (ข้าว) carries a receptive and a productive Target; four
+    adopted learner-voice sentences use it, placed ข้าว (rice), ข้าวไก่
+    (rice, chicken), ข้าวหมู (rice, pork), ข้าวปลา (rice, fish). Seeds
+    every recording.
+    """
+    rice = _word("rice", "ข้าว", "cooked rice")
+    others = (_word("chicken", "ไก่", "chicken"), _word("pork", "หมู", "pork"),
+              _word("fish", "ปลา", "fish"))
+    words = (rice, *others)
+    targets = (Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
+               Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"),
+               *(Target(id=TargetId(f"{w.id}/receptive"), word=w.id, skill="receptive")
+                 for w in others))
+    sentences = (_sentence(words, ((rice.id,),), gloss="rice"),
+                 *(_sentence(words, ((rice.id, w.id),), gloss=f"rice, {w.meaning}")
+                   for w in others))
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    for s in sentences:
+        fx.seed_recording(sentence_note_id(s), s.text)
+    return Syllabus(words=words, targets=targets, sentences=sentences,
+                    frequency={w.id: n for n, w in enumerate(words, start=1)},
+                    profile=Profile(register="male_colloquial"),
+                    rules=_RULES_WITHOUT_COMPLETENESS)
+
+
+def test_a_word_gets_at_most_three_cloze_cards(fx):
+    """Spec 1 r26: four sentences use rice, the first three in placement
+    order fill rice/productive, so compile emits three Cloze notes for it."""
+    syllabus = _four_rice_sentences(fx)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    _m, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
+    assert [next(iter(_target_tags(n))) for n in c_notes] == ["rice/productive"] * 3
+    clozed = {t.split("::", 1)[1] for n in c_notes for t in n["tags"].split(" ")
+              if t.startswith("sentence::")}
+    assert clozed == {sentence_note_id(s) for s in syllabus.sentences[:3]}
+
+
+def test_a_sentence_whose_cloze_cards_overflow_its_block_refuses_to_compile(fx, monkeypatch):
+    """A sentence's block holds its Listening card and one Cloze card per
+    productive fill, at most STRIDE cards; one that would overflow it is a
+    defect, never a due shared with the next block."""
+    import thai_syllabus.compile as compile_module
+    syllabus, kin_khaao = _two_productive_words(fx)
+    monkeypatch.setattr(compile_module, "STRIDE", 2)
+    with pytest.raises(ValueError, match=sentence_note_id(kin_khaao)):
+        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                         current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+
 def test_a_sentences_cloze_cards_are_due_in_its_block_after_its_listening_card(fx):
     syllabus, _kin_khaao = _two_productive_words(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,

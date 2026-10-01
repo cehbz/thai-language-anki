@@ -18,7 +18,8 @@ from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, Att
                                     ChartCell, Need, Sourcing,
                                     _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt, chart_cell,
-                                    comment_attempt, current_best_of, grapheme_attempt,
+                                    comment_attempt, current_best_of, draft_refusal,
+                                    grapheme_attempt,
                                     pair_search_attempt, phrase_attempt,
                                     picture_query_for, retire_sentence, reverify_attempt,
                                     sentence_attempt, sources_for, sources_for_need)
@@ -2007,7 +2008,7 @@ def test_sentence_attempt_refuses_a_draft_over_the_clause_cap(tmp_path, caplog):
 def _nine_word_syllabus():
     # nine one-word vocabulary entries, each an open receptive Target, so
     # a nine-word single-clause draft fills all of them and only the word
-    # cap (not the target-per-sentence cap, raised to admit it) refuses it.
+    # cap refuses it.
     ids = [f"w{i}" for i in range(9)]
     thai = ["กิน", "ข้าว", "อร่อย", "มาก", "น้ำ", "ดื่ม", "ช้า", "เร็ว", "ดี"]
     return Syllabus(
@@ -2025,7 +2026,6 @@ def test_sentence_attempt_refuses_a_draft_over_the_word_cap(tmp_path, caplog):
     ids = [t.word for t in syllabus.targets]
     text = _draft_json(ids, "".join(w.thai for w in syllabus.words), "nine words")
     ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
-    ctx.sentence_targets_per_sentence = 9   # only the word cap is under test
     assert ctx.sentence_max_words == 8
     with caplog.at_level(logging.WARNING):
         res = sentence_attempt(ctx)
@@ -2041,7 +2041,6 @@ def test_sentence_attempt_accepts_a_draft_at_the_word_cap(tmp_path):
     words = [w for w in syllabus.words if w.id in ids]
     text = _draft_json(ids, "".join(w.thai for w in words), "eight words")
     ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
-    ctx.sentence_targets_per_sentence = 8
     res = sentence_attempt(ctx)
     assert res.drafted == 1
 
@@ -2056,56 +2055,31 @@ def _four_word_syllabus():
         frequency={"eat": 1, "rice": 2, "tasty": 3, "very": 4})
 
 
-def test_sentence_attempt_refuses_a_draft_filling_more_open_targets_than_the_cap(tmp_path, caplog):
-    """Spec 3 r27 section 5: a draft that fills more open Targets than
-    `ctx.sentence_targets_per_sentence` is a word list in disguise --
-    refused like the clause cap, logged, never reaching the judge."""
-    syllabus = _four_word_syllabus()
-    text = _draft_json(("eat", "rice", "tasty", "very"), "กินข้าวอร่อยมาก", "eats very tasty rice")
-    ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
-    assert ctx.sentence_targets_per_sentence == 3
-    with caplog.at_level(logging.WARNING):
-        res = sentence_attempt(ctx)
-    assert res.questions == [] and res.drafted == 0
-    assert "draft refused" in caplog.text and "4 targets" in caplog.text and "cap 3" in caplog.text
-
-
-def test_sentence_attempt_accepts_the_same_draft_at_a_raised_target_cap(tmp_path):
+def test_sentence_attempt_accepts_a_draft_filling_four_open_targets(tmp_path):
+    """Spec 3 r56: the per-sentence Target cap is retired -- a draft
+    filling four open Targets is drafted like any other."""
     syllabus = _four_word_syllabus()
     text = _draft_json(("eat", "rice", "tasty", "very"), "กินข้าวอร่อยมาก", "eats very tasty rice")
     ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
-    ctx.sentence_targets_per_sentence = 4
     assert sentence_attempt(ctx).drafted == 1
 
 
-def test_productive_targets_off_the_last_used_word_count_against_the_target_cap(tmp_path, caplog):
-    """Spec 1 r25 with spec 3 r27: eat/productive is filled though rice
-    is the last used word, so "eat rice" fills four open Targets and the
-    cap of 3 refuses it."""
+def test_draft_refusal_accepts_a_sentence_filling_five_open_productive_targets(tmp_path):
+    """Spec 3 r56 with spec 1 r25: a learner-voice sentence using five
+    words, each with an open productive Target, fills all five and is
+    not refused."""
+    ids = ("i", "eat", "rice", "tasty", "very")
+    thai = ("ผม", "กิน", "ข้าว", "อร่อย", "มาก")   # I, eat, rice, tasty, very
     syllabus = Syllabus(
-        words=(word("eat", "กิน", "eat"), word("rice", "ข้าว", "rice")),   # กิน: eat, ข้าว: rice
-        targets=(target("eat/receptive", "eat"), target("eat/productive", "eat", "productive"),
-                 target("rice/receptive", "rice"),
-                 target("rice/productive", "rice", "productive")),
-        frequency={"eat": 1, "rice": 2})
-    text = _draft_json(("eat", "rice"), "กินข้าว", "eat rice")   # กินข้าว: eat rice
-    ctx = _sentence_ctx(tmp_path, text, batch=True, syllabus=syllabus)
-    assert ctx.sentence_targets_per_sentence == 3
-    with caplog.at_level(logging.WARNING):
-        res = sentence_attempt(ctx)
-    assert res.questions == [] and res.drafted == 0
-    assert "draft refused" in caplog.text and "4 targets" in caplog.text and "cap 3" in caplog.text
-
-
-def test_sentence_attempt_counts_only_open_targets_against_the_cap(tmp_path):
-    """Met words are filler (r27): once an adopted sentence fills "very",
-    a four-word draft fills three open Targets and passes the cap of 3."""
-    syllabus = _four_word_syllabus().with_sentences(
-        [_sentence(text="มาก", gloss="very", clauses=((WordId("very"),),))])
-    assert len(syllabus.gaps().unfilled_targets) == 3
-    text = _draft_json(("eat", "rice", "tasty", "very"), "กินข้าวอร่อยมาก", "eats very tasty rice")
-    ctx = _sentence_ctx(tmp_path, text, syllabus=syllabus)
-    assert sentence_attempt(ctx).drafted == 1
+        words=tuple(word(i, t, i) for i, t in zip(ids, thai)),
+        targets=tuple(t for i in ids for t in (target(f"{i}/receptive", i),
+                                               target(f"{i}/productive", i, "productive"))),
+        frequency={i: n for n, i in enumerate(ids, start=1)})
+    draft = _sentence(text="".join(thai), gloss="I eat very tasty rice",
+                      clauses=(tuple(WordId(i) for i in ids),))
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}', syllabus=syllabus)
+    assert len(syllabus.productive_fills(draft)) == 5
+    assert draft_refusal(ctx, draft) is None
 
 
 def test_sentence_attempt_accepts_a_draft_at_a_raised_clause_cap(tmp_path):
@@ -3039,18 +3013,17 @@ def test_sentence_prompt_lists_a_targets_line_per_handed_target():
 
 
 def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
-    """Spec 3 r27 section 5: as many sentences as it takes, each filling
-    at most the cap -- never "the fewest sentences", which drafts word
-    lists."""
+    """Spec 3 r27, r56 section 5: as many sentences as it takes -- never
+    "the fewest sentences", which drafts word lists -- and no per-sentence
+    Target count."""
     syllabus = _three_word_syllabus()
-    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2,
-                              sentence_targets_per_sentence=3)
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
     assert ("Each JSON item is one sentence. Write as many natural sentences as it takes to "
-           "cover the targets below; a sentence fills at most 3 of the targets (two or three "
-           "is right) and may use any other listed vocabulary besides. A sentence may "
-           "introduce at most one word from the Introducible list and must otherwise use only "
-           "the vocabulary below.") in prompt
+           "cover the targets below; a sentence may use any other listed vocabulary besides. "
+           "A sentence may introduce at most one word from the Introducible list and must "
+           "otherwise use only the vocabulary below.") in prompt
     assert "fewest" not in prompt
+    assert "fills at most" not in prompt and "two or three" not in prompt
 
 
 def test_sentence_prompt_gives_the_clause_rendering_rule_and_json_shape_verbatim():

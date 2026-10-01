@@ -34,7 +34,7 @@ re-imports once under the text_sha anchor.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
-LearnerNoteKey(anchor, sha(text)) -- re-harvesting unchanged text is a
+LearnerNoteKey(the note's own anchor, sha(text)) -- re-harvesting unchanged text is a
 key hit, edited text is a new key, a cleared field appends nothing.
 
 `_connect_readonly` registers a no-op stand-in for Anki's own `unicase`
@@ -475,13 +475,18 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
         text = note["flds"][idx].strip()
         if not text:
             continue  # cleared/empty: appends nothing, retracts nothing
+        resolved = _family_anchor_parts(note["tags"])
         subject = _note_subject(note["tags"])
-        if subject is None:
+        if resolved is None or subject is None:
             skipped += 1
             skips.append(("review_note", str(note_id), "note not recognized"))
             continue
+        # Keyed by the note's own anchor: a sentence's Listening note
+        # (text_sha) and each Cloze note (TEXT_SHA:TARGET_ID) are separate
+        # notes under one subject.
+        _family, anchor, _parts = resolved
         text_sha = sha(text)
-        key = LearnerNoteKey(anchor=subject, text_sha=text_sha)
+        key = LearnerNoteKey(anchor=anchor, text_sha=text_sha)
         already = db.latest("assess", "learner-note", key)
         if already is not None:
             skipped += 1
