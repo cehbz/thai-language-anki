@@ -175,13 +175,16 @@ SENTENCE_MODEL = _model(
     }])
 
 # One note per productive Target a sentence fills (spec 4 r9): the
-# sentence with that Target's word blanked.
+# sentence with that Target's word blanked. The whole front nests in
+# ScenePicture's section, so genanki computes ScenePicture as the
+# template's required field: no scene picture, no card (spec 4 r10).
 SENTENCE_CLOZE_MODEL = _model(
     "sentence_cloze",
     ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture", "Gloss"],
     [{
         "name": "Cloze",
-        "qfmt": '<div class="cloze">{{ThaiCloze}}</div>{{ScenePicture}}',
+        "qfmt": '{{#ScenePicture}}<div class="cloze">{{ThaiCloze}}</div>'
+               '{{ScenePicture}}{{/ScenePicture}}',
         "afmt": '{{FrontSide}}<hr id="answer"><div class="target">{{TargetWord}}</div>'
                '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
     }])
@@ -697,8 +700,7 @@ class _DropCause:
 # One entry per (model name, template name) for word and sentence, whose
 # card presence genanki's own required-field computation decides once the
 # note is built; grapheme and minimal_pair decide their drop reason
-# before building theirs. A sentence Cloze note always yields its card
-# (ThaiCloze holds at least the blank).
+# before building theirs.
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Listening"): _DropCause(None, None, "recording"),
     # gate_field is ProductiveTarget (dropped for "gated: ..." when the
@@ -709,6 +711,7 @@ _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     ("word", "Reading"): _DropCause(None, None, "recording"),
     ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested", "recording"),
     ("sentence", "Listening"): _DropCause(None, None, "recording"),
+    ("sentence_cloze", "Cloze"): _DropCause(None, None, "picture"),
 }
 
 
@@ -848,7 +851,8 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
                     compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
     """Per adopted sentence: its sentence note at the start of its block,
     then one Cloze note per productive Target it fills, a due apiece
-    after it within the block, target-id order. A sentence whose cards
+    after it within the block, target-id order; a Cloze note without its
+    scene picture yields a DroppedCard instead. A sentence whose cards
     would overflow its STRIDE-sized block raises ValueError naming it.
     """
     for sentence, targets, due_block in positions.sentence_entries:
@@ -862,8 +866,8 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
         yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha)
         for i, target in enumerate(productive, start=1):
             note = _sentence_cloze_note(sentence, target, syllabus, resolver, compile_id)
-            yield Built(note, due_block * STRIDE + i, "sentence",
-                        sentence_cloze_key(text_sha, target.id), SENTENCE_CLOZE_MODEL)
+            yield from _gated_items((note, due_block * STRIDE + i), SENTENCE_CLOZE_MODEL,
+                                    "sentence", sentence_cloze_key(text_sha, target.id))
 
 
 @dataclass(frozen=True)

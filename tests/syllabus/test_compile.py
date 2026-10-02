@@ -23,7 +23,7 @@ from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, REPEAT_MARK, Sentence, SoundConfusion, Syllable,
     Target, Word, render,
 )
-from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId
+from thai_syllabus.ids import ConfusionId, PairId, TargetId, WordId, sentence_cloze_key
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import RULES, sentence_note_id
@@ -217,6 +217,7 @@ def _fully_seeded(fx) -> Syllabus:
     fx.seed_recording("far", "far")
     text_sha = sentence_note_id(syllabus.sentences[0])
     fx.seed_recording(text_sha, "ผมกินข้าว")
+    fx.seed_picture(text_sha, "a man eating rice")
     return syllabus
 
 
@@ -667,7 +668,7 @@ def test_every_word_and_sentence_template_has_a_registered_drop_cause():
     # KeyError from _template_drop_reason), not silently report a
     # generic reason -- this pins that every template genanki can
     # actually build for these two models is covered.
-    for model in (WORD_MODEL, SENTENCE_MODEL):
+    for model in (WORD_MODEL, SENTENCE_MODEL, SENTENCE_CLOZE_MODEL):
         for tpl in model.templates:
             assert (model.name, tpl["name"]) in _TEMPLATE_DROP_CAUSES
 
@@ -1038,7 +1039,7 @@ def _four_rice_sentences(fx):
     """rice (ข้าว) carries a receptive and a productive Target; four
     adopted learner-voice sentences use it, placed ข้าว (rice), ข้าวไก่
     (rice, chicken), ข้าวหมู (rice, pork), ข้าวปลา (rice, fish). Seeds
-    every recording.
+    every recording and every sentence's scene picture.
     """
     rice = _word("rice", "ข้าว", "cooked rice")
     others = (_word("chicken", "ไก่", "chicken"), _word("pork", "หมู", "pork"),
@@ -1055,6 +1056,7 @@ def _four_rice_sentences(fx):
         fx.seed_recording(w.id, w.meaning)
     for s in sentences:
         fx.seed_recording(sentence_note_id(s), s.text)
+        fx.seed_picture(sentence_note_id(s), s.gloss)
     return Syllabus(words=words, targets=targets, sentences=sentences,
                     frequency={w.id: n for n, w in enumerate(words, start=1)},
                     profile=Profile(register="male_colloquial"),
@@ -1158,6 +1160,7 @@ def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     fx.seed_recording("eat", "to eat")
     fx.seed_recording("rice", "cooked rice")
     fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
+    fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
 
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -1171,6 +1174,168 @@ def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     assert len(c_notes) == 1
     assert _target_tags(c_notes[0]) == {"eat/productive"}
     assert dict(zip(c_fields, c_notes[0]["flds"]))["ThaiCloze"] == "___ข้าว"
+
+
+def _rice_sentence(fx, *, picture: bool):
+    """"กินข้าว" (eat rice) filling rice/productive, with its recording
+    and, when `picture`, its scene picture.
+    """
+    eat = _word("eat", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    targets = (Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive"),
+               Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"))
+    kin_khaao = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(kin_khaao,),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    fx.seed_recording("eat", "to eat")
+    fx.seed_recording("rice", "cooked rice")
+    fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
+    if picture:
+        fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
+    return syllabus, kin_khaao
+
+
+def test_a_cloze_card_without_its_sentences_scene_picture_is_dropped_and_counted(fx):
+    # Spec 4 r10: the Cloze front is the blanked sentence plus the scene
+    # picture; with no current-best picture the Cloze card is not built
+    # and is counted, while the sentence's Listening card still compiles.
+    syllabus, kin_khaao = _rice_sentence(fx, picture=False)
+    text_sha = sentence_note_id(kin_khaao)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, _f, s_notes = _sentence_notes(pkg, "sentence")
+    assert len(s_notes) == 1
+    assert _templates_generated(pkg, s_model, s_notes[0]) == {"Listening"}
+    c_model, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
+    assert not [c for n in c_notes for c in pkg["cards"] if c["nid"] == n["id"]]
+    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+        DroppedCard(family="sentence", kind="Cloze",
+                    subject=sentence_cloze_key(text_sha, "rice/productive"),
+                    reason="no current-best picture")]
+
+
+def test_a_cloze_card_with_its_sentences_scene_picture_compiles(fx):
+    syllabus, _kin_khaao = _rice_sentence(fx, picture=True)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    c_model, c_fields, c_notes = _sentence_notes(pkg, "sentence_cloze")
+    assert len(c_notes) == 1
+    assert _templates_generated(pkg, c_model, c_notes[0]) == {"Cloze"}
+    assert dict(zip(c_fields, c_notes[0]["flds"]))["ScenePicture"].startswith("<img ")
+    assert not [d for d in compiled.report.dropped if d.family == "sentence"]
+
+
+def test_a_cloze_card_whose_scene_picture_is_rejected_is_dropped_and_counted(fx):
+    # The picture is on record but the learner rejected it: no
+    # current-best picture, so the Cloze card drops as if none existed.
+    from thai_syllabus.cachekeys import LearnerKey
+    from thai_syllabus.derivations import current_best, role_of
+
+    syllabus, kin_khaao = _rice_sentence(fx, picture=True)
+    text_sha = sentence_note_id(kin_khaao)
+    scene = current_best(fx.db, text_sha, "picture", current_rubric={}, prior=(),
+                         provenance_source=lambda s: None)
+    role = role_of(fx.db, text_sha, "picture")
+    fx.db.append(port="assess", backend="learner",
+                 key=LearnerKey(artifact_sha=scene.artifact_sha, role=role), subject=text_sha,
+                 question={"role": role, "artifact_sha": scene.artifact_sha, "kind": "rating"},
+                 answer={"value": "unacceptable-none"})
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    assert _sentence_notes(pkg, "sentence_cloze")[2] == []
+    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+        DroppedCard(family="sentence", kind="Cloze",
+                    subject=sentence_cloze_key(text_sha, "rice/productive"),
+                    reason="no current-best picture")]
+
+
+def _two_sentences(fx, *, first_picture: bool):
+    """"กินข้าว" (eat rice), filling eat/productive and rice/productive,
+    beside "ไก่" (chicken), filling chicken/productive. Seeds every
+    recording, the second sentence's scene picture, and the first's when
+    `first_picture`.
+    """
+    eat = _word("eat", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    chicken = _word("chicken", "ไก่", "chicken")
+    words = (eat, rice, chicken)
+    targets = tuple(Target(id=TargetId(f"{w.id}/productive"), word=w.id, skill="productive")
+                    for w in words)
+    first = _sentence(words, ((eat.id, rice.id),), gloss="eat rice")
+    second = _sentence(words, ((chicken.id,),), gloss="chicken")
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    for s in (first, second):
+        fx.seed_recording(sentence_note_id(s), s.text)
+    fx.seed_picture(sentence_note_id(second), "a chicken")
+    if first_picture:
+        fx.seed_picture(sentence_note_id(first), "a man eating rice")
+    return Syllabus(words=words, targets=targets, sentences=(first, second),
+                    frequency={w.id: n for n, w in enumerate(words, start=1)},
+                    profile=Profile(register="male_colloquial"),
+                    rules=_RULES_WITHOUT_COMPLETENESS)
+
+
+def _dues_by_card(fx, syllabus) -> dict[tuple[str, int], int]:
+    """(note guid, card ord) -> due over one compile of `syllabus`."""
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    guid_by_nid = {n["id"]: n["guid"] for n in pkg["notes"]}
+    return {(guid_by_nid[c["nid"]], c["ord"]): c["due"] for c in pkg["cards"]}
+
+
+def test_dropping_a_cloze_card_moves_no_other_cards_due_and_it_returns_unchanged(fx):
+    # The first sentence's two Cloze cards drop without its scene picture;
+    # every remaining card keeps the due it has with the picture, and once
+    # the picture exists the Cloze cards return with their GUIDs and dues.
+    with_picture = _dues_by_card(fx, _two_sentences(fx, first_picture=True))
+
+    (fx.tmp_path / "pictureless").mkdir()
+    fx_without = Fixture(fx.tmp_path / "pictureless")
+    syllabus = _two_sentences(fx_without, first_picture=False)
+    without_picture = _dues_by_card(fx_without, syllabus)
+
+    assert len(with_picture) - len(without_picture) == 2
+    assert without_picture == {k: with_picture[k] for k in without_picture}
+
+    fx_without.seed_picture(sentence_note_id(syllabus.sentences[0]), "a man eating rice")
+    assert _dues_by_card(fx_without, syllabus) == with_picture
+
+
+def test_pictureless_sentences_differing_only_in_the_blanked_word_share_no_front(fx):
+    # "กินข้าว" (eat rice) and "กินไก่" (eat chicken) blank to the same
+    # "กิน___"; with neither scene picture neither Cloze card is built, so
+    # card/unique-front finds nothing to refuse.
+    eat = _word("eat", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    chicken = _word("chicken", "ไก่", "chicken")
+    words = (eat, rice, chicken)
+    targets = (Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive"),
+               Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"),
+               Target(id=TargetId("chicken/productive"), word=chicken.id, skill="productive"))
+    sentences = (_sentence(words, ((eat.id, rice.id),), gloss="eat rice"),
+                 _sentence(words, ((eat.id, chicken.id),), gloss="eat chicken"))
+    syllabus = Syllabus(words=words, targets=targets, sentences=sentences,
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_FOR_UNIQUE_FRONT)
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    for s in sentences:
+        fx.seed_recording(sentence_note_id(s), s.text)
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert [f.evidence for f in compiled.report.findings if f.rule == "card/unique-front"] == []
+    assert compiled.report.gate is True
+    assert sorted(d.subject for d in compiled.report.dropped if d.kind == "Cloze") == sorted(
+        sentence_cloze_key(sentence_note_id(s), f"{w}/productive")
+        for s, w in zip(sentences, ("rice", "chicken")))
 
 
 # --- due / bury-siblings ---------------------------------------------------

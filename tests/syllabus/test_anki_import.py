@@ -304,11 +304,17 @@ def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(f
     assert rating_rows[0].answer["value"] == "unacceptable-none"
 
 
-def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
+def test_flag_on_a_sentence_cloze_card_with_no_current_scene_picture_is_a_card_flag(fx):
+    # The Cloze card compiled with its scene picture (spec 4 r10); the
+    # learner rejected that picture before the import, so the flag has no
+    # artifact to rate and falls back to a card-level flag.
+    from thai_syllabus.cachekeys import LearnerKey
+    from thai_syllabus.derivations import current_best, role_of
     from thai_syllabus.rulebook import sentence_note_id
 
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
+    fx.seed_picture(text_sha, "a man eating rice")
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_noscene_extracted")
@@ -319,13 +325,26 @@ def test_flag_on_a_sentence_cloze_card_with_no_scene_picture_is_a_card_flag(fx):
     conn.commit()
     conn.close()
 
+    scene = current_best(fx.db, text_sha, "picture", current_rubric={}, prior=(),
+                         provenance_source=lambda s: None)
+    role = role_of(fx.db, text_sha, "picture")
+    fx.db.append(port="assess", backend="learner",
+                key=LearnerKey(artifact_sha=scene.artifact_sha, role=role),
+                subject=text_sha, question={"role": role, "artifact_sha": scene.artifact_sha,
+                                            "kind": "rating"},
+                answer={"value": "unacceptable-none"})
+    assert current_best(fx.db, text_sha, "picture", current_rubric={}, prior=(),
+                        provenance_source=lambda s: None).artifact_sha is None
+
     import_collection(collection_path, fx.db,
                       current_rubric={}, prior=(), provenance_source=lambda sha: None)
 
     rows = fx.db.assessments_of(text_sha)
     assert any(r.question.get("kind") == "card-flag" and r.question.get("card_kind") == "cloze"
               for r in rows)
-    assert not any(r.question.get("role") == "scene-for-sentence" for r in rows)
+    # the one learner rating is the rejection above; the flag added none
+    assert len([r for r in rows if r.backend == "learner"
+                and r.question.get("kind") == "rating"]) == 1
 
 
 def test_flag_import_is_idempotent(compiled):

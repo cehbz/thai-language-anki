@@ -1,7 +1,7 @@
 # Spec 4: The Anki boundary
 
-Revision 9, proposed 2026-10-01 against principles r6 and architecture
-r3. Revision process: docs/principles.md.
+Revision 10, proposed 2026-10-01 against principles r7 and architecture
+r4. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -23,6 +23,7 @@ Revision log:
   the live collection (schema 18) failed the import before a note was
   read; 23 Production cards compiled with an empty front.
 - r9 2026-10-01: the sentence note carries the Listening card; each Target a sentence fills productively has its own Cloze note on that sentence (identity sentence + Target, blanking that Target's word, due with the sentence). Evidence: spec 1 r25 lets one sentence fill several productive Targets. The sentence notetype's fields and Cloze template changed, a break taken at the cutover's delete-and-reimport; the append-only rule holds from r9 on. User ruling 2026-10-01.
+- r10 2026-10-01: a sentence Cloze card needs its sentence's scene picture; without one it is dropped from the build (counted, reason "no current-best picture") until the picture exists. Evidence: the Cloze front is the blanked sentence plus the picture, so a pictureless card does not say which word is wanted and two sentences differing only in the blanked word compile to one front. A Cloze card already in the learner's Anki collection stays there when its picture is later rejected, as a Production card does. User ruling 2026-10-01.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -98,8 +99,10 @@ Thai, TargetWord, Audio, ScenePicture, Gloss, ReviewNote, CompileId.
 TargetWord is that Target's word; Audio, ScenePicture and Gloss are the
 sentence's. Tags: sentence::SHA and that one target::ID. A sentence
 filling no productive Target has no Cloze note.
-- Cloze (productive): front cloze on the Target's word + optional scene
-  picture; back target word, NATIVE audio (F7), gloss.
+- Cloze (productive Target and the sentence's current-best scene
+  picture; no picture, no card, counted): front cloze on the Target's
+  word + scene picture; back target word, NATIVE audio (F7), gloss. The
+  sentence stays adopted and its Listening card is unaffected.
 ThaiCloze is the sentence's rendering with every element whose word is
 the Target's word blanked (a repeated word keeps its ๆ outside the
 blank), never str.replace over the text (the ยา/โรงพยาบาล corruption
@@ -159,10 +162,14 @@ retains only final fit-to-viewport.
   with role from (family, card kind): word Listening and sentence
   Listening flag the recording (tone role: a re-verification request,
   never an override); word Production flags the current picture (a
-  learner picture-for-word rating on its sha); a card with no artifact
-  role (Reading, Spelling, Recognition, Cloze, grapheme Reading, or a
-  Production card whose word has no picture, which only a deck compiled
-  before r8 can hold) is a card-level flag, which
+  learner picture-for-word rating on its sha); sentence Cloze flags the
+  sentence's current scene picture (a learner scene-for-sentence rating
+  on its sha); a card with no artifact role (Reading, Spelling,
+  Recognition, grapheme Reading, a Production card whose word has no
+  picture, which only a deck compiled before r8 can hold, or a Cloze
+  card with no current-best scene picture to rate, its picture rejected
+  since the compile or the deck compiled before r10) is a card-level
+  flag, which
   makes the subject directed in the queue (spec 3 §6) and appears on the
   subject screen (spec 5). The idempotence key is the typed
   FlagKey(family, anchor, card_kind, flags); no marker rows.

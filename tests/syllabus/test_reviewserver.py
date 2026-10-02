@@ -1713,7 +1713,8 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
     """Spec 4 r9: the gallery lists each Cloze note the compile writes --
     one per productive Target the sentence fills, each its own card id
     (SENTENCE_SHA:TARGET_ID, the anchor a note on it records), all on the
-    sentence's own subject.
+    sentence's own subject. The sentence carries its scene picture, which
+    a Cloze card needs (spec 4 r10).
     """
     from thai_syllabus.profile import Profile
 
@@ -1721,6 +1722,7 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
     targets = tuple(target(f"{w.id}/{skill}", w.id, skill)
                     for w in (eat, rice) for skill in ("receptive", "productive"))
     s = sentence(((eat.id, rice.id),), thai_of(eat, rice), gloss="eat rice")  # eat rice
+    _judge(db, s.text_sha, "picture", _seed_picture(db, media_store, s.text_sha), True)
     syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(s,),
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial"), assessments=db)

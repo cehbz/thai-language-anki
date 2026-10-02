@@ -440,8 +440,8 @@ PICTURE_FIT = Rule(id="picture/fit", principle="F3", severity="warn", shape="jud
 # --- scene/fit (judged, F3) --------------------------------------------------
 # Whether a sentence's scene picture depicts what the sentence says --
 # picture/fit's counterpart for a sentence subject (role
-# "scene-for-sentence"). A scene picture is optional, so report() asks about
-# a sentence only once one exists.
+# "scene-for-sentence"). report() asks about a sentence once it has a
+# scene picture.
 
 def _scene_fit_subjects(syllabus: "Syllabus") -> list[tuple[str, str | None]]:
     return [(sentence_note_id(s), sha) for s in syllabus.sentences
