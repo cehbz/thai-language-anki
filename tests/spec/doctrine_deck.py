@@ -132,7 +132,7 @@ class DeckBuilder:
         Target(id=TargetId("rice/receptive"), word=RICE.id, skill="receptive",
                introduction="picture_card"),
         # rice is also productive: the sentence uses rice, so it fills
-        # this Target (and compiles its Cloze note) -- and the deck compiles rice's
+        # this Target (and compiles its Cloze card) -- and the deck compiles rice's
         # Production card, the picture-prompted card the F3 doctrine is
         # about.
         Target(id=TargetId("rice/productive"), word=RICE.id, skill="productive",

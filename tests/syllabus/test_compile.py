@@ -16,7 +16,7 @@ import pytest
 from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.compile import (
-    GateRefusal, SENTENCE_CLOZE_MODEL, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
+    CLOZE_SLOTS, GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
     compile_syllabus, thai_cloze,
 )
 from thai_syllabus.entities import (
@@ -118,8 +118,8 @@ class Fixture:
         self._pass_judge(subject, "recording", sha)
         return sha
 
-    def seed_picture(self, subject: str, text: str) -> str:
-        sha = self.media.write(f"image:{subject}:{text}".encode(), ext="jpg")
+    def seed_picture(self, subject: str, text: str, content: bytes | None = None) -> str:
+        sha = self.media.write(content or f"image:{subject}:{text}".encode(), ext="jpg")
         self.db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
                           origin="https://example.com/x.jpg", licence="cc0",
                           acquired=date(2026, 1, 1))
@@ -668,7 +668,7 @@ def test_every_word_and_sentence_template_has_a_registered_drop_cause():
     # KeyError from _template_drop_reason), not silently report a
     # generic reason -- this pins that every template genanki can
     # actually build for these two models is covered.
-    for model in (WORD_MODEL, SENTENCE_MODEL, SENTENCE_CLOZE_MODEL):
+    for model in (WORD_MODEL, SENTENCE_MODEL):
         for tpl in model.templates:
             assert (model.name, tpl["name"]) in _TEMPLATE_DROP_CAUSES
 
@@ -908,11 +908,26 @@ def _target_tags(note) -> set[str]:
     return {t.split("::", 1)[1] for t in note["tags"].split(" ") if t.startswith("target::")}
 
 
-def test_sentence_note_carries_the_listening_card_only(fx):
+def _note_of(pkg, sentence: Sentence) -> tuple[dict, list[str], dict]:
+    """(sentence model, its field names, the sentence note tagged
+    sentence::SHA for `sentence`).
+    """
+    model, field_names, notes = _sentence_notes(pkg, "sentence")
+    tag = f"sentence::{sentence_note_id(sentence)}"
+    (note,) = [n for n in notes if tag in n["tags"].split(" ")]
+    return model, field_names, note
+
+
+def _cards_by_ord(pkg, note) -> dict[int, dict]:
+    return {c["ord"]: c for c in pkg["cards"] if c["nid"] == note["id"]}
+
+
+def test_sentence_note_carries_its_listening_card_and_its_cloze_card(fx):
     # "ผมกินข้าว" (I eat rice) fills pom/receptive, gin/receptive,
-    # rice/receptive and rice/productive: one sentence note (spec 4 r9)
-    # tagged with every one of them, carrying the Listening card alone; the
-    # one productive Target gets its own Cloze note, below.
+    # rice/receptive and rice/productive: one sentence note (spec 4 r11)
+    # tagged with every one of them, carrying the Listening card and the
+    # Cloze card of rice/productive in rice's slot, the sentence's third
+    # distinct word.
     syllabus = _fully_seeded(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -922,27 +937,19 @@ def test_sentence_note_carries_the_listening_card_only(fx):
     note = s_notes[0]
     assert _target_tags(note) == {"pom/receptive", "gin/receptive",
                                   "rice/receptive", "rice/productive"}
-    assert "kind::listening" in note["tags"].split(" ")
-    assert "kind::cloze" not in note["tags"].split(" ")
+    assert {"kind::listening", "kind::cloze"} <= set(note["tags"].split(" "))
 
     fields = dict(zip(field_names, note["flds"]))
     assert fields["Thai"] == "ผมกินข้าว"
     assert fields["TargetWord"] == "ข้าว"   # the sentence's target words: rice, its one productive word
     assert fields["Audio"].startswith("[sound:")
+    assert fields["ScenePicture"].startswith("<img ")
     assert fields["Gloss"] == "I eat rice"
-    assert "Productive" not in fields and "ThaiCloze" not in fields
-    assert [t["name"] for t in s_model["tmpls"]] == ["Listening"]
-    assert _templates_generated(pkg, s_model, note) == {"Listening"}
-
-    c_model, c_field_names, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert len(c_notes) == 1
-    cloze = dict(zip(c_field_names, c_notes[0]["flds"]))
-    assert cloze["ThaiCloze"] == "ผมกิน___"
-    assert cloze["Thai"] == "ผมกินข้าว"
-    assert cloze["TargetWord"] == "ข้าว"
-    assert cloze["Audio"] == fields["Audio"]
-    assert cloze["Gloss"] == "I eat rice"
-    assert _templates_generated(pkg, c_model, c_notes[0]) == {"Cloze"}
+    assert (fields["Cloze3"], fields["ClozeWord3"], fields["ClozeTarget3"]) == \
+        ("ผมกิน___", "ข้าว", "rice/productive")
+    assert [fields[f"Cloze{k}"] for k in (1, 2)] == ["", ""]
+    assert _templates_generated(pkg, s_model, note) == {"Listening", "Cloze 3"}
+    assert _sentence_notes(pkg, "sentence_cloze")[2] == []
 
 
 def _two_productive_words(fx, *, rice_productive: bool = True):
@@ -969,70 +976,145 @@ def _two_productive_words(fx, *, rice_productive: bool = True):
     return syllabus, kin_khaao
 
 
-def test_a_sentence_gets_one_cloze_card_per_productive_target_it_fills(fx):
-    # Spec 4 r9: each productive Target the sentence fills gets its own
-    # Cloze note blanking that Target's word, tagged with the sentence
-    # and that one Target, next to the sentence's own Listening note.
+def test_a_sentence_filling_two_productive_targets_compiles_one_note_with_a_cloze_card_in_each_words_slot(fx):
+    # Spec 4 r11: one sentence note carries the Listening card (ord 0)
+    # and a Cloze card per productive Target the sentence fills, in the
+    # slot of its word's position among the sentence's distinct words:
+    # eat first (Cloze 1, ord 1), rice second (Cloze 2, ord 2).
     syllabus, kin_khaao = _two_productive_words(fx)
-    text_sha = sentence_note_id(kin_khaao)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
 
-    s_model, _s_fields, s_notes = _sentence_notes(pkg, "sentence")
+    s_model, field_names, s_notes = _sentence_notes(pkg, "sentence")
     assert len(s_notes) == 1
-    assert _templates_generated(pkg, s_model, s_notes[0]) == {"Listening"}
+    note = s_notes[0]
+    tmpl_names = [t["name"] for t in s_model["tmpls"]]
+    assert tmpl_names[:3] == ["Listening", "Cloze 1", "Cloze 2"]
+    assert sorted(_cards_by_ord(pkg, note)) == [0, 1, 2]
+    assert _sentence_notes(pkg, "sentence_cloze")[2] == []
 
-    c_model, field_names, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert [t["name"] for t in c_model["tmpls"]] == ["Cloze"]
-    assert field_names == ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture",
-                           "Gloss", "ReviewNote", "CompileId"]
-    by_target = {}
-    for note in c_notes:
-        (target_id,) = _target_tags(note)
-        by_target[target_id] = note
-    assert set(by_target) == {"eat/productive", "rice/productive"}
-
-    eat_fields = dict(zip(field_names, by_target["eat/productive"]["flds"]))
-    rice_fields = dict(zip(field_names, by_target["rice/productive"]["flds"]))
-    assert (eat_fields["ThaiCloze"], eat_fields["TargetWord"]) == ("___ข้าว", "กิน")
-    assert (rice_fields["ThaiCloze"], rice_fields["TargetWord"]) == ("กิน___", "ข้าว")
-    for fields in (eat_fields, rice_fields):
-        assert fields["Thai"] == "กินข้าว"
-        assert fields["Audio"].startswith("[sound:")
-        assert fields["ScenePicture"].startswith("<img ")
-        assert fields["Gloss"] == "eat rice"
-    for note in c_notes:
-        tags = note["tags"].split(" ")
-        assert {"family::sentence", f"sentence::{text_sha}", "kind::cloze"} <= set(tags)
-        assert "kind::listening" not in tags
-        assert _templates_generated(pkg, c_model, note) == {"Cloze"}
+    fields = dict(zip(field_names, note["flds"]))
+    assert (fields["Cloze1"], fields["ClozeWord1"], fields["ClozeTarget1"]) == \
+        ("___ข้าว", "กิน", "eat/productive")
+    assert (fields["Cloze2"], fields["ClozeWord2"], fields["ClozeTarget2"]) == \
+        ("กิน___", "ข้าว", "rice/productive")
+    tags = set(note["tags"].split(" "))
+    assert {"family::sentence", f"sentence::{sentence_note_id(kin_khaao)}",
+            "kind::listening", "kind::cloze"} <= tags
+    assert _target_tags(note) == {"eat/receptive", "eat/productive",
+                                  "rice/receptive", "rice/productive"}
 
 
-def test_a_cloze_notes_guid_is_its_sentence_and_target(fx):
-    # Stable identity from (sentence, Target): a Cloze note's guid is
-    # unchanged when another Target of the same sentence stops being
-    # productive, and differs from its sibling's and the sentence note's.
-    syllabus, kin_khaao = _two_productive_words(fx)
+def _capped_eat(fx, cap: int):
+    """"กิน" (eat) then "กินข้าว" (eat rice), placed in that order; eat
+    and rice each carry a receptive and a productive Target and the
+    production cap is `cap` sentences per word, so at 1 the second
+    sentence loses eat/productive to the first and keeps rice/productive.
+    """
+    eat = _word("eat", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    targets = tuple(Target(id=TargetId(f"{w.id}/{skill}"), word=w.id, skill=skill)
+                    for w in (eat, rice) for skill in ("receptive", "productive"))
+    kin = _sentence((eat, rice), ((eat.id,),), gloss="eat")  # eat
+    kin_khaao = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
+    for w in (eat, rice):
+        fx.seed_recording(w.id, w.meaning)
+    for s in (kin, kin_khaao):
+        fx.seed_recording(sentence_note_id(s), s.text)
+        fx.seed_picture(sentence_note_id(s), s.gloss)
+    syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(kin, kin_khaao),
+                        frequency={eat.id: 1, rice.id: 2},
+                        profile=Profile(register="male_colloquial",
+                                        production_sentences_per_word=cap),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    return syllabus, kin_khaao
+
+
+def test_a_cloze_card_keeps_its_ord_guid_and_due_when_another_fill_of_its_sentence_goes(fx):
+    # Spec 4 r11: a (sentence, Target) pair's card sits in its word's
+    # slot, so the cap taking eat/productive from "กินข้าว" leaves rice's
+    # Cloze card at ord 2 with the same note GUID and due.
+    both, kin_khaao = _capped_eat(fx, cap=2)
+    assert [t.id for t in both.productive_fills(kin_khaao)] == ["eat/productive", "rice/productive"]
+    with_both = _dues_by_card(fx, both)
+    guid = _note_of(read_apkg(fx.out_path), kin_khaao)[2]["guid"]
+
+    (fx.tmp_path / "capped").mkdir()
+    fx_capped = Fixture(fx.tmp_path / "capped")
+    capped, _ = _capped_eat(fx_capped, cap=1)
+    assert [t.id for t in capped.productive_fills(kin_khaao)] == ["rice/productive"]
+    with_rice = _dues_by_card(fx_capped, capped)
+    pkg = read_apkg(fx_capped.out_path)
+    _m, _f, note = _note_of(pkg, kin_khaao)
+
+    assert note["guid"] == guid
+    assert sorted(_cards_by_ord(pkg, note)) == [0, 2]
+    assert with_rice[(guid, 2)] == with_both[(guid, 2)]
+    assert with_rice[(guid, 0)] == with_both[(guid, 0)]
+    assert (guid, 1) in with_both and (guid, 1) not in with_rice
+
+
+def test_an_unfilled_slot_names_its_words_productive_target_and_builds_no_card(fx):
+    # Spec 4 r11: the cap takes eat/productive from "กินข้าว", so slot 1
+    # has no cloze and no card, and is no drop; its ClozeTarget still
+    # names eat/productive, so a card Anki kept there maps to its pair.
+    capped, kin_khaao = _capped_eat(fx, cap=1)
+    compiled = compile_syllabus(capped, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    _m, field_names, note = _note_of(pkg, kin_khaao)
+    fields = dict(zip(field_names, note["flds"]))
+    assert (fields["Cloze1"], fields["ClozeWord1"], fields["ClozeTarget1"]) == \
+        ("", "", "eat/productive")
+    assert fields["ClozeTarget2"] == "rice/productive"
+    assert [fields[f"ClozeTarget{k}"] for k in range(3, CLOZE_SLOTS + 1)] == [""] * (CLOZE_SLOTS - 2)
+    assert sorted(_cards_by_ord(pkg, note)) == [0, 2]
+    assert not [d for d in compiled.report.dropped if d.family == "sentence"]
+
+
+def _slot_of_rice(fx, words, clauses) -> tuple[set[str], dict[str, str]]:
+    """Compiles one sentence over `clauses` in which rice alone is
+    productive: (its templates generated, its fields)."""
+    rice = next(w for w in words if w.id == "rice")
+    targets = (*(Target(id=TargetId(f"{w.id}/receptive"), word=w.id, skill="receptive")
+                 for w in words if w is not rice),
+               Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"))
+    sentence = _sentence(words, clauses, gloss="a sentence")
+    syllabus = Syllabus(words=words, targets=targets, sentences=(sentence,),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    fx.seed_recording(sentence_note_id(sentence), sentence.text)
+    fx.seed_picture(sentence_note_id(sentence), sentence.gloss)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    _m, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    _m, _f, s_notes = _sentence_notes(pkg, "sentence")
-    guid_by_target = {next(iter(_target_tags(n))): n["guid"] for n in c_notes}
-    assert len(set(guid_by_target.values()) | {s_notes[0]["guid"]}) == 3
+    s_model, field_names, note = _note_of(pkg, sentence)
+    return _templates_generated(pkg, s_model, note), dict(zip(field_names, note["flds"]))
 
-    (fx.tmp_path / "again").mkdir()
-    fx_again = Fixture(fx.tmp_path / "again")
-    eat_only, _ = _two_productive_words(fx_again, rice_productive=False)
-    compile_syllabus(eat_only, fx_again.db, fx_again.media, fx_again.out_path,
-                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
-    pkg = read_apkg(fx_again.out_path)
-    _m, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    _m, _f, s_notes_again = _sentence_notes(pkg, "sentence")
-    assert {next(iter(_target_tags(n))): n["guid"] for n in c_notes} == \
-        {"eat/productive": guid_by_target["eat/productive"]}
-    assert s_notes_again[0]["guid"] == s_notes[0]["guid"]
+
+def test_a_cloze_slot_counts_a_repeated_word_once(fx):
+    # "ผมกินยา ยาข้าว" (I take medicine, medicine rice): rice is the 4th
+    # element but the 3rd distinct word, so its card is Cloze 3.
+    pom, med, rice = (_word("pom", "ผม", "I"), _word("med", "ยา", "medicine"),
+                      _word("rice", "ข้าว", "cooked rice"))
+    generated, fields = _slot_of_rice(fx, (pom, med, rice), ((pom.id, med.id), (med.id, rice.id)))
+    assert generated == {"Listening", "Cloze 3"}
+    assert fields["ClozeTarget3"] == "rice/productive"
+
+
+def test_a_cloze_slot_counts_a_word_under_the_repetition_mark_once(fx):
+    # "วิ่งเร็วๆ เร็วข้าว" (run fast-fast, fast rice): the ๆ element and
+    # the later plain เร็ว are one distinct word, so rice is Cloze 3 (the
+    # 4th element, the 5th rendered unit counting ๆ).
+    run, fast, rice = (_word("run", "วิ่ง", "run"), _word("fast", "เร็ว", "fast"),
+                       _word("rice", "ข้าว", "cooked rice"))
+    generated, fields = _slot_of_rice(fx, (run, fast, rice),
+                                      ((run.id, (fast.id, REPEAT_MARK)), (fast.id, rice.id)))
+    assert generated == {"Listening", "Cloze 3"}
+    assert fields["Cloze3"].endswith("___")
 
 
 def _four_rice_sentences(fx):
@@ -1065,58 +1147,107 @@ def _four_rice_sentences(fx):
 
 def test_a_word_gets_at_most_three_cloze_cards(fx):
     """Spec 1 r26: four sentences use rice, the first three in placement
-    order fill rice/productive, so compile emits three Cloze notes for it."""
+    order fill rice/productive, so compile emits three Cloze cards for it,
+    each in rice's slot (the first) of its sentence's note."""
     syllabus = _four_rice_sentences(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    _m, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert [next(iter(_target_tags(n))) for n in c_notes] == ["rice/productive"] * 3
-    clozed = {t.split("::", 1)[1] for n in c_notes for t in n["tags"].split(" ")
-              if t.startswith("sentence::")}
-    assert clozed == {sentence_note_id(s) for s in syllabus.sentences[:3]}
+    cards = {s.text: sorted(_cards_by_ord(pkg, _note_of(pkg, s)[2])) for s in syllabus.sentences}
+    assert cards == {s.text: [0, 1] for s in syllabus.sentences[:3]} | {
+        syllabus.sentences[3].text: [0]}
 
 
-def test_a_sentence_whose_cloze_cards_overflow_its_block_refuses_to_compile(fx, monkeypatch):
-    """A sentence's block holds its Listening card and one Cloze card per
-    productive fill, at most STRIDE cards; one that would overflow it is a
-    defect, never a due shared with the next block."""
-    import thai_syllabus.compile as compile_module
+def test_a_sentence_notes_cards_fit_its_due_block():
+    """A sentence's block holds its Listening card and every Cloze slot;
+    a word's its four templates."""
+    assert len(SENTENCE_MODEL.templates) == 1 + CLOZE_SLOTS
+    assert len(SENTENCE_MODEL.templates) <= STRIDE
+    assert len(WORD_MODEL.templates) <= STRIDE
+
+
+def test_a_productive_fill_beyond_the_last_cloze_slot_is_dropped_and_counted(fx):
+    # A sentence of CLOZE_SLOTS + 1 distinct words whose last word alone
+    # is productive: that word has no slot, so its Cloze card is dropped
+    # with its own reason and the Listening card still compiles.
+    thai = ["ผม", "กิน", "ข้าว", "ไก่", "หมู", "ปลา", "น้ำ", "ชา", "นม", "ไข่", "ผัก", "แกง",
+            "ส้ม", "กุ้ง", "เกลือ", "พริก"]
+    assert len(thai) > CLOZE_SLOTS
+    words = tuple(_word(f"w{i}", t, f"word {i}") for i, t in enumerate(thai[:CLOZE_SLOTS + 1]))
+    last = words[-1]
+    targets = (*(Target(id=TargetId(f"{w.id}/receptive"), word=w.id, skill="receptive")
+                 for w in words),
+               Target(id=TargetId(f"{last.id}/productive"), word=last.id, skill="productive"))
+    long = _sentence(words, (tuple(w.id for w in words),), gloss="a long sentence")
+    syllabus = Syllabus(words=words, targets=targets, sentences=(long,),
+                        frequency={w.id: n for n, w in enumerate(words, start=1)},
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    assert [t.id for t in syllabus.productive_fills(long)] == [f"{last.id}/productive"]
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    fx.seed_recording(sentence_note_id(long), long.text)
+    fx.seed_picture(sentence_note_id(long), long.gloss)
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, _f, note = _note_of(pkg, long)
+    assert _templates_generated(pkg, s_model, note) == {"Listening"}
+    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+        DroppedCard(family="sentence", kind="Cloze",
+                    subject=sentence_cloze_key(sentence_note_id(long), f"{last.id}/productive"),
+                    reason=f"beyond the last Cloze slot ({CLOZE_SLOTS})")]
+
+
+def test_a_second_productive_target_on_a_slotted_word_is_dropped_and_counted(fx):
+    # rice carries two productive Targets (a targets.yaml exception each):
+    # rice's one slot holds the first in target-id order; the second is
+    # dropped with the slot's holder named, never written over it.
+    eat = _word("eat", "กิน", "to eat")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    targets = (Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive"),
+               Target(id=TargetId("rice/productive"), word=rice.id, skill="productive"),
+               Target(id=TargetId("rice/productive-meal"), word=rice.id, skill="productive"))
+    kin_khaao = _sentence((eat, rice), ((eat.id, rice.id),), gloss="eat rice")  # eat rice
+    syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(kin_khaao,),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    assert len(syllabus.productive_fills(kin_khaao)) == 2
+    for w in (eat, rice):
+        fx.seed_recording(w.id, w.meaning)
+    fx.seed_recording(sentence_note_id(kin_khaao), kin_khaao.text)
+    fx.seed_picture(sentence_note_id(kin_khaao), kin_khaao.gloss)
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, s_fields, note = _note_of(pkg, kin_khaao)
+    assert dict(zip(s_fields, note["flds"]))["ClozeTarget2"] == "rice/productive"
+    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+        DroppedCard(family="sentence", kind="Cloze",
+                    subject=sentence_cloze_key(sentence_note_id(kin_khaao), "rice/productive-meal"),
+                    reason="Cloze slot 2 held by rice/productive")]
+
+
+def test_a_sentences_cards_are_siblings_due_in_its_block_listening_first(fx):
     syllabus, kin_khaao = _two_productive_words(fx)
-    monkeypatch.setattr(compile_module, "STRIDE", 2)
-    with pytest.raises(ValueError, match=sentence_note_id(kin_khaao)):
-        compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
-                         current_rubric={}, prior=(), provenance_source=lambda sha: None)
-
-
-def test_a_sentences_cloze_cards_are_due_in_its_block_after_its_listening_card(fx):
-    syllabus, _kin_khaao = _two_productive_words(fx)
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
+    _m, _f, note = _note_of(pkg, kin_khaao)
+    dues = {ord_: c["due"] for ord_, c in _cards_by_ord(pkg, note).items()}
+    assert dues[0] % STRIDE == 0   # the sentence's own order() block
+    assert dues == {0: dues[0], 1: dues[0] + 1, 2: dues[0] + 2}
 
-    def dues(notes) -> list[int]:
-        ids = {n["id"] for n in notes}
-        return [c["due"] for c in pkg["cards"] if c["nid"] in ids]
-
-    _m, _f, s_notes = _sentence_notes(pkg, "sentence")
-    _m, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    (listening_due,) = dues(s_notes)
-    cloze_dues = dues(c_notes)
-    assert len(cloze_dues) == 2 and len(set(cloze_dues)) == 2
-    assert listening_due % STRIDE == 0   # the sentence's own order() block
-    assert all(listening_due < d < listening_due + STRIDE for d in cloze_dues)
-
-    word_dues = [c["due"] for n in pkg["notes"]
-                 if n["id"] not in {x["id"] for x in s_notes + c_notes}
-                 for c in pkg["cards"] if c["nid"] == n["id"]]
-    assert not set(word_dues) & set(cloze_dues + [listening_due])
+    word_dues = [c["due"] for c in pkg["cards"] if c["nid"] != note["id"]]
+    assert not set(word_dues) & set(dues.values())
 
 
 def test_a_sentence_filling_no_productive_target_gets_no_cloze_card(fx):
     # gin's one Target is receptive: the sentence note carries its
-    # Listening card, no Cloze note is compiled, and no Cloze card is
-    # counted as dropped (there is no card to drop).
+    # Listening card, no Cloze card, and no Cloze card is counted as
+    # dropped (an unfilled slot is no card to drop).
     gin = _word("gin", "กิน", "to eat")
     target = Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive")
     sentence = _sentence((gin,), ((gin.id,),), gloss="to eat")  # to eat
@@ -1125,6 +1256,7 @@ def test_a_sentence_filling_no_productive_target_gets_no_cloze_card(fx):
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_recording("gin", "eat")
     fx.seed_recording(sentence_note_id(sentence), "กิน")
+    fx.seed_picture(sentence_note_id(sentence), "eating")
 
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -1134,15 +1266,14 @@ def test_a_sentence_filling_no_productive_target_gets_no_cloze_card(fx):
     fields = dict(zip(field_names, s_notes[0]["flds"]))
     assert fields["TargetWord"] == "กิน"  # gin: the word of every Target it fills
     assert _templates_generated(pkg, s_model, s_notes[0]) == {"Listening"}
-    assert _sentence_notes(pkg, "sentence_cloze")[2] == []
     assert not [d for d in compiled.report.dropped if d.family == "sentence"]
 
 
 def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     # eat's Target is BOTH receptive and productive; rice's is receptive
     # only, and rice is the sentence's last used word (frequency puts eat
-    # first). Under spec 1 r25 eat/productive is filled; under spec 4 r9
-    # it gets its own Cloze card blanking eat, not the last used word.
+    # first). Under spec 1 r25 eat/productive is filled; its Cloze card
+    # blanks eat, in eat's slot.
     eat = _word("eat", "กิน", "to eat")
     rice = _word("rice", "ข้าว", "cooked rice")
     eat_receptive = Target(id=TargetId("eat/receptive"), word=eat.id, skill="receptive")
@@ -1165,20 +1296,18 @@ def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    _m, s_fields, s_notes = _sentence_notes(pkg, "sentence")
+    s_model, s_fields, s_notes = _sentence_notes(pkg, "sentence")
     assert len(s_notes) == 1
     assert _target_tags(s_notes[0]) == {"eat/productive", "eat/receptive", "rice/receptive"}
-    assert dict(zip(s_fields, s_notes[0]["flds"]))["TargetWord"] == "กิน"
-
-    _m, c_fields, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert len(c_notes) == 1
-    assert _target_tags(c_notes[0]) == {"eat/productive"}
-    assert dict(zip(c_fields, c_notes[0]["flds"]))["ThaiCloze"] == "___ข้าว"
+    assert _templates_generated(pkg, s_model, s_notes[0]) == {"Listening", "Cloze 1"}
+    fields = dict(zip(s_fields, s_notes[0]["flds"]))
+    assert fields["TargetWord"] == "กิน"
+    assert fields["Cloze1"] == "___ข้าว"
 
 
-def _rice_sentence(fx, *, picture: bool):
+def _rice_sentence(fx, *, picture: bool, recording: bool = True):
     """"กินข้าว" (eat rice) filling rice/productive, with its recording
-    and, when `picture`, its scene picture.
+    when `recording` and its scene picture when `picture`.
     """
     eat = _word("eat", "กิน", "to eat")
     rice = _word("rice", "ข้าว", "cooked rice")
@@ -1190,7 +1319,8 @@ def _rice_sentence(fx, *, picture: bool):
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_recording("eat", "to eat")
     fx.seed_recording("rice", "cooked rice")
-    fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
+    if recording:
+        fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
     if picture:
         fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
     return syllabus, kin_khaao
@@ -1205,26 +1335,49 @@ def test_a_cloze_card_without_its_sentences_scene_picture_is_dropped_and_counted
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    s_model, _f, s_notes = _sentence_notes(pkg, "sentence")
-    assert len(s_notes) == 1
-    assert _templates_generated(pkg, s_model, s_notes[0]) == {"Listening"}
-    c_model, _f, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert not [c for n in c_notes for c in pkg["cards"] if c["nid"] == n["id"]]
+    s_model, _f, note = _note_of(pkg, kin_khaao)
+    assert _templates_generated(pkg, s_model, note) == {"Listening"}
     assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(text_sha, "rice/productive"),
                     reason="no current-best picture")]
 
 
-def test_a_cloze_card_with_its_sentences_scene_picture_compiles(fx):
-    syllabus, _kin_khaao = _rice_sentence(fx, picture=True)
+def test_a_cloze_card_without_its_sentences_recording_is_dropped_and_counted(fx):
+    # Spec 4 r11: the Cloze back plays the sentence; with no current-best
+    # recording the Cloze card is dropped and counted, beside the
+    # Listening card's own drop.
+    syllabus, kin_khaao = _rice_sentence(fx, picture=True, recording=False)
+    text_sha = sentence_note_id(kin_khaao)
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    c_model, c_fields, c_notes = _sentence_notes(pkg, "sentence_cloze")
-    assert len(c_notes) == 1
-    assert _templates_generated(pkg, c_model, c_notes[0]) == {"Cloze"}
-    assert dict(zip(c_fields, c_notes[0]["flds"]))["ScenePicture"].startswith("<img ")
+    assert _sentence_notes(pkg, "sentence")[2] == []
+    assert sorted([d for d in compiled.report.dropped if d.family == "sentence"],
+                  key=lambda d: d.kind) == [
+        DroppedCard(family="sentence", kind="Cloze",
+                    subject=sentence_cloze_key(text_sha, "rice/productive"),
+                    reason="no current-best recording"),
+        DroppedCard(family="sentence", kind="Listening", subject=text_sha,
+                    reason="no current-best recording")]
+
+
+def test_a_cloze_card_without_its_sentences_recording_or_picture_names_both(fx):
+    syllabus, kin_khaao = _rice_sentence(fx, picture=False, recording=False)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert [d.reason for d in compiled.report.dropped if d.kind == "Cloze"] == [
+        "no current-best picture and recording"]
+
+
+def test_a_cloze_card_with_its_sentences_scene_picture_compiles(fx):
+    syllabus, kin_khaao = _rice_sentence(fx, picture=True)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, s_fields, note = _note_of(pkg, kin_khaao)
+    assert _templates_generated(pkg, s_model, note) == {"Listening", "Cloze 2"}
+    assert dict(zip(s_fields, note["flds"]))["ScenePicture"].startswith("<img ")
     assert not [d for d in compiled.report.dropped if d.family == "sentence"]
 
 
@@ -1247,7 +1400,8 @@ def test_a_cloze_card_whose_scene_picture_is_rejected_is_dropped_and_counted(fx)
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
-    assert _sentence_notes(pkg, "sentence_cloze")[2] == []
+    s_model, _f, note = _note_of(pkg, kin_khaao)
+    assert _templates_generated(pkg, s_model, note) == {"Listening"}
     assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(text_sha, "rice/productive"),
@@ -1338,6 +1492,45 @@ def test_pictureless_sentences_differing_only_in_the_blanked_word_share_no_front
         for s, w in zip(sentences, ("rice", "chicken")))
 
 
+def test_cloze_cards_of_two_sentences_in_different_slots_are_compared_for_one_front(fx):
+    # "กินข้าว" (eat rice) blanks rice in its slot 2; "กิ" + "น" + "ไก่"
+    # ("กินไก่", eat chicken, spelled in three words) blanks chicken in
+    # its slot 3. Given one scene picture, both Cloze fronts are "กิน___"
+    # plus that picture: card/unique-front compares every Cloze card
+    # whatever its slot, naming each card by its (sentence, Target).
+    eat = _word("eat", "กิน", "to eat")
+    ki = _word("ki", "กิ", "ki (a syllable)")
+    n = _word("n", "น", "n (a letter)")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    chicken = _word("chicken", "ไก่", "chicken")
+    words = (eat, ki, n, rice, chicken)
+    targets = (*(Target(id=TargetId(f"{w.id}/receptive"), word=w.id, skill="receptive")
+                 for w in (eat, ki, n)),
+               *(Target(id=TargetId(f"{w.id}/productive"), word=w.id, skill="productive")
+                 for w in (rice, chicken)))
+    two = _sentence(words, ((eat.id, rice.id),), gloss="eat rice")
+    three = _sentence(words, ((ki.id, n.id, chicken.id),), gloss="eat chicken")
+    syllabus = Syllabus(words=words, targets=targets, sentences=(two, three),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_FOR_UNIQUE_FRONT)
+    for w in words:
+        fx.seed_recording(w.id, w.meaning)
+    for s in (two, three):
+        fx.seed_recording(sentence_note_id(s), s.gloss)
+        fx.seed_picture(sentence_note_id(s), "a man eating", content=b"one scene")
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, _f, two_note = _note_of(pkg, two)
+    _m, _f, three_note = _note_of(pkg, three)
+    assert _templates_generated(pkg, s_model, two_note) == {"Listening", "Cloze 2"}
+    assert _templates_generated(pkg, s_model, three_note) == {"Listening", "Cloze 3"}
+    assert {f.note_id for f in compiled.report.findings if f.rule == "card/unique-front"} == {
+        sentence_cloze_key(sentence_note_id(two), "rice/productive"),
+        sentence_cloze_key(sentence_note_id(three), "chicken/productive")}
+
+
 # --- due / bury-siblings ---------------------------------------------------
 
 def test_sibling_cards_get_distinct_due_values(fx):
@@ -1422,10 +1615,10 @@ def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
 def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     # "กินข้าว" (eat rice) fills BOTH eat/receptive and rice/receptive;
     # "หมาวิ่ง" (dog runs) fills both dog/receptive and run/receptive.
-    # One sentence note per adopted Sentence (spec 4 r5, r9): each
+    # One sentence note per adopted Sentence (spec 4 r5, r11): each
     # compiles to ONE note carrying BOTH its filled targets' target:: tags
     # and one Listening card at the sentence's due position (neither fills
-    # a productive Target, so no Cloze notes), and the two sentence
+    # a productive Target, so no Cloze cards), and the two sentence
     # notes land in order() position order: "หมาวิ่ง" (r24: dealt directly
     # after run, the later of dog/run) due before "กินข้าว" (dealt directly
     # after rice, the later of eat/rice) -- two STRIDEs apart, not one,
@@ -1490,10 +1683,11 @@ def test_two_targets_filled_by_one_sentence_share_its_due_position(fx):
     assert eat_due - dog_due == 2 * STRIDE
 
 
-def test_shipped_deck_options_group_already_buries_siblings(fx):
-    # Not this module's own logic -- genanki's default dconf ships
-    # new.bury=true / rev.bury=true already (spec 4 section 2's "both",
-    # A5); this asserts that fact rather than re-implementing it.
+def test_the_packages_own_options_group_buries_new_and_review_siblings(fx):
+    # genanki's default dconf in the package's own collection sets
+    # new.bury and rev.bury. An Anki import does not apply a package's
+    # deck options, so this says nothing about the learner's preset
+    # (spec 4 section 2); anki_import warns about that one.
     import json
     import sqlite3
     import tempfile
@@ -1534,8 +1728,7 @@ def test_every_compiled_card_type_has_a_one_line_meaning():
     one-line meaning, keyed by the family and kind /api/cards reports."""
     expected = set()
     for family, model in (("word", WORD_MODEL), ("minimal_pair", MINIMAL_PAIR_MODEL),
-                          ("grapheme", GRAPHEME_MODEL), ("sentence", SENTENCE_MODEL),
-                          ("sentence", SENTENCE_CLOZE_MODEL)):
+                          ("grapheme", GRAPHEME_MODEL), ("sentence", SENTENCE_MODEL)):
         for template in model.templates:
             expected.add((family, card_kind_of(template["name"])))
     assert set(CARD_MEANINGS) == expected
@@ -1551,8 +1744,8 @@ def test_sentence_listening_back_labels_the_target_words():
     words (spec 3 r54), so plural."""
     listening = next(t for t in SENTENCE_MODEL.templates if t["name"] == "Listening")
     assert '<div class="target"><span class="label">target words</span> {{TargetWord}}</div>' in listening["afmt"]
-    cloze = next(t for t in SENTENCE_CLOZE_MODEL.templates if t["name"] == "Cloze")
-    assert '<span class="label">' not in cloze["afmt"]
+    for cloze in SENTENCE_MODEL.templates[1:]:
+        assert '<span class="label">' not in cloze["afmt"]
 
 
 # --- positions over the interleaved name Targets (spec 1 r16) ------------

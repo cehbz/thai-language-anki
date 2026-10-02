@@ -256,7 +256,7 @@ def test_sentence_listening_flag_lands_on_the_sentence_subject(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_role_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _LISTENING)
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -282,7 +282,7 @@ def test_flag_on_a_sentence_cloze_card_with_a_scene_picture_rates_that_picture(f
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flag_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -320,7 +320,7 @@ def test_flag_on_a_sentence_cloze_card_with_no_current_scene_picture_is_a_card_f
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_noscene_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -428,30 +428,24 @@ def _find_pair_card(conn, pair_id: str):
     raise AssertionError(f"no Recognition card found for pair {pair_id!r}")
 
 
-def _find_sentence_card(conn, sentence_sha: str, template_name: str,
-                        target_id: str | None = None):
-    """(card_id, note_id) for the given template on a note tagged
-    sentence::SENTENCE_SHA: the sentence note for "Listening", or the
-    Cloze note (spec 4 r9) also tagged target::TARGET_ID for "Cloze" --
-    the first one when `target_id` is None."""
+# The card ords of _fully_seeded's "ผมกินข้าว" (I eat rice) sentence note:
+# its Listening card, and the Cloze card of rice/productive in rice's slot,
+# the sentence's third distinct word (spec 4 r11).
+_LISTENING, _RICE_CLOZE = 0, 3
+
+
+def _find_sentence_card(conn, sentence_sha: str, ord_: int):
+    """(card_id, note_id) for card `ord_` of the sentence note tagged
+    sentence::SENTENCE_SHA."""
     models, notes, cards = _models_notes_cards(conn)
-    model_name = "sentence_cloze" if template_name == "Cloze" else "sentence"
-    sentence_model = next(m for m in models.values() if m["name"] == model_name)
-    tmpl_ord = next(i for i, t in enumerate(sentence_model["tmpls"])
-                    if t["name"] == template_name)
-    wanted = {f"sentence::{sentence_sha}"} | ({f"target::{target_id}"} if target_id else set())
-    target_nid = None
-    for nid, mid, flds, tags in notes:
-        if str(mid) != sentence_model["id"]:
-            continue
-        if wanted <= {t for t in tags.split(" ") if t}:
-            target_nid = nid
-            break
-    assert target_nid is not None
-    for cid, nid, ord_ in cards:
-        if nid == target_nid and ord_ == tmpl_ord:
+    sentence_model = next(m for m in models.values() if m["name"] == "sentence")
+    target_nid = next(nid for nid, mid, flds, tags in notes
+                      if str(mid) == sentence_model["id"]
+                      and f"sentence::{sentence_sha}" in tags.split(" "))
+    for cid, nid, card_ord in cards:
+        if nid == target_nid and card_ord == ord_:
             return cid, target_nid
-    raise AssertionError(f"no {template_name} card found for sentence {sentence_sha!r}")
+    raise AssertionError(f"no card {ord_} found for sentence {sentence_sha!r}")
 
 
 def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
@@ -495,7 +489,7 @@ def test_flag_on_a_sentence_listening_card_lands_under_the_text_sha(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_flag_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _LISTENING)
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -534,7 +528,7 @@ def test_a_lapsed_sentence_card_imported_into_a_real_db_yields_one_sentence_reas
                 answer={"value": "good"})
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Listening")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _LISTENING)
     conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
                 (1_700_000_000_000, card_id, 0, 1, 1000, 1000, 2500, 4200, 1))
     conn.commit()
@@ -570,7 +564,7 @@ def test_a_lapsed_cloze_card_imported_into_a_real_db_reasks_the_scene_picture(fx
                 answer={"value": "good"})
 
     conn = _open_rw(collection_path)
-    card_id, _note_id = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    card_id, _note_id = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
     conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
                 (1_700_000_000_000, card_id, 0, 1, 1000, 1000, 2500, 4200, 1))
     conn.commit()
@@ -765,8 +759,8 @@ def test_a_cloze_cards_revlog_lands_under_its_sentence_and_target(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_revlog_extracted")
 
     conn = _open_rw(collection_path)
-    cloze_id, _ = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
-    listening_id, _ = _find_sentence_card(conn, text_sha, "Listening")
+    cloze_id, _ = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
+    listening_id, _ = _find_sentence_card(conn, text_sha, _LISTENING)
     for ts, card_id in ((1_700_000_000_000, cloze_id), (1_700_000_000_001, listening_id)):
         conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
                      (ts, card_id, 0, 3, 1000, 1000, 2500, 4200, 1))
@@ -794,7 +788,7 @@ def test_a_flag_on_a_cloze_card_is_keyed_by_its_sentence_and_target(fx):
     collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_flagkey_extracted")
 
     conn = _open_rw(collection_path)
-    card_id, _ = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    card_id, _ = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
     conn.execute("update cards set flags=1 where id=?", (card_id,))
     conn.commit()
     conn.close()
@@ -808,36 +802,167 @@ def test_a_flag_on_a_cloze_card_is_keyed_by_its_sentence_and_target(fx):
                                                      card_kind="cloze", flags=1)) is not None
 
 
-def test_the_same_review_note_on_a_listening_and_a_cloze_note_harvests_two_rows(fx):
-    """A sentence's Listening note and its Cloze note are two notes: the
-    same ReviewNote text on both is two learner-note rows, each keyed by
-    its note's own anchor (text_sha; TEXT_SHA:TARGET_ID)."""
+def test_a_sentence_notes_review_note_harvests_one_row_under_its_text_sha(fx):
+    """A sentence's Listening and Cloze cards are siblings of one note
+    (spec 4 r11): its ReviewNote is one learner-note row keyed by the
+    note's own anchor, the text_sha."""
     from thai_syllabus.rulebook import sentence_note_id
 
     syllabus = _fully_seeded(fx)
     text_sha = sentence_note_id(syllabus.sentences[0])
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
-    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "cloze_note_extracted")
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "sentence_note_extracted")
 
     conn = _open_rw(collection_path)
-    _, listening_nid = _find_sentence_card(conn, text_sha, "Listening")
-    _, cloze_nid = _find_sentence_card(conn, text_sha, "Cloze", "rice/productive")
+    _, listening_nid = _find_sentence_card(conn, text_sha, _LISTENING)
+    _, cloze_nid = _find_sentence_card(conn, text_sha, _RICE_CLOZE)
+    assert cloze_nid == listening_nid
     _set_review_note(conn, listening_nid, _review_note_field_index(conn, "sentence"),
-                     "the audio is clipped")
-    _set_review_note(conn, cloze_nid, _review_note_field_index(conn, "sentence_cloze"),
                      "the audio is clipped")
     conn.commit()
     conn.close()
 
     report = import_collection(collection_path, fx.db,
                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
-    assert report.notes_harvested == 2
+    assert report.notes_harvested == 1
     rows = [r for r in fx.db.assessments_of(text_sha) if r.backend == "learner-note"]
-    note_sha = sha("the audio is clipped")
-    assert sorted(r.key for r in rows) == sorted(
-        [f"learner-note:{text_sha}:{note_sha}",
-         f"learner-note:{text_sha}:rice/productive:{note_sha}"])
+    assert [r.key for r in rows] == [f"learner-note:{text_sha}:{sha('the audio is clipped')}"]
+
+
+def _compiled_two_productive_words(fx):
+    """"กินข้าว" (eat rice) filling eat/productive (slot 1, card ord 1)
+    and rice/productive (slot 2, card ord 2), compiled and extracted:
+    (text_sha, collection path).
+    """
+    from thai_syllabus.rulebook import sentence_note_id
+    from .test_compile import _two_productive_words
+
+    syllabus, kin_khaao = _two_productive_words(fx)
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    return sentence_note_id(kin_khaao), _extract_collection(fx.out_path, fx.tmp_path / "two_extracted")
+
+
+def test_import_maps_a_study_row_and_a_flag_on_a_cloze_card_ord_to_its_sentence_and_target(fx):
+    # Spec 4 r11: a Cloze card is (sentence note, card ord); the ord is
+    # its slot, and the slot names its Target.
+    from thai_syllabus.cachekeys import FlagKey
+
+    text_sha, collection_path = _compiled_two_productive_words(fx)
+    conn = _open_rw(collection_path)
+    eat_id, _ = _find_sentence_card(conn, text_sha, 1)
+    rice_id, _ = _find_sentence_card(conn, text_sha, 2)
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                 (1_700_000_000_000, rice_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.execute("update cards set flags=1 where id=?", (eat_id,))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert (report.revlog_imported, report.flags_imported) == (1, 1)
+    assert [r.ts for r in fx.db.records("sentence", f"{text_sha}:rice/productive", "cloze")] == \
+        [1_700_000_000_000]
+    assert fx.db.latest("assess", "learner", FlagKey(
+        family="sentence", anchor=f"{text_sha}:eat/productive", card_kind="cloze",
+        flags=1)) is not None
+    identities = {(i.anchor, i.kind_slug, i.target_ids) for i in card_identities(collection_path)
+                  if i.family == "sentence"}
+    assert identities == {
+        (text_sha, "listening", ("eat/productive", "eat/receptive", "rice/productive",
+                                 "rice/receptive")),
+        (f"{text_sha}:eat/productive", "cloze", ("eat/productive",)),
+        (f"{text_sha}:rice/productive", "cloze", ("rice/productive",))}
+
+
+def test_a_cloze_card_on_a_slot_whose_word_has_no_productive_target_is_skipped(fx):
+    # A slot whose word carries no productive Target names none: a card
+    # there (only a collection edited by hand can hold one) is skipped,
+    # counted.
+    text_sha, collection_path = _compiled_two_productive_words(fx)
+    conn = _open_rw(collection_path)
+    rice_id, rice_nid = _find_sentence_card(conn, text_sha, 2)
+    models, _notes, _cards = _models_notes_cards(conn)
+    model = next(m for m in models.values() if m["name"] == "sentence")
+    _set_review_note(conn, rice_nid, _field_index(model, "ClozeTarget2"), "")
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                 (1_700_000_000_000, rice_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert (report.revlog_imported, report.revlog_skipped) == (0, 1)
+    assert fx.db.records("sentence", text_sha, "cloze") == []
+
+
+def _reviewed_after_push_out(fx):
+    """"กินข้าว"'s eat Cloze card (ord 1) compiled at cap 2, then the
+    note updated in place to a cap-1 compile's fields, which empty slot
+    1 (as Anki updates a note on re-import, keeping the card and its
+    schedule), and a review on that card: (capped syllabus, the
+    sentence, collection path).
+    """
+    from .test_compile import _capped_eat
+
+    both, kin_khaao = _capped_eat(fx, cap=2)
+    compile_syllabus(both, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "pushed_out_extracted")
+
+    (fx.tmp_path / "capped").mkdir()
+    fx_capped = Fixture(fx.tmp_path / "capped")
+    capped, _ = _capped_eat(fx_capped, cap=1)
+    compile_syllabus(capped, fx_capped.db, fx_capped.media, fx_capped.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    capped_conn = _open_rw(_extract_collection(fx_capped.out_path, fx.tmp_path / "capped_extracted"))
+    ((capped_flds,),) = capped_conn.execute(
+        "select flds from notes where tags like ?",
+        (f"% sentence::{kin_khaao.text_sha} %",)).fetchall()
+    capped_conn.close()
+
+    conn = _open_rw(collection_path)
+    eat_id, nid = _find_sentence_card(conn, kin_khaao.text_sha, 1)
+    conn.execute("update notes set flds=? where id=?", (capped_flds, nid))
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                 (1_700_000_000_000, eat_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.commit()
+    conn.close()
+    return capped, kin_khaao, collection_path
+
+
+def test_a_review_on_a_cloze_card_whose_slot_emptied_maps_to_its_pair(fx):
+    # Spec 4 r11: an unfilled slot still names its word's productive
+    # Target, so a review Anki recorded on the card kept there lands
+    # under its (sentence, Target).
+    _capped, kin_khaao, collection_path = _reviewed_after_push_out(fx)
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.revlog_imported == 1
+    assert [r.ts for r in fx.db.records(
+        "sentence", f"{kin_khaao.text_sha}:eat/productive", "cloze")] == [1_700_000_000_000]
+
+
+def test_a_review_on_a_pushed_out_pair_makes_it_fill_again_under_the_cap(fx):
+    # The imported review makes the pair studied (spec 1 r26), so under
+    # the same cap it fills "กินข้าว" again and its card returns at ord 1.
+    from thai_syllabus.wiring import studied_cloze_pairs
+
+    capped, kin_khaao, collection_path = _reviewed_after_push_out(fx)
+    assert "eat/productive" not in {t.id for t in capped.productive_fills(kin_khaao)}
+    import_collection(collection_path, fx.db,
+                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    studied = studied_cloze_pairs(fx.db, capped.sentences, capped.targets)
+    assert studied == frozenset({(kin_khaao.text_sha, "eat/productive")})
+    refilled = dataclasses.replace(capped, studied_cloze_pairs=studied)
+    assert [t.id for t in refilled.productive_fills(kin_khaao)] == \
+        ["eat/productive", "rice/productive"]
+    compile_syllabus(refilled, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    conn = _open_rw(_extract_collection(fx.out_path, fx.tmp_path / "refilled_extracted"))
+    assert _find_sentence_card(conn, kin_khaao.text_sha, 1)
+    conn.close()
 
 
 # --- read-only ---------------------------------------------------------
@@ -873,7 +998,10 @@ create table col (
 create table notetypes (id integer primary key, name text);
 create table fields (ntid integer, ord integer, name text);
 create table templates (ntid integer, ord integer, name text);
-create table decks (id integer primary key, name text);
+create table decks (id integer primary key, name text, mtime_secs integer,
+                    usn integer, common blob, kind blob);
+create table deck_config (id integer primary key, name text, mtime_secs integer,
+                          usn integer, config blob);
 create table notes (
     id integer primary key, guid text, mid integer, mod integer,
     usn integer, tags text, flds text, sfld text, csum integer,
@@ -897,9 +1025,37 @@ create table revlog (
 _SCHEMA18_FIELD_VALUES = {"Thai": "ข้าว", "CompileId": "compile-rice-1"}
 
 
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out.append(byte | 0x80 if n else byte)
+        if not n:
+            return bytes(out)
+
+
+def _proto(fields: dict[int, int | bytes]) -> bytes:
+    """A protobuf message of varint (int) and length-delimited (bytes)
+    fields, the encoding of Anki's decks.kind and deck_config.config."""
+    out = b""
+    for number, value in fields.items():
+        if isinstance(value, bytes):
+            out += _varint(number << 3 | 2) + _varint(len(value)) + value
+        else:
+            out += _varint(number << 3) + _varint(value)
+    return out
+
+
+# DeckConfig.Config's bury_new, bury_reviews, bury_interday_learning
+# (Anki 26.09 deck_config.proto); a false bool is absent, as Anki writes it.
+_BURY_FIELDS = (27, 28, 29)
+
+
 def _build_schema18_collection(path: Path, *, review_note_text: str = "",
                                fields: tuple[str, ...] = ("Thai", "CompileId", "ReviewNote"),
-                               ver: int | None = 18) -> dict:
+                               ver: int | None = 18,
+                               bury: tuple[bool, bool, bool] = (False, False, False),
+                               deck_preset: int = 9) -> dict:
     """A synthetic Anki schema-18 collection.anki2 (task 1 brief): one
     "word" notetype (by default Thai/CompileId/ReviewNote fields, a
     Listening template) read from notetypes/fields/templates, col.models=''
@@ -908,7 +1064,10 @@ def _build_schema18_collection(path: Path, *, review_note_text: str = "",
     unset, the other signal _load_models branches on (round 2 review).
     One word note tagged family::word/word::rice, one Listening card on
     it; `fields` lets a caller omit CompileId to exercise the "model has
-    no such field" -> "" fallback (round 2 review).
+    no such field" -> "" fallback (round 2 review). The card's deck
+    "thai-ff" uses preset "Thai" whose new/review/interday-learning
+    sibling burying is `bury` (Anki's defaults: all off); `deck_preset`
+    names another preset id, one with no deck_config row when not 1 or 9.
     """
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA18_DDL)
@@ -925,7 +1084,14 @@ def _build_schema18_collection(path: Path, *, review_note_text: str = "",
     for ord_, name in enumerate(["Listening"]):
         conn.execute("insert into templates (ntid, ord, name) values (?, ?, ?)",
                     (ntid, ord_, name))
-    conn.execute("insert into decks (id, name) values (1, 'Default')")
+    conn.execute("insert into decks (id, name, kind) values (1, 'Default', ?)",
+                 (_proto({1: _proto({1: 1})}),))
+    conn.execute("insert into decks (id, name, kind) values (7, 'thai-ff', ?)",
+                 (_proto({1: _proto({1: deck_preset})}),))
+    conn.execute("insert into deck_config (id, name, config) values (1, 'Default', ?)",
+                 (_proto({}),))
+    conn.execute("insert into deck_config (id, name, config) values (9, 'Thai', ?)",
+                 (_proto({number: 1 for number, on in zip(_BURY_FIELDS, bury) if on}),))
 
     nid = 1
     values = {**_SCHEMA18_FIELD_VALUES, "ReviewNote": review_note_text}
@@ -933,7 +1099,7 @@ def _build_schema18_collection(path: Path, *, review_note_text: str = "",
     conn.execute("insert into notes (id, mid, flds, tags) values (?, ?, ?, ?)",
                 (nid, ntid, flds, " family::word word::rice "))
     card_id = 1
-    conn.execute("insert into cards (id, nid, did, ord, flags) values (?, ?, 1, 0, 0)",
+    conn.execute("insert into cards (id, nid, did, ord, flags, odid) values (?, ?, 7, 0, 0, 0)",
                 (card_id, nid))
     conn.commit()
     conn.close()
@@ -987,6 +1153,88 @@ def test_schema18_review_note_harvest_appends_a_learner_row(fx, schema18):
     rows = [r for r in fx.db.assessments_of("rice") if r.backend == "learner-note"]
     assert len(rows) == 1
     assert rows[0].answer["text"] == "the tones sound off"
+
+
+# --- sibling burying in the deck's preset (spec 4 section 2) ----------------
+
+def test_import_warns_when_the_decks_preset_buries_no_siblings(fx, tmp_path):
+    path = tmp_path / "collection.anki2"
+    _build_schema18_collection(path)
+    report = import_collection(path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.warnings == (
+        "deck 'thai-ff' uses preset 'Thai' with bury new siblings, bury review siblings, "
+        "bury interday learning siblings off, so Anki can show a note's sibling cards on "
+        "the same day; turn them on in that preset (spec 4 section 2)",)
+    assert report.revlog_skipped == 0
+
+
+def test_import_names_only_the_bury_settings_that_are_off(fx, tmp_path):
+    path = tmp_path / "collection.anki2"
+    _build_schema18_collection(path, bury=(True, False, True))
+    report = import_collection(path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert len(report.warnings) == 1
+    assert "with bury review siblings off," in report.warnings[0]
+
+
+def test_import_warns_nothing_when_the_decks_preset_buries_every_sibling(fx, tmp_path):
+    path = tmp_path / "collection.anki2"
+    _build_schema18_collection(path, bury=(True, True, True))
+    report = import_collection(path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.warnings == ()
+
+
+def test_import_reads_a_legacy_collections_deck_preset(compiled):
+    # The .apkg's own legacy collection: its options group (genanki's)
+    # buries new and review siblings and has no interday-learning setting.
+    fx, _compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    (dconf_json,) = conn.execute("select dconf from col").fetchone()
+    dconf = json.loads(dconf_json)
+    dconf["1"]["rev"]["bury"] = False
+    conn.execute("update col set dconf=?", (json.dumps(dconf),))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert len(report.warnings) == 1
+    assert report.warnings[0].startswith(f"deck 'deck' uses preset {dconf['1']['name']!r} with "
+                              "bury review siblings, bury interday learning siblings off,")
+
+
+def test_import_reads_the_default_preset_for_a_deck_whose_preset_is_missing(fx, tmp_path):
+    # Anki falls back to the Default preset (id 1) when a deck's config id
+    # has no deck_config row.
+    path = tmp_path / "collection.anki2"
+    _build_schema18_collection(path, bury=(True, True, True), deck_preset=42)
+    report = import_collection(path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert len(report.warnings) == 1
+    assert report.warnings[0].startswith("deck 'thai-ff' uses preset 'Default' with bury new "
+                                         "siblings, bury review siblings, bury interday "
+                                         "learning siblings off,")
+
+
+def test_import_reads_a_legacy_collections_default_preset_for_a_missing_preset(compiled):
+    fx, _compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    decks_json, dconf_json = conn.execute("select decks, dconf from col").fetchone()
+    decks, dconf = json.loads(decks_json), json.loads(dconf_json)
+    for deck in decks.values():
+        deck["conf"] = 42
+    dconf["1"]["rev"]["bury"] = False
+    conn.execute("update col set decks=?, dconf=?", (json.dumps(decks), json.dumps(dconf)))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert len(report.warnings) == 1
+    assert report.warnings[0].startswith(f"deck 'deck' uses preset {dconf['1']['name']!r} with "
+                              "bury review siblings, bury interday learning siblings off,")
 
 
 # --- unicase collation (round-1 review) ---------------------------------

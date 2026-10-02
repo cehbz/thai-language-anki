@@ -1,7 +1,7 @@
 # Spec 5: The feedback screen
 
-Revision 17, proposed 2026-10-01 against principles r6 and architecture
-r3. Revision process: docs/principles.md.
+Revision 17, proposed 2026-10-01 against principles r7 and architecture
+r4. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.

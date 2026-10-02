@@ -1710,11 +1710,11 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
 
 def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
         db, media_store):
-    """Spec 4 r9: the gallery lists each Cloze note the compile writes --
-    one per productive Target the sentence fills, each its own card id
-    (SENTENCE_SHA:TARGET_ID, the anchor a note on it records), all on the
-    sentence's own subject. The sentence carries its scene picture, which
-    a Cloze card needs (spec 4 r10).
+    """Spec 4 r11: the gallery lists each Cloze card of the sentence
+    note -- one per productive Target the sentence fills, each its own
+    card id (SENTENCE_SHA:TARGET_ID, the anchor a note on it records),
+    all on the sentence's own subject. The sentence carries its scene
+    picture and its recording, which a Cloze card needs.
     """
     from thai_syllabus.profile import Profile
 
@@ -1723,6 +1723,10 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
                     for w in (eat, rice) for skill in ("receptive", "productive"))
     s = sentence(((eat.id, rice.id),), thai_of(eat, rice), gloss="eat rice")  # eat rice
     _judge(db, s.text_sha, "picture", _seed_picture(db, media_store, s.text_sha), True)
+    recording = media_store.write(b"kin khaao", ext="mp3")
+    db.add_media(sha=recording, kind="recording", ext="mp3", source="forvo",
+                 origin="https://forvo.com/x", licence="cc-by", acquired=date(2026, 1, 1))
+    _judge(db, s.text_sha, "recording", recording, True)
     syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(s,),
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial"), assessments=db)

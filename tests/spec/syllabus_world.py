@@ -290,7 +290,7 @@ def duplicate_front_syllabus() -> Syllabus:
 def receptive_only_sentence_syllabus() -> Syllabus:
     """gin "กิน" (to eat), one receptive Target, one sentence using only
     that word -- so the sentence fills no productive Target and compiles
-    no Cloze note (spec 4 r9: one Cloze note per productive Target filled).
+    no Cloze card (spec 4 r11: one Cloze card per productive Target filled).
     """
     gin = _word("gin", "กิน", "to eat")
     target = Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive")

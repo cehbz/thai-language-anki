@@ -2,8 +2,8 @@
 artifacts and media provenance) and a MediaStore into one Anki .apkg.
 
 One note per picture-introduced word, grapheme, and adopted sentence
-that fills a target, one per minimal-pair member, and one per productive
-Target an adopted sentence fills (its Cloze note); every note tagged,
+that fills a target (its Listening card and a Cloze card per productive
+Target it fills), one per minimal-pair member; every note tagged,
 due-stamped from Syllabus.order(), and stamped with this compile's
 CompileId.
 
@@ -43,8 +43,9 @@ if TYPE_CHECKING:
     from .store import MediaStore, SyllabusDb
 
 __all__ = ["BuiltDeck", "build_deck", "card_kind_of", "CARD_CSS", "CARD_MEANINGS",
-          "card_meaning", "compile_syllabus", "field_values", "GateRefusal", "render_card",
-          "tag_value", "thai_cloze"]
+          "card_meaning", "CLOZE_SLOTS", "cloze_target_field", "compile_syllabus",
+          "field_values", "GateRefusal", "render_card", "tag_value", "template_kind",
+          "thai_cloze"]
 
 
 class GateRefusal(Exception):
@@ -161,33 +162,56 @@ GRAPHEME_MODEL = _model(
                '{{Audio}}<div class="ipa">{{Sound}}</div>',
     }])
 
-# The sentence note: its Listening card. TargetWord is the sentence's
-# target words (Syllabus.target_words), joined.
+# A sentence note's Cloze card slots (spec 4 r11): slot k, card ord k,
+# holds the Cloze card of the productive Target on the sentence's k-th
+# distinct word (clause order, first occurrence). The live deck's longest
+# adopted sentence uses 10 distinct words.
+CLOZE_SLOTS = 10
+
+
+def _cloze_fields(slot: int) -> tuple[str, str, str]:
+    """Slot `slot`'s fields: the sentence with its word blanked and that
+    word (both empty when the sentence does not fill the slot's Target),
+    and the id of the slot word's productive Target, filled or not."""
+    return f"Cloze{slot}", f"ClozeWord{slot}", f"ClozeTarget{slot}"
+
+
+def cloze_target_field(ord_: int) -> str:
+    """The sentence-note field naming the Target of the Cloze card at
+    card ord `ord_` (its slot)."""
+    return _cloze_fields(ord_)[2]
+
+
+def _cloze_template(slot: int) -> dict[str, str]:
+    """Slot `slot`'s Cloze card. The front nests in the sections of its
+    Cloze field, ScenePicture and Audio, so genanki computes all three as
+    required: no Target in the slot, no picture or no recording, no card
+    (spec 4 r10, r11)."""
+    cloze, word, _target = _cloze_fields(slot)
+    return {
+        "name": f"Cloze {slot}",
+        "qfmt": f'{{{{#{cloze}}}}}{{{{#ScenePicture}}}}{{{{#Audio}}}}'
+                f'<div class="cloze">{{{{{cloze}}}}}</div>{{{{ScenePicture}}}}'
+                f'{{{{/Audio}}}}{{{{/ScenePicture}}}}{{{{/{cloze}}}}}',
+        "afmt": f'{{{{FrontSide}}}}<hr id="answer"><div class="target">{{{{{word}}}}}</div>'
+                '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
+    }
+
+
+# The sentence note: its Listening card, then one Cloze card per slot.
+# TargetWord is the sentence's target words (Syllabus.target_words),
+# joined.
 SENTENCE_MODEL = _model(
     "sentence",
-    ["Thai", "TargetWord", "Audio", "Gloss"],
+    ["Thai", "TargetWord", "Audio", "Gloss", "ScenePicture",
+     *(f for slot in range(1, CLOZE_SLOTS + 1) for f in _cloze_fields(slot))],
     [{
         "name": "Listening",
         "qfmt": "{{Audio}}",
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
                '<div class="target"><span class="label">target words</span> {{TargetWord}}</div>'
                '{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
-    }])
-
-# One note per productive Target a sentence fills (spec 4 r9): the
-# sentence with that Target's word blanked. The whole front nests in
-# ScenePicture's section, so genanki computes ScenePicture as the
-# template's required field: no scene picture, no card (spec 4 r10).
-SENTENCE_CLOZE_MODEL = _model(
-    "sentence_cloze",
-    ["ThaiCloze", "Thai", "TargetWord", "Audio", "ScenePicture", "Gloss"],
-    [{
-        "name": "Cloze",
-        "qfmt": '{{#ScenePicture}}<div class="cloze">{{ThaiCloze}}</div>'
-               '{{ScenePicture}}{{/ScenePicture}}',
-        "afmt": '{{FrontSide}}<hr id="answer"><div class="target">{{TargetWord}}</div>'
-               '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
-    }])
+    }, *(_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1))])
 
 # Spec 5 r9 (design ruling 4): one line per card type -- what the front
 # asks, what the back shows -- keyed by the family and kind /api/cards
@@ -210,11 +234,9 @@ def card_meaning(family: str, kind: str) -> str | None:
     return CARD_MEANINGS.get((family, kind))
 
 
-STRIDE = 100  # due-per-order-position block size; above the most cards
-             # any one order() entry yields (word: 4; sentence: its
-             # Listening card plus one Cloze card per productive fill, at
-             # most the distinct words it uses). _sentence_items refuses a
-             # sentence whose cards would not fit.
+STRIDE = 100  # due-per-order-position block size, in which a note's
+             # cards are due at base + ord; above the most templates any
+             # one note has (word: 4; sentence: 1 + CLOZE_SLOTS).
 
 
 def _guid(family: str, *parts: str) -> str:
@@ -537,11 +559,34 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     return _GraphemeBuild(note, due, None)
 
 
-def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], due_block: int,
+def _cloze_slots(sentence: Sentence, productive: tuple[Target, ...]
+                 ) -> tuple[dict[int, Target], list[tuple[Target, str]]]:
+    """(slot -> Target, dropped (Target, reason)) for `sentence`'s
+    productive fills (spec 4 r11): a Target takes the slot of its word's
+    position among the sentence's distinct words; one beyond the last
+    slot, or on a slot another Target already holds, is dropped.
+    """
+    slots: dict[int, Target] = {}
+    dropped: list[tuple[Target, str]] = []
+    for target in productive:
+        slot = sentence.words.index(target.word) + 1
+        if slot > CLOZE_SLOTS:
+            dropped.append((target, f"beyond the last Cloze slot ({CLOZE_SLOTS})"))
+        elif slot in slots:
+            dropped.append((target, f"Cloze slot {slot} held by {slots[slot].id}"))
+        else:
+            slots[slot] = target
+    return slots, dropped
+
+
+def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], slots: Mapping[int, Target],
+                   productive_of: Mapping[WordId, Target], due_block: int,
                    syllabus: "Syllabus", resolver: _Resolver,
                    compile_id: str) -> tuple[genanki.Note, int]:
-    """The sentence note (its Listening card), `targets` the ones it fills
-    (target-id order), due at the start of its order() block.
+    """The sentence note, `targets` the ones it fills (target-id order),
+    `slots` its filled Cloze slots' Targets, `productive_of` each word's
+    productive Target (named in its slot whether filled or not), due at
+    the start of its order() block.
     """
     text_sha = sentence_note_id(sentence)
     target_words = ", ".join(syllabus.word(w).thai for w in syllabus.target_words(sentence))
@@ -550,47 +595,33 @@ def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], due_block: i
     # same artifact kinds a word's audio and picture carry.
     tags = ["family::sentence"]
     tags += [f"target::{t.id}" for t in targets]
-    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::listening"]
+    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::listening", "kind::cloze"]
     tags += resolver.src_tag("audio", text_sha, "recording")
+    tags += resolver.src_tag("img", text_sha, "picture")
 
+    words = sentence.words
+    slot_fields: list[str] = []
+    for slot in range(1, CLOZE_SLOTS + 1):
+        target = slots.get(slot)
+        named = productive_of.get(words[slot - 1]) if slot <= len(words) else None
+        if target is not None:
+            slot_fields += [thai_cloze(sentence, target.word, lambda w: syllabus.word(w).thai),
+                            syllabus.word(target.word).thai, target.id]
+        else:
+            slot_fields += ["", "", named.id if named is not None else ""]
     fields = [
         sentence.text,
         target_words,
         resolver.sound(text_sha, "recording"),
         sentence.gloss,
+        resolver.img(text_sha, "picture"),
+        *slot_fields,
         "",  # ReviewNote
         compile_id,
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
                         guid=_guid("sentence", text_sha))
     return note, due_block * STRIDE
-
-
-def _sentence_cloze_note(sentence: Sentence, target: Target,
-                         syllabus: "Syllabus", resolver: _Resolver,
-                         compile_id: str) -> genanki.Note:
-    """`sentence`'s Cloze note for one productive `target` it fills (spec
-    4 r9): the rendering with that target's word blanked, identified by
-    (sentence, target).
-    """
-    text_sha = sentence_note_id(sentence)
-    tags = ["family::sentence", f"sentence::{text_sha}", f"target::{target.id}",
-            f"compile::{compile_id}", "kind::cloze"]
-    tags += resolver.src_tag("audio", text_sha, "recording")
-    tags += resolver.src_tag("img", text_sha, "picture")
-
-    fields = [
-        thai_cloze(sentence, target.word, lambda w: syllabus.word(w).thai),
-        sentence.text,
-        syllabus.word(target.word).thai,
-        resolver.sound(text_sha, "recording"),
-        resolver.img(text_sha, "picture"),
-        sentence.gloss,
-        "",  # ReviewNote
-        compile_id,
-    ]
-    return genanki.Note(model=SENTENCE_CLOZE_MODEL, fields=fields, tags=tags,
-                        guid=_guid("sentence", text_sha, target.id))
 
 
 # --- card/unique-front (A3) -------------------------------------------------
@@ -622,13 +653,22 @@ def field_values(model: genanki.Model, note: genanki.Note) -> dict[str, str]:
     return dict(zip((f["name"] for f in model.fields), note.fields))
 
 
+_SLOT_SUFFIX_RE = re.compile(r" \d+$")
+
+
+def template_kind(template_name: str) -> str:
+    """A template's card kind as named: its name without a Cloze slot's
+    number ("Cloze 3" -> "Cloze")."""
+    return _SLOT_SUFFIX_RE.sub("", template_name)
+
+
 def card_kind_of(template_name: str) -> str:
-    """study.card_kind for a card (spec 4 section 2): a template's own
-    name, lowered. The one place this conversion happens -- anki_import.py's
+    """study.card_kind for a card (spec 4 section 2): its template's
+    kind, lowered. The one place this conversion happens -- anki_import.py's
     revlog/flag import and reviewserver.py's gallery both read a card's
     kind through this function.
     """
-    return template_name.lower()
+    return template_kind(template_name).lower()
 
 
 def tag_value(note: genanki.Note, prefix: str) -> str | None:
@@ -643,16 +683,18 @@ def tag_value(note: genanki.Note, prefix: str) -> str | None:
     return None
 
 
-def _record_fronts(entries: list[tuple[str, str, str]], model: genanki.Model,
-                   subject: str, note: genanki.Note) -> None:
-    """Appends (model:ord, subject, rendered front) for every card the note
-    actually generated -- card/unique-front compares these within a
-    (model, ord) group.
+def _record_fronts(entries: list[tuple[str, str, str]], built: "Built") -> None:
+    """Appends (model:kind, card subject, rendered front) for every card
+    the note actually generated -- card/unique-front compares these
+    within a (model, card kind) group, every Cloze slot in one.
     """
-    values = field_values(model, note)
-    for card in note.cards:
-        front = _render_qfmt(model.templates[card.ord]["qfmt"], values)
-        entries.append((f"{model.name}:{card.ord}", subject, front))
+    model = built.model
+    values = field_values(model, built.note)
+    for card in built.note.cards:
+        template = model.templates[card.ord]
+        front = _render_qfmt(template["qfmt"], values)
+        entries.append((f"{model.name}:{card_kind_of(template['name'])}",
+                        built.subject_of(card.ord), front))
 
 
 def render_card(model: genanki.Model, note: genanki.Note, ord_: int) -> tuple[str, str]:
@@ -689,12 +731,13 @@ def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Findi
 class _DropCause:
     """What a (model, template) pair's card generation depends on: a
     `gate_field` whose emptiness means the card was not asked for (reason
-    `gate_reason`), or the `artifact_kind` whose missing current-best
-    leaves the card no front.
+    `gate_reason`; None counts no drop at all), else the artifacts,
+    (field, artifact kind), whose missing current-best leaves the card no
+    front.
     """
     gate_field: str | None
     gate_reason: str | None
-    artifact_kind: str
+    artifacts: tuple[tuple[str, str], ...]
 
 
 # One entry per (model name, template name) for word and sentence, whose
@@ -702,40 +745,55 @@ class _DropCause:
 # note is built; grapheme and minimal_pair decide their drop reason
 # before building theirs.
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
-    ("word", "Listening"): _DropCause(None, None, "recording"),
+    ("word", "Listening"): _DropCause(None, None, (("Audio", "recording"),)),
     # gate_field is ProductiveTarget (dropped for "gated: ..." when the
     # word isn't productive); when it IS productive but the card still
     # didn't generate, the front's other requirement -- a current-best
     # picture (spec 4 section 1/3) -- is what's missing.
-    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target", "picture"),
-    ("word", "Reading"): _DropCause(None, None, "recording"),
-    ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested", "recording"),
-    ("sentence", "Listening"): _DropCause(None, None, "recording"),
-    ("sentence_cloze", "Cloze"): _DropCause(None, None, "picture"),
+    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target",
+                                       (("Picture", "picture"),)),
+    ("word", "Reading"): _DropCause(None, None, (("Audio", "recording"),)),
+    ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested",
+                                     (("Audio", "recording"),)),
+    ("sentence", "Listening"): _DropCause(None, None, (("Audio", "recording"),)),
+    # A slot holding no Target is no card and no drop (spec 4 r11).
+    **{("sentence", f"Cloze {slot}"): _DropCause(
+        _cloze_fields(slot)[0], None, (("ScenePicture", "picture"), ("Audio", "recording")))
+       for slot in range(1, CLOZE_SLOTS + 1)},
 }
 
 
 def _template_drop_reason(model_name: str, template_name: str,
-                          fields_by_name: Mapping[str, str]) -> str:
+                          fields_by_name: Mapping[str, str]) -> str | None:
     """The drop reason `(model_name, template_name)` registers in
-    _TEMPLATE_DROP_CAUSES; a template with no entry raises KeyError.
+    _TEMPLATE_DROP_CAUSES, naming the missing artifacts (every listed one
+    when none is empty); None when its gate counts no drop. A template
+    with no entry raises KeyError.
     """
     cause = _TEMPLATE_DROP_CAUSES[(model_name, template_name)]
     if cause.gate_field is not None and not fields_by_name[cause.gate_field]:
         return cause.gate_reason
-    return f"no current-best {cause.artifact_kind}"
+    missing = [kind for name, kind in cause.artifacts if not fields_by_name[name]]
+    return "no current-best " + " and ".join(missing or [kind for _, kind in cause.artifacts])
 
 
 def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
-                 subject: str) -> list[DroppedCard]:
-    """One DroppedCard per template the note didn't generate a card for,
-    reason from _template_drop_reason.
+                 subject_of: Callable[[int], str]) -> list[DroppedCard]:
+    """One DroppedCard per template the note didn't generate a card for
+    whose drop is counted, reason from _template_drop_reason, subject the
+    card's own.
     """
     present_ords = {c.ord for c in note.cards}
     fields_by_name = field_values(model, note)
-    return [DroppedCard(family=family, kind=tpl["name"], subject=subject,
-                        reason=_template_drop_reason(model.name, tpl["name"], fields_by_name))
-           for ord_, tpl in enumerate(model.templates) if ord_ not in present_ords]
+    dropped = []
+    for ord_, tpl in enumerate(model.templates):
+        if ord_ in present_ords:
+            continue
+        reason = _template_drop_reason(model.name, tpl["name"], fields_by_name)
+        if reason is not None:
+            dropped.append(DroppedCard(family=family, kind=template_kind(tpl["name"]),
+                                       subject=subject_of(ord_), reason=reason))
+    return dropped
 
 
 def _stamp_due(apkg_path: Path, due_by_guid_ord: dict[tuple[str, int], int]) -> None:
@@ -778,27 +836,35 @@ def _blocking_findings(findings: tuple[Finding, ...], syllabus: "Syllabus") -> l
 @dataclass(frozen=True)
 class Built:
     """One compiled note ready for the deck. `base_due` is card ord 0's
-    due value; siblings land at base_due + card.ord. `model` and
-    `subject` record its fronts for card/unique-front.
+    due value; siblings land at base_due + card.ord. `subject` is the
+    note's anchor, `card_subjects` a card's own where it differs (a
+    sentence's Cloze card: its (sentence, Target)); `model` and the card
+    subjects record its fronts for card/unique-front.
     """
     note: genanki.Note
     base_due: int
     family: str
     subject: str
     model: genanki.Model
+    card_subjects: Mapping[int, str] = field(default_factory=dict)
+
+    def subject_of(self, ord_: int) -> str:
+        return self.card_subjects.get(ord_, self.subject)
 
 
 def _gated_items(built: tuple[genanki.Note, int] | None, model: genanki.Model,
-                 family: str, subject: str) -> Iterator[Built | DroppedCard]:
+                 family: str, subject: str,
+                 card_subjects: Mapping[int, str] | None = None) -> Iterator[Built | DroppedCard]:
     """DroppedCards for `built`'s un-produced templates, then its Built
     record if any card survived; nothing when `built` is None.
     """
     if built is None:
         return
     note, base_due = built
-    yield from _dropped_for(note, model, family, subject)
+    item = Built(note, base_due, family, subject, model, dict(card_subjects or {}))
+    yield from _dropped_for(note, model, family, item.subject_of)
     if note.cards:
-        yield Built(note, base_due, family, subject, model)
+        yield item
 
 
 def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
@@ -849,25 +915,27 @@ def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
 
 def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
                     compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
-    """Per adopted sentence: its sentence note at the start of its block,
-    then one Cloze note per productive Target it fills, a due apiece
-    after it within the block, target-id order; a Cloze note without its
-    scene picture yields a DroppedCard instead. A sentence whose cards
-    would overflow its STRIDE-sized block raises ValueError naming it.
+    """Per adopted sentence: its note at the start of its block, the
+    Listening card and each Cloze card siblings due at base + ord; a
+    Cloze card is subject (sentence, Target), and a productive fill with
+    no slot, or a slotted card without the picture or recording, yields a
+    DroppedCard.
     """
+    productive_of: dict[WordId, Target] = {}
+    for t in sorted(syllabus.targets, key=lambda t: t.id):
+        if t.skill == "productive":
+            productive_of.setdefault(t.word, t)
     for sentence, targets, due_block in positions.sentence_entries:
-        built = _sentence_note(sentence, targets, due_block, syllabus, resolver, compile_id)
         text_sha = sentence_note_id(sentence)
-        productive = syllabus.productive_fills(sentence)
-        if 1 + len(productive) > STRIDE:
-            raise ValueError(
-                f"sentence {text_sha!r} has {1 + len(productive)} cards, more than its "
-                f"due block holds ({STRIDE})")
-        yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha)
-        for i, target in enumerate(productive, start=1):
-            note = _sentence_cloze_note(sentence, target, syllabus, resolver, compile_id)
-            yield from _gated_items((note, due_block * STRIDE + i), SENTENCE_CLOZE_MODEL,
-                                    "sentence", sentence_cloze_key(text_sha, target.id))
+        slots, unslotted = _cloze_slots(sentence, syllabus.productive_fills(sentence))
+        for target, reason in unslotted:
+            yield DroppedCard(family="sentence", kind="Cloze",
+                              subject=sentence_cloze_key(text_sha, target.id), reason=reason)
+        built = _sentence_note(sentence, targets, slots, productive_of, due_block, syllabus,
+                               resolver, compile_id)
+        yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha,
+                                {slot: sentence_cloze_key(text_sha, t.id)
+                                 for slot, t in slots.items()})
 
 
 @dataclass(frozen=True)
@@ -916,7 +984,7 @@ def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore"
         if isinstance(item, DroppedCard):
             dropped.append(item)
             continue
-        _record_fronts(front_entries, item.model, item.subject, item.note)
+        _record_fronts(front_entries, item)
         built.append(item)
 
     unique_front_rule = next((r for r in syllabus.rules if r.id == "card/unique-front"), None)

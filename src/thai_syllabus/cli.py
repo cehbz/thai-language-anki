@@ -339,6 +339,8 @@ def main(argv: list[str] | None = None, *,
                     args.collection, derivations.db, current_rubric=derivations.current_rubric,
                     prior=derivations.prior, provenance_source=derivations.provenance_source)
                 print(report)
+                for warning in report.warnings:
+                    print(f"warning: {warning}")
                 return 0
         if args.command == "compile":
             return _cmd_compile(args)

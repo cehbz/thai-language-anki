@@ -201,8 +201,8 @@ def test_forcing_past_a_closed_gate_writes_the_package_with_declared_warnings(wo
 # --- a receptive-only sentence note yields only the Listening card --------
 
 def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
-    # Spec 4 r9: a sentence that fills no productive Target compiles its
-    # sentence note (the Listening card) and no Cloze note --
+    # Spec 4 r11: a sentence that fills no productive Target compiles its
+    # sentence note with the Listening card and no Cloze card --
     # receptive_only_sentence_syllabus isolates that (gin's only Target
     # is receptive, and it is the sentence's only used word).
     syllabus = receptive_only_sentence_syllabus()
@@ -218,7 +218,6 @@ def test_a_receptive_only_sentence_note_yields_only_the_listening_card(world):
 
     generated = {tmpl_names[c["ord"]] for c in _cards_of(pkg, s_notes[0]["id"])}
     assert generated == {"Listening"}
-    assert "sentence_cloze" not in _models_by_name(pkg)
 
 
 # --- a pair with no rendition is dropped and counted -----------------------

@@ -723,7 +723,7 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
             kind = card_kind_of(template_name)
             front, back = render_card(item.model, item.note, card.ord)
             entry: dict[str, Any] = {
-                "index": len(cards), "id": item.subject, "family": item.family,
+                "index": len(cards), "id": item.subject_of(card.ord), "family": item.family,
                 "kind": kind, "subject": entity_subject,
                 "front_html": _resolve_media_for_web(front),
                 "back_html": _resolve_media_for_web(back),

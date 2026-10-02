@@ -6,16 +6,22 @@ Card identity -> (family, anchor, card kind, compile_id) comes from
 compile.py's tag/CompileId convention: family::, word::/pair::/grapheme::/
 target::/sentence::/member::/speaker:: tags, CompileId as a note field.
 Every tag is atomic; a pair member's anchor (MemberKey) composes its three
-tags' values, and a sentence Cloze note's anchor (spec 4 r9) composes its
-sentence:: and its one target:: tag's values the same way
-(ids.sentence_cloze_key). The sentence note's target:: tags (one per
-filled target, plural) come along as target_ids beside its text_sha
-anchor, the sentence:: tag's value alone. A note is a Cloze note when
-kind::cloze is its only kind:: tag; a pre-r9 sentence note, carrying
-both kinds, anchors every card on its text_sha. The card kind
-(Listening/Production/.../Cloze, lowered) is the card's own template
-name, via `col.models` and the card's `ord`, which names one sibling
-where a note-level `kind::` tag names them all.
+tags' values. The sentence note's anchor is its sentence:: tag's value,
+the text_sha, and its target:: tags (one per filled target, plural) come
+along as target_ids. A sentence note's Cloze card (spec 4 r11) is its
+card ord, the ord its slot: the slot's ClozeTarget field
+(compile.cloze_target_field) names the card's Target, and its anchor
+composes the text_sha and that Target as a pair member's MemberKey does
+(ids.sentence_cloze_key), target_ids that one Target. The field names
+the slot word's productive Target whether or not the sentence fills it,
+so a card whose slot a later compile emptied keeps its pair; a slot whose
+word carries no productive Target names none and its card is not
+recognized. A pre-r9
+note's Cloze card, its model having no slot fields, anchors on the
+text_sha. The card kind (Listening/Production/.../Cloze, lowered) is the
+card's own template's kind (compile.card_kind_of), via `col.models` and
+the card's `ord`, which names one sibling where a note-level `kind::` tag
+names them all.
 
 Revlog import appends one `study` row per revlog entry, keyed (spec 2
 section 2) by (family, anchor, card_kind, ts); `anchor` is the card's own
@@ -31,6 +37,13 @@ over (family, anchor, card_kind, flags), the card-and-flags fact itself.
 A sentence Listening card's flag anchor is its text_sha, a Cloze card's
 its TEXT_SHA:TARGET_ID; a flag keyed under the old target:sha shape
 re-imports once under the text_sha anchor.
+
+Sibling burying: Anki buries a note's other cards for the day only when
+the deck's preset says so, and importing a package leaves the learner's
+deck preset unchanged. The import reads the preset of every deck holding
+a compiled card (a filtered deck's card by its home deck; a deck whose
+preset is missing reads the Default preset) and warns, in its report,
+for each of the three bury settings that is off.
 
 ReviewNote harvest: each non-empty ReviewNote field appends a
 learner-note row on the note's own entity subject, keyed by
@@ -58,7 +71,7 @@ from typing import Any
 
 from .authority import role_for
 from .cachekeys import FlagKey, LearnerNoteKey, ReverifyKey, sha
-from .compile import card_kind_of
+from .compile import card_kind_of, cloze_target_field
 from .ids import sentence_cloze_key
 from .ports import StudyRecord
 from .store import SyllabusDb
@@ -93,6 +106,8 @@ class ImportReport:
     notes_skipped: int = 0
     skips: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
     # (kind, identity, reason) -- kind in {"revlog", "flag", "review_note"}
+    # Printed one per line by the import command, so kept out of the repr.
+    warnings: tuple[str, ...] = field(default=(), repr=False)
 
 
 def _unicase_nocase(a: str, b: str) -> int:
@@ -166,19 +181,13 @@ def _grapheme_anchor(tags: list[str]) -> tuple[str, dict[str, str]] | None:
 def _sentence_anchor(tags: list[str]) -> tuple[str, dict[str, Any]] | None:
     # The sentence note's anchor is its own text_sha, matching its guid;
     # target_ids carries every target:: tag the note fills (target-id
-    # order preserved from the note's own tags). A Cloze note (spec 4 r9:
-    # kind::cloze its only kind) has exactly one target:: tag and anchors
-    # on (sentence, Target).
+    # order preserved from the note's own tags). _identify_card narrows a
+    # Cloze card to its slot's Target.
     sentence_sha = _tag_value(tags, "sentence")
     target_ids = _tag_values(tags, "target")
     if sentence_sha is None or not target_ids:
         return None
-    parts = {"sentence_sha": sentence_sha, "target_ids": target_ids}
-    if _tag_values(tags, "kind") != ("cloze",):
-        return sentence_sha, parts
-    if len(target_ids) != 1:
-        return None
-    return sentence_cloze_key(sentence_sha, target_ids[0]), parts
+    return sentence_sha, {"sentence_sha": sentence_sha, "target_ids": target_ids}
 
 
 _ANCHOR_BUILDERS: dict[str, Any] = {
@@ -230,7 +239,7 @@ def _note_subject(tags: list[str]) -> str | None:
 class _Collection:
     models: dict[str, Any]
     notes: dict[int, dict[str, Any]]     # note id -> {mid, flds, tags}
-    cards: dict[int, dict[str, Any]]     # card id -> {nid, ord, flags}
+    cards: dict[int, dict[str, Any]]     # card id -> {nid, ord, flags, deck}
 
 
 def _load_models_from_tables(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -280,8 +289,9 @@ def _load_collection(conn: sqlite3.Connection) -> _Collection:
         notes[nid] = {"mid": mid, "flds": flds.split("\x1f"),
                      "tags": [t for t in tags.split(" ") if t]}
     cards: dict[int, dict[str, Any]] = {}
-    for cid, nid, ord_, flags_ in conn.execute("select id, nid, ord, flags from cards"):
-        cards[cid] = {"nid": nid, "ord": ord_, "flags": flags_}
+    for cid, nid, ord_, flags_, did, odid in conn.execute(
+            "select id, nid, ord, flags, did, odid from cards"):
+        cards[cid] = {"nid": nid, "ord": ord_, "flags": flags_, "deck": odid or did}
     return _Collection(models=models, notes=notes, cards=cards)
 
 
@@ -330,6 +340,14 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     if not (0 <= ord_ < len(tmpls)):
         return None
     kind_slug = card_kind_of(tmpls[ord_]["name"])
+    if (family, kind_slug) == ("sentence", "cloze"):
+        target_idx = _field_index(model, cloze_target_field(ord_))
+        if target_idx is not None:
+            target_id = note["flds"][target_idx]
+            if not target_id:
+                return None
+            anchor = sentence_cloze_key(parts["sentence_sha"], target_id)
+            parts = {**parts, "target_ids": (target_id,)}
     compile_idx = _field_index(model, "CompileId")
     compile_id = note["flds"][compile_idx] if compile_idx is not None else ""
     return _CardIdentity(family=family, anchor=anchor, kind_slug=kind_slug,
@@ -373,7 +391,8 @@ def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
         if identity is None:
             skipped += 1
             skips.append(("revlog", str(card_id),
-                          "card not recognized (no family:: tag, or model/template unknown)"))
+                          "card not recognized (no family:: tag, model/template unknown, "
+                          "or a Cloze slot naming no Target)"))
             continue
         anchor = _study_anchor(identity)
         record = StudyRecord(family=identity.family, anchor=anchor,
@@ -459,6 +478,105 @@ def _import_flags(col: _Collection, db: SyllabusDb, skips: list[tuple[str, str, 
     return imported, skipped
 
 
+# --- sibling burying ------------------------------------------------------
+
+# Anki's three sibling-burying settings of a deck preset: (label, legacy
+# dconf JSON path, DeckConfig.Config field number in Anki's current schema).
+_BURY_SETTINGS: tuple[tuple[str, tuple[str, ...], int], ...] = (
+    ("bury new siblings", ("new", "bury"), 27),
+    ("bury review siblings", ("rev", "bury"), 28),
+    ("bury interday learning siblings", ("buryInterdayLearning",), 29),
+)
+
+
+def _varint(blob: bytes, i: int) -> tuple[int, int]:
+    value, shift = 0, 0
+    while True:
+        byte = blob[i]
+        i += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, i
+        shift += 7
+
+
+def _proto_fields(blob: bytes) -> dict[int, int | bytes]:
+    """A protobuf message's top-level fields, field number -> its last
+    value (an int for a varint, bytes otherwise)."""
+    out: dict[int, int | bytes] = {}
+    i = 0
+    while i < len(blob):
+        key, i = _varint(blob, i)
+        number, wire_type = key >> 3, key & 7
+        if wire_type == 0:
+            value, i = _varint(blob, i)
+        else:
+            size = {1: 8, 5: 4}.get(wire_type)
+            if size is None:
+                size, i = _varint(blob, i)
+            value = blob[i:i + size]
+            i += size
+        out[number] = value
+    return out
+
+
+def _deck_presets(conn: sqlite3.Connection) -> dict[int, tuple[str, str, tuple[str, ...]]]:
+    """Per normal deck id: (deck name, preset name, the bury settings the
+    preset has off), from col.decks/col.dconf JSON in the legacy schema or
+    the decks/deck_config tables (protobuf blobs) in Anki's current one. A
+    deck whose preset id has no row reads the Default preset (id 1), as
+    Anki does.
+    """
+    ver, decks_json, dconf_json = conn.execute("select ver, decks, dconf from col").fetchone()
+    out: dict[int, tuple[str, str, tuple[str, ...]]] = {}
+    if ver is not None and ver < 18:
+        presets = json.loads(dconf_json)
+        for deck in json.loads(decks_json).values():
+            preset = presets.get(str(deck.get("conf")), presets.get("1"))
+            if deck.get("dyn") or preset is None:
+                continue
+            off = []
+            for label, path, _number in _BURY_SETTINGS:
+                value: Any = preset
+                for key in path:
+                    value = value.get(key) if isinstance(value, dict) else None
+                if not value:
+                    off.append(label)
+            out[int(deck["id"])] = (deck["name"], preset["name"], tuple(off))
+        return out
+    presets = {pid: (name, _proto_fields(config)) for pid, name, config in
+               conn.execute("select id, name, config from deck_config")}
+    for did, name, kind in conn.execute("select id, name, kind from decks"):
+        normal = _proto_fields(kind).get(1)
+        if not isinstance(normal, bytes):
+            continue
+        preset = presets.get(_proto_fields(normal).get(1, 1), presets.get(1))
+        if preset is None:
+            continue
+        preset_name, config = preset
+        off = tuple(label for label, _path, number in _BURY_SETTINGS if not config.get(number))
+        out[did] = (name.replace("\x1f", "::"), preset_name, off)
+    return out
+
+
+def _bury_warnings(conn: sqlite3.Connection, col: _Collection) -> tuple[str, ...]:
+    """One warning per deck holding a compiled card whose preset has a
+    bury setting off, naming the deck, the preset and the settings."""
+    decks = {card["deck"] for card in col.cards.values()
+             if (note := col.notes.get(card["nid"])) is not None
+             and _tag_value(note["tags"], "family") is not None}
+    presets = _deck_presets(conn)
+    warnings = []
+    for did in sorted(decks):
+        deck_name, preset_name, off = presets.get(did, (None, None, ()))
+        if off:
+            warnings.append(
+                f"deck {deck_name!r} uses preset {preset_name!r} with {', '.join(off)} off, "
+                "so Anki can show a note's sibling cards on the same day; turn them on in "
+                "that preset (spec 4 section 2)")
+    return tuple(warnings)
+
+
 # --- ReviewNote harvest ----------------------------------------------------
 
 def _import_review_notes(col: _Collection, db: SyllabusDb,
@@ -481,9 +599,7 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
             skipped += 1
             skips.append(("review_note", str(note_id), "note not recognized"))
             continue
-        # Keyed by the note's own anchor: a sentence's Listening note
-        # (text_sha) and each Cloze note (TEXT_SHA:TARGET_ID) are separate
-        # notes under one subject.
+        # Keyed by the note's own anchor (a sentence note's: its text_sha).
         _family, anchor, _parts = resolved
         text_sha = sha(text)
         key = LearnerNoteKey(anchor=anchor, text_sha=text_sha)
@@ -526,10 +642,11 @@ def import_collection(collection_path: str | Path, db: SyllabusDb, *,
             col, db, skips, current_rubric=current_rubric, prior=prior,
             provenance_source=provenance_source)
         notes_harvested, notes_skipped = _import_review_notes(col, db, skips)
+        warnings = _bury_warnings(conn, col)
     finally:
         conn.close()
     return ImportReport(
         revlog_imported=revlog_imported, revlog_skipped=revlog_skipped,
         flags_imported=flags_imported, flags_skipped=flags_skipped,
         notes_harvested=notes_harvested, notes_skipped=notes_skipped,
-        skips=tuple(skips))
+        skips=tuple(skips), warnings=warnings)

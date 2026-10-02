@@ -24,7 +24,7 @@ Revision log:
   r12, r21). §8 "what this architecture deletes from the current code"
   retired (that code is gone) and §9 "open at time of writing" moved to
   TODO.md. No other statement changed.
-- r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7. No new decision.
+- r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7; a sentence's cards as siblings of one note and its guid after spec 4 r11. No new decision.
 
 ## 1. Shape of the system
 
@@ -66,8 +66,9 @@ input protected):
 - **Sentence** — the author's parse: clauses of registered Words, rendered
   to its Thai text; a voice constraint (learner-voice/other-voice); a
   gloss; provenance. Its speaker marking is the union of its words'. It
-  fills one or more Targets (derived, never stored). Its cards are a
-  Listening card and one Cloze card per productive Target it fills.
+  fills one or more Targets (derived, never stored). Its cards are
+  siblings of one note: a Listening card and one Cloze card per
+  productive Target it fills, in the slot of that Target's word.
   Identity is the text, so replacing a text resets its scheduling while
   everything else updates in place.
 - **Picture / Recording** — bytes (hash = identity) + Provenance (source,
@@ -188,9 +189,9 @@ fills edges.
 
 **Anki** — adopted wholesale (note, card, template, guid, due, tags,
 scheduling); zero re-litigation. `compile()` translates: stable model
-ids; guid from durable identity (the text for a sentence's Listening
-card, the text and the Target for its Cloze cards, the Word for word
-cards); due from order(); sibling separation for renditions;
+ids; guid from durable identity (the text for a sentence's note, whose
+Cloze cards keep their words' slots; the Word for word cards); due from
+order(); sibling separation for renditions;
 tags carrying what StudyRecords need to map back (target, confusion,
 card kind, compile id); styled cards (A8); refuses on gate failure. Anki
 adapts scheduling only; content adaptation is regeneration here — the

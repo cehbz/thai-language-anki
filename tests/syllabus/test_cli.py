@@ -264,6 +264,21 @@ def test_import_passes_the_loaded_derivations_rubric_prior_and_provenance_source
     assert callable(captured["provenance_source"])
 
 
+def test_import_prints_each_warning_on_its_own_line(tmp_path, monkeypatch, capsys):
+    from thai_syllabus.anki_import import ImportReport
+
+    root = _write_curated_dir(tmp_path / "deck")
+    monkeypatch.setattr(cli.anki_import, "import_collection",
+                        lambda *a, **k: ImportReport(warnings=("the preset buries nothing",)))
+    collection = tmp_path / "collection.anki2"
+    collection.write_bytes(b"")
+    assert cli.main(["import", "--deck", str(root), "--collection", str(collection)]) == 0
+    out = capsys.readouterr().out
+    assert "\nwarning: the preset buries nothing\n" in out
+    assert out.count("the preset buries nothing") == 1
+    assert "warnings=" not in out
+
+
 # --- run: wiring plumbing (monkeypatched run_pipeline only) ----------------
 #
 # build_levers/Lever are gone (Task 10); cli._cmd_run now wires its Sourcing
