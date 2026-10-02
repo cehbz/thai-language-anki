@@ -11,15 +11,86 @@ still run against them.
 1. Sound stage part 2 (steps 5 to 7 below): pairs are in; vowel signs
    and tone marks next. 3 words stay disputed; a pair member must be
    corroborated, nothing else.
-2. Cutover to Anki: delete the study deck and import a fresh compile.
-   The sentence order (spec 1 r24) reaches Anki only this way: cards
+2. Cutover to Anki: delete the study deck and import a fresh compile
+   (steps under Cutover). The sentence order (spec 1 r24) and the
+   one-note sentence cards (spec 4 r11) reach Anki only this way: cards
    already imported keep their due position.
-3. Sentences for the 363 unfilled targets (280, plus 83 reopened when
-   the 8-word cap retired 40 sentences); the drafter's cached answer
-   yields the same refused drafts every pass (198 and 126 refusals of
-   two drafts in one night); fix the re-ask.
+3. Sentences for the 57 unfilled targets (275 before spec 1 r25; no
+   draft on record is adoptable). With `card/unique-front` they are all
+   that closes the build gate. Causes under "Sentence fill queue".
 4. The six open picture needs: learner direction from the review screen
    re-opens them; no engineering.
+
+## Sentence fill queue (measured 2026-10-02)
+
+Write-up: .superpowers/sdd/2026-10-01-cloze-any-target/run-investigation.md.
+Of the 57 unfilled targets, 56 are receptive.
+
+- **A productive Target is derived for a female-marked word.** ดิฉัน
+  ("I", female polite) gets one because derivation never reads the
+  speaker marking; no learner-voice sentence can use the word, so it is
+  unfillable. E3 makes other-sex words receptive only.
+- **No path drafts a female-speaker sentence.** The receptive Targets
+  of ดิฉัน and the female polite particles ค่ะ and คะ need one: every
+  draft is recorded as learner voice and the judge's rubric asks for
+  male colloquial Thai. 19 of 23 judge failures among their drafts cite
+  the female pronoun; 13 more drafts were refused for marking both
+  sexes.
+- **Five classifiers hold the queue.** An ask carries at most 5
+  sentence-introduced words, and หยด (drop), ทิศ (direction), อย่าง
+  (kind), ฟอง (eggs) and ด้าน (side) take them every time: their passing
+  sentences were retired by the 8-word cap, and the set-aside counts
+  only "nothing fits" answers (0 on record). 47 Targets (23 classifiers,
+  24 function words such as ไม่ "not", มี "have", จะ "will") were never
+  asked for in 81 asks.
+- **The drafting prompt withholds unmet sentence-introduced words**
+  (ว่า "that", จะ "will") from its vocabulary; the judge then fails
+  drafts for lacking them.
+- **A cycle takes about 56 minutes before its ask:** the adoption pass
+  recomputes `gaps()` (a full report, 5.0 s) for each of 673 drafts on
+  record (timing inferred from the per-call measurement).
+- **The run has no exit while each cycle's ask is new** (inferred from
+  cli.py's loop): `--max-wait-seconds` bounds one batch wait, and the
+  drafter has no budget. The 2026-10-02 run adopted nothing in two
+  cycles and was stopped by hand.
+- The run still awaits a vetoed, unjudged candidate's verdict once
+  before re-sourcing (spec 3 r55 follow-up).
+
+## Sentence cards: after spec 4 r11
+
+- **The per-word cap can push a Cloze card the learner has not reviewed
+  out of the build** while it stays in Anki with a blank front (spec 4
+  section 1). On the live deck 20 of 46 judge-passing drafts would push
+  out 34 pairs if adopted.
+- **757 Cloze cards arrive as new cards at the cutover**; nothing caps
+  productive new cards (F12, under Doctrine divergences).
+- `sentence/synthetic-productive` warns on 336 sentences.
+- A hand-declared sentence-introduced productive Target capped out of
+  every earlier filler stays unfilled (spec 1 r26); none on the live
+  deck.
+- The import's bury check reads each card's home deck; whether Anki
+  applies a parent deck's bury settings to a nested deck is unverified.
+- Minor: `SCENE_FIT_RUBRIC` says "the target word" (rewording re-keys
+  every verdict); `target_words` is defined only in spec 3's r54 log
+  line; `attempts.joined` is a thin public helper; the comment pass does
+  not show which Target a commented Cloze card blanked; the scene-picture
+  re-ask pools lapses across a sentence's Cloze anchors.
+
+## Same-spelling words and shared pictures
+
+33 `card/unique-front` findings on the word notetype close the compile
+gate (the 2026-09-21 compile was forced past them).
+
+- **Same-spelling words:** 12 groups collide on Reading; หนัง
+  (movie / leather) also on Listening and Spelling through one shared
+  recording. หลัง (back / classifier) and ที่ (serving / "at") are
+  further groups not flagged today. Every group is pronounced alike.
+  Ruling 2026-10-02: one Reading, Listening and Spelling card per
+  spelling showing every meaning; Production stays one per meaning.
+  Needs a plan.
+- **Shared pictures:** tomorrow/today and oneself/"I" (male) collide on
+  Production through one picture each; veto one of each pair so the run
+  re-sources it.
 
 ## Sentences: after the parsimonious-sentences arc
 
@@ -116,9 +187,13 @@ Still open:
 
 ## Cutover
 
-- Compile, delete-and-reimport in Anki, proof pass in `thai-syllabus
-  review`, then `import` after a study session; verify study rows (family,
-  anchor, card_kind) and flag rows.
+- Compile (`--force` while the gate is closed). In Anki: delete the
+  deck and the stale notetypes (spec 4 section 5), import with "Merge
+  note types", turn on the three bury-sibling settings in the deck's
+  preset (the import warns while any is off), and leave blank-front
+  Cloze cards alone (Empty Cards deletes their schedule). Then the proof
+  pass in `thai-syllabus review`, and `import` after a study session;
+  verify study rows (family, anchor, card_kind) and flag rows.
 
 ## Content decisions (user)
 
@@ -247,8 +322,8 @@ Wiktionary was consulted for 5 forms, 1 absent):
 
 ## Content work (machine)
 
-- Sentence corpus: the run's sentence attempt fills open Targets; since
-  spec 3 r27 a sentence fills at most three of them.
+- Sentence corpus: the run's sentence attempt fills open Targets; a
+  word carries at most three production cards (spec 1 r26).
 - Batch judge granularity: the run submits one Message Batch per need;
   before the whole-syllabus batch pass, gather every judge question of a
   run into one batch and resolve on the next run (the pending derivation
