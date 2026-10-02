@@ -1,7 +1,7 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 56, proposed 2026-10-01 against principles r6 and architecture
-r3. Revision process: docs/principles.md.
+Revision 57, proposed 2026-10-01 against principles r7 and architecture
+r4. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -250,6 +250,7 @@ Revision log:
 - r54 2026-10-01: the sentence-for-target judge, the scene-picture fit judge and the phrase prompt name the sentence's target words (the words of the Targets it fills productively, else of every Target it fills) instead of its last used word (spec 1 r25). User ruling 2026-10-01.
 - r55 2026-10-01: a sentence recording fails the duration check only under 0.2 s or over 1 s plus 1 s per deck word; a word recording keeps 0.2-5 s. Evidence: a valid 8-word sentence whose synthesis ran 5.5 s failed the 5 s cap, exhausted its recording need and reached the learner as a question they could not answer; over 799 sentence clips the longest run 2.14 s at two words and 6.46 s at eight (1.07 s per word at most, short sentences highest because of fixed lead-in and tail). Sentence length is the drafting rules' to bound (spec 3 r53). A mechanical verdict decides a candidate only under the check's current key, so a clip that failed an earlier window is re-asked. User ruling 2026-10-01.
 - r56 2026-10-01: the per-sentence Target cap (r27) is retired: the drafter is no longer told a per-sentence Target count and a draft is not refused for filling many; practice is bounded per word instead (spec 1 r26) and sentence length by r53. Evidence: under spec 1 r25 an ordinary four-word sentence fills four open productive Targets and was refused. User ruling 2026-10-01.
+- r57 2026-10-01: a sentence recording's voice constraint is its speaker marking alone, any sex when unmarked (principles r7); a word's is unchanged. User ruling 2026-10-01.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -550,16 +551,15 @@ questions are asked in one call.
 constraint (E2, E7; spec 1 §1 r10): derived from the speaker marking. A
 word need's marking is its Word's `speaker`; a sentence need's marking is
 `Syllabus.marking(sentence)`. Marking female → female; male → male; empty
-→ male when the recording plays on a productive back (a productive Target
-on the word, or a productive Target in the sentence's fill set), any sex
-otherwise. Within the constraint the pick spreads over the pool (TTS pools
-per sex in providers.yaml; a Forvo item is admitted only when the sex
-Forvo states matches). A marking holding both sexes never reaches
-sourcing: the Sentence invariant refuses it. No rulebook rule: the
-constraint holds at sourcing time; a recording on record that contradicts
-it is vetoed once through the learner path (an `unacceptable-none` rating
-on that sha, role recording-for-word or recording-for-sentence) and
-re-sourced under the constraint. Forvo attempt: lookup (cached; the §6a
+→ any sex for a sentence; for a word, male when it has a productive
+Target, any sex otherwise. Within the constraint the pick spreads over
+the pool (TTS pools per sex in providers.yaml; a Forvo item is admitted
+only when the sex Forvo states matches). A marking holding both sexes
+never reaches sourcing: the Sentence invariant refuses it. No rulebook
+rule: the constraint holds at sourcing time; a recording on record that
+contradicts it is vetoed once through the learner path (an
+`unacceptable-none` rating on that sha, role recording-for-word or
+recording-for-sentence) and re-sourced under the constraint. Forvo attempt: lookup (cached; the §6a
 re-ask rule on an expired url; only items recording the asked form are
 candidates, r49), download each candidate's mp3 with its recorded word on
 the bytes row, the mechanical recording check on each (duration: 0.2-5 s
@@ -640,10 +640,11 @@ sentence, or retire the target); any learner row on the word reopens it.
 a gloss that misstates the sentence fails the candidate). Adoption
 (`Syllabus.add_sentence` with provenance) fills every target `fills()`
 says it fills, chosen greedily by targets filled, and creates needs: the
-sentence's recording (voice constraint from the marking as for a word,
+sentence's recording (voice constraint from the marking, Recording
 above; tts allowed for receptive-only, a productive fill wants native,
-warn otherwise) and an optional scene picture. A refused draft and a
-draft filling nothing are rejected drafts in the record. An adopted
+warn otherwise) and a scene picture (the sentence's Cloze cards need
+it, spec 4 r10). A refused draft and a draft filling nothing are
+rejected drafts in the record. An adopted
 Sentence whose recording need is exhausted with no passing candidate, or
 whose total deck words summed across its clauses exceed
 `sentence_max_words` (r53: a config lowered after adoption, or a comment

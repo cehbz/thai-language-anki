@@ -1960,33 +1960,26 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
 # --- recordings (Word) and sentence recordings ------------------------------
 
 def _voice_constraint(ctx: Sourcing, need: Need) -> VoiceConstraint:
-    """The recording's voice constraint follows the sentence's speaker
-    marking (spec 1 section 1 (r10)): "female" when the marking is
-    `{"female"}`, "male" when it is `{"male"}`, else "male" where the
-    recording plays on a productive back (E2, spec 3 section 5) -- the
-    aggregate decides what serves a productive Target -- and "any"
-    otherwise. A marking holding both sexes cannot reach here:
-    Syllabus.check_sentence refuses such a sentence. `serves` (whether the
-    recording plays on a productive back) is read only once the marking
-    itself does not decide -- the marking checks first.
+    """The recording's voice constraint follows the speaker marking (spec
+    1 section 1 (r10), spec 3 section 5): "female" when the marking is
+    `{"female"}`, "male" when it is `{"male"}`. Unmarked, a sentence's
+    recording is "any" (principles E7, r7); a word's is "male" when the
+    word has a productive Target (F7) and "any" otherwise. A marking
+    holding both sexes cannot reach here: Syllabus.check_sentence refuses
+    such a sentence.
     """
     if need.subject_kind == "sentence":
-        sentence = ctx.syllabus.sentence(need.subject)
-        marking = ctx.syllabus.marking(sentence)
-
-        def serves() -> bool:
-            return ctx.syllabus.sentence_serves_productive(sentence)
+        marking = ctx.syllabus.marking(ctx.syllabus.sentence(need.subject))
+        unmarked: VoiceConstraint = "any"
     else:
         word = _word_of(ctx, need.subject)
         marking = frozenset({word.speaker}) - {None}
-
-        def serves() -> bool:
-            return ctx.syllabus.serves_productive(word.id)
+        unmarked = "male" if ctx.syllabus.serves_productive(word.id) else "any"
     if marking == frozenset({"female"}):
         return "female"
     if marking == frozenset({"male"}):
         return "male"
-    return "male" if serves() else "any"
+    return unmarked
 
 
 def _pool(ctx: Sourcing, constraint: VoiceConstraint) -> list[str]:
@@ -2025,8 +2018,8 @@ def _forvo_lookup(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spend
                   constraint: VoiceConstraint = "any", fresh: bool = False) -> list[Mapping]:
     """One lookup, cached forever, appended under `subject`. Under a
     "male" or "female" constraint only speakers Forvo states are that
-    sex are admitted (spec 1 section 1 (r10); E2: a productive back
-    plays in the learner's register); "any" admits every item. `fresh`
+    sex are admitted (spec 1 section 1 (r10), spec 3 section 5); "any"
+    admits every item. `fresh`
     re-asks over the cached answer (spec 3 section 6a's re-ask rule).
     Only an item whose recorded `word` is the asked form (`_same_form`)
     is returned."""

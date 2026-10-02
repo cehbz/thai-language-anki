@@ -186,12 +186,6 @@ class Syllabus:
         """
         return any(t.word == word_id and t.skill == "productive" for t in self.targets)
 
-    def sentence_serves_productive(self, sentence: Sentence) -> bool:
-        """Whether this sentence fills a productive Target, so its own
-        recording plays on a productive back.
-        """
-        return any(t.skill == "productive" for t in self.fill_set(sentence))
-
     def pair_voice_constraint(self, pair_id: PairId) -> "VoiceConstraint":
         """The strictest of the members' voice constraints, a rendition
         speaking for every member at once: "male" if any member serves a

@@ -994,20 +994,50 @@ def test_a_sentence_recording_keeps_the_recording_artifact_kind(tmp_path):
     assert {r.question["role"] for r in verdicts} == {"recording-for-sentence"}
 
 
-def test_a_sentence_filling_a_productive_target_draws_a_male_voice(tmp_path):
-    sentence = _sentence(text="ข้าว")   # ข้าว: rice
-    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice"),),
+def test_an_unmarked_sentence_filling_a_productive_target_draws_any_voice(tmp_path):
+    """Spec 3 r57 (principles r7 E7): an unmarked sentence's recording is
+    any sex, productive backs included."""
+    rice = word("rice", "ข้าว", "rice")   # ข้าว: rice
+    sentence = compose_sentence(((rice.id, rice.id),), thai_of(rice), gloss="rice, rice")
+    syllabus = Syllabus(words=(rice,),
                         targets=(target("rice/productive", "rice", skill="productive"),)
                         ).with_sentences([sentence])
-    ctx, tts = _recording_ctx(tmp_path, syllabus)
+    ctx, tts = _recording_ctx(tmp_path, syllabus, {
+        sentence.text: [{"username": "malee", "pathmp3": "https://f/1.mp3", "sex": "f"}]})
+    assert ctx.syllabus.productive_fills(sentence)
     attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
-    assert tts.last_voice in _MALE
+    # this text_sha's pick over both pools lands in the female pool
+    assert tts.voices == [pick_voice(sentence.text_sha, list(_MALE) + list(_FEMALE))]
+    assert tts.last_voice in _FEMALE
+
+    attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "forvo")
+    assert ctx.db.speaker("forvo:malee") == Speaker("forvo:malee", "native", sex="female")
+
+
+def test_a_sentence_marked_male_filling_a_productive_target_draws_a_male_voice(tmp_path):
+    rice = word("rice", "ข้าว", "rice")   # ข้าว: rice
+    khrap = word("khrap", "ครับ", "male politeness particle", speaker="male")  # ครับ: kráp
+    draft = compose_sentence(((WordId("rice"), WordId("khrap")),), thai_of(rice, khrap),
+                             gloss="rice, politely")
+    syllabus = Syllabus(words=(rice, khrap),
+                        targets=(target("rice/productive", "rice", skill="productive"),
+                                 target("khrap/receptive", "khrap"))
+                        ).with_sentences([draft])
+    ctx, tts = _recording_ctx(tmp_path, syllabus, {
+        draft.text: [{"username": "malee", "pathmp3": "https://f/1.mp3", "sex": "f"},
+                     {"username": "somchai", "pathmp3": "https://f/2.mp3", "sex": "m"}]})
+    assert ctx.syllabus.productive_fills(draft)
+    attempt(ctx, Need(draft.text_sha, "recording", "sentence"), "tts")
+    assert tts.voices == [pick_voice(draft.text_sha, list(_MALE))]
+
+    attempt(ctx, Need(draft.text_sha, "recording", "sentence"), "forvo")
+    assert ctx.db.speaker("forvo:somchai").sex == "male"
+    assert ctx.db.speaker("forvo:malee") is None
 
 
 def test_a_sentence_marked_female_draws_a_female_voice_and_forvo_admits_only_female(tmp_path):
-    """The marking outranks the productive-back fallback: rice carries
-    no productive Target here, yet ค่ะ's own female marking still picks
-    the voice (spec 1 section 1 (r10))."""
+    """The marking alone decides a sentence's voice (spec 1 section 1
+    (r10), spec 3 r57): ค่ะ's female marking picks the voice."""
     rice = word("rice", "ข้าว", "rice")   # ข้าว: rice
     kha = word("kha", "ค่ะ", "female politeness particle", speaker="female")
     draft = compose_sentence(((WordId("rice"), WordId("kha")),), thai_of(rice, kha),

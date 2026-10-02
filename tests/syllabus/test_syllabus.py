@@ -189,18 +189,6 @@ def test_a_word_serves_productive_only_with_a_productive_target():
     assert not _voice_syllabus("productive").serves_productive("news")
 
 
-def test_a_sentence_serves_productive_when_it_fills_a_productive_target():
-    rice = word("rice", "ข้าว")   # rice
-    news = word("news", "ข่าว")  # news
-    to = thai_of(rice, news)
-    rice_sentence = sentence(((rice.id,),), to)     # rice
-    news_sentence = sentence(((news.id,),), to)     # news
-    productive = _voice_syllabus("productive")
-    assert productive.sentence_serves_productive(rice_sentence)
-    assert not productive.sentence_serves_productive(news_sentence)
-    assert not _voice_syllabus().sentence_serves_productive(rice_sentence)
-
-
 def test_a_pair_takes_the_strictest_of_its_members_voice_constraints():
     confusion = SoundConfusion(id=ConfusionId("tone:falling-low"), dimension="tone",
                                sounds=("falling", "low"))

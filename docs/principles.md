@@ -1,6 +1,6 @@
 # Principles
 
-Revision 6, proposed 2026-09-18 (r5 approved 2026-09-17). The architecture
+Revision 7, proposed 2026-10-01 (r6 approved 2026-09-18). The architecture
 (docs/architecture.md) and the specs (docs/specs/) are the companions.
 
 Three meta-rules from the charter; every principle traces to one; every
@@ -60,6 +60,15 @@ Revision log:
   Evidence: TTS synthesizes from Thai script, never from the stored IPA,
   so the transcription never reaches the learner's ear; user ruling
   2026-09-18.
+- r7 2026-10-01: E7 -- a sentence's recording follows its speaker marking
+  and is otherwise any voice, productive backs included; a word's
+  productive audio keeps a male voice. Evidence: since spec 1 r25, 416 of
+  424 sentences serve a productive Target, so the male-voice rule would
+  have made every future sentence recording male (94 of 413 are female
+  today); the learner must also recognize female speakers, and a sentence
+  marked for the learner's own sex is voiced male by its marking. F7's
+  sentence clause names the text's register, not the voice. User ruling
+  2026-10-01.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
@@ -131,8 +140,8 @@ Revision log:
 - **F7.** **Native audio on anything tone-bearing the learner must
   produce, and production is checked by ear.** Renditions and word
   recordings are native; a Sentence filling a productive Target carries
-  native audio in the learner's register, and the learner grades
-  production against it; receptive-only Sentences may be TTS.
+  native audio, its text in the learner's register, and the learner
+  grades production against it; receptive-only Sentences may be TTS.
   [evidence: decided 09-02]
 - **F8.** **Order = usefulness in daily speech; then SRS.**
   [provisional: study, intro order feel] Constraints first: sounds early,
@@ -202,7 +211,8 @@ Revision log:
   reception, productive backs included. Speaker diversity (sex, age band,
   regional accent, over distinct speakers) is a coverage measure on each
   audio corpus; receptive audio spans all of it; productive audio keeps
-  the learner's register in the text and a male voice on the recording
-  (F7) and varies the speaker within that. An unknown attribute never
-  counts as coverage. Diversity never overrides native audio (F7) or one
-  speaker per rendition (F1).
+  the learner's register in the text; a word recording on a productive
+  back keeps a male voice; a sentence recording follows the
+  sentence's speaker marking and is otherwise any voice, productive backs
+  included. An unknown attribute never counts as coverage. Diversity
+  never overrides native audio (F7) or one speaker per rendition (F1).

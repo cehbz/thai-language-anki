@@ -24,7 +24,7 @@ Revision log:
   r12, r21). §8 "what this architecture deletes from the current code"
   retired (that code is gone) and §9 "open at time of writing" moved to
   TODO.md. No other statement changed.
-- r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9. No new decision.
+- r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7. No new decision.
 
 ## 1. Shape of the system
 
@@ -130,8 +130,8 @@ the pair search (dictionary + G2P over Thai at large; curated seeds; LLM
 proposal mechanically verified), and the learner (supply — costliest).
 There is no producer/filler split: all of them answer "provide X for Y"
 under a query. A recording's voice constraint follows the subject's
-speaker marking, and a male voice where the recording plays on a
-productive back.
+speaker marking; an unmarked word recording is a male voice where the
+word has a productive Target, an unmarked sentence recording any voice.
 
 **Assess** (fitness of an artifact-in-role, a word fact, a finding, or a
 card): the judge (LLM; keyed on rubric + subject + artifact + role — the

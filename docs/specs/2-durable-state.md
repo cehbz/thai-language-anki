@@ -1,7 +1,7 @@
 # Spec 2: Durable state
 
-Revision 20, proposed 2026-10-01 against principles r6 and architecture
-r3. Revision process: docs/principles.md.
+Revision 20, proposed 2026-10-01 against principles r7 and architecture
+r4. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -104,7 +104,8 @@ reference data, versioned with the deck and never hand-edited.
     pairs.yaml                 # adopted MinimalPairs (written by the
                                # run's pair search, spec 3 r47; removed
                                # by retirement -- part 2)
-    profile.yaml               # register, emphasis, productive_cutoff
+    profile.yaml               # register, emphasis, productive_cutoff,
+                               # production_sentences_per_word
     rulebook.yaml              # rule config: severities, thresholds,
                                # judged-rule rubric text
     frequency_th.txt           # the frequency corpus, one word per line in

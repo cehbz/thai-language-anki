@@ -447,7 +447,6 @@ def test_a_productive_target_is_filled_by_the_first_three_sentences_in_placement
     assert syllabus.productive_fills(s4) == ()
     assert {t.id for t in syllabus.fill_set(s4)} == {"rice/receptive", "fish/receptive"}
     assert syllabus.target_words(s4) == ("fish", "rice")   # no productive fill: every fill's word
-    assert syllabus.sentence_serves_productive(s4) is False
 
 
 def test_a_studied_pair_keeps_filling_and_counts_toward_the_cap():
