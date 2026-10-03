@@ -253,7 +253,7 @@ Revision log:
 - r57 2026-10-01: a sentence recording's voice constraint is its speaker marking alone, any sex when unmarked (principles r7); a word's is unchanged. User ruling 2026-10-01.
 - r58 2026-10-02: an other-voice draft is judged under role sentence-for-target-other-voice (natural as its marked speaker's sentence; grammar; gloss); the drafting prompt names a marked target's speaker. sentence-for-target and its verdicts are unchanged. Evidence: 19 of 23 judge failures among the drafts for the last 57 Targets cite the female pronoun against the male-register rubric. User ruling 2026-10-02.
 - r59 2026-10-02: the drafting ask hands open Targets in introduction order; its vocabulary never falls below sentence_vocabulary_floor (150) picture-introduced words of the word block; a handed classifier is named with the nouns counted with it, which join the vocabulary. Evidence: in targets.yaml order five classifiers took every introducible slot in every ask since 2026-09-27 and 47 Targets were never handed; an ask for the five earliest function words offered 79 words; ทิศ (directions) was handed with none of its four nouns. User ruling 2026-10-02.
-- r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter. User ruling 2026-10-02.
+- r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once, and a retired text drafted again is not put to the judge; every prompt line listing a speaker-marked word, vocabulary lines included, names its speaker. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter; 24 drafted texts on record paired ดิฉัน (I, female polite) with ผม (I, male), whose vocabulary line was untagged. User ruling 2026-10-02.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -610,10 +610,12 @@ drafter may use (a noun with a Target that is picture-introduced or
 already met), wherever they sit (r59); the ask to
 use the earliest listed words that make a natural sentence (r59); the
 handed sentence-introduced targets not yet met, listed as introducible,
-at most one per sentence; a handed target whose word marks its speaker's
-sex names that speaker on its line, and the prompt states that a
+at most one per sentence; every line listing a word that marks its
+speaker's sex, a vocabulary line as well as a target or introducible
+line, names that speaker (`[speaker: female]` or `[speaker: male]`),
+and the prompt states that a
 sentence using such a word is that speaker's own sentence and uses no
-word marked for the other sex (r58); a handed sentence-introduced
+word marked for the other sex (r58, r60); a handed sentence-introduced
 classifier's line names those nouns, ids and meanings in introduction
 order, and one with no such noun has the plain line, as does every
 other target (r59); a
@@ -657,7 +659,8 @@ the handed target ids on the row): `nothing` with the drafter's reason
 for a no-fit answer, `drafted` for any other answer, naming the text
 shas of the drafts it put to the judge. An answer served from the cache
 appends none; one so served that is a no-fit or puts no draft to the
-judge is re-asked once (§6a), so the rows count the drafter's answers,
+judge (every draft already adopted, retired or refused at acceptance)
+is re-asked once (§6a), so the rows count the drafter's answers,
 not runs. The cap counts asks in a row that added no sentence for the
 word: the rows since the newer of the word's newest learner row and the
 newest adoption of a sentence using the word. A word with
@@ -811,7 +814,11 @@ rendition, never a pair (spec 5 §1).
   rank only by their own verdicts: current_best reads assessments only),
   `nothing` (the source answered and nothing
   usable came of it), or `transient-failure` (the ask or any fetch it
-  needed failed on the wire; retry). The attempt appends one outcome
+  needed failed on the wire; retry). The sentence need adds two, which
+  only its ask cap reads and neither counts as tried for any source
+  (§5, r60): `drafted` (backend llm: a fresh drafting ask that returned
+  drafts, one row per handed word) and `adopted` (backend run: one row
+  per word a newly adopted sentence uses). The attempt appends one outcome
   row per source it asks (port `attempt`, backend = the source, key
   AttemptOutcomeKey(subject, kind, source)); a picture attempt's row
   names the query it was asked with (r35); `candidates` and `nothing`

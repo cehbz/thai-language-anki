@@ -2538,6 +2538,14 @@ def _direction_line_text(direction: str) -> str:
     return " ".join(direction.translate(_DIRECTION_DELIMITERS).split())[:DIRECTION_MAX_CHARS]
 
 
+def _prompt_word_line(word: Word) -> str:
+    """A word's text on any drafting-prompt line that lists it
+    (record.vocabulary_line), with `[speaker: <sex>]` after it when the
+    word marks its speaker's sex (spec 3 section 5)."""
+    line = record.vocabulary_line(word)
+    return line if word.speaker is None else f"{line}  [speaker: {word.speaker}]"
+
+
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
                      *, directions: Mapping[WordId, str] = {},
@@ -2551,8 +2559,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     sentence, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
     sentence already fills, an Introducible line per handed
-    sentence-introduced target no adopted sentence fills -- a target whose
-    word marks its speaker's sex says so on its line, and the prompt says
+    sentence-introduced target no adopted sentence fills -- every line
+    listing a word that marks its speaker's sex, vocabulary line included,
+    says so (`_prompt_word_line`), and the prompt says
     such a sentence is that speaker's own (spec 3 r58), and a sentence-introduced classifier
     target's line names the nouns it counts (`_handed_nouns`, spec 3
     r59), and a handed word with an entry in `directions` (the learner's
@@ -2584,9 +2593,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     introducible_lines = []
     for target in targets:
         word = syllabus.word(target.word)
-        line = f"- target {target.id}: {record.vocabulary_line(word)}"
-        if word.speaker is not None:
-            line += f"  [speaker: {word.speaker}]"
+        line = f"- target {target.id}: {_prompt_word_line(word)}"
         if nouns := _handed_nouns(target, classifier_nouns):
             line += f"  [classifier for: {', '.join(f'{n.id} ({n.meaning})' for n in nouns)}]"
         if (direction := directions.get(word.id)) is not None:
@@ -2597,7 +2604,7 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             target_lines.append(line)
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
-               + "\n".join("- " + record.vocabulary_line(w) for w in vocabulary) + "\n")
+               + "\n".join("- " + _prompt_word_line(w) for w in vocabulary) + "\n")
     if any(t.word in directions for t in targets):
         sections += ("A target line may carry the learner's direction for that word; "
                      "follow it in the sentences that use the word.\n")
@@ -2736,7 +2743,7 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     questions = [] if no_fit is not None else _draft_questions(ctx, answer, open_targets)
     if answer.hit and not questions:
         # Spec 3 r19/r60 section 6a's re-ask rule. A no-fit, or an answer
-        # every draft of which is already adopted or refused at acceptance,
+        # every draft of which is already adopted, retired or refused at acceptance,
         # adds nothing to the prompt's refused block, so the next run's
         # prompt -- and its cache key -- is the very same one; served from
         # the cache it would be read for ever, the drafter never asked again
@@ -2767,14 +2774,15 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
 def _draft_questions(ctx: Sourcing, answer: ProviderAnswer,
                      open_targets: Sequence[Target]) -> list[AssessQuestion]:
     """The judge question of each merged draft in a drafting answer that is
-    not adopted already and passes `draft_refusal`; a refused draft is
+    neither adopted already nor retired (record.retired_texts, as
+    derivations.adoptable_drafts) and passes `draft_refusal`; a refused draft is
     logged ("draft refused: %s: %s", the reason and the text) and
     skipped."""
-    adopted = {s.text_sha for s in ctx.syllabus.sentences}
+    skip = {s.text_sha for s in ctx.syllabus.sentences} | record.retired_texts(ctx.db)
     questions: list[AssessQuestion] = []
     raw_drafts = [d for item in answer.items for d in record.parse_drafts(str(item))]
     for draft in record.merge_drafts(raw_drafts):
-        if draft.text_sha in adopted:
+        if draft.text_sha in skip:
             continue
         sentence = record.draft_sentence(draft, ctx.syllabus, ctx.today)
         refusal = draft_refusal(ctx, sentence, open_targets)

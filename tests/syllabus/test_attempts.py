@@ -26,7 +26,7 @@ from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, Att
                                     sentence_attempt, sources_for, sources_for_need)
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, RenditionAskKey,
-                                    RunReportKey, rendition_identity, sha)
+                                    RetirementKey, RunReportKey, rendition_identity, sha)
 from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, attempts_since_change, exhausted
 from thai_syllabus.learner import CommentRef, append_comment, append_direction
 from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, candidate_shas,
@@ -2047,6 +2047,29 @@ def test_a_cached_answer_that_puts_no_draft_to_the_judge_is_re_asked_and_counted
     assert len(drafter.prompts) == 3
 
 
+def test_a_retired_text_drafted_again_is_not_judged_and_its_cached_answer_is_re_asked(tmp_path):
+    """Spec 3 section 5: a retired text is never re-adopted, so it is not
+    put to the judge again either (as derivations.adoptable_drafts skips
+    it). An answer whose only draft is retired puts no draft to the
+    judge, so served from the cache it is re-asked and counted -- the
+    word is not left handed for ever and never counted."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "rice"), "กินข้าว", "eat rice"))  # eat rice
+    retired = text_sha("กินข้าว")
+    ctx.db.append(port="attempt", backend="run", key=RetirementKey(retired), subject=retired,
+                  question={"kind": "retirement", "subject_kind": "sentence",
+                            "reason": "unnatural", "candidates": 0, "text": "กินข้าว"},
+                  answer={"retired": True})
+    drafter = ctx.provider._backends["llm-sentence"]
+    for _ in range(3):
+        res = sentence_attempt(ctx)
+        assert res.drafted == 0 and res.questions == []
+    assert len(drafter.prompts) == 3            # one ask, then two re-asks of the cached one
+    for word_id in ("eat", "rice"):
+        rows = [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+        assert [r.answer for r in rows] == [{"outcome": "drafted", "candidates": [],
+                                             "drafts": []}] * 3
+
+
 def test_a_word_handed_three_times_with_a_target_still_open_is_withheld(tmp_path):
     """Spec 3 r60: the cap counts every recorded ask, drafted or no-fit,
     since the word's anchor."""
@@ -3354,6 +3377,30 @@ def test_sentence_prompt_marks_a_speaker_marked_targets_line_with_its_speaker():
     assert ("- target khrap/receptive: khrap  ครับ  (polite particle (male))  [speaker: male]\n"
             in prompt)
     assert "- target eat/receptive: eat  กิน  (eat)\n" in prompt
+
+
+def test_sentence_prompt_marks_every_line_listing_a_speaker_marked_word():
+    """Spec 3 section 5: the speaker tag is on every line that lists a
+    speaker-marked word, its vocabulary line included -- a drafter shown
+    ผม (I, male) untagged in the vocabulary pairs it with a handed ค่ะ
+    (female polite particle) and the draft is refused. An unmarked
+    word's line is unchanged."""
+    syllabus = Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat"),   # ข้าว: rice, กิน: eat
+               word("i-male", "ผม", "I (male speaker)", speaker="male"),   # ผม: I (male)
+               word("kha", "ค่ะ", "polite particle (female)", speaker="female")),
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice"),
+                 target("i-male/receptive", "i-male"),
+                 target("kha/receptive", "kha", introduction="sentence")),
+        frequency={"eat": 1, "i-male": 2, "rice": 3, "kha": 4})
+    handed = [t for t in syllabus.targets if t.id in ("rice/receptive", "kha/receptive")]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2)
+    vocabulary = prompt.split("Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
+    assert vocabulary.splitlines() == ["- eat  กิน  (eat)",
+                                       "- i-male  ผม  (I (male speaker))  [speaker: male]",
+                                       "- rice  ข้าว  (rice)"]
+    assert "- target kha/receptive: kha  ค่ะ  (polite particle (female))  [speaker: female]\n" in prompt
+    assert "- target rice/receptive: rice  ข้าว  (rice)\n" in prompt
 
 
 def test_sentence_prompt_states_that_a_speaker_marked_sentence_is_that_speakers_own():
