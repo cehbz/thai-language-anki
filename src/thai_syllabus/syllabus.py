@@ -6,6 +6,7 @@ report() identifies the state it judged so a stale report steers nothing.
 """
 import dataclasses
 import hashlib
+import heapq
 import json
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
@@ -28,6 +29,26 @@ from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 
 if TYPE_CHECKING:
     from .attempts import VoiceConstraint
+
+
+# A sentence's placement (spec 1 section 3, r31): (position, word count,
+# text_sha), extended by (word count, text_sha) once for each sentence it
+# is placed directly after. Compared lexicographically: int, int, str at
+# every pair of indices alike, and the text_sha last, so a strict total
+# order over any set of sentences.
+PlacementKey = tuple[int | str, ...]
+
+
+@dataclass(frozen=True)
+class _Placement:
+    """The adopted sentences' placement fold (`Syllabus._placement`):
+    each one's key and clause-3 fill set before the production cap, by
+    text_sha, and each sentence-introduced Target's first fill -- the key
+    of the earliest-placed sentence whose fill set holds it.
+    """
+    keys: dict[str, PlacementKey]
+    fill_sets: dict[str, tuple[Target, ...]]
+    first_fills: dict[TargetId, PlacementKey]
 
 
 def name_word_ids_of(graphemes: Sequence[Grapheme]) -> frozenset[WordId]:
@@ -228,50 +249,29 @@ class Syllabus:
             sounds += [OrderEntry("word_target", t.id)
                       for t in self._name_targets.get(g.name_word, ())]
 
-        # r24: a sentence is dealt directly after its last used word's last
-        # Target -- interleaved into the word_target block, not appended
-        # after every word. A last-word group is sorted by
-        # `_placement_key` -- (last word's position, word count,
-        # text_sha): shorter first, ties by text_sha -- the one key the
-        # fill set's placement (clause 3's novelty rule) reads too, so the
-        # two can never disagree about which sentence comes first. A
-        # sentence naming no targeted word (last_used_word raises) is
-        # placed after every other entry, sorted by that same key.
-        by_last_word: dict[WordId, list[Sentence]] = {}
-        orphaned: list[Sentence] = []
+        # r24, r31: a sentence is dealt at the position its placement key
+        # names (`_placement_key`, its first element) -- its last used
+        # word's last Target, or that of the sentence it is placed
+        # directly after -- interleaved into the word_target block. A
+        # position's sentences are sorted by that same key, the one
+        # clause 3's placement reads, so the two can never disagree about
+        # which sentence comes first. A name word's position is -1 (its
+        # Targets sit in the sounds block, spec 1 r16): dealt before any
+        # word_target entry. A sentence naming no targeted word is placed
+        # past every Target, after every other entry.
+        by_position: dict[int | str, list[Sentence]] = {}
         for s in self.sentences:
-            try:
-                word = self.last_used_word(s)
-            except ValueError:
-                orphaned.append(s)
-                continue
-            by_last_word.setdefault(word, []).append(s)
+            by_position.setdefault(self._placement_key(s)[0], []).append(s)
 
-        def sentences_after(word: WordId) -> list[OrderEntry]:
-            group = sorted(by_last_word.get(word, ()), key=self._placement_key)
+        def sentences_at(position: int) -> list[OrderEntry]:
+            group = sorted(by_position.get(position, ()), key=self._placement_key)
             return [OrderEntry("sentence", s.text_sha) for s in group]
 
-        body: list[OrderEntry] = []
-        # A name word's Targets sit in the sounds block, not this one
-        # (spec 1 r16), so _word_last_position seeds it at -1: a sentence
-        # whose last used word is a name word is dealt before any
-        # word_target entry. `_word_last_position`'s -1 keys come from
-        # `name_word_ids`, a frozenset, so its dict iteration order is not
-        # deterministic across runs (PYTHONHASHSEED) -- sort the words
-        # explicitly so two name words' sentence groups always land in
-        # the same relative order.
-        name_words_at_minus_one = sorted(
-            word for word, position in self._word_last_position.items() if position == -1)
-        for word in name_words_at_minus_one:
-            body += sentences_after(word)
-
+        body = sentences_at(-1)
         for i, t in enumerate(self._ordered_targets):
             body.append(OrderEntry("word_target", t.id))
-            if self._word_last_position[t.word] == i:
-                body += sentences_after(t.word)
-
-        orphaned_sorted = sorted(orphaned, key=self._placement_key)
-        body += [OrderEntry("sentence", s.text_sha) for s in orphaned_sorted]
+            body += sentences_at(i)
+        body += sentences_at(len(self._ordered_targets))
 
         return [*sounds, *body]
 
@@ -312,8 +312,8 @@ class Syllabus:
     def _word_last_position(self) -> dict[WordId, int]:
         """Each word's greatest index among its own targets in
         _ordered_targets (receptive and productive both included) --
-        the relative position a sentence using that word is placed
-        after in order(); shared by last_used_word.
+        the position of a sentence's own placement key when it is the
+        sentence's last used word; shared by last_used_word.
 
         A name word's Targets are not in _ordered_targets (spec 1 r16:
         order() places them in the sounds block, before every word
@@ -378,10 +378,9 @@ class Syllabus:
         (each target belongs to one word; every word's own last
         position is a distinct index), but the (position, word) key
         still orders any hypothetical tie to the greater word id.
-        order() groups sentences by this word to deal each one right
-        after the word's last Target, and `_placement_key` reads its
-        position. Raises ValueError naming the sentence's text_sha when
-        it uses no targeted word.
+        Its position is the first element of the sentence's own
+        placement key (`_own_placement_key`). Raises ValueError naming
+        the sentence's text_sha when it uses no targeted word.
         """
         used = frozenset(sentence.words)
         candidates = [w for w in used if w in self._word_last_position]
@@ -451,7 +450,7 @@ class Syllabus:
     def _candidate_targets_over(self, sentence: Sentence, used: frozenset[WordId]
                                 ) -> tuple[Target, ...]:
         """`candidate_targets`'s own body, over a `used` (frozenset(
-        sentence.words)) the caller already built -- `_compute_fill_set`
+        sentence.words)) the caller already built -- `_clause_3`
         needs that same set for its own sentence-level gate and passes
         it straight through instead of building it twice.
         """
@@ -461,56 +460,118 @@ class Syllabus:
             if self._target_satisfies_clauses_1_and_2(used, sentence.voice, t, admits_learner)),
             key=lambda t: t.id))
 
-    def _sentence_order_key(self, sentence: Sentence) -> tuple[int, int, str] | None:
-        """(last_used_word's `_word_last_position`, word_count,
-        text_sha): the key order() sorts a last-word group by, and clause
-        3's novelty rule compares to place one adopted sentence at or
-        before another -- one key, so order() and the fill set agree on
-        which of two sentences sharing a last word comes first. None
-        when the sentence uses no targeted word at all.
+    @cached_property
+    def _targeted_word_ids(self) -> frozenset[WordId]:
+        """Every Word carrying a Target: clause 3's sentence-level gate."""
+        return frozenset(t.word for t in self.targets)
+
+    def _own_placement_key(self, sentence: Sentence) -> PlacementKey:
+        """(last_used_word's `_word_last_position`, word_count, text_sha),
+        or -- for a sentence using no targeted word --
+        (len(_ordered_targets), word_count, text_sha), past every placed
+        word's position: where the sentence's own words place it.
         """
         try:
-            word = self.last_used_word(sentence)
+            position = self._word_last_position[self.last_used_word(sentence)]
         except ValueError:
-            return None
-        return (self._word_last_position[word], sentence.word_count, sentence.text_sha)
+            position = len(self._ordered_targets)
+        return (position, sentence.word_count, sentence.text_sha)
+
+    @staticmethod
+    def _after(key: PlacementKey, sentence: Sentence) -> PlacementKey:
+        """`key` extended by `sentence`'s (word_count, text_sha): directly
+        after the sentence placed at `key` and before whatever follows
+        it; sentences placed after one sentence, shorter first, ties by
+        text_sha.
+        """
+        return (*key, sentence.word_count, sentence.text_sha)
+
+    @staticmethod
+    def _unmet(candidates: Iterable[Target], first_fills: Mapping[TargetId, PlacementKey],
+               at: PlacementKey) -> list[Target]:
+        """The sentence-introduced `candidates` no sentence placed at or
+        before `at` fills, by `first_fills` (each Target's earliest
+        filling sentence's key).
+        """
+        return [t for t in candidates
+                if t.introduction == "sentence"
+                and not (t.id in first_fills and first_fills[t.id] <= at)]
 
     @cached_property
-    def _adopted_order_keys(self) -> dict[str, tuple[int, int, str] | None]:
-        """Every adopted sentence's own `_sentence_order_key`, computed
-        once per instance and keyed by text_sha -- `_order_key_of` reads
-        this for an adopted sentence instead of recomputing
-        `last_used_word` (an O(words) scan) on every comparison in the
-        novelty check's inner loop over self.sentences.
+    def _placement(self) -> _Placement:
+        """The adopted sentences' placement and clause-3 fill sets before
+        the cap (spec 1 section 3, r31), one fold in placement order. A
+        sentence is taken at its own key (`_own_placement_key`) and
+        clause 3 evaluated there against the sentences already placed,
+        every one at a lesser key. One clause 3 refuses for two or more
+        unmet sentence-introduced Targets waits; the first fill that
+        leaves at most one of them unmet takes it again, directly after
+        the filling sentence (`_after`). One no fill does that for keeps
+        its own key and fills nothing. Keys are taken in increasing
+        order, so each fill set reads only sentences placed before it,
+        and a sentence whose words were all met at or before its own key
+        keeps that key.
         """
-        return {s.text_sha: self._sentence_order_key(s) for s in self.sentences}
+        index = self._sentence_index
+        own = {s.text_sha: self._own_placement_key(s) for s in self.sentences}
+        heap = [(key, sha) for sha, key in own.items()]
+        heapq.heapify(heap)
+        keys: dict[str, PlacementKey] = {}
+        fill_sets: dict[str, tuple[Target, ...]] = {}
+        first_fills: dict[TargetId, PlacementKey] = {}
+        unmet_of: dict[str, set[TargetId]] = {}
+        waiting: dict[TargetId, set[str]] = {}
+        while heap:
+            at, sha = heapq.heappop(heap)
+            if sha in keys:
+                continue
+            fill, unmet = self._clause_3(index[sha], first_fills, at)
+            if len(unmet) > 1:
+                unmet_of[sha] = {t.id for t in unmet}
+                for t in unmet:
+                    waiting.setdefault(t.id, set()).add(sha)
+                continue
+            keys[sha] = at
+            fill_sets[sha] = fill
+            for t in fill:
+                if t.introduction == "sentence" and t.id not in first_fills:
+                    first_fills[t.id] = at
+                    for other in waiting.pop(t.id, ()):
+                        unmet_of[other].discard(t.id)
+                        if len(unmet_of[other]) == 1:
+                            heapq.heappush(heap, (self._after(at, index[other]), other))
+        for sha in unmet_of:
+            if sha not in keys:
+                keys[sha] = own[sha]
+                fill_sets[sha] = ()
+        return _Placement(keys=keys, fill_sets=fill_sets, first_fills=first_fills)
 
-    def _order_key_of(self, sentence: Sentence) -> tuple[int, int, str] | None:
-        """`_sentence_order_key`, from `_adopted_order_keys` for an
-        adopted sentence, computed fresh for any other sentence.
+    def _placement_key(self, sentence: Sentence) -> PlacementKey:
+        """The sentence's placement (spec 1 section 3, r31): an adopted
+        sentence's from `_placement`; any other's as that fold would
+        place it once adopted -- its own key, or, when n >= 2 of its
+        sentence-introduced Targets are unmet there, directly after the
+        adopted sentence whose first fill is the (n-1)th among theirs,
+        leaving one unmet; its own key when fewer than n-1 are filled.
+        order()'s sort key, clause 3's "placed at or before", and the
+        production cap's "placed before" (`_adopted_placement_order`).
         """
-        if sentence.text_sha in self._adopted_order_keys:
-            return self._adopted_order_keys[sentence.text_sha]
-        return self._sentence_order_key(sentence)
-
-    def _placement_key(self, sentence: Sentence) -> tuple[int, int, str]:
-        """`_order_key_of`, or -- for a sentence using no targeted word --
-        (len(_ordered_targets), word_count, text_sha), past every placed
-        word's position, as order() deals such a sentence after every
-        other entry. A strict total order over any finite set of
-        sentences: order()'s sort key and `_adopted_placement_order`'s.
-        """
-        key = self._order_key_of(sentence)
-        if key is not None:
-            return key
-        return (len(self._ordered_targets), sentence.word_count, sentence.text_sha)
+        placement = self._placement
+        if sentence.text_sha in placement.keys:
+            return placement.keys[sentence.text_sha]
+        own = self._own_placement_key(sentence)
+        _, unmet = self._clause_3(sentence, placement.first_fills, own)
+        fills = sorted(placement.first_fills[t.id] for t in unmet
+                       if t.id in placement.first_fills)
+        if len(unmet) <= 1 or len(fills) < len(unmet) - 1:
+            return own
+        return self._after(fills[len(unmet) - 2], sentence)
 
     @cached_property
     def _adopted_placement_order(self) -> tuple[Sentence, ...]:
         """self.sentences sorted by placement order (spec 1 section 3,
         clause 3): `_placement_key`, the key order() deals sentences by
-        -- a strict total order over a finite set, the basis the
-        fill-set recursion below is well-founded on.
+        -- a strict total order over a finite set.
         """
         return tuple(sorted(self.sentences, key=self._placement_key))
 
@@ -519,15 +580,12 @@ class Syllabus:
         """Per productive Target, the studied pairs (`studied_cloze_pairs`)
         whose adopted sentence's clause-3 fill set before the cap contains
         it: the places of the production cap (r26) those pairs hold
-        whatever their position. Clause 3 before the cap comes from a
-        fold over the adopted sentences with no cap applied, run only
-        when there are studied pairs.
+        whatever their position. Clause 3 before the cap is the
+        placement fold's (`_placement`).
         """
         if not self.studied_cloze_pairs:
             return {}
-        uncapped: dict[str, tuple[Target, ...]] = {}
-        for s in self._adopted_placement_order:
-            uncapped[s.text_sha] = self._compute_fill_set(s, uncapped)
+        uncapped = self._placement.fill_sets
         counts: dict[TargetId, int] = {}
         for sha, target_id in self.studied_cloze_pairs:
             if any(t.id == target_id and t.skill == "productive" for t in uncapped.get(sha, ())):
@@ -541,18 +599,24 @@ class Syllabus:
 
     @cached_property
     def _adopted_fold(self) -> tuple[dict[str, tuple[Target, ...]],
-                                     dict[str, tuple[Target, ...]]]:
-        """(fill sets, capped out), each keyed by text_sha: every adopted
-        sentence's own fill set (spec 1 section 3,
-        clause 3), computed once per instance in placement order
+                                     dict[str, tuple[Target, ...]],
+                                     dict[TargetId, PlacementKey]]:
+        """(fill sets, capped out, first fills): every adopted sentence's
+        own fill set (spec 1 section 3, clause 3) and the productive
+        Targets the cap leaves out of it, each keyed by text_sha, and
+        each sentence-introduced Target's first fill among those fill
+        sets -- computed once per instance in placement order
         (`_adopted_placement_order`): each sentence's novelty rule reads
-        only the fill sets already computed here for sentences placed
-        strictly before it in that same order: well-founded, placement
-        order being a strict total order over a finite set. `fill_set`
-        looks an adopted sentence up here directly, memoized
-        for the life of this instance (`with_sentences` returns a new
-        one -- this cannot go stale); a candidate not itself adopted is
-        computed fresh against this completed map.
+        only sentences placed strictly before it. Clause 3 is the
+        placement fold's (`_placement`), evaluated again here only for a
+        sentence using the word of a sentence-introduced Target the cap
+        has left out of an earlier sentence, or that an earlier
+        evaluation here has -- the one way the capped fill sets can fail
+        to meet a Target the uncapped ones meet. `fill_set`
+        looks an adopted sentence up here directly, memoized for the life
+        of this instance (`with_sentences` returns a new one -- this
+        cannot go stale); a candidate not itself adopted is computed
+        fresh against the completed first fills.
 
         The production cap (r26): a productive Target is kept by a
         studied pair always, and by an unstudied one while fewer than
@@ -562,84 +626,79 @@ class Syllabus:
         leaves out.
         """
         cap = self.profile.production_sentences_per_word
+        placement = self._placement
         unstudied_kept: dict[TargetId, int] = {}
         computed: dict[str, tuple[Target, ...]] = {}
         capped_out: dict[str, tuple[Target, ...]] = {}
+        first_fills: dict[TargetId, PlacementKey] = {}
+        dropped_introduced: set[WordId] = set()
         for s in self._adopted_placement_order:
+            at = placement.keys[s.text_sha]
+            clause_3 = placement.fill_sets[s.text_sha]
+            if not dropped_introduced.isdisjoint(s.words):
+                clause_3, _ = self._clause_3(s, first_fills, at)
+                dropped_introduced.update(
+                    t.word for t in placement.fill_sets[s.text_sha]
+                    if t.introduction == "sentence" and t not in clause_3)
             kept: list[Target] = []
             dropped: list[Target] = []
-            for t in self._compute_fill_set(s, computed):
+            for t in clause_3:
                 if t.skill == "productive" and (s.text_sha, t.id) not in self.studied_cloze_pairs:
                     if unstudied_kept.get(t.id, 0) >= cap - self._studied_counts.get(t.id, 0):
                         dropped.append(t)
+                        if t.introduction == "sentence":
+                            dropped_introduced.add(t.word)
                         continue
                     unstudied_kept[t.id] = unstudied_kept.get(t.id, 0) + 1
                 kept.append(t)
             computed[s.text_sha] = tuple(kept)
             capped_out[s.text_sha] = tuple(dropped)
-        return computed, capped_out
+            for t in kept:
+                if t.introduction == "sentence":
+                    first_fills.setdefault(t.id, at)
+        return computed, capped_out, first_fills
 
     @cached_property
-    def _unstudied_fill_keys(self) -> dict[TargetId, list[tuple[int, int, str]]]:
+    def _unstudied_fill_keys(self) -> dict[TargetId, list[PlacementKey]]:
         """Per productive Target, the placement keys of the adopted
         sentences filling it through an unstudied pair, sorted: what a
         draft's production cap counts below its own key.
         """
-        keys: dict[TargetId, list[tuple[int, int, str]]] = {}
+        keys: dict[TargetId, list[PlacementKey]] = {}
         for s in self._adopted_placement_order:
             for t in self._adopted_fill_sets[s.text_sha]:
                 if t.skill == "productive" and (s.text_sha, t.id) not in self.studied_cloze_pairs:
                     keys.setdefault(t.id, []).append(self._placement_key(s))
         return keys
 
-    def _compute_fill_set(self, sentence: Sentence,
-                          adopted_fill_sets: Mapping[str, tuple[Target, ...]]
-                          ) -> tuple[Target, ...]:
-        """fill_set's body (spec 1 section 3, clause 3): a sentence-level
-        gate first -- every word the sentence names carries a Target --
-        then the candidates passing clauses 1 and 2, in target-id order.
-        Among the candidates, a
-        sentence-introduced Target is unmet unless some other adopted
-        sentence, placed at or before this one, already has it in ITS
-        OWN fill set (read from `adopted_fill_sets`, not clauses 1 and 2
-        alone -- a sentence whose own fill set is empty, an untargeted
+    def _clause_3(self, sentence: Sentence, first_fills: Mapping[TargetId, PlacementKey],
+                  at: PlacementKey) -> tuple[tuple[Target, ...], list[Target]]:
+        """(fill set, unmet) for `sentence` placed at `at` (spec 1
+        section 3, clause 3): a sentence-level gate first -- every word
+        the sentence names carries a Target -- then the candidates
+        passing clauses 1 and 2, in target-id order. Among the
+        candidates, a sentence-introduced Target is unmet unless some
+        other adopted sentence, placed at or before `at`, already has it
+        in ITS OWN fill set -- `first_fills`, each such Target's earliest
+        filling sentence's key, built from fill sets, not clauses 1 and 2
+        alone (a sentence whose own fill set is empty, an untargeted
         word, meets nothing for anyone); more than one unmet candidate
         empties the fill set; zero or one leaves every candidate as the
-        fill set. `adopted_fill_sets` carries every sentence placed
-        strictly before `sentence` in placement order, when called from
-        `_adopted_fold`'s own recursive build, or the complete map,
-        for a candidate that is not itself adopted.
+        fill set. Unmet is empty when the gate fails. `first_fills`
+        covers the sentences placed strictly before `sentence` when
+        called from a fold's own build, or every adopted sentence, for a
+        candidate that is not itself adopted.
         """
         used = frozenset(sentence.words)
-        if not used <= self._word_target_positions.keys():
-            return ()
-
+        if not used <= self._targeted_word_ids:
+            return (), []
         candidates = self._candidate_targets_over(sentence, used)
-        if not candidates:
-            return ()
-
-        this_key = self._order_key_of(sentence)
-
-        def met_by_another_adopted_sentence(target: Target) -> bool:
-            for other in self.sentences:
-                if other.text_sha == sentence.text_sha:
-                    continue
-                other_key = self._order_key_of(other)
-                if other_key is None or other_key > this_key:
-                    continue
-                if target in adopted_fill_sets.get(other.text_sha, ()):
-                    return True
-            return False
-
-        unmet = [t for t in candidates
-                if t.introduction == "sentence" and not met_by_another_adopted_sentence(t)]
-        if len(unmet) > 1:
-            return ()
-        return candidates
+        unmet = self._unmet(candidates, first_fills, at)
+        return (() if len(unmet) > 1 else candidates), unmet
 
     def fill_set(self, sentence: Sentence) -> tuple[Target, ...]:
         """Every Target `sentence` fills (spec 1 section 3, clause 3):
-        `_compute_fill_set`'s result under the production cap (r26),
+        `_clause_3`'s fill set under the production cap (r26),
         memoized per instance for an adopted sentence
         (`_adopted_fill_sets`), computed fresh for a candidate that is
         not itself adopted -- which keeps a productive Target only while
@@ -664,14 +723,14 @@ class Syllabus:
         filling it are fewer than the cap: what the fold gives it once
         adopted.
         """
-        fills, capped = self._adopted_fold
+        fills, capped, first_fills = self._adopted_fold
         if sentence.text_sha in fills:
             return fills[sentence.text_sha], capped[sentence.text_sha]
         cap = self.profile.production_sentences_per_word
         key = self._placement_key(sentence)
         kept: list[Target] = []
         dropped: list[Target] = []
-        for t in self._compute_fill_set(sentence, fills):
+        for t in self._clause_3(sentence, first_fills, key)[0]:
             if (t.skill == "productive"
                     and self._studied_counts.get(t.id, 0)
                     + bisect_left(self._unstudied_fill_keys.get(t.id, ()), key) >= cap):

@@ -362,11 +362,11 @@ def test_an_earlier_adopted_sentence_meeting_one_target_lets_the_other_fill():
     assert syllabus.fill_set(s) == (t_rice, t_spoon)
 
 
-def test_a_later_adopted_sentence_does_not_count_as_meeting():
-    """`later` names spoon's word, but its own order() position (set by
-    "bowl", the word it also uses) is placed after the candidate's -- it
-    does not count, so both candidates stay unmet and the fill set
-    empties."""
+def test_a_later_adopted_sentence_meets_the_word_for_a_candidate_placed_after_it():
+    """`later` names spoon's word, its own position (set by "bowl", the
+    word it also uses) after the candidate's own entry. Spoon is met
+    where `later` is placed, so the candidate is placed after it (r31):
+    rice is its one unmet Target and both fill."""
     rice = word("rice", "ข้าว")  # rice -- sentence-introduced
     spoon = word("spoon", "ช้อน")  # spoon -- sentence-introduced
     bowl = word("bowl", "ชาม")  # bowl -- gives `later` a later order() position
@@ -375,12 +375,13 @@ def test_a_later_adopted_sentence_does_not_count_as_meeting():
     t_bowl = target("bowl/receptive", "bowl", "receptive")
     to = thai_of(rice, spoon, bowl)
     later = sentence(((spoon.id, bowl.id),), to,
-                     voice="learner_voice")  # spoon, bowl -- adopted, placed AFTER s
+                     voice="learner_voice")  # spoon, bowl -- adopted, own entry after s's
     s = sentence(((rice.id, spoon.id),), to, voice="learner_voice")  # rice, spoon -- the candidate
     syllabus = Syllabus(words=(rice, spoon, bowl), targets=(t_rice, t_spoon, t_bowl),
                         sentences=(later,), profile=Profile(register="male_colloquial"),
                         frequency={rice.id: 1, spoon.id: 2, bowl.id: 3})
-    assert syllabus.fill_set(s) == ()
+    assert syllabus._placement_key(later) < syllabus._placement_key(s)
+    assert syllabus.fill_set(s) == (t_rice, t_spoon)
 
 
 def test_an_adopted_sentence_is_not_its_own_meeting_sentence():
@@ -426,6 +427,223 @@ def test_a_word_targeted_anywhere_in_the_order_still_lets_the_sentence_fill():
     syllabus = base_syllabus((rice, spoon, with_word), (t_rice, t_spoon, t_with),
                              frequency={rice.id: 1, with_word.id: 2, spoon.id: 99})
     assert syllabus.fills(s, t_rice) is True
+
+
+# --- placement by met position (r31) -----------------------------------------
+
+def _met_later(*extra_sentences):
+    """gun (the classifier กระบอก) and very come early in the order,
+    market and old later; both gun and very are sentence-introduced.
+    `met` (market, very) is placed at market's entry and introduces very
+    there; `next_` (old) is placed after it. The draft (gun, very) has
+    very's entry for its own: only `met`, placed later, fills very.
+    """
+    gun = word("gun", "กระบอก")     # classifier for guns -- sentence-introduced, no sentence fills it
+    very = word("very", "มาก")       # very -- sentence-introduced
+    market = word("market", "ตลาด")  # market
+    old = word("old", "เก่า")         # old
+    t_gun = target("gun/receptive", "gun", introduction="sentence")
+    t_very = target("very/receptive", "very", introduction="sentence")
+    to = thai_of(gun, very, market, old)
+    met = sentence(((market.id, very.id),), to)  # market (is) very ...
+    next_ = sentence(((old.id,),), to)           # old
+    draft = sentence(((gun.id, very.id),), to)   # (this) gun (is) very ...
+    syllabus = Syllabus(words=(gun, very, market, old),
+                        targets=(t_gun, t_very, target("market/receptive", "market"),
+                                 target("old/receptive", "old")),
+                        sentences=(met, next_) + extra_sentences,
+                        profile=Profile(register="male_colloquial"),
+                        frequency={gun.id: 1, very.id: 2, market.id: 3, old.id: 4})
+    return syllabus, draft, met, next_, t_gun, t_very
+
+
+def test_a_draft_using_a_word_met_only_by_a_later_sentence_fills_its_open_target():
+    """r31: very is met where `met` is placed, after the draft's own
+    entry; the draft is placed no earlier, so very is met for it and gun
+    is its one unmet sentence-introduced Target."""
+    syllabus, draft, met, _, t_gun, t_very = _met_later()
+    assert syllabus.last_used_word(draft) == "very"
+    assert syllabus._placement_key(met)[0] > syllabus._word_last_position["very"]
+    assert syllabus.fill_set(draft) == (t_gun, t_very)
+
+
+def test_such_a_draft_is_placed_directly_after_the_sentence_that_met_the_word():
+    syllabus, draft, met, next_, _, _ = _met_later()
+    key = syllabus._placement_key(draft)
+    assert key == syllabus._placement_key(met) + (draft.word_count, draft.text_sha)
+    assert syllabus._placement_key(met) < key < syllabus._placement_key(next_)
+
+
+def test_the_draft_once_adopted_keeps_the_placement_and_fill_set_predicted_for_it():
+    syllabus, draft, met, _, t_gun, t_very = _met_later()
+    adopted = syllabus.with_sentences([draft])
+    assert adopted._placement_key(draft) == syllabus._placement_key(draft)
+    assert adopted.fill_set(draft) == (t_gun, t_very)
+    assert adopted.fill_set(met) == syllabus.fill_set(met)
+
+
+def test_a_sentence_introducing_the_word_itself_keeps_its_own_key():
+    """`intro` (very alone) is placed at very's entry and is the first to
+    fill it; `met`, placed later, uses very already met. Both keep their
+    own keys -- every word each uses is met at or before it."""
+    syllabus, _, met, _, _, t_very = _met_later()
+    very = syllabus.word("very")
+    intro = sentence(((very.id,),), thai_of(*syllabus.words))  # very
+    syllabus = syllabus.with_sentences([intro])
+    for s in (intro, met):
+        own = (syllabus._word_last_position[syllabus.last_used_word(s)], s.word_count, s.text_sha)
+        assert syllabus._placement_key(s) == own
+        assert t_very in syllabus.fill_set(s)
+
+
+def test_a_draft_is_placed_after_the_later_of_two_sentences_that_met_its_words():
+    """gun, very and that (นั้น) are sentence-introduced and unmet at the
+    draft's own entry; very is met by `met` (market's entry), that by
+    `met_that` (old's entry). The draft follows `met_that`, the later,
+    and fills all three: gun is its one unmet Target."""
+    syllabus, _, met, _, t_gun, t_very = _met_later()
+    that = word("that", "นั้น")  # that (adnominal) -- sentence-introduced
+    t_that = target("that/receptive", "that", introduction="sentence")
+    syllabus = dataclasses.replace(
+        syllabus, words=syllabus.words + (that,), targets=syllabus.targets + (t_that,),
+        sentences=(met,), frequency={**syllabus.frequency, that.id: 2.5})
+    gun, very, old = (syllabus.word(w) for w in ("gun", "very", "old"))
+    to = thai_of(*syllabus.words)
+    met_that = sentence(((old.id, that.id),), to)          # old (one) that ...
+    draft = sentence(((gun.id, that.id, very.id),), to)    # that gun (is) very ...
+    syllabus = syllabus.with_sentences([met_that])
+    assert syllabus.last_used_word(draft) == "that"
+    assert syllabus._placement_key(met) < syllabus._placement_key(met_that)
+    assert syllabus._placement_key(draft) == (syllabus._placement_key(met_that)
+                                              + (draft.word_count, draft.text_sha))
+    assert syllabus.fill_set(draft) == (t_gun, t_that, t_very)
+    adopted = syllabus.with_sentences([draft])
+    assert adopted._placement_key(draft) == syllabus._placement_key(draft)
+    assert adopted.fill_set(draft) == (t_gun, t_that, t_very)
+
+
+def test_a_draft_with_two_never_met_sentence_introduced_words_still_fills_nothing():
+    syllabus, _, _, _, _, _ = _met_later()
+    lone = word("lone", "เดี่ยว")  # single -- sentence-introduced, no sentence fills it
+    syllabus = dataclasses.replace(
+        syllabus, words=syllabus.words + (lone,),
+        targets=syllabus.targets + (target("lone/receptive", "lone", introduction="sentence"),))
+    draft = sentence(((syllabus.word("gun").id, lone.id),), thai_of(*syllabus.words))
+    assert syllabus.fill_set(draft) == ()
+
+
+def _anchored_block(*extra_targets, profile=None):
+    """a, b and c are sentence-introduced, in that order, then x, z and
+    p. f1 (a, p) introduces a at p's entry; f2 (a, b) and e (a, c) have
+    two unmet words at their own entries and are placed directly after
+    f1, each introducing its second word.
+    """
+    a, b, c, x, z, p = (word(i, t) for i, t in (
+        ("a", "ก"), ("b", "ข"), ("c", "ค"), ("x", "ง"), ("z", "จ"), ("p", "ฉ")))
+    to = thai_of(a, b, c, x, z, p)
+    f1 = sentence(((a.id, p.id),), to)
+    f2 = sentence(((a.id, b.id),), to)
+    syllabus = Syllabus(
+        words=(a, b, c, x, z, p),
+        targets=(target("a/r", "a", introduction="sentence"),
+                 target("b/r", "b", introduction="sentence"),
+                 target("c/r", "c", introduction="sentence"),
+                 target("x/r", "x"), target("z/r", "z"), target("p/r", "p"), *extra_targets),
+        profile=profile or Profile(register="male_colloquial"),
+        frequency={a.id: 1, b.id: 2, c.id: 3, x.id: 4, z.id: 5, p.id: 6})
+    return syllabus, to, (a, b, c, x, z, p), f1, f2
+
+
+def _assert_placed_as_predicted(syllabus, draft):
+    adopted = syllabus.with_sentences([draft])
+    assert adopted._placement_key(draft) == syllabus._placement_key(draft)
+    assert adopted.fill_set(draft) == syllabus.fill_set(draft)
+    assert adopted.capped_out(draft) == syllabus.capped_out(draft)
+    return adopted
+
+
+def test_a_draft_follows_the_sentence_leaving_one_unmet_though_its_other_word_is_met_inside_that_block():
+    """The draft (a, b, x) has a and b unmet at its own entry. f1 meets
+    a; f2, placed inside f1's block ahead of the draft's own slot there,
+    meets b. The draft is placed directly after f1 -- the sentence whose
+    fill leaves one unmet -- before and after adoption alike, and order()
+    deals it after e, the longer sentences of f1's block last."""
+    syllabus, to, (a, b, c, x, _, _), f1, f2 = _anchored_block()
+    e = sentence(((a.id, c.id),), to)
+    syllabus = syllabus.with_sentences([f1, f2, e])
+    draft = sentence(((a.id, b.id, x.id),), to)
+    assert syllabus._placement_key(f2) < syllabus._placement_key(draft)
+    assert syllabus._placement_key(draft) == (syllabus._placement_key(f1)
+                                              + (draft.word_count, draft.text_sha))
+    adopted = _assert_placed_as_predicted(syllabus, draft)
+    by_key = [s.text_sha for s in sorted((f1, f2, e, draft), key=syllabus._placement_key)]
+    assert [en.id for en in adopted.order() if en.kind == "sentence"] == by_key
+
+
+def test_a_draft_predicted_capped_out_stays_capped_out_once_adopted():
+    """Cap 1 on x/productive: e (a, c, x) and the draft (a, b, x, x) are
+    both placed directly after f1, e first (three words to four), so e
+    keeps x/productive and the draft is capped out of it -- predicted and
+    once adopted."""
+    t_x_p = target("x/productive", "x", "productive")
+    syllabus, to, (a, b, c, x, _, _), f1, f2 = _anchored_block(
+        t_x_p, profile=Profile(register="male_colloquial", production_sentences_per_word=1))
+    e = sentence(((a.id, c.id, x.id),), to)
+    syllabus = syllabus.with_sentences([f1, f2, e])
+    draft = sentence(((a.id, b.id, x.id, x.id),), to)
+    assert syllabus.capped_out(draft) == (t_x_p,)
+    adopted = _assert_placed_as_predicted(syllabus, draft)
+    assert t_x_p in adopted.fill_set(e)
+
+
+def test_a_draft_never_left_with_one_unmet_word_stays_at_its_entry():
+    """a, b, q and r are sentence-introduced; f1 meets a and f2 meets b,
+    q and r no sentence fills. The draft (a, b, q, r) never has at most
+    one unmet: it keeps its own entry and fills nothing, predicted and
+    once adopted."""
+    a, b, q, r, p = (word(i, t) for i, t in (
+        ("a", "ก"), ("b", "ข"), ("q", "ค"), ("r", "ง"), ("p", "ฉ")))
+    to = thai_of(a, b, q, r, p)
+    syllabus = Syllabus(
+        words=(a, b, q, r, p),
+        targets=(*(target(f"{w}/r", w, introduction="sentence") for w in "abqr"),
+                 target("p/r", "p")),
+        sentences=(sentence(((a.id, p.id),), to), sentence(((a.id, b.id),), to)),
+        profile=Profile(register="male_colloquial"),
+        frequency={"a": 1, "b": 2, "q": 3, "r": 4, "p": 5})
+    draft = sentence(((a.id, b.id, q.id, r.id),), to)
+    own = (syllabus._word_last_position["r"], draft.word_count, draft.text_sha)
+    assert syllabus._placement_key(draft) == own
+    assert syllabus.fill_set(draft) == ()
+    _assert_placed_as_predicted(syllabus, draft)
+
+
+def test_a_sentence_the_cap_empties_meets_nothing_for_a_later_one():
+    """Cap 1 on w/productive (sentence-introduced), its one place held
+    by the studied pair on s. e1 (w, a) introduces w and is capped out of
+    it, so w is unmet for e2 (w, u, b) once capped: two unmet, e2 fills
+    nothing. f (u, v, c) uses u, met before the cap only by e2: once
+    capped u and v are both unmet, and f fills nothing either."""
+    w, u, v, a, b, c, late = (word(i, t) for i, t in (
+        ("w", "ก"), ("u", "ข"), ("v", "ค"), ("a", "ง"), ("b", "จ"), ("c", "ฉ"), ("late", "ซ")))
+    to = thai_of(w, u, v, a, b, c, late)
+    t_w = target("w/productive", "w", "productive", introduction="sentence")
+    e1 = sentence(((w.id, a.id),), to)
+    e2 = sentence(((w.id, u.id, b.id),), to)
+    f = sentence(((u.id, v.id, c.id),), to)
+    s = sentence(((w.id, late.id),), to)
+    syllabus = Syllabus(
+        words=(w, u, v, a, b, c, late),
+        targets=(t_w, target("u/r", "u", introduction="sentence"),
+                 target("v/r", "v", introduction="sentence"),
+                 *(target(f"{k}/r", k) for k in ("a", "b", "c", "late"))),
+        sentences=(e1, e2, f, s),
+        profile=Profile(register="male_colloquial", production_sentences_per_word=1),
+        frequency={k: i for i, k in enumerate(("w", "u", "v", "a", "b", "c", "late"), 1)},
+        studied_cloze_pairs=frozenset({(s.text_sha, t_w.id)}))
+    assert syllabus.capped_out(e1) == (t_w,)
+    assert syllabus.fill_set(e2) == ()
+    assert syllabus.fill_set(f) == ()
 
 
 # --- the per-word production cap (r26) ---------------------------------------
@@ -579,7 +797,7 @@ def test_without_studied_pairs_the_fold_evaluates_clause_3_once_per_adopted_sent
     sentence and no other pass over the sentences."""
     syllabus, t_rice_p, sentences = _four_rice_sentences()
     calls = {"clause_3": 0, "candidates": 0}
-    clause_3, candidates = Syllabus._compute_fill_set, Syllabus.candidate_targets
+    clause_3, candidates = Syllabus._clause_3, Syllabus.candidate_targets
 
     def counting_clause_3(self, *args):
         calls["clause_3"] += 1
@@ -589,7 +807,7 @@ def test_without_studied_pairs_the_fold_evaluates_clause_3_once_per_adopted_sent
         calls["candidates"] += 1
         return candidates(self, *args)
 
-    monkeypatch.setattr(Syllabus, "_compute_fill_set", counting_clause_3)
+    monkeypatch.setattr(Syllabus, "_clause_3", counting_clause_3)
     monkeypatch.setattr(Syllabus, "candidate_targets", counting_candidates)
     assert [syllabus.fills(s, t_rice_p) for s in sentences] == [True, True, True, False]
     assert calls == {"clause_3": len(sentences), "candidates": 0}

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 30, proposed 2026-10-02 against principles r7 and architecture
+Revision 31, proposed 2026-10-03 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -78,6 +78,7 @@ Revision log:
 - r28 2026-10-02: a drafted sentence whose marking does not admit the learner is other_voice. Evidence: every draft was learner_voice, so the three receptive Targets on female-marked words (ดิฉัน, ค่ะ, คะ) had 32 drafts and none could pass. User ruling 2026-10-02.
 - r29 2026-10-02: a spelling group is the Words sharing a written form that carry a Target, in introduction order; spec 4 r12 compiles its form-side cards once. Evidence: 12 groups of same-spelling Words compiled 29 identical Reading, Listening and Spelling fronts. User ruling 2026-10-02.
 - r30 2026-10-02: a Target may want several sentences (default one) and is open until that many adopted sentences fill it; one with a sentence and short of its count is target/sentences-wanted (warn), which leaves the gate open. Evidence: a sentence-introduced word has no card of its own, and none of the 424 adopted sentences used ไม่ (not), มี (have), เป็น (be), จะ (will), ได้ (can) or แล้ว (already). User ruling 2026-10-02.
+- r31 2026-10-03: a sentence is placed where clause 3 first admits it: its entry, or directly after the adopted sentence whose fill leaves at most one of its sentence-introduced words unmet; order() deals it there. Evidence: all 23 draft rows for the last 8 open Targets paired the Target with a word met only by a later-placed sentence and were refused as introducing two words, though the prompt offers every met word. User ruling 2026-10-03.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -274,7 +275,7 @@ cross-entity behavior:
 learner meets. Constraints, each also stated as a rule: sounds stage
 (pairs, graphemes) before words; a grapheme's name-word Targets
 (receptive then productive) directly after that grapheme, inside the
-sounds stage, and nowhere else (r16); a sentence directly after its last used word's last Target (r24) -- one whose last used word is a letter-name word follows the sounds stage, ahead of every word Target; sentences sharing a last word by word count, then text_sha, the same key the fill-set placement (§3 clause 3) reads; a sentence with no placed word last;
+sounds stage, and nowhere else (r16); a sentence at its placement (clause 3 below; r24, r31) -- one placed at a letter-name word follows the sounds stage, ahead of every word Target; sentences at one place by word count, then text_sha, the same placement clause 3 reads; a sentence with no placed word last;
 receptive target before productive target per word, so productive
 Targets enter in frequency order like their words. Ties: frequency rank
 ÷ emphasis weight; the loader resolves ranks through the FrequencyMap
@@ -300,11 +301,18 @@ Targets (E7).
 2. sentence.voice satisfies target.skill (other_voice fills receptive
    only); a productive Target is filled only when the sentence's marking
    admits the learner's voice, i.e. is empty or the Profile's own sex,
-3. at the sentence's entry position (after its last word's target):
-   every word it uses has a Target, and at most one filled Target is
-   sentence-introduced and unmet, no adopted sentence placed at or
-   before this one filling it. That every element is a registered word
-   holds by construction (§1).
+3. at the sentence's placement: every word it uses has a Target, and
+   at most one filled Target is sentence-introduced and unmet, no
+   adopted sentence placed at or before this one filling it. That every
+   element is a registered word holds by construction (§1). A
+   sentence's placement (r31) is its entry (after its last used word's
+   last Target) unless two or more of its sentence-introduced Targets
+   are unmet there; then it is directly after the adopted sentence
+   whose fill leaves at most one of them unmet, each placement reading
+   only sentences placed before it and fills before the cap (clause 4).
+   With no such sentence it stays at its entry and fills nothing.
+   Sentences placed directly after one sentence go by word count, then
+   text_sha. A draft is placed where it would be once adopted.
 4. a productive Target is filled by at most
    `production_sentences_per_word` sentences (r26): among the adopted
    sentences clauses 1-3 admit for it, the first in placement order,

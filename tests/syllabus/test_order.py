@@ -2,7 +2,9 @@
 word; ties by frequency rank / emphasis weight; a sentence dealt right
 after its last used word's last Target, a last-word group shorter first
 then by text_sha -- the key the fill set's placement reads too; a
-sentence using no targeted word last (spec 1, section 3, r24).
+sentence using no targeted word last (spec 1, section 3, r24); a
+sentence using a word met only by a later-placed sentence dealt directly
+after that sentence (r31).
 """
 import pytest
 
@@ -160,15 +162,14 @@ def test_sentences_tied_on_length_sharing_a_last_word_tie_on_text_sha():
 
 
 def test_order_and_the_fill_set_placement_share_one_key_within_a_last_word_group():
-    """Fix wave (final review): order() deals a last-word group shorter
-    first, so the fill set's placement (spec 1 section 3 clause 3's "an
-    adopted sentence placed at or before this one") must read the same
-    (last-word position, word count, text_sha) key. A (long, lower
+    """order() deals a last-word group shorter first, and the fill set's
+    placement (spec 1 section 3 clause 3's "an adopted sentence placed
+    at or before this one") reads the same key. A (long, lower
     text_sha) and B (short) share last word w and both use the
-    sentence-introduced x; B also uses the sentence-introduced y. B is
-    dealt first, so A cannot have met x for B: B carries two unmet
-    sentence-introduced Targets and fills nothing, and A -- placed
-    after B, whose fill set is empty -- fills x alone.
+    sentence-introduced x; B also uses the sentence-introduced y. At its
+    own key B, shorter, comes first with two unmet Targets; A introduces
+    x at its own key, and B is placed directly after A (r31), where y is
+    its one unmet Target: order() deals A then B, and B fills x and y.
     """
     x = word("a_x", "ข้าว")  # rice
     y = word("b_y", "ปลา")  # fish
@@ -189,9 +190,10 @@ def test_order_and_the_fill_set_placement_share_one_key_within_a_last_word_group
     assert syllabus.last_used_word(long_a) == syllabus.last_used_word(short_b) == w.id
 
     sentence_shas = [e.id for e in syllabus.order() if e.kind == "sentence"]
-    assert sentence_shas == [short_b.text_sha, long_a.text_sha]
-    assert t_x not in syllabus.fill_set(short_b)
-    assert syllabus.fill_set(short_b) == ()
+    assert sentence_shas == [long_a.text_sha, short_b.text_sha]
+    assert syllabus._placement_key(short_b) == (syllabus._placement_key(long_a)
+                                                + (short_b.word_count, short_b.text_sha))
+    assert syllabus.fill_set(short_b) == (t_w, t_x, t_y)
     assert t_x in syllabus.fill_set(long_a)
 
 
@@ -207,6 +209,157 @@ def test_a_sentence_whose_last_used_word_has_no_target_is_placed_last():
     entries = syllabus.order()
     assert entries[-1].kind == "sentence"
     assert entries[-1].id == s.text_sha
+
+
+# --- placement by met position (r31) -----------------------------------------
+
+def _sentence_shas(syllabus):
+    return [e.id for e in syllabus.order() if e.kind == "sentence"]
+
+
+def test_order_deals_a_sentence_directly_after_the_sentence_that_met_its_word():
+    """gun and very are sentence-introduced; `met` (market, very) is the
+    only other sentence filling very and is placed at market's entry.
+    `late` (gun, very) has very's entry for its own, yet is dealt right
+    after `met`, before old's Target and the sentence placed there."""
+    gun = word("gun", "กระบอก")     # classifier for guns -- sentence-introduced
+    very = word("very", "มาก")       # very -- sentence-introduced
+    market = word("market", "ตลาด")  # market
+    old = word("old", "เก่า")         # old
+    to = thai_of(gun, very, market, old)
+    met = sentence(((market.id, very.id),), to)   # market (is) very ...
+    late = sentence(((gun.id, very.id),), to)     # (this) gun (is) very ...
+    after = sentence(((old.id,),), to)            # old
+    syllabus = Syllabus(
+        words=(gun, very, market, old),
+        targets=(target("gun/receptive", "gun", introduction="sentence"),
+                 target("very/receptive", "very", introduction="sentence"),
+                 target("market/receptive", "market"), target("old/receptive", "old")),
+        sentences=(late, after, met),
+        frequency={gun.id: 1, very.id: 2, market.id: 3, old.id: 4})
+    entries = syllabus.order()
+    positions = {(e.kind, e.id): i for i, e in enumerate(entries)}
+    assert _sentence_shas(syllabus) == [met.text_sha, late.text_sha, after.text_sha]
+    assert positions[("sentence", late.text_sha)] == positions[("sentence", met.text_sha)] + 1
+    assert positions[("sentence", late.text_sha)] < positions[("word_target", "old/receptive")]
+
+
+def _chain():
+    """w2, w3 and w1 are sentence-introduced, in that order, then late.
+    A (w1, late) introduces w1 at late's entry. B (w2, w1) has w1's
+    entry for its own and two unmet words there; A meets w1, so B
+    follows A and introduces w2. C (w3, w2) likewise follows B."""
+    w2 = word("w2", "สอง")    # two -- sentence-introduced
+    w3 = word("w3", "สาม")    # three -- sentence-introduced
+    w1 = word("w1", "หนึ่ง")  # one -- sentence-introduced
+    late = word("late", "สาย")  # late
+    to = thai_of(w1, w2, w3, late)
+    a = sentence(((w1.id, late.id),), to)  # one late
+    b = sentence(((w2.id, w1.id),), to)    # two one
+    c = sentence(((w3.id, w2.id),), to)    # three two
+    syllabus = Syllabus(
+        words=(w1, w2, w3, late),
+        targets=(target("w1/receptive", "w1", introduction="sentence"),
+                 target("w2/receptive", "w2", introduction="sentence"),
+                 target("w3/receptive", "w3", introduction="sentence"),
+                 target("late/receptive", "late")),
+        sentences=(c, b, a),
+        frequency={w2.id: 1, w3.id: 2, w1.id: 3, late.id: 4})
+    return syllabus, a, b, c
+
+
+def test_a_chain_of_met_sentences_orders_each_after_the_one_that_met_its_word():
+    syllabus, a, b, c = _chain()
+    key = syllabus._placement_key
+    assert key(b) == key(a) + (b.word_count, b.text_sha)
+    assert key(c) == key(b) + (c.word_count, c.text_sha)
+    assert _sentence_shas(syllabus) == [a.text_sha, b.text_sha, c.text_sha]
+    assert [len(syllabus.fill_set(s)) for s in (a, b, c)] == [2, 2, 2]
+
+
+def test_sentences_anchored_on_one_sentence_order_by_word_count_then_text_sha():
+    """Three sentences each pair very with a word of their own and are
+    met by `met` alone: they follow it shortest first, ties by text_sha."""
+    small = word("small", "เล็ก")    # small
+    very = word("very", "มาก")       # very -- sentence-introduced
+    a = word("a", "ก")              # a -- sentence-introduced
+    b = word("b", "ข")              # b -- sentence-introduced
+    c = word("c", "ค")              # c -- sentence-introduced
+    market = word("market", "ตลาด")  # market
+    words = (small, very, a, b, c, market)
+    to = thai_of(*words)
+    met = sentence(((market.id, very.id),), to)             # market (is) very ...
+    two_a = sentence(((a.id, very.id),), to)
+    two_b = sentence(((b.id, very.id),), to)
+    three = sentence(((small.id, c.id, very.id),), to)
+    syllabus = Syllabus(
+        words=words,
+        targets=(target("small/receptive", "small"), target("market/receptive", "market"),
+                 *(target(f"{w.id}/receptive", w.id, introduction="sentence")
+                   for w in (very, a, b, c))),
+        sentences=(three, two_b, two_a, met),
+        frequency={w.id: rank for rank, w in enumerate(words, 1)})
+    anchored = sorted((two_a, two_b, three), key=lambda s: (s.word_count, s.text_sha))
+    assert anchored[-1] is three
+    assert _sentence_shas(syllabus) == [met.text_sha] + [s.text_sha for s in anchored]
+
+
+def test_a_sentence_using_no_targeted_word_is_still_placed_after_an_anchored_one():
+    syllabus, a, b, c = _chain()
+    orphan = word("orphan", "เอก")  # a word with no Target
+    syllabus = Syllabus(words=syllabus.words + (orphan,), targets=syllabus.targets,
+                        frequency=syllabus.frequency,
+                        sentences=syllabus.sentences
+                        + (sentence(((orphan.id,),), thai_of(orphan)),))
+    assert _sentence_shas(syllabus)[:3] == [a.text_sha, b.text_sha, c.text_sha]
+    assert syllabus.order()[-1].id == syllabus.sentences[-1].text_sha
+
+
+def test_a_sentence_with_no_sentence_introduced_word_keeps_its_own_key():
+    w1 = word("w1", "หมา")  # dog
+    w2 = word("w2", "แมว")  # cat
+    w3 = word("w3", "สอง")  # two
+    to = thai_of(w1, w2, w3)
+    sentences = (sentence(((w1.id, w3.id),), to), sentence(((w1.id, w2.id, w3.id),), to),
+                 sentence(((w2.id,),), to))
+    syllabus = Syllabus(words=(w1, w2, w3),
+                        targets=(target("t1", "w1"), target("t2", "w2"), target("t3", "w3")),
+                        sentences=sentences)
+    for s in sentences:
+        assert syllabus._placement_key(s) == (
+            syllabus._word_last_position[syllabus.last_used_word(s)], s.word_count, s.text_sha)
+
+
+def test_a_sentence_anchored_on_a_letter_name_sentence_stays_ahead_of_every_word_target():
+    """Four letter names; n1 and n2 are sentence-introduced. A (n1, n3,
+    n4) introduces n1; B (n2, n1) is shorter, so its own key precedes
+    A's, with two unmet words there. B follows A, and both stay after
+    the sounds block, ahead of rice's Target."""
+    keywords = [word(f"k{i}", t) for i, t in enumerate(("กา", "ขา", "คา", "งา"), 1)]
+    names = [word(f"n{i}", t) for i, t in enumerate(("กอ ไก่", "ขอ ไข่", "คอ ควาย", "งอ งู"), 1)]
+    graphemes = [Grapheme.create(symbol=sym, kind="consonant", sound=snd, consonant_class=cls,
+                                 keyword_word=k, name_word=n)
+                 for sym, snd, cls, k, n in zip("กขคง", ("k", "kh", "kh", "ng"),
+                                                ("mid", "high", "low", "low"), keywords, names)]
+    rice = word("rice", "ข้าว")  # rice
+    n1, n2, n3, n4 = names
+    to = thai_of(*names)
+    a = sentence(((n1.id, n3.id, n4.id),), to)
+    b = sentence(((n2.id, n1.id),), to)
+    syllabus = Syllabus(
+        words=(*keywords, *names, rice), graphemes=tuple(graphemes), sentences=(b, a),
+        targets=(target("n1/receptive", "n1", introduction="sentence"),
+                 target("n2/receptive", "n2", introduction="sentence"),
+                 target("n3/receptive", "n3"), target("n4/receptive", "n4"),
+                 target("rice/receptive", "rice")),
+        profile=Profile(register="male_colloquial"))
+    entries = syllabus.order()
+    positions = {(e.kind, e.id): i for i, e in enumerate(entries)}
+    assert syllabus._placement_key(b) == syllabus._placement_key(a) + (b.word_count, b.text_sha)
+    assert positions[("sentence", b.text_sha)] == positions[("sentence", a.text_sha)] + 1
+    assert positions[("sentence", b.text_sha)] < positions[("word_target", "rice/receptive")]
+    assert positions[("sentence", a.text_sha)] > max(
+        i for i, e in enumerate(entries) if e.kind == "grapheme")
 
 
 # --- Syllabus.last_used_word ------------------------------------------------
@@ -312,13 +465,13 @@ def test_a_sentence_using_a_name_word_is_still_placed():
     assert syllabus._word_last_position["name-chicken"] == -1
 
 
-def test_two_name_words_sentence_groups_are_ordered_by_word_id_not_hash_order():
+def test_two_name_words_sentence_groups_are_ordered_by_placement_key_not_hash_order():
     """`_word_last_position` seeds every name word at -1 from
-    `name_word_ids`, a frozenset, so iterating `_word_last_position.items()`
-    to find the -1 words visits them in the frozenset's hash-dependent
-    order (varies with PYTHONHASHSEED). order() must instead visit them in
-    a fixed (sorted-by-word-id) order, so two sentences each keyed to a
-    different name word always land in the same relative order."""
+    `name_word_ids`, a frozenset whose iteration order varies with
+    PYTHONHASHSEED. order() deals the sentences at -1 by placement key
+    (word count, then text_sha), not by that iteration, so two sentences
+    each keyed to a different name word always land in the same relative
+    order -- here name b's first, the shorter, against word-id order."""
     keyword_a = word("keyword-a", "กา")
     keyword_b = word("keyword-b", "ขา")
     name_a = word("name-a", "กอ ไก่", "the letter ก's recited name")
@@ -331,7 +484,7 @@ def test_two_name_words_sentence_groups_are_ordered_by_word_id_not_hash_order():
     # Built out of word-id order (b before a) so a hash-order bug would
     # not be masked by construction order coinciding with the fix.
     s_b = sentence(((name_b.id,),), to, gloss="name b only")
-    s_a = sentence(((name_a.id,),), to, gloss="name a only")
+    s_a = sentence(((name_a.id, name_a.id),), to, gloss="name a twice")
     syllabus = Syllabus(
         words=(keyword_a, keyword_b, name_a, name_b), graphemes=(g_a, g_b),
         sentences=(s_b, s_a),
@@ -340,6 +493,7 @@ def test_two_name_words_sentence_groups_are_ordered_by_word_id_not_hash_order():
         profile=Profile(register="male_colloquial"))
     assert syllabus._word_last_position["name-a"] == -1
     assert syllabus._word_last_position["name-b"] == -1
+    assert s_b.word_count < s_a.word_count
     entries = syllabus.order()
     sentence_shas = [e.id for e in entries if e.kind == "sentence"]
-    assert sentence_shas == [s_a.text_sha, s_b.text_sha]
+    assert sentence_shas == [s_b.text_sha, s_a.text_sha]

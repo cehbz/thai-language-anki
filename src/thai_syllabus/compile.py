@@ -414,12 +414,12 @@ def _positions(syllabus: "Syllabus") -> _Positions:
 
     # One entry per adopted sentence with at least one filled target (the
     # note it compiles into). Its due block is its own order() position
-    # (r24: order() already deals it directly after its last used word's
-    # last Target, its own block of width 1) -- not a block after every
-    # word. A sentence with no order() position (should not arise: order()
-    # covers every syllabus.sentences entry, but this stays a defensive
-    # fallback) is due after every other block, such sentences sorted by
-    # id for a deterministic (if arbitrary) relative order among them.
+    # (r24, r31: order() already deals it at its placement, its own block
+    # of width 1) -- not a block after every word. A sentence with no
+    # order() position (should not arise: order() covers every
+    # syllabus.sentences entry, but this stays a defensive fallback) is
+    # due after every other block, such sentences sorted by id for a
+    # deterministic (if arbitrary) relative order among them.
     positioned: list[tuple[Sentence, tuple[Target, ...], int]] = []
     unpositioned: list[tuple[Sentence, tuple[Target, ...]]] = []
     for s in syllabus.sentences:
