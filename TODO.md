@@ -14,54 +14,40 @@ still run against them.
 2. Cutover to Anki: delete the study deck and import a fresh compile
    (steps under Cutover). The sentence order (spec 1 r24) and the
    one-note sentence cards (spec 4 r11) reach Anki only this way: cards
-   already imported keep their due position.
-3. Sentences for the 8 unfilled Targets: เลย ("at all"), คะ (female
-   polite particle, question), ว่า ("that", complementizer), เป็น ("be")
-   and the classifiers กระบอก (tubes, guns), กอง (piles, fires), ท่อน
-   (logs) and บาท (baht). They are all that closes the build gate. Each
-   is at the three-ask cap and waits for a learner direction on the
-   review screen. Every draft for them was refused by the fill rule,
-   none by the judge, and the screen shows only 2 of the 8; both under
-   "Sentence fill queue".
+   already imported keep their due position. The build gate is open:
+   the 2026-10-03 compile after the enrichment run needed no `--force`.
 
-## Sentence fill queue (fill run 2026-10-03)
+## Sentence drafting (enrichment run 2026-10-03)
 
-The 12-cycle run adopted 41 sentences, 6 of them in the female
-speaker's voice, and filled 42 of 50 Targets for USD 1.00, three
-quarters of it on judging scene pictures. Report:
-.superpowers/sdd/2026-10-02-fill-queue/task-7-report.md.
+The 12-cycle run with `--poll-seconds 60` adopted 34 sentences, 10 of
+them in the female speaker's voice and 13 of them drafts made before
+spec 1 r31 that it now admits, for USD 1.34, 90% of it on scene
+pictures (65% judging, 25% illustrator). It filled the 8 Targets the
+fill run left open and brought every sentence-introduced Target to its
+wanted count. Report:
+.superpowers/sdd/2026-10-02-fill-queue/task-9-report.md.
 
-- **The drafting prompt offers words the fill rule counts as unmet.**
-  All 21 drafts for the 8 open Targets were refused before the judge as
-  filling no open Target. Each pairs its Target with a second
-  sentence-introduced word, such as มาก ("very"), อัน (classifier for
-  pieces), ไม่ ("not") or แล้ว ("already"), whose every filling sentence
-  is placed after the draft in the study order, so the draft would
-  introduce two words. The prompt's vocabulary lists every met
-  sentence-introduced word wherever its filling sentence is placed.
-  Whether the prompt or the fill rule changes is open.
-- **A text refused at acceptance is proposed again.** The prompt names
-  only texts the judge failed or that were retired, so the drafter is
-  never told; four texts came back in three asks each.
-- **A scene-picture question hides a word's direction question.** The
-  question waits while a draft of the word's asks is in the unresolved
-  judge batch, matched by text sha alone, so a scene-picture question on
-  an adopted sentence those asks drafted holds it back: 6 of the 8 open
-  words are off the screen until the batch the run left out resolves.
-- **The 300 s batch poll sets the cycle length.** Every batch resolved
-  at its first poll, about 308 s after submission: 72% of the run's 78
-  minutes. Cycles 10 to 12 had nothing to draft and only sourced scene
-  pictures.
+- **The batch poll still sets the cycle length; `--poll-seconds` is
+  the lever.** At 60 s, doubling each poll, 7 of 8 batches resolved at
+  the third poll, about 190 s after submission (308 s at the 300 s
+  default): 60% of the run's 49 minutes, against 72% of the fill run's
+  78. When a batch ends is not recorded, only the poll that saw it.
+  Cycles 4 to 12 drafted nothing and only sourced scene pictures.
 - The adoption pass logs the same 31 refused drafts on record twice a
   cycle (27 mark both sexes, 3 name unregistered words, 1 does not
-  match its clauses): 744 of the log's 987 lines.
-- imgfetch refuses Pexels originals over its 10 MiB cap (7 in the run,
-  11.7 to 34.8 MB); a smaller Pexels rendition would fetch (inferred).
+  match its clauses): 744 of the log's 924 lines. The mixed-sex ones
+  also take up to 8 of the drafting prompt's 20 refused lines (spec 3
+  r62), each reason quoting the draft's 64-hex text sha, since
+  `check_sentence`'s message is passed through as is.
+- imgfetch refuses Pexels originals over its 10 MiB cap (1 in the
+  enrichment run at 10.9 MB, 7 in the fill run at 11.7 to 34.8 MB); a
+  smaller Pexels rendition would fetch (inferred).
 - The ask count restarts at any learner row on the word (spec 3 r19)
   and at the adoption of any sentence using the word, not only one that
   fills its open Target, so a word can be handed more than three times
-  in a row. None of the 8 open Targets is affected: all are receptive
-  (inferred).
+  in a row. No Target on the live deck is affected: every
+  sentence-introduced Target is receptive, and for all 82 the adopted
+  sentences using the word are exactly those filling the Target.
 - Spec 5 r18 says a classifier's direction question names its nouns "as
   the drafting prompt does", but the screen names them for every
   classifier Word and the prompt only for a sentence-introduced one: a
@@ -76,12 +62,14 @@ quarters of it on judging scene pictures. Report:
 
 - **The per-word cap can push a Cloze card the learner has not reviewed
   out of the build** while it stays in Anki with a blank front (spec 4
-  section 1). On the live deck 20 of 46 judge-passing drafts would push
-  out 34 pairs if adopted.
-- **781 Cloze cards arrive as new cards at the cutover**; nothing caps
+  section 1). Between the 2026-10-03 compiles before and after the
+  enrichment run, its sentences, placed earlier, pushed 25 pairs on 23
+  later sentences out under the cap; 6 of those sentences lost every
+  Cloze card. None was studied yet: the cutover is pending.
+- **799 Cloze cards arrive as new cards at the cutover**; nothing caps
   productive new cards (F12, under Doctrine divergences).
-- `sentence/synthetic-productive` warns on 362 sentences.
-- 107 sentences carry no Cloze card, and the scene pictures of 88 of
+- `sentence/synthetic-productive` warns on 377 sentences.
+- 124 sentences carry no Cloze card, and the scene pictures of 94 of
   them show on no card: the sentence Listening card shows none.
 - A hand-declared sentence-introduced productive Target capped out of
   every earlier filler stays unfilled (spec 1 r26); none on the live
@@ -93,6 +81,33 @@ quarters of it on judging scene pictures. Report:
   line; `attempts.joined` is a thin public helper; the comment pass does
   not show which Target a commented Cloze card blanked; the scene-picture
   re-ask pools lapses across a sentence's Cloze anchors.
+
+## Corpus after enrichment (user decision)
+
+Every sentence-introduced Target has its wanted count of sentences
+(spec 1 r30): the 26 function words set to 5, 3 or 2 by frequency rank
+and the 56 classifiers at 1. No `target/sentence-required` or
+`target/sentences-wanted` finding remains.
+
+- **The sentences adopted before the fill run never use the function
+  words.** The 424 of the corpus's 499 sentences adopted before the
+  2026-10-03 fill run use none of the 26 except ที่ ("at", 37 sentences)
+  and นี้ ("this", 108). 286 of the 424 use none of the 26.
+  - Every use of the other 24 is in the 75 sentences of the two
+    2026-10-03 runs. Sentences per word: ไม่ ("not") 11, มี ("have") 14,
+    มาก ("very") 9, แล้ว ("already") 8, ครับ (male polite particle) 8,
+    ใน ("in") 7, ค่ะ (female polite particle) 6, เป็น ("be") 3, จะ
+    ("will") 3, and 2 to 5 for each of the rest.
+  - 427 of the 499 use none of the 24.
+
+  Whether to redraft or extend the earlier corpus with these words is
+  open (the fill-queue plan's design question).
+- **Redundant sentences (measure only).** 20 adopted sentences fill no
+  Target that an earlier-placed sentence does not already fill. 8 of
+  them are from the enrichment run, and each of those adds a sentence
+  toward a function word's wanted count. Counted against wanted counts,
+  9 are surplus, all adopted before the fill run, such as กล้องแพง
+  ("the camera is expensive").
 
 ## Same-spelling words
 
@@ -327,7 +342,11 @@ Wiktionary was consulted for 5 forms, 1 absent):
   residue it would serve is zero today. Not planned.
 - The `wiktionary` line in the run's per-backend spend table is minted
   by `default_budgets` from `quotas.wiktionary` and never charged
-  (asks=0 while rows are written); cosmetic. A deck paced at 0 s never
+  (asks=0 while rows are written); cosmetic. Its `judge` line never
+  counts batch verdicts, because `_resolve_previous_batch` tallies no
+  spend. It read `asks=0 cost=0.0000` in every cycle of both 2026-10-03
+  runs, while the enrichment run's batch judging cost USD 0.99; the
+  cycle line's `spent=` reads the record and includes it. A deck paced at 0 s never
   backs off from a 429 without a Retry-After header (the wiring default
   is 1 s). An `absent` dictionary row is final; Wiktionary grows, so a
   `nothing_ttl_days` for it may be wanted. Spec 3 §5's grapheme-adoption
