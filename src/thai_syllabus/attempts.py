@@ -86,7 +86,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
            "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
            "reverify_attempt",
-           "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal",
+           "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "OpenTargets",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_MAX_WORDS",
            "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
 
@@ -1169,6 +1169,29 @@ def _artifact_for(comment: record.Comment, kind: str) -> tuple[str | None, str |
     return None, f"the card showed {len(recordings)} recordings"
 
 
+class OpenTargets:
+    """The Targets still open in `ctx.syllabus` (gaps(), one full
+    report()), in targets order: read on the first call and again only
+    when `ctx.syllabus` has since been replaced -- a retirement inside a
+    pass reopens the retired sentence's Targets. A Syllabus is frozen and
+    target/sentence-required reads nothing outside it, so a read holds
+    for as long as `ctx.syllabus` is the syllabus it was read from.
+    """
+
+    def __init__(self, ctx: Sourcing) -> None:
+        self._ctx = ctx
+        self._syllabus: Syllabus | None = None
+        self._targets: tuple[Target, ...] = ()
+
+    def __call__(self) -> tuple[Target, ...]:
+        syllabus = self._ctx.syllabus
+        if syllabus is not self._syllabus:
+            open_ids = set(syllabus.gaps().unfilled_targets)
+            self._syllabus = syllabus
+            self._targets = tuple(t for t in syllabus.targets if t.id in open_ids)
+        return self._targets
+
+
 def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None = None
                   ) -> str | None:
     """Why a drafted `sentence` could not be adopted, or None when it
@@ -1183,8 +1206,8 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
     line).
 
     `open_targets` is the caller's own snapshot of the Targets still open
-    (`sentence_attempt` reads it once for the whole run); None reads
-    gaps() here.
+    (`sentence_attempt` reads it once for the whole run, the comment pass
+    and the D2 recovery through OpenTargets); None reads gaps() here.
     """
     try:
         ctx.syllabus.check_sentence(sentence)
@@ -1202,8 +1225,7 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
         # study.
         return f"{sentence.word_count} words (cap {ctx.sentence_max_words})"
     if open_targets is None:
-        open_ids = set(ctx.syllabus.gaps().unfilled_targets)
-        open_targets = [t for t in ctx.syllabus.targets if t.id in open_ids]
+        open_targets = OpenTargets(ctx)()
     fills = ctx.syllabus.fill_set(sentence)
     if not any(t in fills for t in open_targets):
         return "fills no open Target"
@@ -1220,13 +1242,15 @@ def _done(action: Mapping[str, Any]) -> dict[str, Any]:
 
 def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
                        parses: Mapping[str, Clauses], ref: CommentRef,
-                       questions: list[AssessQuestion]) -> dict[str, Any]:
+                       questions: list[AssessQuestion],
+                       open_targets: OpenTargets) -> dict[str, Any]:
     """replacement_sentence: the parsed clauses become a draft accepted
     the way sentence_attempt accepts one (draft_refusal: invariant,
-    clause cap, word cap, fills an open Target), appended as the same provide row under
-    DRAFT_SUBJECT that a drafting ask leaves -- record.sentence_drafts
-    reads it back -- with its sentence-for-target question collected for
-    the run's batch; adoption is the next run's, once the verdict lands.
+    clause cap, word cap, fills a Target `open_targets` holds open),
+    appended as the same provide row under DRAFT_SUBJECT that a drafting
+    ask leaves -- record.sentence_drafts reads it back -- with its
+    sentence-for-target question collected for the run's batch; adoption
+    is the next run's, once the verdict lands.
     """
     text = action["thai"].strip()
     clauses = parses.get(text)
@@ -1236,7 +1260,7 @@ def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
     if draft.text_sha in {s.text_sha for s in ctx.syllabus.sentences}:
         return _refused(action, "already adopted")
     sentence = record.draft_sentence(draft, ctx.today)
-    refusal = draft_refusal(ctx, sentence)
+    refusal = draft_refusal(ctx, sentence, open_targets())
     if refusal is not None:
         return _refused(action, refusal)
     ctx.db.append(port="provide", backend="llm",
@@ -1270,7 +1294,7 @@ _ARTIFACT_SUBJECT_KINDS = frozenset({"word", "sentence"})
 
 def _act(ctx: Sourcing, comment: record.Comment, subject_kind: str, action: Mapping[str, Any],
          parses: Mapping[str, Clauses], ref: CommentRef,
-         questions: list[AssessQuestion]) -> dict[str, Any]:
+         questions: list[AssessQuestion], open_targets: OpenTargets) -> dict[str, Any]:
     """One action executed as its existing typed row, marked with the
     comment; the record of what happened goes on the reading row."""
     name = action["action"]
@@ -1324,7 +1348,7 @@ def _act(ctx: Sourcing, comment: record.Comment, subject_kind: str, action: Mapp
                         derived_from=ref)
         return _done(action)
     if name == "replacement_sentence":
-        return _draft_replacement(ctx, action, parses, ref, questions)
+        return _draft_replacement(ctx, action, parses, ref, questions, open_targets)
     return _refused(action, "outside the vocabulary")
 
 
@@ -1414,6 +1438,7 @@ def comment_attempt(ctx: Sourcing) -> AttemptResult:
     parses = _parse_replacements(ctx, readings, spend)
 
     questions: list[AssessQuestion] = []
+    open_targets = OpenTargets(ctx)
     read = actions_done = unactionable = retired = 0
     for comment, refusal in closed:
         # no ask was made about it and no action is possible: the row is
@@ -1435,7 +1460,7 @@ def comment_attempt(ctx: Sourcing) -> AttemptResult:
             _log.warning("comment %s: the reader named no reading for it", comment.comment_sha)
             reading = record.CommentReading(reading="", actions=(), unactionable=(_NO_READING,))
         before = len(ctx.syllabus.sentences)
-        records = [_act(ctx, comment, subject_kind, a, parses, ref, questions)
+        records = [_act(ctx, comment, subject_kind, a, parses, ref, questions, open_targets)
                    for a in reading.actions]
         retired += before - len(ctx.syllabus.sentences)
         actions_done += sum(1 for r in records if r["outcome"] == "done")

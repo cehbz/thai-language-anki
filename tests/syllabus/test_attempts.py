@@ -3778,6 +3778,72 @@ def test_retire_sentence_action_retires_with_reason_and_hint_and_a_replacement_i
     assert retire["outcome"] == "done" and replaced["outcome"] == "done"
 
 
+def _counting_reports(monkeypatch):
+    """Syllabus.report wrapped to count its calls: gaps() is one full
+    report, five seconds on the live deck."""
+    calls = []
+    real = Syllabus.report
+
+    def counted(self):
+        calls.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Syllabus, "report", counted)
+    return calls
+
+
+def test_the_comment_pass_reads_the_open_targets_once_for_its_replacements(tmp_path, monkeypatch):
+    """Three replacement drafts in one pass, the syllabus unchanged
+    between them: the open Targets are read once, not once per draft."""
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    texts = {"กินข้าวครับ": ["eat", "rice", "polite-particle"],   # กินข้าวครับ: eat rice (polite)
+             "ข้าวครับ": ["rice", "polite-particle"],             # ข้าวครับ: rice (polite)
+             "กินครับ": ["eat", "polite-particle"]}               # กินครับ: eat (polite)
+    ctx.provider._backends["llm-parse"] = _Llm(json.dumps({"parses": [
+        {"text": t, "clauses": [c]} for t, c in texts.items()]}, ensure_ascii=False))
+    particle = word("polite-particle", "ครับ", "polite particle (male)", speaker="male")  # ครับ: kráp
+    ctx.syllabus = replace(ctx.syllabus.with_words((*ctx.syllabus.words, particle)),
+                           targets=(*ctx.syllabus.targets,
+                                    target("polite-particle/receptive", "polite-particle",
+                                           introduction="sentence")))
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="too blunt", shown={"text_sha": s.text_sha}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "the sentence lacks a particle", [
+        {"action": "replacement_sentence", "thai": t, "gloss": "polite"} for t in texts], [])))
+    reports = _counting_reports(monkeypatch)
+    res = comment_attempt(ctx)
+    assert res.comment_actions == 3 and len(res.questions) == 3
+    assert len(reports) == 1
+
+
+def test_a_replacement_after_a_retirement_is_checked_against_the_reopened_targets(
+        tmp_path, monkeypatch):
+    """A retirement inside the pass replaces ctx.syllabus and reopens the
+    retired sentence's Targets: a replacement checked after it reads the
+    open Targets of the syllabus it is checked against, not the pass's
+    first read. The same text is refused before the retirement (every
+    Target filled) and accepted after it."""
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    ctx.provider._backends["llm-parse"] = _Llm(json.dumps({"parses": [
+        {"text": "ข้าวกิน", "clauses": [["rice", "eat"]]}]}, ensure_ascii=False))
+    # ข้าวกิน: rice eat (reversed)
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="odd", shown={"text_sha": s.text_sha}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    replacement = {"action": "replacement_sentence", "thai": "ข้าวกิน", "gloss": "rice, eat"}
+    _answer_with(ctx, _readings_json((c.comment_sha, "odd", [
+        replacement, {"action": "retire_sentence", "reason": "odd"}, replacement], [])))
+    reports = _counting_reports(monkeypatch)
+    res = comment_attempt(ctx)
+    (before, retire, after) = reading_of(ctx.db.assessments_of(s.text_sha),
+                                         c.comment_sha).answer["actions"]
+    assert before["outcome"] == "refused" and before["reason"] == "fills no open Target"
+    assert retire["outcome"] == "done" and after["outcome"] == "done"
+    assert [q.question.params["text"] for q in res.questions] == ["ข้าวกิน"]
+    assert len(reports) == 2   # one read per syllabus the pass checked against
+
+
 def test_a_judge_that_dies_at_the_replacement_check_reports_the_counts_it_already_wrote(tmp_path):
     """Fix round 1 finding 1: the retirement, the rows and the reading are
     already on the record when the judge is asked about the replacement

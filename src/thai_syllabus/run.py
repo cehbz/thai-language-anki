@@ -29,6 +29,7 @@ from .cachekeys import RunReportKey
 from .attempts import (
     AttemptResult,
     Need,
+    OpenTargets,
     Sourcing,
     Spend,
     adjudication_attempt,
@@ -354,7 +355,8 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     the clause cap, at least one still-open Target filled, the
     per-sentence Target cap), decides, so the judge is never asked about
     a draft the run would refuse anyway -- a curated change since it was
-    drafted, or its Targets filled in the meantime. A refusal is a
+    drafted, or its Targets filled in the meantime. The open Targets are
+    read once for the pass (OpenTargets). A refusal is a
     routine, permanent fact about the draft, logged at debug. Drafts are
     not needs: the questions ride this run's batch like the sentence
     attempt's, and no bucket counts them.
@@ -363,11 +365,12 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     retired = retired_texts(ctx.db)
     role = role_for("sentence")
     questions: list[AssessQuestion] = []
+    open_targets = OpenTargets(ctx)
     for draft in sentence_drafts(ctx.db):
         if draft.text_sha in adopted or draft.text_sha in retired or not draft.gloss:
             continue
         sentence = draft_sentence(draft, ctx.today)
-        refusal = draft_refusal(ctx, sentence)
+        refusal = draft_refusal(ctx, sentence, open_targets())
         if refusal is not None:
             _log.debug("orphaned draft not asked about: %s: %s", refusal, draft.text)
             continue

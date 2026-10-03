@@ -3174,6 +3174,32 @@ def test_a_draft_the_run_could_never_adopt_is_not_asked_about(tmp_path, fake_sea
     assert text_sha(over_cap) not in [s for s, _role in _submitted_pairs(ctx.db, report.batch_id)]
 
 
+def test_the_recovery_reads_the_open_targets_once_for_every_draft_on_record(
+        tmp_path, fake_search, fake_batch, monkeypatch):
+    """Three drafts on record, each checked by attempts.draft_refusal:
+    the pass reads the open Targets (gaps(), one full Syllabus.report)
+    once, not once per draft -- 699 drafts at 5 s each on the live deck."""
+    root = _deck(tmp_path, (RICE, FISH, EAT),
+                 (target("rice/receptive", "rice"), target("fish/receptive", "fish"),
+                  target("eat/receptive", "eat")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    thai = thai_of(RICE, FISH, EAT)
+    for clause, gloss in ((["eat", "rice"], "eat rice"), (["eat", "fish"], "eat fish"),
+                          (["rice", "fish"], "rice, fish")):
+        _seed_draft(ctx.db, clauses=[clause], gloss=gloss, text="".join(map(thai, clause)))
+    calls = []
+    real = Syllabus.report
+
+    def counted(self):
+        calls.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Syllabus, "report", counted)
+    result = run_mod._recover_orphaned_drafts(ctx)
+    assert len(result.questions) == 3
+    assert len(calls) == 1
+
+
 
 # --- the adoption counts: events, outside the needs identity (spec 3 r40) --
 
