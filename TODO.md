@@ -23,8 +23,6 @@ still run against them.
    review screen. Every draft for them was refused by the fill rule,
    none by the judge, and the screen shows only 2 of the 8; both under
    "Sentence fill queue".
-4. The six open picture needs: learner direction from the review screen
-   re-opens them; no engineering.
 
 ## Sentence fill queue (fill run 2026-10-03)
 
@@ -96,21 +94,21 @@ quarters of it on judging scene pictures. Report:
   not show which Target a commented Cloze card blanked; the scene-picture
   re-ask pools lapses across a sentence's Cloze anchors.
 
-## Same-spelling words and shared pictures
+## Same-spelling words
 
-33 `card/unique-front` findings on the word notetype close the compile
-gate (the 2026-09-21 compile was forced past them).
+Each spelling group compiles one Listening, Reading and Spelling set on
+its first picture-introduced Word (spec 4 r12); the 2026-10-03 compile
+has no `card/unique-front` finding.
 
-- **Same-spelling words:** 12 groups collide on Reading; หนัง
-  (movie / leather) also on Listening and Spelling through one shared
-  recording. หลัง (back / classifier) and ที่ (serving / "at") are
-  further groups not flagged today. Every group is pronounced alike.
-  Ruling 2026-10-02: one Reading, Listening and Spelling card per
-  spelling showing every meaning; Production stays one per meaning.
-  Needs a plan.
-- **Shared pictures:** tomorrow/today and oneself/"I" (male) collide on
-  Production through one picture each; veto one of each pair so the run
-  re-sources it.
+- A receptive-only member that does not carry the set compiles no
+  note: to-measure (วัด "to measure", beside "temple") and
+  banknote-colloquial (แบงก์ "banknote", beside "bank"). Its recording
+  is still required, and a rate question on it shows "no card compiles
+  for this subject yet".
+- The review screen's `shown.picture` takes a card's first picture, so
+  a carrier with no picture of its own would report another member's.
+- Spec 1 says a Word with no Target is in no spelling group, while
+  `spelling_group` returns its form's group for one.
 
 ## Sentences: after the parsimonious-sentences arc
 
@@ -208,8 +206,12 @@ Still open:
 ## Cutover
 
 - Compile (`--force` while the gate is closed). In Anki: delete the
-  deck and the stale notetypes (spec 4 section 5), import with "Merge
-  note types", turn on the three bury-sibling settings in the deck's
+  deck and the stale notetypes spec 4 section 5 names (`sentence`,
+  `minimal_pair`, `sentence+`, `minimal_pair+`, `sentence++`,
+  `picture_word`, `picture_word+`, `spelling_sound`, `spelling_sound+`;
+  `word` and `word+` too unless the import merges note types: the word
+  notetype gained fields at spec 4 r12), import with "Merge note types",
+  turn on the three bury-sibling settings in the deck's
   preset (the import warns while any is off), and leave blank-front
   Cloze cards alone (Empty Cards deletes their schedule). Then the proof
   pass in `thai-syllabus review`, and `import` after a study session;
