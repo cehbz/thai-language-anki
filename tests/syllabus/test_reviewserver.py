@@ -1843,6 +1843,31 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
         assert set(card["shown"]) == {"picture", "recordings", "text_sha", "syllabus_state_id"}
 
 
+def test_gallery_shows_a_spelling_groups_form_side_cards_under_its_first_word(db, media_store):
+    """spec 4 r12: the gallery's cards are the compile's -- a spelling
+    group's Reading card once, on its first Word, its back giving both
+    meanings; the second, receptive-only Word has no card of its own."""
+    eye = word("eye", "ตา", "eye")
+    grandfather = word("grandfather", "ตา", "grandfather (mother's side)")
+    syllabus = Syllabus(words=(grandfather, eye),
+                        targets=(target("t-eye", eye.id), target("t-grandfather", grandfather.id)),
+                        frequency={eye.id: 1, grandfather.id: 2}, assessments=db)
+    pictures = {}
+    for w in (eye, grandfather):
+        pictures[w.id] = media_store.write(f"{w.id}-picture".encode(), ext="jpg")
+        db.add_media(sha=pictures[w.id], kind="picture", ext="jpg", source="openverse",
+                     origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
+        _judge(db, w.id, "picture", pictures[w.id], True)
+    cards = rs.compiled_cards(_derivations_for(syllabus, db, media_store))
+    assert [(c["subject"], c["kind"]) for c in cards] == [("eye", "reading")]
+    back = cards[0]["back_html"]
+    assert "eye" in back and "grandfather (mother's side)" in back
+    assert f'<img src="/media/{pictures["grandfather"]}">' in back
+    assert cards[0]["gloss"] == "eye"
+    # the card's own picture comes first, so `shown` names the subject's
+    assert cards[0]["shown"]["picture"] == pictures["eye"]
+
+
 def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
         db, media_store, w1, w2, pair, confusion):
     """spec 5 section 1: the pair drill's per-confusion accuracy logging

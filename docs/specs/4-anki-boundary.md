@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 11, proposed 2026-10-02 against principles r7 and architecture
+Revision 12, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -25,6 +25,7 @@ Revision log:
 - r9 2026-10-01: the sentence note carries the Listening card; each Target a sentence fills productively has its own Cloze note on that sentence (identity sentence + Target, blanking that Target's word, due with the sentence). Evidence: spec 1 r25 lets one sentence fill several productive Targets. The sentence notetype's fields and Cloze template changed, a break taken at the cutover's delete-and-reimport; the append-only rule holds from r9 on. User ruling 2026-10-01.
 - r10 2026-10-01: a sentence Cloze card needs its sentence's scene picture; without one it is dropped from the build (counted, reason "no current-best picture") until the picture exists. Evidence: the Cloze front is the blanked sentence plus the picture, so a pictureless card does not say which word is wanted and two sentences differing only in the blanked word compile to one front. A Cloze card already in the learner's Anki collection stays there when its picture is later rejected, as a Production card does. User ruling 2026-10-01.
 - r11 2026-10-02: a sentence's Listening card and its Cloze cards are siblings of one note, a Cloze card in the slot of its word's position in the sentence; a Cloze card needs the sentence's recording as well as its scene picture. Evidence: under r9 each Cloze card was its own note, so Anki's sibling burying no longer separated a sentence's cards: 336 Listening cards were followed at once by a Cloze card on the same sentence and 225 sentences dealt two to seven Cloze cards back to back, each front showing the words the others blank; 4 Cloze cards compiled with no audio on the back. The notetype changes again before any import of r9, and the cutover deletes the stale notetypes with the deck; a notetype change updates a collection in place only under Anki's "Merge note types". Sibling burying is the learner's deck preset, which an import does not set: the import warns when it is off. User ruling 2026-10-02.
+- r12 2026-10-02: a spelling group's Listening, Reading and Spelling cards are compiled once, on its first picture-introduced Word's note (gated by the appended field FormSide); the Listening and Reading backs list the group's other members, each with its picture and meaning, after the note's own (the appended field OtherSenses); the Spelling back is unchanged; each member keeps its Production card. A Word alone in its form compiles and renders as under r11. Evidence: 29 of the 33 card/unique-front findings on the live deck were same-spelling Words (12 groups). The notetype change needs "Merge note types" on an import into a collection that holds r11's word notetype, or that notetype is deleted with the deck at a cutover (§5). User ruling 2026-10-02.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -44,7 +45,11 @@ collection's notetype in place only when the package is imported with
 Anki's "Merge note types"; without it Anki creates a copy named with a
 `+` (`sentence+`) and puts the imported notes under it. The sentence
 notetype changed at r9 and again at r11, before any import of r9, a
-break taken at the cutover (§5). A note's first
+break taken at the cutover (§5). The word notetype changed at r12 (the
+fields OtherSenses and FormSide appended, the Listening, Reading and
+Spelling templates changed): an import into a collection holding r11's
+`word` notetype under the same model id needs "Merge note types", or
+that notetype is deleted with the deck at a cutover (§5). A note's first
 field is its identity, unique within its model (A3). Every model carries the
 card CSS (legible Thai, bounded images, answer distinct, night mode — as
 shipped in the current compiler) and two service fields rendered by no
@@ -52,19 +57,41 @@ template: ReviewNote (the mid-review comment channel) and CompileId.
 
 **word** (from a Word with a picture-introduced Target):
 fields Thai, Meaning, Picture, Audio, Ipa, Classifier, FrontGloss,
-TestSpelling, ProductiveTarget, ReviewNote, CompileId. ProductiveTarget
-gates the Production card (non-empty iff the word has a productive
-Target). Ipa renders the Pronunciation value with tone and length.
-- Listening (receptive): front audio; back picture, Thai, IPA, meaning.
+TestSpelling, ProductiveTarget, ReviewNote, CompileId, OtherSenses,
+FormSide.
+The Listening, Reading and Spelling cards are the form side of a
+spelling (spec 1 §3's spelling group: the Words sharing a written form
+that carry a Target, in introduction order; a Word alone in its form is
+a group of one). They are compiled once per group, on the note of its
+first picture-introduced Word (the carrier), and play the carrier's
+recording; FormSide (non-empty on the carrier's note only) gates them.
+OtherSenses is the group's other members, in introduction order, each
+as its current-best picture where it has one and its meaning; a
+sentence-introduced member, which has no note, appears there. It is
+empty for a Word alone in its form, whose cards render as under r11.
+Every other picture-introduced member's note holds its
+Production card only, and a member with no productive Target has no
+note (no card, none counted as dropped). Identity, tags and due are
+each note's own Word's (§2): a review or flag on a form-side card maps
+to the carrier. ProductiveTarget gates the Production card (non-empty
+iff the word has a productive Target). Ipa renders the Pronunciation
+value with tone and length.
+- Listening (receptive; carrier only): front audio; back picture, Thai,
+  IPA, meaning, OtherSenses.
 - Production (productive Target and a current-best picture; no picture,
   no card): front picture
   {{#FrontGloss}}gloss chip{{/FrontGloss}}; back Thai, native audio, IPA.
-- Reading (staged: due after the graphemes its spelling uses): front
-  Thai script; back picture, audio, meaning.
-- Spelling (TestSpelling-gated): front audio; back Thai.
+- Reading (carrier only; staged: due after the graphemes its spelling
+  uses): front Thai script; back picture, audio, meaning, OtherSenses.
+- Spelling (carrier only; TestSpelling-gated, TestSpelling non-empty iff
+  any member of the group has a productive Target): front audio; back
+  Thai.
+A form-side card already in the learner's collection on a note that no
+longer carries the form side is left with a blank front, its schedule
+intact; Anki's Empty Cards deletes it.
 FrontGloss is the F3 variant point: empty by default; the compile fills
-it per gloss policy (pending study input). Meaning always renders on
-backs.
+it per gloss policy (pending study input). Meaning renders on the
+Listening and Reading backs, the other members' meanings after it.
 
 **minimal_pair** (one note per rendition member):
 fields MemberKey, Choices, Audio, OtherAudio, Stimulus, Speaker, plus
@@ -232,7 +259,9 @@ retains only final fit-to-viewport.
   ids (`sentence++`, which holds the sentence notes the learner studies,
   `picture_word`, `picture_word+`, `spelling_sound`, `spelling_sound+`)
   do not collide with r11's; the learner deletes them at the cutover
-  along with the deck.
+  along with the deck. r12 changes the `word` notetype under its model
+  id: a cutover imported without "Merge note types" also expects absent
+  the `word` notetype with r11's fields and its `+` copy (`word+`).
 - No native Anki cloze type: the sentence notetype is a plain one with a
   template per Cloze slot; corruption is impossible by construction
   (element replacement).

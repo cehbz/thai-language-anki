@@ -68,14 +68,13 @@ def test_recompiling_a_changed_syllabus_updates_notes_in_place(world):
 # --- A3: no two cards share a front ----------------------------------------
 
 def test_two_notes_sharing_a_front_refuse_the_compile_with_a_finding(world):
-    syllabus = duplicate_front_syllabus()
-    world.seed_recording("rice-a", "recording a")
-    world.seed_recording("rice-b", "recording b")
+    syllabus = duplicate_front_syllabus(world)
     with pytest.raises(GateRefusal) as excinfo:
         compile_syllabus(syllabus, world.db, world.media, world.out_path, current_rubric={}, prior=(),
                          provenance_source=lambda sha: None)
     assert not world.out_path.exists()
-    assert any(f.rule == "card/unique-front" for f in excinfo.value.report.findings)
+    assert any(f.rule == "card/unique-front" and f.evidence.endswith("(word:production)")
+               for f in excinfo.value.report.findings)
 
 
 # --- A4: every media reference resolves to a file in the package ----------

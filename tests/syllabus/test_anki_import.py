@@ -392,6 +392,44 @@ def test_flag_on_a_tone_correctness_role_queues_reverification_not_override(comp
     assert reverify_rows[0].question["role"] == "recording-for-word"
 
 
+def test_a_review_and_a_flag_on_a_spelling_groups_listening_card_map_to_its_first_word(fx):
+    """spec 4 r12: แก้ว (glass, drinking / the material) has one Listening
+    card, on the first Word's note; its review and its flag land on that
+    Word, whose recording it plays."""
+    from .test_compile import glass_group
+
+    syllabus, _media = glass_group(fx)
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "extracted")
+    conn = _open_rw(collection_path)
+    models, notes, cards = _models_notes_cards(conn)
+    word_model = next(m for m in models.values() if m["name"] == "word")
+    listening_ord = next(i for i, t in enumerate(word_model["tmpls"]) if t["name"] == "Listening")
+    thai_idx = _field_index(word_model, "Thai")
+    glass_nids = {nid for nid, mid, flds, _tags in notes
+                  if str(mid) == word_model["id"] and flds.split("\x1f")[thai_idx] == "แก้ว"}
+    listening = [cid for cid, nid, ord_ in cards if nid in glass_nids and ord_ == listening_ord]
+    assert len(listening) == 1
+    assert compiled.report.findings == ()
+    (card_id,) = listening
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                 (1_700_000_000_000, card_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.execute("update cards set flags=2 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    assert report.revlog_imported == 1 and report.flags_imported == 1
+    assert len(fx.db.records("word", "glass-drinking", "listening")) == 1
+    assert fx.db.records("word", "glass-material", "listening") == []
+    assert [r.question["role"] for r in fx.db.assessments_of("glass-drinking")
+            if r.backend == "learner" and r.question.get("kind") == "reverify"] == [
+        "recording-for-word"]
+    assert not [r for r in fx.db.assessments_of("glass-material") if r.backend == "learner"]
+
+
 def test_flag_import_is_idempotent_per_flags_state(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)

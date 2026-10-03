@@ -348,32 +348,34 @@ _RULES_FOR_UNIQUE_FRONT = _RULES_WITHOUT_COMPLETENESS + (
     next(r for r in RULES if r.id == "card/unique-front"),)
 
 
-def _duplicate_front_syllabus() -> Syllabus:
-    # Two distinct words sharing one Thai spelling -- their Reading
-    # template fronts ("{{Thai}}" alone) render identically.
-    rice_a = _word("rice-a", "ข้าว", "cooked rice (a)")
-    rice_b = _word("rice-b", "ข้าว", "cooked rice (b)")
-    targets = (Target(id=TargetId("rice-a/receptive"), word=rice_a.id, skill="receptive"),
-              Target(id=TargetId("rice-b/receptive"), word=rice_b.id, skill="receptive"))
-    return Syllabus(words=(rice_a, rice_b), targets=targets,
-                    rules=_RULES_FOR_UNIQUE_FRONT)
+def _duplicate_front_syllabus(fx) -> Syllabus:
+    # Two distinct spellings, ข้าว (rice) and หมา (dog), both productive and
+    # seeded with one shared picture -- their Production fronts (the
+    # picture alone) render identically.
+    rice = _word("rice", "ข้าว", "cooked rice")
+    dog = _word("dog", "หมา", "dog")
+    targets = tuple(Target(id=TargetId(f"{w.id}/{skill}"), word=w.id, skill=skill)
+                    for w in (rice, dog) for skill in ("receptive", "productive"))
+    for w in (rice, dog):
+        fx.seed_picture(w.id, "one picture", content=b"one picture")
+        fx.seed_recording(w.id, f"recording {w.id}")
+    return Syllabus(words=(rice, dog), targets=targets, rules=_RULES_FOR_UNIQUE_FRONT)
 
 
 def test_compile_refuses_on_duplicate_card_fronts(fx):
-    syllabus = _duplicate_front_syllabus()
-    fx.seed_recording("rice-a", "recording a")
-    fx.seed_recording("rice-b", "recording b")
+    syllabus = _duplicate_front_syllabus(fx)
     with pytest.raises(GateRefusal) as excinfo:
         compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert not fx.out_path.exists()
-    assert any(f.rule == "card/unique-front" for f in excinfo.value.report.findings)
+    assert {(f.note_id, f.evidence) for f in excinfo.value.report.findings
+            if f.rule == "card/unique-front"} == {
+        ("rice", "front matches ['dog'] (word:production)"),
+        ("dog", "front matches ['rice'] (word:production)")}
 
 
 def test_compile_forced_past_duplicate_fronts_reports_the_finding_and_writes(fx):
-    syllabus = _duplicate_front_syllabus()
-    fx.seed_recording("rice-a", "recording a")
-    fx.seed_recording("rice-b", "recording b")
+    syllabus = _duplicate_front_syllabus(fx)
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     assert fx.out_path.exists()
@@ -383,8 +385,8 @@ def test_compile_forced_past_duplicate_fronts_reports_the_finding_and_writes(fx)
 
 
 def test_compile_with_distinct_fronts_reports_no_unique_front_finding(fx):
-    # Same setup as _duplicate_front_syllabus but with distinct Thai
-    # spellings -- no two Reading fronts collide.
+    # Two receptive words with distinct Thai spellings and their own
+    # recordings -- no two fronts collide.
     rice = _word("rice", "ข้าว", "cooked rice")
     dog = _word("dog", "หมา", "dog")
     targets = (Target(id=TargetId("rice/receptive"), word=rice.id, skill="receptive"),
@@ -1813,3 +1815,234 @@ def test_a_name_words_targets_take_one_block_each_between_grapheme_and_word():
     assert positions.target_index["rice/receptive"] == 3
     assert positions.word_index["name-chicken"] == 1
     assert positions.order_length == 4
+
+
+# --- spelling groups: one set of form-side cards per spelling (spec 4 r12) --
+
+import genanki
+
+from thai_syllabus.compile import build_deck, field_values, render_card
+
+_FORM_SIDE = ("Listening", "Reading", "Spelling")
+
+
+def _word_template_ord(name: str) -> int:
+    return next(i for i, t in enumerate(WORD_MODEL.templates) if t["name"] == name)
+
+
+def _built_deck(fx, syllabus: Syllabus):
+    return build_deck(syllabus, fx.db, fx.media, current_rubric={}, prior=(),
+                      provenance_source=lambda sha: None, compile_id="C")
+
+
+def _word_cards(deck) -> dict[str, set[str]]:
+    """word id -> the template names its compiled note generated."""
+    return {b.subject: {WORD_MODEL.templates[c.ord]["name"] for c in b.note.cards}
+            for b in deck.built if b.family == "word"}
+
+
+def _word_built(deck, word_id: str):
+    (built,) = [b for b in deck.built if b.family == "word" and b.subject == word_id]
+    return built
+
+
+def glass_group(fx, *, drinking_productive: bool = True, material_productive: bool = True):
+    """แก้ว (kɛ̂ːw): glass (drinking), introduced first, and glass (the
+    material), each picture-introduced, with its own picture and
+    recording. -> (syllabus, word id -> (picture sha, recording sha)).
+    card/unique-front is enabled."""
+    drinking = _word("glass-drinking", "แก้ว", "glass (drinking)")
+    material = _word("glass-material", "แก้ว", "glass (the material)")
+    targets = [Target(id=TargetId("glass-drinking/receptive"), word=drinking.id,
+                      skill="receptive"),
+               Target(id=TargetId("glass-material/receptive"), word=material.id,
+                      skill="receptive")]
+    if drinking_productive:
+        targets.append(Target(id=TargetId("glass-drinking/productive"), word=drinking.id,
+                              skill="productive"))
+    if material_productive:
+        targets.append(Target(id=TargetId("glass-material/productive"), word=material.id,
+                              skill="productive"))
+    syllabus = Syllabus(words=(material, drinking), targets=tuple(targets),
+                        frequency={drinking.id: 1, material.id: 2},
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_FOR_UNIQUE_FRONT)
+    media = {w.id: (fx.seed_picture(w.id, w.meaning), fx.seed_recording(w.id, w.meaning))
+             for w in (drinking, material)}
+    return syllabus, media
+
+
+def test_a_spelling_groups_form_side_cards_compile_once_on_its_first_word(fx):
+    syllabus, _media = glass_group(fx)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck) == {
+        "glass-drinking": {"Listening", "Production", "Reading", "Spelling"},
+        "glass-material": {"Production"},
+    }
+    assert deck.front_findings == ()
+    assert [d for d in deck.dropped if d.family == "word"] == []
+
+
+def test_a_spelling_groups_form_side_backs_show_every_meaning_and_picture(fx):
+    """The carrier's Listening and Reading backs are its own, then each
+    other member's picture and meaning; its Spelling back is the Thai
+    alone, the same whichever meaning."""
+    syllabus, media = glass_group(fx)
+    carrier = _word_built(_built_deck(fx, syllabus), "glass-drinking")
+    (own_picture, own_recording), (other_picture, _) = (media["glass-drinking"],
+                                                        media["glass-material"])
+    own_img, own_sound = f'<img src="{own_picture}.jpg">', f"[sound:{own_recording}.mp3]"
+    other = f'<img src="{other_picture}.jpg"><div class="gloss">glass (the material)</div>'
+    rendered = {kind: render_card(WORD_MODEL, carrier.note, _word_template_ord(kind))
+                for kind in _FORM_SIDE}
+    assert rendered["Listening"] == (
+        own_sound, f'{own_sound}<hr id="answer">{own_img}<div class="thai">แก้ว</div>'
+                   f'<div class="ipa">ma˧</div><div class="gloss">glass (drinking)</div>{other}')
+    assert rendered["Reading"] == (
+        '<div class="thai">แก้ว</div>',
+        f'<div class="thai">แก้ว</div><hr id="answer">{own_img}{own_sound}'
+        f'<div class="gloss">glass (drinking)</div>{other}')
+    assert rendered["Spelling"] == (
+        own_sound, f'{own_sound}<hr id="answer"><div class="thai">แก้ว</div>')
+
+
+# The word templates as r11 (commit 47d6879) shipped them, and its fields.
+_R11_WORD_MODEL = genanki.Model(
+    1, "word-r11",
+    fields=[{"name": f} for f in ("Thai", "Meaning", "Picture", "Audio", "Ipa", "Classifier",
+                                  "FrontGloss", "TestSpelling", "ProductiveTarget",
+                                  "ReviewNote", "CompileId")],
+    templates=[{
+        "name": "Listening",
+        "qfmt": "{{Audio}}",
+        "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}'
+               '<div class="thai">{{Thai}}</div><div class="ipa">{{Ipa}}</div>'
+               '<div class="gloss">{{Meaning}}</div>',
+    }, {
+        "name": "Production",
+        "qfmt": '{{#ProductiveTarget}}{{#Picture}}{{Picture}}'
+               '{{#FrontGloss}}<div class="gloss">{{FrontGloss}}</div>{{/FrontGloss}}'
+               '{{/Picture}}{{/ProductiveTarget}}',
+        "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
+               '{{Audio}}<div class="ipa">{{Ipa}}</div>',
+    }, {
+        "name": "Reading",
+        "qfmt": '<div class="thai">{{Thai}}</div>',
+        "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}{{Audio}}'
+               '<div class="gloss">{{Meaning}}</div>',
+    }, {
+        "name": "Spelling",
+        "qfmt": "{{#TestSpelling}}{{Audio}}{{/TestSpelling}}",
+        "afmt": '{{#TestSpelling}}{{FrontSide}}<hr id="answer">'
+               '<div class="thai">{{Thai}}</div>{{/TestSpelling}}',
+    }])
+
+
+def test_a_word_alone_in_its_form_renders_every_card_as_r11_did(fx):
+    """A group of one: each of the four cards' front and back, rendered
+    from its note, is byte-identical under r11's templates and today's."""
+    deck = _built_deck(fx, _fully_seeded(fx))
+    words = [b for b in deck.built if b.family == "word"]
+    assert {b.subject for b in words} == {"pom", "gin", "rice"}
+    for built in words:
+        for ord_, template in enumerate(WORD_MODEL.templates):
+            assert template["name"] == _R11_WORD_MODEL.templates[ord_]["name"]
+            assert (render_card(WORD_MODEL, built.note, ord_)
+                    == render_card(_R11_WORD_MODEL, built.note, ord_)), (built.subject,
+                                                                          template["name"])
+
+
+def test_a_spelling_groups_production_cards_are_each_members_own(fx):
+    syllabus, media = glass_group(fx)
+    deck = _built_deck(fx, syllabus)
+    for word_id, (picture, recording) in media.items():
+        front, back = render_card(WORD_MODEL, _word_built(deck, word_id).note,
+                                  _word_template_ord("Production"))
+        assert front == f'<img src="{picture}.jpg">'
+        assert back == (f'{front}<hr id="answer"><div class="thai">แก้ว</div>'
+                        f'[sound:{recording}.mp3]<div class="ipa">ma˧</div>')
+
+
+def test_a_later_member_with_no_productive_target_compiles_no_note_and_no_drop(fx):
+    syllabus, _media = glass_group(fx, material_productive=False)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck) == {
+        "glass-drinking": {"Listening", "Production", "Reading", "Spelling"}}
+    assert [d for d in deck.dropped if d.subject == "glass-material"] == []
+
+
+def test_the_spelling_card_exists_when_only_a_later_member_is_productive(fx):
+    syllabus, _media = glass_group(fx, drinking_productive=False)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck) == {
+        "glass-drinking": {"Listening", "Reading", "Spelling"},
+        "glass-material": {"Production"},
+    }
+
+
+def test_a_sentence_introduced_members_meaning_appears_on_the_groups_backs(fx):
+    # ที่ (tʰîː): "at", met only through sentences and introduced first,
+    # and serving (counted order), picture-introduced: serving carries
+    # the form-side cards, "at" has no note and no picture.
+    serving = _word("serving", "ที่", "serving, portion")
+    at = _word("at", "ที่", "at; that, which (relative)")
+    syllabus = Syllabus(
+        words=(serving, at),
+        targets=(Target(id=TargetId("serving/receptive"), word=serving.id, skill="receptive"),
+                 Target(id=TargetId("at/receptive"), word=at.id, skill="receptive",
+                        introduction="sentence")),
+        frequency={at.id: 1, serving.id: 2},
+        profile=Profile(register="male_colloquial"), rules=_RULES_FOR_UNIQUE_FRONT)
+    picture = fx.seed_picture("serving", "a serving of rice")
+    fx.seed_recording("serving", "serving")
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck) == {"serving": {"Listening", "Reading"}}
+    carrier = _word_built(deck, "serving")
+    for kind in ("Listening", "Reading"):
+        _front, back = render_card(WORD_MODEL, carrier.note, _word_template_ord(kind))
+        assert "at; that, which (relative)" in back, kind
+        assert back.index("serving, portion") < back.index("at; that, which (relative)")
+        assert back.count("<img") == 1 and f'<img src="{picture}.jpg">' in back
+
+
+def test_a_word_alone_in_its_form_compiles_what_it_compiled_before(fx):
+    """A group of one (every word of _fully_seeded): guid, due, card set,
+    tags and the values of the fields r11's notetype has, as r11 compiled
+    them."""
+    import genanki
+
+    deck = _built_deck(fx, _fully_seeded(fx))
+    r11_fields = ("Thai", "Meaning", "Picture", "Audio", "Ipa", "Classifier", "FrontGloss",
+                  "TestSpelling", "ProductiveTarget", "ReviewNote", "CompileId")
+    kinds = ["kind::listening", "kind::production", "kind::reading", "kind::spelling"]
+    pom_audio = "[sound:e644fa75f59f5020b31b369fdf55f790640b8d0d0e39633d5752f2e4bb0b75aa.mp3]"
+    gin_audio = "[sound:250c59e1ee75c4276b81f3eb0038f67bf515c29209b79eef46abc00de3fe0011.mp3]"
+    rice_picture = '<img src="2aa102b2ef4b1b3f72a348c100d5a91ffd7ff8de2f2b9ad94d8b3a984349e6ba.jpg">'
+    rice_audio = "[sound:842576699068fc9b6e70177dbe3f5df21e01f82a356c994901d1b4350a57bac7.mp3]"
+    expected = {
+        "pom": (400, [0, 2], ["family::word", "word::pom", "compile::C", *kinds,
+                              "audio-src::forvo"],
+                ["ผม", "I (male speaker)", "", pom_audio, "ma˧", "", "", "", "", "", "C"]),
+        "gin": (300, [0, 2], ["family::word", "word::gin", "compile::C", *kinds,
+                              "audio-src::forvo"],
+                ["กิน", "to eat", "", gin_audio, "ma˧", "", "", "", "", "", "C"]),
+        "rice": (500, [0, 1, 2, 3], ["family::word", "word::rice", "compile::C", *kinds,
+                                     "img-src::openverse", "audio-src::forvo"],
+                 ["ข้าว", "cooked rice", rice_picture, rice_audio, "ma˧", "", "", "1", "1",
+                  "", "C"]),
+    }
+    got = {}
+    for b in deck.built:
+        if b.family != "word":
+            continue
+        assert b.note.guid == genanki.guid_for("word", b.subject)
+        values = field_values(WORD_MODEL, b.note)
+        got[b.subject] = (b.base_due, sorted(c.ord for c in b.note.cards), list(b.note.tags),
+                          [values[f] for f in r11_fields])
+    assert got == expected
+    assert {(d.subject, d.kind, d.reason) for d in deck.dropped if d.family == "word"} == {
+        ("pom", "Production", "gated: no productive Target"),
+        ("pom", "Spelling", "gated: spelling not tested"),
+        ("gin", "Production", "gated: no productive Target"),
+        ("gin", "Spelling", "gated: spelling not tested"),
+    }

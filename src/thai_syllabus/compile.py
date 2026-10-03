@@ -1,7 +1,9 @@
 """compile_syllabus (spec 4): a Syllabus, a SyllabusDb (current-best
 artifacts and media provenance) and a MediaStore into one Anki .apkg.
 
-One note per picture-introduced word, grapheme, and adopted sentence
+One note per picture-introduced word (a spelling group's later members
+only when productive: the group's first such Word carries its
+Listening, Reading and Spelling cards), grapheme, and adopted sentence
 that fills a target (its Listening card and a Cloze card per productive
 Target it fills), one per minimal-pair member; every note tagged,
 due-stamped from Syllabus.order(), and stamped with this compile's
@@ -86,23 +88,32 @@ def _stable_id(*parts: str) -> int:
     return int(hashlib.sha256("::".join(parts).encode()).hexdigest()[:8], 16)
 
 
-def _model(name: str, fields: list[str], templates: list[dict]) -> genanki.Model:
-    all_fields = [*fields, "ReviewNote", "CompileId"]
+def _model(name: str, fields: list[str], templates: list[dict],
+           appended: tuple[str, ...] = ()) -> genanki.Model:
+    """`appended` are fields a later revision added, after the service
+    fields, so every earlier field keeps its ord."""
+    all_fields = [*fields, "ReviewNote", "CompileId", *appended]
     return genanki.Model(_stable_id(name), name,
                          fields=[{"name": f} for f in all_fields],
                          templates=templates, css=CARD_CSS)
 
 
+# The word note (spec 4 r12). Listening, Reading and Spelling are the
+# spelling's form-side cards: their fronts nest in FormSide, set on the
+# note of the spelling group's first picture-introduced Word only. The
+# Listening and Reading backs follow the note's own picture and meaning
+# with OtherSenses, the group's other members' (empty for a Word alone
+# in its form).
 WORD_MODEL = _model(
     "word",
     ["Thai", "Meaning", "Picture", "Audio", "Ipa", "Classifier", "FrontGloss",
      "TestSpelling", "ProductiveTarget"],
     [{
         "name": "Listening",
-        "qfmt": "{{Audio}}",
+        "qfmt": "{{#FormSide}}{{Audio}}{{/FormSide}}",
         "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}'
                '<div class="thai">{{Thai}}</div><div class="ipa">{{Ipa}}</div>'
-               '<div class="gloss">{{Meaning}}</div>',
+               '<div class="gloss">{{Meaning}}</div>{{OtherSenses}}',
     }, {
         # Picture nests inside its own section, not just ProductiveTarget's
         # (spec 4 section 1: "productive Target and a current-best
@@ -123,15 +134,16 @@ WORD_MODEL = _model(
                '{{Audio}}<div class="ipa">{{Ipa}}</div>',
     }, {
         "name": "Reading",
-        "qfmt": '<div class="thai">{{Thai}}</div>',
+        "qfmt": '{{#FormSide}}<div class="thai">{{Thai}}</div>{{/FormSide}}',
         "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}{{Audio}}'
-               '<div class="gloss">{{Meaning}}</div>',
+               '<div class="gloss">{{Meaning}}</div>{{OtherSenses}}',
     }, {
         "name": "Spelling",
-        "qfmt": "{{#TestSpelling}}{{Audio}}{{/TestSpelling}}",
+        "qfmt": "{{#FormSide}}{{#TestSpelling}}{{Audio}}{{/TestSpelling}}{{/FormSide}}",
         "afmt": '{{#TestSpelling}}{{FrontSide}}<hr id="answer">'
                '<div class="thai">{{Thai}}</div>{{/TestSpelling}}',
-    }])
+    }],
+    appended=("OtherSenses", "FormSide"))
 
 MINIMAL_PAIR_MODEL = _model(
     "minimal_pair",
@@ -219,9 +231,9 @@ SENTENCE_MODEL = _model(
 # the card type's tooltip and the comment pass hands it to the reader
 # with the comment; both read this one table.
 CARD_MEANINGS: dict[tuple[str, str], str] = {
-    ("word", "listening"): "Front plays the word; back shows its picture, Thai, IPA and meaning.",
+    ("word", "listening"): "Front plays the word; back shows its picture, Thai, IPA and meaning, then any other meaning of that spelling with its picture.",
     ("word", "production"): "Front shows the picture (and a gloss when set); back shows the Thai, plays it and gives the IPA.",
-    ("word", "reading"): "Front shows the Thai; back shows the picture, plays the word and gives the meaning.",
+    ("word", "reading"): "Front shows the Thai; back shows the picture, plays the word and gives the meaning, then any other meaning of that spelling with its picture.",
     ("word", "spelling"): "Front plays the word; back shows the Thai spelling.",
     ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and offers both; back names the one heard, with IPA, and plays the other.",
     ("grapheme", "reading"): "Front shows the letter; back shows its recited name, the keyword picture, the keyword's Thai and gloss, plays it and gives the sound.",
@@ -433,13 +445,26 @@ def _positions(syllabus: "Syllabus") -> _Positions:
 # below; each returns (genanki.Note, due) or None for an item with
 # nothing to compile.
 
-def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
+def _other_senses(word: Word, group: Sequence[Word], resolver: _Resolver) -> str:
+    """The OtherSenses field (spec 4 r12): each other member of `word`'s
+    spelling group, in introduction order, as its current-best picture
+    (none when it has none) and its meaning; empty for a group of one."""
+    return "".join(f'{resolver.img(w.id, "picture")}<div class="gloss">{w.meaning}</div>'
+                   for w in group if w.id != word.id)
+
+
+def _word_note(syllabus: "Syllabus", word: Word, carries_form_side: bool,
+               productive_words: frozenset[WordId], resolver: _Resolver,
                compile_id: str, positions: _Positions) -> tuple[genanki.Note, int] | None:
+    """`word`'s note; `carries_form_side` when it is its spelling group's
+    first picture-introduced Word, whose note holds the group's
+    Listening, Reading and Spelling cards (spec 4 r12)."""
     if word.id not in positions.word_index:
         return None  # no Target at all -- not a compiled word (spec 4 section 1)
 
-    productive = any(t.word == word.id and t.skill == "productive"
-                     for t in syllabus.targets)
+    group = syllabus.spelling_group(word.id)
+    productive = word.id in productive_words
+    spelling_tested = any(w.id in productive_words for w in group)
     classifier_word = syllabus.find_word(word.classifier) if word.classifier else None
 
     tags = [f"family::word", f"word::{word.id}", f"compile::{compile_id}"]
@@ -455,10 +480,12 @@ def _word_note(syllabus: "Syllabus", word: Word, resolver: _Resolver,
         ipa.render(word.pron),
         classifier_word.thai if classifier_word else "",
         "",  # FrontGloss: F3 variant point, empty by default (spec 4 section 1)
-        "1" if productive else "",   # TestSpelling: set with ProductiveTarget
+        "1" if spelling_tested else "",   # TestSpelling: any member productive
         "1" if productive else "",   # ProductiveTarget
         "",  # ReviewNote: mid-review comment channel, rendered by no template
         compile_id,
+        _other_senses(word, group, resolver),
+        "1" if carries_form_side else "",   # FormSide
     ]
     note = genanki.Note(model=WORD_MODEL, fields=fields, tags=tags,
                         guid=_guid("word", word.id))
@@ -729,36 +756,40 @@ def _duplicate_front_findings(entries: list[tuple[str, str, str]]) -> list[Findi
 
 @dataclass(frozen=True)
 class _DropCause:
-    """What a (model, template) pair's card generation depends on: a
-    `gate_field` whose emptiness means the card was not asked for (reason
-    `gate_reason`; None counts no drop at all), else the artifacts,
-    (field, artifact kind), whose missing current-best leaves the card no
-    front.
+    """What a (model, template) pair's card generation depends on: its
+    `gates`, (field, reason) in order, the first with an empty field
+    meaning the card was not asked for (with that reason; None counts no
+    drop at all), else the artifacts, (field, artifact kind), whose
+    missing current-best leaves the card no front.
     """
-    gate_field: str | None
-    gate_reason: str | None
+    gates: tuple[tuple[str, str | None], ...]
     artifacts: tuple[tuple[str, str], ...]
 
+
+# A form-side card on a note that does not carry its spelling's form side
+# is no card and no drop: the group's first Word carries it (spec 4 r12).
+_FORM_SIDE_GATE = ("FormSide", None)
 
 # One entry per (model name, template name) for word and sentence, whose
 # card presence genanki's own required-field computation decides once the
 # note is built; grapheme and minimal_pair decide their drop reason
 # before building theirs.
 _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
-    ("word", "Listening"): _DropCause(None, None, (("Audio", "recording"),)),
-    # gate_field is ProductiveTarget (dropped for "gated: ..." when the
-    # word isn't productive); when it IS productive but the card still
-    # didn't generate, the front's other requirement -- a current-best
-    # picture (spec 4 section 1/3) -- is what's missing.
-    ("word", "Production"): _DropCause("ProductiveTarget", "gated: no productive Target",
+    ("word", "Listening"): _DropCause((_FORM_SIDE_GATE,), (("Audio", "recording"),)),
+    # gated on ProductiveTarget (dropped for "gated: ..." when the word
+    # isn't productive); when it IS productive but the card still didn't
+    # generate, the front's other requirement -- a current-best picture
+    # (spec 4 section 1/3) -- is what's missing.
+    ("word", "Production"): _DropCause((("ProductiveTarget", "gated: no productive Target"),),
                                        (("Picture", "picture"),)),
-    ("word", "Reading"): _DropCause(None, None, (("Audio", "recording"),)),
-    ("word", "Spelling"): _DropCause("TestSpelling", "gated: spelling not tested",
-                                     (("Audio", "recording"),)),
-    ("sentence", "Listening"): _DropCause(None, None, (("Audio", "recording"),)),
+    ("word", "Reading"): _DropCause((_FORM_SIDE_GATE,), (("Audio", "recording"),)),
+    ("word", "Spelling"): _DropCause(
+        (_FORM_SIDE_GATE, ("TestSpelling", "gated: spelling not tested")),
+        (("Audio", "recording"),)),
+    ("sentence", "Listening"): _DropCause((), (("Audio", "recording"),)),
     # A slot holding no Target is no card and no drop (spec 4 r11).
     **{("sentence", f"Cloze {slot}"): _DropCause(
-        _cloze_fields(slot)[0], None, (("ScenePicture", "picture"), ("Audio", "recording")))
+        ((_cloze_fields(slot)[0], None),), (("ScenePicture", "picture"), ("Audio", "recording")))
        for slot in range(1, CLOZE_SLOTS + 1)},
 }
 
@@ -771,8 +802,9 @@ def _template_drop_reason(model_name: str, template_name: str,
     with no entry raises KeyError.
     """
     cause = _TEMPLATE_DROP_CAUSES[(model_name, template_name)]
-    if cause.gate_field is not None and not fields_by_name[cause.gate_field]:
-        return cause.gate_reason
+    for gate_field, gate_reason in cause.gates:
+        if not fields_by_name[gate_field]:
+            return gate_reason
     missing = [kind for name, kind in cause.artifacts if not fields_by_name[name]]
     return "no current-best " + " and ".join(missing or [kind for _, kind in cause.artifacts])
 
@@ -871,12 +903,23 @@ def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> Iterator[Built | DroppedCard]:
     # A word note is compiled only for a word with a picture-introduced
     # Target (spec 4 section 1); a sentence-introduced word compiles no
-    # word note, it is carried by its sentence note.
+    # word note, it is carried by its sentence note. The first
+    # picture-introduced Word of a spelling group carries the group's
+    # form-side cards; every other member's note holds its Production
+    # card only, so a member with no productive Target has no note
+    # (spec 4 r12).
     picture_introduced_word_ids = set(_picture_introduced_words(syllabus))
+    productive_words = frozenset(t.word for t in syllabus.targets if t.skill == "productive")
     for word in syllabus.words:
         if word.id not in picture_introduced_word_ids:
             continue
-        built = _word_note(syllabus, word, resolver, compile_id, positions)
+        carrier = next(w for w in syllabus.spelling_group(word.id)
+                       if w.id in picture_introduced_word_ids)
+        carries_form_side = carrier.id == word.id
+        if not carries_form_side and word.id not in productive_words:
+            continue
+        built = _word_note(syllabus, word, carries_form_side, productive_words, resolver,
+                           compile_id, positions)
         yield from _gated_items(built, WORD_MODEL, "word", word.id)
 
 

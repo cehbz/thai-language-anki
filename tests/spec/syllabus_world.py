@@ -150,8 +150,8 @@ class SyllabusWorld:
         self._pass_judge(subject, "recording", sha)
         return sha
 
-    def seed_picture(self, subject: str, text: str) -> str:
-        sha = self.media.write(f"image:{subject}:{text}".encode(), ext="jpg")
+    def seed_picture(self, subject: str, text: str, content: bytes | None = None) -> str:
+        sha = self.media.write(content or f"image:{subject}:{text}".encode(), ext="jpg")
         self.db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
                           origin="https://example.com/x.jpg", licence="cc0",
                           acquired=date(2026, 1, 1))
@@ -270,19 +270,23 @@ def fully_seeded_syllabus(world: SyllabusWorld) -> Syllabus:
         syllabus, media=_DbMediaIndex(db=world.db, pairs=syllabus.pairs))
 
 
-# --- fixture: two words sharing one spelling, for card/unique-front -------
+# --- fixture: two words sharing one picture, for card/unique-front --------
 
-def duplicate_front_syllabus() -> Syllabus:
-    """Two distinct words both spelled "ข้าว" (rice) -- their Reading
-    template fronts ("{{Thai}}" alone) render identically, tripping
-    card/unique-front (A3: no two cards share a front).
+def duplicate_front_syllabus(world: SyllabusWorld) -> Syllabus:
+    """Two distinct spellings, ข้าว (rice) and หมา (dog), both productive,
+    seeded in `world` with one shared picture -- their Production fronts
+    (the picture alone) render identically, tripping card/unique-front
+    (A3: no two cards share a front).
     """
-    rice_a = _word("rice-a", "ข้าว", "cooked rice (a)")
-    rice_b = _word("rice-b", "ข้าว", "cooked rice (b)")
-    targets = (Target(id=TargetId("rice-a/receptive"), word=rice_a.id, skill="receptive"),
-              Target(id=TargetId("rice-b/receptive"), word=rice_b.id, skill="receptive"))
+    rice = _word("rice", "ข้าว", "cooked rice")
+    dog = _word("dog", "หมา", "dog")
+    targets = tuple(Target(id=TargetId(f"{w.id}/{skill}"), word=w.id, skill=skill)
+                    for w in (rice, dog) for skill in ("receptive", "productive"))
+    for w in (rice, dog):
+        world.seed_picture(w.id, "one picture", content=b"one picture")
+        world.seed_recording(w.id, f"recording {w.id}")
     rules = RULES_WITHOUT_COMPLETENESS + (UNIQUE_FRONT_RULE,)
-    return Syllabus(words=(rice_a, rice_b), targets=targets, rules=rules)
+    return Syllabus(words=(rice, dog), targets=targets, rules=rules)
 
 
 # --- fixture: one receptive-only Target filled by its own sentence --------
