@@ -11,7 +11,7 @@ from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING
 
 from .cachekeys import JudgeKey
 from .entities import (
@@ -43,7 +43,8 @@ def name_word_ids_of(graphemes: Sequence[Grapheme]) -> frozenset[WordId]:
 def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
                               categories: Sequence[Category],
                               frequency: Mapping[WordId, int], cutoff: int,
-                              *, name_word_ids: frozenset[WordId] = frozenset()
+                              *, learner_speaker: Literal["male", "female"],
+                              name_word_ids: frozenset[WordId] = frozenset()
                               ) -> tuple[Target, ...]:
     """Spec 1 r9: one Target(id=f"{w.id}/productive", word=w.id,
     skill="productive", introduction="picture_card") per Word that is a
@@ -52,6 +53,10 @@ def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
     `words` order. A listed productive Target on such a word raises
     ValueError naming the row: targets.yaml lists exceptions only. A
     listed productive Target on any other word stands as the exception.
+
+    Spec 1 r27 (E3): a Word whose `speaker` marking is not
+    `learner_speaker` has no productive Target: it derives none, and a
+    listed one raises ValueError naming the row.
 
     `name_word_ids` is the Words spec 1 r16 makes a grapheme's recited
     name (`name_word_ids_of` over the deck's graphemes). Those derive
@@ -64,11 +69,20 @@ def derive_productive_targets(words: Sequence[Word], targets: Sequence[Target],
     """
     categorized = {word_id for cat in categories for word_id in cat.members}
     listed_productive = {t.word: t for t in targets if t.skill == "productive"}
+    other_sex = {w.id: w.speaker for w in words
+                 if w.speaker is not None and w.speaker != learner_speaker}
+    for t in targets:
+        if t.skill == "productive" and t.word in other_sex:
+            raise ValueError(
+                f"targets.yaml lists productive target {t.id!r} for word {t.word!r}, "
+                f"whose speaker marking {other_sex[t.word]!r} is not the learner's "
+                f"{learner_speaker!r} (spec 1 r27: such a word is receptive only)")
 
     derived: list[Target] = []
     for w in words:
         rank = frequency.get(w.id)
         eligible = (w.id in categorized and not w.no_productive
+                   and w.id not in other_sex
                    and w.id not in name_word_ids
                    and rank is not None and rank <= cutoff)
         if not eligible:

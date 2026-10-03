@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 26, proposed 2026-10-01 against principles r7 and architecture
+Revision 27, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -74,6 +74,7 @@ Revision log:
 - r24 2026-09-25: order() deals each sentence directly after its last used word's last Target (the entry position §3 clause 3 already names); a sentence whose last used word is a letter-name word follows the sounds block; sentences sharing a last word are ordered by word count then text_sha, the same key the fill-set placement (§3 clause 3) reads; a sentence with no placed word last. Evidence: order() appended every sentence after every word Target, so no sentence card reached the learner until all ~900 word cards had been introduced; the principle (F8) is a sentence after its words. User ruling 2026-09-25.
 - r25 2026-10-01: a productive Target is filled by any learner-voice sentence using its word whose marking admits the learner; last_used_word is the placement key only. Evidence: 620 of 650 drafts refused as filling no open Target used an open productive word that was not their last word in order; with spec 1 r24 dealing a sentence after its last word, every word it uses is known when its cards arrive. User ruling 2026-10-01.
 - r26 2026-10-01: a productive Target is filled by at most `production_sentences_per_word` (Profile, 3) sentences, the first in placement order, a pair with a study record on its Cloze card kept and counted. Evidence: under r25 the live deck compiled 1,425 Cloze cards, 96 on the male "I" and 33 on "good", median 2 per word; 761 at three per word. User ruling 2026-10-01.
+- r27 2026-10-02: a Word whose speaker marking is not the learner's has no productive Target (E3), derived or listed. Evidence: ดิฉัน ("I", female polite) derived one that no sentence can fill, since a productive fill needs a marking that admits the learner. User ruling 2026-10-02.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -153,8 +154,12 @@ Target                              # curated learning list; the unit of
                                     # a targets.yaml row adds one below the
                                     # cutoff, `no_productive: true` withholds
                                     # one. Closure and unranked words carry
-                                    # none unless listed. The loader refuses
-                                    # a row that duplicates a derived Target.
+                                    # none unless listed. A Word whose
+                                    # speaker marking is not the learner's
+                                    # carries none, derived or listed (E3).
+                                    # The loader refuses a row that
+                                    # duplicates a derived Target or lists
+                                    # one on such a Word.
 
 Category                            # curated learning list: a theme of
   name: str                         # the FF 625 list. identity

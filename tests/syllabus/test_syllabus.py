@@ -249,7 +249,8 @@ def test_check_sentence_refuses_a_sentence_marking_both_a_male_and_a_female_spea
 
 def test_derive_productive_targets_derives_for_a_categorized_word_at_the_cutoff():
     rice = word("rice", "ข้าว")
-    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2000}, 2000)
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2000}, 2000,
+                                        learner_speaker="male")
     assert [t.id for t in derived] == ["rice/productive"]
     d = derived[0]
     assert (d.word, d.skill, d.introduction) == (rice.id, "productive", "picture_card")
@@ -257,25 +258,28 @@ def test_derive_productive_targets_derives_for_a_categorized_word_at_the_cutoff(
 
 def test_derive_productive_targets_excludes_a_word_ranked_past_the_cutoff():
     rice = word("rice", "ข้าว")
-    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2001}, 2000)
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 2001}, 2000,
+                                        learner_speaker="male")
     assert derived == ()
 
 
 def test_derive_productive_targets_excludes_an_uncategorized_word():
     rice = word("rice", "ข้าว")
-    derived = derive_productive_targets([rice], [], [], {rice.id: 1}, 2000)
+    derived = derive_productive_targets([rice], [], [], {rice.id: 1}, 2000, learner_speaker="male")
     assert derived == ()
 
 
 def test_derive_productive_targets_excludes_a_no_productive_word():
     rice = dataclasses.replace(word("rice", "ข้าว"), no_productive=True)
-    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 1}, 2000)
+    derived = derive_productive_targets([rice], [], [_food("rice")], {rice.id: 1}, 2000,
+                                        learner_speaker="male")
     assert derived == ()
 
 
 def test_derive_productive_targets_excludes_an_unranked_word():
     rice = word("rice", "ข้าว")
-    derived = derive_productive_targets([rice], [], [_food("rice")], {}, 2000)
+    derived = derive_productive_targets([rice], [], [_food("rice")], {}, 2000,
+                                        learner_speaker="male")
     assert derived == ()
 
 
@@ -296,7 +300,7 @@ def test_derive_productive_targets_keeps_a_listed_exception_below_cutoff():
     rice = word("rice", "ข้าว")
     listed = target("rice/productive", "rice", skill="productive")
     derived = derive_productive_targets(
-        [rice], [listed], [_food("rice")], {rice.id: 5000}, 2000)
+        [rice], [listed], [_food("rice")], {rice.id: 5000}, 2000, learner_speaker="male")
     assert derived == ()
 
     syllabus = Syllabus(words=(rice,), targets=(listed,) + derived,
@@ -310,7 +314,8 @@ def test_derive_productive_targets_raises_on_a_listed_target_for_an_eligible_wor
     rice = word("rice", "ข้าว")
     listed = target("rice/productive", "rice", skill="productive")
     with pytest.raises(ValueError, match="rice/productive"):
-        derive_productive_targets([rice], [listed], [_food("rice")], {rice.id: 10}, 2000)
+        derive_productive_targets([rice], [listed], [_food("rice")], {rice.id: 10}, 2000,
+                                  learner_speaker="male")
 
 
 def test_derive_productive_targets_skips_a_name_word_whose_target_adoption_listed():
@@ -326,7 +331,7 @@ def test_derive_productive_targets_skips_a_name_word_whose_target_adoption_liste
     listed = target("name-chicken/productive", "name-chicken", skill="productive")
 
     derived = derive_productive_targets([name], [listed], [letters], {name.id: 10}, 2000,
-                                        name_word_ids=frozenset({name.id}))
+                                        name_word_ids=frozenset({name.id}), learner_speaker="male")
 
     assert derived == ()
 
@@ -341,16 +346,52 @@ def test_derive_productive_targets_still_derives_for_an_ordinary_word_beside_a_n
     derived = derive_productive_targets(
         [rice, name], [target("name-chicken/productive", "name-chicken", skill="productive")],
         [_food("rice"), letters], {rice.id: 10, name.id: 10}, 2000,
-        name_word_ids=frozenset({name.id}))
+        name_word_ids=frozenset({name.id}), learner_speaker="male")
 
     assert [t.id for t in derived] == ["rice/productive"]
+
+
+# --- the speaker marking (spec 1 r27, principle E3) -----------------------
+
+def _pronouns(*word_ids: str) -> Category:
+    return Category(name=CategoryName("Pronouns"), members=frozenset(word_ids))
+
+
+def test_derive_productive_targets_gives_a_female_marked_word_none_for_a_male_learner():
+    dichan = word("dichan", "ดิฉัน", "I (female, polite)", speaker="female")   # ดิฉัน
+    derived = derive_productive_targets([dichan], [], [_pronouns("dichan")],
+                                        {dichan.id: 918}, 2000, learner_speaker="male")
+    assert derived == ()
+
+
+def test_derive_productive_targets_derives_for_a_female_marked_word_for_a_female_learner():
+    dichan = word("dichan", "ดิฉัน", "I (female, polite)", speaker="female")   # ดิฉัน
+    derived = derive_productive_targets([dichan], [], [_pronouns("dichan")],
+                                        {dichan.id: 918}, 2000, learner_speaker="female")
+    assert [t.id for t in derived] == ["dichan/productive"]
+
+
+def test_derive_productive_targets_keeps_male_marked_and_unmarked_words_for_a_male_learner():
+    phom = word("phom", "ผม", "I (male)", speaker="male")   # ผม
+    rice = word("rice", "ข้าว")                               # ข้าว
+    derived = derive_productive_targets(
+        [phom, rice], [], [_pronouns("phom"), _food("rice")],
+        {phom.id: 20, rice.id: 100}, 2000, learner_speaker="male")
+    assert [t.id for t in derived] == ["phom/productive", "rice/productive"]
+
+
+def test_derive_productive_targets_refuses_a_listed_productive_target_on_an_other_sex_word():
+    dichan = word("dichan", "ดิฉัน", "I (female, polite)", speaker="female")   # ดิฉัน
+    listed = target("dichan-says-i", "dichan", skill="productive")
+    with pytest.raises(ValueError, match="dichan-says-i.*speaker"):
+        derive_productive_targets([dichan], [listed], [], {}, 2000, learner_speaker="male")
 
 
 def test_order_places_the_derived_productive_target_after_the_receptive_one():
     rice = word("rice", "ข้าว")
     receptive = target("rice/receptive", "rice")
     derived = derive_productive_targets(
-        [rice], [receptive], [_food("rice")], {rice.id: 1}, 2000)
+        [rice], [receptive], [_food("rice")], {rice.id: 1}, 2000, learner_speaker="male")
     syllabus = Syllabus(words=(rice,), targets=(receptive,) + derived,
                         categories=(_food("rice"),))
     ids = [e.id for e in syllabus.order() if e.kind == "word_target"]

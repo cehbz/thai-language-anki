@@ -981,6 +981,7 @@ def load_syllabus(deck_root: str | Path, *,
     targets = tuple(bundle.targets) + derive_productive_targets(
         bundle.words, bundle.targets, bundle.categories, frequency,
         bundle.profile.productive_cutoff,
+        learner_speaker=bundle.profile.learner_speaker,
         name_word_ids=name_word_ids_of(bundle.graphemes))
 
     rulebook_text = rulebook_file_text(root / "curated" / "rulebook.yaml")

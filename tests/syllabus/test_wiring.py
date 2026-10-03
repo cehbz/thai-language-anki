@@ -751,6 +751,43 @@ def test_load_syllabus_no_productive_suppresses_the_derived_target(tmp_path):
     assert "rice/productive" not in {t.id for t in syllabus.targets}
 
 
+def _write_female_marked_word(root, targets):
+    """ดิฉัน ("I", female polite), categorized and ranked 1 against a
+    cutoff of 1, beside the fixture's own words."""
+    curated = root / "curated"
+    words = yaml.safe_load((curated / "words.yaml").read_text(encoding="utf-8"))
+    words.append({"id": "dichan", "thai": "ดิฉัน", "meaning": "I (female, polite)",
+                  "category": "Pronouns", "speaker": "female",
+                  "pron": {"syllables": [{"segments": ["d", "i", ""], "vowel_length": "short",
+                                          "tone": "low"}], "corroboration": "engines_agree"}})
+    (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
+    (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
+    (curated / "frequency_th.txt").write_text("ดิฉัน\n", encoding="utf-8")
+    (curated / "profile.yaml").write_text(yaml.safe_dump(
+        {"register": "male_colloquial", "emphasis": {}, "productive_cutoff": 1}))
+
+
+def test_load_syllabus_derives_no_productive_target_for_an_other_sex_word(tmp_path):
+    """Spec 1 r27 (E3): the profile's learner speaks as a male, so the
+    female-marked ดิฉัน is receptive only."""
+    root = _write_curated_dir(tmp_path / "deck")
+    _write_female_marked_word(root, [{"id": "dichan/receptive", "word": "dichan",
+                                      "skill": "receptive"}])
+    syllabus = load_syllabus(root)
+    assert [t.id for t in syllabus.targets if t.word == "dichan"] == ["dichan/receptive"]
+
+
+def test_load_syllabus_refuses_a_listed_productive_target_on_an_other_sex_word(tmp_path):
+    """Unranked, so the row is an exception below the cutoff, not a
+    duplicate of a derived Target: it is refused for the marking alone."""
+    root = _write_curated_dir(tmp_path / "deck")
+    _write_female_marked_word(root, [{"id": "dichan/productive", "word": "dichan",
+                                      "skill": "productive"}])
+    (root / "curated" / "frequency_th.txt").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="dichan/productive.*speaker"):
+        load_syllabus(root)
+
+
 def test_load_syllabus_loads_an_adopted_grapheme_whose_name_word_is_ranked(tmp_path):
     """I4: the grapheme pass writes the recited name's two Targets into
     targets.yaml and puts the word in `Letter names`, so a name word whose
