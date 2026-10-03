@@ -917,11 +917,12 @@ def test_a_sentence_direction_question_summarizes_only_the_asks_the_cap_counts(
     assert asked[0]["reason"] == "after the direction"
 
 
-def _batch_marker(db, batch_id, subjects, status="submitted"):
+def _batch_marker(db, batch_id, subjects, status="submitted", role="sentence-for-target",
+                  kind="sentence"):
     db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
               question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
-                       "roles": ["sentence-for-target"] * len(subjects),
-                       "kinds": ["sentence"] * len(subjects)},
+                       "roles": [role] * len(subjects),
+                       "kinds": [kind] * len(subjects)},
               answer={"status": status})
 
 
@@ -946,6 +947,27 @@ def test_another_subject_in_the_batch_does_not_hold_the_direction_question_back(
         _drafted(db, w1.id, drafts=("d" * 64,))
     _batch_marker(db, "b1", ["e" * 64])
     assert len(_sentence_directions(derivations, w1.id)) == 1
+
+
+def test_a_scene_picture_question_on_a_drafted_text_does_not_hold_the_direction_question(
+        derivations, db, w1):
+    """Spec 5 r19: only a pending sentence verdict holds the direction
+    question back; a scene-picture question on the same text does not."""
+    draft_sha = "d" * 64
+    for _ in range(3):
+        _drafted(db, w1.id, drafts=(draft_sha,))
+    _batch_marker(db, "b1", [draft_sha], role="scene-for-sentence", kind="picture")
+    assert len(_sentence_directions(derivations, w1.id)) == 1
+
+
+@pytest.mark.parametrize("role", ["sentence-for-target", "sentence-for-target-other-voice"])
+def test_a_pending_sentence_verdict_under_either_voice_holds_the_direction_question(
+        derivations, db, w1, role):
+    draft_sha = "d" * 64
+    for _ in range(3):
+        _drafted(db, w1.id, drafts=(draft_sha,))
+    _batch_marker(db, "b1", [draft_sha], role=role)
+    assert _sentence_directions(derivations, w1.id) == []
 
 
 def _classifier_derivations(db, media_store):

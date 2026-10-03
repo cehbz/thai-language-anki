@@ -28,7 +28,7 @@ from datetime import date
 
 from . import record
 from .assessor import MechanicalKeyOf, mechanical_question
-from .authority import AUTHORITY_ORDER, role_for, sentence_role
+from .authority import AUTHORITY_ORDER, ROLE_FOR_VOICE, role_for, sentence_role
 from .entities import Sentence, Syllable, Target, is_corroborated
 from .ids import WordId, sentence_cloze_key
 from .media import Speaker
@@ -922,15 +922,21 @@ def sentence_exhausted(cache: CacheReader, word: str, *,
     return ExhaustedStatus(exhausted=len(asks) >= cap, attempts=len(asks))
 
 
+_SENTENCE_ROLES = frozenset(ROLE_FOR_VOICE.values())
+
+
 def sentence_drafts_awaiting(cache: CacheReader, word: str) -> bool:
     """Whether a draft some ask in `sentence_asks` put to the judge (the
-    `drafts` its `drafted` row names) is a subject of the unresolved judge
-    batch (record.unresolved_batch): its verdict is still to come, and
-    with it a possible adoption (spec 5 r18)."""
+    `drafts` its `drafted` row names) has a sentence verdict (a question
+    under a role authority.ROLE_FOR_VOICE maps) in the unresolved judge batch
+    (record.unresolved_batch): that verdict is still to come, and with it
+    a possible adoption (spec 5 r19). Another question on the draft's
+    text, such as its scene picture's, does not count."""
     found = record.unresolved_batch(cache)
     if found is None:
         return False
-    in_batch = set(found[1])
+    _, subjects, roles, _ = found
+    in_batch = {s for s, role in zip(subjects, roles) if role in _SENTENCE_ROLES}
     return any(sha in in_batch for r in sentence_asks(cache, word)
                for sha in r.answer.get("drafts") or ())
 

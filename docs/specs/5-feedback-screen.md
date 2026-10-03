@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 18, proposed 2026-10-02 against principles r7 and architecture
+Revision 19, proposed 2026-10-03 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -110,6 +110,7 @@ Revision log:
   sources could not give it. User ruling 2026-09-27.
 - r17 2026-10-01: a need with an unvetoed candidate still awaiting its verdict is not a direction request and is not counted exhausted (spec 3 r55). Evidence: a clip that failed an earlier duration window is asked again, and its need was shown as a question the learner cannot answer. User ruling 2026-10-01.
 - r18 2026-10-02: a word's sentence need is a direction request at spec 3 r60's ask cap, whatever the asks answered, once no draft of those asks awaits its verdict; what was tried is how many of those asks drafted and their no-fit reasons; a classifier's question names its nouns; a word wanting several sentences (spec 1 r30) shows how many fill it of how many it wants; the typed direction is given to the drafter on the word's prompt line. User ruling 2026-10-02.
+- r19 2026-10-03: the direction question waits only on a pending sentence verdict on a text the word's asks drafted; a scene-picture question on such a text does not hold it. Evidence: 6 of the 8 words at the cap were off the screen while a scene-picture batch was unresolved. Defect fix.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -189,7 +190,9 @@ stops; unanswered questions stay queued. Question kinds:
    direction is recorded as a direction, not as a rating. A word's
    sentence need is a direction request once it is at the ask cap
    (spec 3 §5, r60) and no draft an ask counted there put to the judge
-   is in the unresolved judge batch. What was tried is read from the
+   has its sentence verdict pending in the unresolved judge batch; a
+   scene-picture question on such a draft does not hold it (r19). What
+   was tried is read from the
    asks the cap counts: the number that drafted, none of whose drafts
    was adopted with the word in it, then each no-fit answer's reason,
    newest first, with the newest reason shown beside the question;
