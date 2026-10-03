@@ -2578,7 +2578,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     clauses per sentence (spec 3 r23 section 5/8) and at most
     `sentence_max_words` deck words across them (spec 3 r53 section 5/8). When `refused` (derivations.refused_drafts) is
     non-empty, a block lists those texts as sentences not to propose
-    again, each with the verdict's evidence delimited the way the
+    again, each with the verdict's evidence or the acceptance refusal's
+    reason (spec 3 r62) delimited the way the
     assessor prompts delimit deck fields (assessor.deck_field, over the
     untrusted-data notice given once before the block), before the
     output-format sentence (spec 3 r19 section 5), which requires
@@ -2623,7 +2624,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                     + "\n".join(introducible_lines) + "\n")
     refused_lines = (f"- {text} — {deck_field(evidence)}" if evidence else f"- {text}"
                      for text, evidence in refused)
-    refused_block = (f"Do not propose these sentences; each failed review:\n{UNTRUSTED}\n"
+    refused_block = (f"Do not propose these sentences; each failed review or acceptance:\n"
+                     f"{UNTRUSTED}\n"
                      + "\n".join(refused_lines) + "\n"
                      if refused else "")
     repeated_id, suffixed_id = _example_clause_ids(vocabulary)
@@ -2683,8 +2685,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     the text, gloss, and the sentence's target words joined
     (Syllabus.target_words, spec 3 r54). Adoption is the run's, after the
     verdicts land. The drafting prompt also names the texts the judge
-    has already failed (derivations.refused_drafts, spec 3 r19 section
-    5) so the drafter does not propose them again.
+    has already failed and those `draft_refusal` refuses now, with the
+    reason it logs (derivations.refused_drafts, spec 3 r19 and r62
+    section 5), so the drafter does not propose them again.
 
     A word whose sentence need is at the ask cap
     (derivations.sentence_exhausted under ctx.sentence_nothing_cap) is
@@ -2736,7 +2739,10 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         return AttemptResult(attempted=False, subjects_exhausted=withheld)
     open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
 
-    refused = refused_drafts(ctx.db, syllabus, current_rubric=ctx.rubrics)
+    refused = refused_drafts(
+        ctx.db, syllabus, current_rubric=ctx.rubrics,
+        refusal=lambda draft: draft_refusal(
+            ctx, record.draft_sentence(draft, syllabus, ctx.today), open_targets))
     question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
         params={"prompt": _sentence_prompt(

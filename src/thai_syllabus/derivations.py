@@ -1679,7 +1679,9 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
 
 
 def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
-                   limit: int = 20) -> list[tuple[str, str]]:
+                   limit: int = 20,
+                   refusal: Callable[[record.SentenceDraft], str | None] | None = None
+                   ) -> list[tuple[str, str]]:
     """The texts not to propose again (spec 3 section 5): every unadopted
     sentence draft (`record.sentence_drafts`) whose verdict, under the
     role its voice selects (Syllabus.drafted_voice, authority.sentence_role,
@@ -1694,6 +1696,12 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
     listed. `(text, evidence)`, evidence the deciding row's own
     `answer["evidence"]`, whitespace collapsed and cut to 200 characters
     (empty when it named none).
+
+    Every other unadopted draft that `refusal` refuses (the caller's
+    acceptance test, attempts.draft_refusal, spec 3 r62) is listed in the
+    same newest-first order with the reason it returns, under the same
+    `limit`; `refusal` is called only on a draft no failing verdict
+    already lists, and not once the list is full.
 
     A retired text (spec 3 section 5, record.retirements) is listed too,
     whatever its own sentence-for-target verdict was (it passed -- that
@@ -1726,13 +1734,12 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
         rows = cache.assessments_of(draft.text_sha)
         role = sentence_role(syllabus.drafted_voice(draft.words))
         decided = _role_row(rows, role, current_rubric)
-        if decided is None:
-            continue
-        backend, row = decided
-        if _rank_of(backend, row) > _JUDGE_FAIL_RANK:
-            continue
-        evidence = " ".join(str(row.answer.get("evidence") or "").split())[:200]
-        out.append((draft.text, evidence))
+        if decided is not None and _rank_of(*decided) <= _JUDGE_FAIL_RANK:
+            _, row = decided
+            evidence = " ".join(str(row.answer.get("evidence") or "").split())[:200]
+            out.append((draft.text, evidence))
+        elif refusal is not None and (reason := refusal(draft)) is not None:
+            out.append((draft.text, reason))
         if len(out) >= limit:
             break
     # A retired sentence that was never a draft (migrated, or a comment's

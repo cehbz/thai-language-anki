@@ -3,6 +3,7 @@ returns ingested, the speaker recorded, and the judge questions collected.
 Real SyllabusDb + MediaStore; fake Provide/Assess backends; no network."""
 import hashlib
 import io
+import itertools
 import json
 import logging
 from dataclasses import asdict, dataclass, replace
@@ -2027,17 +2028,19 @@ def test_a_fresh_ask_that_drafts_appends_one_drafted_row_per_handed_word(tmp_pat
 
 def test_a_cached_answer_that_puts_no_draft_to_the_judge_is_re_asked_and_counted(tmp_path):
     """Spec 3 r60 section 6a: an answer every draft of which is refused at
-    acceptance adds nothing to the refused block, so the next prompt is
-    the same and the provider would serve it from the cache for ever, the
-    word neither drafted for nor counted. Served from the cache, it is
-    re-asked once, and the fresh answer is recorded -- so the cap is
-    reached and the word withheld."""
+    acceptance puts no draft to the judge. The next prompt names the
+    refused text (r62), a fresh ask; once the drafter answers it again,
+    that prompt is the same and the provider would serve it from the
+    cache for ever, the word neither drafted for nor counted. Served from
+    the cache, it is re-asked once, and the fresh answer is recorded -- so
+    the cap is reached and the word withheld."""
     # the text does not render from the clauses: refused at acceptance
     ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "rice"), "ข้าวกิน", "rice eat"))
     drafter = ctx.provider._backends["llm-sentence"]
     for _ in range(3):
         assert sentence_attempt(ctx).questions == []
-    assert len(drafter.prompts) == 3            # one ask, then two re-asks of the cached one
+    assert len(drafter.prompts) == 3            # two asks, then a re-ask of the cached second
+    assert drafter.prompts[0] != drafter.prompts[1] == drafter.prompts[2]
     for word_id in ("eat", "rice"):
         outcomes = [r.answer["outcome"] for r in rows_for(ctx.db, word_id, "sentence")
                     if r.port == "attempt"]
@@ -3722,7 +3725,7 @@ def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():
     syllabus = _three_word_syllabus()
     prompt = _sentence_prompt(syllabus, list(syllabus.targets), refused=[("กินข้าว", "too formal")],
                               sentence_max_clauses=2)   # กินข้าว: eat rice
-    assert ("Do not propose these sentences; each failed review:\n"
+    assert ("Do not propose these sentences; each failed review or acceptance:\n"
            f"{UNTRUSTED}\n"
            f"- กินข้าว — {deck_field('too formal')}") in prompt
     assert prompt.index("Do not propose these sentences") < prompt.index(
@@ -3746,6 +3749,77 @@ def test_sentence_prompt_renders_a_refused_text_with_no_evidence_with_no_danglin
                               sentence_max_clauses=2)   # กิน: eat
     assert "- กิน\n" in prompt
     assert "— " not in prompt and "—\n" not in prompt
+
+
+# --- the not-again list names the texts refused at acceptance (spec 3 r62) --
+
+def _not_again_lines(prompt: str) -> list[str]:
+    """The not-again block's text lines, in prompt order."""
+    start = prompt.index(f"{UNTRUSTED}\n", prompt.index("Do not propose these sentences"))
+    return prompt[start + len(UNTRUSTED) + 1:prompt.index("Write each sentence as clauses")
+                  ].splitlines()
+
+
+def _drafts_json(drafts) -> str:
+    """One drafting-answer item carrying several single-clause drafts,
+    each (word_ids, text, gloss), in listing order."""
+    return json.dumps({"sentences": [{"clauses": [list(ids)], "text": text, "gloss": gloss}
+                                     for ids, text, gloss in drafts]})
+
+
+def test_a_draft_refused_at_acceptance_is_named_in_the_next_prompt_with_its_reason(
+        tmp_path, caplog):
+    """Spec 3 r62 section 5: a draft on record that acceptance refuses
+    (attempts.draft_refusal) is named in the next drafting prompt's
+    not-again list with the reason the run logs for it."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("ghost",), "ผี", "a ghost"), batch=True)  # ผี: ghost
+    drafter = ctx.provider._backends["llm-sentence"]
+    with caplog.at_level(logging.WARNING):
+        sentence_attempt(ctx)
+    sentence_attempt(ctx)
+    reason = f"sentence {text_sha('ผี')!r} names unregistered word 'ghost'"
+    assert f"draft refused: {reason}: ผี" in caplog.text
+    assert f"- ผี — {deck_field(reason)}\n" in drafter.prompts[-1]
+
+
+def test_a_draft_marking_both_sexes_is_named_in_the_next_prompt_with_its_reason(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "kha", "khrap"), "กินค่ะครับ", "eat"),
+                        batch=True, syllabus=_marked_syllabus())   # กิน ค่ะ ครับ: eat + both particles
+    drafter = ctx.provider._backends["llm-sentence"]
+    sentence_attempt(ctx)
+    sentence_attempt(ctx)
+    reason = f"sentence {text_sha('กินค่ะครับ')!r} marks both a male and a female speaker"
+    assert f"- กินค่ะครับ — {deck_field(reason)}\n" in drafter.prompts[-1]
+
+
+def test_a_draft_the_judge_failed_is_still_named_with_its_evidence(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "rice"), "กินข้าว", "eat rice"),
+                        judge_value="false")   # กินข้าว: eat rice
+    drafter = ctx.provider._backends["llm-sentence"]
+    sentence_attempt(ctx)
+    sentence_attempt(ctx)
+    assert f"- กินข้าว — {deck_field('e')}\n" in drafter.prompts[-1]
+
+
+def test_the_not_again_list_caps_both_kinds_together_newest_first(tmp_path):
+    """derivations.refused_drafts' cap (20, newest draft first) holds
+    across the judge's failures and the acceptance refusals: an older ask's
+    15 failed texts and a newer ask's 10 refused ones list as the 10
+    refused, newest first, then the 10 newest failed."""
+    ids = [seq for n in (1, 2, 3, 4) for seq in itertools.product(("eat", "rice"), repeat=n)][:15]
+    failed = [(seq, "".join({"eat": "กิน", "rice": "ข้าว"}[w] for w in seq), "eat rice")
+              for seq in ids]   # กิน: eat, ข้าว: rice
+    refused = [(("ghost",) * k, "ผี" * k, "a ghost") for k in range(1, 11)]   # ผี: ghost
+    ctx = _sentence_ctx(tmp_path, _drafts_json(failed), judge_value="false")
+    drafter = ctx.provider._backends["llm-sentence"]
+    sentence_attempt(ctx)
+    drafter.text = _drafts_json(refused)
+    sentence_attempt(ctx)
+    drafter.text = _NO_FIT
+    sentence_attempt(ctx)
+    texts = [line[2:].split(" — ")[0] for line in _not_again_lines(drafter.prompts[-1])]
+    assert texts == ([text for _, text, _ in reversed(refused)]
+                     + [text for _, text, _ in reversed(failed)][:10])
 
 
 # --- phrase_attempt: one drafted image-search phrase per open picture need --

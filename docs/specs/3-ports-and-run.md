@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 61, proposed 2026-10-02 against principles r7 and architecture
+Revision 62, proposed 2026-10-03 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -255,6 +255,7 @@ Revision log:
 - r59 2026-10-02: the drafting ask hands open Targets in introduction order; its vocabulary never falls below sentence_vocabulary_floor (150) picture-introduced words of the word block; a handed classifier is named with the nouns counted with it, which join the vocabulary. Evidence: in targets.yaml order five classifiers took every introducible slot in every ask since 2026-09-27 and 47 Targets were never handed; an ask for the five earliest function words offered 79 words; ทิศ (directions) was handed with none of its four nouns. User ruling 2026-10-02.
 - r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once, and a retired text drafted again is not put to the judge; every prompt line listing a speaker-marked word, vocabulary lines included, names its speaker. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter; 24 drafted texts on record paired ดิฉัน (I, female polite) with ผม (I, male), whose vocabulary line was untagged. User ruling 2026-10-02.
 - r61 2026-10-02: the drafting prompt says how many sentences a handed Target still wants; adoption supplies a Target's count; a scene picture is sourced only for a sentence carrying a Cloze card. Evidence: scene-picture judging is $31.05 of the $55.30 judged so far, about $0.07 a sentence, against $0.003 to judge the sentence itself. User ruling 2026-10-02.
+- r62 2026-10-03: the drafting prompt names the texts refused at acceptance with the reason, beside the judge's failures. Evidence: four texts for the open Targets came back in three asks each on 2026-10-03, the drafter never told. Defect fix.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -632,9 +633,10 @@ more than one more sentence (spec 1 r30) says how many on its line
 (`[wanted in N more sentences]`), and the prompt says before the target
 lines to write that many different sentences using the word; a prompt
 with no such Target says nothing of it (r61); the profile register; the existing sentence openings to avoid; the
-unadopted texts the judge failed, newest first, at most 20,
-each with the verdict's evidence (whitespace-collapsed, 200 characters),
-as sentences not to propose. It asks for as many natural sentences as it
+unadopted texts the judge failed, each with the verdict's evidence
+(whitespace-collapsed, 200 characters), and those acceptance refuses,
+each with the reason logged for it (r62), newest first, at most 20
+together, as sentences not to propose. It asks for as many natural sentences as it
 takes to cover the handed targets (r27), each free to use any other
 listed vocabulary besides, with no per-sentence Target count (r56),
 each of at most `sentence_max_clauses` clauses (§8, default 2) and at most `sentence_max_words` deck words summed across them
