@@ -43,7 +43,9 @@ from thai_syllabus.entities import Category
 from thai_syllabus.media import Speaker
 from thai_syllabus.profile import Profile
 from thai_syllabus.provider import GlyphBackend, IllustratorBackend, Provider, Question
-from thai_syllabus.rulebook import COVERAGE_CONFUSIONS, PAIR_RENDITION_REQUIRED, sentence_note_id
+from thai_syllabus.rulebook import (COVERAGE_CONFUSIONS, PAIR_RENDITION_REQUIRED,
+                                    SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
+                                    SENTENCE_FOR_TARGET_RUBRIC, sentence_note_id)
 from thai_syllabus.run import Budget
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
@@ -1381,6 +1383,17 @@ def test_build_sourcing_caps_the_dictionary_s_fetches_per_run(tmp_path):
         "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
         "quotas: {wiktionary: {max_asks: null}}\n", encoding="utf-8")
     assert build_sourcing(root).dictionary._max_asks is None
+
+
+def test_the_current_rubrics_carry_both_sentence_roles(tmp_path):
+    """Spec 3 r58: an other-voice draft's role is additive -- its own
+    rubric beside sentence-for-target's, which is unchanged."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    rubrics = load_derivations(root).current_rubric
+    assert rubrics["sentence-for-target"] == SENTENCE_FOR_TARGET_RUBRIC
+    assert rubrics.get("sentence-for-target-other-voice") == SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC
 
 
 def test_load_derivations_carries_the_parameters_build_sourcing_runs_under(tmp_path):

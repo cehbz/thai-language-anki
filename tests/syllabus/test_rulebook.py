@@ -17,6 +17,7 @@ from thai_syllabus.rules import Rule
 from thai_syllabus.rulebook import (ENFORCEMENT_PRINCIPLES, PICTURE_FIT, PICTURE_FIT_RUBRIC,
                                     PICTURE_PREFERENCE, PRINCIPLES, PRONUNCIATION_RUBRIC,
                                     RULES, SCENE_FIT_RUBRIC,
+                                    SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC, SENTENCE_REGISTER_NATURAL,
                                     apply_overlay, rubrics_for, sentence_note_id,
                                     traceability_metric)
@@ -445,6 +446,16 @@ def test_sentence_register_rule_is_silent_with_no_cached_verdict():
     assert findings == []
 
 
+def test_sentence_register_rule_does_not_subject_an_other_voice_sentence():
+    """E3's register rule covers the learner's own sentences only: a
+    female-marked sentence is other_voice (spec 1 r28)."""
+    gin = word("gin", "กิน")  # eat
+    kha = word("kha", "ค่ะ", speaker="female")  # female polite particle
+    s = sentence(((gin.id, kha.id),), thai_of(gin, kha), voice="other_voice")  # eat (female)
+    assert SENTENCE_REGISTER_NATURAL.judged_subjects(
+        make_syllabus(words=(gin, kha), sentences=(s,))) == []
+
+
 # --- rulebook overlay (spec 3) -----------------------------------------------
 
 def test_overlay_changes_severity_and_rubric_only_where_configured():
@@ -830,6 +841,26 @@ def test_the_scene_rubric_judges_a_memory_cue_not_a_depiction():
     assert "memory cue" in SCENE_FIT_RUBRIC
     assert "the target word is blanked" in SCENE_FIT_RUBRIC
     assert "evoke the sentence, and is it a good way" not in SCENE_FIT_RUBRIC
+
+
+def test_the_sentence_rubric_text_is_unchanged():
+    """Its sha keys every sentence-for-target verdict on record (JudgeKey):
+    a change would make all of them stale."""
+    assert SENTENCE_FOR_TARGET_RUBRIC == (
+        "Does this sentence read as natural male colloquial Central Thai, in the learner's "
+        "register? Is it natural, grammatical, something a native speaker would say? And does "
+        "the English gloss offered with it state what the sentence actually says? A gloss that "
+        "misstates the sentence fails the candidate, however good the Thai is.")
+
+
+def test_the_other_voice_sentence_rubric_judges_it_as_its_marked_speakers_sentence():
+    """Spec 3 r58: natural Central Thai as the marked speaker would say it,
+    grammatical, and a gloss that states what it says -- not the male
+    learner's register."""
+    rubric = SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC
+    assert "the speaker named with it" in rubric
+    assert "grammatical" in rubric and "gloss" in rubric
+    assert "colloquial" not in rubric and "learner's register" not in rubric
 
 
 def test_the_sentence_rubric_asks_whether_the_gloss_states_the_meaning():

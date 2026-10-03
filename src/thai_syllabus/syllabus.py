@@ -8,14 +8,14 @@ import dataclasses
 import hashlib
 import json
 from bisect import bisect_left
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Literal, TYPE_CHECKING
 
 from .cachekeys import JudgeKey
 from .entities import (
-    Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Word, render,
+    Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Voice, Word, render,
 )
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
@@ -336,6 +336,18 @@ class Syllabus:
         return frozenset(
             speaker for w in sentence.words
             if (speaker := self.word(w).speaker) is not None)
+
+    def drafted_voice(self, words: Iterable[WordId]) -> Voice:
+        """The voice of a sentence drafted over `words` (spec 1 r28):
+        other_voice when the speaker marking of its registered words does
+        not admit the learner (Profile.learner_speaker), else
+        learner_voice. An unregistered id contributes nothing; the
+        Sentence invariant (check_sentence) is what refuses it.
+        """
+        marking = {speaker for w in words
+                   if (found := self.find_word(w)) is not None
+                   and (speaker := found.speaker) is not None}
+        return "learner_voice" if marking <= {self.profile.learner_speaker} else "other_voice"
 
     def check_sentence(self, sentence: Sentence) -> None:
         """The Sentence invariant a syllabus's own vocabulary decides

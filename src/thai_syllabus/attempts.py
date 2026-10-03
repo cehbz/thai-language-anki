@@ -33,7 +33,7 @@ from typing import Any, Literal
 from . import ipa, record
 from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnreachable,
                        PreparedQuestion, deck_field, mechanical_question)
-from .authority import role_for
+from .authority import role_for, sentence_role
 from .cachekeys import (AttemptOutcomeKey, CacheKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
                         RenditionAskKey, RetirementKey, RunReportKey, rendition_identity, sha)
 from .compile import card_meaning
@@ -86,7 +86,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
            "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
            "reverify_attempt",
-           "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "OpenTargets",
+           "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "draft_question", "OpenTargets",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_MAX_WORDS",
            "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
 
@@ -1232,6 +1232,26 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
     return None
 
 
+def draft_question(syllabus: Syllabus, rubrics: Mapping[str, str], sentence: Sentence
+                   ) -> AssessQuestion:
+    """The judge question for a drafted `sentence` (record.draft_sentence)
+    that `draft_refusal` accepted -- the one every pass raising it asks:
+    the role its voice selects (authority.sentence_role, spec 3 r58),
+    that role's rubric, the text, gloss and target words joined
+    (Syllabus.target_words, spec 3 r54), and for an other-voice sentence
+    the speaker its marking names. Raises KeyError on a target word the
+    syllabus does not register.
+    """
+    role = sentence_role(sentence.voice)
+    params = {"text": sentence.text, "gloss": sentence.gloss,
+              "word": joined(t.thai for t in target_words_of(syllabus, sentence))}
+    if sentence.voice == "other_voice":
+        (params["speaker"],) = syllabus.marking(sentence)
+    return AssessQuestion(subject=sentence.text_sha, role=role, artifact_sha=None,
+                          rubric=rubrics[role], params=params,
+                          kind="sentence", subject_kind="sentence")
+
+
 def _refused(action: Mapping[str, Any], reason: str) -> dict[str, Any]:
     return {**action, "outcome": "refused", "reason": reason}
 
@@ -1248,8 +1268,8 @@ def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
     the way sentence_attempt accepts one (draft_refusal: invariant,
     clause cap, word cap, fills a Target `open_targets` holds open),
     appended as the same provide row under DRAFT_SUBJECT that a drafting
-    ask leaves -- record.sentence_drafts reads it back -- with its
-    sentence-for-target question collected for the run's batch; adoption
+    ask leaves -- record.sentence_drafts reads it back -- with its judge
+    question (draft_question) collected for the run's batch; adoption
     is the next run's, once the verdict lands.
     """
     text = action["thai"].strip()
@@ -1259,7 +1279,7 @@ def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
     draft = record.SentenceDraft(clauses=clauses, text=text, gloss=action["gloss"].strip())
     if draft.text_sha in {s.text_sha for s in ctx.syllabus.sentences}:
         return _refused(action, "already adopted")
-    sentence = record.draft_sentence(draft, ctx.today)
+    sentence = record.draft_sentence(draft, ctx.syllabus, ctx.today)
     refusal = draft_refusal(ctx, sentence, open_targets())
     if refusal is not None:
         return _refused(action, refusal)
@@ -1271,12 +1291,7 @@ def _draft_replacement(ctx: Sourcing, action: Mapping[str, Any],
                   answer={"items": [json.dumps({"sentences": [
                       {"clauses": clauses_to_json(clauses), "text": text, "gloss": draft.gloss}]},
                       ensure_ascii=False)]})
-    role = role_for("sentence")
-    words = joined(t.thai for t in target_words_of(ctx.syllabus, sentence))
-    questions.append(AssessQuestion(
-        subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
-        params={"text": text, "gloss": draft.gloss, "word": words},
-        kind="sentence", subject_kind="sentence"))
+    questions.append(draft_question(ctx.syllabus, ctx.rubrics, sentence))
     return _done(action)
 
 
@@ -2463,7 +2478,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     id/thai/meaning lines, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
     sentence already fills, an Introducible line per handed
-    sentence-introduced target no adopted sentence fills, the profile
+    sentence-introduced target no adopted sentence fills -- a target whose
+    word marks its speaker's sex says so on its line, and the prompt says
+    such a sentence is that speaker's own (spec 3 r58) -- the profile
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
     clauses per sentence (spec 3 r23 section 5/8) and at most
@@ -2485,6 +2502,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     for target in targets:
         word = syllabus.word(target.word)
         line = f"- target {target.id}: {record.vocabulary_line(word)}"
+        if word.speaker is not None:
+            line += f"  [speaker: {word.speaker}]"
         if target.introduction == "sentence" and target.id not in met_targets:
             introducible_lines.append(line)
         else:
@@ -2507,6 +2526,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                           "text": "...", "gloss": "..."}, ensure_ascii=False)
     return ("Draft flashcard sentences in colloquial Central Thai for a learner whose register is "
             f"{syllabus.profile.register}.\n"
+            "A sentence that uses a word marked for its speaker's sex (a target marked "
+            "[speaker: female] or [speaker: male]) is that speaker's own sentence and must not "
+            "use a word marked for the other sex.\n"
             "Each JSON item is one sentence. Write as many natural sentences as it takes to "
             "cover the targets below; a sentence may use any other listed vocabulary besides. "
             "A sentence may introduce at most one word from the Introducible list and must "
@@ -2549,8 +2571,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     filled (Syllabus.fill_set) -- the same test the comment pass's replacement and the run's D2
     recovery apply. A refused draft is logged ("draft refused: %s: %s",
     the reason and the text) and skipped, nothing else. The judge
-    question carries the text, gloss, and the sentence's target words
-    joined (Syllabus.target_words, spec 3 r54). Adoption is the run's, after the
+    question is `draft_question`'s: the role the draft's voice selects,
+    the text, gloss, and the sentence's target words joined
+    (Syllabus.target_words, spec 3 r54). Adoption is the run's, after the
     verdicts land. The drafting prompt also names the texts the judge
     has already failed (derivations.refused_drafts, spec 3 r19 section
     5) so the drafter does not propose them again.
@@ -2630,17 +2653,12 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     for draft in record.merge_drafts(raw_drafts):
         if draft.text_sha in adopted:
             continue
-        sentence = record.draft_sentence(draft, ctx.today)
+        sentence = record.draft_sentence(draft, ctx.syllabus, ctx.today)
         refusal = draft_refusal(ctx, sentence, open_targets)
         if refusal is not None:
             _log.warning("draft refused: %s: %s", refusal, draft.text)
             continue
-        words = joined(t.thai for t in target_words_of(syllabus, sentence))
-        questions.append(AssessQuestion(
-            subject=draft.text_sha, role=role_for("sentence"), artifact_sha=None,
-            rubric=ctx.rubrics[role_for("sentence")],
-            params={"text": draft.text, "gloss": draft.gloss, "word": words},
-            kind="sentence", subject_kind="sentence"))
+        questions.append(draft_question(syllabus, ctx.rubrics, sentence))
     result = ctx.assessor.ask_many("judge", questions)
     _count_verdicts(spend, "judge", result)
     return AttemptResult(attempted=True, questions=list(result.collected),

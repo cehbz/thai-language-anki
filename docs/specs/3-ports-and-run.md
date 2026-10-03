@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 57, proposed 2026-10-01 against principles r7 and architecture
+Revision 58, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -251,6 +251,7 @@ Revision log:
 - r55 2026-10-01: a sentence recording fails the duration check only under 0.2 s or over 1 s plus 1 s per deck word; a word recording keeps 0.2-5 s. Evidence: a valid 8-word sentence whose synthesis ran 5.5 s failed the 5 s cap, exhausted its recording need and reached the learner as a question they could not answer; over 799 sentence clips the longest run 2.14 s at two words and 6.46 s at eight (1.07 s per word at most, short sentences highest because of fixed lead-in and tail). Sentence length is the drafting rules' to bound (spec 3 r53). A mechanical verdict decides a candidate only under the check's current key, so a clip that failed an earlier window is re-asked. User ruling 2026-10-01.
 - r56 2026-10-01: the per-sentence Target cap (r27) is retired: the drafter is no longer told a per-sentence Target count and a draft is not refused for filling many; practice is bounded per word instead (spec 1 r26) and sentence length by r53. Evidence: under spec 1 r25 an ordinary four-word sentence fills four open productive Targets and was refused. User ruling 2026-10-01.
 - r57 2026-10-01: a sentence recording's voice constraint is its speaker marking alone, any sex when unmarked (principles r7); a word's is unchanged. User ruling 2026-10-01.
+- r58 2026-10-02: an other-voice draft is judged under role sentence-for-target-other-voice (natural as its marked speaker's sentence; grammar; gloss); the drafting prompt names a marked target's speaker. sentence-for-target and its verdicts are unchanged. Evidence: 19 of 23 judge failures among the drafts for the last 57 Targets cite the female pronoun against the male-register rubric. User ruling 2026-10-02.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -346,13 +347,14 @@ one speaker answers empty.
 
 | backend | roles | key | authority |
 |---|---|---|---|
-| judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
+| judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), sentence-for-target-other-voice (naturalness as its marked speaker's sentence), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
 | mechanical | recording: duration (a word 0.2-5 s; a sentence at least 0.2 s and at most 1 s plus 1 s per deck word, r55), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.2-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
 **Authority order per role** (domain data, spec 1 §4): picture-for-word:
-learner > judge. sentence-for-target: learner > judge. recording-for-word
+learner > judge. sentence-for-target and sentence-for-target-other-voice:
+learner > judge. recording-for-word
 and recording-for-sentence: listener (when calibrated) > mechanical;
 the learner vetoes, never ranks. rendition-for-pair: the rendition
 backend (one-speaker check); the learner vetoes, never ranks. A vetoed
@@ -599,8 +601,11 @@ and unmet; the remainder are the next non-introduced open Targets.
 entry-position order up to the furthest handed target, plus every
 sentence-introduced word an adopted sentence fills; the handed
 sentence-introduced targets not yet met, listed as introducible, at most
-one per sentence; the profile register; the existing sentence openings
-to avoid; the unadopted texts the judge failed, newest first, at most 20,
+one per sentence; a handed target whose word marks its speaker's sex
+names that speaker on its line, and the prompt states that a sentence
+using such a word is that speaker's own sentence and uses no word marked
+for the other sex (r58); the profile register; the existing sentence
+openings to avoid; the unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
 takes to cover the handed targets (r27), each free to use any other
@@ -637,7 +642,13 @@ sentence, or retire the target); any learner row on the word reopens it.
 
 *Judging and adoption.* The judge sees each candidate once
 (sentence-for-target: naturalness; register; the L1 gloss with the text,
-a gloss that misstates the sentence fails the candidate). Adoption
+a gloss that misstates the sentence fails the candidate). A draft whose
+marking does not admit the learner is other_voice (spec 1 r28) and is
+judged under sentence-for-target-other-voice instead (r58): natural
+Central Thai as the speaker its words mark would say it, grammatical,
+and the gloss as above; its question names that speaker's sex. Adoption
+and the refused-text list read each draft's verdict under the role its
+voice selects. Adoption
 (`Syllabus.add_sentence` with provenance) fills every target `fills()`
 says it fills, chosen greedily by targets filled, and creates needs: the
 sentence's recording (voice constraint from the marking, Recording
@@ -722,7 +733,7 @@ run's batch like a draft's. A judge that cannot be reached at that check
 is reported, not raised — every row is already written, so the run
 counts what the pass did and then ends the pass. A batch that never
 comes back would orphan such a draft, so each run also re-asks,
-cache-first, the sentence-for-target question of every draft on record
+cache-first, the judge question of every draft on record
 that is neither adopted nor retired, holds no fresh verdict, and would
 still pass the same acceptance test a fresh draft does (the invariant,
 the clause cap, at least one still-open Target filled, the per-sentence

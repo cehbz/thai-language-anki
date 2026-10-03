@@ -3117,6 +3117,27 @@ def test_a_recovered_drafts_judge_question_names_its_target_words(
     assert f"Target words: {deck_field(EAT.thai + ', ' + RICE.thai)}" in prompts[0]
 
 
+def test_a_recovered_female_marked_draft_is_asked_as_its_speakers_own_sentence(
+        tmp_path, fake_search, fake_batch):
+    """Spec 1 r28, spec 3 r58: the recovery builds the draft's Sentence in
+    the one place the drafting ask does, so a draft using ค่ะ (khâ, female
+    polite particle) is other_voice and its question is submitted under
+    sentence-for-target-other-voice, naming the marked speaker."""
+    kha = word("kha", "ค่ะ", "polite particle (female)", speaker="female")
+    root = _deck(tmp_path, (RICE, EAT, kha),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat"),
+                  target("kha/receptive", "kha", introduction="sentence")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
+    text = EAT_RICE + kha.thai   # กินข้าวค่ะ: eat rice (female polite)
+    _seed_draft(ctx.db, clauses=[["eat", "rice", "kha"]], text=text, gloss="eat rice")
+    report = run(ctx, budgets={})
+    assert (text_sha(text), "sentence-for-target-other-voice") in _submitted_pairs(
+        ctx.db, report.batch_id)
+    (prompt,) = [prompt for prompt, _attachments
+                 in fake_batch._requests[report.batch_id].values() if text in prompt]
+    assert f"Speaker: {deck_field('female')}" in prompt
+
+
 def test_a_draft_with_a_fresh_verdict_collects_nothing(ctx_orphaned_draft, fake_batch):
     r1 = run(ctx_orphaned_draft, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=False)

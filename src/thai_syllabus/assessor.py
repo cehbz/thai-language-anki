@@ -571,12 +571,17 @@ def picture_preference_prompt(q: AssessQuestion) -> str:
 
 
 def sentence_prompt(q: AssessQuestion) -> str:
+    """A drafted sentence's question, under either sentence role: an
+    other-voice draft's `speaker` param (spec 3 r58) adds a Speaker line;
+    a learner-voice draft's prompt has none."""
     p = q.params
+    speaker = f"Speaker: {deck_field(p['speaker'])}\n" if p.get("speaker") else ""
     return (f"You are evaluating one Thai sentence, and the English gloss offered with it, "
            f"for a flashcard.\n{UNTRUSTED}\n"
            f"Sentence: {deck_field(p.get('text', ''))}\n"
            f"English gloss offered for it: {deck_field(p.get('gloss') or '(none given)')}\n"
-           f"Target words: {deck_field(p.get('word', ''))}\n\n"
+           f"Target words: {deck_field(p.get('word', ''))}\n"
+           f"{speaker}\n"
            f"Rubric:\n{q.rubric or ''}\n\n"
            'Respond with a JSON object: {"value": <bool>, "evidence": <string>, '
            '"suggestion": <string or null>}. Respond with only that JSON object and no other '
@@ -731,6 +736,7 @@ _DEFAULT_JUDGE_BUILDERS: dict[str, tuple[Callable[[AssessQuestion], str],
     # through to _fallback_judge_prompt's params dump (fix round 1).
     "scene-for-sentence": (picture_fit_prompt, _generic_value_parser),
     "sentence-for-target": (sentence_prompt, _generic_value_parser),
+    "sentence-for-target-other-voice": (sentence_prompt, _generic_value_parser),
     "picture-preference": (picture_preference_prompt, parse_preference),
     "pronunciation-for-word": (pronunciation_prompt, parse_pronunciation),
 }

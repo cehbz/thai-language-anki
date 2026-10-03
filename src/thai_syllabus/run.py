@@ -24,7 +24,6 @@ from time import time_ns
 from typing import NamedTuple
 
 from .assessor import AssessQuestion, JudgeUnreachable, PreparedQuestion
-from .authority import role_for
 from .cachekeys import RunReportKey
 from .attempts import (
     AttemptResult,
@@ -37,6 +36,7 @@ from .attempts import (
     attempt,
     comment_attempt,
     current_best_of,
+    draft_question,
     draft_refusal,
     grapheme_attempt,
     joined,
@@ -49,7 +49,6 @@ from .attempts import (
     reverify_attempt,
     sentence_attempt,
     sources_for_need,
-    target_words_of,
 )
 from .derivations import (
     QueuedNeeds,
@@ -336,8 +335,8 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     (record.sentence_drafts) that is neither adopted nor retired, asked
     again -- cache-first through `ctx.assessor.ask_many`, whose JudgeKey
     carries the rubric sha, so a draft already holding a fresh
-    sentence-for-target verdict under the current rubric collects
-    nothing and only an unjudged one does.
+    verdict under its role's current rubric collects nothing and only an
+    unjudged one does.
 
     A batch that never came back orphans whatever drafts it carried, a
     drafting ask's and a comment's replacement alike, and neither pass
@@ -347,9 +346,11 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     would sit on record for ever, neither adopted nor refused.
 
     The question is the one `sentence_attempt` (and
-    `attempts._draft_replacement`) raises for a draft: role
-    sentence-for-target, the current rubric, `{text, gloss, word}` with
-    the sentence's target words joined (spec 3 r54). A draft is asked about only when
+    `attempts._draft_replacement`) raises for a draft,
+    `attempts.draft_question`: the role the draft's voice selects (spec 3
+    r58), that role's current rubric, `{text, gloss, word}` with the
+    sentence's target words joined (spec 3 r54), and an other-voice
+    draft's speaker. A draft is asked about only when
     it could still be adopted: `attempts.draft_refusal`, the one
     acceptance test both of those passes apply (the Sentence invariant,
     the clause cap, at least one still-open Target filled, the
@@ -363,26 +364,21 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     """
     adopted = {s.text_sha for s in ctx.syllabus.sentences}
     retired = retired_texts(ctx.db)
-    role = role_for("sentence")
     questions: list[AssessQuestion] = []
     open_targets = OpenTargets(ctx)
     for draft in sentence_drafts(ctx.db):
         if draft.text_sha in adopted or draft.text_sha in retired or not draft.gloss:
             continue
-        sentence = draft_sentence(draft, ctx.today)
+        sentence = draft_sentence(draft, ctx.syllabus, ctx.today)
         refusal = draft_refusal(ctx, sentence, open_targets())
         if refusal is not None:
             _log.debug("orphaned draft not asked about: %s: %s", refusal, draft.text)
             continue
         try:
-            words = joined(t.thai for t in target_words_of(ctx.syllabus, sentence))
+            questions.append(draft_question(ctx.syllabus, ctx.rubrics, sentence))
         except KeyError as e:
             _log.debug("orphaned draft not asked about: %s: %s", e, draft.text)
             continue
-        questions.append(AssessQuestion(
-            subject=draft.text_sha, role=role, artifact_sha=None, rubric=ctx.rubrics[role],
-            params={"text": draft.text, "gloss": draft.gloss, "word": words},
-            kind="sentence", subject_kind="sentence"))
     if not questions:
         return AttemptResult(attempted=False)
     result = ctx.assessor.ask_many("judge", questions)

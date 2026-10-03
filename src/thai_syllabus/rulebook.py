@@ -229,12 +229,18 @@ PICTURE_FIT_RUBRIC = (
 PICTURE_PREFERENCE_RUBRIC = ("Rank the attached candidates by how well each, as the only picture "
                              "on a flashcard, evokes the word for a learner: concrete, "
                              "unambiguous, no answer-revealing text.")
-SENTENCE_FOR_TARGET_RUBRIC = (
-    SENTENCE_REGISTER_RUBRIC
-    + " Is it natural, grammatical, something a native speaker would say?"
-    + " And does the English gloss offered with it state what the sentence"
-    + " actually says? A gloss that misstates the sentence fails the"
-    + " candidate, however good the Thai is.")
+_SENTENCE_NATURAL_AND_GLOSS = (
+    " Is it natural, grammatical, something a native speaker would say?"
+    " And does the English gloss offered with it state what the sentence"
+    " actually says? A gloss that misstates the sentence fails the"
+    " candidate, however good the Thai is.")
+SENTENCE_FOR_TARGET_RUBRIC = SENTENCE_REGISTER_RUBRIC + _SENTENCE_NATURAL_AND_GLOSS
+# spec 3 r58: an other-voice draft (a word in it marks a speaker of the
+# other sex than the learner's) is judged as that speaker's own sentence.
+SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC = (
+    "Does this sentence read as natural Central Thai as the speaker named with it"
+    " would say it? Its words mark that speaker's sex, so judge it as that speaker's own"
+    " sentence." + _SENTENCE_NATURAL_AND_GLOSS)
 
 PRONUNCIATION_RUBRIC = (
     "Give the standard Central Thai pronunciation of the word as it is said in isolation, "

@@ -74,6 +74,7 @@ from thai_syllabus.record import (
     without_vetoed_readings,
 )
 from thai_syllabus.store import SyllabusDb
+from thai_syllabus.syllabus import Syllabus
 
 from .builders import word
 
@@ -906,14 +907,55 @@ def test_sentence_drafts_merges_a_text_split_across_two_provide_rows(cache):
 
 # --- draft_sentence: a SentenceDraft as a Sentence value ---------------------
 
+# กิน: eat; ค่ะ (khâ): polite particle, female speaker; ครับ (khráp): male
+_MARKED_SYLLABUS = Syllabus(words=(
+    word("eat", "กิน", "eat"),
+    word("kha", "ค่ะ", "polite particle (female)", speaker="female"),
+    word("khrap", "ครับ", "polite particle (male)", speaker="male")))
+
+
+def _draft(*word_ids: str) -> SentenceDraft:
+    text = "".join(_MARKED_SYLLABUS.word(WordId(w)).thai for w in word_ids)
+    return SentenceDraft(clauses=(tuple(WordId(w) for w in word_ids),), text=text, gloss="g")
+
+
 def test_draft_sentence_carries_the_drafts_own_clauses_learner_voice_and_provenance():
     draft = SentenceDraft(clauses=((WordId("eat"),),), text="กิน", gloss="eat")   # กิน: eat
-    sentence = draft_sentence(draft, lambda: date(2026, 9, 9))
+    sentence = draft_sentence(draft, _MARKED_SYLLABUS, lambda: date(2026, 9, 9))
     assert sentence.clauses == draft.clauses
     assert sentence.text == "กิน" and sentence.gloss == "eat"
     assert sentence.voice == "learner_voice"
     assert sentence.provenance.source == "llm" and sentence.provenance.origin == "draft"
     assert sentence.provenance.acquired == date(2026, 9, 9)
+
+
+def test_draft_sentence_takes_its_provenance_origin_from_the_caller():
+    sentence = draft_sentence(_draft("eat"), _MARKED_SYLLABUS, lambda: date(2026, 9, 9),
+                              origin="m")
+    assert sentence.provenance.origin == "m"
+
+
+def test_a_draft_using_a_female_marked_word_is_an_other_voice_sentence():
+    """Spec 1 r28: a drafted sentence's voice follows its marking -- ค่ะ
+    marks a female speaker, which the male learner's profile does not
+    admit."""
+    sentence = draft_sentence(_draft("eat", "kha"), _MARKED_SYLLABUS, lambda: date(2026, 9, 9))
+    assert sentence.voice == "other_voice"
+
+
+def test_a_male_marked_draft_is_a_learner_voice_sentence():
+    sentence = draft_sentence(_draft("eat", "khrap"), _MARKED_SYLLABUS, lambda: date(2026, 9, 9))
+    assert sentence.voice == "learner_voice"
+
+
+def test_a_draft_naming_an_unregistered_word_is_built_for_the_invariant_to_refuse():
+    """The voice reads only registered words, so check_sentence, not the
+    build, is what refuses an unknown id."""
+    draft = SentenceDraft(clauses=((WordId("eat"), WordId("nope")),), text="กินx", gloss="g")
+    sentence = draft_sentence(draft, _MARKED_SYLLABUS, lambda: date(2026, 9, 9))
+    assert sentence.voice == "learner_voice"
+    with pytest.raises(ValueError, match="nope"):
+        _MARKED_SYLLABUS.check_sentence(sentence)
 
 
 # --- vocabulary_line / parse_prompt / parses_in (spec 3 r16 section 5) -----

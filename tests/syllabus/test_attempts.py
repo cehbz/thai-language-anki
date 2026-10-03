@@ -47,6 +47,7 @@ from thai_syllabus.phonology import Engines
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
 from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRIC,
+                                    SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
                                     SENTENCE_FOR_TARGET_RUBRIC)
 from thai_syllabus.run import _Tally
 from thai_syllabus.safety import Guard
@@ -67,6 +68,7 @@ _RUBRICS = {"picture-for-word": PICTURE_FIT_RUBRIC,
             "picture-preference": PICTURE_PREFERENCE_RUBRIC,
             "scene-for-sentence": PICTURE_FIT_RUBRIC,
             "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC,
+            "sentence-for-target-other-voice": SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
             "pronunciation-for-word": "R"}
 
 _MALE = ("th-M-a", "th-M-b")
@@ -2087,6 +2089,63 @@ def test_sentence_attempt_refuses_a_draft_whose_text_does_not_match_its_clauses(
     assert "draft refused" in caplog.text
 
 
+# --- a draft's voice follows its marking (spec 1 r28, spec 3 r58) ----------
+
+def _marked_syllabus() -> Syllabus:
+    """eat and rice with receptive Targets; ค่ะ (khâ, female polite
+    particle) and ครับ (khráp, male) each a sentence-introduced word."""
+    return Syllabus(
+        words=(word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat"),   # ข้าว: rice, กิน: eat
+               word("kha", "ค่ะ", "polite particle (female)", speaker="female"),
+               word("khrap", "ครับ", "polite particle (male)", speaker="male")),
+        targets=(target("eat/receptive", "eat"), target("rice/receptive", "rice"),
+                 target("kha/receptive", "kha", introduction="sentence"),
+                 target("khrap/receptive", "khrap", introduction="sentence")),
+        frequency={"eat": 1, "rice": 2, "kha": 3, "khrap": 4})
+
+
+def test_a_female_marked_drafts_question_is_asked_as_its_speakers_own_sentence(tmp_path):
+    """A draft using ค่ะ is other_voice (spec 1 r28): its question carries
+    role sentence-for-target-other-voice, that role's rubric, and the
+    marked speaker's sex (spec 3 r58)."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "rice", "kha"), "กินข้าวค่ะ", "eat rice"),
+                        batch=True, syllabus=_marked_syllabus())   # กินข้าวค่ะ: eat rice (female polite)
+    res = sentence_attempt(ctx)
+    (q,) = [c.question for c in res.questions]
+    assert q.role == "sentence-for-target-other-voice"
+    assert q.rubric == SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC
+    assert q.params == {"text": "กินข้าวค่ะ", "gloss": "eat rice", "word": "กิน, ค่ะ, ข้าว",
+                        "speaker": "female"}
+
+
+def test_a_learner_voice_drafts_question_and_judge_key_are_unchanged(tmp_path):
+    """The existing role, its rubric text and every learner-voice draft's
+    JudgeKey are byte-identical to before r58, so no sentence verdict on
+    record is re-keyed. A male-marked draft is learner_voice."""
+    for sub, (ids, text) in {"unmarked": (("eat", "rice"), "กินข้าว"),            # eat rice
+                             "male": (("eat", "rice", "khrap"), "กินข้าวครับ")}.items():
+        ctx = _sentence_ctx(tmp_path / sub, _draft_json(ids, text, "eat rice"), batch=True,
+                            syllabus=_marked_syllabus())
+        (q,) = [c.question for c in sentence_attempt(ctx).questions]
+        assert q.role == "sentence-for-target"
+        assert q.rubric == SENTENCE_FOR_TARGET_RUBRIC
+        assert sha(SENTENCE_FOR_TARGET_RUBRIC) == "06202865a4d8b3ff"
+        assert set(q.params) == {"text", "gloss", "word"}
+        assert JudgeKey.for_question(q).encode() == (
+            f"judge:06202865a4d8b3ff:{text_sha(text)}::sentence-for-target")
+
+
+def test_sentence_attempt_still_refuses_a_draft_marking_both_sexes(tmp_path, caplog):
+    """The Sentence invariant (spec 1 r10) refuses a draft using ค่ะ and
+    ครับ together, whatever its voice."""
+    ctx = _sentence_ctx(tmp_path, _draft_json(("eat", "kha", "khrap"), "กินค่ะครับ", "eat"),
+                        batch=True, syllabus=_marked_syllabus())
+    with caplog.at_level(logging.WARNING):
+        res = sentence_attempt(ctx)
+    assert res.questions == [] and res.drafted == 0
+    assert "marks both a male and a female speaker" in caplog.text
+
+
 def _clauses_draft_json(clause_word_ids, text, gloss) -> str:
     """One drafting-answer item with one clause per element of
     `clause_word_ids` (each a single-word clause)."""
@@ -3117,6 +3176,26 @@ def test_sentence_prompt_lists_a_targets_line_per_handed_target():
     assert "- target tasty/receptive: tasty  อร่อย  (tasty)" in prompt
 
 
+def test_sentence_prompt_marks_a_speaker_marked_targets_line_with_its_speaker():
+    """Spec 3 r58 section 5: a handed target whose word marks its
+    speaker's sex says so on its line, introducible or not; an unmarked
+    target's line is unchanged."""
+    syllabus = _marked_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert "- target kha/receptive: kha  ค่ะ  (polite particle (female))  [speaker: female]\n" in prompt
+    assert ("- target khrap/receptive: khrap  ครับ  (polite particle (male))  [speaker: male]\n"
+            in prompt)
+    assert "- target eat/receptive: eat  กิน  (eat)\n" in prompt
+
+
+def test_sentence_prompt_states_that_a_speaker_marked_sentence_is_that_speakers_own():
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert ("A sentence that uses a word marked for its speaker's sex (a target marked "
+            "[speaker: female] or [speaker: male]) is that speaker's own sentence and must not "
+            "use a word marked for the other sex.\n") in prompt
+
+
 def test_sentence_prompt_gives_the_required_covering_instruction_verbatim():
     """Spec 3 r27, r56 section 5: as many sentences as it takes -- never
     "the fewest sentences", which drafts word lists -- and no per-sentence
@@ -3776,6 +3855,30 @@ def test_retire_sentence_action_retires_with_reason_and_hint_and_a_replacement_i
     (retire, replaced) = reading_of(ctx.db.assessments_of(s.text_sha),
                                     c.comment_sha).answer["actions"]
     assert retire["outcome"] == "done" and replaced["outcome"] == "done"
+
+
+def test_a_female_marked_replacement_is_asked_as_its_speakers_own_sentence(tmp_path):
+    """The comment pass's replacement becomes a Sentence in the same one
+    place as a drafted one: ค่ะ makes it other_voice, and its question
+    the other-voice role's (spec 3 r58)."""
+    ctx, s = _adopted_sentence_ctx(tmp_path)
+    ctx.provider._backends["llm-parse"] = _Llm(json.dumps({"parses": [
+        {"text": "กินข้าวค่ะ", "clauses": [["eat", "rice", "kha"]]}]},
+        ensure_ascii=False))   # กินข้าวค่ะ: eat rice (female polite)
+    particle = word("kha", "ค่ะ", "polite particle (female)", speaker="female")  # ค่ะ: khâ
+    ctx.syllabus = replace(ctx.syllabus.with_words((*ctx.syllabus.words, particle)),
+                           targets=(*ctx.syllabus.targets,
+                                    target("kha/receptive", "kha", introduction="sentence")))
+    append_comment(ctx.db, subject=s.text_sha, card_id=s.text_sha, kind="listening",
+                   text="say it politely", shown={"text_sha": s.text_sha}, subject_kind="sentence")
+    (c,) = comments(ctx.db)
+    _answer_with(ctx, _readings_json((c.comment_sha, "a polite variant", [
+        {"action": "replacement_sentence", "thai": "กินข้าวค่ะ", "gloss": "eat rice (polite)"}],
+        [])))
+    (q,) = comment_attempt(ctx).questions
+    assert q.question.role == "sentence-for-target-other-voice"
+    assert q.question.rubric == SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC
+    assert q.question.params["speaker"] == "female"
 
 
 def _counting_reports(monkeypatch):

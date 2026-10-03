@@ -17,13 +17,17 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .cachekeys import RunReportKey, comment_identity
-from .entities import Clauses, Sentence, Word, clauses_from_json, text_sha
+from .entities import Clauses, Sentence, Word, clauses_from_json, element_word, text_sha
+from .ids import WordId
 from .media import Provenance
 from .ports import Answer, CacheReader
 from .transport import strip_fences
+
+if TYPE_CHECKING:
+    from .syllabus import Syllabus
 
 _log = logging.getLogger(__name__)
 
@@ -835,6 +839,11 @@ class SentenceDraft:
     def text_sha(self) -> str:
         return text_sha(self.text)
 
+    @property
+    def words(self) -> tuple[WordId, ...]:
+        """Every word id its clauses name, clause order."""
+        return tuple(element_word(e) for clause in self.clauses for e in clause)
+
 
 def parse_drafts(text: str) -> list[SentenceDraft]:
     """The listings one llm answer item's JSON carries, one `SentenceDraft`
@@ -1065,14 +1074,18 @@ def merge_drafts(drafts: Sequence[SentenceDraft]) -> list[SentenceDraft]:
             for one_text in order if one_text not in conflicted]
 
 
-def draft_sentence(draft: SentenceDraft, today: Callable[[], date]) -> Sentence:
-    """`draft` as a Sentence value: its own clauses, learner_voice,
-    provenance llm/draft. `today` is called once for the provenance date
-    (Sourcing.today / adoptable_drafts' own `today` parameter).
+def draft_sentence(draft: SentenceDraft, syllabus: Syllabus, today: Callable[[], date],
+                   *, origin: str = "draft") -> Sentence:
+    """`draft` as a Sentence value, the one place a draft becomes one
+    (the sentence attempt, the comment pass's replacement, the run's
+    recovery and adoption): its own clauses, the voice
+    its marking gives it in `syllabus` (Syllabus.drafted_voice, spec 1
+    r28), provenance llm/`origin`. `today` is called once for the
+    provenance date.
     """
     return Sentence(clauses=draft.clauses, text=draft.text, gloss=draft.gloss,
-                    voice="learner_voice",
-                    provenance=Provenance(source="llm", origin="draft",
+                    voice=syllabus.drafted_voice(draft.words),
+                    provenance=Provenance(source="llm", origin=origin,
                                           licence="generated", acquired=today()))
 
 

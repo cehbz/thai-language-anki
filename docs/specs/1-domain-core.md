@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 27, proposed 2026-10-02 against principles r7 and architecture
+Revision 28, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -75,6 +75,7 @@ Revision log:
 - r25 2026-10-01: a productive Target is filled by any learner-voice sentence using its word whose marking admits the learner; last_used_word is the placement key only. Evidence: 620 of 650 drafts refused as filling no open Target used an open productive word that was not their last word in order; with spec 1 r24 dealing a sentence after its last word, every word it uses is known when its cards arrive. User ruling 2026-10-01.
 - r26 2026-10-01: a productive Target is filled by at most `production_sentences_per_word` (Profile, 3) sentences, the first in placement order, a pair with a study record on its Cloze card kept and counted. Evidence: under r25 the live deck compiled 1,425 Cloze cards, 96 on the male "I" and 33 on "good", median 2 per word; 761 at three per word. User ruling 2026-10-01.
 - r27 2026-10-02: a Word whose speaker marking is not the learner's has no productive Target (E3), derived or listed. Evidence: ดิฉัน ("I", female polite) derived one that no sentence can fill, since a productive fill needs a marking that admits the learner. User ruling 2026-10-02.
+- r28 2026-10-02: a drafted sentence whose marking does not admit the learner is other_voice. Evidence: every draft was learner_voice, so the three receptive Targets on female-marked words (ดิฉัน, ค่ะ, คะ) had 32 drafts and none could pass. User ruling 2026-10-02.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -199,6 +200,10 @@ Sentence                            # artifact
   gloss: str                        # L1 gloss, drafted and judged with
                                     # the text (F3: a gloss on any back)
   voice: Literal[learner_voice, other_voice]
+                                    # a drafted sentence's voice follows
+                                    # its marking (§3): other_voice when
+                                    # the marking does not admit the
+                                    # learner, else learner_voice
   provenance: Provenance
   # which Targets it fills is DERIVED (Syllabus.fills), never stored
 ```

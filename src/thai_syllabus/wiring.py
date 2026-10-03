@@ -72,7 +72,8 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
+from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
+                       SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
                        rubrics_for, sentence_note_id)
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import BuildReadCache, MediaStore, SyllabusDb
@@ -660,9 +661,11 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
     bundle = load_curated(root / "curated")
     syllabus = load_syllabus(root, db=db, bundle=bundle)
     # rubrics_for covers registered judged Rules only; "sentence-for-target"
-    # (attempts.py) and "pronunciation-for-word" (the adjudication pass,
-    # spec 3 r28) are judge roles with no Rule, added here directly.
+    # and "sentence-for-target-other-voice" (attempts.py, spec 3 r58) and
+    # "pronunciation-for-word" (the adjudication pass, spec 3 r28) are
+    # judge roles with no Rule, added here directly.
     rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC,
+              "sentence-for-target-other-voice": SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
               "pronunciation-for-word": PRONUNCIATION_RUBRIC}
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric=rubrics,

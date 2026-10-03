@@ -1269,6 +1269,36 @@ def test_a_sentence_filling_no_productive_target_gets_no_cloze_card(fx):
     assert not [d for d in compiled.report.dropped if d.family == "sentence"]
 
 
+def test_an_other_voice_sentence_gets_a_listening_card_and_no_cloze_card(fx):
+    # Spec 1 r28: "กินค่ะ" (eat, female polite) is other_voice -- ค่ะ marks
+    # a female speaker the male learner's profile does not admit -- so
+    # though gin carries a productive Target the sentence fills none, and
+    # its note carries the Listening card alone.
+    gin = _word("gin", "กิน", "to eat")
+    kha = dataclasses.replace(_word("kha", "ค่ะ", "polite particle (female)"), speaker="female")
+    targets = (Target(id=TargetId("gin/receptive"), word=gin.id, skill="receptive"),
+               Target(id=TargetId("gin/productive"), word=gin.id, skill="productive"),
+               Target(id=TargetId("kha/receptive"), word=kha.id, skill="receptive",
+                      introduction="sentence"))
+    sentence = _sentence((gin, kha), ((gin.id, kha.id),), gloss="eat", voice="other_voice")
+    syllabus = Syllabus(words=(gin, kha), targets=targets, sentences=(sentence,),
+                        frequency={gin.id: 1, kha.id: 2},
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    fx.seed_recording("gin", "eat")
+    fx.seed_recording(sentence_note_id(sentence), "กินค่ะ")
+    fx.seed_picture(sentence_note_id(sentence), "eating")
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    s_model, _field_names, s_notes = _sentence_notes(pkg, "sentence")
+    (note,) = s_notes
+    assert _target_tags(note) == {"gin/receptive", "kha/receptive"}
+    assert _templates_generated(pkg, s_model, note) == {"Listening"}
+    assert not [d for d in compiled.report.dropped if d.family == "sentence"]
+
+
 def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     # eat's Target is BOTH receptive and productive; rice's is receptive
     # only, and rice is the sentence's last used word (frequency puts eat

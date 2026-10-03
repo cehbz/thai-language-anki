@@ -2408,14 +2408,15 @@ def _draft_syllabus(sentences=()):
                     sentences=tuple(sentences))
 
 
-def _sentence_verdict(backend, value, rubric=None, ts=None, subject=_DRAFT_SHA, evidence=None):
+def _sentence_verdict(backend, value, rubric=None, ts=None, subject=_DRAFT_SHA, evidence=None,
+                      role="sentence-for-target"):
     ts = ts if ts is not None else _next_ts()
     answer = {"value": value}
     if evidence is not None:
         answer["evidence"] = evidence
     return Answer(port="assess", backend=backend, key=f"{backend}:{ts}", key_sha="x",
                  subject=subject,
-                 question={"role": "sentence-for-target", "artifact_sha": None,
+                 question={"role": role, "artifact_sha": None,
                           "rubric": rubric, "kind": "sentence", "subject_kind": "sentence",
                           "params": {}},
                  answer=answer, cost=0.0, ts=ts)
@@ -2530,6 +2531,50 @@ def test_a_draft_that_fills_nothing_is_not_adoptable(cache):
     cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=_UNFILLING_DRAFT_SHA)]
     assert _adoptable_drafts(cache, _draft_syllabus(),
                             current_rubric={"sentence-for-target": "R"}) == []
+
+
+# --- a female-marked draft is read under its own role (spec 3 r58) ---------
+
+_KHA = word("kha", "ค่ะ", "polite particle (female)", speaker="female")   # ค่ะ: khâ
+_EAT_KHA = "กินค่ะ"   # กินค่ะ: eat (female polite)
+_EAT_KHA_JSON = ('{"sentences": [{"clauses": [["eat", "kha"]], "text": "' + _EAT_KHA
+                 + '", "gloss": "eat"}]}')
+_OTHER_VOICE = "sentence-for-target-other-voice"
+_BOTH_RUBRICS = {"sentence-for-target": "R", _OTHER_VOICE: "RO"}
+
+
+def _marked_draft_syllabus():
+    return Syllabus(words=(_EAT, _KHA),
+                    targets=(target("eat/receptive", "eat"),
+                             target("kha/receptive", "kha", introduction="sentence")))
+
+
+def test_adoptable_drafts_adopts_a_female_marked_draft_as_other_voice_on_its_own_roles_pass(cache):
+    _drafted(cache, _EAT_KHA_JSON)
+    cache.rows += [_sentence_verdict("judge", True, rubric="RO", subject=text_sha(_EAT_KHA),
+                                     role=_OTHER_VOICE)]
+    adoptable = _adoptable_drafts(cache, _marked_draft_syllabus(), current_rubric=_BOTH_RUBRICS)
+    assert [(s.text, s.voice, {t.id for t in filled}) for s, filled in adoptable] == [
+        (_EAT_KHA, "other_voice", {"eat/receptive", "kha/receptive"})]
+
+
+def test_adoptable_drafts_ignores_a_female_marked_drafts_learner_voice_verdict(cache):
+    """A pass under sentence-for-target judged the draft as the male
+    learner's sentence; it is not the draft's role and decides nothing."""
+    _drafted(cache, _EAT_KHA_JSON)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R", subject=text_sha(_EAT_KHA))]
+    assert _adoptable_drafts(cache, _marked_draft_syllabus(), current_rubric=_BOTH_RUBRICS) == []
+
+
+def test_refused_drafts_reads_a_female_marked_draft_under_its_own_role(cache):
+    _drafted(cache, _EAT_KHA_JSON)
+    cache.rows += [_sentence_verdict("judge", False, rubric="R", subject=text_sha(_EAT_KHA),
+                                     evidence="a female pronoun in a male register")]
+    assert refused_drafts(cache, _marked_draft_syllabus(), current_rubric=_BOTH_RUBRICS) == []
+    cache.rows += [_sentence_verdict("judge", False, rubric="RO", subject=text_sha(_EAT_KHA),
+                                     evidence="unnatural", role=_OTHER_VOICE)]
+    assert refused_drafts(cache, _marked_draft_syllabus(), current_rubric=_BOTH_RUBRICS) == [
+        (_EAT_KHA, "unnatural")]
 
 
 def test_adoptable_drafts_skips_a_draft_naming_an_unregistered_word_and_logs(cache, caplog):

@@ -1430,6 +1430,34 @@ def test_the_sentence_prompt_says_so_when_no_gloss_was_offered():
     assert "(none given)" in prompt
 
 
+def test_an_other_voice_sentence_question_gets_the_sentence_prompt_naming_its_speaker():
+    """Spec 3 r58: the other-voice role has the sentence prompt (not the
+    fallback params dump), which names the marked speaker."""
+    prompts = []
+
+    def complete(prompt, attachments=()):
+        prompts.append(prompt)
+        return Completion(text='{"value": true, "evidence": "natural"}')
+
+    jb = JudgeBackend(model="m", transport="api", complete=complete)
+    q = AssessQuestion(subject="s", role="sentence-for-target-other-voice", rubric="R",
+                       kind="sentence", subject_kind="sentence",
+                       params={"text": "กินค่ะ", "gloss": "eat", "word": "กิน, ค่ะ",
+                               "speaker": "female"})   # กินค่ะ: eat (female polite)
+    raw = jb.fetch(q)
+    assert prompts[0] == sentence_prompt(q)
+    assert "Role: sentence-for-target-other-voice" not in prompts[0]
+    assert f"Speaker: {deck_field('female')}\n" in prompts[0]
+    assert raw.value is True
+
+
+def test_a_learner_voice_sentence_prompt_names_no_speaker():
+    prompt = sentence_prompt(AssessQuestion(
+        subject="s", role="sentence-for-target", rubric="R",
+        params={"text": "กินข้าว", "gloss": "eat rice", "word": "กิน"}))   # กินข้าว: eat rice
+    assert "Speaker:" not in prompt
+
+
 def test_sentence_prompt_asks_for_only_the_json_object():
     prompt = sentence_prompt(AssessQuestion(
         subject="s", role="sentence-for-target", rubric="R",

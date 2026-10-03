@@ -4,7 +4,8 @@ the derivations (spec 3) consume these values; they do not define them.
 """
 from __future__ import annotations
 
-__all__ = ["AUTHORITY_ORDER", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "role_for"]
+__all__ = ["AUTHORITY_ORDER", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "ROLE_FOR_VOICE",
+           "role_for", "sentence_role"]
 
 
 # Per role, backends ordered most- to least-authoritative: authority is
@@ -16,6 +17,7 @@ AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
     "picture-for-word": ("learner", "judge"),
     "scene-for-sentence": ("learner", "judge"),
     "sentence-for-target": ("learner", "judge"),
+    "sentence-for-target-other-voice": ("learner", "judge"),
     "finding-waiver": ("learner",),
     "card-flag": ("learner",),
     "recording-for-word": ("mechanical", "judge"),  # learner may flag, never outrank
@@ -57,3 +59,17 @@ def role_for(kind: str, subject_kind: str = "word") -> str:
     if subject_kind == "sentence" and kind in ROLE_FOR_SENTENCE_SUBJECT:
         return ROLE_FOR_SENTENCE_SUBJECT[kind]
     return ROLE_FOR_KIND[kind]
+
+
+# A drafted sentence's own role by its voice (spec 3 r58): an other-voice
+# draft is judged as its marked speaker's sentence, under a role of its
+# own, so the learner-voice role, its rubric and its verdicts are untouched.
+ROLE_FOR_VOICE: dict[str, str] = {
+    "learner_voice": ROLE_FOR_KIND["sentence"],
+    "other_voice": "sentence-for-target-other-voice",
+}
+
+
+def sentence_role(voice: str) -> str:
+    """The Assess role a drafted sentence of `voice` is judged under."""
+    return ROLE_FOR_VOICE[voice]

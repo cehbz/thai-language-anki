@@ -28,10 +28,10 @@ from datetime import date
 
 from . import record
 from .assessor import MechanicalKeyOf, mechanical_question
-from .authority import AUTHORITY_ORDER, role_for
+from .authority import AUTHORITY_ORDER, role_for, sentence_role
 from .entities import Sentence, Syllable, Target, is_corroborated
 from .ids import WordId, sentence_cloze_key
-from .media import Provenance, Speaker
+from .media import Speaker
 from .phonology import syllables_from_verdict
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
 from .record import LEARNER_RANK
@@ -1592,9 +1592,12 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
     -- a draft judged before a cap existed, or under a higher one, is
     never adopted only for the run to retire it -- that fills at least
     one still-open Target
-    (Syllabus.fill_set, spec 1 section 3) and whose sentence-for-target
-    assessment passes (authority order deciding), with those Targets.
-    `model` and `today` go on the Sentence's provenance. A text F13 has
+    (Syllabus.fill_set, spec 1 section 3) and whose assessment passes
+    (authority order deciding) under the role its voice selects
+    (authority.sentence_role, spec 3 r58), with those Targets. Each draft
+    becomes a Sentence through record.draft_sentence, which gives it the
+    voice its marking does (spec 1 r28); `model` and `today` go on its
+    provenance. A text F13 has
     retired (spec 3 section 5, record.retired_texts) is never re-adopted,
     even once its own Targets reopen and it is the passing draft on
     file -- its own recording proved unsourceable, and that does not
@@ -1602,7 +1605,6 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
     """
     adopted = {s.text_sha for s in syllabus.sentences}
     retired = record.retired_texts(cache)
-    provenance = Provenance(source="llm", origin=model, licence="generated", acquired=today())
     unfilled = set(syllabus.gaps().unfilled_targets)
     out: list[tuple[Sentence, tuple[Target, ...]]] = []
     for draft in record.sentence_drafts(cache):
@@ -1610,8 +1612,7 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
             continue
         if not draft.gloss:
             continue
-        sentence = Sentence(clauses=draft.clauses, text=draft.text, gloss=draft.gloss,
-                            voice="learner_voice", provenance=provenance)
+        sentence = record.draft_sentence(draft, syllabus, today, origin=model)
         try:
             syllabus.check_sentence(sentence)
         except ValueError as e:
@@ -1625,8 +1626,7 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
         if not filled:
             continue
         rows = cache.assessments_of(draft.text_sha)
-        role = role_for("sentence", record.subject_kind_of(rows))
-        ranked = _role_rank(rows, role, current_rubric)
+        ranked = _role_rank(rows, sentence_role(sentence.voice), current_rubric)
         if ranked is None or ranked[1] <= _JUDGE_FAIL_RANK:
             continue
         out.append((sentence, filled))
@@ -1636,8 +1636,9 @@ def adoptable_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[st
 def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str],
                    limit: int = 20) -> list[tuple[str, str]]:
     """The texts not to propose again (spec 3 section 5): every unadopted
-    sentence draft (`record.sentence_drafts`) whose sentence-for-target
-    verdict, under the current rubric and the same authority order
+    sentence draft (`record.sentence_drafts`) whose verdict, under the
+    role its voice selects (Syllabus.drafted_voice, authority.sentence_role,
+    spec 3 r58), the current rubric and the same authority order
     `adoptable_drafts` reads (`_role_row`), fails (`_JUDGE_FAIL_RANK`),
     newest draft first, at most `limit`. `record.sentence_drafts` returns
     drafts oldest first and merges each text to its one draft, so the
@@ -1678,7 +1679,7 @@ def refused_drafts(cache: CacheReader, syllabus, *, current_rubric: Mapping[str,
         if draft.text_sha in adopted:
             continue
         rows = cache.assessments_of(draft.text_sha)
-        role = role_for("sentence", record.subject_kind_of(rows))
+        role = sentence_role(syllabus.drafted_voice(draft.words))
         decided = _role_row(rows, role, current_rubric)
         if decided is None:
             continue

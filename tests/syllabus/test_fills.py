@@ -166,6 +166,25 @@ def test_marking_that_does_not_admit_the_learner_fills_no_productive_target():
     assert syllabus.fills(s, t_b_r) is True
 
 
+def test_an_other_voice_sentence_fills_its_words_receptive_targets_and_no_productive_one():
+    """Spec 1 r28: a drafted sentence whose marking does not admit the
+    learner is other_voice; it fills every receptive Target of its words
+    and no productive Target (clause 2)."""
+    a = word("eat", "กิน")  # eat
+    b = word("rice", "ข้าว")  # rice
+    kha = word("kha", "ค่ะ", "female politeness particle", speaker="female")
+    receptive = (target("eat/receptive", "eat"), target("rice/receptive", "rice"),
+                 target("kha/receptive", "kha", introduction="sentence"))
+    productive = (target("eat/productive", "eat", "productive"),
+                  target("rice/productive", "rice", "productive"))
+    s = sentence(((a.id, b.id, kha.id),), thai_of(a, b, kha),
+                 voice="other_voice")  # eat rice (female speaker)
+    syllabus = base_syllabus((a, b, kha), receptive + productive,
+                             frequency={a.id: 1, b.id: 2, kha.id: 3})
+    assert set(syllabus.fill_set(s)) == set(receptive)
+    assert syllabus.productive_fills(s) == ()
+
+
 def test_marking_that_admits_the_learner_fills_every_used_words_productive_target():
     """ครับ marks a male speaker, the male_colloquial profile's own sex
     (r10): admitted, so both used words' productive Targets fill."""
