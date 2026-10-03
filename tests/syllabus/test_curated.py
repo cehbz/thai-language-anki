@@ -1315,6 +1315,30 @@ def test_providers_sentence_introducible_per_ask_defaults_to_five_and_round_trip
     assert curated.load_providers_config(path).sentence_introducible_per_ask == 3
 
 
+def test_providers_sentence_vocabulary_floor_defaults_to_150_and_round_trips(tmp_path):
+    """Spec 3 r59 section 5/8: the fewest picture-introduced words of the
+    word block a drafting ask's vocabulary offers."""
+    assert curated.ProvidersConfig().sentence_vocabulary_floor == 150
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers()))
+    assert curated.load_providers_config(path).sentence_vocabulary_floor == 150
+    path.write_text(yaml.safe_dump(_providers(sentence_vocabulary_floor=40)))
+    cfg = curated.load_providers_config(path)
+    assert cfg.sentence_vocabulary_floor == 40
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path).sentence_vocabulary_floor == 40
+
+
+@pytest.mark.parametrize("value", [0, -1, "150"])
+def test_providers_sentence_vocabulary_floor_rejects_a_non_positive_or_non_integer(tmp_path,
+                                                                                   value):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(sentence_vocabulary_floor=value)))
+    with pytest.raises(curated.CuratedValidationError,
+                       match="providers.sentence_vocabulary_floor"):
+        curated.load_providers_config(path)
+
+
 def test_providers_no_longer_carries_a_per_sentence_target_cap(tmp_path):
     """Spec 3 r56: the per-sentence Target cap is retired. A providers.yaml
     still carrying the key loads (the loader ignores top-level keys it

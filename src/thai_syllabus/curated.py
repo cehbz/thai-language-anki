@@ -770,6 +770,10 @@ class ProvidersConfig:
     # many sentence-introduced, unmet Targets one drafting ask is handed;
     # the rest of the handed batch is the next non-introduced open Targets
     sentence_introducible_per_ask: int = 5
+    # the drafting prompt's own vocabulary floor default (spec 3 r59
+    # section 5/8): the fewest picture-introduced words of the word block
+    # an ask's vocabulary offers
+    sentence_vocabulary_floor: int = 150
     pair_search_depth: int = 5000   # forms of the frequency list the pair search reads (spec 3 r47 section 8)
     pair_search_asks: int = 40      # outside candidates the judge is asked about per run
     # providers.yaml `wiktionary.contact` (design 2026-09-20 §2): an
@@ -1077,6 +1081,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         errors.append(f"providers.sentence_introducible_per_ask: "
                       f"{sentence_introducible_per_ask!r} must be a positive integer")
 
+    sentence_vocabulary_floor = data.get("sentence_vocabulary_floor", 150)
+    if not isinstance(sentence_vocabulary_floor, int) or sentence_vocabulary_floor < 1:
+        errors.append(f"providers.sentence_vocabulary_floor: "
+                      f"{sentence_vocabulary_floor!r} must be a positive integer")
+
     pair_search_depth = data.get("pair_search_depth", 5000)
     if not isinstance(pair_search_depth, int) or pair_search_depth < 1:
         errors.append(f"providers.pair_search_depth: {pair_search_depth!r} must be a positive integer")
@@ -1179,6 +1188,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         sentence_max_clauses=sentence_max_clauses,
         sentence_max_words=sentence_max_words,
         sentence_introducible_per_ask=sentence_introducible_per_ask,
+        sentence_vocabulary_floor=sentence_vocabulary_floor,
         pair_search_depth=pair_search_depth,
         pair_search_asks=pair_search_asks,
         wiktionary_contact=wiktionary_contact)
@@ -1234,6 +1244,7 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
         "sentence_max_clauses": config.sentence_max_clauses,
         "sentence_max_words": config.sentence_max_words,
         "sentence_introducible_per_ask": config.sentence_introducible_per_ask,
+        "sentence_vocabulary_floor": config.sentence_vocabulary_floor,
         "pair_search_depth": config.pair_search_depth,
         "pair_search_asks": config.pair_search_asks,
         **({"wiktionary": {"contact": config.wiktionary_contact}}

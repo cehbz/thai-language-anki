@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 58, proposed 2026-10-02 against principles r7 and architecture
+Revision 59, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -252,6 +252,7 @@ Revision log:
 - r56 2026-10-01: the per-sentence Target cap (r27) is retired: the drafter is no longer told a per-sentence Target count and a draft is not refused for filling many; practice is bounded per word instead (spec 1 r26) and sentence length by r53. Evidence: under spec 1 r25 an ordinary four-word sentence fills four open productive Targets and was refused. User ruling 2026-10-01.
 - r57 2026-10-01: a sentence recording's voice constraint is its speaker marking alone, any sex when unmarked (principles r7); a word's is unchanged. User ruling 2026-10-01.
 - r58 2026-10-02: an other-voice draft is judged under role sentence-for-target-other-voice (natural as its marked speaker's sentence; grammar; gloss); the drafting prompt names a marked target's speaker. sentence-for-target and its verdicts are unchanged. Evidence: 19 of 23 judge failures among the drafts for the last 57 Targets cite the female pronoun against the male-register rubric. User ruling 2026-10-02.
+- r59 2026-10-02: the drafting ask hands open Targets in introduction order; its vocabulary never falls below sentence_vocabulary_floor (150) picture-introduced words of the word block; a handed classifier is named with the nouns counted with it, which join the vocabulary. Evidence: in targets.yaml order five classifiers took every introducible slot in every ask since 2026-09-27 and 47 Targets were never handed; an ask for the five earliest function words offered 79 words; ทิศ (directions) was handed with none of its four nouns. User ruling 2026-10-02.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -591,21 +592,32 @@ while `MediaIndex.rendition(pair)` is None (`pair/rendition-required` per
 pair), whatever its confusion's other pairs have.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target. The handed targets are the next open Targets in order, at most
+target. The handed targets are the next open Targets in introduction
+order (spec 1 `order()`, r59), at most
 `sentence_targets_per_run` (40), of which at most
 `sentence_introducible_per_ask` (§8, default 5) are sentence-introduced
 and unmet; the remainder are the next non-introduced open Targets.
 
 *Prompt.* The vocabulary met in the fill-set sense, once, as
-`id  thai  (meaning)` lines: the picture-introduced words in
-entry-position order up to the furthest handed target, plus every
-sentence-introduced word an adopted sentence fills; the handed
-sentence-introduced targets not yet met, listed as introducible, at most
-one per sentence; a handed target whose word marks its speaker's sex
-names that speaker on its line, and the prompt states that a sentence
-using such a word is that speaker's own sentence and uses no word marked
-for the other sex (r58); the profile register; the existing sentence
-openings to avoid; the unadopted texts the judge failed, newest first, at most 20,
+`id  thai  (meaning)` lines in introduction order: the picture-introduced
+words up to the furthest handed target and past it until the vocabulary
+holds `sentence_vocabulary_floor` (§8, default 150) picture-introduced
+words of the word block (a recited name in the sounds block does not
+count), every sentence-introduced word an adopted sentence fills, and
+the nouns a handed sentence-introduced classifier counts that the
+drafter may use (a noun with a Target that is picture-introduced or
+already met), wherever they sit (r59); the ask to
+use the earliest listed words that make a natural sentence (r59); the
+handed sentence-introduced targets not yet met, listed as introducible,
+at most one per sentence; a handed target whose word marks its speaker's
+sex names that speaker on its line, and the prompt states that a
+sentence using such a word is that speaker's own sentence and uses no
+word marked for the other sex (r58); a handed sentence-introduced
+classifier's line names those nouns, ids and meanings in introduction
+order, and one with no such noun has the plain line, as does every
+other target (r59); the
+profile register; the existing sentence openings to avoid; the
+unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
 takes to cover the handed targets (r27), each free to use any other
@@ -1007,7 +1019,8 @@ openverse 60, pexels 60, others 0: a challenge is a plain transport
 failure, and brave answers 402/429 rather than a challenge page),
 `sentence_nothing_cap` (3), `sentence_max_clauses` (2),
 `sentence_max_words` (8, r53),
-`sentence_introducible_per_ask` (5), `pair_search_depth` (5000) and
+`sentence_introducible_per_ask` (5), `sentence_vocabulary_floor` (150,
+r59), `pair_search_depth` (5000) and
 `pair_search_asks` (40).
 `secrets.brave` names a reference to the Brave Search API subscription
 key, sent as `X-Subscription-Token` on every search. `secrets.openverse` names a

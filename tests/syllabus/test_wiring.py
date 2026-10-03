@@ -26,6 +26,7 @@ from thai_syllabus.attempts import (
     DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK,
     DEFAULT_SENTENCE_MAX_CLAUSES,
     DEFAULT_SENTENCE_MAX_WORDS,
+    DEFAULT_SENTENCE_VOCABULARY_FLOOR,
 )
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, sha
 from thai_syllabus.curated import (
@@ -1504,6 +1505,25 @@ def test_the_sentence_introducible_cap_defaults_to_five(tmp_path):
         encoding="utf-8")
     assert (build_sourcing(root).sentence_introducible_per_ask
            == DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK == 5)
+
+
+def test_the_sentence_vocabulary_floor_reaches_sourcing(tmp_path):
+    """Spec 3 r59 section 5/8: providers.yaml's own sentence_vocabulary_floor
+    is the floor sentence_attempt's drafting prompt reads off Sourcing."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "sentence_vocabulary_floor: 40\nimgfetch_path: /opt/bin/imgfetch\n"
+        "audiofetch_path: /opt/bin/audiofetch\n", encoding="utf-8")
+    assert build_sourcing(root).sentence_vocabulary_floor == 40
+
+
+def test_the_sentence_vocabulary_floor_defaults_to_150(tmp_path):
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    assert (build_sourcing(root).sentence_vocabulary_floor
+           == DEFAULT_SENTENCE_VOCABULARY_FLOOR == 150)
 
 
 def test_nothing_ttl_reaches_both_derivations_and_sourcing(tmp_path):

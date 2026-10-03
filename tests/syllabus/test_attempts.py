@@ -1760,9 +1760,9 @@ def test_sentence_attempt_reports_the_words_it_was_handed_targets_for(tmp_path):
 def _introducible_and_receptive_syllabus(n_introducible: int, n_receptive: int) -> Syllabus:
     """`n_introducible` words with a sentence-introduced, unmet Target
     (order: intro0 .. introN-1), followed by `n_receptive` words with a
-    picture_card Target (recept0 .. receptN-1) -- syllabus.targets order
-    is what gaps().unfilled_targets follows (rulebook._check_target_sentence
-    walks syllabus.targets in order)."""
+    picture_card Target (recept0 .. receptN-1), ranked in that order --
+    introduction order (Syllabus.order) is the order the drafting ask
+    hands open Targets in (spec 3 r59)."""
     introducible_words = tuple(word(f"intro{i}", f"อ{i}", f"intro {i}")
                                for i in range(n_introducible))
     receptive_words = tuple(word(f"recept{i}", f"ร{i}", f"recept {i}")
@@ -1770,8 +1770,9 @@ def _introducible_and_receptive_syllabus(n_introducible: int, n_receptive: int) 
     introducible_targets = tuple(target(f"intro{i}/t", f"intro{i}", introduction="sentence")
                                  for i in range(n_introducible))
     receptive_targets = tuple(target(f"recept{i}/t", f"recept{i}") for i in range(n_receptive))
-    return Syllabus(words=introducible_words + receptive_words,
-                    targets=introducible_targets + receptive_targets)
+    words = introducible_words + receptive_words
+    return Syllabus(words=words, targets=introducible_targets + receptive_targets,
+                    frequency={w.id: rank for rank, w in enumerate(words, start=1)})
 
 
 def test_sentence_attempt_hands_at_most_the_introducible_cap(tmp_path):
@@ -1803,6 +1804,46 @@ def test_sentence_attempt_honors_a_lowered_introducible_cap(tmp_path):
     assert res.targets_handed == 12
     assert res.subjects_handed == (frozenset(f"intro{i}" for i in range(2))
                                    | frozenset(f"recept{i}" for i in range(10)))
+
+
+def _classifier_and_function_word_syllabus() -> Syllabus:
+    """A classifier listed before a function word in targets.yaml order,
+    ranked after it in introduction order -- both sentence-introduced and
+    unmet -- and two picture words listed in the reverse of their rank."""
+    return Syllabus(
+        words=(word("clf-egg", "ฟอง", "(classifier -- no gloss migrated)"),  # ฟอง: classifier for eggs
+               word("not", "ไม่", "not"),                                  # ไม่: not
+               word("rice", "ข้าว", "rice"), word("eat", "กิน", "eat")),     # ข้าว: rice, กิน: eat
+        targets=(target("clf-egg/receptive", "clf-egg", introduction="sentence"),
+                 target("not/receptive", "not", introduction="sentence"),
+                 target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+        frequency={"not": 1, "eat": 2, "clf-egg": 3, "rice": 4})
+
+
+def test_sentence_attempt_hands_open_targets_in_introduction_order(tmp_path):
+    """Spec 3 r59 section 5: the introducible cap applies to the open
+    Targets in introduction order (Syllabus.order), not targets.yaml order:
+    with one introducible slot, the function word ranked first takes it."""
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}',
+                        syllabus=_classifier_and_function_word_syllabus())
+    ctx.sentence_introducible_per_ask = 1
+    assert sentence_attempt(ctx).subjects_handed == frozenset({"not", "rice", "eat"})
+
+
+def test_sentence_attempt_caps_the_handed_targets_in_introduction_order(tmp_path):
+    """`max_targets` cuts the introduction order: the two earliest open
+    Targets are handed."""
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}',
+                        syllabus=_classifier_and_function_word_syllabus())
+    assert sentence_attempt(ctx, max_targets=2).subjects_handed == frozenset({"not", "eat"})
+
+
+def test_sentence_attempt_lists_the_handed_targets_in_introduction_order(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}',
+                        syllabus=_classifier_and_function_word_syllabus())
+    sentence_attempt(ctx)
+    prompt = ctx.provider._backends["llm-sentence"].prompts[0]
+    assert prompt.index("- target eat/receptive:") < prompt.index("- target rice/receptive:")
 
 
 # --- the no-fit answer (spec 3 r19 section 5) -------------------------------
@@ -3361,11 +3402,140 @@ def test_sentence_prompt_shows_a_picture_introduced_target_though_its_word_is_al
 
 
 def test_sentence_prompt_lists_only_the_vocabulary_the_handed_targets_met():
+    """At a floor already reached, the walk ends at the furthest handed
+    target (spec 3 r59)."""
     syllabus = _three_word_syllabus()
     first_only = [t for t in syllabus.targets if t.id == "eat/receptive"]
-    vocabulary = _sentence_prompt(syllabus, first_only, sentence_max_clauses=2).split(
+    vocabulary = _sentence_prompt(syllabus, first_only, sentence_max_clauses=2,
+                                  sentence_vocabulary_floor=1).split(
         "Vocabulary, in the order met:\n")[1].split("\nTargets:")[0]
     assert vocabulary.splitlines() == ["- eat  กิน  (eat)"]
+
+
+def _floor_syllabus():
+    """A grapheme whose recited name sits in the sounds block, a function
+    word ranked first and four picture words after it."""
+    chicken = word("chicken", "ไก่", "chicken")                     # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่", "the letter's recited name")  # กอ ไก่: the name of ก
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    pictures = tuple(word(f"p{i}", f"ป{i}", f"picture {i}") for i in range(1, 5))
+    return Syllabus(
+        words=(chicken, name, word("not", "ไม่", "not")) + pictures,   # ไม่: not
+        targets=(target("name-chicken/receptive", "name-chicken"),
+                 target("not/receptive", "not", introduction="sentence"))
+                + tuple(target(f"{w.id}/receptive", w.id) for w in pictures),
+        graphemes=(g,),
+        frequency={"not": 1, "p1": 2, "p2": 3, "p3": 4, "p4": 5})
+
+
+def _vocabulary_block_ids(prompt: str) -> list[str]:
+    block = prompt.split("Vocabulary, in the order met:\n")[1]
+    ids = []
+    for line in block.splitlines():
+        if not line.startswith("- ") or line.startswith("- target "):
+            break
+        ids.append(line[2:].split("  ")[0])
+    return ids
+
+
+def test_sentence_prompt_vocabulary_reaches_the_floor_past_an_early_handed_target():
+    """Spec 3 r59 section 5: an ask whose furthest handed Target sits early
+    still offers the first `sentence_vocabulary_floor` picture-introduced
+    words of the word block, in introduction order; the recited name in
+    the sounds block is offered and does not count toward the floor."""
+    syllabus = _floor_syllabus()
+    handed = [t for t in syllabus.targets if t.id == "not/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=2)
+    assert _vocabulary_block_ids(prompt) == ["name-chicken", "p1", "p2"]
+
+
+def test_sentence_prompt_vocabulary_past_the_floor_ends_at_the_furthest_handed_target():
+    syllabus = _floor_syllabus()
+    handed = [t for t in syllabus.targets if t.id == "p3/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=2)
+    assert _vocabulary_block_ids(prompt) == ["name-chicken", "p1", "p2", "p3"]
+
+
+def test_sentence_attempt_reads_the_vocabulary_floor_off_sourcing(tmp_path):
+    ctx = _sentence_ctx(tmp_path, '{"sentences": []}', syllabus=_floor_syllabus())
+    ctx.sentence_vocabulary_floor = 1
+    ctx.sentence_introducible_per_ask = 1
+    sentence_attempt(ctx, max_targets=1)
+    prompt = ctx.provider._backends["llm-sentence"].prompts[0]
+    assert _vocabulary_block_ids(prompt) == ["name-chicken", "p1"]
+
+
+def test_sentence_prompt_asks_for_the_earliest_words_that_make_a_natural_sentence():
+    """Spec 3 r59 section 5."""
+    syllabus = _three_word_syllabus()
+    prompt = _sentence_prompt(syllabus, list(syllabus.targets), sentence_max_clauses=2)
+    assert ("The vocabulary is listed in the order the learner meets it; use the earliest "
+            "words that make a natural sentence.\n") in prompt
+
+
+def _classifier_syllabus():
+    """ฟอง counts eggs and bubbles; แบบ counts no deck noun. The bubble is
+    met before the egg, both after the classifier."""
+    return Syllabus(
+        words=(word("first", "หนึ่ง", "first word"),                        # หนึ่ง: one
+               word("clf-egg", "ฟอง", "(classifier -- no gloss migrated)"),  # ฟอง: classifier for eggs
+               word("clf-style", "แบบ", "(classifier -- no gloss migrated)"),  # แบบ: classifier for styles
+               word("egg", "ไข่", "egg", classifier="clf-egg"),               # ไข่: egg
+               word("bubble", "ฟองสบู่", "soap bubble", classifier="clf-egg")),  # ฟองสบู่: soap bubble
+        targets=(target("first/receptive", "first"),
+                 target("clf-egg/receptive", "clf-egg", introduction="sentence"),
+                 target("clf-style/receptive", "clf-style", introduction="sentence"),
+                 target("egg/receptive", "egg"), target("bubble/receptive", "bubble")),
+        frequency={"first": 1, "clf-egg": 2, "clf-style": 3, "bubble": 4, "egg": 50})
+
+
+def test_sentence_prompt_names_a_handed_classifiers_nouns_in_introduction_order():
+    """Spec 3 r59 section 5: a handed classifier's line names the deck
+    nouns whose `classifier` is that Word, ids and meanings, in
+    introduction order."""
+    syllabus = _classifier_syllabus()
+    handed = [t for t in syllabus.targets if t.id == "clf-egg/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=1)
+    assert ("- target clf-egg/receptive: clf-egg  ฟอง  ((classifier -- no gloss migrated))"
+            "  [classifier for: bubble (soap bubble), egg (egg)]\n") in prompt
+
+
+def test_sentence_prompt_offers_a_handed_classifiers_nouns_beyond_the_furthest_target():
+    syllabus = _classifier_syllabus()
+    handed = [t for t in syllabus.targets if t.id == "clf-egg/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=1)
+    assert _vocabulary_block_ids(prompt) == ["first", "bubble", "egg"]
+
+
+def test_sentence_prompt_gives_a_picture_introduced_classifier_word_its_plain_line():
+    """Spec 3 r59 section 5: only a sentence-introduced classifier is named
+    with its nouns; a picture-introduced Target whose Word some noun names
+    as its classifier gets the plain line and adds no noun."""
+    person = word("person", "คน", "person")                          # คน: person
+    syllabus = Syllabus(
+        words=(person, word("teacher", "ครู", "teacher", classifier="person")),  # ครู: teacher
+        targets=(target("person/receptive", "person"), target("teacher/receptive", "teacher")),
+        frequency={"person": 1, "teacher": 2})
+    handed = [t for t in syllabus.targets if t.id == "person/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=1)
+    assert "- target person/receptive: person  คน  (person)\n" in prompt
+    assert _vocabulary_block_ids(prompt) == ["person"]
+
+
+def test_sentence_prompt_gives_a_classifier_no_noun_names_its_plain_line():
+    syllabus = _classifier_syllabus()
+    handed = [t for t in syllabus.targets if t.id == "clf-style/receptive"]
+    prompt = _sentence_prompt(syllabus, handed, sentence_max_clauses=2,
+                              sentence_vocabulary_floor=1)
+    assert ("- target clf-style/receptive: clf-style  แบบ  ((classifier -- no gloss migrated))\n"
+            in prompt)
+    assert _vocabulary_block_ids(prompt) == ["first"]
 
 
 def test_sentence_prompt_appends_the_refused_block_when_refused_texts_exist():

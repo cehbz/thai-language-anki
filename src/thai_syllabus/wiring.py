@@ -736,6 +736,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         sentence_max_clauses=cfg.sentence_max_clauses,
         sentence_max_words=cfg.sentence_max_words,
         sentence_introducible_per_ask=cfg.sentence_introducible_per_ask,
+        sentence_vocabulary_floor=cfg.sentence_vocabulary_floor,
         nothing_ttl=derivations.nothing_ttl,
         frequency_words=lambda: load_frequency_words(root / "curated" / "frequency_th.txt"),
         pair_search_depth=cfg.pair_search_depth,

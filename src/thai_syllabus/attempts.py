@@ -24,6 +24,7 @@ import functools
 import json
 import time
 import logging
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -88,7 +89,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "reverify_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "draft_question", "OpenTargets",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_MAX_WORDS",
-           "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK"]
+           "DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK", "DEFAULT_SENTENCE_VOCABULARY_FLOOR"]
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +112,12 @@ DEFAULT_SENTENCE_MAX_WORDS = 8
 # room for the receptive backlog and yielded almost nothing adopted. Wired
 # from providers.yaml's own sentence_introducible_per_ask (wiring.build_sourcing).
 DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK = 5
+
+# The drafting prompt's own vocabulary floor default (spec 3 r59 section
+# 5/8): the fewest picture-introduced words of the word block an ask's
+# vocabulary offers. Wired from providers.yaml's own
+# sentence_vocabulary_floor (wiring.build_sourcing).
+DEFAULT_SENTENCE_VOCABULARY_FLOOR = 150
 
 # The comment pass's own cap (spec 3 r30 section 5) on how many unread
 # comments one reading ask is handed, oldest first: one prompt carries a
@@ -242,6 +249,10 @@ class Sourcing:
     # sentence-introduced, unmet Targets one drafting ask is handed; the
     # rest of the handed batch is the next non-introduced open Targets.
     sentence_introducible_per_ask: int = DEFAULT_SENTENCE_INTRODUCIBLE_PER_ASK
+    # The drafting prompt's own vocabulary floor (spec 3 r59 section 5/8):
+    # an ask's vocabulary offers at least this many picture-introduced
+    # words of the word block.
+    sentence_vocabulary_floor: int = DEFAULT_SENTENCE_VOCABULARY_FLOOR
     # The writing command's own account of deliberate removals (spec 2
     # section 6, safety.writing_command): threaded onto ctx the same way
     # cli._cmd_run sets it, so run()'s own retirement of an exhausted
@@ -2414,42 +2425,76 @@ def _tts_rendition(ctx: Sourcing, pair, words, constraint: VoiceConstraint,
 
 # --- the sentence attempt (per run, over the open Targets) ------------------
 
-def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target]) -> list[Word]:
-    """The vocabulary a sentence prompt may draw on, entirely: the
-    picture-introduced words met in entry order (Syllabus.order) up to
-    the furthest handed target -- a met sentence-introduced word
-    (`Syllabus.met_sentence_introduced_targets`) interleaved at its own
-    entry within that same bounded walk when its entry falls at or
-    before the furthest handed target, appended after the walk, still in
-    entry order, when its entry falls beyond it. An unmet
+def _word_entries(syllabus: Syllabus) -> list[tuple[int, Target]]:
+    """Syllabus.order()'s word_target entries, each with its position in
+    the order and its Target."""
+    by_id = {t.id: t for t in syllabus.targets}
+    return [(i, by_id[entry.id]) for i, entry in enumerate(syllabus.order())
+            if entry.kind == "word_target"]
+
+
+def _offerable(target: Target, met_targets: frozenset[TargetId]) -> bool:
+    """Whether a Target's entry offers its word to a sentence prompt: a
+    picture-introduced Target, or a sentence-introduced one an adopted
+    sentence already meets."""
+    return target.introduction == "picture_card" or target.id in met_targets
+
+
+def _classifier_nouns(syllabus: Syllabus, entries: Sequence[tuple[int, Target]]
+                      ) -> dict[WordId, list[Word]]:
+    """Each classifier's offerable nouns -- the Words whose `classifier`
+    is that Word -- in introduction order (spec 3 r59 section 5)."""
+    met_targets = syllabus.met_sentence_introduced_targets()
+    classifier_of = {w.id: w.classifier for w in syllabus.words if w.classifier is not None}
+    nouns: dict[WordId, list[Word]] = {}
+    seen: set[WordId] = set()
+    for _, target in entries:
+        noun = target.word
+        if noun in classifier_of and noun not in seen and _offerable(target, met_targets):
+            seen.add(noun)
+            nouns.setdefault(classifier_of[noun], []).append(syllabus.word(noun))
+    return nouns
+
+
+def _handed_nouns(target: Target, classifier_nouns: Mapping[WordId, Sequence[Word]]
+                  ) -> Sequence[Word]:
+    """The nouns a handed Target brings into its prompt (spec 3 r59
+    section 5): a sentence-introduced classifier's offerable nouns; none
+    for any other Target."""
+    return classifier_nouns.get(target.word, ()) if target.introduction == "sentence" else ()
+
+
+def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target],
+                      entries: Sequence[tuple[int, Target]],
+                      classifier_nouns: Mapping[WordId, Sequence[Word]], *,
+                      floor: int) -> list[Word]:
+    """The vocabulary a sentence prompt may draw on, entirely, in
+    introduction order (Syllabus.order): the picture-introduced words up
+    to the furthest handed target, and past it until the vocabulary holds
+    `floor` picture-introduced words of the word block (a recited name in
+    the sounds block does not count, spec 3 r59); every met
+    sentence-introduced word (`Syllabus.met_sentence_introduced_targets`)
+    wherever its entry falls; and every noun a handed sentence-introduced
+    classifier counts (`_handed_nouns`) wherever its entry falls. An unmet
     sentence-introduced word stays out throughout.
     """
     met_targets = syllabus.met_sentence_introduced_targets()
-    wanted = {t.id for t in targets}
-    by_id = {t.id: t for t in syllabus.targets}
+    handed = {t.id for t in targets}
+    furthest = max((i for i, t in entries if t.id in handed), default=-1)
+    nouns = {n.id for t in targets for n in _handed_nouns(t, classifier_nouns)}
     vocabulary: list[Word] = []
     seen: set[WordId] = set()
-    remaining = set(wanted)
-    for entry in syllabus.order():
-        if entry.kind != "word_target":
+    word_block = 0
+    for i, target in entries:
+        if target.word in seen or not _offerable(target, met_targets):
             continue
-        entry_target = by_id[entry.id]
-        word_id = entry_target.word
-        include = entry_target.introduction == "picture_card" or entry.id in met_targets
-        if include and word_id not in seen:
-            seen.add(word_id)
-            vocabulary.append(syllabus.word(word_id))
-        remaining.discard(entry.id)
-        if not remaining:
-            break
-    for entry in syllabus.order():
-        if entry.kind != "word_target":
-            continue
-        entry_target = by_id[entry.id]
-        if (entry_target.introduction == "sentence" and entry.id in met_targets
-                and entry_target.word not in seen):
-            seen.add(entry_target.word)
-            vocabulary.append(syllabus.word(entry_target.word))
+        counts = (target.introduction == "picture_card"
+                  and target.word not in syllabus.name_word_ids)
+        if (i <= furthest or (counts and word_block < floor)
+                or target.id in met_targets or target.word in nouns):
+            seen.add(target.word)
+            vocabulary.append(syllabus.word(target.word))
+            word_block += counts
     return vocabulary
 
 
@@ -2473,14 +2518,20 @@ def _example_clause_ids(vocabulary: Sequence[Word]) -> tuple[str, str]:
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
                      *, sentence_max_clauses: int,
-                     sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS) -> str:
-    """The drafting prompt (spec 3 section 5): the met vocabulary once as
-    id/thai/meaning lines, a Targets line per picture-introduced handed
+                     sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS,
+                     sentence_vocabulary_floor: int = DEFAULT_SENTENCE_VOCABULARY_FLOOR) -> str:
+    """The drafting prompt (spec 3 section 5): the met vocabulary
+    (`_entry_vocabulary`, at least `sentence_vocabulary_floor` words of the
+    word block, spec 3 r59) once as id/thai/meaning lines in introduction
+    order, with the ask to use its earliest words that make a natural
+    sentence, a Targets line per picture-introduced handed
     target and per handed sentence-introduced target some adopted
     sentence already fills, an Introducible line per handed
     sentence-introduced target no adopted sentence fills -- a target whose
     word marks its speaker's sex says so on its line, and the prompt says
-    such a sentence is that speaker's own (spec 3 r58) -- the profile
+    such a sentence is that speaker's own (spec 3 r58), and a sentence-introduced classifier
+    target's line names the nouns it counts (`_handed_nouns`, spec 3
+    r59) -- the profile
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
     clauses per sentence (spec 3 r23 section 5/8) and at most
@@ -2495,7 +2546,10 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     built from the prompt's own vocabulary where possible
     (`_example_clause_ids`, spec 3 r24 section 5).
     """
-    vocabulary = _entry_vocabulary(syllabus, targets)
+    entries = _word_entries(syllabus)
+    classifier_nouns = _classifier_nouns(syllabus, entries)
+    vocabulary = _entry_vocabulary(syllabus, targets, entries, classifier_nouns,
+                                   floor=sentence_vocabulary_floor)
     met_targets = syllabus.met_sentence_introduced_targets()
     target_lines = []
     introducible_lines = []
@@ -2504,6 +2558,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
         line = f"- target {target.id}: {record.vocabulary_line(word)}"
         if word.speaker is not None:
             line += f"  [speaker: {word.speaker}]"
+        if nouns := _handed_nouns(target, classifier_nouns):
+            line += f"  [classifier for: {', '.join(f'{n.id} ({n.meaning})' for n in nouns)}]"
         if target.introduction == "sentence" and target.id not in met_targets:
             introducible_lines.append(line)
         else:
@@ -2533,6 +2589,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             "cover the targets below; a sentence may use any other listed vocabulary besides. "
             "A sentence may introduce at most one word from the Introducible list and must "
             "otherwise use only the vocabulary below.\n"
+            "The vocabulary is listed in the order the learner meets it; use the earliest "
+            "words that make a natural sentence.\n"
             f"Each sentence has at most {sentence_max_clauses} clauses.\n"
             f"Each sentence has at most {sentence_max_words} words, its clauses' words summed.\n"
             "Give each sentence an English gloss that states exactly what it says.\n"
@@ -2552,13 +2610,14 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     """One drafting ask per run over the open Targets (spec 3 section 5),
     at most `max_targets` of them (AttemptResult.targets_handed says how
     many, and subjects_handed which words they belong to). The handed
-    targets are the next open Targets in order, of which at most
+    targets are the next open Targets in introduction order
+    (Syllabus.order, spec 3 r59), of which at most
     `ctx.sentence_introducible_per_ask` (spec 3 r24 section 5/8) are
     introducible -- sentence-introduced (`introduction == "sentence"`)
     and not yet met (`Syllabus.met_sentence_introduced_targets`); an
     introducible Target beyond that cap is skipped rather than handed,
     and does not count against `max_targets`, so the remainder of the
-    handed batch is the next non-introduced open Targets in order. This
+    handed batch is the next non-introduced open Targets in that order. This
     keeps a run dominated by introducible targets (e.g. 36 of 40) from
     starving the handed batch of the receptive backlog the drafter can
     actually place several of per sentence. Each merged
@@ -2598,7 +2657,9 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     withheld = frozenset(
         w for w in {word_of[t] for t in unfilled if t in word_of}
         if sentence_exhausted(ctx.db, w, cap=ctx.sentence_nothing_cap).exhausted)
-    handable = [t for t in unfilled if word_of.get(t) not in withheld]
+    position = {t.id: i for i, t in _word_entries(syllabus)}
+    handable = sorted((t for t in unfilled if word_of.get(t) not in withheld),
+                      key=lambda t: position.get(t, math.inf))
     target_of = {t.id: t for t in syllabus.targets}
     met_targets = syllabus.met_sentence_introduced_targets()
     selected: list[str] = []
@@ -2614,8 +2675,7 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
                 continue   # over the introducible cap -- skipped, not counted against max_targets
             introducible_handed += 1
         selected.append(tid)
-    open_ids = set(selected)
-    targets = [t for t in syllabus.targets if t.id in open_ids]
+    targets = [target_of[t] for t in selected if t in target_of]
     if not targets:
         return AttemptResult(attempted=False, subjects_exhausted=withheld)
     open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
@@ -2625,7 +2685,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
         params={"prompt": _sentence_prompt(
             syllabus, targets, refused, sentence_max_clauses=ctx.sentence_max_clauses,
-            sentence_max_words=ctx.sentence_max_words)})
+            sentence_max_words=ctx.sentence_max_words,
+            sentence_vocabulary_floor=ctx.sentence_vocabulary_floor)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
 
