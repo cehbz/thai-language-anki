@@ -226,6 +226,43 @@ def test_targets_round_trip(tmp_path):
     assert loaded == targets
 
 
+def test_a_target_wanting_several_sentences_round_trips_and_one_is_not_written(tmp_path):
+    """Spec 1 r30: `sentences` is read from a targets.yaml row, defaults to
+    one, and is written only for a row that wants more than one."""
+    path = tmp_path / "targets.yaml"
+    targets = [Target(id=TargetId("not/receptive"), word=WordId("not"), skill="receptive",
+                      introduction="sentence", sentences=5),
+               Target(id=TargetId("rice/receptive"), word=WordId("rice"), skill="receptive")]
+    curated.save_targets(path, targets)
+    rows = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert rows[0].get("sentences") == 5 and "sentences" not in rows[1]
+    loaded = curated.load_targets(path)
+    assert loaded == targets and loaded[1].sentences == 1
+
+
+@pytest.mark.parametrize("value", [0, -2, "3", True, 1.5, None])
+def test_a_target_row_whose_sentences_is_not_a_positive_integer_is_refused(tmp_path, value):
+    path = tmp_path / "targets.yaml"
+    path.write_text(yaml.safe_dump([{"id": "not/receptive", "word": "not", "skill": "receptive",
+                                     "introduction": "sentence", "sentences": value}]),
+                    encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"targets\[0\] \('not/receptive'\): sentences"):
+        curated.load_targets(path)
+
+
+def test_a_productive_target_row_wanting_several_sentences_is_refused(tmp_path):
+    """Spec 1 r30: wanting several sentences is for receptive exposure; a
+    productive Target's practice is bounded by the production cap."""
+    path = tmp_path / "targets.yaml"
+    path.write_text(yaml.safe_dump([{"id": "rice/productive", "word": "rice",
+                                     "skill": "productive", "sentences": 2}]),
+                    encoding="utf-8")
+    with pytest.raises(curated.CuratedValidationError,
+                       match=r"targets\[0\] \('rice/productive'\): sentences 2 on a productive"):
+        curated.load_targets(path)
+
+
 # --- graphemes -----------------------------------------------------------
 
 def test_graphemes_round_trip_with_keyword_resolution(tmp_path):

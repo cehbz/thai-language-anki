@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 60, proposed 2026-10-02 against principles r7 and architecture
+Revision 61, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -254,6 +254,7 @@ Revision log:
 - r58 2026-10-02: an other-voice draft is judged under role sentence-for-target-other-voice (natural as its marked speaker's sentence; grammar; gloss); the drafting prompt names a marked target's speaker. sentence-for-target and its verdicts are unchanged. Evidence: 19 of 23 judge failures among the drafts for the last 57 Targets cite the female pronoun against the male-register rubric. User ruling 2026-10-02.
 - r59 2026-10-02: the drafting ask hands open Targets in introduction order; its vocabulary never falls below sentence_vocabulary_floor (150) picture-introduced words of the word block; a handed classifier is named with the nouns counted with it, which join the vocabulary. Evidence: in targets.yaml order five classifiers took every introducible slot in every ask since 2026-09-27 and 47 Targets were never handed; an ask for the five earliest function words offered 79 words; ทิศ (directions) was handed with none of its four nouns. User ruling 2026-10-02.
 - r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once, and a retired text drafted again is not put to the judge; every prompt line listing a speaker-marked word, vocabulary lines included, names its speaker. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter; 24 drafted texts on record paired ดิฉัน (I, female polite) with ผม (I, male), whose vocabulary line was untagged. User ruling 2026-10-02.
+- r61 2026-10-02: the drafting prompt says how many sentences a handed Target still wants; adoption supplies a Target's count; a scene picture is sourced only for a sentence carrying a Cloze card. Evidence: scene-picture judging is $31.05 of the $55.30 judged so far, about $0.07 a sentence, against $0.003 to judge the sentence itself. User ruling 2026-10-02.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -597,7 +598,9 @@ target. The handed targets are the next open Targets in introduction
 order (spec 1 `order()`, r59), at most
 `sentence_targets_per_run` (40), of which at most
 `sentence_introducible_per_ask` (§8, default 5) are sentence-introduced
-and unmet; the remainder are the next non-introduced open Targets.
+and unmet; the remainder are the next open Targets that are not, a met
+sentence-introduced Target still wanting sentences (spec 1 r30) among
+them.
 
 *Prompt.* The vocabulary met in the fill-set sense, once, as
 `id  thai  (meaning)` lines in introduction order: the picture-introduced
@@ -624,7 +627,11 @@ on its line as the learner's instruction for that word, one line with
 every run of whitespace one space, no angle or square brackets, at most
 300 characters, and the prompt says before the target lines to follow
 such a direction in the sentences that use the word; a prompt with no
-direction says nothing of directions (r60); the profile register; the existing sentence openings to avoid; the
+direction says nothing of directions (r60); a handed Target that wants
+more than one more sentence (spec 1 r30) says how many on its line
+(`[wanted in N more sentences]`), and the prompt says before the target
+lines to write that many different sentences using the word; a prompt
+with no such Target says nothing of it (r61); the profile register; the existing sentence openings to avoid; the
 unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
@@ -686,11 +693,17 @@ voice selects. Adoption
 (`Syllabus.add_sentence` with provenance) appends one `adopted` outcome
 row under each word the sentence uses (port attempt, backend run, the
 sentence's text sha on the row), where the ask cap restarts (r60); it
-fills every target `fills()` says it fills, chosen greedily by targets filled, and creates needs: the
+fills every target `fills()` says it fills. The adopted drafts are
+chosen greedily by the open Targets each fills, an open Target counting
+for as many drafts as it wants more sentences (spec 1 r30), so adoption
+supplies a Target's count (r61); a draft chosen for another Target may
+add to one already at its count. Adoption creates needs: the
 sentence's recording (voice constraint from the marking, Recording
 above; tts allowed for receptive-only, a productive fill wants native,
-warn otherwise) and a scene picture (the sentence's Cloze cards need
-it, spec 4 r10). A refused draft and a draft filling nothing are
+warn otherwise) and, for a sentence carrying a Cloze card (a productive
+fill), a scene picture (its Cloze cards need it, spec 4 r10). A sentence
+with no Cloze card has no scene-picture need, and one that already has
+a scene picture keeps it (r61). A refused draft and a draft filling nothing are
 rejected drafts in the record. An adopted
 Sentence whose recording need is exhausted with no passing candidate, or
 whose total deck words summed across its clauses exceed

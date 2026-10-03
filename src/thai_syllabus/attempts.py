@@ -2564,7 +2564,10 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     says so (`_prompt_word_line`), and the prompt says
     such a sentence is that speaker's own (spec 3 r58), and a sentence-introduced classifier
     target's line names the nouns it counts (`_handed_nouns`, spec 3
-    r59), and a handed word with an entry in `directions` (the learner's
+    r59), a handed Target wanting more than one more sentence
+    (`Syllabus.sentences_wanted`, spec 1 r30) says how many on its line,
+    the prompt asking for that many different sentences using the word
+    (spec 3 r61), and a handed word with an entry in `directions` (the learner's
     newest direction on its sentence need, `_sentence_directions`) carries
     it on its line as the learner's instruction, one line of at most
     `DIRECTION_MAX_CHARS` characters with no angle or square brackets
@@ -2596,6 +2599,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
         line = f"- target {target.id}: {_prompt_word_line(word)}"
         if nouns := _handed_nouns(target, classifier_nouns):
             line += f"  [classifier for: {', '.join(f'{n.id} ({n.meaning})' for n in nouns)}]"
+        if (wanted := syllabus.sentences_wanted(target)) > 1:
+            line += f"  [wanted in {wanted} more sentences]"
         if (direction := directions.get(word.id)) is not None:
             line += f"  [learner's direction: {_direction_line_text(direction)}]"
         if target.introduction == "sentence" and target.id not in met_targets:
@@ -2605,6 +2610,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
                + "\n".join("- " + _prompt_word_line(w) for w in vocabulary) + "\n")
+    if any(syllabus.sentences_wanted(t) > 1 for t in targets):
+        sections += ("A target line may say how many more sentences it is wanted in; write "
+                     "that many different sentences that use the word.\n")
     if any(t.word in directions for t in targets):
         sections += ("A target line may carry the learner's direction for that word; "
                      "follow it in the sentences that use the word.\n")

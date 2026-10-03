@@ -689,6 +689,30 @@ def test_a_run_whose_only_open_word_is_at_the_cap_asks_nothing_and_appends_nothi
     assert ctx.db.newest_ts(excluding_port="run") == mark
 
 
+def test_the_run_adopts_as_many_sentences_as_a_target_still_wants_and_no_more(
+        tmp_path, fake_search, fake_batch):
+    """Spec 1 r30, spec 3 r61: rice wants two sentences; three passing
+    drafts use it, and the run adopts two of them."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice", sentences=2), target("eat/receptive", "eat")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                llm=_Llm(json.dumps({"sentences": [
+                    # กิน = eat, ข้าว = rice
+                    {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"},
+                    {"clauses": [["rice"]], "text": "ข้าว", "gloss": "rice"},
+                    {"clauses": [["rice"], ["eat"]], "text": "ข้าว กิน", "gloss": "rice, eat"}]},
+                    ensure_ascii=False)))
+    for name in ("openverse", "wikimedia", "pexels"):
+        ctx.provider._backends[name] = _Silent(name)
+    assert ctx.syllabus.targets[0].sentences == 2       # read back from targets.yaml
+    r1 = run(ctx, budgets={})
+    assert r1.drafted == 3
+    fake_batch.complete_all(r1.batch_id, passed=True)
+    r2 = run(ctx, budgets={})
+    assert r2.sentences_adopted == 2
+    assert ctx.syllabus.gaps().unfilled_targets == ()
+
+
 def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_batch):
     r1 = run(ctx_batch_sentences, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=True)
@@ -698,19 +722,27 @@ def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_
 
 
 def test_an_adopted_sentence_reaches_its_recording_and_picture_needs_this_run(
-        ctx_batch_sentences, fake_batch):
+        tmp_path, fake_search, fake_batch):
     """C1: an adopted sentence carries a gloss (spec 1); with neither a
     recording nor a scene picture yet, both needs are queued and
     attempted in the run that adopts it, and the run's own accounting
-    identity holds."""
-    r1 = run(ctx_batch_sentences, budgets={})
+    identity holds. eat/productive gives the sentence a Cloze card, so it
+    has a scene-picture need (spec 3 r61)."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat"),
+                  target("eat/productive", "eat", "productive")))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                # กิน = eat, ข้าว = rice, one clause so it renders กินข้าว with no space
+                llm=_Llm(json.dumps({"sentences": [
+                    {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"}]})))
+    r1 = run(ctx, budgets={})
     fake_batch.complete_all(r1.batch_id, passed=True)
-    r2 = run(ctx_batch_sentences, budgets={})
+    r2 = run(ctx, budgets={})
     assert r2.sentences_adopted == 1
 
     sentence_sha = text_sha(EAT_RICE)
-    recording_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "recording")
-    picture_rows = rows_for(ctx_batch_sentences.db, sentence_sha, "picture")
+    recording_rows = rows_for(ctx.db, sentence_sha, "recording")
+    picture_rows = rows_for(ctx.db, sentence_sha, "picture")
     assert any(r.port == "provide" and r.backend == "forvo" for r in recording_rows)
     assert any(r.port == "provide" and r.backend == "pexels" for r in picture_rows)
 
@@ -1168,6 +1200,11 @@ class _Syl:
         need keeps its kind's roster."""
         return frozenset(g.keyword for g in self.graphemes
                          if getattr(g, "keyword", None) is not None)
+
+    def has_scene_picture_need(self, sentence):
+        """The real Syllabus's own predicate, read by derivations.all_needs
+        (spec 3 r61): every sentence over this fake carries a Cloze card."""
+        return True
 
     def gaps(self):
         return self._gaps

@@ -195,11 +195,16 @@ def test_gaps_agree_with_the_completeness_findings():
 
 
 def test_gaps_lists_the_sentence_without_a_scene_picture():
+    """eat/productive gives the sentence a Cloze card, so it has a
+    scene-picture need (spec 3 r61)."""
     eat = word("eat", "กิน")  # eat
     rice = word("rice", "ข้าว")  # rice
     to = thai_of(eat, rice)
     eat_rice = sentence(((eat.id, rice.id),), to, gloss="eat rice")  # eat rice
-    syl = make_gaps_syllabus(words=(eat, rice), sentences=(eat_rice,), media=FakeMediaIndex())
+    syl = make_gaps_syllabus(words=(eat, rice), sentences=(eat_rice,), media=FakeMediaIndex(),
+                             targets=(target("eat/receptive", "eat"),
+                                      target("eat/productive", "eat", "productive"),
+                                      target("rice/receptive", "rice")))
     assert syl.gaps().scene_pictures == (eat_rice.text_sha,)
 
 

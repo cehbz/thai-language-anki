@@ -93,8 +93,10 @@ reference data, versioned with the deck and never hand-edited.
                                # a grapheme's keyword and recited-name
                                # Words -- under its writing command
                                # (r14, r17, spec 3 r28/r40)
-    targets.yaml               # id, word, skill, introduction (receptive
-                               # targets and productive exceptions).
+    targets.yaml               # id, word, skill, introduction, sentences
+                               # (spec 1 r30; written only when above
+                               # one) (receptive targets and productive
+                               # exceptions).
                                # Learner-owned; the run adds a name
                                # word's two Targets by adoption (r17)
     graphemes.yaml             # symbol, kind, sound, class, keyword,

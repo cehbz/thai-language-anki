@@ -109,7 +109,7 @@ Revision log:
   had vetted a generated picture for a sentence whose need still had
   sources could not give it. User ruling 2026-09-27.
 - r17 2026-10-01: a need with an unvetoed candidate still awaiting its verdict is not a direction request and is not counted exhausted (spec 3 r55). Evidence: a clip that failed an earlier duration window is asked again, and its need was shown as a question the learner cannot answer. User ruling 2026-10-01.
-- r18 2026-10-02: a word's sentence need is a direction request at spec 3 r60's ask cap, whatever the asks answered, once no draft of those asks awaits its verdict; what was tried is how many of those asks drafted and their no-fit reasons; a classifier's question names its nouns; the typed direction is given to the drafter on the word's prompt line. User ruling 2026-10-02.
+- r18 2026-10-02: a word's sentence need is a direction request at spec 3 r60's ask cap, whatever the asks answered, once no draft of those asks awaits its verdict; what was tried is how many of those asks drafted and their no-fit reasons; a classifier's question names its nouns; a word wanting several sentences (spec 1 r30) shows how many fill it of how many it wants; the typed direction is given to the drafter on the word's prompt line. User ruling 2026-10-02.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -193,7 +193,10 @@ stops; unanswered questions stay queued. Question kinds:
    asks the cap counts: the number that drafted, none of whose drafts
    was adopted with the word in it, then each no-fit answer's reason,
    newest first, with the newest reason shown beside the question;
-   there are no best candidates. A classifier Word's question names the
+   there are no best candidates. Beside what was tried, the question of
+   a word whose Target wants more than one sentence (spec 1 r30) says how
+   many adopted sentences fill it of how many it wants ("2 of 5"). A
+   classifier Word's question names the
    nouns it counts, ids and meanings, as the drafting prompt does. Its
    typed direction reopens the word and is written on the word's line in
    the next drafting prompt as the learner's instruction (r18).

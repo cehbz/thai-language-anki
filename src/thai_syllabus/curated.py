@@ -215,13 +215,28 @@ def build_categories(rows: Sequence[tuple[Word, CategoryName | None]]) -> tuple[
 # --- targets -----------------------------------------------------------
 
 def _target_to_dict(t: Target) -> dict:
-    return {"id": t.id, "word": t.word, "skill": t.skill,
-           "introduction": t.introduction}
+    d = {"id": t.id, "word": t.word, "skill": t.skill, "introduction": t.introduction}
+    if t.sentences != 1:
+        # spec 1 r30: written only for a Target wanting more than one.
+        d["sentences"] = t.sentences
+    return d
 
 
 def _target_from_dict(d: dict) -> Target:
     return Target(id=TargetId(d["id"]), word=WordId(d["word"]), skill=d["skill"],
-                 introduction=d.get("introduction", "picture_card"))
+                 introduction=d.get("introduction", "picture_card"),
+                 sentences=d.get("sentences", 1))
+
+
+def _target_sentences_error(t: Target) -> str | None:
+    """Why a loaded Target's `sentences` is refused (spec 1 r30): not a
+    positive integer, or above one on a productive Target."""
+    if isinstance(t.sentences, bool) or not isinstance(t.sentences, int) or t.sentences < 1:
+        return f"sentences {t.sentences!r} must be a positive integer"
+    if t.skill == "productive" and t.sentences != 1:
+        return (f"sentences {t.sentences} on a productive Target (spec 1 r30: a productive "
+                "Target wants one sentence)")
+    return None
 
 
 def save_targets(path: str | Path, targets: list[Target]) -> None:
@@ -241,6 +256,9 @@ def load_targets(path: str | Path, words_by_id: Mapping[str, Word] | None = None
             continue
         if words_by_id is not None and t.word not in words_by_id:
             errors.append(f"targets[{i}] ({t.id!r}): word {t.word!r} does not resolve")
+            continue
+        if (sentences_error := _target_sentences_error(t)) is not None:
+            errors.append(f"targets[{i}] ({t.id!r}): {sentences_error}")
             continue
         targets.append(t)
     if errors:

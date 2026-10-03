@@ -259,11 +259,14 @@ class Grapheme:
 
 @dataclass(frozen=True)
 class Target:
-    """(word, skill): a learning target. Identity: id."""
+    """(word, skill): a learning target. Identity: id. `sentences`: the
+    adopted sentences that fill it before it is no longer open (spec 1
+    r30), a positive integer, one for a productive Target."""
     id: TargetId
     word: WordId
     skill: Skill
     introduction: Introduction = "picture_card"
+    sentences: int = 1
 
 
 @dataclass(frozen=True)

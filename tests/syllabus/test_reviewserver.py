@@ -1023,6 +1023,32 @@ def test_the_direction_view_shows_a_sentence_need_s_tried_reasons_and_classifier
     assert "classifier for: dog (dog)" in texts
 
 
+def _short_word_derivations(db, media_store):
+    """ไม่ (not), sentence-introduced, wanting five sentences, two of which
+    fill it."""
+    not_, eat = word("not", "ไม่", "not"), word("eat", "กิน", "eat")   # ไม่: not, กิน: eat
+    to = thai_of(not_, eat)
+    syllabus = Syllabus(words=(not_, eat),
+                        targets=(target("t-eat", "eat"),
+                                 target("t-not", "not", introduction="sentence", sentences=5)),
+                        sentences=(sentence(((not_.id, eat.id),), to),              # ไม่กิน
+                                   sentence(((eat.id,), (not_.id, eat.id)), to)),   # กิน ไม่กิน
+                        assessments=db)
+    return _derivations_for(syllabus, db, media_store)
+
+
+def test_a_word_withheld_while_short_says_how_many_sentences_it_has_and_wants(
+        db, media_store):
+    """Fix round 1: the direction question of a word withheld while short
+    of its wanted sentences says how many fill it of how many it wants."""
+    for _ in range(3):
+        _drafted(db, "not", targets=("t-not",))
+    asked = _sentence_directions(_short_word_derivations(db, media_store), "not")
+    assert len(asked) == 1
+    assert asked[0].get("sentence_counts") == [{"target": "t-not", "filled": 2, "wanted": 5}]
+    assert "sentences: 2 of 5" in _direction_view_texts(asked[0])
+
+
 def test_a_picture_direction_question_carries_no_reason(derivations, db, w1):
     """A picture attempt's `nothing` outcome states none, so the field is
     None rather than absent -- the screen reads one shape."""

@@ -100,7 +100,8 @@ def test_registered_rules_match_the_spec_table():
         "coverage/categories", "coverage/exercise-depth", "coverage/pictures", "picture/fit",
         "picture/preference", "scene/fit", "target/picture-required",
         "sentence/fills-novelty",
-        "target/sentence-required", "grapheme/keyword-picture-required",
+        "target/sentence-required", "target/sentences-wanted",
+        "grapheme/keyword-picture-required",
         "grapheme/keyword-contains-symbol", "target/recording-required",
         "sentence/recording-required", "recording/synthetic",
         "sentence/synthetic-productive",
@@ -909,3 +910,45 @@ def test_the_pronunciation_rubric_names_the_vowel_length_rule():
     assert "said long when spoken alone" in PRONUNCIATION_RUBRIC
     assert "น้ำ" in PRONUNCIATION_RUBRIC and "ได้" in PRONUNCIATION_RUBRIC
     assert "keeps its own length inside a compound" in PRONUNCIATION_RUBRIC
+
+
+# --- a Target that wants several sentences (spec 1 r30) ----------------------
+
+def test_sentence_fills_novelty_does_not_flag_the_sentences_that_supply_the_wanted_count():
+    """ไม่ (not) wants three sentences. The first introduces it; the second
+    and third each use it again and introduce one more word of their own.
+    ไม่ is met from its first sentence (spec 1 section 3, clause 3), so
+    neither later sentence carries two new words and none is flagged."""
+    not_, eat = word("not", "ไม่"), word("eat", "กิน")             # ไม่: not, กิน: eat
+    very, already = word("very", "มาก"), word("already", "แล้ว")    # มาก: very, แล้ว: already
+    to = thai_of(not_, eat, very, already)
+    targets = (target("not/receptive", "not", introduction="sentence", sentences=3),
+               target("eat/receptive", "eat"),
+               target("very/receptive", "very", introduction="sentence"),
+               target("already/receptive", "already", introduction="sentence"))
+    sentences = (sentence(((not_.id, eat.id),), to),                          # ไม่กิน: don't eat
+                 sentence(((not_.id, eat.id, very.id),), to),                 # ไม่กินมาก: don't eat much
+                 sentence(((eat.id, already.id), (not_.id, eat.id)), to))     # กินแล้ว ไม่กิน: ate, not eating
+    syllabus = make_syllabus(words=(not_, eat, very, already), targets=targets,
+                             sentences=sentences,
+                             frequency={"not": 1, "eat": 2, "very": 3, "already": 4})
+    assert [targets[0] in syllabus.fill_set(s) for s in sentences] == [True, True, True]
+    assert [f for f in syllabus.report().findings if f.rule == "sentence/fills-novelty"] == []
+
+
+def test_coverage_pictures_counts_no_scene_need_for_a_listening_only_sentence_without_one():
+    """Spec 3 r61: a sentence with no Cloze card has no scene-picture need;
+    one that already has a picture keeps it and still counts."""
+    eat, rice, fish = word("eat", "กิน"), word("rice", "ข้าว"), word("fish", "ปลา")  # eat, rice, fish
+    targets = (target("eat/receptive", "eat"), target("eat/productive", "eat", "productive"),
+               target("rice/receptive", "rice"), target("fish/receptive", "fish"))
+    to = thai_of(eat, rice, fish)
+    eat_rice = sentence(((eat.id, rice.id),), to)   # กินข้าว: eat rice -- a Cloze card on eat
+    rice_only = sentence(((rice.id,),), to)         # ข้าว: rice -- Listening only, no picture
+    fish_only = sentence(((fish.id,),), to)         # ปลา: fish -- Listening only, has a picture
+    media = FakeMediaIndex(pictures={"eat", "rice", "fish", fish_only.text_sha})
+    syllabus = make_syllabus(words=(eat, rice, fish), targets=targets,
+                             sentences=(eat_rice, rice_only, fish_only), media=media,
+                             frequency={"eat": 1, "rice": 2, "fish": 3})
+    metric = next(m for m in syllabus.report().metrics if m.rule == "coverage/pictures")
+    assert metric.detail["sentence"] == {"covered": 1, "total": 2}

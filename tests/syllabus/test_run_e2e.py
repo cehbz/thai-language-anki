@@ -55,13 +55,16 @@ class _Search:
     """Two hits per query -- one image alone can never exercise the
     preference branch (_assess_all_candidates only asks a preference
     question over 2+ passing candidates)."""
+    def __init__(self, source="openverse"):
+        self.source = source
+
     def cache_key(self, q):
-        return ProvideKey(source="openverse", kind="", query=q.params["query"])
+        return ProvideKey(source=self.source, kind="", query=q.params["query"])
 
     def fetch(self, q):
         return RawAnswer(items=(
-            {"url": f"https://x/{q.subject}-good.jpg", "source": "openverse", "licence": "by"},
-            {"url": f"https://x/{q.subject}-good2.jpg", "source": "openverse", "licence": "by"}))
+            {"url": f"https://x/{q.subject}-good.jpg", "source": self.source, "licence": "by"},
+            {"url": f"https://x/{q.subject}-good2.jpg", "source": self.source, "licence": "by"}))
 
 
 class _Forvo:
@@ -113,7 +116,8 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     # fixture deck and load pythainlp/torch to read them.
     ctx.adopt_graphemes = False
     ctx.provider._backends.update({
-        "openverse": _Search(), "forvo": _Forvo(), "llm-sentence": _Llm(),
+        "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
+        "forvo": _Forvo(), "llm-sentence": _Llm(),
         "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
         "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
     ctx.assessor._backends["judge"].complete = _judge_complete
@@ -296,7 +300,10 @@ def test_a_resolved_batch_leaving_two_passing_pictures_submits_a_preference_batc
     openverse ask whose fit questions ride r2's own new batch, pending.
     The identity still holds on both reports.
     """
-    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
+    # rice/productive: the sentence carries a Cloze card, so it has a
+    # scene-picture need (spec 3 r61)
+    root = _batch_fixture_deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),
+                                                   target("rice/productive", "rice", "productive")))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
                llm=_DraftLlm(json.dumps({"sentences": [
                    {"clauses": [["rice"]], "text": "ข้าว", "gloss": "rice"}]})))   # ข้าว: rice

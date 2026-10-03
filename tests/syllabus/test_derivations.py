@@ -1858,7 +1858,11 @@ def test_all_needs_names_every_target_pair_grapheme_and_sentence_need():
     grapheme = Grapheme.create(symbol="ไก่"[0], kind="consonant", sound="k",
                                consonant_class="mid", keyword_word=keyword_word)
     s = sentence(((rice.id,),), thai_of(rice), gloss="rice")  # rice is delicious
-    syllabus = Syllabus(targets=(target("t-rice", "rice"),), pairs=(pair,),
+    # rice/productive: the sentence carries a Cloze card, so it has a
+    # scene-picture need (spec 3 r61)
+    syllabus = Syllabus(words=(rice, near, keyword_word),
+                        targets=(target("t-rice", "rice"),
+                                 target("rice/productive", "rice", "productive")), pairs=(pair,),
                         graphemes=(grapheme,), sentences=(s,), confusions=(confusion,))
     assert all_needs(syllabus) == [
         ("rice", "picture", "word"),
@@ -3291,3 +3295,43 @@ def test_queued_without_the_callable_uses_the_kind_roster(cache):
 
     assert "picture" in asked
     assert [e.subject for e in found.entries] == ["rice"]
+
+
+# --- a Target that wants several sentences; scene pictures (spec 3 r61) ----
+
+def test_a_passing_draft_filling_only_a_short_target_is_adoptable(cache):
+    """Spec 1 r30: กิน (eat) wants two sentences and one fills it, so it is
+    still open and a draft filling it alone is adoptable."""
+    eat_twice = sentence(((_EAT.id,), (_EAT.id,)), thai_of(_EAT))   # กิน กิน: eat, eat
+    syllabus = Syllabus(words=(_EAT, _TASTY),
+                        targets=(target("eat/receptive", "eat", sentences=2),),
+                        sentences=(eat_twice,))
+    _drafted(cache)
+    cache.rows += [_sentence_verdict("judge", True, rubric="R")]
+    adoptable = _adoptable_drafts(cache, syllabus, current_rubric={"sentence-for-target": "R"})
+    assert [(s.text, tuple(t.id for t in ts)) for s, ts in adoptable] == [
+        ("กิน", ("eat/receptive",))]        # กิน: eat
+
+
+def test_a_listening_only_sentence_has_a_scene_picture_need_only_while_it_has_a_picture():
+    """Spec 3 r61: a scene picture is a need of a sentence carrying a Cloze
+    card; a sentence without one keeps a picture it already has."""
+    from .fakes import FakeMediaIndex
+    eat, rice, fish = _EAT, _RICE, word("fish", "ปลา", "fish")   # ปลา: fish
+    to = thai_of(eat, rice, fish)
+    eat_rice = sentence(((eat.id, rice.id),), to)   # กินข้าว: eat rice -- a Cloze card on eat
+    rice_only = sentence(((rice.id,),), to)         # ข้าว: rice -- Listening only, no picture
+    fish_only = sentence(((fish.id,),), to)         # ปลา: fish -- Listening only, a picture
+    syllabus = Syllabus(words=(eat, rice, fish),
+                        targets=(target("eat/receptive", "eat"),
+                                 target("eat/productive", "eat", "productive"),
+                                 target("rice/receptive", "rice"),
+                                 target("fish/receptive", "fish")),
+                        sentences=(eat_rice, rice_only, fish_only),
+                        frequency={"eat": 1, "rice": 2, "fish": 3},
+                        media=FakeMediaIndex(pictures={fish_only.text_sha}))
+    scenes = [s for s, kind, sk in all_needs(syllabus) if kind == "picture" and sk == "sentence"]
+    assert scenes == [eat_rice.text_sha, fish_only.text_sha]
+    open_scenes = [s for s, kind, sk in available_needs(syllabus)
+                   if kind == "picture" and sk == "sentence"]
+    assert open_scenes == [eat_rice.text_sha]

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 29, proposed 2026-10-02 against principles r7 and architecture
+Revision 30, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -77,6 +77,7 @@ Revision log:
 - r27 2026-10-02: a Word whose speaker marking is not the learner's has no productive Target (E3), derived or listed. Evidence: ดิฉัน ("I", female polite) derived one that no sentence can fill, since a productive fill needs a marking that admits the learner. User ruling 2026-10-02.
 - r28 2026-10-02: a drafted sentence whose marking does not admit the learner is other_voice. Evidence: every draft was learner_voice, so the three receptive Targets on female-marked words (ดิฉัน, ค่ะ, คะ) had 32 drafts and none could pass. User ruling 2026-10-02.
 - r29 2026-10-02: a spelling group is the Words sharing a written form that carry a Target, in introduction order; spec 4 r12 compiles its form-side cards once. Evidence: 12 groups of same-spelling Words compiled 29 identical Reading, Listening and Spelling fronts. User ruling 2026-10-02.
+- r30 2026-10-02: a Target may want several sentences (default one) and is open until that many adopted sentences fill it; one with a sentence and short of its count is target/sentences-wanted (warn), which leaves the gate open. Evidence: a sentence-introduced word has no card of its own, and none of the 424 adopted sentences used ไม่ (not), มี (have), เป็น (be), จะ (will), ได้ (can) or แล้ว (already). User ruling 2026-10-02.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -165,6 +166,11 @@ Target                              # curated learning list; the unit of
                                     # The loader refuses a row that
                                     # duplicates a derived Target or lists
                                     # one on such a Word.
+  sentences: int = 1                # the adopted sentences it wants: it
+                                    # is open until that many fill it
+                                    # (§3); a positive integer, one on a
+                                    # productive Target (the loader
+                                    # refuses more)
 
 Category                            # curated learning list: a theme of
   name: str                         # the FF 625 list. identity
@@ -317,6 +323,16 @@ Used by generation as acceptance and by report() as coverage. Clause 3
 is a rule over the fill set, applied once per sentence, by acceptance
 (the attempt), by adoption (the fold) and by the gate.
 
+**Open and met.** A Target is open while fewer adopted sentences fill it
+(their fill sets contain it, clauses 1-4 above) than its `sentences`.
+One no adopted sentence fills is target/sentence-required (error: "no
+adopted sentence fills it"); one some fill, short of its count, is
+target/sentences-wanted (warn: "N of M adopted sentences fill it"), so
+the gate does not wait on a wanted count. gaps() lists both among the
+unfilled targets, in target order. A sentence-introduced
+Target is met once an adopted sentence fills it (clause 3), open or not:
+from then on its word is vocabulary for the sentences placed after.
+
 **report() -> Report** — runs every check on every note and every
 measure on the aggregate. Report { syllabus_state_id, rulebook_id,
 findings, metrics, gate }. syllabus_state_id = hash of the aggregate's
@@ -326,10 +342,10 @@ structural, not advisory). gate = no unwaived error findings.
 
 **gaps() -> Gaps** — derived from the report's completeness findings
 and measures, never recomputed beside them: every pair without a
-current-best rendition (`pair/rendition-required`), unfilled targets, words
-lacking pictures/recordings, sentences lacking recordings, sentences
-lacking an (optional, budget-prioritized) scene picture, graphemes
-lacking keyword data. Input to the batch run (spec 3).
+current-best rendition (`pair/rendition-required`), unfilled (open)
+targets, words lacking pictures/recordings, sentences lacking recordings,
+sentences carrying a Cloze card (a productive fill) that lack a scene
+picture (spec 3 r61), graphemes lacking keyword data. Input to the batch run (spec 3).
 
 Compile is an application service (spec 4; architecture §7) over
 report(), order() and the current-best artifacts; the aggregate has no
@@ -388,7 +404,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); coverage/sound-stage (measure: confusions at their weight-proportional pair count, graphemes whose keyword has a picture, recited-name words with a chart cell; value the least of the three); one speaker per rendition by construction; exact confusion by construction (MinimalPair.create; r19) |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
-| F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: an adopted sentence fills it), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
+| F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: no adopted sentence fills it), target/sentences-wanted (check, warn: some adopted sentence fills it, fewer than its `sentences`, r30), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
 | F6 | grapheme/keyword-picture-required (check, error; the keyword Word's own picture need, spec 3 r42), grapheme/keyword-contains-symbol (check, error) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
 | F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive |

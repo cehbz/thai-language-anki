@@ -707,6 +707,32 @@ class Syllabus:
         return frozenset(t.id for fills in self._adopted_fill_sets.values()
                          for t in fills if t.introduction == "sentence")
 
+    @cached_property
+    def _fill_counts(self) -> dict[TargetId, int]:
+        """Per Target, the adopted sentences whose fill set contains it."""
+        counts: dict[TargetId, int] = {}
+        for fills in self._adopted_fill_sets.values():
+            for t in fills:
+                counts[t.id] = counts.get(t.id, 0) + 1
+        return counts
+
+    def fill_count(self, target: Target) -> int:
+        """The adopted sentences whose fill set contains `target`."""
+        return self._fill_counts.get(target.id, 0)
+
+    def sentences_wanted(self, target: Target) -> int:
+        """How many more adopted sentences `target` wants (spec 1 r30):
+        `target.sentences` less the adopted sentences filling it, never
+        below zero. A Target is open while this is positive."""
+        return max(0, target.sentences - self.fill_count(target))
+
+    def has_scene_picture_need(self, sentence: Sentence) -> bool:
+        """Whether `sentence` has a scene-picture need (spec 3 r61): it
+        carries a Cloze card (`productive_fills`), or it already has a
+        scene picture, which it keeps."""
+        return (bool(self.productive_fills(sentence))
+                or self.media.picture_sha(sentence.text_sha) is not None)
+
     def vocabulary_met_by(self, target: Target) -> tuple[Word, ...]:
         """Every Word with a Target at or before `target`'s order()
         position (the target's own word included).
@@ -761,20 +787,27 @@ class Syllabus:
     def cover(self, drafts: Sequence[tuple[Sentence, Sequence[Target]]]
               ) -> list[tuple[Sentence, tuple[Target, ...]]]:
         """The drafts worth adopting, greedily: the one filling the most
-        still-unfilled Targets, then the next, until none fills one, each
-        with the Targets it is adopted for. Ties go to the shorter text,
-        then the lower text_sha.
+        still-wanted Targets, then the next, until none fills one, each
+        with the Targets it is adopted for. An open Target is wanted by as
+        many drafts as it wants more sentences (`sentences_wanted`, spec 1
+        r30). Ties go to the shorter text, then the lower text_sha.
         """
-        uncovered = set(self.gaps().unfilled_targets)
+        unfilled = set(self.gaps().unfilled_targets)
+        wanted = {t.id: self.sentences_wanted(t) for t in self.targets if t.id in unfilled}
         remaining = sorted(drafts, key=lambda d: (len(d[0].text), d[0].text_sha))
         chosen: list[tuple[Sentence, tuple[Target, ...]]] = []
+
+        def gains(draft: tuple[Sentence, Sequence[Target]]) -> tuple[Target, ...]:
+            return tuple(t for t in draft[1] if wanted.get(t.id, 0) > 0)
+
         while remaining:
-            best = max(remaining, key=lambda d: len({t.id for t in d[1]} & uncovered))
-            gained = tuple(t for t in best[1] if t.id in uncovered)
+            best = max(remaining, key=lambda d: len(gains(d)))
+            gained = gains(best)
             if not gained:
                 break
             chosen.append((best[0], gained))
-            uncovered -= {t.id for t in gained}
+            for t in gained:
+                wanted[t.id] -= 1
             remaining.remove(best)
         return chosen
 
@@ -823,7 +856,8 @@ class Syllabus:
     def gaps(self) -> Gaps:
         """report()'s completeness findings and measures (spec 1 section
         3), folded by rule id. Scene pictures carry no rule finding, so
-        that one field reads the media index directly.
+        that one field reads the media index directly: the sentences
+        carrying a Cloze card with no scene picture (spec 3 r61).
         """
         report = self.report()
 
@@ -831,10 +865,16 @@ class Syllabus:
             return tuple(f.note_id for f in report.findings if f.rule == rule_id)
 
         scene_pictures = tuple(
-            s.text_sha for s in self.sentences if self.media.picture_sha(s.text_sha) is None
+            s.text_sha for s in self.sentences
+            if self.media.picture_sha(s.text_sha) is None and self.has_scene_picture_need(s)
         )
+        # spec 1 r30: an open Target has no sentence (target/sentence-
+        # required) or fewer than it wants (target/sentences-wanted); both
+        # in target order
+        open_ids = {*note_ids("target/sentence-required"), *note_ids("target/sentences-wanted")}
+        open_targets = tuple(t.id for t in self.targets if t.id in open_ids)
         return Gaps(pairs_missing_renditions=note_ids("pair/rendition-required"),
-                    unfilled_targets=note_ids("target/sentence-required"),
+                    unfilled_targets=open_targets,
                     words_missing_pictures=note_ids("target/picture-required"),
                     words_missing_recordings=note_ids("target/recording-required"),
                     graphemes_missing_keyword_data=note_ids("grapheme/keyword-picture-required"),
@@ -877,7 +917,11 @@ class Syllabus:
 
         payload = {
             "words": sorted((canon(w) for w in self.words), key=lambda d: d["id"]),
-            "targets": sorted((canon(t) for t in self.targets), key=lambda d: d["id"]),
+            # a Target's `sentences` at its default (spec 1 r30) is left
+            # out: a deck that sets it nowhere keeps its state id
+            "targets": sorted(({k: v for k, v in canon(t).items()
+                                if not (k == "sentences" and v == 1)}
+                               for t in self.targets), key=lambda d: d["id"]),
             "pairs": sorted((canon(p) for p in self.pairs), key=lambda d: d["id"]),
             "graphemes": sorted((canon(g) for g in self.graphemes), key=lambda d: d["symbol"]),
             "sentences": sorted((canon(s) for s in self.sentences),

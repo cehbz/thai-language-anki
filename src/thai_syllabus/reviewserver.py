@@ -473,6 +473,13 @@ def _classifier_for(syllabus: Syllabus, word_id: str) -> list[dict[str, str]]:
             for n in classifier_nouns_of(syllabus, WordId(word_id))]
 
 
+def _sentence_counts(syllabus: Syllabus, word_id: str) -> list[dict[str, Any]]:
+    """Each of the Word's Targets that wants more than one sentence (spec 1
+    r30): how many adopted sentences fill it and how many it wants."""
+    return [{"target": str(t.id), "filled": syllabus.fill_count(t), "wanted": t.sentences}
+            for t in syllabus.targets if t.word == word_id and t.sentences > 1]
+
+
 def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                         attempts: int, *, syllabus_state_id: str) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
@@ -485,6 +492,8 @@ def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind:
         "attempts": attempts,
         "classifier_for": (_classifier_for(d.syllabus, subject)
                            if kind == "sentence" and subject_kind == "word" else []),
+        "sentence_counts": (_sentence_counts(d.syllabus, subject)
+                            if kind == "sentence" and subject_kind == "word" else []),
         # Why the source declined in its own words, where it stated one: a
         # sentence need's no-fit answer (spec 3 r19 section 5). Always
         # present, None for a kind whose `nothing` outcomes state none.
@@ -2292,6 +2301,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     }
     var tried = el("div", { "class": "tried" });
     tried.appendChild(el("h4", {}, "tried"));
+    // A word wanting several sentences: how many fill it of how many it
+    // wants (spec 1 r30).
+    (q.sentence_counts || []).forEach(function (c) {
+      tried.appendChild(el("div", {}, "sentences: " + c.filled + " of " + c.wanted));
+    });
     if (q.tried && q.tried.length) {
       q.tried.forEach(function (t) {
         var said = t.query || t.reason;

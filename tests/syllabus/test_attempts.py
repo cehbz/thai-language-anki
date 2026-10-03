@@ -17,7 +17,7 @@ from thai_syllabus.assessor import (UNTRUSTED, Assessor, Excluded, JudgeBackend,
                                     RenditionBackend, deck_field)
 from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
                                     ChartCell, Need, Sourcing,
-                                    _picture_params, _pool, _sentence_prompt,
+                                    _phrase_prompt, _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt, chart_cell,
                                     comment_attempt, current_best_of, draft_refusal,
                                     grapheme_attempt,
@@ -3801,7 +3801,7 @@ def _real_phrase_backend(text: str) -> LlmBackend:
 
 def test_phrase_attempt_drafts_one_phrase_each_for_a_word_and_a_sentence_need(tmp_path):
     scene = _sentence()   # subject_kind "sentence", subject = its text_sha
-    syllabus = _word_syllabus().with_sentences([scene])
+    syllabus = _word_syllabus(productive=True).with_sentences([scene])  # a Cloze card: a scene need
     text = json.dumps({"phrases": [
         {"subject": "rice", "phrase": "bowl of steamed rice"},
         {"subject": scene.text_sha, "phrase": "a family eating rice together"}]})
@@ -3844,7 +3844,7 @@ def test_phrase_attempt_skips_a_subject_that_already_carries_a_learner_direction
 
 def test_phrase_attempt_is_skipped_when_nothing_lacks_a_phrase(tmp_path):
     scene = _sentence()
-    syllabus = _word_syllabus().with_sentences([scene])
+    syllabus = _word_syllabus(productive=True).with_sentences([scene])  # a Cloze card: a scene need
     ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
     for subject in ("rice", scene.text_sha):
         ctx.db.append(port="provide", backend="llm", key=PhraseKey(subject=subject),
@@ -3887,7 +3887,7 @@ def test_phrase_attempt_caches_a_partial_answers_rows_and_leaves_the_rest_lackin
     cached as today; the omitted subject simply re-asks next run (a
     shrunken lacking set)."""
     scene = _sentence()
-    syllabus = _word_syllabus().with_sentences([scene])   # two open picture needs
+    syllabus = _word_syllabus(productive=True).with_sentences([scene])   # two open picture needs
     backend = _real_phrase_backend(json.dumps({"phrases": [
         {"subject": "rice", "phrase": "bowl of rice"}]}))   # scene.text_sha omitted
     ctx = _sourcing(tmp_path, syllabus, backends={"llm-phrase": backend}, assess={})
@@ -3899,7 +3899,7 @@ def test_phrase_attempt_caches_a_partial_answers_rows_and_leaves_the_rest_lackin
 
 def test_phrase_prompt_delimits_each_need_as_deck_data(tmp_path):
     scene = _sentence()
-    syllabus = _word_syllabus().with_sentences([scene])
+    syllabus = _word_syllabus(productive=True).with_sentences([scene])  # a Cloze card: a scene need
     ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
     phrase_attempt(ctx)
     prompt = _phrase_drafter(ctx).prompts[0]
@@ -3939,12 +3939,12 @@ def test_phrase_prompt_names_the_target_word_the_category_and_asks_for_two_forms
     assert UNTRUSTED in prompt
 
 
-def test_a_scene_using_no_targeted_word_is_still_asked_for_a_query(tmp_path):
-    """A sentence using no targeted word fills nothing, so it has no
-    target words (Syllabus.target_words). Its item line falls back to
-    text and gloss with no `target:` clause -- the scene still deserves
-    a query -- and the ask still goes out for every other need beside
-    it."""
+def test_a_scene_using_no_targeted_word_is_not_asked_for_a_query(tmp_path):
+    """A sentence using no targeted word fills nothing, so it carries no
+    Cloze card and has no scene-picture need (spec 3 r61): the phrase ask
+    leaves it out and still goes out for every other need. Handed one
+    all the same, its item line falls back to text and gloss with no
+    `target:` clause, as it has no target words (Syllabus.target_words)."""
     orphan = _sentence(text="กิน", gloss="someone eats",   # กิน: eat
                        clauses=((WordId("eat"),),))
     syllabus = _word_syllabus().with_words(
@@ -3954,11 +3954,12 @@ def test_a_scene_using_no_targeted_word_is_still_asked_for_a_query(tmp_path):
     ctx = _phrase_ctx(tmp_path, syllabus, json.dumps({"phrases": []}))
     assert phrase_attempt(ctx).attempted
     prompt = _phrase_drafter(ctx).prompts[0]
-    line = next(ln for ln in prompt.splitlines()
+    assert orphan.text_sha not in prompt
+    assert "- subject: rice  kind: word" in prompt        # the other need still asked
+    line = next(ln for ln in _phrase_prompt(ctx, [(orphan.text_sha, "sentence")]).splitlines()
                 if ln.startswith(f"- subject: {orphan.text_sha}"))
     assert f"text: {deck_field('กิน')}" in line and f"gloss: {deck_field('someone eats')}" in line
     assert "target:" not in line
-    assert "- subject: rice  kind: word" in prompt        # the other need still asked
 
 
 def test_phrase_attempt_records_both_forms_and_only_the_phrase_when_none_came(tmp_path):
@@ -5652,3 +5653,86 @@ def test_an_ordinary_picture_source_is_asked_the_query_alone(tmp_path):
     ctx, search, _judge = _picture_ctx(tmp_path)
     attempt(ctx, Need("rice", "picture"), "openverse")
     assert search.asked == [{"query": "rice food"}]
+
+
+# --- a Target that wants several sentences (spec 1 r30, spec 3 r61) ---------
+
+_NOT_W = word("not", "ไม่", "not")       # ไม่: not
+_EAT_W = word("eat", "กิน", "eat")       # กิน: eat
+_RICE_W = word("rice", "ข้าว", "rice")   # ข้าว: rice
+_NER = thai_of(_NOT_W, _EAT_W, _RICE_W)
+_FILLING_NOT = (compose_sentence(((_NOT_W.id, _EAT_W.id),), _NER),                 # ไม่กิน: don't eat
+                compose_sentence(((_RICE_W.id,), (_NOT_W.id, _EAT_W.id)), _NER),   # ข้าว ไม่กิน
+                compose_sentence(((_NOT_W.id, _EAT_W.id), (_RICE_W.id,)), _NER))   # ไม่กิน ข้าว
+_RICE_ALONE = compose_sentence(((_RICE_W.id,),), _NER)                             # ข้าว: rice
+_DONT_EAT_RICE = compose_sentence(((_NOT_W.id, _EAT_W.id, _RICE_W.id),), _NER)     # ไม่กินข้าว
+
+
+def _not_wanting_three(filling: int) -> Syllabus:
+    """ไม่ (not), sentence-introduced, wanting three sentences, `filling`
+    of which are adopted; กิน (eat) and ข้าว (rice) already filled."""
+    return Syllabus(words=(_NOT_W, _EAT_W, _RICE_W),
+                    targets=(target("not/receptive", "not", introduction="sentence",
+                                    sentences=3),
+                             target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+                    sentences=(_RICE_ALONE, *_FILLING_NOT[:filling]),
+                    frequency={"not": 1, "eat": 2, "rice": 3})
+
+
+def test_a_draft_filling_only_a_short_target_is_accepted_and_refused_once_it_is_not(tmp_path):
+    short = _sentence_ctx(tmp_path / "short", _NO_FIT, syllabus=_not_wanting_three(2))
+    assert short.syllabus.gaps().unfilled_targets == ("not/receptive",)
+    assert draft_refusal(short, _DONT_EAT_RICE) is None
+    full = _sentence_ctx(tmp_path / "full", _NO_FIT, syllabus=_not_wanting_three(3))
+    assert draft_refusal(full, _DONT_EAT_RICE) == "fills no open Target"
+
+
+_WANTED_MORE = ("A target line may say how many more sentences it is wanted in; write that "
+                "many different sentences that use the word.")
+
+
+def test_the_prompt_says_how_many_more_sentences_a_met_target_wants(tmp_path):
+    """Spec 3 r61: a handed Target wanting more than one more sentence
+    says so on its line, and the prompt asks for that many different
+    sentences; ไม่ is met, so it is an ordinary Target, not introducible."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_not_wanting_three(1))
+    res = sentence_attempt(ctx)
+    assert res.subjects_handed == frozenset({"not"})
+    prompt = ctx.provider._backends["llm-sentence"].prompts[-1]
+    line = next(l for l in prompt.splitlines() if l.startswith("- target not/receptive:"))
+    assert line.endswith("  [wanted in 2 more sentences]")
+    assert prompt.index("Targets:\n") < prompt.index(line)
+    assert "Introducible (at most one per sentence):" not in prompt
+    assert _WANTED_MORE in prompt
+
+
+def test_a_target_wanting_one_more_sentence_has_a_plain_line(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_not_wanting_three(2))
+    assert sentence_attempt(ctx).subjects_handed == frozenset({"not"})
+    prompt = ctx.provider._backends["llm-sentence"].prompts[-1]
+    line = next(l for l in prompt.splitlines() if l.startswith("- target not/receptive:"))
+    assert "wanted" not in line and _WANTED_MORE not in prompt
+
+
+def _seed_adopted(db, word_id, text_sha_):
+    """The `adopted` outcome row run._adopt_sentences appends under each
+    word an adopted sentence uses (spec 3 r60 section 5)."""
+    db.append(port="attempt", backend="run",
+              key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="run"),
+              subject=word_id,
+              question={"kind": "sentence", "source": "run", "subject_kind": "word",
+                        "sentence": text_sha_},
+              answer={"outcome": "adopted", "candidates": []})
+
+
+def test_a_word_that_gained_a_sentence_from_its_last_ask_is_not_withheld(tmp_path):
+    """Spec 3 r60/r61: the ask cap counts the asks in a row that added no
+    sentence for the word. ไม่ (not) was handed four times, the third ask
+    adding a sentence, and is still short of three: two asks since, so it
+    is handed again."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_not_wanting_three(1))
+    _seed_drafted(ctx.db, "not", "not/receptive", times=3)
+    _seed_adopted(ctx.db, "not", _FILLING_NOT[0].text_sha)
+    _seed_drafted(ctx.db, "not", "not/receptive", times=2)
+    res = sentence_attempt(ctx)
+    assert res.subjects_handed == frozenset({"not"}) and res.subjects_exhausted == frozenset()

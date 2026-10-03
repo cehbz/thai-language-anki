@@ -336,14 +336,33 @@ def _check_target_sentence(syllabus: "Syllabus") -> list[Finding]:
     # no sentence uses a letter name, and requiring one would hand the
     # drafter 84 Targets it cannot write for.
     name_words = syllabus.name_word_ids
-    filled_ids = {t.id for s in syllabus.sentences for t in syllabus.fill_set(s)}
-    return [Finding(rule="target/sentence-required", note_id=t.id, evidence="no adopted sentence fills it")
-           for t in syllabus.targets if t.id not in filled_ids and t.word not in name_words]
+    return [Finding(rule="target/sentence-required", note_id=t.id,
+                    evidence="no adopted sentence fills it")
+            for t in syllabus.targets
+            if not syllabus.fill_count(t) and t.word not in name_words]
 
 
 TARGET_SENTENCE_REQUIRED = Rule(id="target/sentence-required", principle="F5",
                                 severity="error", shape="check",
                                 check=_check_target_sentence)
+
+
+def _check_target_sentences_wanted(syllabus: "Syllabus") -> list[Finding]:
+    # Spec 1 r30: a Target some adopted sentence fills, short of the
+    # sentences it wants (Target.sentences). A name word's Targets are
+    # exempt, as above.
+    name_words = syllabus.name_word_ids
+    return [Finding(rule="target/sentences-wanted", note_id=t.id,
+                    evidence=(f"{syllabus.fill_count(t)} of {t.sentences} adopted sentences "
+                              "fill it"))
+            for t in syllabus.targets
+            if syllabus.fill_count(t) and syllabus.sentences_wanted(t)
+            and t.word not in name_words]
+
+
+TARGET_SENTENCES_WANTED = Rule(id="target/sentences-wanted", principle="F5",
+                               severity="warn", shape="check",
+                               check=_check_target_sentences_wanted)
 
 
 def _check_pair_rendition(syllabus: "Syllabus") -> list[Finding]:
@@ -476,14 +495,17 @@ PICTURE_PREFERENCE = Rule(id="picture/preference", principle="F3", severity="inf
 # --- coverage/pictures --------------------------------------------------------
 # F3 (spec 1 section 4, r15): needs with a current-best picture over picture
 # needs, by subject kind -- the picture-introduced words with a
-# current-best picture and the sentences with a scene picture. The
+# current-best picture and the sentences with a scene picture, over the
+# sentences with a scene-picture need (Syllabus.has_scene_picture_need,
+# spec 3 r61). The
 # design's metric (2026-09-13 ruling 5): coverage, not the per-candidate
 # pass rate.
 
 def _measure_coverage_pictures(syllabus: "Syllabus") -> Metric:
     words = _picture_introduced_words(syllabus)
     word_covered = sum(1 for w in words if syllabus.media.has_picture(w))
-    scenes = [sentence_note_id(s) for s in syllabus.sentences]
+    scenes = [sentence_note_id(s) for s in syllabus.sentences
+              if syllabus.has_scene_picture_need(s)]
     scene_covered = sum(1 for s in scenes if syllabus.media.picture_sha(s) is not None)
     total = len(words) + len(scenes)
     value = (word_covered + scene_covered) / total if total else 1.0
@@ -637,6 +659,7 @@ RULES: list[Rule] = [
     TARGET_PICTURE_REQUIRED,
     TARGET_RECORDING_REQUIRED,
     TARGET_SENTENCE_REQUIRED,
+    TARGET_SENTENCES_WANTED,
     PAIR_RENDITION_REQUIRED,
     GRAPHEME_KEYWORD_PICTURE_REQUIRED,
     RECORDING_SYNTHETIC,

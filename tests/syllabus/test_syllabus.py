@@ -10,6 +10,7 @@ from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusi
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
+from thai_syllabus.rulebook import RULES
 from thai_syllabus.syllabus import Syllabus, derive_productive_targets
 
 from .builders import sentence, syl, target, thai_of, word
@@ -492,3 +493,124 @@ def test_with_adoptions_replaces_the_four_curated_collections():
     assert after.name_word_ids == frozenset({"name-chicken"})
     assert after.find_word("chicken") is chicken       # the word index is rebuilt
     assert before.find_word("chicken") is None         # the old instance is untouched
+
+
+# --- a Target that wants several sentences (spec 1 r30) ----------------------
+
+_NOT = word("not", "ไม่", "not")       # ไม่: not
+_EAT = word("eat", "กิน", "eat")       # กิน: eat
+_RICE = word("rice", "ข้าว", "rice")   # ข้าว: rice
+_TO = thai_of(_NOT, _EAT, _RICE)
+_NOT_EAT = sentence(((_NOT.id, _EAT.id),), _TO)                          # ไม่กิน: (I) don't eat
+_NOT_EAT_RICE = sentence(((_NOT.id, _EAT.id, _RICE.id),), _TO)           # ไม่กินข้าว: don't eat rice
+_RICE_NOT_EAT = sentence(((_RICE.id,), (_NOT.id, _EAT.id)), _TO)         # ข้าว ไม่กิน: rice, I don't eat
+_NOT_EAT_THEN_RICE = sentence(((_NOT.id, _EAT.id), (_RICE.id,)), _TO)    # ไม่กิน ข้าว: don't eat, rice
+
+
+def _wanting(n: int, adopted=()) -> Syllabus:
+    """ไม่ (not), sentence-introduced, wanting `n` sentences, before two
+    picture words; `adopted` the sentences on record."""
+    return Syllabus(words=(_NOT, _EAT, _RICE),
+                    targets=(target("not/receptive", "not", introduction="sentence",
+                                    sentences=n),
+                             target("eat/receptive", "eat"), target("rice/receptive", "rice")),
+                    sentences=tuple(adopted), frequency={"not": 1, "eat": 2, "rice": 3})
+
+
+def _sentence_required(syllabus: Syllabus, rule: str = "target/sentence-required"
+                       ) -> dict[str, str]:
+    return {f.note_id: f.evidence for f in syllabus.report().findings if f.rule == rule}
+
+
+def test_a_target_wanting_three_sentences_is_open_while_two_fill_it():
+    """Fix round 1 ruling: a Target with a sentence and short of its count
+    is a warn-severity `target/sentences-wanted` finding, not the
+    gate-closing `target/sentence-required`; it is still open."""
+    syllabus = _wanting(3, (_NOT_EAT, _NOT_EAT_RICE))
+    assert sum(syllabus.targets[0] in syllabus.fill_set(s) for s in syllabus.sentences) == 2
+    assert _sentence_required(syllabus) == {}
+    assert _sentence_required(syllabus, "target/sentences-wanted") == {
+        "not/receptive": "2 of 3 adopted sentences fill it"}
+    assert "not/receptive" in syllabus.gaps().unfilled_targets
+
+
+def test_a_target_wanting_three_sentences_with_none_is_sentence_required():
+    syllabus = _wanting(3)
+    assert _sentence_required(syllabus) == {"not/receptive": "no adopted sentence fills it",
+                                            "eat/receptive": "no adopted sentence fills it",
+                                            "rice/receptive": "no adopted sentence fills it"}
+    assert _sentence_required(syllabus, "target/sentences-wanted") == {}
+
+
+def test_a_deck_short_only_of_wanted_sentences_has_an_open_gate():
+    rules = tuple(r for r in RULES if r.id.startswith("target/sentence"))
+    syllabus = dataclasses.replace(_wanting(3, (_NOT_EAT, _NOT_EAT_RICE)), rules=rules)
+    assert [r.severity for r in rules if r.id == "target/sentences-wanted"] == ["warn"]
+    assert syllabus.report().gate is True
+    assert dataclasses.replace(_wanting(3), rules=rules).report().gate is False
+
+
+def test_unfilled_targets_lists_both_kinds_of_open_target_in_target_order():
+    """ไม่ (not) is short with one sentence; ข้าว (rice) has none: both are
+    open, in the Syllabus's target order."""
+    syllabus = _wanting(3, (_NOT_EAT,))
+    assert syllabus.gaps().unfilled_targets == ("not/receptive", "rice/receptive")
+
+
+def test_a_target_wanting_three_sentences_is_filled_by_the_third():
+    syllabus = _wanting(3, (_NOT_EAT, _NOT_EAT_RICE, _RICE_NOT_EAT))
+    assert _sentence_required(syllabus) == {}
+    assert syllabus.gaps().unfilled_targets == ()
+
+
+def test_a_target_wanting_one_sentence_reads_as_before():
+    assert _sentence_required(_wanting(1))["not/receptive"] == "no adopted sentence fills it"
+    assert "not/receptive" not in _sentence_required(_wanting(1, (_NOT_EAT,)))
+
+
+def test_a_sentence_introduced_target_is_met_by_its_first_sentence_while_still_open():
+    syllabus = _wanting(3, (_NOT_EAT,))
+    assert "not/receptive" in syllabus.met_sentence_introduced_targets()
+    assert "not/receptive" in syllabus.gaps().unfilled_targets
+
+
+def test_cover_adopts_drafts_up_to_the_sentences_a_target_still_wants():
+    """Spec 3 r61: adoption supplies the count -- three drafts fill ไม่
+    (not), which wants two more, and the third gains nothing still
+    wanted."""
+    syllabus = _wanting(3, (_NOT_EAT,))
+    drafts = [(s, syllabus.fill_set(s))
+              for s in (_NOT_EAT_RICE, _RICE_NOT_EAT, _NOT_EAT_THEN_RICE)]
+    chosen = syllabus.cover(drafts)
+    assert len(chosen) == 2
+    assert [tuple(t.id for t in gained) for _, gained in chosen] == [
+        ("not/receptive", "rice/receptive"), ("not/receptive",)]
+
+
+def test_gaps_lists_a_scene_picture_only_for_a_sentence_carrying_a_cloze_card():
+    """Spec 3 r61: a scene picture is sourced only for a sentence with a
+    productive fill (its Cloze card shows the picture)."""
+    syllabus = Syllabus(words=(_EAT, _RICE),
+                        targets=(target("eat/receptive", "eat"),
+                                 target("eat/productive", "eat", "productive"),
+                                 target("rice/receptive", "rice")),
+                        sentences=(sentence(((_EAT.id, _RICE.id),), _TO),   # กินข้าว: eat rice
+                                   sentence(((_RICE.id,),), _TO)),          # ข้าว: rice
+                        frequency={"eat": 1, "rice": 2})
+    eat_rice, rice = syllabus.sentences
+    assert syllabus.productive_fills(eat_rice) and not syllabus.productive_fills(rice)
+    assert syllabus.gaps().scene_pictures == (eat_rice.text_sha,)
+
+
+def test_a_target_wanting_one_sentence_leaves_the_state_id_as_it_was():
+    """`sentences` at its default contributes nothing to the syllabus
+    state id, so a deck that sets it nowhere keeps its identity (the
+    literal is the id this fixture had before `sentences` existed); a
+    Target wanting more is a different state."""
+    rice = word("rice", "ข้าว")   # ข้าว: rice
+    one = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice",
+                                                  introduction="sentence"),))
+    assert one.state_id() == "f06d1777ad98c0c0d33080ba54422e3581c2c1fa668c51a5a1643787295d4ce5"
+    two = dataclasses.replace(one, targets=(target("rice/receptive", "rice",
+                                                   introduction="sentence", sentences=2),))
+    assert two.state_id() != one.state_id()

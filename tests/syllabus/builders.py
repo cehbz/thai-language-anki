@@ -32,9 +32,9 @@ def word(id: str, thai: str, meaning: str = "", classifier: str | None = None,
 
 
 def target(id: str, word_id: str, skill: str = "receptive",
-           introduction: str = "picture_card") -> Target:
+           introduction: str = "picture_card", sentences: int = 1) -> Target:
     return Target(id=TargetId(id), word=WordId(word_id), skill=skill,
-                 introduction=introduction)
+                 introduction=introduction, sentences=sentences)
 
 
 def thai_of(*words: Word) -> Callable[[WordId], str]:

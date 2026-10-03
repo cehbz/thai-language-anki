@@ -1100,8 +1100,9 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
     satisfied or not (spec 5 section 3's coverage universe): one picture
     and one recording need per targeted word (once, however many Targets
     name it), one rendition per pair, one picture per grapheme's keyword
-    word (r42: the keyword word's own need), one recording and one scene
-    picture per sentence.
+    word (r42: the keyword word's own need), one recording per sentence
+    and one scene picture per sentence that has that need
+    (Syllabus.has_scene_picture_need, spec 3 r61).
 
     Deduped here, not by the caller: a count folded over this list (such
     as reviewserver.compute_stats's coverage, one row per need) counts a
@@ -1120,7 +1121,8 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
         candidates.append((g.keyword, "picture", "word"))
     for s in syllabus.sentences:
         candidates.append((s.text_sha, "recording", "sentence"))
-        candidates.append((s.text_sha, "picture", "sentence"))
+        if syllabus.has_scene_picture_need(s):
+            candidates.append((s.text_sha, "picture", "sentence"))
     seen: set[tuple[str, str, str]] = set()
     out: list[tuple[str, str, str]] = []
     for c in candidates:
