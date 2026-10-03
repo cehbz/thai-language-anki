@@ -55,10 +55,13 @@ from .derivations import (
     learner_ranks,
     queue,
     reasks,
+    sentence_asks,
+    sentence_drafts_awaiting,
     unjudged_candidates,
     vetoed,
 )
-from .ids import PairId
+from .attempts import classifier_nouns_of
+from .ids import PairId, WordId
 from .learner import (ACTION_RATINGS, append_comment, append_comment_veto, append_direction,
                       append_rating)
 from .media import Speaker
@@ -131,6 +134,10 @@ def _out_of_options(d: "Derivations", subject: str, kind: str, *, subject_kind: 
     status = _exhausted(d, subject, kind, subject_kind=subject_kind, now_ns=now_ns)
     if not status.exhausted:
         return None
+    if kind == "sentence":
+        # A sentence need's candidates are the drafts its asks put to the
+        # judge, under their own text shas (spec 5 r18).
+        return None if sentence_drafts_awaiting(d.db, subject) else status
     role = role_for(kind, subject_kind)
     awaiting = [sha for sha in unjudged_candidates(d.db, subject, kind,
                                                    current_rubric=d.current_rubric,
@@ -436,33 +443,52 @@ def _tried_candidates(d: "Derivations", subject: str, kind: str,
     return candidates
 
 
-def _sentence_tried_summary(rows: Sequence[Answer]) -> list[dict[str, Any]]:
-    """A sentence need's "tried" list (spec 5 section 1 kind 2): the
-    drafting ask itself is recorded under record.DRAFT_SUBJECT, not the
-    word (attempts.sentence_attempt), so _tried_summary's source-ask rows
-    are never here. What the word's own `nothing` outcome rows state as
-    the drafter's reason for declining (attempts._append_no_fit) stands
-    in for it instead, newest first.
+def _sentence_tried_summary(asks: Sequence[Answer]) -> list[dict[str, Any]]:
+    """A sentence need's "tried" list (spec 5 r18 section 1 kind 2) over
+    its asks since the anchor (derivations.sentence_asks, the rows the
+    cap counts): the drafting ask itself is recorded under
+    record.DRAFT_SUBJECT, not the word (attempts.sentence_attempt), so
+    _tried_summary's source-ask rows are never here. First, when any of
+    those asks drafted, how many did -- none of their drafts was adopted
+    with the word in it, or the count would have restarted -- then the
+    reason each no-fit answer gave, newest first.
     """
-    declined = [r for r in rows if r.port == "attempt"
-               and r.answer.get("outcome") == "nothing" and r.answer.get("reason")]
-    return [{"source": "llm", "reason": r.answer["reason"]}
-           for r in sorted(declined, key=lambda r: r.ts, reverse=True)]
+    tried: list[dict[str, Any]] = []
+    drafted = sum(1 for r in asks if r.answer.get("outcome") == "drafted")
+    if drafted:
+        tried.append({"source": "llm", "reason": (
+            f"{drafted} {'ask' if drafted == 1 else 'asks'} drafted nothing that was adopted")})
+    declined = [r for r in asks if r.answer.get("outcome") == "nothing" and r.answer.get("reason")]
+    tried += [{"source": "llm", "reason": r.answer["reason"]}
+              for r in sorted(declined, key=lambda r: r.ts, reverse=True)]
+    return tried
+
+
+def _classifier_for(syllabus: Syllabus, word_id: str) -> list[dict[str, str]]:
+    """The nouns a classifier Word counts, as the drafting prompt names
+    them (attempts.classifier_nouns_of): a classifier Word carries no
+    meaning the learner can read (spec 5 r18). Empty for any other
+    Word."""
+    return [{"id": str(n.id), "meaning": n.meaning}
+            for n in classifier_nouns_of(syllabus, WordId(word_id))]
 
 
 def _direction_question(d: "Derivations", subject: str, kind: str, subject_kind: str,
                         attempts: int, *, syllabus_state_id: str) -> dict[str, Any]:
     rows = rows_for(d.db, subject, kind)
-    tried = _sentence_tried_summary(rows) if kind == "sentence" else _tried_summary(rows)
+    asks = sentence_asks(d.db, subject) if kind == "sentence" else rows
+    tried = _sentence_tried_summary(asks) if kind == "sentence" else _tried_summary(rows)
     return {
         "type": "direction", "subject": subject, "kind": kind, "subject_kind": subject_kind,
         "role": role_for(kind, subject_kind), "gloss": _gloss_for(d.syllabus, subject, subject_kind),
         "tried": tried, "candidates": _tried_candidates(d, subject, kind, rows),
         "attempts": attempts,
+        "classifier_for": (_classifier_for(d.syllabus, subject)
+                           if kind == "sentence" and subject_kind == "word" else []),
         # Why the source declined in its own words, where it stated one: a
         # sentence need's no-fit answer (spec 3 r19 section 5). Always
         # present, None for a kind whose `nothing` outcomes state none.
-        "reason": latest_nothing_reason(rows),
+        "reason": latest_nothing_reason(asks),
         "label": _subject_label(d.syllabus, subject, subject_kind),
         "shown": _question_shown(kind, subject, subject_kind, _best(d, subject, kind).artifact_sha,
                                  syllabus_state_id),
@@ -2258,11 +2284,18 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     // The source's own words for declining, where it stated any (spec 3
     // r19 section 5's no-fit answer on a sentence need).
     if (q.reason) { box.appendChild(el("div", { "class": "query" }, "reason: " + q.reason)); }
+    // A classifier Word has no meaning of its own: the nouns it counts
+    // stand in for one (spec 5 r18).
+    if (q.classifier_for && q.classifier_for.length) {
+      box.appendChild(el("div", { "class": "query" }, "classifier for: " + q.classifier_for.map(
+        function (n) { return n.id + " (" + n.meaning + ")"; }).join(", ")));
+    }
     var tried = el("div", { "class": "tried" });
     tried.appendChild(el("h4", {}, "tried"));
     if (q.tried && q.tried.length) {
       q.tried.forEach(function (t) {
-        tried.appendChild(el("div", {}, t.source + (t.query ? ": " + t.query : "")));
+        var said = t.query || t.reason;
+        tried.appendChild(el("div", {}, t.source + (said ? ": " + said : "")));
       });
     } else {
       tried.appendChild(el("div", {}, "none"));

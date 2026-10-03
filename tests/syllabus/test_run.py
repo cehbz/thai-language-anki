@@ -38,6 +38,7 @@ from thai_syllabus.derivations import (
     next_source,
     open_words,
     refused_drafts,
+    sentence_exhausted,
 )
 from thai_syllabus.entities import (Category, Grapheme, MinimalPair, SoundConfusion,
                                     text_sha)
@@ -590,6 +591,102 @@ def test_a_no_fit_answer_leaves_one_nothing_row_per_handed_word(
     assert report.attempted == 3 and report.exhausted == 0   # the word was handed over
     assert (report.available == report.attempted + report.exhausted + report.pending
            + report.unserved + report.budgeted + report.deferred)
+
+
+def _seed_drafted(db, word_id, target_id, *, times):
+    """`times` drafted outcome rows on a word's sentence need, in the
+    shape attempts.sentence_attempt appends them (spec 3 r60 section 5)."""
+    for _ in range(times):
+        db.append(port="attempt", backend="llm",
+                  key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                  subject=word_id,
+                  question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                           "targets": [target_id]},
+                  answer={"outcome": "drafted", "candidates": []})
+
+
+def _sentence_attempt_rows(ctx, word_id):
+    return [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_the_third_ask_s_drafts_are_adopted_before_the_word_is_judged_exhausted(
+        tmp_path, fake_search, fake_batch, passed):
+    """Spec 3 r60 section 7: the third ask's drafts ride a batch; a pass
+    with the batch still out never reaches the sentence attempt, and the
+    pass that resolves it adopts before the sentence attempt reads the
+    cap. Adopted, the words leave the open set; refused, they are
+    withheld and counted exhausted, the drafter not asked again."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")))
+    transport = _FixedCompletionTransport(json.dumps({"sentences": [
+        # กิน = eat, ข้าว = rice: one clause, rendered กินข้าว
+        {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"}]}))
+    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch,
+                llm=LlmBackend(producer="sentence-drafter", model="m", transport=transport))
+    for name in ("openverse", "wikimedia", "pexels"):
+        ctx.provider._backends[name] = _Silent(name)
+    for word_id in ("rice", "eat"):
+        _seed_drafted(ctx.db, word_id, f"{word_id}/receptive", times=2)
+
+    r1 = run(ctx, budgets={})                      # the third ask
+    assert len(transport.prompts) == 1 and r1.batch_id is not None
+    assert all(len(_sentence_attempt_rows(ctx, w)) == 3 for w in ("rice", "eat"))
+
+    r2 = run(ctx, budgets={})                      # its batch still out
+    assert r2.batch_id == r1.batch_id and len(transport.prompts) == 1
+    assert r2.exhausted == 0 and r2.sentences_adopted == 0
+
+    fake_batch.complete_all(r1.batch_id, passed=passed)
+    r3 = run(ctx, budgets={})
+    assert len(transport.prompts) == 1             # the drafter was not asked again
+    if passed:
+        assert r3.sentences_adopted == 1 and r3.exhausted == 0
+        assert open_words(ctx.syllabus) == frozenset()
+        # the third ask added a sentence: the count restarts at its adoption
+        assert not any(sentence_exhausted(ctx.db, w).exhausted for w in ("rice", "eat"))
+    else:
+        assert r3.sentences_adopted == 0 and r3.exhausted == 2
+        assert open_words(ctx.syllabus) == frozenset({"rice", "eat"})
+
+
+def test_adopting_a_sentence_records_the_adoption_against_each_word_it_uses(
+        ctx_batch_sentences, fake_batch):
+    """Spec 3 r60 section 5: the ask cap restarts at a sentence's
+    adoption, so the adoption is on the record, under each word the
+    sentence uses, after the ask that drafted it."""
+    r1 = run(ctx_batch_sentences, budgets={})
+    fake_batch.complete_all(r1.batch_id, passed=True)
+    run(ctx_batch_sentences, budgets={})
+    for word_id in ("eat", "rice"):
+        rows = _sentence_attempt_rows(ctx_batch_sentences, word_id)
+        assert [r.answer["outcome"] for r in rows] == ["drafted", "adopted"]
+        assert rows[1].backend == "run"
+        assert rows[1].question == {"kind": "sentence", "source": "run",
+                                    "subject_kind": "word", "sentence": text_sha(EAT_RICE)}
+
+
+def test_a_run_whose_only_open_word_is_at_the_cap_asks_nothing_and_appends_nothing(
+        tmp_path, fake_search):
+    """Spec 3 r60 section 7: once every open word is filled or withheld the
+    drafter is not asked and the pass appends nothing, raises no batch
+    and adopts nothing -- the cycle loop's "nothing left to do"."""
+    root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice", introduction="sentence"),))
+    transport = _FixedCompletionTransport(json.dumps({"sentences": [], "reason": "no fit"}))
+    ctx = _wire(build_sourcing(root), fake_search,
+                llm=LlmBackend(producer="sentence-drafter", model="m", transport=transport))
+    _seed_drafted(ctx.db, "rice", "rice/receptive", times=3)
+    # rice's recording need: forvo, then tts, each answers nothing
+    run(ctx, budgets={})
+    run(ctx, budgets={})
+    mark = ctx.db.newest_ts(excluding_port="run")
+
+    report = run(ctx, budgets={})
+    assert transport.prompts == []
+    assert report.batch_id is None and report.exhausted == 2   # the recording and the sentence
+    assert not (report.adopted_graphemes or report.adopted_words or report.adopted_pairs
+                or report.sentences_adopted)
+    assert ctx.db.newest_ts(excluding_port="run") == mark
 
 
 def test_run_adopts_sentences_whose_verdicts_resolved(ctx_batch_sentences, fake_batch):

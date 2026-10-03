@@ -28,7 +28,7 @@ from thai_syllabus import reviewserver as rs
 from thai_syllabus.assessor import RecordingCheckBackend, mechanical_question
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.authority import role_for
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, CommentReadingKey, DirectionKey, FlagKey,
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, CommentReadingKey, DirectionKey, FlagKey,
                                     JudgeKey, LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, comment_identity, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
@@ -837,6 +837,190 @@ def test_a_sentence_direction_questions_tried_lists_the_words_own_nothing_reason
         {"source": "llm", "reason": "still no verb to use it with"},
         {"source": "llm", "reason": "the vocabulary has no verb yet"},
     ]
+
+
+def _drafted(db, word_id, *, targets=("t-rice",), drafts=()):
+    """One drafted outcome row the sentence attempt appends for a word a
+    fresh drafting ask handed (spec 3 r60 section 5): `drafts` are the
+    text shas of the drafts it put to the judge."""
+    return db.append(port="attempt", backend="llm",
+                     key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="llm"),
+                     subject=word_id,
+                     question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                              "targets": list(targets)},
+                     answer={"outcome": "drafted", "candidates": [], "drafts": list(drafts)})
+
+
+def test_a_word_handed_to_three_drafting_asks_gets_the_sentence_direction_question(
+        derivations, db, w1):
+    """Spec 3 r60, spec 5 r18: a word at the cap by asks that drafted is
+    put to the learner as a no-fit-capped word is; "tried" says how many
+    asks drafted nothing that was adopted, beside the no-fit reasons."""
+    def sentence_directions():
+        return [i for i in rs.build_queue(derivations, budget=50)
+                if i["type"] == "direction" and i["kind"] == "sentence"
+                and i["subject"] == w1.id]
+
+    _drafted(db, w1.id)
+    _drafted(db, w1.id)
+    assert sentence_directions() == []
+    _no_fit(db, w1.id, reason="no verb to use it with")
+    asked = sentence_directions()
+    assert len(asked) == 1 and asked[0]["attempts"] == 3
+    assert asked[0]["tried"] == [
+        {"source": "llm", "reason": "2 asks drafted nothing that was adopted"},
+        {"source": "llm", "reason": "no verb to use it with"},
+    ]
+
+
+def test_a_word_at_the_cap_by_drafted_asks_alone_says_so_and_states_no_reason(
+        derivations, db, w1):
+    for _ in range(3):
+        _drafted(db, w1.id)
+    directions = [i for i in rs.build_queue(derivations, budget=50)
+                  if i["type"] == "direction" and i["kind"] == "sentence"
+                  and i["subject"] == w1.id]
+    assert len(directions) == 1
+    asked = directions[0]
+    assert asked["tried"] == [
+        {"source": "llm", "reason": "3 asks drafted nothing that was adopted"}]
+    assert asked["reason"] is None
+
+
+def _sentence_directions(derivations, subject):
+    return [i for i in rs.build_queue(derivations, budget=50)
+            if i["type"] == "direction" and i["kind"] == "sentence" and i["subject"] == subject]
+
+
+def test_a_sentence_direction_question_summarizes_only_the_asks_the_cap_counts(
+        derivations, db, w1):
+    """Spec 5 r18: the tried summary and the reason are the asks since the
+    word's newest learner row -- the same rows the cap counts."""
+    _drafted(db, w1.id)
+    _no_fit(db, w1.id, reason="before the direction")
+    db.append(port="assess", backend="learner",
+              key=DirectionKey(subject=w1.id, role="sentence-for-target",
+                               text_sha=sha("use it with กิน")),   # กิน: eat
+              subject=w1.id,
+              question={"kind": "direction", "role": "sentence-for-target",
+                       "subject_kind": "word"},
+              answer={"direction": "use it with กิน"})
+    _drafted(db, w1.id)
+    _drafted(db, w1.id)
+    _no_fit(db, w1.id, reason="after the direction")
+    asked = _sentence_directions(derivations, w1.id)
+    assert len(asked) == 1 and asked[0]["attempts"] == 3
+    assert asked[0]["tried"] == [
+        {"source": "llm", "reason": "2 asks drafted nothing that was adopted"},
+        {"source": "llm", "reason": "after the direction"},
+    ]
+    assert asked[0]["reason"] == "after the direction"
+
+
+def _batch_marker(db, batch_id, subjects, status="submitted"):
+    db.append(port="assess", backend="judge", key=BatchMarkerKey(batch_id), subject="batch",
+              question={"kind": "batch", "batch_id": batch_id, "subjects": list(subjects),
+                       "roles": ["sentence-for-target"] * len(subjects),
+                       "kinds": ["sentence"] * len(subjects)},
+              answer={"status": status})
+
+
+def test_no_sentence_direction_question_while_an_asks_drafts_await_their_verdict(
+        derivations, db, w1):
+    """Spec 5 r18: a word at the cap whose drafts from an ask that handed
+    it still sit in the unresolved judge batch is the machine's, not a
+    direction request; once the batch resolves it is."""
+    draft_sha = "d" * 64
+    _drafted(db, w1.id)
+    _drafted(db, w1.id)
+    _drafted(db, w1.id, drafts=(draft_sha,))
+    _batch_marker(db, "b1", [draft_sha])
+    assert _sentence_directions(derivations, w1.id) == []
+    _batch_marker(db, "b1", [draft_sha], status="resolved")
+    assert len(_sentence_directions(derivations, w1.id)) == 1
+
+
+def test_another_subject_in_the_batch_does_not_hold_the_direction_question_back(
+        derivations, db, w1):
+    for _ in range(3):
+        _drafted(db, w1.id, drafts=("d" * 64,))
+    _batch_marker(db, "b1", ["e" * 64])
+    assert len(_sentence_directions(derivations, w1.id)) == 1
+
+
+def _classifier_derivations(db, media_store):
+    """A classifier Word (no meaning of its own) and the noun it counts."""
+    tua = word("tua", "ตัว", "(classifier -- no gloss migrated)")   # ตัว: classifier for animals
+    dog = word("dog", "หมา", "dog", classifier="tua")              # หมา: dog
+    syllabus = Syllabus(words=(dog, tua),
+                        targets=(target("t-dog", "dog"),
+                                 target("t-tua", "tua", introduction="sentence")),
+                        assessments=db)
+    return _derivations_for(syllabus, db, media_store)
+
+
+def test_a_classifier_s_sentence_direction_question_names_the_nouns_it_counts(
+        db, media_store):
+    """Spec 5 r18: a classifier Word carries no meaning, so its direction
+    question names the nouns it counts, as the drafting prompt does."""
+    for _ in range(3):
+        _drafted(db, "tua", targets=("t-tua",))
+    asked = _sentence_directions(_classifier_derivations(db, media_store), "tua")
+    assert len(asked) == 1
+    assert asked[0].get("classifier_for") == [{"id": "dog", "meaning": "dog"}]
+
+
+_DIRECTION_VIEW_HARNESS = r"""
+const src = require("fs").readFileSync(0, "utf8");
+function node(tag) {
+  return { tag: tag, text: "", children: [],
+           appendChild(c) { this.children.push(c); return c; },
+           setAttribute() {}, addEventListener() {},
+           set textContent(v) { this.text = String(v); } };
+}
+global.document = { createElement: node };
+const fn = (name) => {
+  const start = src.indexOf("  function " + name + "(");
+  const end = src.indexOf("\n  }\n", start);
+  return src.slice(start, end + 4);
+};
+eval(fn("el") + fn("renderDirection"));
+function subjectHeader(q, suffix) { return el("div", {}, q.subject + suffix); }
+function artifactView() { return el("div", {}, "artifact"); }
+function renderComments() {}
+function supplyButton() { return el("button", {}, "supply"); }
+function openDirectionBox() {}
+function loadQueue() {}
+const box = node("div");
+renderDirection(JSON.parse(process.argv[1]), box);
+const texts = [];
+(function walk(n) { if (n.text) texts.push(n.text); n.children.forEach(walk); })(box);
+process.stdout.write(JSON.stringify(texts));
+"""
+
+
+def _direction_view_texts(question) -> list[str]:
+    """Every text the page's own renderDirection puts on screen for
+    `question`, run under node against a minimal DOM."""
+    import shutil
+    import subprocess
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run(["node", "-e", _DIRECTION_VIEW_HARNESS, json.dumps(question)],
+                         input=rs.INDEX_HTML, capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+def test_the_direction_view_shows_a_sentence_need_s_tried_reasons_and_classifier_nouns(
+        db, media_store):
+    for _ in range(2):
+        _drafted(db, "tua", targets=("t-tua",))
+    _no_fit(db, "tua", targets=("t-tua",), reason="no noun to count")
+    asked = _sentence_directions(_classifier_derivations(db, media_store), "tua")
+    texts = _direction_view_texts(asked[0])
+    assert "llm: 2 asks drafted nothing that was adopted" in texts
+    assert "llm: no noun to count" in texts
+    assert "classifier for: dog (dog)" in texts
 
 
 def test_a_picture_direction_question_carries_no_reason(derivations, db, w1):

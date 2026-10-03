@@ -605,7 +605,7 @@ class Derivations:
     # tried_sources()'s distinct-query cap (spec 3 r35 section 8), the same
     # value build_sourcing hands the run's Sourcing.
     requery_cap: int = DEFAULT_REQUERY_CAP
-    # sentence_exhausted()'s no-fit cap (spec 3 r19 section 5), the same
+    # sentence_exhausted()'s ask cap (spec 3 r60 section 5), the same
     # value build_sourcing hands the run's Sourcing.
     sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
     # tried_sources()'s per-source ageing (spec 3 r19 section 6a/9,

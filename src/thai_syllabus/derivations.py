@@ -47,7 +47,8 @@ __all__ = [
     "CANDIDATE_SUBJECT_PREFIX", "CandidateVerdict", "candidate_adjudications",
     "attempts_since_change", "tried_sources", "next_source",
     "GLYPH_SOURCES", "ALPHABET_SOURCES", "need_sources",
-    "ExhaustedStatus", "exhausted", "sentence_exhausted",
+    "ExhaustedStatus", "exhausted", "sentence_exhausted", "sentence_asks",
+    "sentence_drafts_awaiting", "SENTENCE_ADOPTED_OUTCOME",
     "improved",
     "directed",
     "QueueEntry", "queue", "QueuedNeeds", "queued",
@@ -97,10 +98,11 @@ DEFAULT_REQUERY_CAP = 3
 # nothing_ttl day, in the ts's own nanosecond units.
 _NANOS_PER_DAY = 86_400 * 1_000_000_000
 
-# The no-fit cap sentence_exhausted() enforces (spec 3 r19 section 5): a
-# word whose sentence need has this many `nothing` outcome rows since its
-# last handed draft is not handed to the drafter again, and the feedback
-# screen asks the learner for a direction instead.
+# The ask cap sentence_exhausted() enforces (spec 3 r60 section 5): a
+# word whose sentence need has had this many drafting asks in a row that
+# added no sentence for it (sentence_asks) is not handed to the drafter
+# again, and the feedback screen asks the learner for a
+# direction instead.
 DEFAULT_SENTENCE_NOTHING_CAP = 3
 
 # Artifact kinds no Source serves and no per-run pass covers: such a need
@@ -862,9 +864,19 @@ class ExhaustedStatus:
     attempts: int
 
 
-def _sentence_anchor_ts(cache: CacheReader, word: str) -> int:
+# The outcomes a drafting ask records against each word it handed
+# (attempts.sentence_attempt, spec 3 r60 section 5).
+_SENTENCE_ASK_OUTCOMES = frozenset({"nothing", "drafted"})
+# The outcome the run records against each word an adopted sentence uses
+# (run._adopt_sentences, spec 3 r60 section 5).
+SENTENCE_ADOPTED_OUTCOME = "adopted"
+
+
+def _sentence_anchor_ts(cache: CacheReader, word: str, rows: Sequence[Answer]) -> int:
     """The ts a word's sentence need is counted from: the newest learner
-    row of ANY kind on the word, or -1 when it carries none.
+    row of ANY kind on the word, or the newest adoption of a sentence
+    using the word (`rows`, its (word, "sentence") rows), whichever is
+    later; -1 when it carries neither.
 
     Spec 3 r19 section 6a reopens a sentence-exhausted word on "a learner
     row", and the row the feedback screen's direction question writes is
@@ -872,30 +884,55 @@ def _sentence_anchor_ts(cache: CacheReader, word: str) -> int:
     own learner term (record.ratings_for_role, LEARNER_RANK-valued rating
     rows under the need's role) cannot see it. Its other term, the ts of
     the attempt that produced current-best's artifact, is always -1 here:
-    a sentence need stores no artifact under the word. So `_anchor_ts`
-    has nothing to add, and the newest learner row on the subject is the
-    whole anchor -- architecture section 4's "any learner input reopens a
-    need", read as widely as the direction question needs.
+    a sentence need stores no artifact under the word. So the newest
+    learner row on the subject stands in for it -- architecture section
+    4's "any learner input reopens a need", read as widely as the
+    direction question needs -- and an adoption stands in for the
+    artifact (spec 3 r60: the cap counts asks in a row that added no
+    sentence for the word).
     """
-    return max((r.ts for r in cache.assessments_of(word) if r.backend == "learner"),
-              default=-1)
+    learner = max((r.ts for r in cache.assessments_of(word) if r.backend == "learner"),
+                  default=-1)
+    adopted = max((r.ts for r in rows if r.port == "attempt"
+                   and r.answer.get("outcome") == SENTENCE_ADOPTED_OUTCOME), default=-1)
+    return max(learner, adopted)
+
+
+def sentence_asks(cache: CacheReader, word: str) -> list[Answer]:
+    """The drafting asks `word`'s sentence need has had in a row without
+    gaining a sentence (spec 3 r60 section 5), oldest first: its attempt
+    outcome rows `nothing` or `drafted`, one per fresh ask that handed
+    the word, since `_sentence_anchor_ts`."""
+    rows = record.rows_for(cache, word, "sentence")
+    since_ts = _sentence_anchor_ts(cache, word, rows)
+    return [r for r in rows if r.port == "attempt" and r.ts > since_ts
+            and r.answer.get("outcome") in _SENTENCE_ASK_OUTCOMES]
 
 
 def sentence_exhausted(cache: CacheReader, word: str, *,
                        cap: int = DEFAULT_SENTENCE_NOTHING_CAP) -> ExhaustedStatus:
-    """`word`'s sentence need after `cap` no-fit answers (spec 3 r19
-    section 5): the `nothing` attempt-outcome rows under (word,
-    "sentence") since `_sentence_anchor_ts`, one per handed draft the
-    drafter answered "nothing fits" to. At the cap the word is not handed
-    to the drafter again and the feedback screen asks the learner for a
-    direction; a learner row on the word reopens it (section 6a), which
-    is what the anchor carries.
+    """`word`'s sentence need after `cap` drafting asks in a row that added
+    no sentence for it (`sentence_asks`, spec 3 r60 section 5). At the cap
+    the word is not handed to the drafter again and the feedback screen
+    asks the learner for a direction; a learner row on the word reopens
+    it (section 6a), and so does the adoption of a sentence that uses
+    it.
     """
-    rows = record.rows_for(cache, word, "sentence")
-    since_ts = _sentence_anchor_ts(cache, word)
-    nothing = [r for r in rows if r.port == "attempt" and r.ts > since_ts
-              and r.answer.get("outcome") == "nothing"]
-    return ExhaustedStatus(exhausted=len(nothing) >= cap, attempts=len(nothing))
+    asks = sentence_asks(cache, word)
+    return ExhaustedStatus(exhausted=len(asks) >= cap, attempts=len(asks))
+
+
+def sentence_drafts_awaiting(cache: CacheReader, word: str) -> bool:
+    """Whether a draft some ask in `sentence_asks` put to the judge (the
+    `drafts` its `drafted` row names) is a subject of the unresolved judge
+    batch (record.unresolved_batch): its verdict is still to come, and
+    with it a possible adoption (spec 5 r18)."""
+    found = record.unresolved_batch(cache)
+    if found is None:
+        return False
+    in_batch = set(found[1])
+    return any(sha in in_batch for r in sentence_asks(cache, word)
+               for sha in r.answer.get("drafts") or ())
 
 
 def exhausted(cache: CacheReader, subject: str, kind: str, *,

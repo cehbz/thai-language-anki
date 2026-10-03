@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 59, proposed 2026-10-02 against principles r7 and architecture
+Revision 60, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -253,6 +253,7 @@ Revision log:
 - r57 2026-10-01: a sentence recording's voice constraint is its speaker marking alone, any sex when unmarked (principles r7); a word's is unchanged. User ruling 2026-10-01.
 - r58 2026-10-02: an other-voice draft is judged under role sentence-for-target-other-voice (natural as its marked speaker's sentence; grammar; gloss); the drafting prompt names a marked target's speaker. sentence-for-target and its verdicts are unchanged. Evidence: 19 of 23 judge failures among the drafts for the last 57 Targets cite the female pronoun against the male-register rubric. User ruling 2026-10-02.
 - r59 2026-10-02: the drafting ask hands open Targets in introduction order; its vocabulary never falls below sentence_vocabulary_floor (150) picture-introduced words of the word block; a handed classifier is named with the nouns counted with it, which join the vocabulary. Evidence: in targets.yaml order five classifiers took every introducible slot in every ask since 2026-09-27 and 47 Targets were never handed; an ask for the five earliest function words offered 79 words; ทิศ (directions) was handed with none of its four nouns. User ruling 2026-10-02.
+- r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter. User ruling 2026-10-02.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -615,8 +616,13 @@ sentence using such a word is that speaker's own sentence and uses no
 word marked for the other sex (r58); a handed sentence-introduced
 classifier's line names those nouns, ids and meanings in introduction
 order, and one with no such noun has the plain line, as does every
-other target (r59); the
-profile register; the existing sentence openings to avoid; the
+other target (r59); a
+handed word's newest learner direction on its sentence need is written
+on its line as the learner's instruction for that word, one line with
+every run of whitespace one space, no angle or square brackets, at most
+300 characters, and the prompt says before the target lines to follow
+such a direction in the sentences that use the word; a prompt with no
+direction says nothing of directions (r60); the profile register; the existing sentence openings to avoid; the
 unadopted texts the judge failed, newest first, at most 20,
 each with the verdict's evidence (whitespace-collapsed, 200 characters),
 as sentences not to propose. It asks for as many natural sentences as it
@@ -643,14 +649,27 @@ verdict is keyed by the text and was given on that gloss. A draft
 filling no open target is not judged.
 
 *No fit.* `{"sentences": [], "reason": "..."}` is recognized and
-cached: one `nothing` outcome row per handed word (the sentence need's
-subject; port attempt, backend llm, the handed target ids on the row).
-A no-fit served from the cache is re-asked once, so the rows count
-refusals, not runs. A word with `sentence_nothing_cap` (§8, default 3)
-such rows since its newest learner row is exhausted: its targets are not
-handed again, the run counts it exhausted, and the feedback screen asks
-the learner a direction question carrying the drafter's reason (supply a
-sentence, or retire the target); any learner row on the word reopens it.
+cached; it asks the judge nothing.
+
+*The ask cap (r60).* Every fresh drafting ask appends one outcome row
+per handed word (the sentence need's subject; port attempt, backend llm,
+the handed target ids on the row): `nothing` with the drafter's reason
+for a no-fit answer, `drafted` for any other answer, naming the text
+shas of the drafts it put to the judge. An answer served from the cache
+appends none; one so served that is a no-fit or puts no draft to the
+judge is re-asked once (§6a), so the rows count the drafter's answers,
+not runs. The cap counts asks in a row that added no sentence for the
+word: the rows since the newer of the word's newest learner row and the
+newest adoption of a sentence using the word. A word with
+`sentence_nothing_cap` (§8, default 3) such rows, of either outcome, and
+a Target still open, is exhausted: its targets are not handed again,
+the run counts it exhausted, and the feedback screen asks the learner a
+direction question (spec 5 §1 kind 2: supply a sentence, or retire the
+target); a learner row on the word, or the adoption of a sentence using
+it, reopens it, and the newest direction is written on its prompt line.
+The cap is read by the sentence attempt, after the pass has adopted
+what the resolved batch passed (§7); a draft whose verdict has not come
+back by then (a lost batch, an excluded question) is not waited for.
 
 *Judging and adoption.* The judge sees each candidate once
 (sentence-for-target: naturalness; register; the L1 gloss with the text,
@@ -661,8 +680,10 @@ Central Thai as the speaker its words mark would say it, grammatical,
 and the gloss as above; its question names that speaker's sex. Adoption
 and the refused-text list read each draft's verdict under the role its
 voice selects. Adoption
-(`Syllabus.add_sentence` with provenance) fills every target `fills()`
-says it fills, chosen greedily by targets filled, and creates needs: the
+(`Syllabus.add_sentence` with provenance) appends one `adopted` outcome
+row under each word the sentence uses (port attempt, backend run, the
+sentence's text sha on the row), where the ask cap restarts (r60); it
+fills every target `fills()` says it fills, chosen greedily by targets filled, and creates needs: the
 sentence's recording (voice constraint from the marking, Recording
 above; tts allowed for receptive-only, a productive fill wants native,
 warn otherwise) and a scene picture (the sentence's Cloze cards need
@@ -877,6 +898,16 @@ search by the hits not yet tried. A second served refusal, or any wire
 failure, is transient. Nothing infers durability from a response; the
 cap decides it.
 
+**Drafting asks (r60).** A drafting answer served from the cache is
+not an ask: it appends no outcome row against the handed words. A
+no-fit so served, or one that puts no draft to the judge (every draft
+already adopted or refused at acceptance, so the refused block and the
+prompt are unchanged), is re-asked once and the fresh answer is the
+run's. Every fresh answer, drafts or a no-fit, appends one outcome row
+per handed word and counts toward `sentence_nothing_cap` (§5) whatever
+it answered; a learner row on the word, or the adoption of a sentence
+using it, restarts the count.
+
 **Unreachable versus excluded.** A question the backend cannot prepare
 (a missing or unreadable artifact, a member with no verdict) is excluded
 for the run and never cached; only a backend that answered none of the
@@ -912,7 +943,9 @@ status at growing intervals) and runs again, until a run raises no batch
 and appends nothing to the record but its own report (a tally such as
 `attempted` measures effort, not progress: the sentence attempt counts
 its open targets every pass) -- `--cycles N` caps the number of runs
-instead (r39).
+instead (r39). A word at the ask cap is withheld from the drafter (§5,
+r60), so a pass whose every open word is filled or withheld asks the
+drafter nothing and, with no other need open, appends nothing.
 
 ```
 run(syllabus, budgets):

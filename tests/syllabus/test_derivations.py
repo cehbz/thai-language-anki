@@ -1091,6 +1091,72 @@ def test_no_fit_rows_after_the_reopening_learner_row_count_again(cache):
     assert status.exhausted is True and status.attempts == 3
 
 
+def _drafted_row(word, *, ts=None, targets=("t1",)):
+    """One `drafted` outcome row: a fresh drafting ask that handed the
+    word's Targets and came back with drafts (spec 3 r60)."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="attempt", backend="llm",
+                 key=f"attempt:{word}:sentence:llm:{ts}", key_sha="x", subject=word,
+                 question={"kind": "sentence", "source": "llm", "subject_kind": "word",
+                          "targets": list(targets)},
+                 answer={"outcome": "drafted", "candidates": []},
+                 cost=0.0, ts=ts)
+
+
+def test_sentence_exhausted_counts_drafted_asks_alongside_no_fit_answers(cache):
+    """Spec 3 r60: every recorded ask counts toward the cap, whatever it
+    answered; a learner row still reopens the word."""
+    cache.rows.extend([_drafted_row("rice", ts=1), _drafted_row("rice", ts=2)])
+    assert sentence_exhausted(cache, "rice", cap=3).exhausted is False
+    cache.rows.append(_no_fit_row("rice", ts=3))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is True and status.attempts == 3
+    cache.rows.append(direction_row("rice", ts=4))
+    assert sentence_exhausted(cache, "rice", cap=3).attempts == 0
+
+
+def test_three_drafted_asks_alone_reach_the_cap(cache):
+    for ts in (1, 2, 3):
+        cache.rows.append(_drafted_row("rice", ts=ts))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is True and status.attempts == 3
+
+
+def _adopted_row(word, *, ts=None, sentence="s" * 64):
+    """The row the run appends under each word an adopted sentence uses
+    (spec 3 r60 section 5)."""
+    ts = ts if ts is not None else _next_ts()
+    return Answer(port="attempt", backend="run",
+                 key=f"attempt:{word}:sentence:run:{ts}", key_sha="x", subject=word,
+                 question={"kind": "sentence", "source": "run", "subject_kind": "word",
+                          "sentence": sentence},
+                 answer={"outcome": "adopted", "candidates": []},
+                 cost=0.0, ts=ts)
+
+
+def test_a_sentence_adopted_for_the_word_restarts_the_ask_count(cache):
+    """Spec 3 r60: the cap counts asks in a row that added no sentence
+    for the word. A word that gained a sentence from its third ask is not
+    withheld whatever its Targets still want, and a Target reopened with
+    no learner row (a retirement) does not inherit the asks that filled
+    it."""
+    for ts in (1, 2, 3):
+        cache.rows.append(_drafted_row("rice", ts=ts))
+    assert sentence_exhausted(cache, "rice", cap=3).exhausted is True
+    cache.rows.append(_adopted_row("rice", ts=4))
+    status = sentence_exhausted(cache, "rice", cap=3)
+    assert status.exhausted is False and status.attempts == 0
+    cache.rows.extend([_drafted_row("rice", ts=5), _no_fit_row("rice", ts=6)])
+    assert sentence_exhausted(cache, "rice", cap=3).attempts == 2
+
+
+def test_another_word_s_adoption_does_not_restart_the_count(cache):
+    for ts in (1, 2, 3):
+        cache.rows.append(_drafted_row("rice", ts=ts))
+    cache.rows.append(_adopted_row("fish", ts=4))
+    assert sentence_exhausted(cache, "rice", cap=3).exhausted is True
+
+
 def test_exhausted_dispatches_the_sentence_kind_to_the_no_fit_cap(cache):
     """A "sentence" need has no Source roster at all, so the source-and-
     attempt-cap fold would call every word exhausted from the first run;

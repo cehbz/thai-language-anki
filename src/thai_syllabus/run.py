@@ -24,7 +24,7 @@ from time import time_ns
 from typing import NamedTuple
 
 from .assessor import AssessQuestion, JudgeUnreachable, PreparedQuestion
-from .cachekeys import RunReportKey
+from .cachekeys import AttemptOutcomeKey, RunReportKey
 from .attempts import (
     AttemptResult,
     Need,
@@ -51,6 +51,7 @@ from .attempts import (
     sources_for_need,
 )
 from .derivations import (
+    SENTENCE_ADOPTED_OUTCOME,
     QueuedNeeds,
     QueueEntry,
     adjudications,
@@ -310,7 +311,10 @@ class _Tally:
 
 def _adopt_sentences(ctx: Sourcing) -> int:
     """The cover over every verified draft on record (Syllabus.cover),
-    written to the sentences table and applied to `ctx.syllabus`.
+    written to the sentences table and applied to `ctx.syllabus`; each
+    adoption appends one `adopted` outcome row under each word the
+    sentence uses (spec 3 r60 section 5), where the ask cap restarts
+    (derivations.sentence_asks).
     """
     chosen = ctx.syllabus.cover(adoptable_drafts(
         ctx.db, ctx.syllabus, current_rubric=ctx.rubrics,
@@ -325,6 +329,13 @@ def _adopt_sentences(ctx: Sourcing) -> int:
                             origin=sentence.provenance.origin,
                             licence=sentence.provenance.licence,
                             acquired=sentence.provenance.acquired)
+        for word_id in sentence.words:
+            ctx.db.append(port="attempt", backend="run",
+                          key=AttemptOutcomeKey(subject=word_id, kind="sentence", source="run"),
+                          subject=word_id,
+                          question={"kind": "sentence", "source": "run", "subject_kind": "word",
+                                    "sentence": sentence.text_sha},
+                          answer={"outcome": SENTENCE_ADOPTED_OUTCOME, "candidates": []})
     adopted: tuple[Sentence, ...] = tuple(sentence for sentence, _targets in chosen)
     ctx.syllabus = ctx.syllabus.with_sentences(adopted)
     return len(adopted)
@@ -1061,7 +1072,7 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             tally.sentences_adopted += _adopt_sentences(ctx)
             # No Source is asked per open Target -- the sentence attempt is
             # what serves them. A word whose Targets it was handed is
-            # `attempted`; one it withheld at the no-fit cap (spec 3 r19
+            # `attempted`; one it withheld at the ask cap (spec 3 r60
             # section 5, AttemptResult.subjects_exhausted) is `exhausted`,
             # once, and never also deferred; one it never reached (the
             # per-run Target cap) is `deferred`; one the adopted drafts

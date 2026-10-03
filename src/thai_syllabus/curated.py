@@ -756,7 +756,7 @@ class ProvidersConfig:
     attempt_cap: int = 8       # exhausted()'s per-subject attempt cap default
     transient_cap: int = 3     # tried_sources()'s transient-outcome cap default
     requery_cap: int = 3       # tried_sources()'s distinct-query cap default (spec 3 r35 section 8)
-    # sentence_exhausted()'s no-fit cap default (spec 3 r19 section 5)
+    # sentence_exhausted()'s ask cap default (spec 3 r60 section 5)
     sentence_nothing_cap: int = 3
     # the drafting prompt's own clause cap default (spec 3 r23 section 5/8)
     sentence_max_clauses: int = 2

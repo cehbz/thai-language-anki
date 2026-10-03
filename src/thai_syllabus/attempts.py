@@ -81,7 +81,7 @@ from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
            "VoiceConstraint",
            "sources_for", "sources_for_need", "provenance_source_for",
-           "current_best_of",
+           "current_best_of", "classifier_nouns_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "ChartCell", "chart_cell", "GLYPH_SOURCE",
            "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
@@ -232,9 +232,11 @@ class Sourcing:
     # built against, restoring the original callable when the pass ends;
     # the default reads the wall clock afresh for a caller outside a run.
     now_ns: Callable[[], int] = field(default=time.time_ns)
-    # The `nothing` outcomes a word's sentence need may carry since its
-    # last handed draft before the drafter stops being handed its Targets
-    # (spec 3 r19 section 5, derivations.sentence_exhausted).
+    # The drafting asks (`nothing` or `drafted`) in a row that added no
+    # sentence for a word -- since its newest learner row or the newest
+    # adoption of a sentence using it -- before the drafter stops being
+    # handed its Targets (spec 3 r60 section 5,
+    # derivations.sentence_exhausted).
     sentence_nothing_cap: int = DEFAULT_SENTENCE_NOTHING_CAP
     # The drafting prompt's own clause cap (spec 3 r23 section 5/8): a
     # draft over this many clauses is refused like an invariant failure
@@ -2456,6 +2458,14 @@ def _classifier_nouns(syllabus: Syllabus, entries: Sequence[tuple[int, Target]]
     return nouns
 
 
+def classifier_nouns_of(syllabus: Syllabus, word_id: WordId) -> list[Word]:
+    """The offerable nouns a classifier Word counts, in introduction order
+    -- what a drafting prompt names on the classifier's line
+    (`_classifier_nouns`); empty for a Word no noun names as its
+    classifier."""
+    return list(_classifier_nouns(syllabus, _word_entries(syllabus)).get(word_id, ()))
+
+
 def _handed_nouns(target: Target, classifier_nouns: Mapping[WordId, Sequence[Word]]
                   ) -> Sequence[Word]:
     """The nouns a handed Target brings into its prompt (spec 3 r59
@@ -2515,9 +2525,23 @@ def _example_clause_ids(vocabulary: Sequence[Word]) -> tuple[str, str]:
     return repeated, suffixed
 
 
+# The longest learner direction a drafting prompt line carries (spec 3 r60).
+DIRECTION_MAX_CHARS = 300
+_DIRECTION_DELIMITERS = str.maketrans("", "", "<>[]")
+
+
+def _direction_line_text(direction: str) -> str:
+    """A learner direction as one prompt line can carry it (spec 3 r60
+    section 5): no angle or square brackets, which delimit the prompt's
+    own structure; every run of whitespace, newlines included, one space;
+    at most DIRECTION_MAX_CHARS characters."""
+    return " ".join(direction.translate(_DIRECTION_DELIMITERS).split())[:DIRECTION_MAX_CHARS]
+
+
 def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      refused: Sequence[tuple[str, str]] = (),
-                     *, sentence_max_clauses: int,
+                     *, directions: Mapping[WordId, str] = {},
+                     sentence_max_clauses: int,
                      sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS,
                      sentence_vocabulary_floor: int = DEFAULT_SENTENCE_VOCABULARY_FLOOR) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary
@@ -2531,7 +2555,12 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     word marks its speaker's sex says so on its line, and the prompt says
     such a sentence is that speaker's own (spec 3 r58), and a sentence-introduced classifier
     target's line names the nouns it counts (`_handed_nouns`, spec 3
-    r59) -- the profile
+    r59), and a handed word with an entry in `directions` (the learner's
+    newest direction on its sentence need, `_sentence_directions`) carries
+    it on its line as the learner's instruction, one line of at most
+    `DIRECTION_MAX_CHARS` characters with no angle or square brackets
+    (`_direction_line_text`), the prompt saying before the target lines to
+    follow it (spec 3 r60) -- the profile
     register, the existing sentence openings to avoid, and the clause
     rendering rule (spec 1 section 1). Asks for at most `sentence_max_clauses`
     clauses per sentence (spec 3 r23 section 5/8) and at most
@@ -2560,6 +2589,8 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
             line += f"  [speaker: {word.speaker}]"
         if nouns := _handed_nouns(target, classifier_nouns):
             line += f"  [classifier for: {', '.join(f'{n.id} ({n.meaning})' for n in nouns)}]"
+        if (direction := directions.get(word.id)) is not None:
+            line += f"  [learner's direction: {_direction_line_text(direction)}]"
         if target.introduction == "sentence" and target.id not in met_targets:
             introducible_lines.append(line)
         else:
@@ -2567,6 +2598,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     openings = sorted({syllabus.word(s.words[0]).thai for s in syllabus.sentences if s.words})
     sections = ("Vocabulary, in the order met:\n"
                + "\n".join("- " + record.vocabulary_line(w) for w in vocabulary) + "\n")
+    if any(t.word in directions for t in targets):
+        sections += ("A target line may carry the learner's direction for that word; "
+                     "follow it in the sentences that use the word.\n")
     if target_lines:
         sections += "Targets:\n" + "\n".join(target_lines) + "\n"
     if introducible_lines:
@@ -2637,17 +2671,24 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     has already failed (derivations.refused_drafts, spec 3 r19 section
     5) so the drafter does not propose them again.
 
-    A word whose sentence need is at the no-fit cap
+    A word whose sentence need is at the ask cap
     (derivations.sentence_exhausted under ctx.sentence_nothing_cap) is
     withheld: its Targets are not handed over, and
     `subjects_exhausted` names it so the run counts it `exhausted`
-    rather than attempted or deferred. A no-fit answer -- spec 3 r19
+    rather than attempted or deferred. Every fresh ask (spec 3 r60
+    section 5) appends one outcome row per handed Target's word, under
+    that WORD as subject with the Target ids in the row's question
+    (`_append_asked`): `nothing` for a no-fit answer -- spec 3 r19
     section 5's `{"sentences": [], "reason": "..."}`, read by
-    record.parse_no_fit -- appends one `nothing` outcome row per handed
-    Target's word, under that WORD as subject with the Target ids in the
-    row's question, and asks the judge nothing. A no-fit served from the
-    provider cache is re-asked once first (section 6a): the cap counts
-    the drafter's refusals, never the runs that read the same cached one.
+    record.parse_no_fit, which asks the judge nothing -- and `drafted`
+    for any other answer, naming the text shas of the drafts it put to
+    the judge. An answer served from the provider cache appends none; one
+    so served that is a no-fit or puts no draft to the judge is re-asked
+    once first (section 6a): the cap counts the drafter's answers, never
+    the runs that read the same cached one, and a cached answer whose
+    drafts are all refused is not read for ever. A handed word's newest
+    learner direction on its sentence need is written on its prompt line
+    (`_sentence_directions`, spec 3 r60).
     """
     spend: dict[str, Spend] = {}
     syllabus = ctx.syllabus
@@ -2684,31 +2725,52 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
     question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
         params={"prompt": _sentence_prompt(
-            syllabus, targets, refused, sentence_max_clauses=ctx.sentence_max_clauses,
+            syllabus, targets, refused,
+            directions=_sentence_directions(ctx, {t.word for t in targets}),
+            sentence_max_clauses=ctx.sentence_max_clauses,
             sentence_max_words=ctx.sentence_max_words,
             sentence_vocabulary_floor=ctx.sentence_vocabulary_floor)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
-
     no_fit = _no_fit_in(answer)
-    if no_fit is not None and answer.hit:
-        # Spec 3 r19 section 6a's re-ask rule. A no-fit adds nothing to the
-        # prompt's refused block, so the next run's prompt -- and its cache
-        # key -- is the very same one; served from the cache it would cache
-        # one more `nothing` row per run for a refusal the drafter never
-        # made, and sentence_exhausted would count runs instead. Re-ask
-        # once and let the fresh answer (drafts or a new no-fit) be the
-        # run's answer; only an answer that was not a hit is recorded.
+    questions = [] if no_fit is not None else _draft_questions(ctx, answer, open_targets)
+    if answer.hit and not questions:
+        # Spec 3 r19/r60 section 6a's re-ask rule. A no-fit, or an answer
+        # every draft of which is already adopted or refused at acceptance,
+        # adds nothing to the prompt's refused block, so the next run's
+        # prompt -- and its cache key -- is the very same one; served from
+        # the cache it would be read for ever, the drafter never asked again
+        # and the word's asks never counted. Re-ask once and let the fresh
+        # answer (drafts or a new no-fit) be the run's answer; only an
+        # answer that was not a hit is recorded.
         answer = ctx.provider.reask("llm-sentence", question)
         _count(spend, "llm-sentence", answer)
         no_fit = _no_fit_in(answer)
+        questions = [] if no_fit is not None else _draft_questions(ctx, answer, open_targets)
     if no_fit is not None:
-        _append_no_fit(ctx, targets, no_fit)
+        _append_asked(ctx, targets, {"outcome": "nothing", "candidates": [], "reason": no_fit})
         return AttemptResult(attempted=True, drafted=0, targets_handed=len(targets),
                              subjects_handed=frozenset(t.word for t in targets),
                              subjects_exhausted=withheld, spend=spend)
+    if answer.items and not answer.hit:
+        _append_asked(ctx, targets, {"outcome": "drafted", "candidates": [],
+                                     "drafts": [q.subject for q in questions]})
+    result = ctx.assessor.ask_many("judge", questions)
+    _count_verdicts(spend, "judge", result)
+    return AttemptResult(attempted=True, questions=list(result.collected),
+                         excluded=dict(result.excluded), spend=spend,
+                         drafted=len(questions), targets_handed=len(targets),
+                         subjects_handed=frozenset(t.word for t in targets),
+                         subjects_exhausted=withheld)
 
-    adopted = {s.text_sha for s in syllabus.sentences}
+
+def _draft_questions(ctx: Sourcing, answer: ProviderAnswer,
+                     open_targets: Sequence[Target]) -> list[AssessQuestion]:
+    """The judge question of each merged draft in a drafting answer that is
+    not adopted already and passes `draft_refusal`; a refused draft is
+    logged ("draft refused: %s: %s", the reason and the text) and
+    skipped."""
+    adopted = {s.text_sha for s in ctx.syllabus.sentences}
     questions: list[AssessQuestion] = []
     raw_drafts = [d for item in answer.items for d in record.parse_drafts(str(item))]
     for draft in record.merge_drafts(raw_drafts):
@@ -2719,14 +2781,8 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         if refusal is not None:
             _log.warning("draft refused: %s: %s", refusal, draft.text)
             continue
-        questions.append(draft_question(syllabus, ctx.rubrics, sentence))
-    result = ctx.assessor.ask_many("judge", questions)
-    _count_verdicts(spend, "judge", result)
-    return AttemptResult(attempted=True, questions=list(result.collected),
-                         excluded=dict(result.excluded), spend=spend,
-                         drafted=len(questions), targets_handed=len(targets),
-                         subjects_handed=frozenset(t.word for t in targets),
-                         subjects_exhausted=withheld)
+        questions.append(draft_question(ctx.syllabus, ctx.rubrics, sentence))
+    return questions
 
 
 def _no_fit_in(answer: ProviderAnswer) -> str | None:
@@ -2736,13 +2792,29 @@ def _no_fit_in(answer: ProviderAnswer) -> str | None:
                 if (reason := record.parse_no_fit(str(item)))), None)
 
 
-def _append_no_fit(ctx: Sourcing, targets: Sequence[Target], reason: str) -> None:
-    """One `nothing` outcome row per handed Target's word (spec 3 r19
-    section 5): the drafter answered that nothing fits, and the record
-    keeps that per word, since the sentence need's subject is the word
-    everywhere -- the Target ids it covered sit in the row's question.
-    `derivations.sentence_exhausted` counts these rows against the
-    no-fit cap.
+def _sentence_directions(ctx: Sourcing, words: Iterable[WordId]) -> dict[WordId, str]:
+    """Each of `words`' newest learner direction on its sentence need
+    (role sentence-for-target, record.directions: a direction derived from
+    a struck comment reading is ignored); a word with none is absent."""
+    role = role_for("sentence", "word")
+    found: dict[WordId, str] = {}
+    for w in words:
+        directed = [r for r in record.directions(ctx.db.assessments_of(w))
+                    if r.question.get("role") == role]
+        if directed:
+            found[w] = str(directed[-1].answer["direction"])
+    return found
+
+
+def _append_asked(ctx: Sourcing, targets: Sequence[Target], answer: Mapping[str, Any]) -> None:
+    """One outcome row per handed Target's word for a fresh drafting ask
+    (spec 3 r19 and r60 section 5): `answer` is the outcome -- `nothing`
+    with the drafter's reason, or `drafted` with the text shas of the
+    drafts put to the judge -- and the record keeps it per
+    word, since the sentence need's subject is the word everywhere -- the
+    Target ids it covered sit in the row's question.
+    `derivations.sentence_asks` counts these rows against
+    `sentence_nothing_cap`.
     """
     by_word: dict[str, list[str]] = {}
     for t in targets:
@@ -2753,7 +2825,7 @@ def _append_no_fit(ctx: Sourcing, targets: Sequence[Target], reason: str) -> Non
                       subject=word_id,
                       question={"kind": "sentence", "source": "llm", "subject_kind": "word",
                                 "targets": target_ids},
-                      answer={"outcome": "nothing", "candidates": [], "reason": reason})
+                      answer=dict(answer))
 
 
 _ATTEMPTS: dict[str, Callable[[Sourcing, Need, str], AttemptResult]] = {
