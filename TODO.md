@@ -15,46 +15,64 @@ still run against them.
    (steps under Cutover). The sentence order (spec 1 r24) and the
    one-note sentence cards (spec 4 r11) reach Anki only this way: cards
    already imported keep their due position.
-3. Sentences for the 57 unfilled targets (275 before spec 1 r25; no
-   draft on record is adoptable). With `card/unique-front` they are all
-   that closes the build gate. Causes under "Sentence fill queue".
+3. Sentences for the 8 unfilled Targets: เลย ("at all"), คะ (female
+   polite particle, question), ว่า ("that", complementizer), เป็น ("be")
+   and the classifiers กระบอก (tubes, guns), กอง (piles, fires), ท่อน
+   (logs) and บาท (baht). They are all that closes the build gate. Each
+   is at the three-ask cap and waits for a learner direction on the
+   review screen. Every draft for them was refused by the fill rule,
+   none by the judge, and the screen shows only 2 of the 8; both under
+   "Sentence fill queue".
 4. The six open picture needs: learner direction from the review screen
    re-opens them; no engineering.
 
-## Sentence fill queue (measured 2026-10-02)
+## Sentence fill queue (fill run 2026-10-03)
 
-Write-up: .superpowers/sdd/2026-10-01-cloze-any-target/run-investigation.md.
-Of the 57 unfilled targets, 56 are receptive.
+The 12-cycle run adopted 41 sentences, 6 of them in the female
+speaker's voice, and filled 42 of 50 Targets for USD 1.00, three
+quarters of it on judging scene pictures. Report:
+.superpowers/sdd/2026-10-02-fill-queue/task-7-report.md.
 
-- **A productive Target is derived for a female-marked word.** ดิฉัน
-  ("I", female polite) gets one because derivation never reads the
-  speaker marking; no learner-voice sentence can use the word, so it is
-  unfillable. E3 makes other-sex words receptive only.
-- **No path drafts a female-speaker sentence.** The receptive Targets
-  of ดิฉัน and the female polite particles ค่ะ and คะ need one: every
-  draft is recorded as learner voice and the judge's rubric asks for
-  male colloquial Thai. 19 of 23 judge failures among their drafts cite
-  the female pronoun; 13 more drafts were refused for marking both
-  sexes.
-- **Five classifiers hold the queue.** An ask carries at most 5
-  sentence-introduced words, and หยด (drop), ทิศ (direction), อย่าง
-  (kind), ฟอง (eggs) and ด้าน (side) take them every time: their passing
-  sentences were retired by the 8-word cap, and the set-aside counts
-  only "nothing fits" answers (0 on record). 47 Targets (23 classifiers,
-  24 function words such as ไม่ "not", มี "have", จะ "will") were never
-  asked for in 81 asks.
-- **The drafting prompt withholds unmet sentence-introduced words**
-  (ว่า "that", จะ "will") from its vocabulary; the judge then fails
-  drafts for lacking them.
-- **A cycle takes about 56 minutes before its ask:** the adoption pass
-  recomputes `gaps()` (a full report, 5.0 s) for each of 673 drafts on
-  record (timing inferred from the per-call measurement).
-- **The run has no exit while each cycle's ask is new** (inferred from
-  cli.py's loop): `--max-wait-seconds` bounds one batch wait, and the
-  drafter has no budget. The 2026-10-02 run adopted nothing in two
-  cycles and was stopped by hand.
+- **The drafting prompt offers words the fill rule counts as unmet.**
+  All 21 drafts for the 8 open Targets were refused before the judge as
+  filling no open Target. Each pairs its Target with a second
+  sentence-introduced word, such as มาก ("very"), อัน (classifier for
+  pieces), ไม่ ("not") or แล้ว ("already"), whose every filling sentence
+  is placed after the draft in the study order, so the draft would
+  introduce two words. The prompt's vocabulary lists every met
+  sentence-introduced word wherever its filling sentence is placed.
+  Whether the prompt or the fill rule changes is open.
+- **A text refused at acceptance is proposed again.** The prompt names
+  only texts the judge failed or that were retired, so the drafter is
+  never told; four texts came back in three asks each.
+- **A scene-picture question hides a word's direction question.** The
+  question waits while a draft of the word's asks is in the unresolved
+  judge batch, matched by text sha alone, so a scene-picture question on
+  an adopted sentence those asks drafted holds it back: 6 of the 8 open
+  words are off the screen until the batch the run left out resolves.
+- **The 300 s batch poll sets the cycle length.** Every batch resolved
+  at its first poll, about 308 s after submission: 72% of the run's 78
+  minutes. Cycles 10 to 12 had nothing to draft and only sourced scene
+  pictures.
+- The adoption pass logs the same 31 refused drafts on record twice a
+  cycle (27 mark both sexes, 3 name unregistered words, 1 does not
+  match its clauses): 744 of the log's 987 lines.
+- imgfetch refuses Pexels originals over its 10 MiB cap (7 in the run,
+  11.7 to 34.8 MB); a smaller Pexels rendition would fetch (inferred).
+- The ask count restarts at any learner row on the word (spec 3 r19)
+  and at the adoption of any sentence using the word, not only one that
+  fills its open Target, so a word can be handed more than three times
+  in a row. None of the 8 open Targets is affected: all are receptive
+  (inferred).
+- Spec 5 r18 says a classifier's direction question names its nouns "as
+  the drafting prompt does", but the screen names them for every
+  classifier Word and the prompt only for a sentence-introduced one: a
+  picture-introduced classifier at the cap would show its every noun,
+  54 for คน (person).
 - The run still awaits a vetoed, unjudged candidate's verdict once
   before re-sourcing (spec 3 r55 follow-up).
+- The test suite has no network guard (a conftest refusing non-local
+  `getaddrinfo`); test_run_e2e was found calling api.pexels.com.
 
 ## Sentence cards: after spec 4 r11
 
@@ -62,9 +80,11 @@ Of the 57 unfilled targets, 56 are receptive.
   out of the build** while it stays in Anki with a blank front (spec 4
   section 1). On the live deck 20 of 46 judge-passing drafts would push
   out 34 pairs if adopted.
-- **757 Cloze cards arrive as new cards at the cutover**; nothing caps
+- **781 Cloze cards arrive as new cards at the cutover**; nothing caps
   productive new cards (F12, under Doctrine divergences).
-- `sentence/synthetic-productive` warns on 336 sentences.
+- `sentence/synthetic-productive` warns on 362 sentences.
+- 107 sentences carry no Cloze card, and the scene pictures of 88 of
+  them show on no card: the sentence Listening card shows none.
 - A hand-declared sentence-introduced productive Target capped out of
   every earlier filler stays unfilled (spec 1 r26); none on the live
   deck.
