@@ -398,6 +398,49 @@ def test_order_places_the_derived_productive_target_after_the_receptive_one():
     assert ids.index("rice/receptive") < ids.index("rice/productive")
 
 
+# --- spelling_group: the targeted Words of one written form (spec 1 r29) ---
+
+def test_a_spelling_group_is_the_words_of_one_form_in_introduction_order():
+    # หนัง: movie (colloquial) / leather; ดี: good, another form
+    movie = word("movie", "หนัง", "movie")
+    leather = word("leather", "หนัง", "leather")
+    good = word("good", "ดี", "good")
+    syllabus = Syllabus(words=(leather, good, movie),
+                        targets=(target("leather/r", "leather"), target("good/r", "good"),
+                                 target("movie/r", "movie")),
+                        frequency={movie.id: 1, good.id: 2, leather.id: 3})
+    assert syllabus.spelling_group("leather") == (movie, leather)
+    assert syllabus.spelling_group("movie") == (movie, leather)
+
+
+def test_a_word_alone_in_its_form_is_a_group_of_itself():
+    rice = word("rice", "ข้าว", "rice")      # ข้าว: rice
+    news = word("news", "ข่าว", "news")      # ข่าว: news, a different form
+    syllabus = Syllabus(words=(rice, news),
+                        targets=(target("rice/r", "rice"), target("news/r", "news")))
+    assert syllabus.spelling_group("rice") == (rice,)
+
+
+def test_a_word_with_no_target_is_left_out_of_its_forms_group():
+    # หลัง: back (of the body) / the classifier หลัง, which no Target names
+    back = word("back", "หลัง", "back")
+    classifier = word("classifier:หลัง", "หลัง", "(classifier)")
+    syllabus = Syllabus(words=(classifier, back), targets=(target("back/r", "back"),))
+    assert syllabus.spelling_group("back") == (back,)
+    assert syllabus.spelling_group("classifier:หลัง") == (back,)
+
+
+def test_a_sentence_introduced_word_is_a_member_of_its_forms_group():
+    # ที่: serving (counted order) / "at", met only through sentences
+    serving = word("serving", "ที่", "serving")
+    at = word("at", "ที่", "at")
+    syllabus = Syllabus(words=(serving, at),
+                        targets=(target("serving/r", "serving"),
+                                 target("at/r", "at", introduction="sentence")),
+                        frequency={at.id: 1, serving.id: 2})
+    assert syllabus.spelling_group("serving") == (at, serving)
+
+
 # --- name_word_ids: the Words that are a grapheme's recited name ----------
 
 def test_name_word_ids_names_every_graphemes_name_word():

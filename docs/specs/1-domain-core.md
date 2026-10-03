@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 28, proposed 2026-10-02 against principles r7 and architecture
+Revision 29, proposed 2026-10-02 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -76,6 +76,7 @@ Revision log:
 - r26 2026-10-01: a productive Target is filled by at most `production_sentences_per_word` (Profile, 3) sentences, the first in placement order, a pair with a study record on its Cloze card kept and counted. Evidence: under r25 the live deck compiled 1,425 Cloze cards, 96 on the male "I" and 33 on "good", median 2 per word; 761 at three per word. User ruling 2026-10-01.
 - r27 2026-10-02: a Word whose speaker marking is not the learner's has no productive Target (E3), derived or listed. Evidence: ดิฉัน ("I", female polite) derived one that no sentence can fill, since a productive fill needs a marking that admits the learner. User ruling 2026-10-02.
 - r28 2026-10-02: a drafted sentence whose marking does not admit the learner is other_voice. Evidence: every draft was learner_voice, so the three receptive Targets on female-marked words (ดิฉัน, ค่ะ, คะ) had 32 drafts and none could pass. User ruling 2026-10-02.
+- r29 2026-10-02: a spelling group is the Words sharing a written form that carry a Target, in introduction order; spec 4 r12 compiles its form-side cards once. Evidence: 12 groups of same-spelling Words compiled 29 identical Reading, Listening and Spelling fronts. User ruling 2026-10-02.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -94,7 +95,10 @@ Word                                # language model
   thai: str                         # written form; not unique across
                                     # Words: a form shared by several
                                     # senses is a homograph, and a
-                                    # sentence names the sense
+                                    # sentence names the sense. A form's
+                                    # spelling group: its Words that
+                                    # carry a Target, in introduction
+                                    # order (§3)
   pron: Pronunciation               # spoken form
   meaning: str                      # today rendered as the English gloss
   classifier: WordId | None         # nouns: unmarked colloquial classifier
@@ -272,6 +276,11 @@ port and the aggregate holds the mapping. Pure; recomputed each call;
 the studied past is not consulted (StudyRecords fix history, rules catch
 invalidated sentences). Consumers (compile, the screen) read positions;
 none re-derives placement.
+
+**spelling_group(word) -> tuple[Word]** — the Words sharing the Word's
+written form (`thai`) that carry a Target, ordered by the order()
+position of each one's first Target, ties by word id. A Word alone in
+its form is a group of one; a Word with no Target is in no group.
 
 **marking(sentence) -> set** — the union of `speaker` over the
 sentence's words: empty (any speaker), {male}, or {female}. Both sexes at

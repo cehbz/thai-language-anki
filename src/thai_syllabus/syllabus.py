@@ -400,6 +400,27 @@ class Syllabus:
             positions.setdefault(t.word, []).append(self._target_positions[t.id])
         return positions
 
+    @cached_property
+    def _spelling_groups(self) -> dict[str, tuple[Word, ...]]:
+        """Each written form's Words that carry a Target, ordered by
+        their first Target's order() position, then word id."""
+        by_form: dict[str, list[Word]] = {}
+        for w in self.words:
+            if w.id in self._word_target_positions:
+                by_form.setdefault(w.thai, []).append(w)
+        return {form: tuple(sorted(ws, key=lambda w: (min(self._word_target_positions[w.id]),
+                                                      str(w.id))))
+                for form, ws in by_form.items()}
+
+    def spelling_group(self, word_id: WordId) -> tuple[Word, ...]:
+        """The spelling group of the Word's written form (spec 1 r29): the
+        Words sharing `Word.thai` that carry a Target, in introduction
+        order. A Word alone in its form is a group of one. A Word with no
+        Target is in no group; for it this is its form's group, empty
+        when no Word of the form carries a Target.
+        """
+        return self._spelling_groups.get(self.word(word_id).thai, ())
+
     # --- fills() -----------------------------------------------------------
 
     def _target_satisfies_clauses_1_and_2(self, words: frozenset[WordId], voice: str,
