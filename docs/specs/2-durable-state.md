@@ -1,7 +1,7 @@
 # Spec 2: Durable state
 
-Revision 20, proposed 2026-10-01 against principles r7 and architecture
-r4. Revision process: docs/principles.md.
+Revision 21, proposed 2026-10-04 against principles r8 and architecture
+r5. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -66,6 +66,7 @@ Revision log:
   migration does not block the ~600 sound rows' cards. User approval
   2026-09-18.
 - r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. Evidence: spec 4 r9 gives each productive Target a sentence fills its own Cloze note. User ruling 2026-10-01.
+- r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). Evidence: principles r8 (F1) gates a word's reading on its segmental confusions; the study table holds 12 rows, none on a pair, so every confusion is unstable today. User ruling 2026-10-04.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -97,8 +98,8 @@ reference data, versioned with the deck and never hand-edited.
                                # (spec 1 r30; written only when above
                                # one) (receptive targets and productive
                                # exceptions).
-                               # Learner-owned; the run adds a name
-                               # word's two Targets by adoption (r17)
+                               # Learner-owned; a recited-name Word
+                               # has none (spec 1 r32)
     graphemes.yaml             # symbol, kind, sound, class, keyword,
                                # name_word. Learner-owned; the run adds
                                # a row per adopted grapheme (r17)
@@ -168,20 +169,31 @@ study(family, anchor, card_kind, member_index, speaker_id, compile_id,
   -- store 4. The import reads a card's tags once and writes their parts
   -- as columns: family (word|minimal_pair|grapheme|sentence), anchor (the
   -- entity id: word id, pair id, grapheme symbol, sentence text_sha; a
-  -- sentence Cloze card's anchor composes the sentence and its Target,
+  -- sentence Cloze or AudioCloze card's anchor composes the sentence and
+  -- its Target,
   -- TEXT_SHA:TARGET_ID via ids.sentence_cloze_key, as a pair member's
   -- MemberKey composes its parts, r20), card_kind, and for a pair card
   -- member_index and speaker_id. Nothing
   -- re-parses an anchor: a pair row's pair id is matched exactly against
   -- the aggregate's pairs, and the Target of a word card is derived from
   -- card_kind. Imported from
-  -- revlog; append-only, insert-or-ignore. Anki flags do NOT land here:
+  -- revlog, except manual and rescheduled entries (revlog type 4,
+  -- MANUAL: Forget and Reset; 5, RESCHEDULED: Set Due Date; Anki 26.8's
+  -- RevlogEntry.ReviewKind), which are not reviews: the import, from the
+  -- collection file and through AnkiConnect alike, reads the revlog type
+  -- and writes no row for them (r21); append-only, insert-or-ignore. Anki flags do NOT land here:
   -- a flag imports as a learner assessment row in cache.
 ```
 
 Learner authority, regression rules, exhausted, current-best, the queue:
 all reads over `cache` (spec 3 owns the fold logic); nothing here stores
 them. Confusion weights = confusions.yaml seed × study rows; derived.
+A SoundConfusion is **stable** (spec 1 §3's readability, r21) once any
+ten consecutive Recognition reviews of its pairs (minimal_pair rows
+whose anchor is one of its pairs, by ts) hold at least 8 correct
+(grade > 1), and it stays stable; until then it is unstable. An
+unstable confusion with a pair in the deck **blocks**; one with no pair
+blocks nothing. Derived at compile, never stored.
 
 ## 3. Interfaces consumed by the domain core
 

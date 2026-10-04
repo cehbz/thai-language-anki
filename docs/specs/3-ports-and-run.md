@@ -1,7 +1,7 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 64, proposed 2026-10-03 against principles r7 and architecture
-r4. Revision process: docs/principles.md.
+Revision 65, proposed 2026-10-04 against principles r8 and architecture
+r5. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -258,6 +258,7 @@ Revision log:
 - r62 2026-10-03: the drafting prompt names the texts refused at acceptance with the reason, beside the judge's failures. Evidence: four texts for the open Targets came back in three asks each on 2026-10-03, the drafter never told. Defect fix.
 - r63 2026-10-03: the cli judge transport sends the judge's or role's model and effort per request, keeps no session, runs in safe mode and offers no tool but Read; a cli call costs no cash, and every LLM answer's row records the tokens its completion reported, which the run report shows per subscription backend; `drafter.model` and `drafter.effort` (§8) are the cli drafter's own, unset sending nothing; the judge's asks are capped per invocation (`run --judge-asks M`) and per day (its budget, counted from its verdict rows), and at the cap a need the judge decides counts budgeted; the sentence attempt waits until every unjudged draft on record has been served (§5). Evidence: the judge moves to the subscription for the sentence enrichment; the pronunciation role keeps Opus 5.5 at high; a run with `--backend-cap judge=0` made 7 verdicts. User rulings 2026-10-03: subscription work is measured in quota, never dollars; the drafter keeps the CLI's default model unless configured.
 - r64 2026-10-03: `pacer` (§8) configures the quota pacer: judge calls are released each tick up to the week's unused pace-line allowance, under a 5-hour-window ceiling and a per-tick cap. Evidence: the subscription exposes no scriptable quota except through a mod's usage() call, and the weekly window is several 5-hour windows deep, so spreading is the only way to spend it. User ruling 2026-10-03.
+- r65 2026-10-04: a filled Cloze slot of an adopted sentence has a gapped recording need, the sentence by TTS with a 600 ms SSML break in place of the slot's word, in the sentence's voice or its marking's pool, checked as a sentence recording (subject kind `slot`, its bound plus 0.6 s per break), for spec 4 r13's AudioCloze front; every pair member Word has a picture need, judged as a word's, for the identification front; a recited-name Word is adopted with no Target (spec 1 r32) and keeps its recording and chart-cell picture needs; a drafting ask hands seed Targets or the others, never both, a run making one ask of each kind when both are open, and only the others get the vocabulary floor, so a seed Target's sentences are drafted over the picture words up to the furthest handed Target and the met glue words; `pacer.import` (true), `pacer.anki_connect_url` and `pacer.collection_path` (§8): a tick harvests the collection's reviews through AnkiConnect while Anki is open and from the collection file while it is closed, and while Anki is open compiles a deck changed since the last import and imports it through AnkiConnect. Evidence: the text Cloze front shows the Thai sentence, so it waits for every word's reading (principles r8 E1) and the hearing stage needs a production card by ear; 18 of 55 pairs have pictures for both members, 34 for one and 3 for none, since a member without a Target has no picture need; 2 adopted sentences use only the first 50 picture words, none of their Targets open; adopted sentences reached Anki only by a hand import. User rulings 2026-10-02 (the floor keeps applying to sentence-introduced Targets) and 2026-10-04.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -266,9 +267,10 @@ shapes are spec 2; domain consumers are spec 1; UI surfaces are spec 5.
 
 ## 1. Vocabulary
 
-- **Need**: (subject, kind). Kinds: picture (Word), recording (Word),
-  rendition (MinimalPair), sentence (open Targets, per run), grapheme
-  keyword (Grapheme). `Syllabus.gaps()` enumerates needs.
+- **Need**: (subject, kind). Kinds: picture (Word), recording (Word;
+  a gapped recording per filled Cloze slot, §5), rendition
+  (MinimalPair), sentence (open Targets, per run), grapheme keyword
+  (Grapheme). `Syllabus.gaps()` enumerates needs.
 - **Source**: a Provide backend. Attempts and budgets are per Source.
 - **Attempt**: one Source tried for one need: fetch candidates, obtain a
   verdict on every candidate from the role's deciding authority, re-derive
@@ -358,7 +360,7 @@ one speaker answers empty.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), sentence-for-target-other-voice (naturalness as its marked speaker's sentence), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording: duration (a word 0.2-5 s; a sentence at least 0.2 s and at most 1 s plus 1 s per deck word, r55), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.2-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence | ground truth for what it checks |
+| mechanical | recording: duration (a word 0.2-5 s; a sentence at least 0.2 s and at most 1 s plus 1 s per deck word, r55; a gapped recording that bound plus 0.6 s per break, r65), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.2-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence, mech:recording:0.2-1.0+1.0pw+0.6pb;own-word-v1:SUBJECT:sha for a gapped recording | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -438,7 +440,9 @@ order. Its query is the grapheme's symbol, a fact of curated data that no
 direction, suggestion or draft replaces, so the phrase ask skips it and a
 learner direction on that need is logged at WARNING and not applied; while
 its keyword has no current-best picture there is no cell to draw and the
-need waits on the r25 path, counted `deferred`. That one roster --
+need waits on the r25 path, counted `deferred`. The name Word keeps this
+picture need and its recording need (Recording below) though it carries
+no Target (r65, spec 1 r32). That one roster --
 `sources_for_need` -- is what the attempt loop, the queue and the screen's
 `exhausted` all read, so none of them can disagree about what a need has
 left to try. One attempt: search, imgfetch the first N
@@ -512,15 +516,14 @@ matches, else a new closure Word (no category, no Target) whose id is the
 slug of the table's gloss, suffixed `-2`, `-3` while taken; its recited
 name is a new Word (id `name-<keyword id>`, `-2`, `-3` on collision like
 the keyword's, and re-used when the vocabulary already holds the recited
-name -- a run interrupted between the three file writes re-adopts without
-duplicating) with the category `Letter names` and both Targets (spec 1
-r16), each Target written only where targets.yaml does not list its id
-already. Each new Word's pronunciation comes
+name -- a run interrupted between the file writes re-adopts without
+duplicating) with the category `Letter names` (spec 1 r16) and no
+Target (spec 1 r32). Each new Word's pronunciation comes
 from the engines, never the judge: thaig2p's syllables, corroboration
 `engines_agree` when the rule tone engine settles a monosyllable's tone
 and `disputed` otherwise -- the adjudication pass (r28) asks about the
-disputed ones next run, and E4 blocks their cards meanwhile. words.yaml,
-targets.yaml and graphemes.yaml are then written whole from the rows the
+disputed ones next run, and E4 blocks their cards meanwhile. words.yaml
+and graphemes.yaml are then written whole from the rows the
 loaders produced with the new ones appended, under the writing command
 (spec 2 r17): rows added, none removed. A row the pass cannot adopt --
 a keyword whose form does not contain the symbol (the obsolete ฃ and ฅ,
@@ -594,6 +597,20 @@ roster's sex is recorded on the speaker), then mechanical. TTS supplies
 sex and timbre only; Forvo and commissions supply age and accent.
 `recording/synthetic` warns when current-best is TTS.
 
+**Gapped recording (a filled Cloze slot, r65).** One need per slot a
+Target fills (spec 4 §1), its subject the slot's sentence and Target
+composed as the Cloze card's anchor (spec 2 §2): the sentence rendered
+with a 600 ms SSML break in place of the slot word's elements. Source: tts
+alone, keyed as any tts ask over the SSML text (sent as the engine's
+SSML input), in the sentence's own
+voice when its current-best recording is TTS, else a voice of the pool
+its marking selects (Recording above); a native-recorded sentence gets a
+TTS gap and keeps its native recording. Its subject kind is `slot`, its
+role recording-for-sentence: checked, re-verified and vetoed as a
+sentence recording is, the duration bound the sentence's plus 0.6 s per
+break (§4). It is the AudioCloze card's front (spec 4
+§1); an exhausted gapped need retires nothing.
+
 **Rendition (MinimalPair).** Source order: forvo (intersection of members'
 lookups by username; one lookup per member, shared with the recording need
 and re-asked per member under the same rule), tts (one voice, the first of
@@ -612,20 +629,29 @@ while `MediaIndex.rendition(pair)` is None (`pair/rendition-required` per
 pair), whatever its confusion's other pairs have.
 
 **Sentence (per run over open Targets).** One attempt per run, not per
-target. The handed targets are the next open Targets in introduction
-order (spec 1 `order()`, r59), at most
-`sentence_targets_per_run` (40), of which at most
-`sentence_introducible_per_ask` (§8, default 5) are sentence-introduced
-and unmet; the remainder are the next open Targets that are not, a met
+target. An ask hands seed Targets (spec 1 §3's seed sentences:
+picture-introduced receptive Targets wanting more than one sentence,
+open while fewer sentences placed within the seed span fill them) or the others,
+never both (r65); when both kinds are open the attempt makes two asks,
+one of each kind. The handed targets are the next open Targets of the
+ask's kind in introduction order (spec 1 `order()`, r59). A seed ask
+hands `sentence_introducible_per_ask` (§8, default 5) seed Targets and,
+as introducibles, the next as many open sentence-introduced Targets no
+sentence placed within the seed span fills whose words are placed
+within it, classifiers aside; the others' ask does not hand those. An
+ask of the others hands at most `sentence_targets_per_run` (40), of
+which at most `sentence_introducible_per_ask` are sentence-introduced
+and unmet, the remainder the next open Targets that are not, a met
 sentence-introduced Target still wanting sentences (spec 1 r30) among
 them.
 
 *Prompt.* The vocabulary met in the fill-set sense, once, as
 `id  thai  (meaning)` lines in introduction order: the picture-introduced
-words up to the furthest handed target and past it until the vocabulary
-holds `sentence_vocabulary_floor` (§8, default 150) picture-introduced
-words of the word block (a recited name in the sounds block does not
-count), every sentence-introduced word an adopted sentence fills, and
+words up to the furthest handed target and, in an ask of the others,
+past it until the vocabulary holds `sentence_vocabulary_floor` (§8,
+default 150) picture-introduced words (r65: a seed ask has no floor),
+every sentence-introduced word an adopted sentence fills (in a seed ask,
+only those whose first filling sentence is placed within the seed span), and
 the nouns a handed sentence-introduced classifier counts that the
 drafter may use (a noun with a Target that is picture-introduced or
 already met), wherever they sit (r59); the ask to
@@ -720,7 +746,8 @@ add to one already at its count. Adoption creates needs: the
 sentence's recording (voice constraint from the marking, Recording
 above; tts allowed for receptive-only, a productive fill wants native,
 warn otherwise) and, for a sentence carrying a Cloze card (a productive
-fill), a scene picture (its Cloze cards need it, spec 4 r10). A sentence
+fill), a scene picture (its Cloze cards need it, spec 4 r10) and a
+gapped recording per filled slot (r65). A sentence
 with no Cloze card has no scene-picture need, and one that already has
 a scene picture keeps it (r61). A refused draft and a draft filling nothing are
 rejected drafts in the record. An adopted
@@ -826,7 +853,10 @@ itself).
 
 **Pair (SoundConfusion).** The pair search above (r47) adopts; a pair is
 exact by construction (MinimalPair.create). The learner vetoes a
-rendition, never a pair (spec 5 §1).
+rendition, never a pair (spec 5 §1). Every member Word has a picture
+need, sourced and judged as a word's (picture-for-word), Target or not
+(r65): a pair's Recognition card exists only once every member has one
+(spec 4 §1).
 
 ## 6. Derivations (folds; never stored)
 
@@ -1139,7 +1169,24 @@ reset and gone at it, so the week ends spent. M ≥ `min_calls` runs one
 cycle with `--judge-asks M`, else the tick logs and exits. The two per-call
 figures are one judge call's measured share of each window; the scheduled
 tick refuses a `pacer` block that does not set both. Unspent
-allowance carries over to later ticks.
+allowance carries over to later ticks. With the key `import` (true |
+false; true, r65) on, the pacer also carries reviews in and the deck
+out. Each tick first harvests reviews, flags and ReviewNotes (the
+`import` command, spec 4 §4, before `run`): through AnkiConnect at
+`anki_connect_url` (`http://127.0.0.1:8765`) while Anki is open, since
+Anki locks its collection file while it runs, and from `collection_path`
+(`~/Library/Application Support/Anki2/User 1/collection.anki2`) while it
+is closed; both read the same cards, notes and revlog and land the same
+rows under the same keys. The deck has changed when the record (cache,
+any row but run's own report) or the study table holds a newer ts than
+at the last import, so an adoption, a new current-best and a review that
+flips a staging gate (spec 1 §3) all count. While Anki is open, a tick
+with a changed deck compiles its package, never forced, and has Anki
+import it through AnkiConnect's `importPackage`; it logs and skips the
+import when nothing changed, the gate is closed or AnkiConnect does not
+answer. The pacer keeps between ticks the ts of its last import, and so
+what is pending. The import is Anki's note update by guid, which changes
+no existing card's due (spec 4 §5).
 
 ## 9. Explicitly out
 

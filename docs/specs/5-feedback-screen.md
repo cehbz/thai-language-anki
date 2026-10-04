@@ -1,7 +1,7 @@
 # Spec 5: The feedback screen
 
-Revision 19, proposed 2026-10-03 against principles r7 and architecture
-r4. Revision process: docs/principles.md.
+Revision 20, proposed 2026-10-04 against principles r8 and architecture
+r5. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -111,6 +111,7 @@ Revision log:
 - r17 2026-10-01: a need with an unvetoed candidate still awaiting its verdict is not a direction request and is not counted exhausted (spec 3 r55). Evidence: a clip that failed an earlier duration window is asked again, and its need was shown as a question the learner cannot answer. User ruling 2026-10-01.
 - r18 2026-10-02: a word's sentence need is a direction request at spec 3 r60's ask cap, whatever the asks answered, once no draft of those asks awaits its verdict; what was tried is how many of those asks drafted and their no-fit reasons; a classifier's question names its nouns; a word wanting several sentences (spec 1 r30) shows how many fill it of how many it wants; the typed direction is given to the drafter on the word's prompt line. User ruling 2026-10-02.
 - r19 2026-10-03: the direction question waits only on a pending sentence verdict on a text the word's asks drafted; a scene-picture question on such a text does not hold it. Evidence: 6 of the 8 words at the cap were off the screen while a scene-picture batch was unresolved. Defect fix.
+- r20 2026-10-04: the gallery orders cards by their own due, not note by note; the AudioCloze card (spec 4 r13) carries its type and one-line meaning like every card type, in the gallery, on a rate question and in the comment pass. Evidence: the gallery sorted notes by their first card's due and showed each note's cards in ord order, which spec 4 r13's per-kind dues no longer match (a word's Reading card 50 positions after its Listening card). User ruling 2026-10-04.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -119,27 +120,28 @@ in spec 3's derivations; this surface only presents and records.
 ## 1. Modes
 
 **Proof gallery**: every card rendered front/back in introduction order,
-sequential, no scheduling; per-card one-line comments (`n`; r9); pair
-drill with per-confusion accuracy logging; gloss overlay; stats. A note
-appends as a learner assessment row via RecordWriter, recording the card
-as shown: the artifact shas it displayed, the sentence text for a
-sentence card, and the syllabus state id. The card lists its notes
-thereafter, each marked stale once the card no longer shows what the
-note named (F9: an answer is about the thing shown). Every rendered
-card, gallery or question, shows its type (family and kind as
-`/api/cards` reports them) with the one-line meaning of that card type
-as a tooltip (r9). A comment is listed with its reading under it in both
-modes — "unread" until a run has read it (r10). Under each comment:
+each card at its own due (spec 4 §2; r20), sequential, no scheduling;
+per-card one-line comments (`n`; r9); pair drill with per-confusion
+accuracy logging; gloss overlay; stats. A note appends as a learner
+assessment row via RecordWriter, recording the card as shown: the
+artifact shas it displayed, the sentence text for a sentence card, and
+the syllabus state id. The card lists its notes thereafter, each marked
+stale once the card no longer shows what the note named (F9: an answer
+is about the thing shown). Every rendered card, gallery or question,
+shows its type (family and kind as `/api/cards` reports them) with the
+one-line meaning of that card type as a tooltip (r9), the AudioCloze
+card's included (r20). A comment is listed with its reading under it in
+both modes — "unread" until a run has read it (r10). Under each comment:
 `unread`, or its reading with the actions taken and the unactionable
 requests, and a strike control that writes a veto row against that
 reading; folds that consume a comment-derived row (directions, ratings)
 ignore vetoed ones, and a replacement sentence the struck reading
-drafted is no longer adoptable (it drops out of the drafts the run
-reads back); a retirement inferred from a comment acts at once and
-striking it re-adopts nothing (r10). A note that fails to save stays in
-the box with a visible failure and retries on Enter; a strike that fails
-to save says so beside the control and the reading is left as it was.
-Drill results append as study-adjacent evidence rows.
+drafted is no longer adoptable (it drops out of the drafts the run reads
+back); a retirement inferred from a comment acts at once and striking it
+re-adopts nothing (r10). A note that fails to save stays in the box with
+a visible failure and retries on Enter; a strike that fails to save says
+so beside the control and the reading is left as it was. Drill results
+append as study-adjacent evidence rows.
 
 **Question session**: serves the spec-3 queue, capped by the
 learner-attention budget (default 20/session, configurable), highest

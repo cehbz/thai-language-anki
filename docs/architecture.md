@@ -1,6 +1,6 @@
 # Architecture
 
-Revision 4, proposed 2026-10-01 (r3 approved 2026-09-11). Written from the
+Revision 5, proposed 2026-10-04 (r4 approved 2026-10-02). Written from the
 entity pass and behavior walk of 2026-09-01/02. The principles
 (docs/principles.md) are the companion: every rule traces to a principle,
 every principle to one of the three charter meta-rules: is it a
@@ -25,6 +25,7 @@ Revision log:
   retired (that code is gone) and §9 "open at time of writing" moved to
   TODO.md. No other statement changed.
 - r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7; a sentence's cards as siblings of one note and its guid after spec 4 r11. No new decision.
+- r5 2026-10-04: a sentence's cards gain an AudioCloze card per filled productive Target (spec 4 r13); order() puts the pairs first and compile stages the rest, so dues come from order() and the staging, which reads the study record (spec 1 r32, spec 4 r13); a reorder reaches Anki only through a cutover (principles r8 F8). No new decision.
 
 ## 1. Shape of the system
 
@@ -67,8 +68,9 @@ input protected):
   to its Thai text; a voice constraint (learner-voice/other-voice); a
   gloss; provenance. Its speaker marking is the union of its words'. It
   fills one or more Targets (derived, never stored). Its cards are
-  siblings of one note: a Listening card and one Cloze card per
-  productive Target it fills, in the slot of that Target's word.
+  siblings of one note: a Listening card, and per productive Target it
+  fills an AudioCloze card and a Cloze card, in the slot of that
+  Target's word.
   Identity is the text, so replacing a text resets its scheduling while
   everything else updates in place.
 - **Picture / Recording** — bytes (hash = identity) + Provenance (source,
@@ -97,10 +99,12 @@ MinimalPairs, Graphemes, Sentences, current-best artifacts. All
 cross-entity behavior lives here:
 
 - `order()` — the introduction order. Constraints hold by construction
-  (sounds early; a sentence after all its words' targets; receptive
-  before productive per word); frequency × emphasis breaks ties. Derived,
-  never stored: the studied past is fixed by StudyRecords, the unstudied
-  future reorders freely, and rules catch what a reorder invalidates.
+  (the pairs first, compile staging the rest, spec 4; a sentence after
+  all its words' targets; receptive before productive per word); frequency × emphasis breaks ties. Derived,
+  never stored: the studied past is fixed by StudyRecords, the derived
+  order reorders freely (an imported card keeps its due, so a reorder
+  reaches Anki only through a cutover), and rules catch what a reorder
+  invalidates.
 - `fills(sentence, target)` — the one definition of "this text serves
   that target": the target's word among the sentence's clauses; the
   voice satisfying the skill, and for a productive Target a
@@ -191,7 +195,7 @@ fills edges.
 scheduling); zero re-litigation. `compile()` translates: stable model
 ids; guid from durable identity (the text for a sentence's note, whose
 Cloze cards keep their words' slots; the Word for word cards); due from
-order(); sibling separation for renditions;
+order() and the staging (spec 1 §3); sibling separation for renditions;
 tags carrying what StudyRecords need to map back (target, confusion,
 card kind, compile id); styled cards (A8); refuses on gate failure. Anki
 adapts scheduling only; content adaptation is regeneration here — the
@@ -216,5 +220,5 @@ question.
   is misplaced domain logic.
 - **Feedback session**: serve the screen, append learner answers.
 - **Import**: revlog and flags.
-- **Compile**: gate on report(), translate order() and the current-best
-  artifacts into Anki's domain, label.
+- **Compile**: gate on report(), translate order(), the staging and the
+  current-best artifacts into Anki's domain, label.

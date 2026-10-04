@@ -1,7 +1,7 @@
 # Spec 1: Domain core
 
-Revision 31, proposed 2026-10-03 against principles r7 and architecture
-r4. Revision process: docs/principles.md.
+Revision 32, proposed 2026-10-04 against principles r8 and architecture
+r5. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -79,6 +79,7 @@ Revision log:
 - r29 2026-10-02: a spelling group is the Words sharing a written form that carry a Target, in introduction order; spec 4 r12 compiles its form-side cards once. Evidence: 12 groups of same-spelling Words compiled 29 identical Reading, Listening and Spelling fronts. User ruling 2026-10-02.
 - r30 2026-10-02: a Target may want several sentences (default one) and is open until that many adopted sentences fill it; one with a sentence and short of its count is target/sentences-wanted (warn), which leaves the gate open. Evidence: a sentence-introduced word has no card of its own, and none of the 424 adopted sentences used ไม่ (not), มี (have), เป็น (be), จะ (will), ได้ (can) or แล้ว (already). User ruling 2026-10-02.
 - r31 2026-10-03: a sentence is placed where clause 3 first admits it: its entry, or directly after the adopted sentence whose fill leaves at most one of its sentence-introduced words unmet; order() deals it there. Evidence: all 23 draft rows for the last 8 open Targets paired the Target with a word met only by a later-placed sentence and were refused as introducing two words, though the prompt offers every met word. User ruling 2026-10-03.
+- r32 2026-10-04: the sounds stage is the pairs; a grapheme is no order() entry, its card placed by compile just before the first Reading card in order of a word containing it and present while any such Reading card is; a cluster onset touches its head consonant's confusions; a recited-name Word carries no Target and keeps its category, its recording need and its chart-cell picture need (it is not a closure word); staging (§3): a word is heard at its position, said P later and read D after it is heard once readable, readable meaning no segmental confusion its pronunciation touches blocks it (spec 2 r21) or its Reading card has a review, so readability latches, its script on its other cards once its Reading card has a review, and a sentence's text and its text Cloze wait until every word it uses is read, its AudioCloze card P after its Listening card; a studied AudioCloze pair counts for clause 4 as a studied Cloze pair; order() reads no study, the staging does; seed sentences: the first picture words' receptive Targets want two sentences (r30), drafted over spec 3 r65's vocabulary; gaps() adds gapped recordings, pair members' pictures and the recited-name Words' needs. Evidence: principles r8 (F1, F6, F8, E1); on the live deck every picture word touches the tone and length confusions (776 of 776) and 100/187/489 touch 0/1/2+ segmental ones; the sounds block put 42 graphemes and their 84 name-word Targets ahead of every vocabulary word; 2 adopted sentences use only the first 50 picture words. User ruling 2026-10-04.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -140,12 +141,13 @@ Grapheme                            # language model
                                     # re-checked on loaded data by rule
   name_word: WordId | None          # the recited letter name as a Word
                                     # ("gɔɔ gài" for ก); consonants today.
-                                    # r16: that Word carries the category
-                                    # `Letter names` and both Targets, so
-                                    # the learner meets the name
-                                    # receptively and productively; its
-                                    # picture is the alphabet-chart cell
-                                    # (spec 3 §3's glyph source)
+                                    # That Word carries the category
+                                    # `Letter names` (r16) and no Target
+                                    # (r32): the learner hears it on the
+                                    # grapheme card (spec 4 §1); it keeps
+                                    # its recording need and its picture,
+                                    # the alphabet-chart cell (spec 3 §3's
+                                    # glyph source)
 
 Target                              # curated learning list; the unit of
   id: TargetId                      # ordering and coverage. identity
@@ -181,7 +183,9 @@ Category                            # curated learning list: a theme of
                                     # category field); closure words (pair
                                     # members, keywords) and words whose
                                     # only targets are sentence-introduced
-                                    # are in none
+                                    # are in none; a recited-name Word is
+                                    # not a closure word and is in
+                                    # `Letter names` (r32)
 
 MinimalPair
   id: PairId                        # identity
@@ -271,11 +275,10 @@ interfaces). All
 cross-entity behavior:
 
 **order() -> list[OrderEntry]** — OrderEntry { kind: word_target | pair
-| grapheme | sentence, id }: the one introduction order of everything the
-learner meets. Constraints, each also stated as a rule: sounds stage
-(pairs, graphemes) before words; a grapheme's name-word Targets
-(receptive then productive) directly after that grapheme, inside the
-sounds stage, and nowhere else (r16); a sentence at its placement (clause 3 below; r24, r31) -- one placed at a letter-name word follows the sounds stage, ahead of every word Target; sentences at one place by word count, then text_sha, the same placement clause 3 reads; a sentence with no placed word last;
+| sentence, id }: the one introduction order of the pairs, Targets and
+sentences. Constraints, each also stated as a rule: the sounds stage
+(the pairs) before words (r32: a grapheme is not an entry, Staging
+below deals its card); a sentence at its placement (clause 3 below; r24, r31); sentences at one place by word count, then text_sha, the same placement clause 3 reads; a sentence with no placed word last;
 receptive target before productive target per word, so productive
 Targets enter in frequency order like their words. Ties: frequency rank
 ÷ emphasis weight; the loader resolves ranks through the FrequencyMap
@@ -283,6 +286,37 @@ port and the aggregate holds the mapping. Pure; recomputed each call;
 the studied past is not consulted (StudyRecords fix history, rules catch
 invalidated sentences). Consumers (compile, the screen) read positions;
 none re-derives placement.
+
+**Staging (r32)** — when an item's cards are dealt relative to its
+order() position, and when its script shows, P and D positions being
+spec 4 §2's; compile realizes it as dues, card presence and field gates
+(spec 4 §1, §2) and is the one reader of study evidence here. A word is
+**readable** while no segmental confusion its pronunciation touches
+blocks (spec 2 §2: unstable, with a pair in the deck), or once its
+form's Reading card has a review, so a compile never withdraws a
+reviewed Reading card; an unreviewed one can be withdrawn when a pair
+is added to a touched confusion that is not stable. A confusion is
+segmental unless its dimension is tone or length, and a pronunciation
+touches it where a syllable's value on its dimension (§1) is one of its
+sounds; a cluster onset (kʰr, pl) touches the confusions of its head
+consonant (kʰ, p). A word with no pronunciation on record touches none
+and is readable. A word is
+**read** once its form's Reading card has a review in the study record;
+a word whose form has no Reading card (a sentence-introduced word) is
+read once readable.
+- A word is heard at its position (Listening), said P later
+  (Production) and read D after it is heard (Reading, Spelling, present
+  once it is readable); its Thai and IPA appear on its other cards once
+  it is read.
+- A sentence is heard at its placement (Listening), its text on the
+  back only once every word it uses is read; it is produced by ear P
+  after that (one AudioCloze card per filled productive Target) and
+  from its text (Cloze) only once every word it uses is read.
+- A grapheme sits just before the first Reading card, in order, of a
+  word whose form contains its symbol, and is present while any Reading
+  card of such a word is. Only
+  consonants have Grapheme rows yet: vowel signs and tone marks have no
+  card.
 
 **spelling_group(word) -> tuple[Word]** — the Words sharing the Word's
 written form (`thai`) that carry a Target, ordered by the order()
@@ -317,7 +351,7 @@ Targets (E7).
    `production_sentences_per_word` sentences (r26): among the adopted
    sentences clauses 1-3 admit for it, the first in placement order,
    except that a (sentence, Target) pair with a study record on its Cloze
-   card, clauses 1-3 admitting it, keeps filling it and counts toward the
+   or AudioCloze card (r32), clauses 1-3 admitting it, keeps filling it and counts toward the
    cap whatever its position; a studied pair clause 3 refuses holds no
    place. A sentence beyond them does not fill that Target and keeps its
    other fills. A draft (not adopted) fills it only while the studied
@@ -337,7 +371,15 @@ One no adopted sentence fills is target/sentence-required (error: "no
 adopted sentence fills it"); one some fill, short of its count, is
 target/sentences-wanted (warn: "N of M adopted sentences fill it"), so
 the gate does not wait on a wanted count. gaps() lists both among the
-unfilled targets, in target order. A sentence-introduced
+unfilled targets, in target order. Seed sentences (r32): the receptive
+Targets of the first picture-introduced words want two sentences each,
+so simple sentences arrive with the first vocabulary; a seed ask offers
+the span's picture words and the glue placed within it, other function
+words as introducibles, one per sentence (spec 3 §5). A seed Target's count is met only by the
+sentences placed within the seed span, at or before the last seed
+Target's word's place; a sentence placed later still fills it (the
+gate, met, clause 3) but counts toward no seed Target's `sentences`,
+here or in N above. A sentence-introduced
 Target is met once an adopted sentence fills it (clause 3), open or not:
 from then on its word is vocabulary for the sentences placed after.
 
@@ -351,13 +393,16 @@ structural, not advisory). gate = no unwaived error findings.
 **gaps() -> Gaps** — derived from the report's completeness findings
 and measures, never recomputed beside them: every pair without a
 current-best rendition (`pair/rendition-required`), unfilled (open)
-targets, words lacking pictures/recordings, sentences lacking recordings,
+targets, words lacking pictures/recordings (recited-name Words among
+them, r32), pair members lacking pictures (a pair's card waits on them,
+spec 3 r65), sentences lacking recordings,
 sentences carrying a Cloze card (a productive fill) that lack a scene
-picture (spec 3 r61), graphemes lacking keyword data. Input to the batch run (spec 3).
+picture (spec 3 r61), filled Cloze slots lacking a gapped recording
+(spec 3 r65), graphemes lacking keyword data. Input to the batch run (spec 3).
 
 Compile is an application service (spec 4; architecture §7) over
-report(), order() and the current-best artifacts; the aggregate has no
-storage dependency.
+report(), order(), the current-best artifacts and, for the staging, the
+study record; the aggregate has no storage dependency.
 
 ## 4. Rules
 
@@ -391,9 +436,7 @@ constructor or the loader enforces (order() constraints, one category
 per word, every id registered, one speaker per rendition) gets unit
 tests, not a rule. A constructor-enforced invariant is re-checked by a
 rule only where the loader does not construct through the checking path
-(pairs, grapheme keywords). target/sentence-required does not apply to a
-name word's Targets (r16): the chart cell and the recited name's own
-recording are their exercise, and no sentence uses a letter name.
+(pairs, grapheme keywords).
 
 Severity: error findings close the gate (compile refuses, spec 4 §2);
 warn and info ship as declared warnings. Per-deck severity overrides live
@@ -415,9 +458,9 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: no adopted sentence fills it), target/sentences-wanted (check, warn: some adopted sentence fills it, fewer than its `sentences`, r30), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
 | F6 | grapheme/keyword-picture-required (check, error; the keyword Word's own picture need, spec 3 r42), grapheme/keyword-contains-symbol (check, error) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
-| F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive |
+| F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive; compile stages hearing before reading (§3 Staging, spec 4 §2) |
 | F11 | by construction: current-best ranks judged candidates only |
-| E1 | by construction: order() places reading after graphemes |
+| E1 | compile: a grapheme card before the first Reading card that needs it; Thai and IPA gated on the item being read (§3 Staging, spec 4 §1, §2) |
 | E3 | sentence/register-natural (judged); the speaker marking holds at sourcing (spec 3 §5) |
 | E4 | pair/pronunciation-corroborated (check, error; blocks pair membership) |
 | E5 | word/classifier-known (check, warn, nouns) |

@@ -1,6 +1,6 @@
 # Principles
 
-Revision 7, proposed 2026-10-01 (r6 approved 2026-09-18). The architecture
+Revision 8, proposed 2026-10-04 (r7 approved 2026-10-02). The architecture
 (docs/architecture.md) and the specs (docs/specs/) are the companions.
 
 Three meta-rules from the charter; every principle traces to one; every
@@ -69,6 +69,29 @@ Revision log:
   marked for the learner's own sex is voiced male by its marking. F7's
   sentence clause names the text's register, not the voice. User ruling
   2026-10-01.
+- r8 2026-10-04: hearing before reading. F1: the pairs are the first
+  cards, and a word's reading waits until every segmental confusion its
+  pronunciation touches is stable in the study evidence; F6: a recited
+  name is heard on its grapheme's card and the name Words carry no cards,
+  saying the names being a later skill; F8: an item is heard before it
+  is read, and the staging of its reading and its script, not the
+  introduction order, reads study evidence; E1: the learner's ranking
+  (understanding speech, then speaking, then reading), written Thai and
+  transcription off an item's cards until the learner has reviewed its
+  reading, and each letter dealt just before the first reading front
+  that needs it; F8: the derived order reorders freely, but an imported
+  card keeps its due, so a reorder reaches Anki only through a cutover;
+  E6: study evidence also decides when a word's reading and script are
+  dealt. Evidence: an unfamiliar script shown while words are learned
+  inhibited a hard contrast against no orthography (Mathieu 2016) and,
+  for 114 learners, into high proficiency (Shepperd, Hellmuth & Roberts
+  2026); a new script beat familiar letters with incongruent values
+  (Hayes-Harb & Cheng 2016); Wyner's own order is ear training first and
+  claims no listening benefit from the script; no study varies when a
+  script is introduced, so reading opens on a signal, not a word count;
+  on the live deck every picture word touches the tone and length
+  confusions and 100/187/489 touch 0/1/2+ segmental ones; research log
+  2026-10-04. User ruling 2026-10-04.
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 
@@ -100,8 +123,14 @@ Revision log:
 - **F1.** **Sound system first.** [provisional: study, pair difficulty]
   SoundConfusions are trained by MinimalPairs with native renditions, one
   speaker across the members of a rendition so the voice never carries
-  the answer. Which confusions are trained, and how heavily, comes from
-  the learner profile and, once it exists, the learner's study evidence.
+  the answer; the pairs are the first cards. Which confusions are
+  trained, and how heavily, comes from the learner profile and, once it
+  exists, the learner's study evidence. The sound stage also gates
+  reading: a word is read only once every segmental confusion its
+  pronunciation touches that a pair trains is stable in that evidence,
+  since a script shown while a hard contrast is still being learned inhibits hearing it. Tone
+  and vowel length do not gate: every syllable carries them, the pairs
+  train them alongside, and the script encodes both.
 - **F2.** **Concrete vocabulary before grammar.** Word targets ordered by
   colloquial usefulness (frequency blend × emphasis) inside semantic
   spread (category coverage as a measure). A category measures spread
@@ -132,8 +161,10 @@ Revision log:
   (F6a: one picture per word, everywhere). Writing is incidental, never
   a family. Consonant keywords are the acrophonic words; vowels and marks
   take concrete picturable keywords. The recited names are learned as
-  speech, receptively and productively: each is a Word of its own, met
-  with its grapheme. Tone-rule material is card-back
+  speech, hearing first: each is a Word of its own, heard on its
+  grapheme's card, and carries no card of its own. Saying them, which a
+  learner needs to ask how a word is spelled, is a later skill.
+  Tone-rule material is card-back
   reference, never tested; a word's tone is memorized with the word.
 - **F6b.** A pair card's back shows both members, marks the stimulus, and
   offers each member's audio individually. [evidence: study 09-02]
@@ -144,11 +175,15 @@ Revision log:
   grades production against it; receptive-only Sentences may be TTS.
   [evidence: decided 09-02]
 - **F8.** **Order = usefulness in daily speech; then SRS.**
-  [provisional: study, intro order feel] Constraints first: sounds early,
-  a sentence after its words, receptive before productive per word;
-  usefulness (F2) orders within them. Order is derived, never stored: the
-  studied past is fixed by the evidence, the unstudied future reorders
-  freely, and what a reorder invalidates is caught, not hidden.
+  [provisional: study, intro order feel] Constraints first: sounds first,
+  a sentence after its words, receptive before productive per word, an
+  item heard before it is read (E1); usefulness (F2) orders within them.
+  Order is derived, never stored: the studied past is fixed by the
+  evidence, the derived order reorders freely, and what a reorder
+  invalidates is caught, not hidden; a card already imported keeps its
+  due, so a reorder reaches Anki only through a cutover. The introduction order reads no
+  study evidence; when an item's reading is dealt and when its script
+  shows do (F1, E1).
 - **F9.** **A learner's answer is permanent and final; a machine's answers
   exactly the question asked.** A learner's answer is about an artifact
   in a role and outlives every rubric; it is never discarded and wins on
@@ -181,9 +216,16 @@ Revision log:
 
 ## Lens 3 — "Does it teach Thai, to this learner?"
 
-- **E1.** The learner does not read Thai. No card front requires reading before
-  its graphemes are introduced; script-only fronts are staged after the
-  spelling-sound material they use.
+- **E1.** The learner ranks understanding spoken Thai first, speaking
+  second and reading third, and does not read Thai. A word or sentence is
+  heard before it is read: its reading is dealt once its sounds are
+  stable (F1), and written Thai and its transcription appear on none of
+  its other cards until the learner has reviewed that reading; a pair's
+  back names its members in script once the answer is given. No front requires reading
+  before its graphemes are introduced: each letter is dealt just before
+  the first reading front that needs it. [evidence: Mathieu 2016;
+  Shepperd, Hellmuth & Roberts 2026; Hayes-Harb & Cheng 2016; user ruling
+  2026-10-04]
 - **E2.** Production is checked by ear: see F7.
 - **E3.** Register: colloquial Central Thai; the profile (male, colloquial)
   shapes generation; other-voice material fills receptive Targets only;
@@ -205,7 +247,8 @@ Revision log:
   reference on backs. Measure words and register variants are
   constructions and register, not noun attributes.
 - **E6.** Evidence closes the loop: study records survive regeneration and
-  feed confusion reweighting and learner re-asks; until they exist, the
+  feed confusion reweighting and learner re-asks, and decide when a
+  word's reading and script are dealt (F1, E1); until they exist, the
   proxies are the report's measures and the learner's study notes.
 - **E7.** **Comprehension needs many voices.** Everything the learner hears is
   reception, productive backs included. Speaker diversity (sex, age band,
