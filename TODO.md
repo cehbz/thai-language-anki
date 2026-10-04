@@ -11,28 +11,57 @@ still run against them.
 1. Sound stage part 2 (steps 5 to 7 below): pairs are in; vowel signs
    and tone marks next. 3 words stay disputed; a pair member must be
    corroborated, nothing else.
-2. Cutover to Anki: delete the study deck and import a fresh compile
-   (steps under Cutover). The sentence order (spec 1 r24) and the
-   one-note sentence cards (spec 4 r11) reach Anki only this way: cards
-   already imported keep their due position. The build gate is open:
-   the 2026-10-03 compile after the enrichment run needed no `--force`.
+2. Re-import after the enrichment settles: the deck in Anki is the
+   2026-10-03 package (1,425 notes); sentences the pacer adopts since
+   reach it only through a compile and a re-import (note guids are
+   stable, so an updated package adds cards and keeps the schedule).
+   Then `import` after a study session; verify study rows (family,
+   anchor, card_kind) and flag rows.
 
-## Sentence drafting (enrichment run 2026-10-03)
+## Sentence drafting: the judge on the subscription (2026-10-04)
 
-The 12-cycle run with `--poll-seconds 60` adopted 34 sentences, 10 of
-them in the female speaker's voice and 13 of them drafts made before
-spec 1 r31 that it now admits, for USD 1.34, 90% of it on scene
-pictures (65% judging, 25% illustrator). It filled the 8 Targets the
-fill run left open and brought every sentence-introduced Target to its
-wanted count. Report:
-.superpowers/sdd/2026-10-02-fill-queue/task-9-report.md.
+The live judge runs on the cli transport (Sonnet 5.5, `--safe-mode`)
+and the quota pacer (spec 3 r64, `tools/quota_pacer.py`, launchd agent
+`com.ceh.thai-syllabus.pacer`, hourly, log `~/decks/thai-ff/work/pacer.log`)
+releases judge calls against the week's unused allowance. Its first
+tick (allowance 8.15 points, 40 calls) adopted 12 sentences. Reports:
+.superpowers/sdd/2026-10-03-quota-pacer/task-1..3-report.md.
 
-- **The batch poll still sets the cycle length; `--poll-seconds` is
-  the lever.** At 60 s, doubling each poll, 7 of 8 batches resolved at
-  the third poll, about 190 s after submission (308 s at the 300 s
-  default): 60% of the run's 49 minutes, against 72% of the fill run's
-  78. When a batch ends is not recorded, only the poll that saw it.
-  Cycles 4 to 12 drafted nothing and only sourced scene pictures.
+- **`points_per_call` 0.015 and `session_points_per_call` 0.05 are
+  upper bounds**, not measurements: the usage probe reads whole
+  percentage points, and 50 calls moved the weekly window by 0 and the
+  5-hour window by 1. Tighten them from the pacer log once a few ticks
+  have run (compare the probe before and after a 40-call tick).
+- **Drafting asks are unpaced.** `--judge-asks` caps judge calls only;
+  a drafting ask at the CLI's default model (Opus 5.5 with thinking,
+  48 to 152 s, 5k to 17k output tokens) spends about ten safe-mode
+  verdicts' worth, so a tick's quota is dominated by its one drafting
+  ask. Either amortise it in `points_per_call` (done, roughly) or give
+  the drafter its own cap.
+- **40 judge rows of the 2026-10-04 12:09 tick carry a notional cost**
+  (~$0.10 in all): the cli judge's tokens were priced by
+  `judge.price_per_mtok`, meant for the batch judge. The fix is in the
+  next commit; the rows stay as written.
+- Under cli, `quotas.judge.max_cost` and `quotas.llm-*.max_cost` never
+  bind (cost is 0); the loader could refuse `max_cost` on a cli
+  backend. The review screen's "spend per newly covered need" reads 0
+  for a cli judge and shows nothing about quota. The persisted
+  RunReport row keeps `{asks, cost}` per backend; tokens sit only on
+  the answer rows.
+- `--safe-mode` was measured on picture verdicts only (73% less input,
+  verdicts within the judge's noise); its effect on sentence verdicts
+  is inferred.
+- Sonnet 5.5 against Sonnet 5 on 50 recorded verdicts: pictures 23/25,
+  sentences 19/25, every sentence miss Sonnet 5.5 passing what Sonnet 5
+  failed, and in 3 of the 6 Sonnet 5's reason was wrong about Thai.
+  Sonnet 5.5's own repeat agreement on borderline pictures is 8/10.
+- `save_providers_config` does not write the `pacer` block (only tests
+  call it). The `drafter.model` value is not stripped of whitespace.
+- **Under the batch judge the poll sets the cycle length;
+  `--poll-seconds` is the lever.** At 60 s, doubling each poll, 7 of 8
+  batches resolved at the third poll, about 190 s after submission
+  (308 s at the 300 s default): 60% of a 49-minute run. When a batch
+  ends is not recorded, only the poll that saw it.
 - The adoption pass logs the same 31 refused drafts on record twice a
   cycle (27 mark both sexes, 3 name unregistered words, 1 does not
   match its clauses): 744 of the log's 924 lines. The mixed-sex ones
@@ -84,10 +113,11 @@ wanted count. Report:
 
 ## Corpus after enrichment (user decision)
 
-Every sentence-introduced Target has its wanted count of sentences
-(spec 1 r30): the 26 function words set to 5, 3 or 2 by frequency rank
-and the 56 classifiers at 1. No `target/sentence-required` or
-`target/sentences-wanted` finding remains.
+Wanted counts (spec 1 r30): 10 sentences for the six function words of
+frequency rank 20 or better (ไม่ "not", และ "and", ครับ, แล้ว "already",
+ได้ "can", ค่ะ; user 2026-10-03), 5 to rank 100, 3 to rank 300, 2
+below, classifiers 1. After the pacer's first tick two are short: และ
+8 of 10, ค่ะ 9 of 10; the next ticks fill them.
 
 - **The sentences adopted before the fill run never use the function
   words.** The 424 of the corpus's 499 sentences adopted before the
@@ -217,20 +247,6 @@ Still open:
 - `exhausted().capped` is query-scoped while its attempt count is per
   need (spec 3 r35): a source at the transient cap under an old query
   counts no attempt; an under-count of at most one per such source.
-
-## Cutover
-
-- Compile (`--force` while the gate is closed). In Anki: delete the
-  deck and the stale notetypes spec 4 section 5 names (`sentence`,
-  `minimal_pair`, `sentence+`, `minimal_pair+`, `sentence++`,
-  `picture_word`, `picture_word+`, `spelling_sound`, `spelling_sound+`;
-  `word` and `word+` too unless the import merges note types: the word
-  notetype gained fields at spec 4 r12), import with "Merge note types",
-  turn on the three bury-sibling settings in the deck's
-  preset (the import warns while any is off), and leave blank-front
-  Cloze cards alone (Empty Cards deletes their schedule). Then the proof
-  pass in `thai-syllabus review`, and `import` after a study session;
-  verify study rows (family, anchor, card_kind) and flag rows.
 
 ## Content decisions (user)
 
