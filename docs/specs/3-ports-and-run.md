@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 62, proposed 2026-10-03 against principles r7 and architecture
+Revision 63, proposed 2026-10-03 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -256,6 +256,7 @@ Revision log:
 - r60 2026-10-02: every fresh drafting ask is recorded against each word it handed; a word handed sentence_nothing_cap (3) times in a row without gaining a sentence, with a Target still open, is withheld and put to the learner, whose direction is written on the word's prompt line as the learner's instruction; a cached drafting answer that puts no draft to the judge is re-asked once, and a retired text drafted again is not put to the judge; every prompt line listing a speaker-marked word, vocabulary lines included, names its speaker. Evidence: the cap counted only "nothing fits" answers (0 on record) while five classifiers were handed 11 to 37 times each; the run of 2026-10-02 made 11 cycles and adopted nothing; a direction reopened a word without its text reaching the drafter; 24 drafted texts on record paired ดิฉัน (I, female polite) with ผม (I, male), whose vocabulary line was untagged. User ruling 2026-10-02.
 - r61 2026-10-02: the drafting prompt says how many sentences a handed Target still wants; adoption supplies a Target's count; a scene picture is sourced only for a sentence carrying a Cloze card. Evidence: scene-picture judging is $31.05 of the $55.30 judged so far, about $0.07 a sentence, against $0.003 to judge the sentence itself. User ruling 2026-10-02.
 - r62 2026-10-03: the drafting prompt names the texts refused at acceptance with the reason, beside the judge's failures. Evidence: four texts for the open Targets came back in three asks each on 2026-10-03, the drafter never told. Defect fix.
+- r63 2026-10-03: the cli judge transport sends the judge's or role's model and effort per request, keeps no session and offers no tool but Read; a cli call costs no cash, and every LLM answer's row records the tokens its completion reported, which the run report shows per subscription backend; `drafter.model` and `drafter.effort` (§8) are the cli drafter's own, unset sending nothing; the judge's asks are capped per invocation (`run --judge-asks M`) and per day (its budget, counted from its verdict rows), and at the cap a need the judge decides counts budgeted; the sentence attempt waits until every unjudged draft on record has been served (§5). Evidence: the judge moves to the subscription for the sentence enrichment; the pronunciation role keeps Opus 5.5 at high; a run with `--backend-cap judge=0` made 7 verdicts. User rulings 2026-10-03: subscription work is measured in quota, never dollars; the drafter keeps the CLI's default model unless configured.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -314,8 +315,12 @@ incurred, in that backend's currency, measured by the backend: Forvo one
 lookup, TTS characters times rate, the api and batch judge and the api
 drafter tokens times the price of the model that answered (the judge's, or
 the role's, r43), the cli judge and
-the cli drafter one call of quota, the learner seconds. A transport that receives usage and drops it violates this
-contract. Consumers: budget enforcement (section 7), cross-run accounting
+the cli drafter no cash: a subscription call's quota use is recorded as the
+tokens the CLI reports and counted in asks, and the judge's asks are
+budgeted (section 7; r63), the learner seconds. Every LLM answer's row
+carries the tokens its completion reported (`usage`: input, output, cache
+read, cache creation); a transport that receives usage and drops it
+violates this contract. Consumers: budget enforcement (section 7), cross-run accounting
 from the record, queue order, the run report.
 
 **Artifacts reach assessors as paths.** An Assess question naming an
@@ -372,7 +377,14 @@ source order, then `learner`, then `generated`: a generated picture ranks
 below a photograph of equal verdict and above nothing (r34).
 
 **Judge transports**: cli / api / batch, selected in providers.yaml; the
-run does not know which (section 7). Batch state is one marker row per
+run does not know which (section 7). The cli transport runs `claude -p
+--output-format json`, sending `--model` and, when set, `--effort` on
+every request, the judge's or the role's (r63), with no session kept, no
+stdin, and no tool but Read (none without attachments); it reads the
+reply's result text, usage tokens and answering model, and a reply flagged
+`is_error` or not a JSON object is a transport error, its `result` the
+reason (on a non-zero exit too).
+Batch state is one marker row per
 run, keyed on the batch id, released when the batch ends. report() never
 calls Assess. A batch is outstanding until its
 status is ended; a result of type expired or errored carries no verdict
@@ -380,7 +392,8 @@ and its question re-asks.
 
 **Drafter transport**: cli / api, selected in providers.yaml
 `drafter.transport` (cli by default); api rides the judge's account,
-model and price. `judge.thinking` (disabled by default, or adaptive) is
+model and price; cli sends `drafter.model` and `drafter.effort` when set
+and otherwise runs at the CLI's defaults (r63). `judge.thinking` (disabled by default, or adaptive) is
 sent by the api and batch transports on every request; `adaptive`
 requires `judge.max_tokens` (at least 16000), which both transports send.
 
@@ -789,7 +802,12 @@ that is neither adopted nor retired, holds no fresh verdict, and would
 still pass the same acceptance test a fresh draft does (the invariant,
 the clause cap, at least one still-open Target filled, the per-sentence
 Target cap) — a drafter's and a comment's replacement alike — and
-submits a question raised twice in one run once.
+submits a question raised twice in one run once. The sentence attempt
+runs only once that re-ask is served (every such question answered,
+riding the batch, or excluded): while one is dropped on the wire or held
+back by the judge's ask allowance the drafter is not asked, since each
+fresh ask counts against its words' cap, and the open words count
+deferred or budgeted (r63).
 
 **Parse (existing texts).** The same transport, asked once per migration
 for the clauses of given texts against the full registered vocabulary
@@ -950,7 +968,13 @@ forvo 450/day from 22:00 UTC, brave 30/day, illustrator 20/day, learner
 20/session. Spend is summed from
 the record since the most recent `day_starts` instant (HH:MM with a
 zone; default local midnight): the source's asks plus the bytes fetches
-attributed to it (§4's forvo row).
+attributed to it (§4's forvo row); the judge's, its verdict rows (r63).
+The judge's asks are capped per invocation by `run --judge-asks M` and per
+day by its budget, both an ask allowance the Assessor holds (the lower
+wins): at it, a remaining question is not asked (inline or into the
+batch) and is asked on a later run, a need the judge decides is not
+attempted and counts budgeted, and neither the sentence attempt nor the
+phrase ask runs.
 
 One source per need per run; one judge batch per run; at most one batch
 outstanding: when the previous run's batch is still in progress, the run
@@ -1004,7 +1028,7 @@ always. The remaining fields count events, not needs.
 | exhausted | needs whose next source is None |
 | pending | needs with a question in this run's batch or the earlier unresolved one; a need with a question collected this run is never attempted again in it |
 | unserved | needs whose kind has no Source and no per-run pass; no kind is one today (r42 retired the last), and the bucket stays in the identity for the next |
-| budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent); a picture need whose every remaining source is dead or budgeted, at least one of them budgeted (r37) |
+| budgeted | needs skipped because their Source's day budget was spent (every open Target within the drafting cap when the drafter's budget is spent); a picture need whose every remaining source is dead or budgeted, at least one of them budgeted (r37); a need the judge decides once the judge's ask allowance is spent, and every open Target within the drafting cap then (r63) |
 | deferred | needs the run never considered: an earlier batch still outstanding, the judge unreachable at resolve, open Targets beyond the per-run drafting cap, needs whose ask failed on the wire or whose every untried source is dead for the run (r26), questions collected but never submitted, a retired sentence's other needs still in this pass's queue, a picture need with no query on record (r25) |
 | improved | needs whose current-best artifact sha differs after the attempt (a re-ranking among unchanged artifacts is not improvement) |
 | drafted | drafts the sentence attempt produced |
@@ -1028,7 +1052,7 @@ always. The remaining fields count events, not needs.
 | excluded | questions that could not be prepared (missing or unreadable artifact), per need, skipped |
 | unreachable | the judge could not be reached: the run stops at the first such attempt and exits non-zero |
 | source_failures[source] | a Source that could not be reached: skipped for the rest of the run; the failing need records a `transient-failure` outcome and counts deferred; a later need whose next source it is takes its next live source in the same run (r26: the dead source counts as tried for this pass only, nothing on the record) and counts deferred only when no live source is left or budgeted (r37); a drafter transport failure counts under `llm-sentence`, a phrase drafter's under `llm-phrase`, the comment reader's (or its parse ask's) under `llm-comment` |
-| spend[source] | the source's asks and cost this run |
+| spend[source] | the source's asks and cost this run, and the tokens its LLM answers reported (a subscription backend's line shows asks and tokens, no cost; r63) |
 
 Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 
@@ -1041,7 +1065,8 @@ xhigh | max; unset sends nothing), `judge.max_tokens` (4096; at least
 `judge.roles.<role>.{model, thinking, effort, max_tokens, price_per_mtok}` (r43: a
 role's own setting, each field inherited from `judge` when unset; a role
 whose model differs from the judge's states its own price),
-`drafter.transport` (cli | api),
+`drafter.transport` (cli | api), `drafter.model` and `drafter.effort`
+(the cli drafter's; unset sends nothing, r63),
 `image_candidates` (5), `image_width` (1600), `transient_cap` (3),
 `requery_cap` (3: the distinct queries one picture need is searched under
 since its requery window opened, r35; a source's query form is code,

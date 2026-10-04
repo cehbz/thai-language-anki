@@ -22,7 +22,7 @@ from .authority import role_for
 from .cachekeys import BatchMarkerKey, CacheKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from .entities import _same_form
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, RequestParams, TransportError, strip_fences
+from .transport import Completion, RequestParams, TransportError, Usage, strip_fences
 
 __all__ = [
     "AssessQuestion", "Verdict", "RawVerdict", "AssessBackend",
@@ -82,6 +82,7 @@ class Verdict:
     evidence: str | None = None
     suggestion: str | None = None
     hit: bool = False
+    usage: Usage = field(default_factory=Usage)  # the tokens a fresh answer spent
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ class RawVerdict:
     cost: float = 0.0
     evidence: str | None = None
     suggestion: str | None = None
+    usage: Usage = field(default_factory=Usage)
 
 
 class LearnerAskNotSupported(RuntimeError):
@@ -168,6 +170,36 @@ class Assessor:
         self._record = record
         self._cache = cache
         self._backends = dict(backends)
+        self._allowance: dict[str, int] = {}   # backend -> wire asks left (limit())
+        self._refused: dict[str, int] = {}     # backend -> questions kept off the wire
+
+    def limit(self, backend: str, asks: int) -> None:
+        """Caps the wire asks `backend` may make from now on at `asks`
+        (spec 3 r63 section 7: `run --judge-asks`, the judge's day
+        budget); a second limit keeps the lower allowance."""
+        current = self._allowance.get(backend)
+        self._allowance[backend] = max(0, asks if current is None else min(current, asks))
+
+    def remaining(self, backend: str) -> int | None:
+        """The wire asks `backend` has left, or None when unlimited."""
+        return self._allowance.get(backend)
+
+    def refused(self, backend: str) -> int:
+        """How many questions ask_many has kept off `backend`'s wire for
+        want of allowance, since this Assessor was built."""
+        return self._refused.get(backend, 0)
+
+    def _spend_allowance(self, backend: str) -> bool:
+        """Takes one wire ask from `backend`'s allowance: False, and one
+        more refusal counted, when none is left."""
+        left = self._allowance.get(backend)
+        if left is None:
+            return True
+        if left == 0:
+            self._refused[backend] = self._refused.get(backend, 0) + 1
+            return False
+        self._allowance[backend] = left - 1
+        return True
 
     def key_of(self, backend: str, question: AssessQuestion) -> CacheKey:
         """The cache key `backend` would use for `question`: how a caller
@@ -216,9 +248,11 @@ class Assessor:
         equivalent is asked once, not once per repetition -- a repeated
         question's later occurrences are skipped, not re-asked, so no
         ask's cost is lost from the spend by one overwriting another in
-        `resolved`. Either way the repeat is logged as a warning. Any
-        other exception -- unknown backend, learner/listener --
-        propagates.
+        `resolved`. Either way the repeat is logged as a warning. A miss
+        beyond the backend's ask allowance (limit()) is neither asked nor
+        collected nor cached -- like a dropped question, it is asked again
+        on a later run -- and counts one refusal (refused()). Any other
+        exception -- unknown backend, learner/listener -- propagates.
         """
         impl = self._backends[backend]
         is_batch = (getattr(impl, "complete", None) is None
@@ -229,6 +263,7 @@ class Assessor:
         collected_keys: set[CacheKey] = set()
         wire_attempts = 0
         wire_failures = 0
+        refused_before = self.refused(backend)
         for q in questions:
             key = impl.cache_key(q)
             # Only on a miss: a cached verdict needs no preparation, so a
@@ -250,6 +285,8 @@ class Assessor:
                     excluded[key.encode()] = Excluded(subject=q.subject,
                                                       artifact_sha=q.artifact_sha, reason=str(e))
                     continue
+                if not self._spend_allowance(backend):
+                    continue
                 collected.append(PreparedQuestion(question=q, key=key, prompt=prompt,
                                                   attachments=paths))
                 collected_keys.add(key)
@@ -257,6 +294,9 @@ class Assessor:
             if key in resolved:
                 _log.warning("%s: a question repeated within one call is asked once "
                              "(key=%s)", backend, key.encode())
+                continue
+            if self.remaining(backend) == 0:
+                self._spend_allowance(backend)   # counts the refusal
                 continue
             try:
                 resolved[key] = self.ask(backend, q)
@@ -269,10 +309,16 @@ class Assessor:
             except TransportError as e:
                 _log.warning("%s backend dropped a question (key=%s): %s",
                              backend, key.encode(), e)
+                self._spend_allowance(backend)
                 wire_attempts += 1
                 wire_failures += 1
                 continue
+            self._spend_allowance(backend)
             wire_attempts += 1
+        refused = self.refused(backend) - refused_before
+        if refused:
+            _log.info("%s: %d question(s) not asked: its ask allowance is spent",
+                      backend, refused)
         if wire_attempts and wire_attempts == wire_failures:
             raise JudgeUnreachable(
                 f"{backend} answered none of {wire_attempts} question(s) on the wire")
@@ -295,7 +341,7 @@ class Assessor:
         raw = impl.fetch(question)  # transport/preparation errors propagate uncached
         ts = self._append_verdict(backend, key, question, raw)
         return Verdict(value=raw.value, cost=raw.cost, ts=ts,
-                       evidence=raw.evidence, suggestion=raw.suggestion)
+                       evidence=raw.evidence, suggestion=raw.suggestion, usage=raw.usage)
 
     def _append_verdict(self, backend: str, key: CacheKey, question: AssessQuestion,
                         raw: RawVerdict) -> int:
@@ -304,6 +350,8 @@ class Assessor:
             answer["evidence"] = raw.evidence
         if raw.suggestion is not None:
             answer["suggestion"] = raw.suggestion
+        if raw.usage:
+            answer["usage"] = raw.usage.as_row()
         return self._record.append(
             port="assess", backend=backend, key=key, subject=question.subject,
             question={"role": question.role, "artifact_sha": question.artifact_sha,
@@ -434,10 +482,12 @@ class Assessor:
                 _log.warning("batch %s: %s: %s", batch_id, key.encode(), e)
                 continue
             raw = RawVerdict(value=parsed.value, evidence=parsed.evidence,
-                             suggestion=parsed.suggestion, cost=impl._cost(completion, role))
+                             suggestion=parsed.suggestion, cost=impl._cost(completion, role),
+                             usage=completion.usage)
             ts = self._append_verdict("judge", key, question, raw)
             resolved[key] = Verdict(value=raw.value, cost=raw.cost, ts=ts,
-                                    evidence=raw.evidence, suggestion=raw.suggestion)
+                                    evidence=raw.evidence, suggestion=raw.suggestion,
+                                    usage=raw.usage)
         unmatched = sum(1 for result_id in results if result_id not in rebuilt_ids)
         if unanswered or unmatched:
             _log.warning("batch %s: %d of %d questions have no result; %d results match no question",
@@ -762,8 +812,7 @@ class JudgeBackend:
     prompt_builder: Callable[[AssessQuestion], str] = field(default=_default_judge_prompt)
     parse_response: Callable[..., RawVerdict] = field(default=_default_parse_judge_response)
     resolve_path: Callable[[str], Path | None] | None = None  # artifact_sha -> file path, for attachments
-    price: Price | None = None  # api/batch: dollar cost from actual token usage
-    quota_cost_per_call: float = 0.0  # cli: flat subscription-quota cost (no token usage on the wire)
+    price: Price | None = None  # api/batch: dollar cost from actual token usage; cli: None, no cash
     # Per-role overrides (spec 3 r43, providers.yaml `judge.roles.<role>`):
     # the RequestParams one role's questions go out under, and the Price
     # its answers are costed at. A role with no entry is asked and priced
@@ -804,10 +853,11 @@ class JudgeBackend:
         return self.role_params.get(question.role)
 
     def _cost(self, completion: Completion, role: str | None = None) -> float:
+        """The cash a verdict cost: its tokens at the role's or the judge's
+        price; 0.0 with no price (the cli transport spends quota, recorded
+        as the verdict's tokens, r63)."""
         price = self.role_prices.get(role, self.price) if role is not None else self.price
-        if price is not None:
-            return price.cost(completion)
-        return self.quota_cost_per_call
+        return price.cost(completion) if price is not None else 0.0
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         if self.complete is None:
@@ -825,7 +875,8 @@ class JudgeBackend:
         raw = self._parse(completion.text, question)
         return RawVerdict(value=raw.value, evidence=raw.evidence,
                           suggestion=raw.suggestion,
-                          cost=self._cost(completion, question.role))
+                          cost=self._cost(completion, question.role),
+                          usage=completion.usage)
 
 
 # --- mechanical: ground truth for what it checks ----------------------------

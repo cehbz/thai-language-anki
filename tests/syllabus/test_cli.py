@@ -32,6 +32,7 @@ from thai_syllabus.cachekeys import JudgeKey, ProvideKey
 from thai_syllabus.compile import GateRefusal
 from thai_syllabus.rules import Compile, CompileReport, Finding, Report
 from thai_syllabus.run import RunReport, Spend
+from thai_syllabus.transport import Usage
 from thai_syllabus.safety import HistoryError
 from thai_syllabus.store import SyllabusDb
 
@@ -332,6 +333,41 @@ def test_run_wires_a_sourcing_ctx_and_budgets_into_run_pipeline(deck, monkeypatc
     assert "improved=1" in text
     assert "pending=1" in text
     assert "sentences_adopted=3" in text
+
+
+def test_a_quota_backends_line_shows_asks_and_tokens_and_a_cash_backends_its_cost(
+        deck, monkeypatch, capsys):
+    """Spec 3 r63: a subscription backend's quota use is reported in asks
+    and tokens, never a cost; a cash backend's line keeps its cost."""
+    monkeypatch.setattr(cli, "run_pipeline", lambda ctx, budgets, **kw: RunReport(
+        attempted=1,
+        spend={"judge": Spend(asks=3, cost=0.0, usage=Usage(30, 210, 1500, 900)),
+               "tts": Spend(asks=1, cost=0.25)}))
+    assert cli.main(["run", "--deck", str(deck), "--cycles", "1"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "  judge: asks=3 tokens=30/210 cache=1500/900" in lines
+    assert "  tts: asks=1 cost=0.2500" in lines
+
+
+def test_run_judge_asks_caps_the_invocations_judge_wire_asks(deck, monkeypatch):
+    """Spec 3 r63 section 7: `--judge-asks M` is the invocation's judge
+    ask allowance, set once on the Assessor every pass shares."""
+    seen = []
+    monkeypatch.setattr(cli, "run_pipeline", lambda ctx, budgets, **kw: (
+        seen.append(ctx.assessor.remaining("judge")) or RunReport(attempted=1)))
+    assert cli.main(["run", "--deck", str(deck), "--judge-asks", "3", "--cycles", "1"]) == 0
+    assert seen == [3]
+
+
+def test_run_judge_asks_accepts_zero_and_refuses_a_negative(deck, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "run_pipeline", lambda ctx, budgets, **kw: (
+        seen.append(ctx.assessor.remaining("judge")) or RunReport()))
+    assert cli.main(["run", "--deck", str(deck), "--judge-asks", "0", "--cycles", "1"]) == 0
+    assert seen == [0]
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["run", "--deck", str(deck), "--judge-asks", "-1"])
+    assert exit_.value.code == 2
 
 
 def test_run_prints_excluded_and_unreachable(deck, monkeypatch, capsys):

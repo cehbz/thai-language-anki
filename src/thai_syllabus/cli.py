@@ -4,7 +4,7 @@
     thai-syllabus review   --deck DIR [--port 8877]
     thai-syllabus import   --deck DIR --collection PATH
     thai-syllabus compile  --deck DIR --out PATH [--force]
-    thai-syllabus run      --deck DIR [--backend-cap NAME=N ...]
+    thai-syllabus run      --deck DIR [--backend-cap NAME=N ...] [--judge-asks M]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
                           [--poll-max-seconds S] [--max-wait-seconds S]
     thai-syllabus restore  --deck DIR
@@ -30,7 +30,7 @@ from .assessor import JudgeUnreachable
 from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
 from .curated import load_providers_config
-from .run import Budget, RunReport
+from .run import Budget, RunReport, Spend
 from .run import run as run_pipeline
 from .safety import HistoryError, SafetyCheckFailed, restore, writing_command
 from .wiring import build_sourcing, default_budgets, load_derivations
@@ -96,6 +96,17 @@ def _min_one(flag: str) -> Callable[[str], int]:
     return parse
 
 
+def _non_negative(flag: str) -> Callable[[str], int]:
+    """An argparse `type=` for an int flag that refuses anything below 0
+    (--judge-asks)."""
+    def parse(raw: str) -> int:
+        value = int(raw)
+        if value < 0:
+            raise argparse.ArgumentTypeError(f"--{flag} must be at least 0, got {value}")
+        return value
+    return parse
+
+
 def _spend_so_far(ctx: Sourcing, start_ns: int) -> float:
     """This invocation's own cash cost so far: the judge's own cost (port
     assess) plus tts's and the illustrator's own cost (port provide, spec
@@ -107,6 +118,21 @@ def _spend_so_far(ctx: Sourcing, start_ns: int) -> float:
     return (record.cost_since(ctx.db, "assess", "judge", start_ns)
             + record.cost_since(ctx.db, "provide", "tts", start_ns)
             + record.cost_since(ctx.db, "provide", "illustrator", start_ns))
+
+
+def _spend_line(spend: Spend) -> str:
+    """One backend's spend this run: its asks, its cash cost, and the
+    tokens its answers reported (input/output, cache read/creation). A
+    backend that spent tokens and no cash is a subscription backend
+    (spec 3 r63): its line shows asks and tokens, no cost."""
+    parts = [f"asks={spend.asks}"]
+    if spend.cost or not spend.usage:
+        parts.append(f"cost={spend.cost:.4f}")
+    if spend.usage:
+        u = spend.usage
+        parts.append(f"tokens={u.input_tokens}/{u.output_tokens} "
+                     f"cache={u.cache_read_input_tokens}/{u.cache_creation_input_tokens}")
+    return " ".join(parts)
 
 
 def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
@@ -141,7 +167,7 @@ def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
          f"unreachable={report.unreachable} "
          f"batch_id={report.batch_id}", flush=True)
     for name, spend in sorted(report.spend.items()):
-        print(f"  {name}: asks={spend.asks} cost={spend.cost:.4f}", flush=True)
+        print(f"  {name}: {_spend_line(spend)}", flush=True)
     for name, count in sorted(report.source_failures.items()):
         print(f"  source_failures: {name}={count}", flush=True)
 
@@ -192,6 +218,8 @@ def _cmd_run(args: argparse.Namespace, *,
         for raw in args.backend_cap:
             name, max_asks = _parse_backend_cap(raw)
             budgets[name] = Budget(max_asks=max_asks)
+        if args.judge_asks is not None:
+            ctx.assessor.limit("judge", args.judge_asks)
 
         cycle = 1
         while args.cycles is None or cycle <= args.cycles:
@@ -279,7 +307,13 @@ def main(argv: list[str] | None = None, *,
     p.add_argument("--backend-cap", action="append", default=[], metavar="NAME=N",
                    help="cap NAME's asks at N per day, measured from the record "
                         "(spend since local midnight plus this run's own), "
-                        "e.g. --backend-cap forvo=100 (repeatable)")
+                        "e.g. --backend-cap forvo=100 (repeatable); judge=N counts "
+                        "the judge's verdicts on record today")
+    p.add_argument("--judge-asks", type=_non_negative("judge-asks"), default=None,
+                   metavar="M",
+                   help="ask the judge at most M questions over this whole "
+                        "invocation, inline and batch alike; the needs it can then "
+                        "not judge count budgeted (spec 3 r63)")
     p.add_argument("--cycles", type=_min_one("cycles"), default=None,
                    help="cap the number of resolve/attempt/submit passes; default "
                         "unbounded -- the invocation repeats until a pass raises "

@@ -24,6 +24,7 @@ from time import time_ns
 from typing import NamedTuple
 
 from .assessor import AssessQuestion, JudgeUnreachable, PreparedQuestion
+from .authority import AUTHORITY_ORDER, role_for
 from .cachekeys import AttemptOutcomeKey, RunReportKey
 from .attempts import (
     AttemptResult,
@@ -79,7 +80,7 @@ from .record import (
     sentence_drafts,
     spend_since,
 )
-from .transport import QuotaExhausted, TransportError
+from .transport import QuotaExhausted, TransportError, Usage
 
 __all__ = ["Budget", "Spend", "RunReport", "run"]
 
@@ -306,7 +307,8 @@ class _Tally:
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
         for backend, incurred in result.spend.items():
-            self.spend.setdefault(backend, Spend()).add(incurred.asks, incurred.cost)
+            self.spend.setdefault(backend, Spend()).add(incurred.asks, incurred.cost,
+                                                        incurred.usage)
 
 
 def _adopt_sentences(ctx: Sourcing) -> int:
@@ -341,7 +343,7 @@ def _adopt_sentences(ctx: Sourcing) -> int:
     return len(adopted)
 
 
-def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
+def _recover_orphaned_drafts(ctx: Sourcing) -> tuple[AttemptResult, bool]:
     """D2 (spec 3 r30 section 5): every sentence draft on record
     (record.sentence_drafts) that is neither adopted nor retired, asked
     again -- cache-first through `ctx.assessor.ask_many`, whose JudgeKey
@@ -372,6 +374,11 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
     routine, permanent fact about the draft, logged at debug. Drafts are
     not needs: the questions ride this run's batch like the sentence
     attempt's, and no bucket counts them.
+
+    The flag says whether recovery was served: every question raised has
+    a verdict, rides the batch, or was excluded -- none dropped on the
+    wire or kept off it by the judge's ask allowance (spec 3 r63 section
+    5: the sentence attempt waits until it is).
     """
     adopted = {s.text_sha for s in ctx.syllabus.sentences}
     retired = retired_texts(ctx.db)
@@ -391,14 +398,19 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> AttemptResult:
             _log.debug("orphaned draft not asked about: %s: %s", e, draft.text)
             continue
     if not questions:
-        return AttemptResult(attempted=False)
+        return AttemptResult(attempted=False), True
     result = ctx.assessor.ask_many("judge", questions)
     spend: dict[str, Spend] = {}
     for verdict in result.resolved.values():
         spend.setdefault("judge", Spend()).add(0 if verdict.hit else 1,
-                                               float(verdict.cost or 0.0))
-    return AttemptResult(attempted=True, questions=list(result.collected),
-                         excluded=dict(result.excluded), spend=spend)
+                                               float(verdict.cost or 0.0),
+                                               Usage() if verdict.hit else verdict.usage)
+    asked = {ctx.assessor.key_of("judge", q) for q in questions}
+    served = (set(result.resolved) | {p.key for p in result.collected}
+              | {k for k in asked if k.encode() in result.excluded})
+    return (AttemptResult(attempted=True, questions=list(result.collected),
+                          excluded=dict(result.excluded), spend=spend),
+            asked <= served)
 
 
 class _Adjudicated(NamedTuple):
@@ -536,9 +548,44 @@ def _spent_today(ctx: Sourcing, budgets: Mapping[str, Budget]) -> dict[str, Spen
     spent: dict[str, Spend] = {}
     for name, budget in budgets.items():
         since = day_start_ns(now, budget.day_starts)
+        if name == "judge":
+            verdicts = [r for r in ctx.db.rows_since("assess", "judge", since)
+                        if r.subject != "batch"]
+            spent[name] = Spend(asks=len(verdicts), cost=sum(r.cost for r in verdicts))
+            continue
         spent[name] = Spend(asks=asks_since(ctx.db, name, since) + fetches_since(ctx.db, name, since),
                             cost=spend_since(ctx.db, name, since))
     return spent
+
+
+def _limit_judge_for_the_day(ctx: Sourcing, budgets: Mapping[str, Budget],
+                             carried: Mapping[str, Spend]) -> None:
+    """The judge's day budget (`--backend-cap judge=N`, `quotas.judge`)
+    as an ask allowance on the Assessor: what is left of `max_asks` after
+    the verdicts on record since the day start, none once the budget is
+    reached by asks or cost. The Assessor keeps the lower of this and any
+    allowance already set (`run --judge-asks`)."""
+    budget = budgets.get("judge")
+    if budget is None:
+        return
+    spent = carried.get("judge", Spend())
+    if budget.exceeded_by(spent):
+        ctx.assessor.limit("judge", 0)
+    elif budget.max_asks is not None:
+        ctx.assessor.limit("judge", budget.max_asks - spent.asks)
+
+
+def _judge_spent(ctx: Sourcing) -> bool:
+    """Whether the judge's ask allowance is used up for this run."""
+    return ctx.assessor.remaining("judge") == 0
+
+
+def _judge_decides(need: Need) -> bool:
+    """Whether the judge is the machine authority on `need`'s role (a
+    picture's fit; a recording's is the mechanical check's)."""
+    order = [b for b in AUTHORITY_ORDER.get(role_for(need.kind, need.subject_kind), ())
+             if b != "learner"]
+    return bool(order) and order[0] == "judge"
 
 
 def _spent_on(source: str, carried: Mapping[str, Spend], tally: _Tally) -> Spend:
@@ -778,6 +825,13 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
         if need.subject_kind == "sentence" and need.subject in tally.retired_subjects:
             tally.deferred += 1
             continue
+        if _judge_spent(ctx) and _judge_decides(need):
+            # Spec 3 r63 section 7: the judge's ask allowance is spent, so
+            # nothing it decides is attempted -- a source asked now would
+            # fetch candidates no verdict could follow.
+            tally.budgeted += 1
+            continue
+        refused_before = ctx.assessor.refused("judge")
         before = current_best_of(ctx, need.subject, need.kind)
         try:
             result = assess_first(ctx, need)
@@ -900,6 +954,9 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
             # accounts for it; counting it here too would double it
             # against `available`.
             tally.pending_candidates += 1
+        elif ctx.assessor.refused("judge") > refused_before:
+            # the allowance ran out inside this need's own attempt
+            tally.budgeted += 1
         else:
             tally.attempted += int(result.attempted)
         if improved(before, current_best_of(ctx, need.subject, need.kind)):
@@ -955,6 +1012,7 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # otherwise count twice against its day budget: once read back here,
     # once already in `tally.spend`.
     carried = _spent_today(ctx, budgets)
+    _limit_judge_for_the_day(ctx, budgets, carried)
     previous = ctx.assessor.unresolved_batch()
     still_out = previous
     if previous is not None:
@@ -998,7 +1056,8 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # bucket, `pending` unaffected. A dead judge here ends the run before
     # any Target was handed, the same as the comment pass below.
     try:
-        tally.collect(_recover_orphaned_drafts(ctx))
+        recovered, recovery_served = _recover_orphaned_drafts(ctx)
+        tally.collect(recovered)
     except JudgeUnreachable:
         return _judge_died_before_the_loop(ctx, tally, collected_at_resolve, now_ns=now_ns)
 
@@ -1045,8 +1104,17 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # Targets the attempt is handed, never the needs.
     open_words_before = open_words(ctx.syllabus)
     sentence_budget = budgets.get("llm-sentence")
-    if sentence_budget is None or not sentence_budget.exceeded_by(
-            _spent_on("llm-sentence", carried, tally)):
+    if not recovery_served:
+        # Spec 3 r63 section 5: a draft on record is still unjudged, so the
+        # drafter is not asked again (each fresh ask counts against its
+        # words' cap) until recovery has served it -- budgeted when the
+        # judge's allowance held it back, deferred when its wire dropped it.
+        if _judge_spent(ctx):
+            tally.budgeted += len(open_words_before)
+        else:
+            tally.deferred += len(open_words_before)
+    elif not _judge_spent(ctx) and (sentence_budget is None or not sentence_budget.exceeded_by(
+            _spent_on("llm-sentence", carried, tally))):
         try:
             result = sentence_attempt(ctx, max_targets=sentence_targets_per_run)
             tally.collect(result)
@@ -1083,7 +1151,8 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             tally.exhausted += len(result.subjects_exhausted & open_words_after)
             tally.deferred += len((open_words_before - served) & open_words_after)
     else:
-        # The llm-sentence budget kept the attempt from running at all:
+        # The llm-sentence budget, or a spent judge allowance (no draft
+        # could be judged), kept the attempt from running at all:
         # every word with an open Target is budget-constrained, same as a
         # per-need Source skip below. The per-Target cap bounds one
         # attempt's own hand-over and applies only when the attempt runs.
@@ -1139,12 +1208,14 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # need bucket of its own: a picture need this drafts nothing for
     # waits in the loop (r25: no query on record, deferred). A drafter
     # transport failure counts under source_failures["llm-phrase"] and
-    # otherwise never breaks the run.
-    try:
-        tally.collect(phrase_attempt(ctx))
-    except TransportError as e:
-        tally.source_failures["llm-phrase"] = tally.source_failures.get("llm-phrase", 0) + 1
-        _log.warning("drafter llm-phrase failed: %s", e)
+    # otherwise never breaks the run. Not made once the judge's ask
+    # allowance is spent: no picture need is attempted then (r63).
+    if not _judge_spent(ctx):
+        try:
+            tally.collect(phrase_attempt(ctx))
+        except TransportError as e:
+            tally.source_failures["llm-phrase"] = tally.source_failures.get("llm-phrase", 0) + 1
+            _log.warning("drafter llm-phrase failed: %s", e)
 
     # One adjudication ask per run (spec 3 r28 section 5): every word
     # still lacking a corroborated pronunciation. No need bucket: words

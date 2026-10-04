@@ -490,7 +490,7 @@ def test_the_default_drafter_is_the_cli_transport_whatever_the_judge_is(
     backend = build_provider(cfg2, db, media_store)._backends["llm-sentence"]
     assert isinstance(backend.transport._resolve(), ClaudeCliTransport)
     assert calls == []                       # a cli drafter reads no secret
-    assert backend.price is None and backend.quota_cost_per_call == 1.0
+    assert backend.price is None
 
 
 def test_an_api_drafter_rides_the_judges_account_model_price_and_thinking(
@@ -506,7 +506,7 @@ def test_an_api_drafter_rides_the_judges_account_model_price_and_thinking(
     assert isinstance(transport, ClaudeApiTransport)
     assert transport.model == "m" and transport.thinking == "adaptive"
     assert transport.api_key == "anthropic-key"
-    assert backend.price == Price(2.0, 10.0) and backend.quota_cost_per_call == 0.0
+    assert backend.price == Price(2.0, 10.0)
 
 
 def test_the_judge_transports_carry_the_configured_thinking(cfg, db, media_store):
@@ -588,7 +588,7 @@ def test_judge_backend_carries_price_and_resolves_media_paths(db, media_store, s
     assert jb.resolve_path("nope") is None
 
 
-def test_judge_backend_quota_cost_is_flat_for_cli_zero_otherwise(db, media_store, secret_paths):
+def test_a_cli_judge_has_no_price_and_an_api_judge_has_its_own(db, media_store, secret_paths):
     secrets = {n: str(p) for n, p in secret_paths.items()}
     cli_assessor = build_assessor(ProvidersConfig(secrets=secrets,
                                                   judge=JudgeConfig(transport="cli", model="m")),
@@ -599,8 +599,7 @@ def test_judge_backend_quota_cost_is_flat_for_cli_zero_otherwise(db, media_store
         secrets=secrets,
         judge=JudgeConfig(transport="api", model="m", price_per_mtok=(2.0, 10.0))),
         db, media_store)
-    assert cli_assessor._backends["judge"].quota_cost_per_call == 1.0
-    assert api_assessor._backends["judge"].quota_cost_per_call == 0.0
+    assert cli_assessor._backends["judge"].price is None
     assert api_assessor._backends["judge"].price == Price(2.0, 10.0)
 
 
@@ -1711,23 +1710,129 @@ def test_a_judge_role_with_its_own_effort_keeps_it(db, media_store, secret_paths
         model="claude-sonnet-5", max_tokens=4096, thinking="adaptive", effort="xhigh")}
 
 
-def test_a_cli_judge_still_answers_through_the_wrapped_complete(db, media_store, secret_paths,
-                                                                monkeypatch):
-    """The judge's `complete` closure gained a `params` keyword (r43), but
-    `claude -p` takes no per-request model: a cli judge must still be
-    callable with no override at all."""
+def _cli_reply(result: str, model: str = "claude-sonnet-5-5") -> str:
+    import json
+    return json.dumps({"type": "result", "is_error": False, "result": result,
+                       "total_cost_usd": 0.0123,
+                       "usage": {"input_tokens": 10, "output_tokens": 70,
+                                 "cache_read_input_tokens": 500,
+                                 "cache_creation_input_tokens": 300},
+                       "modelUsage": {model: {"outputTokens": 70, "canonicalModel": model}}})
+
+
+_CLI_USAGE_ROW = {"input_tokens": 10, "output_tokens": 70,
+                  "cache_read_input_tokens": 500, "cache_creation_input_tokens": 300}
+
+
+def _cli_runner(calls: list, result: str = '{"value": true}'):
+    """A `claude -p` runner that records each command line and answers
+    with one json reply carrying `result`."""
     import subprocess
 
-    from thai_syllabus.curated import JudgeConfig
-    from thai_syllabus.transport import ClaudeCliTransport, Completion
+    def runner(cmd, capture_output, text, stdin):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, _cli_reply(result), "")
+    return runner
 
-    def runner(cmd, capture_output, text):
-        return subprocess.CompletedProcess(cmd, 0, '{"value": true}', "")
 
+def _patch_cli(monkeypatch, runner):
+    from thai_syllabus.transport import ClaudeCliTransport
     monkeypatch.setattr("thai_syllabus.wiring.ClaudeCliTransport",
-                        lambda: ClaudeCliTransport(runner=runner))
-    cfg = ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
-                          imgfetch_path="curl", audiofetch_path="curl",
-                          judge=JudgeConfig(transport="cli", model="m"))
-    jb = build_assessor(cfg, db, media_store)._backends["judge"]
-    assert jb.complete("ask", []) == Completion(text='{"value": true}')
+                        lambda **kw: ClaudeCliTransport(runner=runner, **kw))
+
+
+def _cli_judge_cfg(secret_paths):
+    from thai_syllabus.curated import JudgeConfig, JudgeRoleConfig
+    return ProvidersConfig(secrets={n: str(p) for n, p in secret_paths.items()},
+                           imgfetch_path="curl", audiofetch_path="curl",
+                           judge=JudgeConfig(transport="cli", model="claude-sonnet-5-5",
+                                             effort="medium",
+                                             roles={"pronunciation-for-word": JudgeRoleConfig(
+                                                 model="claude-opus-5-5", effort="high")}))
+
+
+def _flag(cmd, name):
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def test_a_cli_judge_still_answers_through_the_wrapped_complete(db, media_store, secret_paths,
+                                                                monkeypatch):
+    """A cli judge asked with no override answers with the reply's
+    result text."""
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls))
+    jb = build_assessor(_cli_judge_cfg(secret_paths), db, media_store)._backends["judge"]
+    assert jb.complete("ask", []).text == '{"value": true}'
+
+
+def test_a_cli_judge_sends_the_judges_model_and_effort_and_a_roles_own(
+        db, media_store, secret_paths, monkeypatch):
+    """Spec 3 r63: the cli judge sends `--model`/`--effort` per request,
+    the judge's own, or a role's own setting where it names one."""
+    from thai_syllabus.transport import RequestParams
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls))
+    jb = build_assessor(_cli_judge_cfg(secret_paths), db, media_store)._backends["judge"]
+    assert jb.role_params == {"pronunciation-for-word": RequestParams(
+        model="claude-opus-5-5", max_tokens=4096, thinking="disabled", effort="high")}
+    assert dict(jb.role_prices) == {}
+    jb.complete("ask", [])
+    pronunciation = AssessQuestion(subject="ข้าว", role="pronunciation-for-word")
+    jb.complete("ask", [], params=jb.request_params(pronunciation))
+    assert [(_flag(c, "--model"), _flag(c, "--effort")) for c in calls] == [
+        ("claude-sonnet-5-5", "medium"), ("claude-opus-5-5", "high")]
+
+
+def test_a_cli_verdict_row_costs_no_cash_and_records_the_clis_tokens(
+        db, media_store, secret_paths, monkeypatch):
+    """Spec 3 r63: a cli judge's row costs 0.0 (no cash) and its answer
+    carries the tokens the CLI reported."""
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls))
+    assessor = build_assessor(_cli_judge_cfg(secret_paths), db, media_store)
+    question = AssessQuestion(subject="s", role="a-role-with-no-builder")
+    verdict = assessor.ask("judge", question)
+    assert verdict.value is True and verdict.cost == 0.0
+    row = db.latest("assess", "judge", JudgeKey.for_question(question))
+    assert row.cost == 0.0 and row.answer["usage"] == _CLI_USAGE_ROW
+
+
+def test_a_cli_drafter_row_costs_no_cash_and_records_the_clis_tokens(
+        db, media_store, secret_paths, monkeypatch):
+    """Spec 3 r63: a cli drafter's row costs 0.0 and carries the CLI's
+    tokens."""
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls, result="an entry"))
+    provider = build_provider(_cli_judge_cfg(secret_paths), db, media_store)
+    question = Question(subject="s", provides="entry", params={"prompt": "draft"})
+    answer = provider.ask("llm-entry", question)
+    assert answer.items == ("an entry",) and answer.cost == 0.0
+    row = db.latest("provide", "llm-entry", provider._backends["llm-entry"].cache_key(question))
+    assert row.cost == 0.0 and row.answer["usage"] == _CLI_USAGE_ROW
+
+
+def test_an_unset_drafter_model_runs_the_cli_drafter_at_the_clis_default(
+        db, media_store, secret_paths, monkeypatch):
+    """Spec 3 r63 section 8: the cli drafter sends `--model`/`--effort`
+    only when `drafter.model`/`drafter.effort` are set -- the judge's
+    model is not the drafter's."""
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls, result="an entry"))
+    provider = build_provider(_cli_judge_cfg(secret_paths), db, media_store)
+    provider.ask("llm-entry", Question(subject="s", provides="entry", params={"prompt": "d"}))
+    assert "--model" not in calls[0] and "--effort" not in calls[0]
+
+
+def test_a_set_drafter_model_and_effort_reach_the_cli_drafter_and_its_key(
+        db, media_store, secret_paths, monkeypatch):
+    from thai_syllabus.curated import DrafterConfig
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls, result="an entry"))
+    cfg = dataclasses.replace(_cli_judge_cfg(secret_paths),
+                              drafter=DrafterConfig(transport="cli", model="claude-opus-5-5",
+                                                    effort="high"))
+    provider = build_provider(cfg, db, media_store)
+    question = Question(subject="s", provides="entry", params={"prompt": "d"})
+    provider.ask("llm-entry", question)
+    assert (_flag(calls[0], "--model"), _flag(calls[0], "--effort")) == ("claude-opus-5-5", "high")
+    assert provider._backends["llm-entry"].cache_key(question).model == "claude-opus-5-5"

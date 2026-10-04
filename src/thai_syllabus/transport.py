@@ -4,17 +4,19 @@ transports (cli/api/batch) selected by config"; the llm Provider backend
 uses the same cli/api pair). `anthropic` is an optional dependency
 (pyproject.toml's `llm` extra), imported lazily inside the method that
 needs it. The api and batch transports send `thinking` on every request
-(spec 3 §4), and take a per-request `RequestParams` override of model,
-max_tokens and thinking for a judge role configured with its own setting
-(spec 3 r43).
+(spec 3 §4); every transport takes a per-request `RequestParams` override
+for a judge role configured with its own setting (spec 3 r43), the cli
+transport its model and effort (r63).
 
-Costs are in different currencies (spec 3 section 2): cli spends
-subscription token quota, api/batch spend cash. A transport returns a
-`Completion` (text + token usage); the backend prices it.
+A transport returns a `Completion` (text + token usage). cli spends
+subscription token quota and no cash, its usage recorded as tokens
+(r63); api/batch spend cash and the backend prices the tokens (spec 3
+section 2).
 """
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -106,17 +108,51 @@ class RequestParams:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """The tokens one or more asks spent, as the wire reported them (spec
+    3 section 2): what a subscription call's quota use is recorded and
+    reported in (r63). Zero where the wire reports none."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.input_tokens + other.input_tokens,
+                     self.output_tokens + other.output_tokens,
+                     self.cache_read_input_tokens + other.cache_read_input_tokens,
+                     self.cache_creation_input_tokens + other.cache_creation_input_tokens)
+
+    def __bool__(self) -> bool:
+        return any((self.input_tokens, self.output_tokens,
+                    self.cache_read_input_tokens, self.cache_creation_input_tokens))
+
+    def as_row(self) -> dict[str, int]:
+        """The `usage` object a cache row's answer carries."""
+        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+                "cache_read_input_tokens": self.cache_read_input_tokens,
+                "cache_creation_input_tokens": self.cache_creation_input_tokens}
+
+
+@dataclass(frozen=True)
 class Completion:
     """One transport answer: the text plus the token usage the wire reported
-    (0 where the wire reports none, e.g. cli)."""
+    (0 where the wire reports none)."""
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
     # The model that actually answered, as the wire named it (spec 3
-    # r43) -- None where the wire names none (cli). A per-role override
-    # means the judge's configured model is not always the one to price
-    # against, so the answer carries its own.
+    # r43; the cli's `canonicalModel`) -- None where the wire names none.
+    # A per-role override means the judge's configured model is not
+    # always the one to price against, so the answer carries its own.
     model: str | None = None
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    @property
+    def usage(self) -> Usage:
+        return Usage(self.input_tokens, self.output_tokens,
+                     self.cache_read_input_tokens, self.cache_creation_input_tokens)
 
 
 _MEDIA_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -162,18 +198,67 @@ def _completion_of(message) -> Completion:
                       model=getattr(message, "model", None) or None)
 
 
+def _cli_reply_of(stdout: str) -> dict | None:
+    """The JSON object one `claude -p --output-format json` run printed,
+    or None when stdout holds none."""
+    try:
+        reply = json.loads(stdout or "")
+    except ValueError:
+        return None
+    return reply if isinstance(reply, dict) else None
+
+
+def _cli_completion_of(stdout: str, binary: str) -> Completion:
+    """The Completion in one `claude -p --output-format json` reply: the
+    `result` text, the `usage` tokens and the `canonicalModel` of the
+    model in `modelUsage` with the most output tokens. TransportError for
+    a reply that is not a JSON object, one flagged `is_error`, or one
+    with no result text."""
+    reply = _cli_reply_of(stdout)
+    if reply is None:
+        raise TransportError(f"`{binary} -p` answered with no json reply: {stdout.strip()[:200]!r}")
+    text = str(reply.get("result") or "").strip()
+    if reply.get("is_error"):
+        raise TransportError(f"`{binary} -p` reported an error "
+                             f"({reply.get('subtype')}): {text[:200]}")
+    if not text:
+        raise TransportError(f"`{binary} -p` returned no output")
+    usage = reply.get("usage") or {}
+    models = [m for m in (reply.get("modelUsage") or {}).values() if isinstance(m, dict)]
+    answering = max(models, key=lambda m: m.get("outputTokens") or 0, default={})
+    return Completion(text=text,
+                      input_tokens=int(usage.get("input_tokens") or 0),
+                      output_tokens=int(usage.get("output_tokens") or 0),
+                      cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+                      cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+                      model=answering.get("canonicalModel") or None)
+
+
 @dataclass
 class ClaudeCliTransport:
-    """`claude -p <prompt>` via subprocess. No dollar cost -- spends
-    subscription token quota (tracked by the caller's Budget, not here).
-    Attachments are linked (or copied) into a fresh temp dir passed as
-    `--add-dir` with `--allowedTools Read`, named in the prompt, and the
-    temp dir is removed afterwards.
+    """`claude -p <prompt> --output-format json` via subprocess, spending
+    subscription token quota and no cash. Each request is sent `--model`
+    and, when set, `--effort` (spec 3 r63): this transport's own, or a
+    `RequestParams` override's; `max_tokens` and `thinking` have no cli
+    flag and are not sent. The reply's token usage and model come back on
+    the Completion. A run keeps no session (`--no-session-persistence`),
+    reads no stdin, and is offered no tool but Read (`--tools Read`) when
+    there are attachments and none (`--tools ""`) otherwise, so it cannot
+    run commands. Attachments are linked (or copied) into a fresh temp dir
+    passed as `--add-dir` with `--allowedTools Read`, named in the prompt,
+    and the temp dir is removed afterwards.
     """
+    model: str | None = None
+    effort: str | None = None
     binary: str = "claude"
     runner: Callable[..., Any] = field(default=subprocess.run)
 
-    def complete(self, prompt: str, attachments: Sequence[Path] = ()) -> Completion:
+    def complete(self, prompt: str, attachments: Sequence[Path] = (), *,
+                 params: RequestParams | None = None) -> Completion:
+        """`params`, when given, replaces this transport's own model and
+        effort for this one request (spec 3 r43's per-role judge setting)."""
+        model = params.model if params is not None else self.model
+        effort = params.effort if params is not None else self.effort
         scope_dir = None
         cmd = [self.binary, "-p"]
         if attachments:
@@ -187,23 +272,31 @@ class ClaudeCliTransport:
                     shutil.copyfile(src, dst)
                 names.append(str(dst))
             prompt = prompt + "\nAttached files (read each with the Read tool): " + ", ".join(names)
-        cmd.append(prompt)
+        cmd += [prompt, "--output-format", "json", "--no-session-persistence"]
+        if model:
+            cmd += ["--model", model]
+        if effort is not None:
+            cmd += ["--effort", effort]
+        cmd += ["--tools", "Read" if scope_dir else ""]
         if scope_dir:
             cmd += ["--allowedTools", "Read", "--add-dir", scope_dir]
         try:
-            proc = self.runner(cmd, capture_output=True, text=True)
+            proc = self.runner(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         except OSError as e:
             raise TransportError(f"cannot run `{self.binary} -p`: {e}") from e
         finally:
             if scope_dir:
                 shutil.rmtree(scope_dir, ignore_errors=True)
         if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
+            reply = _cli_reply_of(proc.stdout)
+            if reply is not None and reply.get("is_error") and reply.get("result"):
+                detail = str(reply["result"]).strip()
+            else:
+                detail = (proc.stderr or proc.stdout or "").strip()
             raise TransportError(f"`{self.binary} -p` failed: {detail}")
-        text = (proc.stdout or "").strip()
-        if not text:
+        if not (proc.stdout or "").strip():
             raise TransportError(f"`{self.binary} -p` returned no output")
-        return Completion(text=text)
+        return _cli_completion_of(proc.stdout, self.binary)
 
 
 @dataclass

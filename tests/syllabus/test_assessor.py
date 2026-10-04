@@ -43,7 +43,7 @@ from thai_syllabus.authority import AUTHORITY_ORDER, ROLE_FOR_KIND, role_for
 from thai_syllabus.cachekeys import BatchMarkerKey, JudgeKey, MechanicalKey, rendition_identity, sha
 from thai_syllabus.rulebook import PRONUNCIATION_RUBRIC
 from thai_syllabus.store import SyllabusDb
-from thai_syllabus.transport import Completion, RequestParams, TransportError
+from thai_syllabus.transport import Completion, RequestParams, TransportError, Usage
 
 
 def test_no_module_imports_the_old_packages():
@@ -598,10 +598,41 @@ def test_judge_fetch_attaches_the_artifact_and_prices_the_verdict(tmp_path):
     assert abs(raw.cost - (500 * 2.0 + 50 * 10.0) / 1_000_000) < 1e-12
 
 
-def test_judge_cli_cost_is_one_quota_call():
+def test_a_cli_judge_verdict_costs_no_cash_and_carries_its_tokens():
+    """Spec 3 r63: a subscription call costs no cash; its quota use is
+    the tokens the CLI reported."""
     jb = JudgeBackend(model="m", transport="cli",
-                      complete=lambda p, a=(): Completion(text="true"), quota_cost_per_call=1.0)
-    assert jb.fetch(AssessQuestion(subject="w", role="picture-for-word", rubric="r")).cost == 1.0
+                      complete=lambda p, a=(): Completion(text="true", input_tokens=10,
+                                                          output_tokens=70,
+                                                          cache_read_input_tokens=500,
+                                                          cache_creation_input_tokens=300))
+    raw = jb.fetch(AssessQuestion(subject="w", role="picture-for-word", rubric="r"))
+    assert raw.cost == 0.0
+    assert raw.usage == Usage(10, 70, 500, 300)
+
+
+def test_a_verdict_row_records_the_tokens_its_completion_reported(db):
+    """Spec 3 section 2: a transport that receives usage does not drop
+    it -- the row's answer carries a `usage` object, and the Verdict the
+    tokens."""
+    jb = JudgeBackend(model="m", transport="api", price=Price(2.0, 10.0),
+                      complete=lambda p, a=(): Completion(text="true", input_tokens=100,
+                                                          output_tokens=5))
+    assessor = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", rubric="r")
+    verdict = assessor.ask("judge", q)
+    assert verdict.usage == Usage(100, 5, 0, 0)
+    assert db.latest("assess", "judge", jb.cache_key(q)).answer["usage"] == {
+        "input_tokens": 100, "output_tokens": 5,
+        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+
+
+def test_a_completion_with_no_tokens_writes_no_usage_on_its_row(db):
+    jb = JudgeBackend(model="m", transport="cli", complete=lambda p, a=(): Completion(text="true"))
+    assessor = Assessor(record=db, cache=db, backends={"judge": jb})
+    q = AssessQuestion(subject="w", role="picture-for-word", rubric="r")
+    assessor.ask("judge", q)
+    assert "usage" not in db.latest("assess", "judge", jb.cache_key(q)).answer
 
 
 def test_preference_question_key_and_attachments(tmp_path):
@@ -709,6 +740,55 @@ def test_ask_many_inline_resolves_each_and_skips_transport_errors(db):
     assert isinstance(res, ManyResult)
     assert set(res.resolved) == {jb.cache_key(qs[0])} and res.collected == []
     assert len(calls) == 2  # both questions were attempted, not short-circuited
+
+
+def _three_fits():
+    return [AssessQuestion(subject="w", role="picture-for-word", artifact_sha=f"s{i}", rubric="r")
+            for i in range(3)]
+
+
+def test_a_judge_allowance_puts_only_that_many_questions_on_the_wire(db):
+    """Spec 3 r63 section 7: at the judge's ask allowance the remaining
+    misses are not asked, not cached, and counted refused."""
+    calls = []
+
+    def complete(prompt, attachments=()):
+        calls.append(prompt)
+        return Completion(text="true")
+
+    jb = JudgeBackend(model="m", transport="cli", complete=complete)
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    a.limit("judge", 1)
+    res = a.ask_many("judge", _three_fits())
+    assert len(calls) == 1 and len(res.resolved) == 1
+    assert res.collected == [] and res.excluded == {}
+    assert a.remaining("judge") == 0 and a.refused("judge") == 2
+
+
+def test_a_judge_allowance_serves_cache_hits_without_spending_any(db):
+    jb = JudgeBackend(model="m", transport="cli", complete=lambda p, a=(): Completion(text="true"))
+    a = Assessor(record=db, cache=db, backends={"judge": jb})
+    first = _three_fits()[0]
+    a.ask_many("judge", [first])
+    a.limit("judge", 0)
+    assert set(a.ask_many("judge", [first]).resolved) == {jb.cache_key(first)}
+    assert a.refused("judge") == 0
+
+
+def test_a_judge_allowance_bounds_a_batch_collection_too(assessor_with_batch_transport):
+    a = assessor_with_batch_transport
+    a.limit("judge", 2)
+    res = a.ask_many("judge", [fit_question(w, "a" * 64) for w in ("rice", "fish", "egg")])
+    assert len(res.collected) == 2 and a.refused("judge") == 1
+
+
+def test_a_second_judge_limit_keeps_the_lower_allowance(db):
+    a = Assessor(record=db, cache=db, backends={})
+    assert a.remaining("judge") is None
+    a.limit("judge", 5)
+    a.limit("judge", 2)
+    a.limit("judge", 4)
+    assert a.remaining("judge") == 2
 
 
 class _NoCache:

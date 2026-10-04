@@ -3,6 +3,7 @@ provider.py's llm backend and assessor.py's judge backend. No real
 subprocess, no real anthropic import -- everything injected.
 """
 import base64
+import json
 import subprocess
 from pathlib import Path
 
@@ -23,28 +24,132 @@ from thai_syllabus.transport import (
 
 # --- cli -----------------------------------------------------------------
 
+def _cli_reply(result="the completion", *, is_error=False, model="claude-sonnet-5-5",
+               model_usage=None) -> str:
+    """One `claude -p --output-format json` reply, the shape the CLI
+    prints (fields this transport reads, plus some it ignores)."""
+    if model_usage is None:
+        model_usage = {f"{model}-20260901": {"inputTokens": 10, "outputTokens": 70,
+                                            "canonicalModel": model}}
+    return json.dumps({
+        "type": "result", "subtype": "success", "is_error": is_error,
+        "result": result, "session_id": "s-1", "total_cost_usd": 0.03,
+        "usage": {"input_tokens": 10, "output_tokens": 70,
+                  "cache_read_input_tokens": 13796, "cache_creation_input_tokens": 12724,
+                  "service_tier": "standard"},
+        "modelUsage": model_usage})
+
+
 class _Runner:
-    def __init__(self, stdout="", stderr="", returncode=0):
+    def __init__(self, stdout=None, stderr="", returncode=0):
+        stdout = _cli_reply() if stdout is None else stdout
         self.result = subprocess.CompletedProcess([], returncode, stdout, stderr)
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
+        self.kwargs = kwargs
         return self.result
 
 
-def test_cli_transport_runs_claude_dash_p_and_returns_stdout():
-    runner = _Runner(stdout="the completion\n")
+def _flag(cmd, name):
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def test_cli_transport_runs_claude_dash_p_and_returns_the_result_text():
+    runner = _Runner(stdout=_cli_reply("the completion"))
     t = ClaudeCliTransport(runner=runner)
     assert t.complete("do the thing").text == "the completion"
-    assert runner.calls == [["claude", "-p", "do the thing"]]
+    cmd = runner.calls[0]
+    assert cmd[:3] == ["claude", "-p", "do the thing"]
+    assert _flag(cmd, "--output-format") == "json"
 
 
-def test_cli_transport_raises_on_nonzero_exit():
-    runner = _Runner(stderr="boom", returncode=1)
-    t = ClaudeCliTransport(runner=runner)
+def test_cli_transport_sends_its_model_and_effort():
+    runner = _Runner()
+    ClaudeCliTransport(model="claude-sonnet-5-5", effort="medium", runner=runner).complete("q")
+    assert _flag(runner.calls[0], "--model") == "claude-sonnet-5-5"
+    assert _flag(runner.calls[0], "--effort") == "medium"
+
+
+def test_cli_transport_without_an_effort_sends_none():
+    runner = _Runner()
+    ClaudeCliTransport(model="claude-sonnet-5-5", runner=runner).complete("q")
+    assert "--effort" not in runner.calls[0]
+
+
+def test_cli_transport_sends_the_request_params_model_and_effort_over_its_own():
+    runner = _Runner()
+    t = ClaudeCliTransport(model="claude-sonnet-5-5", effort="medium", runner=runner)
+    t.complete("q", params=RequestParams(model="claude-opus-5-5", max_tokens=16000,
+                                         thinking="adaptive", effort="high"))
+    assert _flag(runner.calls[0], "--model") == "claude-opus-5-5"
+    assert _flag(runner.calls[0], "--effort") == "high"
+
+
+def test_cli_transport_reports_the_clis_usage_and_model():
+    runner = _Runner(stdout=_cli_reply("yes", model="claude-opus-5-5"))
+    c = ClaudeCliTransport(model="claude-opus-5-5", runner=runner).complete("q")
+    assert c == Completion(text="yes", input_tokens=10, output_tokens=70,
+                           cache_read_input_tokens=13796, cache_creation_input_tokens=12724,
+                           model="claude-opus-5-5")
+
+
+def test_cli_transport_names_the_model_with_the_most_output_tokens():
+    runner = _Runner(stdout=_cli_reply("yes", model_usage={
+        "claude-haiku-4-5-20251001": {"outputTokens": 12, "canonicalModel": "claude-haiku-4-5"},
+        "claude-opus-5-5": {"outputTokens": 900, "canonicalModel": "claude-opus-5-5"}}))
+    assert ClaudeCliTransport(runner=runner).complete("q").model == "claude-opus-5-5"
+
+
+def test_cli_transport_reads_a_reply_with_no_model_usage_or_cost():
+    runner = _Runner(stdout=json.dumps({"is_error": False, "result": "yes"}))
+    c = ClaudeCliTransport(runner=runner).complete("q")
+    assert (c.text, c.model, c.input_tokens) == ("yes", None, 0)
+
+
+def test_cli_transport_raises_on_an_empty_result():
+    runner = _Runner(stdout=_cli_reply(""))
+    with pytest.raises(TransportError, match="no output"):
+        ClaudeCliTransport(runner=runner).complete("q")
+
+
+def test_cli_transport_raises_on_an_error_reply_with_its_detail():
+    runner = _Runner(stdout=_cli_reply("API Error: 529 overloaded", is_error=True))
+    with pytest.raises(TransportError, match="529 overloaded"):
+        ClaudeCliTransport(runner=runner).complete("q")
+
+
+def test_cli_transport_raises_on_a_reply_that_is_not_json():
+    runner = _Runner(stdout="plain text, not the json reply\n")
+    with pytest.raises(TransportError, match="plain text"):
+        ClaudeCliTransport(runner=runner).complete("q")
+
+
+def test_cli_transport_on_a_nonzero_exit_names_the_json_replys_reason():
+    runner = _Runner(stdout=_cli_reply("Credit balance is too low", is_error=True),
+                     stderr="Warning: an unrelated notice", returncode=1)
+    with pytest.raises(TransportError, match="Credit balance is too low"):
+        ClaudeCliTransport(runner=runner).complete("x")
+
+
+def test_cli_transport_on_a_nonzero_exit_without_a_json_reply_names_stderr():
+    runner = _Runner(stdout="", stderr="boom", returncode=1)
     with pytest.raises(TransportError, match="boom"):
-        t.complete("x")
+        ClaudeCliTransport(runner=runner).complete("x")
+
+
+def test_cli_transport_reads_no_stdin_and_keeps_no_session():
+    runner = _Runner()
+    ClaudeCliTransport(runner=runner).complete("q")
+    assert runner.kwargs.get("stdin") is subprocess.DEVNULL
+    assert "--no-session-persistence" in runner.calls[0]
+
+
+def test_cli_transport_without_attachments_offers_no_tools():
+    runner = _Runner()
+    ClaudeCliTransport(runner=runner).complete("q")
+    assert _flag(runner.calls[0], "--tools") == ""
 
 
 def test_cli_transport_raises_on_missing_binary():
@@ -263,34 +368,35 @@ def test_cli_transport_scopes_add_dir_to_a_temp_dir_holding_the_attachment(tmp_p
     img.write_bytes(b"jpg")
     seen = {}
 
-    def runner(cmd, capture_output, text):
+    def runner(cmd, capture_output, text, stdin):
         seen["cmd"] = cmd
         add_dir = Path(cmd[cmd.index("--add-dir") + 1])
         seen["files"] = sorted(p.name for p in add_dir.iterdir())
         seen["prompt"] = cmd[cmd.index("-p") + 1]
 
         class P:
-            returncode, stdout, stderr = 0, "yes", ""
+            returncode, stdout, stderr = 0, _cli_reply("yes"), ""
         return P()
 
     t = ClaudeCliTransport(runner=runner)
     c = t.complete("judge this", attachments=[img])
     assert c.text == "yes"
-    assert "--allowedTools" in seen["cmd"] and "Read" in seen["cmd"]
+    assert _flag(seen["cmd"], "--tools") == "Read"
+    assert _flag(seen["cmd"], "--allowedTools") == "Read"
     assert seen["files"] == ["0-a.jpg"]
     assert Path(seen["cmd"][seen["cmd"].index("--add-dir") + 1]) != tmp_path
     assert "a.jpg" in seen["prompt"]
 
 
 def test_cli_transport_without_attachments_adds_no_flags():
-    def runner(cmd, capture_output, text):
+    def runner(cmd, capture_output, text, stdin):
         assert "--add-dir" not in cmd
 
         class P:
-            returncode, stdout, stderr = 0, "t", ""
+            returncode, stdout, stderr = 0, _cli_reply("t"), ""
         return P()
 
-    assert ClaudeCliTransport(runner=runner).complete("q") == Completion(text="t")
+    assert ClaudeCliTransport(runner=runner).complete("q").text == "t"
 
 
 class _CompletionBatches:

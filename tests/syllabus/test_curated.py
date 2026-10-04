@@ -1148,6 +1148,37 @@ def test_providers_rejects_an_unknown_drafter_transport(tmp_path):
         curated.load_providers_config(path)
 
 
+def test_providers_drafter_model_and_effort_default_to_unset_and_round_trip(tmp_path):
+    assert (curated.DrafterConfig().model, curated.DrafterConfig().effort) == (None, None)
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        drafter={"transport": "cli", "model": "claude-opus-5-5", "effort": "high"})))
+    cfg = curated.load_providers_config(path)
+    assert (cfg.drafter.model, cfg.drafter.effort) == ("claude-opus-5-5", "high")
+    curated.save_providers_config(path, cfg)
+    assert curated.load_providers_config(path) == cfg
+
+
+@pytest.mark.parametrize("drafter,field_name", [
+    ({"effort": "extreme"}, "effort"), ({"model": ""}, "model"), ({"model": 5}, "model")])
+def test_providers_rejects_a_bad_drafter_model_or_effort(tmp_path, drafter, field_name):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(drafter=drafter)))
+    with pytest.raises(curated.CuratedValidationError,
+                       match=rf"providers\.drafter\.{field_name}"):
+        curated.load_providers_config(path)
+
+
+def test_providers_rejects_a_drafter_model_on_the_api_drafter(tmp_path):
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml.safe_dump(_providers(
+        secrets={"anthropic": "op://x"},
+        judge={"transport": "cli", "price_per_mtok": {"input": 2.0, "output": 10.0}},
+        drafter={"transport": "api", "model": "claude-opus-5-5"})))
+    with pytest.raises(curated.CuratedValidationError, match=r"providers\.drafter\.model"):
+        curated.load_providers_config(path)
+
+
 def test_providers_api_drafter_requires_the_anthropic_secret_and_a_price(tmp_path):
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(_providers(

@@ -17,13 +17,14 @@ from thai_syllabus.entities import Category, text_sha
 from thai_syllabus.media import Speaker
 from thai_syllabus.provider import FetchBackend, RawAnswer
 from thai_syllabus.profile import Profile
-from thai_syllabus.run import run
+from thai_syllabus.run import Budget, run
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion
 from thai_syllabus.wiring import build_sourcing, load_syllabus
 
 from .builders import sentence, target, thai_of, word
-from .test_run import RICE, _Llm as _DraftLlm, _deck as _batch_fixture_deck, _wire, fake_batch, fake_search
+from .test_run import (RICE, _Llm as _DraftLlm, _LlmPhrase, _deck as _batch_fixture_deck, _wire,
+                       fake_batch, fake_search)
 
 
 def _deck(tmp_path):
@@ -117,7 +118,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     ctx.adopt_graphemes = False
     ctx.provider._backends.update({
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
-        "forvo": _Forvo(), "llm-sentence": _Llm(),
+        "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
         "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
         "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
     ctx.assessor._backends["judge"].complete = _judge_complete
@@ -548,3 +549,83 @@ def test_a_words_open_recording_is_still_attempted_alongside_its_resolve_time_pr
     for report in (r0, r1):
         assert (report.available == report.attempted + report.exhausted + report.pending
                + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_runs_judge_spend_sums_the_tokens_its_verdicts_reported(tmp_path):
+    """Spec 3 r63: the run's spend per backend carries the tokens each
+    fresh answer reported, so a subscription judge's quota use reaches
+    the report."""
+    root = _deck(tmp_path)
+    ctx = build_sourcing(root)
+    ctx.adopt_graphemes = False
+    ctx.provider._backends.update({
+        "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
+        "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
+        "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
+        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
+
+    def complete(prompt, attachments=(), **kw):
+        verdict = _judge_complete(prompt, attachments)
+        return Completion(text=verdict.text, input_tokens=10, output_tokens=70)
+    ctx.assessor._backends["judge"].complete = complete
+    ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
+
+    judge = run(ctx, {}).spend["judge"]
+    assert judge.asks > 0
+    assert (judge.usage.input_tokens, judge.usage.output_tokens) == (10 * judge.asks, 70 * judge.asks)
+
+
+def _counting_ctx(root, calls: list):
+    """`root`'s deck wired with fakes, its judge counting every question
+    it is asked."""
+    ctx = build_sourcing(root)
+    ctx.adopt_graphemes = False
+    ctx.provider._backends.update({
+        "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
+        "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
+        "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
+        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
+
+    def complete(prompt, attachments=(), **kw):
+        calls.append(prompt)
+        return _judge_complete(prompt, attachments)
+    ctx.assessor._backends["judge"].complete = complete
+    ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
+    return ctx
+
+
+def test_a_run_under_a_judge_allowance_of_one_asks_the_judge_once(tmp_path):
+    """Spec 3 r63 section 7: `run --judge-asks 1` makes one judge ask;
+    the needs it could not judge count budgeted."""
+    calls: list = []
+    ctx = _counting_ctx(_deck(tmp_path), calls)
+    ctx.assessor.limit("judge", 1)
+    report = run(ctx, {})
+    assert len(calls) == 1
+    assert report.budgeted >= 1
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)
+
+
+def test_a_judge_day_budget_counts_the_verdicts_already_on_record_today(tmp_path):
+    """`--backend-cap judge=N` (spec 3 section 7): the judge's day is its
+    verdict rows since the day start plus this run's asks."""
+    root = _deck(tmp_path)
+    first: list = []
+    ctx = _counting_ctx(root, first)
+    ctx.assessor.limit("judge", 2)
+    run(ctx, {})
+    assert len(first) == 2
+    again: list = []
+    report = run(_counting_ctx(root, again), {"judge": Budget(max_asks=3)})
+    assert len(again) == 1 and report.budgeted >= 1
+
+
+def test_a_spent_judge_allowance_asks_no_drafter_for_picture_phrases(tmp_path):
+    """Spec 3 r63 section 7: with the judge's allowance spent no picture
+    need is attempted, so the phrase ask that serves them is not made."""
+    calls: list = []
+    ctx = _counting_ctx(_deck(tmp_path), calls)
+    ctx.assessor.limit("judge", 0)
+    run(ctx, {})
+    assert calls == [] and ctx.provider._backends["llm-phrase"].prompts == []

@@ -1071,7 +1071,7 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tm
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
         "pexels": _Silent("pexels"), "forvo": forvo, "tts": _EmptyTts(),
-        "llm-sentence": _Llm(),
+        "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
     })
     ctx.assessor._backends["mechanical"] = _PassingMechanical()
 
@@ -1121,7 +1121,7 @@ def test_a_recording_needs_unjudged_candidate_is_assessed_before_any_source_over
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
         "pexels": _Silent("pexels"), "forvo": forvo, "tts": tts,
-        "llm-sentence": _Llm(),
+        "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
     })
     ctx.assessor._backends["mechanical"] = _PassingMechanical()
 
@@ -1218,7 +1218,7 @@ class _Syl:
 
 class _Assessor:
     """The Assess port as run() uses it: an outstanding batch to resolve,
-    and one submission per run."""
+    one submission per run, and no ask allowance."""
     inline = True
 
     def __init__(self, outstanding=None):
@@ -1239,6 +1239,12 @@ class _Assessor:
             return None
         self.submitted.append(list(prepared))
         return f"batch-{len(self.submitted)}"
+
+    def remaining(self, backend):
+        return None   # no ask allowance
+
+    def refused(self, backend):
+        return 0
 
     def key_of(self, backend, question):
         """The key `backend` answers `question` under; only the real
@@ -3350,8 +3356,8 @@ def test_the_recovery_reads_the_open_targets_once_for_every_draft_on_record(
         return real(self)
 
     monkeypatch.setattr(Syllabus, "report", counted)
-    result = run_mod._recover_orphaned_drafts(ctx)
-    assert len(result.questions) == 3
+    result, served = run_mod._recover_orphaned_drafts(ctx)
+    assert len(result.questions) == 3 and served
     assert len(calls) == 1
 
 
@@ -3624,3 +3630,79 @@ def test_a_run_starts_the_dictionary_s_run(db, monkeypatch):
     assert dictionary.runs == 1
     run(ctx, {})
     assert dictionary.runs == 2
+
+
+class _FreshDrafter:
+    """The sentence drafter keyed by its prompt, as the real one is: a
+    changed prompt is a fresh ask. Every answer carries the same three
+    drafts; `asks` counts the fresh ones."""
+
+    def __init__(self):
+        self.asks = 0
+
+    def cache_key(self, q):
+        return LlmPromptKey(producer="sentence-drafter", model="m",
+                            prompt_sha=sha(q.params["prompt"]))
+
+    def fetch(self, q):
+        self.asks += 1
+        return RawAnswer(items=(json.dumps({"sentences": [
+            # กินข้าว = eat rice, ข้าว = rice, ข้าว กิน = rice, eat
+            {"clauses": [["eat", "rice"]], "text": EAT_RICE, "gloss": "eat rice"},
+            {"clauses": [["rice"]], "text": "ข้าว", "gloss": "rice"},
+            {"clauses": [["rice"], ["eat"]], "text": "ข้าว กิน", "gloss": "rice, eat"}]},
+            ensure_ascii=False),))
+
+
+def test_a_one_ask_judge_serves_the_drafts_on_record_before_the_drafter_is_asked_again(
+        tmp_path, fake_search):
+    """Spec 3 r63 section 5: the sentence attempt waits while a draft on
+    record is still unjudged, so a small judge allowance spends three
+    runs judging one answer's three drafts and the words' ask count stays
+    at one -- neither word is withheld with drafts unjudged."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+                 transport="api")
+    drafter = _FreshDrafter()
+    judged: list[str] = []
+
+    def judge(prompt, attachments=(), **kw):
+        judged.append(prompt)
+        return Completion(text='{"value": false, "evidence": "unnatural"}')
+
+    for _tick in range(3):
+        ctx = _wire(build_sourcing(root), fake_search, llm=drafter, complete=judge)
+        for name in ("openverse", "wikimedia", "pexels"):
+            ctx.provider._backends[name] = _Silent(name)
+        ctx.assessor.limit("judge", 1)
+        run(ctx, budgets={})
+    assert drafter.asks == 1 and len(judged) == 3
+    assert not any(sentence_exhausted(ctx.db, w).exhausted for w in ("rice", "eat"))
+
+
+def test_the_drafter_is_not_asked_while_an_orphaned_draft_stays_unjudged(tmp_path, fake_search):
+    """Spec 3 r63 section 5: the sentence attempt runs only once every
+    unadopted, unretired draft on record has its verdict. One orphan's
+    question drops on the wire (the other answers, so the judge is not
+    unreachable): the drafter is not asked, and the open words wait."""
+    root = _deck(tmp_path, (RICE, EAT),
+                 (target("rice/receptive", "rice"), target("eat/receptive", "eat")),
+                 transport="api")
+
+    def judge(prompt, attachments=(), **kw):
+        if "rice, eat" in prompt:
+            raise TransportError("overloaded")
+        return Completion(text='{"value": false, "evidence": "unnatural"}')
+
+    drafter = _FreshDrafter()
+    ctx = _wire(build_sourcing(root), fake_search, llm=drafter, complete=judge)
+    for name in ("openverse", "wikimedia", "pexels"):
+        ctx.provider._backends[name] = _Silent(name)
+    _seed_draft(ctx.db, clauses=[["eat", "rice"]], text=EAT_RICE, gloss="eat rice")
+    # ข้าว กิน = rice, eat
+    _seed_draft(ctx.db, clauses=[["rice"], ["eat"]], text="ข้าว กิน", gloss="rice, eat")
+    report = run(ctx, budgets={})
+    assert drafter.asks == 0
+    assert not _sentence_attempt_rows(ctx, "rice") and not _sentence_attempt_rows(ctx, "eat")
+    assert report.available == (report.attempted + report.exhausted + report.pending
+                                + report.unserved + report.budgeted + report.deferred)

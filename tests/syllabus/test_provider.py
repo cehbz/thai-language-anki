@@ -48,7 +48,7 @@ from thai_syllabus.provider import (
     wikimedia_backend,
 )
 from thai_syllabus.store import ImageIngestResult, MediaStore, SyllabusDb
-from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
+from thai_syllabus.transport import Completion, QuotaExhausted, TransportError, Usage
 from thai_syllabus.tts import GoogleTts, pick_voice
 
 
@@ -1334,11 +1334,11 @@ def test_llm_cache_key_changes_when_the_prompt_text_changes():
 
 def test_llm_fetch_delegates_to_the_transport_and_wraps_the_completion():
     transport = _FakeTransport(text="ผมกินข้าว")  # I eat rice
-    backend = LlmBackend(producer="p", model="m", transport=transport, quota_cost_per_call=0.002)
+    backend = LlmBackend(producer="p", model="m", transport=transport)
     answer = backend.fetch(Question(subject="s", provides="sentence",
                                     params={"prompt": "write a sentence about rice"}))
     assert answer.items == ("ผมกินข้าว",)  # I eat rice
-    assert answer.cost == 0.002
+    assert answer.cost == 0.0
     assert transport.prompts == ["write a sentence about rice"]
 
 
@@ -1346,14 +1346,27 @@ def test_llm_fetch_prices_the_completions_tokens_when_a_price_is_configured():
     """Spec 3 section 2's cost contract: every Answer carries the cost the
     backend incurred, measured by the backend -- api/batch llm drafting is
     tokens times the providers.yaml price, exactly as JudgeBackend prices a
-    verdict. A flat per-call quota cost applies only where no price does
-    (the cli transport, which reports no usage)."""
+    verdict. With no price (the cli transport) an answer costs no cash."""
     transport = _FakeTransport(text="drafted", input_tokens=1_000_000, output_tokens=500_000)
     backend = LlmBackend(producer="p", model="m", transport=transport,
-                         price=Price(2.0, 10.0), quota_cost_per_call=1.0)
+                         price=Price(2.0, 10.0))
     answer = backend.fetch(Question(subject="s", provides="sentence",
                                     params={"prompt": "draft"}))
     assert answer.cost == pytest.approx(2.0 + 5.0)
+
+
+def test_an_llm_answer_row_records_the_tokens_its_completion_reported(db):
+    """Spec 3 section 2: the drafter's row carries the completion's
+    `usage`, and the ProviderAnswer the tokens."""
+    transport = _FakeTransport(text="drafted", input_tokens=10, output_tokens=70)
+    backend = LlmBackend(producer="p", model="m", transport=transport)
+    provider = Provider(record=db, cache=db, backends={"llm": backend})
+    question = Question(subject="s", provides="sentence", params={"prompt": "draft"})
+    answer = provider.ask("llm", question)
+    assert answer.usage == Usage(10, 70, 0, 0) and answer.cost == 0.0
+    assert db.latest("provide", "llm", backend.cache_key(question)).answer["usage"] == {
+        "input_tokens": 10, "output_tokens": 70,
+        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
 
 
 def test_llm_transport_error_propagates_uncached(db):

@@ -75,7 +75,7 @@ from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PAR
 from .safety import Guard
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus
-from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError
+from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError, Usage
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
 __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind",
@@ -191,13 +191,17 @@ class Need:
 @dataclass
 class Spend:
     """One backend's asks and cost within a run, in that backend's own
-    currency (spec 3 section 7). A cache hit adds no ask."""
+    currency (spec 3 section 7), and the tokens its fresh LLM answers
+    reported -- a subscription backend's quota use (r63). A cache hit
+    adds no ask and no tokens."""
     asks: int = 0
     cost: float = 0.0
+    usage: Usage = field(default_factory=Usage)
 
-    def add(self, asks: int, cost: float) -> None:
+    def add(self, asks: int, cost: float, usage: Usage = Usage()) -> None:
         self.asks += asks
         self.cost += cost
+        self.usage = self.usage + usage
 
 
 @dataclass
@@ -491,7 +495,9 @@ def _candidate_shas(ctx: Sourcing, need: Need) -> list[str]:
 # --- spend ------------------------------------------------------------------
 
 def _count(spend: dict[str, Spend], backend: str, answer) -> None:
-    spend.setdefault(backend, Spend()).add(0 if answer.hit else 1, float(answer.cost or 0.0))
+    spend.setdefault(backend, Spend()).add(
+        0 if answer.hit else 1, float(answer.cost or 0.0),
+        Usage() if answer.hit else getattr(answer, "usage", Usage()))
 
 
 def _count_verdicts(spend: dict[str, Spend], backend: str, result) -> None:

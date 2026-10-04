@@ -149,12 +149,13 @@ class _Lazy:
 
 def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     """A lazy `.complete(prompt)` transport for the judge (judge.transport,
-    judge.model, judge.thinking, judge.max_tokens). None under a "batch"
-    judge.
+    judge.model, judge.effort; judge.thinking and judge.max_tokens under
+    api). None under a "batch" judge.
     """
     kind = cfg.judge.transport
     if kind == "cli":
-        return _Lazy(lambda: ClaudeCliTransport())
+        return _Lazy(lambda: ClaudeCliTransport(model=cfg.judge.model or None,
+                                                effort=cfg.judge.effort))
     if kind == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
@@ -166,14 +167,26 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
 def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
     """The single-question transport llm-sentence/phrase/entry draft on
     (spec 3 section 4): drafter.transport, cli or api; api rides the
-    judge's account, model, thinking and max_tokens.
+    judge's account, model, thinking, effort and max_tokens; cli sends
+    drafter.model and drafter.effort when set, else the CLI's defaults
+    apply.
     """
     if cfg.drafter.transport == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
             thinking=cfg.judge.thinking, effort=cfg.judge.effort,
             max_tokens=cfg.judge.max_tokens))
-    return _Lazy(lambda: ClaudeCliTransport())
+    return _Lazy(lambda: ClaudeCliTransport(model=cfg.drafter.model,
+                                            effort=cfg.drafter.effort))
+
+
+def _drafter_model(cfg: ProvidersConfig) -> str:
+    """The model a drafting ask's cache key names: the cli drafter's own
+    when set, else the judge's (the api drafter's, and the name a cli
+    drafter's asks have always been keyed under)."""
+    if cfg.drafter.transport == "cli" and cfg.drafter.model:
+        return cfg.drafter.model
+    return cfg.judge.model
 
 
 def _judge_price(cfg: ProvidersConfig) -> Price | None:
@@ -183,11 +196,9 @@ def _judge_price(cfg: ProvidersConfig) -> Price | None:
 def _role_params(cfg: ProvidersConfig) -> dict[str, RequestParams]:
     """role -> the RequestParams that role's questions go out under (spec
     3 r43's `judge.roles.<role>`), each field inherited from the judge
-    where the role names none. Empty under the cli transport: `claude -p`
-    takes no per-request model, thinking or output cap.
+    where the role names none. The cli transport sends the model and
+    effort of these (r63).
     """
-    if cfg.judge.transport == "cli":
-        return {}
     return {name: RequestParams(
                 model=role.model if role.model is not None else cfg.judge.model,
                 max_tokens=(role.max_tokens if role.max_tokens is not None
@@ -200,7 +211,7 @@ def _role_params(cfg: ProvidersConfig) -> dict[str, RequestParams]:
 def _role_prices(cfg: ProvidersConfig) -> dict[str, Price]:
     """role -> the Price its answers are costed at (spec 3 r43): the
     role's own when it states one, else the judge's. Empty under the cli
-    transport, which spends quota per call, not cash per token.
+    transport, which spends no cash (r63).
     """
     if cfg.judge.transport == "cli":
         return {}
@@ -212,18 +223,8 @@ def _role_prices(cfg: ProvidersConfig) -> dict[str, Price]:
     return prices
 
 
-def _judge_quota_cost(cfg: ProvidersConfig) -> float:
-    """The cli transport spends a flat unit of subscription quota per call
-    and reports no token usage; api/batch report usage and are priced."""
-    return 1.0 if cfg.judge.transport == "cli" else 0.0
-
-
 def _drafter_price(cfg: ProvidersConfig) -> Price | None:
     return _judge_price(cfg) if cfg.drafter.transport == "api" else None
-
-
-def _drafter_quota_cost(cfg: ProvidersConfig) -> float:
-    return 1.0 if cfg.drafter.transport == "cli" else 0.0
 
 
 # --- build_provider ----------------------------------------------------
@@ -377,10 +378,9 @@ def build_provider(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
                            ("sentence-parser", "llm-parse"),
                            ("comment-reader", "llm-comment")):
         kwargs = {"recognize": recognizers[name]} if name in recognizers else {}
-        backends[name] = LlmBackend(producer=producer, model=cfg.judge.model,
+        backends[name] = LlmBackend(producer=producer, model=_drafter_model(cfg),
                                     transport=drafter_transport,
                                     price=_drafter_price(cfg),
-                                    quota_cost_per_call=_drafter_quota_cost(cfg),
                                     **kwargs)
 
     return Provider(record=db, cache=db, backends=backends)
@@ -463,7 +463,6 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     judge = _build_judge_backend(cfg, secrets)
     judge.resolve_path = resolve
     judge.price = _judge_price(cfg)
-    judge.quota_cost_per_call = _judge_quota_cost(cfg)
     backends: dict[str, AssessBackend] = {
         "judge": judge,
         "mechanical": _recording_check(db, media_store, form_of=form_of,
@@ -489,12 +488,6 @@ def _build_judge_backend(cfg: ProvidersConfig, secrets) -> JudgeBackend:
             # `.complete` lookup on `transport` (a _Lazy) resolves it, so
             # this closure defers that lookup to the moment it is called.
             def complete(prompt, attachments=(), *, params=None, _t=transport):
-                # `params` is forwarded only when a role actually has an
-                # override (spec 3 r43): the cli transport takes no
-                # per-request model, thinking or output cap, and never
-                # sees the keyword.
-                if params is None:
-                    return _t.complete(prompt, attachments)
                 return _t.complete(prompt, attachments, params=params)
     return JudgeBackend(model=cfg.judge.model, transport=kind, complete=complete,
                         batch_transport=batch_transport,

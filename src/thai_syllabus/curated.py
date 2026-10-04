@@ -705,8 +705,9 @@ class JudgeConfig:
     price_per_mtok: tuple[float, float] | None = None  # (input, output) $/Mtok
     thinking: str = "disabled"  # "disabled" | "adaptive"; sent by the api and batch transports
     # "low" | "medium" | "high" | "xhigh" | "max"; sent by the api and batch
-    # transports as `output_config.effort` when set, None sends nothing so
-    # the model's own default applies
+    # transports as `output_config.effort` and by the cli transport as
+    # `--effort` when set, None sends nothing so the model's own default
+    # applies
     effort: str | None = None
     max_tokens: int = 4096      # output token cap; sent by the api and batch transports
     # role -> that role's own setting (spec 3 r43): frozen at
@@ -725,6 +726,10 @@ class JudgeConfig:
 @dataclass(frozen=True)
 class DrafterConfig:
     transport: str = "cli"   # "cli" | "api"; api rides the judge's account, model and price
+    # the cli drafter's `--model`/`--effort` (spec 3 r63 section 8); None
+    # sends nothing, so the CLI's default model and effort apply
+    model: str | None = None
+    effort: str | None = None    # "low" | "medium" | "high" | "xhigh" | "max"
 
 
 @dataclass(frozen=True)
@@ -987,7 +992,21 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         if price_per_mtok is None:
             errors.append("providers.judge.price_per_mtok: required for the 'api' drafter "
                           "transport, which spends cash per token on the judge's account")
-    drafter = DrafterConfig(transport=drafter_transport)
+    drafter_model = drafter_cfg.get("model")
+    if drafter_model is not None and not (isinstance(drafter_model, str) and drafter_model.strip()):
+        errors.append(f"providers.drafter.model: {drafter_model!r} must be a non-empty string")
+        drafter_model = None
+    drafter_effort = drafter_cfg.get("effort")
+    if drafter_effort is not None and drafter_effort not in _EFFORT_VALUES:
+        errors.append(f"providers.drafter.effort: {drafter_effort!r} is not one of "
+                      + ", ".join(repr(v) for v in _EFFORT_VALUES))
+        drafter_effort = None
+    if drafter_transport == "api" and (drafter_model is not None or drafter_effort is not None):
+        key = "model" if drafter_model is not None else "effort"
+        errors.append(f"providers.drafter.{key}: set for the cli drafter only; the api "
+                      "drafter rides the judge's model, effort and price")
+    drafter = DrafterConfig(transport=drafter_transport, model=drafter_model,
+                            effort=drafter_effort)
 
     # The illustrator (spec 3 r34 section 8). Absent is the default: no
     # generated-picture source at all. Present, it must name a provider
@@ -1245,7 +1264,10 @@ def save_providers_config(path: str | Path, config: ProvidersConfig) -> None:
                "female_voices": list(config.tts_female_voices),
                "cost_per_char": config.tts_cost_per_char},
         "judge": judge,
-        "drafter": {"transport": config.drafter.transport},
+        "drafter": {"transport": config.drafter.transport,
+                    **({"model": config.drafter.model} if config.drafter.model is not None else {}),
+                    **({"effort": config.drafter.effort}
+                       if config.drafter.effort is not None else {})},
         **({"illustrator": {"provider": config.illustrator.provider,
                             "model": config.illustrator.model,
                             "price_per_image": config.illustrator.price_per_image}}
