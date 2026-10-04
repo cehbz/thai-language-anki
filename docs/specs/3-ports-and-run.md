@@ -1062,7 +1062,8 @@ Every ask appends; kill-safe anywhere. The run is transport-agnostic.
 
 ## 8. Configuration
 
-providers.yaml adds `judge.price_per_mtok: {input, output}`,
+providers.yaml adds `judge.price_per_mtok: {input, output}` (it prices api
+and batch calls only, the api drafter's included; a cli call costs no cash, r63),
 `judge.thinking` (disabled | adaptive), `judge.effort` (low | medium | high |
 xhigh | max; unset sends nothing), `judge.max_tokens` (4096; at least
 16000 under `thinking: adaptive`),

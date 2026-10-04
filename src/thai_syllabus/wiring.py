@@ -189,8 +189,15 @@ def _drafter_model(cfg: ProvidersConfig) -> str:
     return cfg.judge.model
 
 
-def _judge_price(cfg: ProvidersConfig) -> Price | None:
+def _price_per_mtok(cfg: ProvidersConfig) -> Price | None:
+    """`judge.price_per_mtok` as a Price, whatever the judge's transport."""
     return Price(*cfg.judge.price_per_mtok) if cfg.judge.price_per_mtok else None
+
+
+def _judge_price(cfg: ProvidersConfig) -> Price | None:
+    """The judge's cash price: `judge.price_per_mtok` under api or batch;
+    None under cli, which spends no cash (spec 3 r63)."""
+    return None if cfg.judge.transport == "cli" else _price_per_mtok(cfg)
 
 
 def _role_params(cfg: ProvidersConfig) -> dict[str, RequestParams]:
@@ -224,7 +231,9 @@ def _role_prices(cfg: ProvidersConfig) -> dict[str, Price]:
 
 
 def _drafter_price(cfg: ProvidersConfig) -> Price | None:
-    return _judge_price(cfg) if cfg.drafter.transport == "api" else None
+    """The api drafter rides the judge's account and price, whatever the
+    judge's own transport; the cli drafter spends no cash."""
+    return _price_per_mtok(cfg) if cfg.drafter.transport == "api" else None
 
 
 # --- build_provider ----------------------------------------------------

@@ -1836,3 +1836,29 @@ def test_a_set_drafter_model_and_effort_reach_the_cli_drafter_and_its_key(
     provider.ask("llm-entry", question)
     assert (_flag(calls[0], "--model"), _flag(calls[0], "--effort")) == ("claude-opus-5-5", "high")
     assert provider._backends["llm-entry"].cache_key(question).model == "claude-opus-5-5"
+
+
+def test_a_cli_judge_with_a_price_per_mtok_on_file_costs_no_cash(
+        db, media_store, secret_paths, monkeypatch):
+    """Spec 3 r63 section 8: `judge.price_per_mtok` prices api and batch
+    calls only; a cli judge's verdict row costs 0.0 even when the deck
+    keeps a price for its batch judge."""
+    from thai_syllabus.curated import JudgeConfig
+    calls: list = []
+    _patch_cli(monkeypatch, _cli_runner(calls))
+    cfg = dataclasses.replace(_cli_judge_cfg(secret_paths), judge=JudgeConfig(
+        transport="cli", model="claude-sonnet-5-5", price_per_mtok=(2.0, 10.0)))
+    assessor = build_assessor(cfg, db, media_store)
+    assert assessor._backends["judge"].price is None
+    question = AssessQuestion(subject="s", role="a-role-with-no-builder")
+    assert assessor.ask("judge", question).cost == 0.0
+    assert db.latest("assess", "judge", JudgeKey.for_question(question)).cost == 0.0
+
+
+def test_an_api_drafter_keeps_the_judges_price_when_the_judge_is_on_cli(cfg, db, media_store):
+    from thai_syllabus.curated import DrafterConfig, JudgeConfig
+    cfg2 = ProvidersConfig(secrets=cfg.secrets,
+                           judge=JudgeConfig(transport="cli", model="m",
+                                             price_per_mtok=(2.0, 10.0)),
+                           drafter=DrafterConfig(transport="api"))
+    assert build_provider(cfg2, db, media_store)._backends["llm-sentence"].price == Price(2.0, 10.0)
