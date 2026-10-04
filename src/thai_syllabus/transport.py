@@ -242,7 +242,8 @@ class ClaudeCliTransport:
     `RequestParams` override's; `max_tokens` and `thinking` have no cli
     flag and are not sent. The reply's token usage and model come back on
     the Completion. A run keeps no session (`--no-session-persistence`),
-    reads no stdin, and is offered no tool but Read (`--tools Read`) when
+    runs in safe mode by default (`--safe-mode`, `safe_mode`), reads no
+    stdin, and is offered no tool but Read (`--tools Read`) when
     there are attachments and none (`--tools ""`) otherwise, so it cannot
     run commands. Attachments are linked (or copied) into a fresh temp dir
     passed as `--add-dir` with `--allowedTools Read`, named in the prompt,
@@ -250,6 +251,9 @@ class ClaudeCliTransport:
     """
     model: str | None = None
     effort: str | None = None
+    # `--safe-mode`: the CLI loads none of the user's customizations
+    # (CLAUDE.md, skills, plugins, hooks, MCP servers) into the call
+    safe_mode: bool = True
     binary: str = "claude"
     runner: Callable[..., Any] = field(default=subprocess.run)
 
@@ -273,6 +277,8 @@ class ClaudeCliTransport:
                 names.append(str(dst))
             prompt = prompt + "\nAttached files (read each with the Read tool): " + ", ".join(names)
         cmd += [prompt, "--output-format", "json", "--no-session-persistence"]
+        if self.safe_mode:
+            cmd.append("--safe-mode")
         if model:
             cmd += ["--model", model]
         if effort is not None:

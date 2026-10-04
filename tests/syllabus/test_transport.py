@@ -146,6 +146,18 @@ def test_cli_transport_reads_no_stdin_and_keeps_no_session():
     assert "--no-session-persistence" in runner.calls[0]
 
 
+def test_cli_transport_runs_in_safe_mode_by_default():
+    runner = _Runner()
+    ClaudeCliTransport(runner=runner).complete("q")
+    assert "--safe-mode" in runner.calls[0]
+
+
+def test_cli_transport_with_safe_mode_off_sends_no_safe_mode_flag():
+    runner = _Runner()
+    ClaudeCliTransport(safe_mode=False, runner=runner).complete("q")
+    assert "--safe-mode" not in runner.calls[0]
+
+
 def test_cli_transport_without_attachments_offers_no_tools():
     runner = _Runner()
     ClaudeCliTransport(runner=runner).complete("q")
