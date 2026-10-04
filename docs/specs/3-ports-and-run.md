@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 63, proposed 2026-10-03 against principles r7 and architecture
+Revision 64, proposed 2026-10-03 against principles r7 and architecture
 r4. Revision process: docs/principles.md.
 
 Revision log:
@@ -257,6 +257,7 @@ Revision log:
 - r61 2026-10-02: the drafting prompt says how many sentences a handed Target still wants; adoption supplies a Target's count; a scene picture is sourced only for a sentence carrying a Cloze card. Evidence: scene-picture judging is $31.05 of the $55.30 judged so far, about $0.07 a sentence, against $0.003 to judge the sentence itself. User ruling 2026-10-02.
 - r62 2026-10-03: the drafting prompt names the texts refused at acceptance with the reason, beside the judge's failures. Evidence: four texts for the open Targets came back in three asks each on 2026-10-03, the drafter never told. Defect fix.
 - r63 2026-10-03: the cli judge transport sends the judge's or role's model and effort per request, keeps no session and offers no tool but Read; a cli call costs no cash, and every LLM answer's row records the tokens its completion reported, which the run report shows per subscription backend; `drafter.model` and `drafter.effort` (§8) are the cli drafter's own, unset sending nothing; the judge's asks are capped per invocation (`run --judge-asks M`) and per day (its budget, counted from its verdict rows), and at the cap a need the judge decides counts budgeted; the sentence attempt waits until every unjudged draft on record has been served (§5). Evidence: the judge moves to the subscription for the sentence enrichment; the pronunciation role keeps Opus 5.5 at high; a run with `--backend-cap judge=0` made 7 verdicts. User rulings 2026-10-03: subscription work is measured in quota, never dollars; the drafter keeps the CLI's default model unless configured.
+- r64 2026-10-03: `pacer` (§8) configures the quota pacer: judge calls are released each tick up to the week's unused pace-line allowance, under a 5-hour-window ceiling and a per-tick cap. Evidence: the subscription exposes no scriptable quota except through a mod's usage() call, and the weekly window is several 5-hour windows deep, so spreading is the only way to spend it. User ruling 2026-10-03.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -1117,6 +1118,24 @@ is the HTTP forward proxy Openverse searches and its token request go
 through (Openverse refuses a Thai egress); no other request uses it. The provenance prior
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
 `rubrics` and `severities` are spec 1 §4's.
+
+`pacer` (r64) configures tools/quota_pacer.py, which a launchd agent runs
+hourly for a deck whose judge is on the cli transport (it refuses any other):
+`reserve_percent` (15), `session_ceiling_percent` (50),
+`max_calls_per_tick` (40), `min_calls` (5), `points_per_call` (0.05) and
+`session_points_per_call` (0.5), `probe_model` (haiku),
+`probe_timeout_seconds` (120). Each tick reads the plan's `five_hour` and
+`seven_day` windows (percent used, reset time) from one `probe_model` turn
+with the usage-probe mod loaded, and releases M = floor(min(allowance /
+`points_per_call`, (`session_ceiling_percent` − five-hour percent used) /
+`session_points_per_call`, `max_calls_per_tick`)) judge asks, where, with e
+the elapsed fraction of the weekly window, allowance = 100e − weekly percent
+used − `reserve_percent` × (1 − e): the reserve is whole just after the
+reset and gone at it, so the week ends spent. M ≥ `min_calls` runs one
+cycle with `--judge-asks M`, else the tick logs and exits. The two per-call
+figures are one judge call's measured share of each window; the scheduled
+tick refuses a `pacer` block that does not set both. Unspent
+allowance carries over to later ticks.
 
 ## 9. Explicitly out
 

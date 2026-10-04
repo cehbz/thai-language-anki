@@ -1881,3 +1881,52 @@ def test_the_dictionary_s_per_run_fetch_cap_must_be_a_positive_int_or_null(tmp_p
     write_providers(tmp_path, quotas={"wiktionary": {"max_asks": 50}})
     assert curated.load_providers_config(
         tmp_path / "providers.yaml").quotas["wiktionary"]["max_asks"] == 50
+
+
+# --- pacer (spec 3 r64 section 8) ---------------------------------------------
+
+def test_pacer_defaults_when_the_block_is_absent(tmp_path):
+    write_providers(tmp_path)
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert pacer == curated.PacerConfig(
+        reserve_percent=15, session_ceiling_percent=50, max_calls_per_tick=40,
+        min_calls=5, points_per_call=0.05, session_points_per_call=0.5,
+        probe_model="haiku", probe_timeout_seconds=120)
+
+
+def test_pacer_block_overrides_field_by_field(tmp_path):
+    write_providers(tmp_path, pacer={"reserve_percent": 10, "points_per_call": 0.02})
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert (pacer.reserve_percent, pacer.points_per_call, pacer.min_calls) == (10, 0.02, 5)
+
+
+@pytest.mark.parametrize("field_name,value", [
+    ("reserve_percent", -1), ("reserve_percent", 101),
+    ("session_ceiling_percent", 0), ("session_ceiling_percent", 101),
+    ("max_calls_per_tick", 0), ("min_calls", 1.5), ("min_calls", True),
+    ("points_per_call", 0), ("session_points_per_call", "x"),
+    ("probe_model", ""), ("probe_timeout_seconds", 0),
+])
+def test_a_bad_pacer_value_refuses_naming_the_field(tmp_path, field_name, value):
+    write_providers(tmp_path, pacer={field_name: value})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=rf"providers\.pacer\.{field_name}"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_pacer_min_calls_above_max_calls_per_tick_refuses(tmp_path):
+    write_providers(tmp_path, pacer={"min_calls": 41, "max_calls_per_tick": 40})
+    with pytest.raises(curated.CuratedValidationError, match=r"providers\.pacer\.min_calls"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_pacer_min_calls_above_the_default_max_calls_per_tick_refuses(tmp_path):
+    write_providers(tmp_path, pacer={"min_calls": 41})
+    with pytest.raises(curated.CuratedValidationError, match=r"providers\.pacer\.min_calls"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_a_pacer_block_that_is_not_a_mapping_refuses(tmp_path):
+    write_providers(tmp_path, pacer=None)
+    with pytest.raises(curated.CuratedValidationError, match=r"providers\.pacer"):
+        curated.load_providers_config(tmp_path / "providers.yaml")

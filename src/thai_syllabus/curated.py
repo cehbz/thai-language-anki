@@ -753,6 +753,22 @@ class GlyphConfig:
 
 
 @dataclass(frozen=True)
+class PacerConfig:
+    """providers.yaml `pacer` (spec 3 r64 section 8): tools/quota_pacer.py's
+    settings. Allowance is in weekly percentage points; `points_per_call`
+    and `session_points_per_call` are one judge call's measured share of the
+    weekly and the 5-hour window."""
+    reserve_percent: float = 15
+    session_ceiling_percent: float = 50
+    max_calls_per_tick: int = 40
+    min_calls: int = 5
+    points_per_call: float = 0.05
+    session_points_per_call: float = 0.5
+    probe_model: str = "haiku"
+    probe_timeout_seconds: int = 120
+
+
+@dataclass(frozen=True)
 class ProvidersConfig:
     secrets: dict[str, str | None] = field(default_factory=dict)
     search_proxy: str | None = None
@@ -805,6 +821,7 @@ class ProvidersConfig:
     # about the user that reaches Wiktionary; None -- the default --
     # sends the bare `thai-syllabus/0.1`.
     wiktionary_contact: str | None = None
+    pacer: PacerConfig = field(default_factory=PacerConfig)
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -906,6 +923,62 @@ def _judge_roles(roles_cfg: Any, *, transport: str, judge_model: str, judge_max_
                                       effort=role_effort, max_tokens=role_max_tokens,
                                       price_per_mtok=role_price)
     return roles
+
+
+def _pacer_config(data: Mapping, errors: list[str]) -> PacerConfig:
+    """providers.yaml `pacer` (spec 3 r64 section 8), layered field by
+    field over PacerConfig's defaults. A bare `pacer:` refuses: it is a
+    half-written block, not "defaults"."""
+    if "pacer" not in data:
+        return PacerConfig()
+    cfg = data["pacer"]
+    if not isinstance(cfg, Mapping):
+        errors.append(f"providers.pacer: {cfg!r} must be a mapping")
+        return PacerConfig()
+
+    def number(name: str, lo: float, hi: float | None, lo_open: bool) -> bool:
+        value = cfg[name]
+        ok = (_is_number(value) and (value > lo if lo_open else value >= lo)
+              and (hi is None or value <= hi))
+        if not ok:
+            bound = f"{'>' if lo_open else '>='} {lo:g}" + (f" and <= {hi:g}" if hi is not None else "")
+            errors.append(f"providers.pacer.{name}: {value!r} must be a number {bound}")
+        return ok
+
+    def positive_int(name: str) -> bool:
+        value = cfg[name]
+        ok = isinstance(value, int) and not isinstance(value, bool) and value >= 1
+        if not ok:
+            errors.append(f"providers.pacer.{name}: {value!r} must be a positive integer")
+        return ok
+
+    checks = {
+        "reserve_percent": lambda n: number(n, 0, 100, False),
+        "session_ceiling_percent": lambda n: number(n, 0, 100, True),
+        "max_calls_per_tick": positive_int,
+        "min_calls": positive_int,
+        "points_per_call": lambda n: number(n, 0, None, True),
+        "session_points_per_call": lambda n: number(n, 0, None, True),
+        "probe_timeout_seconds": positive_int,
+    }
+    values: dict[str, Any] = {}
+    for name in cfg:
+        if name == "probe_model":
+            model = cfg[name]
+            if isinstance(model, str) and model.strip():
+                values[name] = model.strip()
+            else:
+                errors.append(f"providers.pacer.probe_model: {model!r} must be a non-empty string")
+        elif name in checks:
+            if checks[name](name):
+                values[name] = cfg[name]
+        else:
+            errors.append(f"providers.pacer.{name}: not a pacer setting")
+    pacer = PacerConfig(**values)
+    if pacer.min_calls > pacer.max_calls_per_tick:
+        errors.append(f"providers.pacer.min_calls: {pacer.min_calls} is above "
+                      f"max_calls_per_tick ({pacer.max_calls_per_tick}), so no tick could run")
+    return pacer
 
 
 def load_providers_config(path: str | Path) -> ProvidersConfig:
@@ -1150,6 +1223,8 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
                       "string (an address Wikimedia can reach this deck's owner at)")
         wiktionary_contact = None
 
+    pacer = _pacer_config(data, errors)
+
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
         if not isinstance(quota, Mapping):
@@ -1216,7 +1291,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, illustrator=illustrator,
-        glyph=glyph,
+        glyph=glyph, pacer=pacer,
         image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,

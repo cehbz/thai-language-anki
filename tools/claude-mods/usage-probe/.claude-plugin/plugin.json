@@ -1,0 +1,8 @@
+{
+  "name": "usage-probe",
+  "version": "0.1.0",
+  "description": "Writes the session's plan rate limits to the file named by THAI_SYLLABUS_USAGE_OUT",
+  "author": {
+    "name": "Charles Haynes"
+  }
+}
