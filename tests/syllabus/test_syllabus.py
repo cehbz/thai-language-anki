@@ -14,6 +14,7 @@ from thai_syllabus.rulebook import RULES
 from thai_syllabus.syllabus import Syllabus, derive_productive_targets
 
 from .builders import sentence, syl, target, thai_of, word
+from .fakes import FakeMediaIndex
 
 
 @pytest.fixture
@@ -667,6 +668,60 @@ def test_gaps_lists_a_scene_picture_only_for_a_sentence_carrying_a_cloze_card():
     eat_rice, rice = syllabus.sentences
     assert syllabus.productive_fills(eat_rice) and not syllabus.productive_fills(rice)
     assert syllabus.gaps().scene_pictures == (eat_rice.text_sha,)
+
+
+def _eat_rice_slots(media=None) -> Syllabus:
+    """กินข้าว (eat rice) fills eat/productive and rice/productive; ข้าว
+    (rice) alone fills rice/productive."""
+    return Syllabus(words=(_EAT, _RICE),
+                    targets=(target("eat/receptive", "eat"),
+                             target("eat/productive", "eat", "productive"),
+                             target("rice/receptive", "rice"),
+                             target("rice/productive", "rice", "productive")),
+                    sentences=(sentence(((_EAT.id, _RICE.id),), _TO),   # กินข้าว: eat rice
+                               sentence(((_RICE.id, (_RICE.id, "ๆ")),), _TO)),  # ข้าวข้าวๆ
+                    frequency={"eat": 1, "rice": 2},
+                    **({"media": media} if media is not None else {}))
+
+
+def test_a_filled_cloze_slot_per_productive_fill_keyed_as_its_cards_anchor():
+    """Spec 4 section 1, spec 3 r65: one slot per productive Target a
+    sentence fills, keyed TEXT_SHA:TARGET_ID (the Cloze card's anchor)."""
+    syllabus = _eat_rice_slots()
+    eat_rice, rice_rice = syllabus.sentences
+    assert [(slot.sentence, slot.target.id) for slot in syllabus.cloze_slots] == [
+        (eat_rice, "eat/productive"), (eat_rice, "rice/productive"),
+        (rice_rice, "rice/productive")]
+    assert [slot.key for slot in syllabus.cloze_slots] == [
+        f"{eat_rice.text_sha}:eat/productive", f"{eat_rice.text_sha}:rice/productive",
+        f"{rice_rice.text_sha}:rice/productive"]
+    assert syllabus.cloze_slot(f"{rice_rice.text_sha}:rice/productive").breaks == 2
+    with pytest.raises(KeyError, match="no filled Cloze slot"):
+        syllabus.cloze_slot(f"{rice_rice.text_sha}:eat/productive")
+
+
+def test_gaps_lists_every_filled_cloze_slot_lacking_a_gapped_recording():
+    """Spec 1 r32: filled Cloze slots lacking a gapped recording are a gap,
+    once their sentence has a recording (spec 3 r65)."""
+    eat_rice = sentence(((_EAT.id, _RICE.id),), _TO)
+    rice_rice = sentence(((_RICE.id, (_RICE.id, "ๆ")),), _TO)
+    has_one = f"{eat_rice.text_sha}:eat/productive"
+    syllabus = _eat_rice_slots(FakeMediaIndex(recording_provenance={
+        has_one: {"source": "tts"}, eat_rice.text_sha: {"source": "tts"},
+        rice_rice.text_sha: {"source": "forvo"}}))
+    assert syllabus.gaps().gapped_recordings == tuple(
+        slot.key for slot in syllabus.cloze_slots if slot.key != has_one)
+    assert len(syllabus.gaps().gapped_recordings) == 2
+
+
+def test_a_slot_whose_sentence_has_no_recording_has_no_gapped_need_yet():
+    """Spec 3 r65: the gapped clip takes its voice from the sentence's
+    recording, so its need waits for one."""
+    eat_rice = sentence(((_EAT.id, _RICE.id),), _TO)
+    syllabus = _eat_rice_slots(FakeMediaIndex(recording_provenance={
+        eat_rice.text_sha: {"source": "tts"}}))
+    assert syllabus.gaps().gapped_recordings == (
+        f"{eat_rice.text_sha}:eat/productive", f"{eat_rice.text_sha}:rice/productive")
 
 
 def test_a_target_wanting_one_sentence_leaves_the_state_id_as_it_was():

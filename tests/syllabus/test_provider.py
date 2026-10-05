@@ -1273,6 +1273,35 @@ def test_tts_fetch_writes_synthesized_audio_content_addressed(tmp_path):
     assert media.has(answer.items[0]["sha"], "mp3")
 
 
+def test_tts_synthesizes_an_ssml_ask_as_ssml_keyed_over_its_text(tmp_path):
+    """Spec 3 r65: an ask carrying `ssml` is synthesized from it, keyed as
+    any tts ask over that text, and costed per character of it."""
+    from thai_syllabus.provider import TtsBackend
+
+    class _FakeTts:
+        def __init__(self):
+            self.asked = []
+
+        def synthesize(self, text, voice):
+            self.asked.append(("text", text))
+            return b"plain"
+
+        def synthesize_ssml(self, ssml, voice):
+            self.asked.append(("ssml", ssml))
+            return b"gapped"
+
+    tts = _FakeTts()
+    ssml = '<speak>กิน<break time="600ms"/></speak>'   # กิน: eat, then the gap
+    backend = TtsBackend(tts=tts, voices=["v1"], media=MediaStore(tmp_path / "media"),
+                         pick_voice=pick_voice, cost_per_char=0.5)
+    question = Question(subject="sha:rice/productive", provides="recording",
+                        params={"ssml": ssml, "voice": "v1"})
+    assert backend.cache_key(question) == ProvideKey(source="tts", kind="v1", query=sha(ssml))
+    answer = backend.fetch(question)
+    assert tts.asked == [("ssml", ssml)]
+    assert answer.cost == len(ssml) * 0.5
+
+
 def test_tts_is_deterministic_same_subject_same_voice():
     voices = ["v1", "v2", "v3"]
     assert pick_voice("subj-1", voices) == pick_voice("subj-1", voices)

@@ -815,6 +815,10 @@ GLYPH_SOURCES: tuple[str, ...] = ("glyph",)
 # offer, and the need degrades exactly as before otherwise.
 ALPHABET_SOURCES: tuple[str, ...] = ("illustrator",)
 
+# A filled Cloze slot's gapped recording (spec 3 r65) is a TTS rendering
+# of SSML, so tts is the one source that can serve it.
+GAPPED_SOURCES: tuple[str, ...] = ("tts",)
+
 
 def need_sources(syllabus, sources_for: Callable[[str], Sequence[str]],
                  subject: str, kind: str, subject_kind: str = "word") -> tuple[str, ...]:
@@ -822,8 +826,9 @@ def need_sources(syllabus, sources_for: Callable[[str], Sequence[str]],
     source alone for a grapheme name word's picture, the illustrator
     ahead of the deck's own picture roster for a grapheme keyword's
     picture (a preference, not an exclusive roster -- ALPHABET_SOURCES),
-    and the deck's own roster for that kind otherwise (spec 3 r41 section
-    5). Read by the run's attempt loop, by queue()/queued() and by the
+    tts alone, where the deck's roster has it, for a filled Cloze slot's
+    gapped recording (GAPPED_SOURCES, spec 3 r65), and the deck's own
+    roster for that kind otherwise (spec 3 r41 section 5). Read by the run's attempt loop, by queue()/queued() and by the
     review server, so every one of them agrees on what a need has left
     to try.
     """
@@ -835,6 +840,8 @@ def need_sources(syllabus, sources_for: Callable[[str], Sequence[str]],
         # as a bug even though next_source skips one already tried.
         return ALPHABET_SOURCES + tuple(s for s in sources_for(kind)
                                         if s not in ALPHABET_SOURCES)
+    if kind == "recording" and subject_kind == "slot":
+        return tuple(s for s in sources_for(kind) if s in GAPPED_SOURCES)
     return tuple(sources_for(kind))
 
 
@@ -1072,6 +1079,7 @@ def available_needs(syllabus) -> list[tuple[str, str, str]]:
     candidates += [(p, "rendition", "pair") for p in gaps.pairs_missing_renditions]
     candidates += [(s, "recording", "sentence") for s in gaps.sentence_recordings]
     candidates += [(s, "picture", "sentence") for s in gaps.scene_pictures]
+    candidates += [(k, "recording", "slot") for k in gaps.gapped_recordings]
     # Spec 3 r42: a grapheme's keyword picture is the keyword WORD's own
     # picture need -- the same kind, the same subject kind, the same
     # attempt, drafter and judge every other word's picture gets. gaps()
@@ -1107,9 +1115,10 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
     satisfied or not (spec 5 section 3's coverage universe): one picture
     and one recording need per targeted word (once, however many Targets
     name it), one rendition per pair, one picture per grapheme's keyword
-    word (r42: the keyword word's own need), one recording per sentence
-    and one scene picture per sentence that has that need
-    (Syllabus.has_scene_picture_need, spec 3 r61).
+    word (r42: the keyword word's own need), one recording per sentence,
+    one scene picture per sentence that has that need
+    (Syllabus.has_scene_picture_need, spec 3 r61) and one gapped
+    recording per filled Cloze slot (subject kind "slot", spec 3 r65).
 
     Deduped here, not by the caller: a count folded over this list (such
     as reviewserver.compute_stats's coverage, one row per need) counts a
@@ -1126,10 +1135,17 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
         # keyword that is also a targeted word is already a candidate and
         # the dedup below folds the two.
         candidates.append((g.keyword, "picture", "word"))
+    slots_of: dict[str, list[str]] = {}
+    for slot in syllabus.cloze_slots:
+        # Spec 3 r65: the need exists once the sentence has a recording.
+        if syllabus.media.recording_provenance(slot.sentence.text_sha) is not None:
+            slots_of.setdefault(slot.sentence.text_sha, []).append(slot.key)
     for s in syllabus.sentences:
         candidates.append((s.text_sha, "recording", "sentence"))
         if syllabus.has_scene_picture_need(s):
             candidates.append((s.text_sha, "picture", "sentence"))
+        # Spec 3 r65: a gapped recording per filled Cloze slot.
+        candidates += [(key, "recording", "slot") for key in slots_of.get(s.text_sha, ())]
     seen: set[tuple[str, str, str]] = set()
     out: list[tuple[str, str, str]] = []
     for c in candidates:

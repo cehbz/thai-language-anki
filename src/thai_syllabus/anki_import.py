@@ -12,7 +12,9 @@ along as target_ids. A sentence note's Cloze card (spec 4 r11) is its
 card ord, the ord its slot: the slot's ClozeTarget field
 (compile.cloze_target_field) names the card's Target, and its anchor
 composes the text_sha and that Target as a pair member's MemberKey does
-(ids.sentence_cloze_key), target_ids that one Target. The field names
+(ids.sentence_cloze_key), target_ids that one Target; an AudioCloze card
+(ord CLOZE_SLOTS + slot, spec 4 r13) maps the same way under its own card
+kind, audio_cloze, and its flag is card-level. The field names
 the slot word's productive Target whether or not the sentence fills it,
 so a card whose slot a later compile emptied keeps its pair; a slot whose
 word carries no productive Target names none and its card is not
@@ -94,6 +96,11 @@ _RATED_ROLE: dict[tuple[str, str], tuple[str, str]] = {
     ("word", "production"): (role_for("picture", "word"), "picture"),
     ("sentence", "cloze"): (role_for("picture", "sentence"), "picture"),
 }
+
+
+# A sentence note's card kinds anchored on their slot's (sentence,
+# Target): the Cloze card and the AudioCloze card (spec 4 r13 section 4).
+_SLOT_CARD_KINDS = frozenset({"cloze", "audio_cloze"})
 
 
 @dataclass(frozen=True)
@@ -340,7 +347,7 @@ def _identify_card(col: _Collection, card_id: int) -> _CardIdentity | None:
     if not (0 <= ord_ < len(tmpls)):
         return None
     kind_slug = card_kind_of(tmpls[ord_]["name"])
-    if (family, kind_slug) == ("sentence", "cloze"):
+    if family == "sentence" and kind_slug in _SLOT_CARD_KINDS:
         target_idx = _field_index(model, cloze_target_field(ord_))
         if target_idx is not None:
             target_id = note["flds"][target_idx]

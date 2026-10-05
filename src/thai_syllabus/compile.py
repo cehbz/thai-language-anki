@@ -4,14 +4,15 @@ artifacts and media provenance) and a MediaStore into one Anki .apkg.
 One note per picture-introduced word (a spelling group's later members
 only when productive: the group's first such Word carries its
 Listening, Reading and Spelling cards), grapheme, and adopted sentence
-that fills a target (its Listening card and a Cloze card per productive
-Target it fills), one per minimal-pair member; every note tagged, each
+that fills a target (its Listening card, and a Cloze card and an
+AudioCloze card per productive Target it fills), one per minimal-pair
+member; every note tagged, each
 card due-stamped by its kind from Syllabus.order() (spec 4 r13), and
 stamped with this compile's CompileId. The study record stages the
 cards (spec 1 r32 Staging): a word's Reading and Spelling cards wait
 for its segmental confusions to be stable, its Thai and IPA for a review
 of its Reading card, a sentence's text and Cloze cards for every word it
-uses to be read, a pair for both members' pictures, and a grapheme for
+uses to be read (its AudioCloze cards for nothing but their artifacts), a pair for both members' pictures, and a grapheme for
 the first Reading card that needs it.
 
 It raises GateRefusal when Syllabus.report().gate is False, or when the
@@ -207,8 +208,9 @@ def _cloze_fields(slot: int) -> tuple[str, str, str]:
 
 def cloze_target_field(ord_: int) -> str:
     """The sentence-note field naming the Target of the Cloze card at
-    card ord `ord_` (its slot)."""
-    return _cloze_fields(ord_)[2]
+    card ord `ord_` (its slot), or of the AudioCloze card at ord
+    CLOZE_SLOTS + slot (spec 4 r13)."""
+    return _cloze_fields(ord_ - CLOZE_SLOTS if ord_ > CLOZE_SLOTS else ord_)[2]
 
 
 def _cloze_template(slot: int) -> dict[str, str]:
@@ -227,10 +229,37 @@ def _cloze_template(slot: int) -> dict[str, str]:
     }
 
 
+def _audio_cloze_field(slot: int) -> str:
+    """Slot `slot`'s gapped recording (spec 3 r65), filled only when a
+    Target fills the slot."""
+    return f"ClozeAudio{slot}"
+
+
+def _audio_cloze_template(slot: int) -> dict[str, str]:
+    """Slot `slot`'s AudioCloze card (spec 4 r13), card ord CLOZE_SLOTS +
+    slot: the scene picture and the gapped recording, no Thai; the back
+    plays the whole recording ({{FrontSide}}'s gapped clip does not
+    replay) with the gloss, the slot's word under ScriptShown. The front
+    nests in its three artifacts' sections, so genanki computes all three
+    as required."""
+    gapped, word = _audio_cloze_field(slot), _cloze_fields(slot)[1]
+    return {
+        "name": f"AudioCloze {slot}",
+        "qfmt": f'{{{{#{gapped}}}}}{{{{#ScenePicture}}}}{{{{#Audio}}}}'
+                f'{{{{ScenePicture}}}}{{{{{gapped}}}}}'
+                f'{{{{/Audio}}}}{{{{/ScenePicture}}}}{{{{/{gapped}}}}}',
+        "afmt": '{{FrontSide}}<hr id="answer">{{Audio}}'
+                f'{{{{#ScriptShown}}}}<div class="target">{{{{{word}}}}}</div>{{{{/ScriptShown}}}}'
+                '{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
+    }
+
+
 # The sentence note: its Listening card, then one Cloze card per slot.
 # TargetWord is the sentence's target words (Syllabus.target_words),
 # joined. ScriptShown (every word it uses read) gates the Thai text and
 # target words on the Listening back and every Cloze front (spec 4 r13).
+# Then one AudioCloze card per slot (spec 4 r13), ord CLOZE_SLOTS + slot,
+# its gapped recording in the appended ClozeAudioK.
 SENTENCE_MODEL = _model(
     "sentence",
     ["Thai", "TargetWord", "Audio", "Gloss", "ScenePicture",
@@ -241,8 +270,9 @@ SENTENCE_MODEL = _model(
         "afmt": '{{FrontSide}}<hr id="answer">{{#ScriptShown}}<div class="thai">{{Thai}}</div>'
                '<div class="target"><span class="label">target words</span> {{TargetWord}}</div>'
                '{{/ScriptShown}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
-    }, *(_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1))],
-    appended=("ScriptShown",))
+    }, *(_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1)),
+       *(_audio_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1))],
+    appended=("ScriptShown", *(_audio_cloze_field(slot) for slot in range(1, CLOZE_SLOTS + 1))))
 
 # Spec 5 r9 (design ruling 4): one line per card type -- what the front
 # asks, what the back shows -- keyed by the family and kind /api/cards
@@ -257,6 +287,7 @@ CARD_MEANINGS: dict[tuple[str, str], str] = {
     ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and shows both members' pictures; back names the one heard, with its picture, Thai and IPA, and gives the other's Thai and IPA and plays it.",
     ("grapheme", "reading"): "Front shows the letter and plays its recited name; back shows the name, the keyword picture, the keyword's Thai and gloss, and gives the sound.",
     ("sentence", "cloze"): "Front shows the sentence with the target word blanked, plus the scene picture; back shows the target word, plays the sentence and gives the gloss.",
+    ("sentence", "audio_cloze"): "Front shows the scene picture and plays the sentence with a pause for the target word; back plays the whole sentence and gives the gloss, with the target word once every word it uses is read.",
     ("sentence", "listening"): "Front plays the sentence; back gives the gloss, with its Thai and target words once every word it uses is read.",
 }
 
@@ -277,9 +308,11 @@ READING_OFFSET = 50
 # A card's offset inside its block, by kind, so no two cards share a due
 # (spec 4 r13 section 2): the block's own entry's cards at their ords (a
 # word's Listening card, a sentence's Listening and Cloze cards, 0 to
-# CLOZE_SLOTS), the Production card of the word P blocks back, the
-# graphemes dealt before the Reading card of the word D blocks back (one
-# lane each, symbol order), then that word's Reading and Spelling cards.
+# CLOZE_SLOTS), the Production card of the word P blocks back or the
+# AudioCloze cards of the sentence P blocks back (slot K at
+# PRODUCTION_LANE + K), the graphemes dealt before the Reading card of
+# the word D blocks back (one lane each, symbol order), then that word's
+# Reading and Spelling cards.
 PRODUCTION_LANE = 20
 GRAPHEME_LANE = 40
 READING_LANE = 60
@@ -771,7 +804,8 @@ def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], slots: Mappi
     # same artifact kinds a word's audio and picture carry.
     tags = ["family::sentence"]
     tags += [f"target::{t.id}" for t in targets]
-    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::listening", "kind::cloze"]
+    tags += [f"sentence::{text_sha}", f"compile::{compile_id}", "kind::listening", "kind::cloze",
+             "kind::audio_cloze"]
     tags += resolver.src_tag("audio", text_sha, "recording")
     tags += resolver.src_tag("img", text_sha, "picture")
 
@@ -795,10 +829,22 @@ def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], slots: Mappi
         "",  # ReviewNote
         compile_id,
         "1" if script_shown else "",   # ScriptShown
+        *(resolver.sound(sentence_cloze_key(text_sha, slots[slot].id), "recording")
+          if slot in slots else "" for slot in range(1, CLOZE_SLOTS + 1)),   # ClozeAudioK
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
                         guid=_guid("sentence", text_sha))
-    return note, {ord_: due_block * STRIDE + ord_ for ord_ in range(len(SENTENCE_MODEL.templates))}
+    return note, _sentence_dues(due_block)
+
+
+def _sentence_dues(block: int) -> dict[int, int]:
+    """A sentence note's card dues by ord, its order() entry at `block`:
+    Listening and each Cloze card there at their ords, AudioCloze K P
+    blocks on in the Production lane (spec 4 r13 section 2)."""
+    dues = {ord_: block * STRIDE + ord_ for ord_ in range(CLOZE_SLOTS + 1)}
+    dues.update({CLOZE_SLOTS + slot: (block + PRODUCTION_OFFSET) * STRIDE + PRODUCTION_LANE + slot
+                 for slot in range(1, CLOZE_SLOTS + 1)})
+    return dues
 
 
 # --- card/unique-front (A3) -------------------------------------------------
@@ -839,13 +885,17 @@ def template_kind(template_name: str) -> str:
     return _SLOT_SUFFIX_RE.sub("", template_name)
 
 
+_WORD_START_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
 def card_kind_of(template_name: str) -> str:
     """study.card_kind for a card (spec 4 section 2): its template's
-    kind, lowered. The one place this conversion happens -- anki_import.py's
-    revlog/flag import and reviewserver.py's gallery both read a card's
-    kind through this function.
+    kind in snake case ("Listening" -> "listening", "AudioCloze 3" ->
+    "audio_cloze"). The one place this conversion happens --
+    anki_import.py's revlog/flag import and reviewserver.py's gallery
+    both read a card's kind through this function.
     """
-    return template_kind(template_name).lower()
+    return _WORD_START_RE.sub("_", template_kind(template_name)).lower()
 
 
 def tag_value(note: genanki.Note, prefix: str) -> str | None:
@@ -943,6 +993,13 @@ _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     **{("sentence", f"Cloze {slot}"): _DropCause(
         ((_cloze_fields(slot)[0], None), ("ScriptShown", _WORDS_NOT_READ)),
         (("ScenePicture", "picture"), ("Audio", "recording")))
+       for slot in range(1, CLOZE_SLOTS + 1)},
+    # An AudioCloze card waits on no staging (spec 4 r13): its slot's
+    # gapped recording, the scene picture and the recording.
+    **{("sentence", f"AudioCloze {slot}"): _DropCause(
+        ((_cloze_fields(slot)[0], None),),
+        ((_audio_cloze_field(slot), "gapped recording"), ("ScenePicture", "picture"),
+         ("Audio", "recording")))
        for slot in range(1, CLOZE_SLOTS + 1)},
 }
 
@@ -1147,9 +1204,9 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
         built = _sentence_note(sentence, targets, slots, productive_of, due_block, syllabus,
                                resolver, compile_id,
                                all(staging.read(w) for w in sentence.words))
-        yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha,
-                                {slot: sentence_cloze_key(text_sha, t.id)
-                                 for slot, t in slots.items()})
+        card_subjects = {slot: sentence_cloze_key(text_sha, t.id) for slot, t in slots.items()}
+        card_subjects.update({CLOZE_SLOTS + slot: key for slot, key in card_subjects.items()})
+        yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha, card_subjects)
 
 
 @dataclass(frozen=True)

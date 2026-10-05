@@ -161,10 +161,16 @@ class _QuotaForvo:
 class _Tts:
     def __init__(self):
         self.voices = []
+        self.ssml = []
 
     def synthesize(self, text, voice):
         self.voices.append(voice)
         return f"{text}-{voice}".encode()
+
+    def synthesize_ssml(self, ssml, voice):
+        self.voices.append(voice)
+        self.ssml.append(ssml)
+        return f"{ssml}-{voice}".encode()
 
     @property
     def last_voice(self):
@@ -306,11 +312,22 @@ def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None, durat
         try:
             return syllabus.sentence(subject).word_count
         except KeyError:
+            pass
+        try:
+            return syllabus.cloze_slot(subject).sentence.word_count
+        except KeyError:
+            return None
+
+    def breaks_of(subject):
+        try:
+            return syllabus.cloze_slot(subject).breaks
+        except KeyError:
             return None
 
     default_mechanical = RecordingCheckBackend(
         resolve_path=resolve, duration_of=duration_of or (lambda path: 1.0),
-        form_of=form_of, recorded_form_of=_recorded_form_of(db), word_count_of=word_count_of)
+        form_of=form_of, recorded_form_of=_recorded_form_of(db), word_count_of=word_count_of,
+        breaks_of=breaks_of)
     syllabus = replace(syllabus, media=_DbMediaIndex(
         db=db, pairs=syllabus.pairs, words=syllabus.words, sentences=syllabus.sentences,
         rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts")))
@@ -346,6 +363,8 @@ def test_a_need_knows_the_role_its_subject_kind_puts_it_under():
     assert Need("rice", "recording").role == "recording-for-word"
     assert Need("sha", "recording", "sentence").role == "recording-for-sentence"
     assert Need("p1", "rendition", "pair").role == "rendition-for-pair"
+    # spec 3 r65: a gapped recording is checked as a sentence recording
+    assert Need("sha:rice/productive", "recording", "slot").role == "recording-for-sentence"
 
 
 def test_attempt_refuses_an_artifact_kind_it_has_no_attempt_for(tmp_path):
@@ -1063,6 +1082,139 @@ def test_an_unmarked_receptive_only_sentence_stays_any(tmp_path):
     ctx, tts = _recording_ctx(tmp_path, _word_syllabus().with_sentences([sentence]))
     attempt(ctx, Need(sentence.text_sha, "recording", "sentence"), "tts")
     assert tts.voices == [pick_voice(sentence.text_sha, list(_MALE) + list(_FEMALE))]
+
+
+# --- gapped recording (a filled Cloze slot, spec 3 r65) --------------------
+
+_EAT = word("eat", "กิน", "eat")      # กิน: eat
+_RICE = word("rice", "ข้าว", "rice")  # ข้าว: rice
+_EAT_RICE = compose_sentence(((_EAT.id, _RICE.id),), thai_of(_EAT, _RICE),
+                             gloss="eat rice")   # กินข้าว: eat rice
+
+
+def _slot_syllabus(*sentences: Sentence) -> Syllabus:
+    return Syllabus(words=(_EAT, _RICE),
+                    targets=(target("eat/receptive", "eat"),
+                             target("rice/productive", "rice", skill="productive"))
+                    ).with_sentences(list(sentences or (_EAT_RICE,)))
+
+
+def _slot_need(sentence: Sentence = _EAT_RICE, target_id: str = "rice/productive") -> Need:
+    return Need(f"{sentence.text_sha}:{target_id}", "recording", "slot")
+
+
+def test_a_gapped_recording_asks_tts_for_the_sentence_with_a_break_for_the_slot_word(tmp_path):
+    """Spec 3 r65: the request is the sentence's SSML, the slot word's
+    element a 600 ms break; with no TTS recording of the sentence, the
+    voice the sentence's own TTS would take (keyed on its text_sha, the
+    pool its marking selects: unmarked, any)."""
+    ctx, tts = _recording_ctx(tmp_path, _slot_syllabus())
+    need = _slot_need()
+    assert [slot.key for slot in ctx.syllabus.cloze_slots] == [need.subject]
+    result = attempt(ctx, need, "tts")
+    assert result.attempted
+    assert tts.ssml == ['<speak>กิน<break time="600ms"/></speak>']
+    assert tts.voices == [pick_voice(_EAT_RICE.text_sha, list(_MALE) + list(_FEMALE))]
+    assert current_best_of(ctx, need.subject, "recording").artifact_sha is not None
+    verdicts = [r for r in ctx.db.assessments_of(need.subject) if r.port == "assess"]
+    assert {(r.question["role"], r.question["subject_kind"]) for r in verdicts} == {
+        ("recording-for-sentence", "slot")}
+
+
+def test_a_gapped_recording_breaks_every_element_of_the_slot_word(tmp_path):
+    """A repeated word's element, its mark included, is one break each."""
+    repeated = compose_sentence(((_RICE.id, _EAT.id, (_RICE.id, "ๆ")),), thai_of(_EAT, _RICE),
+                                gloss="rice, eat rice")   # ข้าวกินข้าวๆ
+    ctx, tts = _recording_ctx(tmp_path, _slot_syllabus(repeated))
+    attempt(ctx, _slot_need(repeated), "tts")
+    assert tts.ssml == ['<speak><break time="600ms"/>กิน<break time="600ms"/></speak>']
+
+
+def test_a_gapped_recording_speaks_in_the_sentences_own_tts_voice(tmp_path):
+    """Spec 3 r65: the sentence's own voice when its current-best
+    recording is TTS."""
+    ctx, tts = _recording_ctx(tmp_path, _slot_syllabus())
+    ctx.voices = {"male": _MALE, "female": _FEMALE}
+    own = next(v for v in (*_MALE, *_FEMALE)
+               if v != pick_voice(_slot_need().subject, list(_MALE) + list(_FEMALE)))
+    ctx.provider._backends["tts"].pick_voice = lambda subject, voices: own
+    attempt(ctx, Need(_EAT_RICE.text_sha, "recording", "sentence"), "tts")
+    ctx.provider._backends["tts"].pick_voice = pick_voice
+    attempt(ctx, _slot_need(), "tts")
+    assert len(tts.ssml) == 1 and tts.voices == [own, own]
+
+
+def test_a_native_sentence_gets_a_gapped_recording_from_its_markings_pool(tmp_path):
+    """A native-recorded sentence keeps its recording; its gap is TTS in
+    the voice the sentence's own TTS would take: keyed on its text_sha,
+    from the pool its marking selects (ครับ, kráp: male)."""
+    khrap = word("khrap", "ครับ", "male politeness particle", speaker="male")
+    polite = compose_sentence(((_EAT.id, _RICE.id, khrap.id),), thai_of(_EAT, _RICE, khrap),
+                              gloss="eat rice, politely")   # กินข้าวครับ
+    syllabus = Syllabus(words=(_EAT, _RICE, khrap),
+                        targets=(target("eat/receptive", "eat"),
+                                 target("rice/productive", "rice", skill="productive"),
+                                 target("khrap/receptive", "khrap"))).with_sentences([polite])
+    ctx, tts = _recording_ctx(tmp_path, syllabus, {
+        polite.text: [{"username": "somchai", "pathmp3": "https://f/1.mp3", "sex": "m"}]})
+    attempt(ctx, Need(polite.text_sha, "recording", "sentence"), "forvo")
+    assert ctx.syllabus.media.recording_provenance(polite.text_sha)["source"] == "forvo"
+    attempt(ctx, _slot_need(polite), "tts")
+    assert tts.voices == [pick_voice(polite.text_sha, list(_MALE))]
+    assert tts.ssml == ['<speak>กิน<break time="600ms"/>ครับ</speak>']
+
+
+def test_a_gapped_recording_has_no_forvo_attempt(tmp_path):
+    ctx, _tts = _recording_ctx(tmp_path, _slot_syllabus())
+    with pytest.raises(ValueError, match="tts alone"):
+        attempt(ctx, _slot_need(), "forvo")
+    assert sources_for_need(ctx, _slot_need()) == ("tts",)
+
+
+def test_a_gapped_recordings_duration_bound_adds_the_breaks(tmp_path):
+    """Spec 3 r55's sentence bound (1 s plus 1 s per deck word) plus
+    0.6 s per break: กินข้าว's gapped clip passes at 3.5 s and fails at
+    3.7 s, and its key names the per-break allowance."""
+    for duration, passes in ((3.5, True), (3.7, False)):
+        ctx, _tts = _recording_ctx(tmp_path / str(duration), _slot_syllabus(),
+                                   duration_of=lambda path, d=duration: d)
+        attempt(ctx, _slot_need(), "tts")
+        verdicts = [r for r in ctx.db.assessments_of(_slot_need().subject)
+                    if r.port == "assess" and r.backend == "mechanical"]
+        assert [r.answer["value"] for r in verdicts] == [passes]
+        assert "+0.6pb" in verdicts[0].key
+
+
+def test_the_run_defers_a_gapped_recording_whose_slot_left_the_deck(tmp_path):
+    """A slot queued before its sentence retired, or before an adoption
+    capped its fill, is deferred, never attempted."""
+    from thai_syllabus import run as run_mod
+    from thai_syllabus.derivations import QueueEntry
+
+    ctx, tts = _recording_ctx(tmp_path, _slot_syllabus())
+    tally = _Tally()
+    gone = QueueEntry(subject=f"{_EAT_RICE.text_sha}:eat/productive", kind="recording",
+                      subject_kind="slot")
+    assert run_mod._try_each_need(ctx, [gone], {}, {}, tally, now_ns=0) == 0
+    assert tally.deferred == 1 and tts.voices == []
+
+
+def test_an_exhausted_gapped_recording_retires_nothing(tmp_path):
+    """Spec 3 r65: a gapped recording out of sources leaves its sentence
+    adopted (a sentence's own exhausted recording retires it, F13)."""
+    from thai_syllabus import run as run_mod
+    from thai_syllabus.derivations import QueueEntry
+
+    ctx, _tts = _recording_ctx(tmp_path, _slot_syllabus())
+    ctx.provider._backends["tts"] = TtsBackend(
+        tts=_RefusingTts(), voices=list(_MALE) + list(_FEMALE), media=ctx.media_store,
+        pick_voice=pick_voice)
+    attempt(ctx, _slot_need(), "tts")   # tts answers nothing: the slot's one source spent
+    tally = _Tally()
+    entry = QueueEntry(subject=_slot_need().subject, kind="recording", subject_kind="slot")
+    run_mod._try_each_need(ctx, [entry], {}, {}, tally, now_ns=0)
+    assert tally.exhausted == 1 and tally.retired == 0
+    assert [s.text_sha for s in ctx.syllabus.sentences] == [_EAT_RICE.text_sha]
 
 
 def test_pool_raises_on_an_empty_pool(tmp_path):
@@ -2793,6 +2945,8 @@ class _RefusingTts:
     def synthesize(self, text, voice):
         self.calls += 1
         raise SynthesisRefused(f"google tts refused {voice}: 400")
+
+    synthesize_ssml = synthesize
 
 
 class _PartialTts:

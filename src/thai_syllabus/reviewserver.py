@@ -35,7 +35,7 @@ from . import ipa
 from .authority import role_for
 from .cachekeys import DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey
 from .compile import (CARD_CSS, CARD_MEANINGS, build_deck, card_kind_of, field_values,
-                      render_card, tag_value)
+                      render_card, tag_value, thai_cloze)
 from .derivations import (
     DEFAULT_REASK_LAPSES,
     LEARNER_RANK,
@@ -148,9 +148,15 @@ def _out_of_options(d: "Derivations", subject: str, kind: str, *, subject_kind: 
 
 def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> str | None:
     """The English gloss a question shows beside its subject (spec 5
-    section 1 kind 1): a sentence's own gloss, a pair's members' meanings
-    joined, else a word's meaning. None when nothing matches.
+    section 1 kind 1): a sentence's own gloss (a filled Cloze slot's
+    sentence's, spec 3 r65), a pair's members' meanings joined, else a
+    word's meaning. None when nothing matches.
     """
+    if subject_kind == "slot":
+        try:
+            return syllabus.cloze_slot(subject).sentence.gloss
+        except KeyError:
+            return None
     if subject_kind == "sentence":
         try:
             return syllabus.sentence(subject).gloss
@@ -169,8 +175,17 @@ def _gloss_for(syllabus: Syllabus, subject: str, subject_kind: str = "word") -> 
 
 def _subject_label(syllabus: Syllabus, subject: str, subject_kind: str) -> dict[str, Any]:
     """How a question names its subject (spec 5 r9, design ruling 5): a
-    word's Thai, id and meaning; a sentence's text and gloss; a pair's
-    members' Thai; a grapheme's symbol. Never a bare sha."""
+    word's Thai, id and meaning; a sentence's text and gloss; a filled
+    Cloze slot's sentence with the slot's word blanked, and its gloss; a
+    pair's members' Thai; a grapheme's symbol. Never a bare sha."""
+    if subject_kind == "slot":
+        try:
+            slot = syllabus.cloze_slot(subject)
+        except KeyError:
+            return {"thai": None, "gloss": None, "id": subject}
+        return {"thai": thai_cloze(slot.sentence, slot.target.word,
+                                   lambda w: syllabus.word(w).thai),
+                "gloss": slot.sentence.gloss, "id": subject}
     if subject_kind == "sentence":
         try:
             s = syllabus.sentence(subject)
@@ -718,8 +733,8 @@ _ENTITY_TAG_PREFIX: dict[str, str] = {
 
 
 def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
-    """Every card compile.build_deck would compile, in its due order
-    (spec 5 section 1). One entry per card: its kind (the template name),
+    """Every card compile.build_deck would compile, each at its own due
+    (spec 5 section 1, r20). One entry per card: its kind (the template name),
     front/back HTML rendered through the note's own model template, the
     model's CSS, metadata read from the note's fields and tags --
     `family`, `subject` (the entity id), `gloss`, and for a minimal_pair
@@ -735,7 +750,9 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
     """
     built_deck = build_deck(d.syllabus, d.db, d.media_store, current_rubric=d.current_rubric,
                             prior=d.prior, provenance_source=d.provenance_source)
-    ordered = sorted(built_deck.built, key=lambda item: item.base_due)
+    # spec 5 r20: each card at its own due, not note by note.
+    ordered = sorted(((item, card) for item in built_deck.built for card in item.note.cards),
+                     key=lambda pair: pair[0].due_of(pair[1].ord))
 
     # Hoisted out of the per-card (and per-note) loop below: state_id()
     # canonicalizes and JSON-dumps the whole syllabus uncached, and is
@@ -746,51 +763,53 @@ def compiled_cards(d: "Derivations") -> list[dict[str, Any]]:
     syllabus_state_id = d.syllabus.state_id()
 
     cards: list[dict[str, Any]] = []
-    for item in ordered:
+    rows_of: dict[str, Any] = {}
+    for item, card in ordered:
         values = field_values(item.model, item.note)
         gloss = values.get("Meaning") or values.get("Gloss") or None
         entity_subject = tag_value(item.note, _ENTITY_TAG_PREFIX[item.family])
-        # One read per note, reused by every one of its cards (a word
+        # One read per subject, reused by every one of its cards (a word
         # note has up to four) -- not one assessments_of call per card.
-        subject_rows = d.db.assessments_of(entity_subject)
-        for card in item.note.cards:
-            template_name = item.model.templates[card.ord]["name"]
-            kind = card_kind_of(template_name)
-            front, back = render_card(item.model, item.note, card.ord)
-            entry: dict[str, Any] = {
-                "index": len(cards), "id": item.subject_of(card.ord), "family": item.family,
-                "kind": kind, "subject": entity_subject,
-                "front_html": _resolve_media_for_web(front),
-                "back_html": _resolve_media_for_web(back),
-                "css": item.model.css, "gloss": gloss,
-            }
-            # spec 5 section 1 r5: `shown` is this exact card's own
-            # artifacts/state, for the client to echo back on /api/note
-            # (C1 fix -- never recomputed server-side at save time,
-            # which would record whatever is current-best *then*, not
-            # what the learner actually saw). `notes` is this card's
-            # own notes, oldest first, each marked stale once the card
-            # no longer shows what it named (F9) -- scoped by this
-            # card's own anchor (entry["id"]) AND kind (C2 fix): a
-            # minimal-pair note's two member cards share a subject and
-            # a card_kind but never an anchor. `reading` is the run's
-            # reading of that note (spec 5 r10), None while unread --
-            # card_notes lists a flag-import row too (it carries no note
-            # text, so the comment pass never reads it), and an identity
-            # with no reading row reads None rather than raising.
-            shown_now = _shown_of(entry)
-            entry["shown"] = {**shown_now, "syllabus_state_id": syllabus_state_id}
-            entry["notes"] = [
-                {"text": n["text"], "ts": n["ts"], "stale": _is_stale(n["shown"], shown_now),
-                 "comment_sha": n["comment_sha"],
-                 "reading": reading_view(subject_rows, n["comment_sha"])}
-                for n in card_notes(subject_rows, entry["id"], kind)
-            ]
-            if item.family == "minimal_pair":
-                member = tag_value(item.note, "member")
-                entry["confusion"] = tag_value(item.note, "confusion")
-                entry["stimulus_member"] = int(member) if member is not None else None
-            cards.append(entry)
+        if entity_subject not in rows_of:
+            rows_of[entity_subject] = d.db.assessments_of(entity_subject)
+        subject_rows = rows_of[entity_subject]
+        template_name = item.model.templates[card.ord]["name"]
+        kind = card_kind_of(template_name)
+        front, back = render_card(item.model, item.note, card.ord)
+        entry: dict[str, Any] = {
+            "index": len(cards), "id": item.subject_of(card.ord), "family": item.family,
+            "kind": kind, "subject": entity_subject,
+            "front_html": _resolve_media_for_web(front),
+            "back_html": _resolve_media_for_web(back),
+            "css": item.model.css, "gloss": gloss,
+        }
+        # spec 5 section 1 r5: `shown` is this exact card's own
+        # artifacts/state, for the client to echo back on /api/note
+        # (C1 fix -- never recomputed server-side at save time,
+        # which would record whatever is current-best *then*, not
+        # what the learner actually saw). `notes` is this card's
+        # own notes, oldest first, each marked stale once the card
+        # no longer shows what it named (F9) -- scoped by this
+        # card's own anchor (entry["id"]) AND kind (C2 fix): a
+        # minimal-pair note's two member cards share a subject and
+        # a card_kind but never an anchor. `reading` is the run's
+        # reading of that note (spec 5 r10), None while unread --
+        # card_notes lists a flag-import row too (it carries no note
+        # text, so the comment pass never reads it), and an identity
+        # with no reading row reads None rather than raising.
+        shown_now = _shown_of(entry)
+        entry["shown"] = {**shown_now, "syllabus_state_id": syllabus_state_id}
+        entry["notes"] = [
+            {"text": n["text"], "ts": n["ts"], "stale": _is_stale(n["shown"], shown_now),
+             "comment_sha": n["comment_sha"],
+             "reading": reading_view(subject_rows, n["comment_sha"])}
+            for n in card_notes(subject_rows, entry["id"], kind)
+        ]
+        if item.family == "minimal_pair":
+            member = tag_value(item.note, "member")
+            entry["confusion"] = tag_value(item.note, "confusion")
+            entry["stimulus_member"] = int(member) if member is not None else None
+        cards.append(entry)
     return cards
 
 

@@ -1866,9 +1866,7 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
     # grapheme, sentence), so it's compiled_cards's own sort that recovers
     # introduction order, checked here against each card's base_due.
     assert [c["index"] for c in cards] == list(range(len(cards)))
-    base_due_by_subject = {built.subject: built.base_due for built in built_deck.built}
-    dues = [base_due_by_subject[c["id"]] for c in cards]
-    assert dues == sorted(dues)
+    assert _card_dues(built_deck, cards) == sorted(_card_dues(built_deck, cards))
 
     reading_card = next(c for c in cards if c["kind"] == "reading" and c["id"] == w1.id)
     assert w1.thai in reading_card["front_html"]
@@ -2017,6 +2015,78 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
         (f"{s.text_sha}:rice/productive", s.text_sha)]
     assert "___ข้าว" in cloze[0]["front_html"] and "กิน___" in cloze[1]["front_html"]
     assert all(c["shown"]["text_sha"] == s.text_sha for c in cloze)
+
+
+def _card_dues(built_deck, cards) -> list[int]:
+    """Each gallery card's own due in the build (spec 4 r13 section 2)."""
+    from thai_syllabus.compile import card_kind_of
+    due_of = {(b.subject_of(c.ord), card_kind_of(b.model.templates[c.ord]["name"])): b.due_of(c.ord)
+              for b in built_deck.built for c in b.note.cards}
+    return [due_of[(c["id"], c["kind"])] for c in cards]
+
+
+def _eat_rice_gallery(db, media_store):
+    """กินข้าว (eat rice) filling rice/productive, with its scene picture,
+    its recording and its rice slot's gapped recording, and each word's
+    recording: (derivations, sentence, slot key)."""
+    from thai_syllabus.profile import Profile
+
+    eat, rice = word("eat", "กิน", "to eat"), word("rice", "ข้าว", "cooked rice")
+    targets = (target("eat/receptive", "eat"), target("rice/productive", "rice", "productive"))
+    s = sentence(((eat.id, rice.id),), thai_of(eat, rice), gloss="eat rice")  # กินข้าว: eat rice
+    key = f"{s.text_sha}:rice/productive"
+    _judge(db, s.text_sha, "picture", _seed_picture(db, media_store, s.text_sha), True)
+    for subject, payload in ((s.text_sha, b"kin khaao"), (key, b"kin <gap>"),
+                             (eat.id, b"kin"), (rice.id, b"khaao")):
+        sha_ = media_store.write(payload, ext="mp3")
+        db.add_media(sha=sha_, kind="recording", ext="mp3", source="tts",
+                     origin="th-TH-Chirp3-HD-Puck", licence="google-tts",
+                     acquired=date(2026, 1, 1))
+        _judge(db, subject, "recording", sha_, True)
+    syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(s,),
+                        frequency={eat.id: 1, rice.id: 2},
+                        profile=Profile(register="male_colloquial"), assessments=db)
+    derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
+                              current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
+                              provenance_source=lambda sha: None,
+                              sources_for=sources_for, attempt_cap=DEFAULT_ATTEMPT_CAP,
+                              transient_cap=DEFAULT_TRANSIENT_CAP)
+    return derivations, s, key
+
+
+def test_the_gallery_orders_cards_by_their_own_due_not_note_by_note(db, media_store):
+    """Spec 5 r20: a word's Reading card, fifty positions on, comes after
+    the next word's and the sentence's cards."""
+    from thai_syllabus.compile import build_deck
+
+    derivations, s, _key = _eat_rice_gallery(db, media_store)
+    built_deck = build_deck(derivations.syllabus, derivations.db, derivations.media_store,
+                            current_rubric=derivations.current_rubric, prior=derivations.prior,
+                            provenance_source=derivations.provenance_source)
+    cards = rs.compiled_cards(derivations)
+    dues = _card_dues(built_deck, cards)
+    assert dues == sorted(dues)
+    assert [(c["id"], c["kind"]) for c in cards][:2] == [("eat", "listening"),
+                                                          ("rice", "listening")]
+
+
+def test_the_gallery_renders_an_audio_cloze_card_with_its_type_and_meaning(db, media_store):
+    """Spec 5 r20: the AudioCloze card is listed, its own card id the
+    slot's anchor, its front the scene and the gapped clip with no Thai,
+    its type's meaning in the page's table."""
+    from thai_syllabus.compile import CARD_MEANINGS
+
+    derivations, s, key = _eat_rice_gallery(db, media_store)
+    cards = rs.compiled_cards(derivations)
+    (audio_cloze,) = [c for c in cards if c["kind"] == "audio_cloze"]
+    assert (audio_cloze["family"], audio_cloze["id"], audio_cloze["subject"]) == (
+        "sentence", key, s.text_sha)
+    assert "ข้าว" not in audio_cloze["front_html"] and "กิน" not in audio_cloze["front_html"]
+    assert "<audio" in audio_cloze["front_html"] and "eat rice" in audio_cloze["back_html"]
+    (listening,) = [c for c in cards if c["id"] == s.text_sha and c["kind"] == "listening"]
+    assert listening["index"] < audio_cloze["index"]
+    assert '"sentence/audio_cloze"' in rs.INDEX_HTML   # its tooltip (spec 5 r9)
+    assert CARD_MEANINGS[("sentence", "audio_cloze")]
 
 
 def test_compiled_cards_notes_are_scoped_by_anchor_not_just_subject_and_kind(
@@ -3653,6 +3723,21 @@ def test_subject_label_and_shown_for_a_sentence_and_a_pair(syllabus, w1, w2, pai
     assert shown == {"picture": None, "recordings": ["r" * 64], "text_sha": s.text_sha,
                      "syllabus_state_id": "s" * 64}
     assert rs._question_shown("picture", "rice", "word", None, "s" * 64)["recordings"] == []
+
+
+def test_subject_label_for_a_filled_cloze_slot_shows_its_sentence_with_the_gap(syllabus, w1, w2):
+    """Spec 3 r65: a gapped recording's question names its sentence, the
+    slot's word blanked, and the sentence's gloss."""
+    s = sentence(((w1.id, w2.id),), thai_of(w1, w2), gloss="rice is near")
+    productive = target(f"{w2.id}/productive", w2.id, "productive")
+    with_slot = dataclasses.replace(syllabus, targets=(*syllabus.targets, productive),
+                                    sentences=(s,))
+    key = f"{s.text_sha}:{productive.id}"
+    assert [slot.key for slot in with_slot.cloze_slots] == [key]
+    assert rs._subject_label(with_slot, key, "slot") == {
+        "thai": "ข้าว___", "gloss": "rice is near", "id": key}   # ข้าว: rice, ใกล้ (near) gapped
+    assert rs._gloss_for(with_slot, key, "slot") == "rice is near"
+    assert rs._subject_label(syllabus, key, "slot") == {"thai": None, "gloss": None, "id": key}
 
 
 def test_a_question_lists_every_comment_on_its_subject_unread(derivations, db, w1):

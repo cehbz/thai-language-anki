@@ -21,6 +21,7 @@ JudgeUnreachable out of ask_many and stops the run.
 from __future__ import annotations
 
 import functools
+from xml.sax.saxutils import escape as xml_escape
 import json
 import time
 import logging
@@ -60,9 +61,9 @@ from .derivations import (
     vetoed,
 )
 from .dictionary import Wiktionary
-from .entities import (Clauses, Grapheme, LETTER_NAMES_CATEGORY, MinimalPair, Pronunciation,
-                       Sentence, Target, Word, _same_form, clauses_to_json, element_word,
-                       is_corroborated)
+from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, LETTER_NAMES_CATEGORY,
+                       MinimalPair, Pronunciation, Sentence, Target, Word, _same_form,
+                       clauses_to_json, element_word, is_corroborated)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
@@ -162,7 +163,7 @@ def sources_for_need(ctx: Sourcing, need: Need) -> tuple[str, ...]:
                         need.subject_kind)
 
 
-SubjectKind = Literal["word", "pair", "grapheme", "sentence", "candidate"]
+SubjectKind = Literal["word", "pair", "grapheme", "sentence", "slot", "candidate"]
 
 # A recording's or rendition's voice constraint (spec 1 section 1 (r10);
 # spec 3 section 5): "male"/"female" admit that sex's own pool alone,
@@ -2022,13 +2023,16 @@ def _voice_constraint(ctx: Sourcing, need: Need) -> VoiceConstraint:
     """The recording's voice constraint follows the speaker marking (spec
     1 section 1 (r10), spec 3 section 5): "female" when the marking is
     `{"female"}`, "male" when it is `{"male"}`. Unmarked, a sentence's
-    recording is "any" (principles E7, r7); a word's is "male" when the
+    recording, and a filled Cloze slot's gapped recording (its sentence's
+    marking), is "any" (principles E7, r7); a word's is "male" when the
     word has a productive Target (F7) and "any" otherwise. A marking
     holding both sexes cannot reach here: Syllabus.check_sentence refuses
     such a sentence.
     """
-    if need.subject_kind == "sentence":
-        marking = ctx.syllabus.marking(ctx.syllabus.sentence(need.subject))
+    if need.subject_kind in ("sentence", "slot"):
+        sentence = (ctx.syllabus.cloze_slot(need.subject).sentence if need.subject_kind == "slot"
+                    else ctx.syllabus.sentence(need.subject))
+        marking = ctx.syllabus.marking(sentence)
         unmarked: VoiceConstraint = "any"
     else:
         word = _word_of(ctx, need.subject)
@@ -2208,10 +2212,13 @@ def _relookup_once(ctx: Sourcing, subject: str, thai: str, spend: dict[str, Spen
 
 def _synthesize(ctx: Sourcing, subject: str, text: str, voice: str, spend: dict[str, Spend],
                 *, subject_kind: SubjectKind = "word",
-                fetches: _Fetches | None = None) -> str | None:
+                fetches: _Fetches | None = None, ssml: bool = False) -> str | None:
+    """`text` synthesized in `voice` under `subject`; `ssml` sends it as
+    SSML (spec 3 r65's gapped recording)."""
     try:
         got = ctx.provider.ask("tts", Question(subject=subject, provides="recording",
-                                               params={"text": text, "voice": voice},
+                                               params={"ssml" if ssml else "text": text,
+                                                       "voice": voice},
                                                kind="recording", subject_kind=subject_kind))
     except SynthesisRefused as e:
         _log.warning("tts refused %s for %s: %s", voice, subject, e)
@@ -2238,13 +2245,48 @@ def _check(ctx: Sourcing, questions: Sequence[AssessQuestion], spend: dict[str, 
     return result
 
 
+# A filled Cloze slot's word, in its gapped recording (spec 3 r65).
+GAP_BREAK = '<break time="600ms"/>'
+
+
+def gapped_ssml(syllabus: Syllabus, slot: ClozeSlot) -> str:
+    """The gapped recording's request (spec 3 r65): the slot's sentence as
+    SSML, every element naming the slot's word (a repeat mark included)
+    one GAP_BREAK, the other elements' Thai escaped, clauses joined with
+    one space as the sentence's text joins them (entities.render)."""
+    def element(e) -> str:
+        if element_word(e) == slot.target.word:
+            return GAP_BREAK
+        form = syllabus.word(element_word(e)).thai
+        return xml_escape(form + REPEAT_MARK if isinstance(e, tuple) else form)
+
+    body = " ".join("".join(element(e) for e in clause) for clause in slot.sentence.clauses)
+    return f"<speak>{body}</speak>"
+
+
+def _gapped_voice(ctx: Sourcing, slot: ClozeSlot, constraint: VoiceConstraint) -> str:
+    """The sentence's own voice when its current-best recording is TTS,
+    else the voice the sentence's own TTS would take: `pick_voice` keyed
+    on its text_sha over the pool its marking selects (spec 3 r65)."""
+    prov = ctx.syllabus.media.recording_provenance(slot.sentence.text_sha)
+    if prov is not None and prov.get("source") == "tts" and prov.get("origin"):
+        return str(prov["origin"])
+    return pick_voice(slot.sentence.text_sha, _pool(ctx, constraint))
+
+
 def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
+    """One recording source tried for a word's, a sentence's or a filled
+    Cloze slot's recording; a slot's gapped recording is tts alone, over
+    `gapped_ssml` (spec 3 r65)."""
+    if need.subject_kind == "slot" and source != "tts":
+        raise ValueError(f"a gapped recording ({need.subject!r}) is sourced from tts alone, "
+                         f"not {source!r} (spec 3 r65)")
     spend: dict[str, Spend] = {}
-    text = (ctx.syllabus.sentence(need.subject).text if need.subject_kind == "sentence"
-            else _word_of(ctx, need.subject).thai)
     constraint = _voice_constraint(ctx, need)
     fetches = _Fetches()
     if source == "forvo":
+        text = (ctx.syllabus.sentence(need.subject).text if need.subject_kind == "sentence"
+                else _word_of(ctx, need.subject).thai)
         # An aged-out `nothing` re-offers forvo (spec 3 r19 section 6a):
         # ask it afresh, never the cached empty answer.
         fresh = aged_out(ctx.db, need.subject, need.kind, "forvo",
@@ -2267,10 +2309,17 @@ def _recording_attempt(ctx: Sourcing, need: Need, source: str) -> AttemptResult:
             _append_outcome(ctx, need, source, fetches.outcome, fetches.candidates)
             raise
     elif source == "tts":
-        voice = pick_voice(need.subject, _pool(ctx, constraint))
+        if need.subject_kind == "slot":
+            slot = ctx.syllabus.cloze_slot(need.subject)
+            text, voice = gapped_ssml(ctx.syllabus, slot), _gapped_voice(ctx, slot, constraint)
+        else:
+            text = (ctx.syllabus.sentence(need.subject).text if need.subject_kind == "sentence"
+                    else _word_of(ctx, need.subject).thai)
+            voice = pick_voice(need.subject, _pool(ctx, constraint))
         try:
             _synthesize(ctx, need.subject, text, voice, spend,
-                        subject_kind=need.subject_kind, fetches=fetches)
+                        subject_kind=need.subject_kind, fetches=fetches,
+                        ssml=need.subject_kind == "slot")
         except QuotaExhausted:
             raise
         except TransportError:

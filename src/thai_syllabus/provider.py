@@ -822,7 +822,9 @@ class ForvoBackend:
 
 @dataclass
 class TtsBackend:
-    """Synthesizes one text into the media store. `cost_per_char` is the
+    """Synthesizes one text into the media store: `params["text"]`, or
+    `params["ssml"]` through the engine's SSML input (spec 3 r65), keyed
+    and costed over whichever the ask carries. `cost_per_char` is the
     configured rate (providers.yaml `tts`), carried by the backend that
     incurs it (spec 3 section 2's "measured by the backend").
     """
@@ -835,14 +837,19 @@ class TtsBackend:
     def _voice(self, question: Question) -> str:
         return question.params.get("voice") or self.pick_voice(question.subject, self.voices)
 
+    @staticmethod
+    def _input(question: Question) -> str:
+        return question.params.get("ssml") or question.params["text"]
+
     def cache_key(self, question: Question) -> ProvideKey:
         return ProvideKey(source="tts", kind=self._voice(question),
-                          query=sha(question.params["text"]))
+                          query=sha(self._input(question)))
 
     def fetch(self, question: Question) -> RawAnswer:
-        text = question.params["text"]
+        text = self._input(question)
         voice = self._voice(question)
-        audio = self.tts.synthesize(text, voice)
+        audio = (self.tts.synthesize_ssml(text, voice) if question.params.get("ssml")
+                 else self.tts.synthesize(text, voice))
         artifact_sha = self.media.write(audio, "mp3")
         return RawAnswer(items=({"sha": artifact_sha, "ext": "mp3", "voice": voice,
                                  "speaker_kind": "synthetic", "source": "tts",

@@ -38,6 +38,8 @@ def pick_voice(subject: str, voices: list[str]) -> str:
 class Tts(Protocol):
     def synthesize(self, text: str, voice: str) -> bytes: ...
 
+    def synthesize_ssml(self, ssml: str, voice: str) -> bytes: ...
+
 
 @dataclass
 class GoogleTts:
@@ -50,6 +52,15 @@ class GoogleTts:
             self.http_post = requests.post
 
     def synthesize(self, text: str, voice: str) -> bytes:
+        return self._synthesize({"text": text}, voice)
+
+    def synthesize_ssml(self, ssml: str, voice: str) -> bytes:
+        """`ssml` sent as text:synthesize's `input.ssml` (spec 3 r65's
+        gapped recording: Chirp 3: HD, Neural2 and Standard voices take
+        <break> in a synchronous request)."""
+        return self._synthesize({"ssml": ssml}, voice)
+
+    def _synthesize(self, request_input: dict[str, str], voice: str) -> bytes:
         """Spec 3 section 2's cost/secrets contract: the key rides the
         `X-Goog-Api-Key` header, never the url, and every failure message
         is redacted before it can carry the key into a log.
@@ -58,7 +69,7 @@ class GoogleTts:
         url = "https://texttospeech.googleapis.com/v1/text:synthesize"
         headers = {"X-Goog-Api-Key": self.api_key}
         body = {
-            "input": {"text": text},
+            "input": request_input,
             "voice": {"languageCode": "th-TH", "name": voice},
             "audioConfig": {"audioEncoding": "MP3"},
         }

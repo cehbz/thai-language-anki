@@ -1093,7 +1093,7 @@ def test_an_unfilled_slot_names_its_words_productive_target_and_builds_no_card(f
     assert fields["ClozeTarget2"] == "rice/productive"
     assert [fields[f"ClozeTarget{k}"] for k in range(3, CLOZE_SLOTS + 1)] == [""] * (CLOZE_SLOTS - 2)
     assert sorted(_cards_by_ord(pkg, note)) == [0, 2]
-    assert not [d for d in compiled.report.dropped if d.family == "sentence"]
+    assert not [d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"]
 
 
 def _slot_of_rice(fx, words, clauses) -> tuple[set[str], dict[str, str]]:
@@ -1184,10 +1184,12 @@ def test_a_word_gets_at_most_three_cloze_cards(fx):
 
 
 def test_a_sentence_notes_cards_fit_its_due_block():
-    """A sentence's block holds its Listening card and every Cloze slot;
-    a word's its four templates."""
-    assert len(SENTENCE_MODEL.templates) == 1 + CLOZE_SLOTS
-    assert len(SENTENCE_MODEL.templates) <= STRIDE
+    """A sentence's block holds its Listening card and every Cloze slot,
+    below the Production lane its AudioCloze cards take P blocks on, and
+    those below the grapheme lane; a word's its four templates."""
+    from thai_syllabus.compile import GRAPHEME_LANE, PRODUCTION_LANE
+    assert len(SENTENCE_MODEL.templates) == 1 + 2 * CLOZE_SLOTS
+    assert CLOZE_SLOTS < PRODUCTION_LANE and PRODUCTION_LANE + CLOZE_SLOTS < GRAPHEME_LANE
     assert len(WORD_MODEL.templates) <= STRIDE
 
 
@@ -1250,7 +1252,7 @@ def test_a_second_productive_target_on_a_slotted_word_is_dropped_and_counted(fx)
     pkg = read_apkg(fx.out_path)
     s_model, s_fields, note = _note_of(pkg, kin_khaao)
     assert dict(zip(s_fields, note["flds"]))["ClozeTarget2"] == "rice/productive"
-    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+    assert [d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"] == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(sentence_note_id(kin_khaao), "rice/productive-meal"),
                     reason="Cloze slot 2 held by rice/productive")]
@@ -1395,7 +1397,7 @@ def test_a_cloze_card_without_its_sentences_scene_picture_is_dropped_and_counted
     pkg = read_apkg(fx.out_path)
     s_model, _f, note = _note_of(pkg, kin_khaao)
     assert _templates_generated(pkg, s_model, note) == {"Listening"}
-    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+    assert [d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"] == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(text_sha, "rice/productive"),
                     reason="no current-best picture")]
@@ -1411,7 +1413,7 @@ def test_a_cloze_card_without_its_sentences_recording_is_dropped_and_counted(fx)
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
     assert _sentence_notes(pkg, "sentence")[2] == []
-    assert sorted([d for d in compiled.report.dropped if d.family == "sentence"],
+    assert sorted([d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"],
                   key=lambda d: d.kind) == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(text_sha, "rice/productive"),
@@ -1436,7 +1438,7 @@ def test_a_cloze_card_with_its_sentences_scene_picture_compiles(fx):
     s_model, s_fields, note = _note_of(pkg, kin_khaao)
     assert _templates_generated(pkg, s_model, note) == {"Listening", "Cloze 2"}
     assert dict(zip(s_fields, note["flds"]))["ScenePicture"].startswith("<img ")
-    assert not [d for d in compiled.report.dropped if d.family == "sentence"]
+    assert not [d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"]
 
 
 def test_a_cloze_card_whose_scene_picture_is_rejected_is_dropped_and_counted(fx):
@@ -1460,7 +1462,7 @@ def test_a_cloze_card_whose_scene_picture_is_rejected_is_dropped_and_counted(fx)
     pkg = read_apkg(fx.out_path)
     s_model, _f, note = _note_of(pkg, kin_khaao)
     assert _templates_generated(pkg, s_model, note) == {"Listening"}
-    assert [d for d in compiled.report.dropped if d.family == "sentence"] == [
+    assert [d for d in compiled.report.dropped if d.family == "sentence" and d.kind != "AudioCloze"] == [
         DroppedCard(family="sentence", kind="Cloze",
                     subject=sentence_cloze_key(text_sha, "rice/productive"),
                     reason="no current-best picture")]
@@ -2456,3 +2458,85 @@ def test_a_sentence_introduced_word_is_read_once_its_segmental_confusions_are_st
         "ScriptShown"] == "1"
 
 
+# --- the AudioCloze card (spec 4 r13, spec 3 r65) ---------------------------
+
+from thai_syllabus.compile import (PRODUCTION_LANE, PRODUCTION_OFFSET, cloze_target_field,
+                                   template_kind)
+
+_AUDIO_CLOZE_3 = CLOZE_SLOTS + 3   # rice's slot in ผมกินข้าว (I eat rice)
+
+
+def _seed_gap(fx, syllabus) -> str:
+    """The gapped recording of rice/productive's slot in ผมกินข้าว."""
+    key = sentence_cloze_key(sentence_note_id(syllabus.sentences[0]), "rice/productive")
+    return fx.seed_recording(key, "ผมกิน <break/>")
+
+
+def test_an_audio_cloze_card_plays_the_gap_over_the_scene_and_reveals_the_sentence(fx):
+    """Front: the scene picture and the gapped clip, no Thai; back: the
+    full recording and the gloss, the word's Thai under ScriptShown."""
+    syllabus = _fully_seeded(fx)
+    gap = _seed_gap(fx, syllabus)
+    built = _sentence_built(_built_deck(fx, syllabus))
+    fields = field_values(SENTENCE_MODEL, built.note)
+    assert fields["ClozeAudio3"] == f"[sound:{gap}.mp3]"
+    assert [fields[f"ClozeAudio{k}"] for k in (1, 2, 4)] == ["", "", ""]
+    assert {c.ord for c in built.note.cards} == {0, 3, _AUDIO_CLOZE_3}
+    assert SENTENCE_MODEL.templates[_AUDIO_CLOZE_3]["name"] == "AudioCloze 3"
+    front, back = render_card(SENTENCE_MODEL, built.note, _AUDIO_CLOZE_3)
+    assert fields["ScenePicture"] in front and f"[sound:{gap}.mp3]" in front
+    assert "ข้าว" not in front and "ผม" not in front   # ข้าว: rice, ผม: I
+    assert fields["Audio"] in back.split('<hr id="answer">', 1)[1]
+    assert "I eat rice" in back and '<div class="target">ข้าว</div>' in back
+
+
+def test_an_audio_cloze_back_hides_the_word_until_the_sentence_is_read(fx):
+    syllabus = _fully_seeded(fx, read=False)
+    _seed_gap(fx, syllabus)
+    built = _sentence_built(_built_deck(fx, syllabus))
+    assert {c.ord for c in built.note.cards} == {0, _AUDIO_CLOZE_3}
+    _front, back = render_card(SENTENCE_MODEL, built.note, _AUDIO_CLOZE_3)
+    assert "ข้าว" not in back and "I eat rice" in back
+
+
+def test_an_audio_cloze_card_is_due_p_blocks_after_the_listening_card_in_the_production_lane(fx):
+    syllabus = _fully_seeded(fx)
+    _seed_gap(fx, syllabus)
+    built = _sentence_built(_built_deck(fx, syllabus))
+    listening = built.due_of(0)
+    assert built.due_of(_AUDIO_CLOZE_3) == (
+        listening + PRODUCTION_OFFSET * STRIDE + PRODUCTION_LANE + 3)
+    assert built.subject_of(_AUDIO_CLOZE_3) == sentence_cloze_key(
+        sentence_note_id(syllabus.sentences[0]), "rice/productive")
+
+
+def test_a_sentence_without_its_gapped_clip_compiles_no_audio_cloze_and_counts_it(fx):
+    syllabus = _fully_seeded(fx)
+    deck = _built_deck(fx, syllabus)
+    built = _sentence_built(deck)
+    assert {c.ord for c in built.note.cards} == {0, 3}
+    assert [(d.kind, d.subject, d.reason) for d in deck.dropped if d.family == "sentence"] == [
+        ("AudioCloze", sentence_cloze_key(sentence_note_id(syllabus.sentences[0]),
+                                          "rice/productive"),
+         "no current-best gapped recording")]
+
+
+def test_an_audio_cloze_card_names_every_artifact_it_lacks(fx):
+    syllabus, kin_khaao = _rice_sentence(fx, picture=False, recording=False)
+    deck = _built_deck(fx, syllabus)
+    assert [d.reason for d in deck.dropped if d.kind == "AudioCloze"] == [
+        "no current-best gapped recording and picture and recording"]
+
+
+def test_an_audio_cloze_card_is_kind_audio_cloze_and_maps_to_its_slots_target():
+    name = SENTENCE_MODEL.templates[_AUDIO_CLOZE_3]["name"]
+    assert template_kind(name) == "AudioCloze"
+    assert card_kind_of(name) == "audio_cloze"
+    assert card_kind_of("Cloze 3") == "cloze" and card_kind_of("Listening") == "listening"
+    assert cloze_target_field(_AUDIO_CLOZE_3) == cloze_target_field(3) == "ClozeTarget3"
+
+
+def test_a_sentence_note_is_tagged_with_the_audio_cloze_kind(fx):
+    syllabus = _fully_seeded(fx)
+    built = _sentence_built(_built_deck(fx, syllabus))
+    assert "kind::audio_cloze" in built.note.tags

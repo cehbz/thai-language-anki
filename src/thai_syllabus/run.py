@@ -798,6 +798,11 @@ def _redraw_stale_cells(ctx: Sourcing, budgets: Mapping[str, Budget],
     return redrawn
 
 
+def _slot_keys(ctx: Sourcing) -> frozenset[str]:
+    """The filled Cloze slots ctx.syllabus holds now (spec 3 r65)."""
+    return frozenset(slot.key for slot in ctx.syllabus.cloze_slots)
+
+
 def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mapping[str, Budget],
                    carried: Mapping[str, Spend], tally: _Tally, *, now_ns: int) -> int:
     """Assess-first, then one Source per need: the fit questions a
@@ -816,13 +821,19 @@ def _try_each_need(ctx: Sourcing, entries: Sequence[QueueEntry], budgets: Mappin
     already retired (F13, tally.retired_subjects) is skipped, counted
     `deferred` -- the queue was built before the retirement, so a still-
     queued sibling need (e.g. the retired sentence's scene picture) is
-    never attempted against the now-deleted sentence.
+    never attempted against the now-deleted sentence; nor is a gapped
+    recording whose filled Cloze slot ctx.syllabus no longer holds.
     """
     dead_sources: set[str] = set()
     budgeted_sources: set[str] = set()
     for index, entry in enumerate(entries):
         need = Need(entry.subject, entry.kind, entry.subject_kind)
         if need.subject_kind == "sentence" and need.subject in tally.retired_subjects:
+            tally.deferred += 1
+            continue
+        if need.subject_kind == "slot" and need.subject not in _slot_keys(ctx):
+            # The slot left the deck this pass: its sentence retired, or
+            # an adoption capped its fill (spec 1 section 3 clause 4).
             tally.deferred += 1
             continue
         if _judge_spent(ctx) and _judge_decides(need):

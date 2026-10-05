@@ -13,7 +13,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
+from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId, sentence_cloze_key
 from .media import Provenance
 
 Dimension = Literal["tone", "length", "aspiration", "vowel_quality", "consonant", "final"]
@@ -455,3 +455,25 @@ class Sentence:
         order()'s within-group placement read.
         """
         return sum(len(clause) for clause in self.clauses)
+
+
+@dataclass(frozen=True)
+class ClozeSlot:
+    """A filled Cloze slot (spec 4 section 1): an adopted Sentence and a
+    productive Target it fills. Identity: `key`, TEXT_SHA:TARGET_ID
+    (ids.sentence_cloze_key), the anchor its Cloze and AudioCloze cards
+    share (spec 2 section 2) and the subject of its gapped recording
+    need (spec 3 r65).
+    """
+    sentence: Sentence
+    target: Target
+
+    @property
+    def key(self) -> str:
+        return sentence_cloze_key(self.sentence.text_sha, self.target.id)
+
+    @property
+    def breaks(self) -> int:
+        """The sentence's elements naming the slot's word: one gap each
+        in the gapped recording."""
+        return sum(1 for e in self.sentence.elements if element_word(e) == self.target.word)

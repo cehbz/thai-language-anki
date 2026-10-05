@@ -844,6 +844,45 @@ def test_a_flag_on_a_cloze_card_is_keyed_by_its_sentence_and_target(fx):
                                                      card_kind="cloze", flags=1)) is not None
 
 
+def test_an_audio_cloze_review_and_flag_map_to_its_slots_anchor_under_their_own_kind(fx):
+    """Spec 4 r13 section 4: an AudioCloze card maps back as its slot's
+    Cloze card does, card kind audio_cloze; its flag is card-level,
+    though the sentence has a scene picture a Cloze flag would rate."""
+    from thai_syllabus.cachekeys import FlagKey
+    from thai_syllabus.compile import CLOZE_SLOTS
+    from thai_syllabus.rulebook import sentence_note_id
+    from .test_compile import _seed_gap
+
+    syllabus = _fully_seeded(fx)
+    _seed_gap(fx, syllabus)
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                    current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    collection_path = _extract_collection(fx.out_path, fx.tmp_path / "audio_cloze_extracted")
+
+    conn = _open_rw(collection_path)
+    card_id, _ = _find_sentence_card(conn, text_sha, CLOZE_SLOTS + _RICE_CLOZE)
+    conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                 (1_700_000_000_000, card_id, 0, 3, 1000, 1000, 2500, 4200, 1))
+    conn.execute("update cards set flags=1 where id=?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    anchor = f"{text_sha}:rice/productive"
+    assert (report.revlog_imported, report.flags_imported) == (1, 1)
+    assert [r.ts for r in fx.db.records("sentence", anchor, "audio_cloze")] == [1_700_000_000_000]
+    assert fx.db.records("sentence", anchor, "cloze") == []
+    (row,) = [r for r in fx.db.assessments_of(text_sha) if r.backend == "learner"]
+    assert (row.question["role"], row.question["anchor"], row.question["card_kind"]) == (
+        "card-flag", anchor, "audio_cloze")
+    assert fx.db.latest("assess", "learner", FlagKey(family="sentence", anchor=anchor,
+                                                     card_kind="audio_cloze", flags=1))
+    assert (anchor, "audio_cloze", ("rice/productive",)) in {
+        (i.anchor, i.kind_slug, i.target_ids) for i in card_identities(collection_path)}
+
+
 def test_a_sentence_notes_review_note_harvests_one_row_under_its_text_sha(fx):
     """A sentence's Listening and Cloze cards are siblings of one note
     (spec 4 r11): its ReviewNote is one learner-note row keyed by the

@@ -442,24 +442,27 @@ def _recorded_form_of(db: SyllabusDb) -> Callable[[str, str], str | None]:
 
 def _recording_check(db: SyllabusDb, media_store: MediaStore, *,
                      form_of: Callable[[str], str | None] | None = None,
-                     word_count_of: Callable[[str], int | None] | None = None
+                     word_count_of: Callable[[str], int | None] | None = None,
+                     breaks_of: Callable[[str], int | None] | None = None
                      ) -> RecordingCheckBackend:
     """The deck's mechanical recording check: the run's "mechanical"
     backend (build_assessor) and the key the review screen's derivations
     decide a candidate under (load_derivations) are this one check."""
     return RecordingCheckBackend(resolve_path=_resolver(db, media_store), form_of=form_of,
                                  recorded_form_of=_recorded_form_of(db),
-                                 word_count_of=word_count_of)
+                                 word_count_of=word_count_of, breaks_of=breaks_of)
 
 
 def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore,
                    *, form_of: Callable[[str], str | None] | None = None,
                    word_count_of: Callable[[str], int | None] | None = None,
+                   breaks_of: Callable[[str], int | None] | None = None,
                    secret_store=None) -> Assessor:
     """The Assess port's backend roster (spec 3 section 2): "judge",
     "mechanical" (the recording check: duration plus the own-word
-    clause, `form_of` supplying the asked form and `word_count_of` a
-    sentence's deck word count), "rendition". Fills is
+    clause, `form_of` supplying the asked form, `word_count_of` a
+    sentence's deck word count and `breaks_of` a filled Cloze slot's
+    breaks), "rendition". Fills is
     membership (Syllabus.fills), not an Assess backend (spec 1 section 3
     r8; spec 3 r16). `form_of` is None outside `build_sourcing` (most
     callers ask about roster shape, not the own-word clause); a backend
@@ -475,7 +478,7 @@ def build_assessor(cfg: ProvidersConfig, db: SyllabusDb, media_store: MediaStore
     backends: dict[str, AssessBackend] = {
         "judge": judge,
         "mechanical": _recording_check(db, media_store, form_of=form_of,
-                                       word_count_of=word_count_of),
+                                       word_count_of=word_count_of, breaks_of=breaks_of),
         "rendition": RenditionBackend(speaker_of=_speaker_of(db)),
     }
     return Assessor(record=db, cache=db, backends=backends)
@@ -717,16 +720,27 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
             return None
 
     def word_count_of(subject: str) -> int | None:
-        # ctx.syllabus at call time, as for form_of.
+        # ctx.syllabus at call time, as for form_of: a sentence's, or a
+        # filled Cloze slot's sentence's (spec 3 r65).
         try:
             return ctx.syllabus.sentence(subject).word_count
+        except KeyError:
+            pass
+        try:
+            return ctx.syllabus.cloze_slot(subject).sentence.word_count
+        except KeyError:
+            return None
+
+    def breaks_of(subject: str) -> int | None:
+        try:
+            return ctx.syllabus.cloze_slot(subject).breaks
         except KeyError:
             return None
 
     ctx = Sourcing(
         syllabus=derivations.syllabus, provider=build_provider(cfg, db, media_store),
         assessor=build_assessor(cfg, db, media_store, form_of=form_of,
-                                word_count_of=word_count_of),
+                                word_count_of=word_count_of, breaks_of=breaks_of),
         db=db, media_store=media_store, rubrics=derivations.current_rubric,
         provenance_prior=derivations.prior,
         image_candidates=cfg.image_candidates,
@@ -932,11 +946,12 @@ class _DbMediaIndex:
 def studied_cloze_pairs(db: SyllabusDb, sentences: Sequence[Sentence],
                         targets: Sequence[Target]) -> frozenset[tuple[str, TargetId]]:
     """Every (sentence text_sha, productive Target id) pair among
-    `sentences` and `targets` with a study row on its Cloze card (family
-    sentence, card kind cloze, anchor `sentence_cloze_key`, spec 4 r9):
-    the pairs spec 1 r26 keeps filling whatever their placement.
+    `sentences` and `targets` with a study row on its Cloze or AudioCloze
+    card (family sentence, card kind cloze or audio_cloze, anchor
+    `sentence_cloze_key`, spec 4 r9, r13): the pairs spec 1 r26 (r32)
+    keeps filling whatever their placement.
     """
-    anchors = db.study_anchors("sentence", "cloze")
+    anchors = db.study_anchors("sentence", "cloze") | db.study_anchors("sentence", "audio_cloze")
     if not anchors:
         return frozenset()
     productive: dict[WordId, list[TargetId]] = {}

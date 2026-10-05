@@ -16,7 +16,8 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from .cachekeys import JudgeKey
 from .entities import (
-    Category, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Voice, Word, render,
+    Category, ClozeSlot, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Voice, Word,
+    render,
 )
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
@@ -792,6 +793,26 @@ class Syllabus:
         return (bool(self.productive_fills(sentence))
                 or self.media.picture_sha(sentence.text_sha) is not None)
 
+    @cached_property
+    def cloze_slots(self) -> tuple[ClozeSlot, ...]:
+        """Every filled Cloze slot (spec 4 section 1): per adopted
+        sentence, in sentence order, one per productive Target it fills
+        (`productive_fills`, target-id order). Each has a gapped recording
+        need (spec 3 r65)."""
+        return tuple(ClozeSlot(s, t) for s in self.sentences for t in self.productive_fills(s))
+
+    @cached_property
+    def _cloze_slot_index(self) -> dict[str, ClozeSlot]:
+        return {slot.key: slot for slot in self.cloze_slots}
+
+    def cloze_slot(self, key: str) -> ClozeSlot:
+        """The filled Cloze slot whose key (ClozeSlot.key) is `key`;
+        KeyError names it."""
+        found = self._cloze_slot_index.get(key)
+        if found is None:
+            raise KeyError(f"no filled Cloze slot {key!r} in the syllabus")
+        return found
+
     def vocabulary_met_by(self, target: Target) -> tuple[Word, ...]:
         """Every Word with a Target at or before `target`'s order()
         position (the target's own word included).
@@ -915,8 +936,9 @@ class Syllabus:
     def gaps(self) -> Gaps:
         """report()'s completeness findings and measures (spec 1 section
         3), folded by rule id. Scene pictures carry no rule finding, so
-        that one field reads the media index directly: the sentences
-        carrying a Cloze card with no scene picture (spec 3 r61).
+        that field reads the media index directly: the sentences
+        carrying a Cloze card with no scene picture (spec 3 r61); so do
+        the filled Cloze slots with no gapped recording (spec 3 r65).
         """
         report = self.report()
 
@@ -932,13 +954,21 @@ class Syllabus:
         # in target order
         open_ids = {*note_ids("target/sentence-required"), *note_ids("target/sentences-wanted")}
         open_targets = tuple(t.id for t in self.targets if t.id in open_ids)
+        # spec 3 r65: a filled Cloze slot's gapped recording, read from
+        # the media index under the slot's key, as scene pictures are; the
+        # need exists once the slot's sentence has a recording, whose
+        # voice the clip takes.
+        gapped = tuple(slot.key for slot in self.cloze_slots
+                       if self.media.recording_provenance(slot.sentence.text_sha) is not None
+                       and self.media.recording_provenance(slot.key) is None)
         return Gaps(pairs_missing_renditions=note_ids("pair/rendition-required"),
                     unfilled_targets=open_targets,
                     words_missing_pictures=note_ids("target/picture-required"),
                     words_missing_recordings=note_ids("target/recording-required"),
                     graphemes_missing_keyword_data=note_ids("grapheme/keyword-picture-required"),
                     sentence_recordings=note_ids("sentence/recording-required"),
-                    scene_pictures=scene_pictures)
+                    scene_pictures=scene_pictures,
+                    gapped_recordings=gapped)
 
     # --- study_by_confusion -------------------------------------------------
 

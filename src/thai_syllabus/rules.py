@@ -81,6 +81,7 @@ class Gaps:
     graphemes_missing_keyword_data: tuple[str, ...]  # symbol
     sentence_recordings: tuple[str, ...] = ()   # text_sha, no recording
     scene_pictures: tuple[str, ...] = ()        # text_sha, no scene picture
+    gapped_recordings: tuple[str, ...] = ()     # ClozeSlot.key, no gapped recording
 
 
 @dataclass(frozen=True)

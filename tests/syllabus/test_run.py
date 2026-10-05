@@ -1165,6 +1165,7 @@ class _Gaps:
         self.unfilled_targets, self.pairs_missing_renditions = sentences, ()
         self.graphemes_missing_keyword_data = graphemes
         self.sentence_recordings, self.scene_pictures = sentence_recordings, ()
+        self.gapped_recordings = ()
 
 
 @dataclasses.dataclass
@@ -1205,6 +1206,12 @@ class _Syl:
         """The real Syllabus's own predicate, read by derivations.all_needs
         (spec 3 r61): every sentence over this fake carries a Cloze card."""
         return True
+
+    @property
+    def cloze_slots(self):
+        """The real Syllabus's own fold, read by derivations.all_needs
+        (spec 3 r65): no sentence over this fake fills a Cloze slot."""
+        return ()
 
     def gaps(self):
         return self._gaps
@@ -2463,6 +2470,7 @@ class _AdoptingSyl:
     def __init__(self, unfilled_targets):
         self.targets, self.sentences, self.pairs, self.words = [], (), (), ()
         self.graphemes = ()          # run._picture_needs folds over all_needs
+        self.cloze_slots = ()        # and so does all_needs' gapped recordings
         self._unfilled = tuple(unfilled_targets)
         self._covered: tuple[str, ...] = ()
 

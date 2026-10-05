@@ -904,9 +904,12 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 @dataclass
 class RecordingCheckBackend:
     """The mechanical recording check (spec 3 section 4, r49, r55): the
-    clip's duration lies within [lo, hi] seconds for a word subject, and
+    clip's duration lies within [lo, hi] seconds for a word subject,
     within [lo, sentence_base + sentence_per_word * N] for a sentence
-    subject of N deck words (`word_count_of(subject)`, Sentence.word_count);
+    subject of N deck words (`word_count_of(subject)`, Sentence.word_count),
+    and for a filled Cloze slot's gapped recording (spec 3 r65) within
+    that bound for its sentence plus `gap` seconds per break
+    (`breaks_of(subject)`, ClozeSlot.breaks);
     and a Forvo clip records the subject's own form --
     `recorded_form_of(subject, sha)` against `form_of(subject)`, compared
     by entities._same_form; a clip with no recorded form on record (TTS,
@@ -914,8 +917,10 @@ class RecordingCheckBackend:
     record) passes that clause, the evidence saying so. Keyed
     mech:recording:LO-HI;CODE_VERSION:SUBJECT:sha for a word subject,
     mech:recording:LO-BASE+PER_WORDpw;CODE_VERSION:SUBJECT:sha for a
-    sentence. `fetch` requires a readable artifact file, and for a
-    sentence its word count (PreparationError otherwise).
+    sentence, mech:recording:LO-BASE+PER_WORDpw+GAPpb;CODE_VERSION:SUBJECT:sha
+    for a slot. `fetch` requires a readable artifact file, for a sentence
+    its word count, and for a slot its word count and breaks
+    (PreparationError otherwise).
     """
     resolve_path: Callable[[str | None], str | Path | None]
     lo: float = 0.2
@@ -927,22 +932,33 @@ class RecordingCheckBackend:
     form_of: Callable[[str], str | None] | None = None
     recorded_form_of: Callable[[str, str], str | None] | None = None
     word_count_of: Callable[[str], int | None] | None = None
+    breaks_of: Callable[[str], int | None] | None = None
+    gap: float = 0.6
     code_version: str = "own-word-v1"
 
     def cache_key(self, question: AssessQuestion) -> MechanicalKey:
         window = (f"{self.lo}-{self.sentence_base}+{self.sentence_per_word}pw"
-                  if question.subject_kind == "sentence" else f"{self.lo}-{self.hi}")
+                  if question.subject_kind in ("sentence", "slot") else f"{self.lo}-{self.hi}")
+        if question.subject_kind == "slot":
+            window += f"+{self.gap}pb"
         return MechanicalKey(check="recording", params=f"{window};{self.code_version}",
                              subject=question.subject, artifact_sha=question.artifact_sha or "-")
 
     def _hi(self, question: AssessQuestion) -> float:
         """The duration ceiling for the question's subject."""
-        if question.subject_kind != "sentence":
+        if question.subject_kind not in ("sentence", "slot"):
             return self.hi
         words = self.word_count_of(question.subject) if self.word_count_of is not None else None
         if words is None:
-            raise PreparationError(f"recording: no word count for sentence {question.subject!r}")
-        return self.sentence_base + self.sentence_per_word * words
+            raise PreparationError(f"recording: no word count for {question.subject_kind} "
+                                   f"{question.subject!r}")
+        hi = self.sentence_base + self.sentence_per_word * words
+        if question.subject_kind != "slot":
+            return hi
+        breaks = self.breaks_of(question.subject) if self.breaks_of is not None else None
+        if breaks is None:
+            raise PreparationError(f"recording: no breaks for slot {question.subject!r}")
+        return hi + self.gap * breaks
 
     def fetch(self, question: AssessQuestion) -> RawVerdict:
         path = self.resolve_path(question.artifact_sha)

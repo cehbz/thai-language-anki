@@ -919,6 +919,25 @@ def test_studied_cloze_pairs_reads_only_the_sentence_cloze_anchors(tmp_path, mon
         == frozenset({(s.text_sha, "rice/productive")})
 
 
+def test_studied_cloze_pairs_counts_a_review_of_an_audio_cloze_card(tmp_path):
+    """Spec 1 r32 clause 4: a pair studied on its AudioCloze card is a
+    studied Cloze pair."""
+    from thai_syllabus.ids import sentence_cloze_key
+    from thai_syllabus.ports import StudyRecord
+    from thai_syllabus.wiring import studied_cloze_pairs
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    rice, eat = word("rice", "ข้าว"), word("eat", "กิน")  # ข้าว: rice, กิน: eat
+    heard = sentence(((rice.id,),), thai_of(rice))           # ข้าว: rice
+    read = sentence(((eat.id, rice.id),), thai_of(rice, eat))  # กินข้าว: eat rice
+    for s, kind in ((heard, "audio_cloze"), (read, "cloze")):
+        db.append_study(StudyRecord(family="sentence",
+                                    anchor=sentence_cloze_key(s.text_sha, "rice/productive"),
+                                    card_kind=kind, compile_id="c", ts=1, grade=3, time_ms=1000))
+    assert studied_cloze_pairs(db, (heard, read),
+                               (target("rice/productive", "rice", "productive"),)) == frozenset(
+        {(heard.text_sha, "rice/productive"), (read.text_sha, "rice/productive")})
+
+
 def test_load_syllabus_refuses_a_sentence_naming_an_unregistered_word(tmp_path):
     from datetime import date
     root = _write_curated_dir(tmp_path / "deck")
@@ -1323,6 +1342,27 @@ def test_build_sourcing_resolves_a_sentences_word_count_for_the_recording_check(
     assert word_count_of is not None
     assert word_count_of(s.text_sha) == 2
     assert word_count_of("slow") is None
+
+
+def test_build_sourcing_resolves_a_filled_slots_word_count_and_breaks(tmp_path):
+    """Spec 3 r65: a gapped recording is checked against its sentence's
+    word count plus its breaks, both read off the ctx's syllabus."""
+    root = _minimal_deck(tmp_path)
+    (root / "curated" / "providers.yaml").write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    ctx = build_sourcing(root)
+    slow = ctx.syllabus.words[0]
+    s = sentence(((slow.id, slow.id),), thai_of(slow))  # ช้าช้า: slow slow
+    ctx.syllabus = dataclasses.replace(
+        ctx.syllabus, targets=(*ctx.syllabus.targets,
+                               target("slow/productive", "slow", "productive"))
+    ).with_sentences([s])
+    key = f"{s.text_sha}:slow/productive"
+    mechanical = ctx.assessor._backends["mechanical"]
+    assert mechanical.word_count_of(key) == 2
+    assert mechanical.breaks_of(key) == 2
+    assert mechanical.breaks_of(s.text_sha) is None
 
 
 def test_the_review_screen_and_the_run_key_the_recording_check_alike(tmp_path):

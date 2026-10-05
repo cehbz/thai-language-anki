@@ -5,7 +5,7 @@ the derivations (spec 3) consume these values; they do not define them.
 from __future__ import annotations
 
 __all__ = ["AUTHORITY_ORDER", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "ROLE_FOR_VOICE",
-           "role_for", "sentence_role"]
+           "SENTENCE_SUBJECT_KINDS", "role_for", "sentence_role"]
 
 
 # Per role, backends ordered most- to least-authoritative: authority is
@@ -52,11 +52,17 @@ ROLE_FOR_SENTENCE_SUBJECT: dict[str, str] = {
 }
 
 
+# Subject kinds whose artifacts are judged as a sentence's: the sentence
+# itself, and a filled Cloze slot, whose gapped recording is checked,
+# re-verified and vetoed as a sentence recording (spec 3 r65).
+SENTENCE_SUBJECT_KINDS = frozenset({"sentence", "slot"})
+
+
 def role_for(kind: str, subject_kind: str = "word") -> str:
     """The Assess role a need's fit verdict is asked under. Raises KeyError
     naming `kind` when no role is mapped.
     """
-    if subject_kind == "sentence" and kind in ROLE_FOR_SENTENCE_SUBJECT:
+    if subject_kind in SENTENCE_SUBJECT_KINDS and kind in ROLE_FOR_SENTENCE_SUBJECT:
         return ROLE_FOR_SENTENCE_SUBJECT[kind]
     return ROLE_FOR_KIND[kind]
 

@@ -6,6 +6,7 @@ CacheReader built directly from Answer rows the test constructs; a handful
 of current_best cases exercise the real SyllabusDb for genuine
 assessments_of ordering.
 """
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass, field
@@ -58,6 +59,7 @@ from thai_syllabus.store import SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 
 from .builders import sentence, syl, target, thai_of, word
+from .fakes import FakeMediaIndex
 
 
 @pytest.fixture
@@ -1206,7 +1208,8 @@ class _FakeGaps:
     def __init__(self, words_missing_pictures=(), words_missing_recordings=(),
                 unfilled_targets=(), pairs_missing_renditions=(),
                 graphemes_missing_keyword_data=(), sentence_recordings=(),
-                scene_pictures=()):
+                scene_pictures=(), gapped_recordings=()):
+        self.gapped_recordings = gapped_recordings
         self.words_missing_pictures = words_missing_pictures
         self.words_missing_recordings = words_missing_recordings
         self.unfilled_targets = unfilled_targets
@@ -1796,7 +1799,8 @@ def test_available_needs_names_each_gap_with_its_subject_kind():
                                        pairs_missing_renditions=("p-rice-near",),
                                        graphemes_missing_keyword_data=("k",),
                                        sentence_recordings=("s1",),
-                                       scene_pictures=("s1",)),
+                                       scene_pictures=("s1",),
+                                       gapped_recordings=("s1:rice/productive",)),
                              pairs=[pair],
                              graphemes=[_FakeGrapheme(symbol="k", keyword="chicken")])
     assert available_needs(syllabus) == [
@@ -1805,6 +1809,7 @@ def test_available_needs_names_each_gap_with_its_subject_kind():
         ("p-rice-near", "rendition", "pair"),
         ("s1", "recording", "sentence"),
         ("s1", "picture", "sentence"),
+        ("s1:rice/productive", "recording", "slot"),   # spec 3 r65's gapped recording
         ("chicken", "picture", "word"),
     ]
 
@@ -1872,7 +1877,12 @@ def test_all_needs_names_every_target_pair_grapheme_and_sentence_need():
         ("chicken", "picture", "word"),
         (s.text_sha, "recording", "sentence"),
         (s.text_sha, "picture", "sentence"),
-    ]
+    ]   # no gapped recording need: the sentence has no recording yet (spec 3 r65)
+    recorded = dataclasses.replace(syllabus, media=FakeMediaIndex(
+        recording_provenance={s.text_sha: {"source": "tts", "origin": "v"}}))
+    # spec 3 r65: once it has one, rice/productive's filled Cloze slot has a
+    # gapped recording need
+    assert (f"{s.text_sha}:rice/productive", "recording", "slot") in all_needs(recorded)
 
 
 def test_all_needs_counts_a_graphemes_keyword_picture_as_a_word_picture():
@@ -3328,6 +3338,17 @@ def test_an_ordinary_words_picture_need_takes_its_kinds_roster():
     syllabus = _NamedSyllabus({"name-chicken"})
     assert need_sources(syllabus, real_sources_for, "rice", "picture",
                         "word") == real_sources_for("picture")
+
+
+def test_a_gapped_recording_need_takes_tts_alone():
+    """Spec 3 r65: the gapped recording is a TTS rendering of SSML; no
+    corpus records a sentence with a pause in it."""
+    from thai_syllabus.attempts import sources_for as real_sources_for
+
+    assert need_sources(_NamedSyllabus(), real_sources_for, "sha:rice/productive",
+                        "recording", "slot") == ("tts",)
+    assert need_sources(_NamedSyllabus(), lambda kind: ("forvo",), "sha:rice/productive",
+                        "recording", "slot") == ()
 
 
 def test_a_name_words_other_needs_take_their_kinds_roster():

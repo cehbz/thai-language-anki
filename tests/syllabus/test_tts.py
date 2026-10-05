@@ -57,6 +57,24 @@ def test_google_tts_synthesizes_on_200_with_audio_content():
     assert tts.synthesize("สวัสดี", "v") == b"mp3-bytes"   # สวัสดี: hello
 
 
+def test_google_tts_sends_ssml_as_the_ssml_input():
+    """Spec 3 r65: the gapped recording's request is SSML, sent as
+    text:synthesize's `input.ssml` (Chirp 3: HD, Neural2 and Standard
+    voices take <break> there); plain text stays `input.text`."""
+    bodies = []
+
+    def fake_post(url, json, headers, timeout):
+        bodies.append(json)
+        return _Resp(200, {"audioContent": "eA=="})
+
+    tts = GoogleTts(api_key="k", http_post=fake_post)
+    ssml = '<speak>กิน<break time="600ms"/></speak>'   # กิน: eat, then the gap
+    assert tts.synthesize_ssml(ssml, "th-TH-Chirp3-HD-Kore") == b"x"
+    tts.synthesize("กินข้าว", "th-TH-Chirp3-HD-Kore")   # กินข้าว: eat rice
+    assert [b["input"] for b in bodies] == [{"ssml": ssml}, {"text": "กินข้าว"}]
+    assert bodies[0]["voice"] == {"languageCode": "th-TH", "name": "th-TH-Chirp3-HD-Kore"}
+
+
 # --- spec 3 section 2's cost/secrets contract: the key rides a header, --
 # --- never the url, and never leaks through a wire-failure message ------
 
