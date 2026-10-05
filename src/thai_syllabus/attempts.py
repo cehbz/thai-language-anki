@@ -75,7 +75,7 @@ from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PAR
                      PHRASE_SUBJECT)
 from .safety import Guard
 from .store import MediaStore, SyllabusDb
-from .syllabus import Syllabus
+from .syllabus import Syllabus, seed_target
 from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError, Usage
 from .tts import FEMALE_VOICES, MALE_VOICES, pick_voice
 
@@ -1247,7 +1247,8 @@ def draft_refusal(ctx: Sourcing, sentence, open_targets: Sequence[Target] | None
     if open_targets is None:
         open_targets = OpenTargets(ctx)()
     fills = ctx.syllabus.fill_set(sentence)
-    if not any(t in fills for t in open_targets):
+    if not any(t in fills and ctx.syllabus.counts_toward_wanted(sentence, t)
+               for t in open_targets):
         return "fills no open Target"
     return None
 
@@ -1573,12 +1574,12 @@ def adjudication_attempt(ctx: Sourcing) -> AttemptResult:
 # symbol stands delimited inside it.
 GRAPHEME_NAME_MEANING = "recited name of the letter {symbol}"
 
-# The three curated files the pass adds rows to (spec 2 r17 section 6).
-# It only ever adds: each is rewritten whole from the rows already on
-# disk plus the new ones. A deck missing one of them is not a store the
-# pass may rewrite -- writing targets.yaml out of nothing would lose
-# every Target the deck owns -- so its rows are skipped, reason logged.
-_ADOPTION_FILES = ("words.yaml", "targets.yaml", "graphemes.yaml")
+# The curated files the pass adds rows to (spec 2 r17 section 6). It
+# only ever adds: each is rewritten whole from the rows already on disk
+# plus the new ones. A deck missing one of them is not a store the pass
+# may rewrite -- writing graphemes.yaml out of nothing would lose every
+# Grapheme the deck owns -- so its rows are skipped, reason logged.
+_ADOPTION_FILES = ("words.yaml", "graphemes.yaml")
 
 
 def grapheme_attempt(ctx: Sourcing, *,
@@ -1587,27 +1588,23 @@ def grapheme_attempt(ctx: Sourcing, *,
     §1): every consonant of the repo inventory not yet in
     `ctx.syllabus.graphemes` becomes a Grapheme row, with its acrophonic
     keyword Word (matched in the vocabulary by `thai`, else created as a
-    closure Word: no category, no Target) and its recited-name Word (both
-    Targets, the category `Letter names`, spec 1 r16). Pronunciations are
+    closure Word: no category, no Target) and its recited-name Word (the
+    category `Letter names`, no Target: spec 1 r32, the name is heard on
+    the grapheme card). Pronunciations are
     seeded from the engines alone, no judge (r40: `engines_agree` when the
     rule tone engine settles a monosyllable's tone, else `disputed`, which
     the adjudication pass asks about next run).
 
-    The three curated files are rewritten whole from the rows the loaders
+    The two curated files are rewritten whole from the rows the loaders
     produced, with the new rows appended -- rows added, none removed, so
     the writing command's Guard has nothing to account for (spec 2 r17
-    section 6). targets.yaml is re-read from disk rather than taken from
-    `ctx.syllabus.targets`, which also holds the productive Targets
-    `derive_productive_targets` derives: targets.yaml lists exceptions
-    only (spec 1 r9), so writing a derived one back would make
-    `derive_productive_targets` itself raise at the next wiring, for any
-    word still eligible to derive that same Target.
+    section 6).
 
-    Those three writes are three files, not one transaction, so the pass
-    is written to survive dying between any two of them (C1): every row it
-    would add is looked up before it is minted -- the recited name by its
-    Thai text in the vocabulary, exactly as the keyword is; each of its
-    two Targets by id among the listed ones; the Grapheme by its symbol.
+    Those two writes are two files, not one transaction, so the pass is
+    written to survive dying between them (C1): every row it would add
+    is looked up before it is minted -- the recited name by its Thai text
+    in the vocabulary, exactly as the keyword is; the Grapheme by its
+    symbol.
     A re-run after an interruption therefore completes the row it left
     half-written instead of duplicating it under `name-<id>-2`.
 
@@ -1644,19 +1641,16 @@ def grapheme_attempt(ctx: Sourcing, *,
     # Deferred: curated.py imports run.py, which imports this module, so a
     # top-level import here would be a cycle (the same reason
     # run._materialize_adjudications defers its own).
-    from .curated import build_categories, load_targets, save_graphemes, save_targets, save_words
+    from .curated import build_categories, save_graphemes, save_words
 
     words = list(ctx.syllabus.words)
     by_id: dict[WordId, Word] = {w.id: w for w in words}
     category_of: dict[WordId, CategoryName | None] = {
         w.id: ctx.syllabus.category_of(w.id) for w in words}
-    listed_targets = list(load_targets(ctx.curated_dir / "targets.yaml"))
-    listed_ids = {str(t.id) for t in listed_targets}
     graphemes = list(ctx.syllabus.graphemes)
     graphemes_by_symbol = {g.symbol: i for i, g in enumerate(graphemes)}
     by_thai = {w.thai: w for w in words}
     taken = {str(w.id) for w in words}
-    added_targets: list[Target] = []
     adopted_graphemes = 0
     adopted_words = 0
     completed_graphemes = 0
@@ -1710,7 +1704,6 @@ def grapheme_attempt(ctx: Sourcing, *,
         # duplicate the name, its two Targets and its cards, and leave
         # the first copy orphaned of any grapheme.
         name_word: Word | None = by_thai.get(row.name_thai)
-        name_targets: list[Target] = []
         if name_word is None:
             name_pron = engines_pronunciation(row.name_thai, engines)
             if name_pron is None:
@@ -1735,15 +1728,6 @@ def grapheme_attempt(ctx: Sourcing, *,
                                  meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
                 staged.append(name_word)
                 taken_now.add(str(name_id))
-        if name_word is not None:
-            both = (Target(id=TargetId(f"{name_word.id}/receptive"), word=name_word.id,
-                           skill="receptive", introduction="picture_card"),
-                    Target(id=TargetId(f"{name_word.id}/productive"), word=name_word.id,
-                           skill="productive", introduction="picture_card"))
-            # Each Target by id: the write that landed keeps its row, the
-            # one that did not is written now (spec 1 r16: the name word
-            # carries both).
-            name_targets = [t for t in both if str(t.id) not in listed_ids]
         try:
             if completing_at is not None:
                 # Same symbol/kind/sound/class/keyword; the one field that
@@ -1765,9 +1749,6 @@ def grapheme_attempt(ctx: Sourcing, *,
             _log.warning("grapheme %s not adopted: %s", row.symbol, e)
             continue
         words += staged
-        listed_targets += name_targets
-        listed_ids.update(str(t.id) for t in name_targets)
-        added_targets += name_targets
         if completing_at is not None:
             graphemes[completing_at] = grapheme
         else:
@@ -1792,10 +1773,9 @@ def grapheme_attempt(ctx: Sourcing, *,
         return AttemptResult(attempted=False, adoption_skipped=skipped)
     word_rows = [(w, category_of.get(w.id)) for w in words]
     save_words(ctx.curated_dir / "words.yaml", word_rows)
-    save_targets(ctx.curated_dir / "targets.yaml", listed_targets)
     save_graphemes(ctx.curated_dir / "graphemes.yaml", graphemes)
     ctx.syllabus = ctx.syllabus.with_adoptions(
-        words=words, targets=tuple(ctx.syllabus.targets) + tuple(added_targets),
+        words=words, targets=tuple(ctx.syllabus.targets),
         graphemes=graphemes, categories=build_categories(word_rows))
     _log.info("grapheme pass: adopted %d grapheme(s), completed %d row(s) and %d word(s)",
               adopted_graphemes, completed_graphemes, adopted_words)
@@ -2532,7 +2512,7 @@ def _handed_nouns(target: Target, classifier_nouns: Mapping[WordId, Sequence[Wor
 def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target],
                       entries: Sequence[tuple[int, Target]],
                       classifier_nouns: Mapping[WordId, Sequence[Word]], *,
-                      floor: int) -> list[Word]:
+                      floor: int, met: frozenset[TargetId] | None = None) -> list[Word]:
     """The vocabulary a sentence prompt may draw on, entirely, in
     introduction order (Syllabus.order): the picture-introduced words up
     to the furthest handed target, and past it until the vocabulary holds
@@ -2541,9 +2521,11 @@ def _entry_vocabulary(syllabus: Syllabus, targets: Sequence[Target],
     sentence-introduced word (`Syllabus.met_sentence_introduced_targets`)
     wherever its entry falls; and every noun a handed sentence-introduced
     classifier counts (`_handed_nouns`) wherever its entry falls. An unmet
-    sentence-introduced word stays out throughout.
+    sentence-introduced word stays out throughout. `met` replaces the met
+    sentence-introduced Targets: a seed ask passes those met within the
+    seed span (Syllabus.seed_span_met_targets).
     """
-    met_targets = syllabus.met_sentence_introduced_targets()
+    met_targets = syllabus.met_sentence_introduced_targets() if met is None else met
     handed = {t.id for t in targets}
     furthest = max((i for i, t in entries if t.id in handed), default=-1)
     nouns = {n.id for t in targets for n in _handed_nouns(t, classifier_nouns)}
@@ -2606,7 +2588,9 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
                      *, directions: Mapping[WordId, str] = {},
                      sentence_max_clauses: int,
                      sentence_max_words: int = DEFAULT_SENTENCE_MAX_WORDS,
-                     sentence_vocabulary_floor: int = DEFAULT_SENTENCE_VOCABULARY_FLOOR) -> str:
+                     sentence_vocabulary_floor: int = DEFAULT_SENTENCE_VOCABULARY_FLOOR,
+                     met: frozenset[TargetId] | None = None,
+                     introducibles: Sequence[Target] = ()) -> str:
     """The drafting prompt (spec 3 section 5): the met vocabulary
     (`_entry_vocabulary`, at least `sentence_vocabulary_floor` words of the
     word block, spec 3 r59) once as id/thai/meaning lines in introduction
@@ -2646,11 +2630,15 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
     entries = _word_entries(syllabus)
     classifier_nouns = _classifier_nouns(syllabus, entries)
     vocabulary = _entry_vocabulary(syllabus, targets, entries, classifier_nouns,
-                                   floor=sentence_vocabulary_floor)
-    met_targets = syllabus.met_sentence_introduced_targets()
+                                   floor=sentence_vocabulary_floor, met=met)
+    met_targets = syllabus.met_sentence_introduced_targets() if met is None else met
     target_lines = []
     introducible_lines = []
-    for target in targets:
+    listed: Sequence[Target] = targets
+    if introducibles:
+        at = {t.id: i for i, t in entries}
+        listed = sorted((*targets, *introducibles), key=lambda t: at.get(t.id, math.inf))
+    for target in listed:
         word = syllabus.word(target.word)
         line = f"- target {target.id}: {_prompt_word_line(word)}"
         if nouns := _handed_nouns(target, classifier_nouns):
@@ -2713,9 +2701,21 @@ def _sentence_prompt(syllabus: Syllabus, targets: Sequence[Target],
 
 
 def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
-    """One drafting ask per run over the open Targets (spec 3 section 5),
-    at most `max_targets` of them (AttemptResult.targets_handed says how
-    many, and subjects_handed which words they belong to). The handed
+    """The run's drafting asks over the open Targets (spec 3 section 5):
+    one over the open seed Targets (`seed_target`, spec 3 r65) and one
+    over the others, each made only when it has a Target to hand, so a
+    run with both kinds open asks twice and neither kind waits on the
+    other. The seed ask hands the next `ctx.sentence_introducible_per_ask`
+    open seed Targets in introduction order, its vocabulary the picture
+    words placed at or before the furthest of them and the
+    sentence-introduced words met within the seed span
+    (Syllabus.seed_span_met_targets), with no floor; beside them, as
+    introducibles, the next `ctx.sentence_introducible_per_ask` open
+    sentence-introduced Targets not met within the span whose words are
+    placed within it, classifiers aside (a classifier's nouns would
+    reach past the span). The others' ask does not hand those. The rest of this docstring is the others' ask, at most
+    `max_targets` Targets (AttemptResult.targets_handed and
+    subjects_handed sum both asks). The handed
     targets are the next open Targets in introduction order
     (Syllabus.order, spec 3 r59), of which at most
     `ctx.sentence_introducible_per_ask` (spec 3 r24 section 5/8) are
@@ -2772,25 +2772,44 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         w for w in {word_of[t] for t in unfilled if t in word_of}
         if sentence_exhausted(ctx.db, w, cap=ctx.sentence_nothing_cap).exhausted)
     position = {t.id: i for i, t in _word_entries(syllabus)}
-    handable = sorted((t for t in unfilled if word_of.get(t) not in withheld),
-                      key=lambda t: position.get(t, math.inf))
     target_of = {t.id: t for t in syllabus.targets}
+    handable = [target_of[t] for t in sorted(
+        (t for t in unfilled if t in target_of and word_of[t] not in withheld),
+        key=lambda t: position.get(t, math.inf))]
     met_targets = syllabus.met_sentence_introduced_targets()
-    selected: list[str] = []
+    seeds = [t for t in handable if seed_target(t)][:min(ctx.sentence_introducible_per_ask,
+                                                          max_targets)]
+    span_met = syllabus.seed_span_met_targets()
+    classifiers = {w.classifier for w in syllabus.words if w.classifier is not None}
+    # A seed ask's introducibles: the sentence-introduced Targets no
+    # sentence placed within the seed span fills, whose words sit in it,
+    # in introduction order. An open one is handed (recorded against its
+    # word, as the others' ask hands one); a closed one is a prompt line
+    # alone, since the Target it would fill wants nothing.
+    seed_introducibles = [
+        t for _, t in _word_entries(syllabus)
+        if t.introduction == "sentence" and t.id not in span_met
+        and t.word not in classifiers and t.word not in withheld
+        and syllabus.placed_within_seed_span(t.word)
+    ][:ctx.sentence_introducible_per_ask] if seeds else []
+    seed_handed = {t.id for t in seed_introducibles if t.id in all_open_ids}
+    others: list[Target] = []
     introducible_handed = 0
-    for tid in handable:
-        if len(selected) >= max_targets:
+    for candidate in (t for t in handable
+                      if not seed_target(t) and t.id not in seed_handed):
+        if len(others) >= max_targets:
             break
-        candidate = target_of.get(tid)
-        introducible = (candidate is not None and candidate.introduction == "sentence"
-                       and tid not in met_targets)
-        if introducible:
+        if candidate.introduction == "sentence" and candidate.id not in met_targets:
             if introducible_handed >= ctx.sentence_introducible_per_ask:
                 continue   # over the introducible cap -- skipped, not counted against max_targets
             introducible_handed += 1
-        selected.append(tid)
-    targets = [target_of[t] for t in selected if t in target_of]
-    if not targets:
+        others.append(candidate)
+    asks = [(targets, floor, met, extra) for targets, floor, met, extra in
+            ((others, ctx.sentence_vocabulary_floor, None, []),
+             (seeds + [t for t in seed_introducibles if t.id in seed_handed], 0, span_met,
+              [t for t in seed_introducibles if t.id not in seed_handed]))
+            if targets]
+    if not asks:
         return AttemptResult(attempted=False, subjects_exhausted=withheld)
     open_targets = [t for t in syllabus.targets if t.id in all_open_ids]
 
@@ -2798,6 +2817,43 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         ctx.db, syllabus, current_rubric=ctx.rubrics,
         refusal=lambda draft: draft_refusal(
             ctx, record.draft_sentence(draft, syllabus, ctx.today), open_targets))
+    questions: list[PreparedQuestion] = []
+    excluded: dict[str, Excluded] = {}
+    drafted = 0
+    judged: set[str] = set()
+    for targets, floor, met, extra in asks:
+        asked = _drafting_ask(ctx, targets, refused, open_targets, spend, floor=floor,
+                              met=met, introducibles=extra, judged=judged)
+        if asked is not None:
+            questions += asked.collected
+            excluded.update(asked.excluded)
+            drafted += asked.drafted
+    handed = [t for targets, *_ in asks for t in targets]
+    return AttemptResult(attempted=True, questions=questions, excluded=excluded, spend=spend,
+                         drafted=drafted, targets_handed=len(handed),
+                         subjects_handed=frozenset(t.word for t in handed),
+                         subjects_exhausted=withheld)
+
+
+@dataclass(frozen=True)
+class _Asked:
+    """One drafting ask's judge questions, as sentence_attempt folds them."""
+    collected: list[PreparedQuestion]
+    excluded: dict[str, Excluded]
+    drafted: int
+
+
+def _drafting_ask(ctx: Sourcing, targets: Sequence[Target], refused: Sequence[tuple[str, str]],
+                  open_targets: Sequence[Target], spend: dict[str, Spend], *,
+                  floor: int, met: frozenset[TargetId] | None,
+                  introducibles: Sequence[Target], judged: set[str]) -> _Asked | None:
+    """One drafter call over `targets` with vocabulary floor `floor`, its
+    re-ask and its outcome rows (sentence_attempt), and the judge asked
+    about its accepted drafts; None for a no-fit answer. `judged` holds
+    the text shas an earlier ask of the same attempt already put to the
+    judge: a text both asks drafted is asked about once, and is added
+    to."""
+    syllabus = ctx.syllabus
     question = Question(
         subject=DRAFT_SUBJECT, provides="sentence", kind="sentence", subject_kind="sentence",
         params={"prompt": _sentence_prompt(
@@ -2805,7 +2861,7 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
             directions=_sentence_directions(ctx, {t.word for t in targets}),
             sentence_max_clauses=ctx.sentence_max_clauses,
             sentence_max_words=ctx.sentence_max_words,
-            sentence_vocabulary_floor=ctx.sentence_vocabulary_floor)})
+            sentence_vocabulary_floor=floor, met=met, introducibles=introducibles)})
     answer = ctx.provider.ask("llm-sentence", question)
     _count(spend, "llm-sentence", answer)
     no_fit = _no_fit_in(answer)
@@ -2825,19 +2881,16 @@ def sentence_attempt(ctx: Sourcing, *, max_targets: int = 40) -> AttemptResult:
         questions = [] if no_fit is not None else _draft_questions(ctx, answer, open_targets)
     if no_fit is not None:
         _append_asked(ctx, targets, {"outcome": "nothing", "candidates": [], "reason": no_fit})
-        return AttemptResult(attempted=True, drafted=0, targets_handed=len(targets),
-                             subjects_handed=frozenset(t.word for t in targets),
-                             subjects_exhausted=withheld, spend=spend)
+        return None
     if answer.items and not answer.hit:
         _append_asked(ctx, targets, {"outcome": "drafted", "candidates": [],
                                      "drafts": [q.subject for q in questions]})
+    questions = [q for q in questions if q.subject not in judged]
+    judged.update(q.subject for q in questions)
     result = ctx.assessor.ask_many("judge", questions)
     _count_verdicts(spend, "judge", result)
-    return AttemptResult(attempted=True, questions=list(result.collected),
-                         excluded=dict(result.excluded), spend=spend,
-                         drafted=len(questions), targets_handed=len(targets),
-                         subjects_handed=frozenset(t.word for t in targets),
-                         subjects_exhausted=withheld)
+    return _Asked(collected=list(result.collected), excluded=dict(result.excluded),
+                  drafted=len(questions))
 
 
 def _draft_questions(ctx: Sourcing, answer: ProviderAnswer,

@@ -3479,9 +3479,9 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     assert [(w.id, c) for w, c in rows] == [
         ("rice", "Food"), ("chicken", None), ("name-chicken", "Letter names"),
         ("snake", None), ("name-snake", "Letter names")]
+    # a recited name carries no Target (spec 1 r32)
     assert [t.id for t in load_targets(root / "curated" / "targets.yaml")] == [
-        "rice/receptive", "name-chicken/receptive", "name-chicken/productive",
-        "name-snake/receptive", "name-snake/productive"]
+        "rice/receptive"]
     saved = load_graphemes(root / "curated" / "graphemes.yaml", {w.id: w for w, _ in rows})
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
         ("ก", "chicken", "name-chicken"), ("ง", "snake", "name-snake")]

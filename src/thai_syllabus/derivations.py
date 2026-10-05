@@ -1114,8 +1114,10 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
     """(subject, artifact kind, subject kind) for every need the deck has,
     satisfied or not (spec 5 section 3's coverage universe): one picture
     and one recording need per targeted word (once, however many Targets
-    name it), one rendition per pair, one picture per grapheme's keyword
-    word (r42: the keyword word's own need), one recording per sentence,
+    name it), one rendition per pair and one picture per pair member
+    (r65), one picture per grapheme's keyword word (r42: the keyword
+    word's own need), one picture and one recording per recited-name Word
+    (spec 1 r32), one recording per sentence,
     one scene picture per sentence that has that need
     (Syllabus.has_scene_picture_need, spec 3 r61) and one gapped
     recording per filled Cloze slot (subject kind "slot", spec 3 r65).
@@ -1130,11 +1132,18 @@ def all_needs(syllabus) -> list[tuple[str, str, str]]:
         candidates.append((t.word, "recording", "word"))
     for p in syllabus.pairs:
         candidates.append((p.id, "rendition", "pair"))
+        # Spec 3 r65: every member has a picture need, Target or not.
+        candidates += [(m, "picture", "word") for m in p.members]
     for g in syllabus.graphemes:
         # Spec 3 r42: a keyword's picture is that word's picture need; a
         # keyword that is also a targeted word is already a candidate and
         # the dedup below folds the two.
         candidates.append((g.keyword, "picture", "word"))
+        # Spec 1 r32: the recited name keeps its chart-cell picture and
+        # its recording without a Target.
+        if g.name_word is not None:
+            candidates.append((g.name_word, "picture", "word"))
+            candidates.append((g.name_word, "recording", "word"))
     slots_of: dict[str, list[str]] = {}
     for slot in syllabus.cloze_slots:
         # Spec 3 r65: the need exists once the sentence has a recording.

@@ -20,6 +20,7 @@ from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, Att
                                     ChartCell, Need, Sourcing,
                                     _phrase_prompt, _picture_params, _pool, _sentence_prompt,
                                     adjudication_attempt, assess_first, attempt, chart_cell,
+                                    OpenTargets,
                                     comment_attempt, current_best_of, draft_refusal,
                                     grapheme_attempt,
                                     pair_search_attempt, phrase_attempt,
@@ -1997,6 +1998,256 @@ def test_sentence_attempt_lists_the_handed_targets_in_introduction_order(tmp_pat
     sentence_attempt(ctx)
     prompt = ctx.provider._backends["llm-sentence"].prompts[0]
     assert prompt.index("- target eat/receptive:") < prompt.index("- target rice/receptive:")
+
+
+# --- seed asks: the first picture words' receptive Targets (spec 3 r65) ----
+
+_THIS = word("this", "นี่", "this")       # นี่: this
+_WHAT = word("what", "อะไร", "what")      # อะไร: what
+_NOT = word("not", "ไม่", "not")          # ไม่: not
+_GOOD = word("good", "ดี", "good")        # ดี: good
+_GO = word("go", "ไป", "go")              # ไป: go
+_WILL = word("will", "จะ", "will")        # จะ: will
+_DOCTOR = word("doctor", "หมอ", "doctor")  # หมอ: doctor
+
+
+def _seed_syllabus(*, others=True) -> Syllabus:
+    """นี่ (this), อะไร (what) and ดี (good) are seed Targets wanting two
+    sentences each; ไม่ดี (not good) is adopted, so ไม่ (not) is met glue
+    and ดี wants one more. With `others`, จะ (will) is an unmet
+    sentence-introduced Target and ไป (go) and หมอ (doctor) open picture
+    Targets wanting their first sentence; without, those three are
+    filled already."""
+    words = (_THIS, _WHAT, _NOT, _GOOD, _GO, _WILL, _DOCTOR)
+    not_good = compose_sentence(((_NOT.id, _GOOD.id),), thai_of(*words), gloss="not good")
+    adopted = [not_good]
+    if not others:
+        adopted += [compose_sentence(((_WILL.id, _GO.id),), thai_of(*words), gloss="will go"),
+                    compose_sentence(((_DOCTOR.id, _GO.id),), thai_of(*words),
+                                     gloss="the doctor goes")]
+    return Syllabus(
+        words=words,
+        targets=(target("this/receptive", "this", sentences=2),
+                 target("what/receptive", "what", sentences=2),
+                 target("not/receptive", "not", introduction="sentence"),
+                 target("good/receptive", "good", sentences=2),
+                 target("go/receptive", "go"),
+                 target("will/receptive", "will", introduction="sentence"),
+                 target("doctor/receptive", "doctor")),
+        sentences=tuple(adopted),
+        frequency={"this": 1, "what": 2, "not": 3, "good": 4, "go": 5, "will": 6, "doctor": 7})
+
+
+def _prompts(ctx) -> list[str]:
+    return ctx.provider._backends["llm-sentence"].prompts
+
+
+def _vocabulary_ids(prompt: str) -> list[str]:
+    block = prompt.split("Vocabulary, in the order met:\n", 1)[1]
+    lines = block.split("\n")
+    return [line.split()[1] for line in lines[:lines.index(next(
+        l for l in lines if not l.startswith("- ")))]]
+
+
+def test_a_run_with_seed_and_other_targets_open_makes_one_ask_of_each(tmp_path):
+    """Spec 3 r65: an ask hands seed Targets or the others, never both;
+    with both open the attempt asks twice so neither kind waits."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_seed_syllabus())
+    ctx.sentence_introducible_per_ask = 2
+
+    result = sentence_attempt(ctx)
+
+    others, seeds = _prompts(ctx)
+    assert "- target this/receptive:" in seeds and "- target what/receptive:" in seeds
+    assert "will/receptive" not in seeds and "go/receptive" not in seeds
+    assert "- target go/receptive:" in others and "will/receptive" in others
+    assert "this/receptive" not in others and "good/receptive" not in others
+    assert result.targets_handed == 2 + 3
+    assert result.subjects_handed == {"this", "what", "go", "will", "doctor"}
+
+
+def test_a_seed_ask_hands_the_introducible_cap_of_seed_targets_in_order(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_seed_syllabus(others=False))
+    ctx.sentence_introducible_per_ask = 2
+
+    result = sentence_attempt(ctx)
+
+    (prompt,) = _prompts(ctx)
+    assert result.subjects_handed == {"this", "what"}      # ดี (good) waits for the next ask
+    assert "[wanted in 2 more sentences]" in prompt
+
+
+def test_a_seed_asks_vocabulary_is_the_picture_words_up_to_it_and_the_met_glue(tmp_path):
+    """No vocabulary floor for a seed ask: the picture words at or before
+    the furthest handed seed Target, and ไม่ (not), met by ไม่ดี."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_seed_syllabus())
+    ctx.sentence_introducible_per_ask = 2
+
+    sentence_attempt(ctx)
+
+    others, seeds = _prompts(ctx)
+    assert _vocabulary_ids(seeds) == ["this", "what", "not"]
+    # the others' ask keeps its floor: every picture word, จะ (will) unmet
+    assert _vocabulary_ids(others) == ["this", "what", "not", "good", "go", "doctor"]
+
+
+def test_each_ask_appends_its_own_rows_for_the_words_it_handed(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_seed_syllabus())
+    ctx.sentence_introducible_per_ask = 2
+
+    sentence_attempt(ctx)
+
+    for word_id, targets in (("this", ["this/receptive"]), ("go", ["go/receptive"])):
+        rows = [r for r in rows_for(ctx.db, word_id, "sentence") if r.port == "attempt"]
+        assert [(r.question["targets"], r.answer["outcome"]) for r in rows] == [
+            (targets, "nothing")]
+
+
+def test_a_text_both_asks_draft_is_put_to_the_judge_once(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _draft_json(("this", "good"), "นี่ดี", "this is good"),
+                        batch=True, syllabus=_seed_syllabus())      # นี่ดี: this is good
+    ctx.sentence_introducible_per_ask = 2
+
+    result = sentence_attempt(ctx)
+
+    assert len(_prompts(ctx)) == 2
+    assert result.drafted == 1 and len(result.questions) == 1
+
+
+def test_a_seed_word_at_the_ask_cap_is_withheld(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_seed_syllabus(others=False))
+    ctx.sentence_introducible_per_ask = 2
+    _seed_no_fit(ctx.db, "this", "this/receptive", times=3)
+
+    result = sentence_attempt(ctx)
+
+    assert result.subjects_exhausted == {"this"}
+    assert result.subjects_handed == {"what", "good"}
+
+
+def test_a_draft_placed_after_the_seed_span_fills_no_open_seed_target(tmp_path):
+    """หมอ (doctor) sits after the last seed
+    Target, so a draft using นี่ (this) and หมอ is placed after the span
+    and does not count toward นี่'s wanted sentences."""
+    syllabus = _seed_syllabus(others=False)
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=syllabus)
+    this = next(t for t in syllabus.targets if t.id == "this/receptive")
+    this_doctor = compose_sentence(((_THIS.id, _DOCTOR.id),), thai_of(_THIS, _DOCTOR),
+                                   gloss="this is a doctor")   # นี่หมอ: this is a doctor
+    assert this in syllabus.fill_set(this_doctor)
+    assert draft_refusal(ctx, this_doctor) == "fills no open Target"
+
+
+def test_a_draft_filling_a_seed_target_that_wants_a_second_sentence_is_accepted(tmp_path):
+    """Spec 1 r30: ดี (good) has one adopted sentence of the two it
+    wants, so it is open and a second sentence using it fills it."""
+    syllabus = _seed_syllabus(others=False)
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=syllabus)
+    good = next(t for t in syllabus.targets if t.id == "good/receptive")
+    assert good in OpenTargets(ctx)()
+    this_is_good = compose_sentence(((_THIS.id, _GOOD.id),), thai_of(_THIS, _GOOD),
+                                    gloss="this is good")      # นี่ดี: this is good
+    assert good in syllabus.fill_set(this_is_good)
+    assert draft_refusal(ctx, this_is_good, open_targets=(good,)) is None
+
+
+# --- a seed ask's vocabulary and introducibles stay in the seed span --------
+
+_ALREADY = word("already", "แล้ว", "already")   # แล้ว: already
+_CAN = word("can", "ได้", "can")                 # ได้: can
+_MUST = word("must", "ต้อง", "must")             # ต้อง: must
+_SPAN_WORDS = (_THIS, _ALREADY, _NOT, _CAN, _MUST, _WHAT, _GOOD, _WILL, _GO, _DOCTOR)
+
+
+def _span_syllabus(*, not_wanted: int = 3) -> Syllabus:
+    """Seeds นี่ (this), อะไร (what), ดี (good); the span ends at ดี.
+    ดีแล้ว (already good) meets แล้ว (already) inside the span; หมอไม่ไป
+    (the doctor does not go) meets ไม่ (not) after it, and ไม่ still wants
+    sentences. ได้ (can) and ต้อง (must) are unmet and placed inside the
+    span; จะ (will) is unmet and placed after it."""
+    th = thai_of(*_SPAN_WORDS)
+    adopted = (compose_sentence(((_GOOD.id, _ALREADY.id),), th, gloss="already good"),
+               compose_sentence(((_DOCTOR.id, _NOT.id, _GO.id),), th,
+                                gloss="the doctor does not go"))
+    intro = dict(introduction="sentence")
+    return Syllabus(
+        words=_SPAN_WORDS,
+        targets=(target("this/receptive", "this", sentences=2),
+                 target("already/receptive", "already", **intro),
+                 target("not/receptive", "not", sentences=not_wanted, **intro),
+                 target("can/receptive", "can", **intro),
+                 target("must/receptive", "must", **intro),
+                 target("what/receptive", "what", sentences=2),
+                 target("good/receptive", "good", sentences=2),
+                 target("will/receptive", "will", **intro),
+                 target("go/receptive", "go"),
+                 target("doctor/receptive", "doctor")),
+        sentences=adopted,
+        frequency={w.id: rank for rank, w in enumerate(_SPAN_WORDS, start=1)})
+
+
+def _introducible_ids(prompt: str) -> list[str]:
+    if "Introducible (at most one per sentence):\n" not in prompt:
+        return []
+    block = prompt.split("Introducible (at most one per sentence):\n", 1)[1].split("\n")
+    return [line.split()[2].rstrip(":").split("/")[0] for line in block
+            if line.startswith("- target ")]
+
+
+def test_a_seed_asks_vocabulary_holds_no_glue_met_after_the_span(tmp_path):
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_span_syllabus())
+
+    sentence_attempt(ctx)
+
+    seeds = next(p for p in _prompts(ctx) if "- target this/receptive:" in p)
+    assert _vocabulary_ids(seeds) == ["this", "already", "what", "good"]
+
+
+def test_a_seed_ask_offers_the_span_s_unmet_function_words_as_introducibles(tmp_path):
+    """ไม่ (not), met only after the span, and the unmet ได้ (can) and
+    ต้อง (must) are introducible in the seed ask; จะ (will), placed after
+    the span, is not -- it stays the others' ask's."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_span_syllabus())
+
+    sentence_attempt(ctx)
+
+    seeds = next(p for p in _prompts(ctx) if "- target this/receptive:" in p)
+    others = next(p for p in _prompts(ctx) if p is not seeds)
+    assert _introducible_ids(seeds) == ["not", "can", "must"]
+    assert _introducible_ids(others) == ["will"]
+
+
+def test_a_span_word_wanting_no_sentence_is_still_introducible_but_not_handed(tmp_path):
+    """ไม่ (not) has the one sentence it wants, placed after the span: it
+    is offered to the seed ask as introducible, and the ask is not
+    recorded against it."""
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=_span_syllabus(not_wanted=1))
+
+    result = sentence_attempt(ctx)
+
+    seeds = next(p for p in _prompts(ctx) if "- target this/receptive:" in p)
+    assert _introducible_ids(seeds) == ["not", "can", "must"]
+    assert "not" not in result.subjects_handed
+    assert not [r for r in rows_for(ctx.db, "not", "sentence") if r.port == "attempt"]
+
+
+def test_a_seed_draft_introducing_one_span_word_is_accepted_and_counts(tmp_path):
+    syllabus = _span_syllabus()
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=syllabus)
+    this = next(t for t in syllabus.targets if t.id == "this/receptive")
+    not_good = compose_sentence(((_THIS.id, _NOT.id, _GOOD.id),), thai_of(*_SPAN_WORDS),
+                                gloss="this is not good")     # นี่ไม่ดี: this is not good
+    assert draft_refusal(ctx, not_good) is None
+    assert this in syllabus.fill_set(not_good)
+    assert syllabus.counts_toward_wanted(not_good, this)
+
+
+def test_a_seed_draft_introducing_two_words_is_refused(tmp_path):
+    syllabus = _span_syllabus()
+    ctx = _sentence_ctx(tmp_path, _NO_FIT, syllabus=syllabus)
+    two = compose_sentence(((_THIS.id, _MUST.id, _CAN.id),), thai_of(*_SPAN_WORDS),
+                           gloss="this must be possible")   # นี่ต้องได้: this must be possible
+    assert draft_refusal(ctx, two) == "fills no open Target"
 
 
 # --- the no-fit answer (spec 3 r19 section 5) -------------------------------
@@ -4939,7 +5190,8 @@ def _grapheme_ctx(tmp_path, syllabus, *, engines=None,
 def test_a_consonant_whose_keyword_is_vocabulary_adopts_its_name_word_and_row(tmp_path):
     """Design 2026-09-12 §1: 20 of the 44 acrophonic keywords are already
     vocabulary words, matched by `thai`; the recited name is the new Word,
-    with both Targets and the category Letter names (spec 1 r16)."""
+    with the category Letter names and no Target (spec 1 r32: it is heard
+    on the grapheme card)."""
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
                         categories=(Category(name="Animals", members=frozenset({"chicken"})),))
@@ -4953,50 +5205,50 @@ def test_a_consonant_whose_keyword_is_vocabulary_adopts_its_name_word_and_row(tm
     assert name.thai == "กอ ไก่"                                   # กอ ไก่: the name of ก
     assert name.meaning == GRAPHEME_NAME_MEANING.format(symbol="ก")
     assert ctx.syllabus.category_of("name-chicken") == "Letter names"
-    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == [
-        "name-chicken/receptive", "name-chicken/productive"]
+    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == []
     g = ctx.syllabus.graphemes[0]
     assert (g.symbol, g.kind, g.sound, g.consonant_class) == ("ก", "consonant", "k", "mid")
     assert (g.keyword, g.name_word) == ("chicken", "name-chicken")
     assert ctx.syllabus.name_word_ids == frozenset({"name-chicken"})
 
 
-def test_the_pass_writes_the_three_curated_files(tmp_path):
+def test_the_pass_writes_words_and_graphemes_and_leaves_targets_alone(tmp_path):
     """Spec 2 r17: the run adds rows to the learner's own files under its
-    writing command -- rows added, none removed."""
+    writing command -- rows added, none removed; a recited name carries
+    no Target (spec 1 r32), so targets.yaml is not written."""
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
                         categories=(Category(name="Animals", members=frozenset({"chicken"})),))
     ctx = _grapheme_ctx(tmp_path, syllabus)
+    targets_before = (ctx.curated_dir / "targets.yaml").read_bytes()
 
     grapheme_attempt(ctx, consonants=[KO])
 
     rows = load_words(ctx.curated_dir / "words.yaml")
     assert [(w.id, c) for w, c in rows] == [("chicken", "Animals"),
                                             ("name-chicken", "Letter names")]
-    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
-        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
+    assert (ctx.curated_dir / "targets.yaml").read_bytes() == targets_before
     saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [("ก", "chicken",
                                                                     "name-chicken")]
 
 
-def test_a_pass_without_the_three_files_writes_nothing_and_counts_the_skip(tmp_path):
+def test_a_pass_without_its_two_files_writes_nothing_and_counts_the_skip(tmp_path):
     """R-P2: the pass adds rows to files the deck already has; a store
     missing one of them is not a store it may rewrite (a truncated
-    targets.yaml would lose every Target the deck owns), so the rows are
-    skipped with a logged reason and nothing is written."""
+    graphemes.yaml would lose every Grapheme the deck owns), so the rows
+    are skipped with a logged reason and nothing is written."""
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
                         categories=(Category(name="Animals", members=frozenset({"chicken"})),))
-    ctx = _grapheme_ctx(tmp_path, syllabus, files=("words.yaml", "graphemes.yaml"))
+    ctx = _grapheme_ctx(tmp_path, syllabus, files=("words.yaml", "targets.yaml"))
 
     result = grapheme_attempt(ctx, consonants=[KO])
 
     assert result == AttemptResult(attempted=False, adoption_skipped=1)
     assert [(w.id, c) for w, c in load_words(ctx.curated_dir / "words.yaml")] == [
         ("chicken", "Animals")]
-    assert not (ctx.curated_dir / "targets.yaml").exists()
+    assert not (ctx.curated_dir / "graphemes.yaml").exists()
     assert ctx.syllabus.graphemes == ()
 
 
@@ -5183,7 +5435,7 @@ def test_a_grapheme_on_file_without_a_name_word_completes_when_the_engines_now_r
     """Spec 3 r43: a recited name thaig2p cannot read as a phrase but can
     read token by token (2026-09-17 evidence, phonology.engines_pronunciation)
     leaves a row on file with `name_word: None`; a later pass, over the
-    same table, mints (or re-uses) that name Word and its two Targets and
+    same table, mints (or re-uses) that name Word (no Target, spec 1 r32) and
     REPLACES the Grapheme row in place -- the one case a curated row
     changes rather than being added. The Guard's row counts are unchanged
     (the row is replaced, not added); `adopted_graphemes` does not count
@@ -5202,8 +5454,7 @@ def test_a_grapheme_on_file_without_a_name_word_completes_when_the_engines_now_r
     name = ctx.syllabus.word("name-chicken")
     assert name.thai == "กอ ไก่"                                   # กอ ไก่: the name of ก
     assert ctx.syllabus.category_of("name-chicken") == "Letter names"
-    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == [
-        "name-chicken/receptive", "name-chicken/productive"]
+    assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == []
     g = ctx.syllabus.graphemes[0]
     assert (g.symbol, g.kind, g.sound, g.consonant_class) == ("ก", "consonant", "k", "mid")
     assert (g.keyword, g.name_word) == ("chicken", "name-chicken")
@@ -5271,43 +5522,13 @@ def _crash_after(monkeypatch, name):
     monkeypatch.setattr(curated_module, name, boom)
 
 
-def test_a_pass_that_died_before_targets_yaml_re_adopts_without_duplicating(
-        tmp_path, monkeypatch):
-    """C1, spec 3 r40 §5: the three curated writes are not one
-    transaction. A run interrupted after words.yaml names the recited
-    name in the vocabulary already, so the next pass must find it by its
-    Thai text -- exactly as it finds the keyword -- and finish the row,
-    not mint `name-chicken-2` beside it.
-    """
-    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
-    syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
-                        categories=(Category(name="Animals", members=frozenset({"chicken"})),))
-    ctx = _grapheme_ctx(tmp_path, syllabus)
-    _crash_after(monkeypatch, "save_targets")
-    with pytest.raises(OSError):
-        grapheme_attempt(ctx, consonants=[KO])
-    monkeypatch.undo()
-    _rewire(ctx)
-
-    result = grapheme_attempt(ctx, consonants=[KO])
-
-    rows = load_words(ctx.curated_dir / "words.yaml")
-    assert [w.id for w, _ in rows] == ["chicken", "name-chicken"]
-    assert not [w.id for w, _ in rows if str(w.id).endswith("-2")]
-    assert (result.adopted_graphemes, result.adopted_words) == (1, 0)
-    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
-        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
-    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
-    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
-        ("ก", "chicken", "name-chicken")]
-
-
 def test_a_pass_that_died_before_graphemes_yaml_writes_only_the_missing_row(
         tmp_path, monkeypatch):
-    """C1, the second interruption: words.yaml and targets.yaml both
-    landed, so only the Grapheme row is absent. The Targets are already
-    listed under their own ids, so the pass writes neither a second Word
-    nor a second Target -- it writes the row that is missing.
+    """C1: the two curated writes are not one transaction. A run
+    interrupted after words.yaml names the recited name in the vocabulary
+    already, so the next pass finds it by its Thai text -- exactly as it
+    finds the keyword -- and writes the row that is missing, not
+    `name-chicken-2` beside it.
     """
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
@@ -5325,21 +5546,21 @@ def test_a_pass_that_died_before_graphemes_yaml_writes_only_the_missing_row(
     rows = load_words(ctx.curated_dir / "words.yaml")
     assert [w.id for w, _ in rows] == ["chicken", "name-chicken"]
     assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
-        "chicken/receptive", "name-chicken/receptive", "name-chicken/productive"]
+        "chicken/receptive"]
     saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
         ("ก", "chicken", "name-chicken")]
     assert ctx.syllabus.name_word_ids == frozenset({"name-chicken"})
 
 
-def test_a_pass_that_died_before_targets_yaml_re_adopts_a_closure_keyword_too(
+def test_a_pass_that_died_before_graphemes_yaml_re_adopts_a_closure_keyword_too(
         tmp_path, monkeypatch):
     """C1 for the row whose keyword is new too: the keyword was already
     re-used by its Thai text before this fix, and the recited name now
     joins it, so the interrupted row is completed under its original two
     ids."""
     ctx = _grapheme_ctx(tmp_path, Syllabus())
-    _crash_after(monkeypatch, "save_targets")
+    _crash_after(monkeypatch, "save_graphemes")
     with pytest.raises(OSError):
         grapheme_attempt(ctx, consonants=[NGO])
     monkeypatch.undo()
@@ -5349,8 +5570,7 @@ def test_a_pass_that_died_before_targets_yaml_re_adopts_a_closure_keyword_too(
 
     assert (result.adopted_graphemes, result.adopted_words) == (1, 0)
     assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["snake", "name-snake"]
-    assert [t.id for t in load_targets(ctx.curated_dir / "targets.yaml")] == [
-        "name-snake/receptive", "name-snake/productive"]
+    assert list(load_targets(ctx.curated_dir / "targets.yaml")) == []
     assert ctx.syllabus.graphemes[0].name_word == "name-snake"
 
 

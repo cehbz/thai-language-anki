@@ -353,8 +353,8 @@ def _check_target_sentences_wanted(syllabus: "Syllabus") -> list[Finding]:
     # exempt, as above.
     name_words = syllabus.name_word_ids
     return [Finding(rule="target/sentences-wanted", note_id=t.id,
-                    evidence=(f"{syllabus.fill_count(t)} of {t.sentences} adopted sentences "
-                              "fill it"))
+                    evidence=(f"{t.sentences - syllabus.sentences_wanted(t)} of {t.sentences} "
+                              "adopted sentences fill it"))
             for t in syllabus.targets
             if syllabus.fill_count(t) and syllabus.sentences_wanted(t)
             and t.word not in name_words]

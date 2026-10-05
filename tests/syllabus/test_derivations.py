@@ -1874,6 +1874,7 @@ def test_all_needs_names_every_target_pair_grapheme_and_sentence_need():
         ("rice", "picture", "word"),
         ("rice", "recording", "word"),
         ("p-rice-near", "rendition", "pair"),
+        ("near", "picture", "word"),          # a pair member's, Target or not (r65)
         ("chicken", "picture", "word"),
         (s.text_sha, "recording", "sentence"),
         (s.text_sha, "picture", "sentence"),
@@ -1918,6 +1919,33 @@ def test_all_needs_names_a_multiply_targeted_word_once():
     syllabus = Syllabus(targets=(target("t-rice-r", "rice", skill="receptive"),
                                 target("t-rice-p", "rice", skill="productive")))
     assert all_needs(syllabus) == [("rice", "picture", "word"), ("rice", "recording", "word")]
+
+
+def test_all_needs_gives_every_pair_member_a_picture_need_target_or_not():
+    """Spec 3 r65: a pair member is pictured for the identification front;
+    ไกล (far) has no Target, so no recording need of its own."""
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    near = word("near", "ใกล้", syllables=(syl(tone="mid"),))   # ใกล้: near
+    far = word("far", "ไกล", syllables=(syl(tone="low"),))      # ไกล: far
+    pair = MinimalPair.create(id=PairId("p"), confusion=confusion, members=(near, far))
+    syllabus = Syllabus(words=(near, far), targets=(target("near/r", "near"),), pairs=(pair,),
+                        confusions=(confusion,))
+    assert all_needs(syllabus) == [("near", "picture", "word"), ("near", "recording", "word"),
+                                   ("p", "rendition", "pair"), ("far", "picture", "word")]
+
+
+def test_all_needs_keeps_a_recited_names_picture_and_recording_without_a_target():
+    """Spec 1 r32: the name Word carries no Target and keeps its chart-cell
+    picture and its recording."""
+    chicken = word("chicken", "ไก่")         # ไก่: chicken
+    name = word("name-chicken", "กอ ไก่")    # กอ ไก่: the recited name of ก
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=chicken, name_word=name)
+    syllabus = Syllabus(words=(chicken, name), graphemes=(g,))
+    assert all_needs(syllabus) == [("chicken", "picture", "word"),
+                                   ("name-chicken", "picture", "word"),
+                                   ("name-chicken", "recording", "word")]
 
 
 # --- judge_verdict -----------------------------------------------------

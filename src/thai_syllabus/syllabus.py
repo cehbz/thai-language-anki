@@ -52,6 +52,16 @@ class _Placement:
     first_fills: dict[TargetId, PlacementKey]
 
 
+def seed_target(target: Target) -> bool:
+    """A seed Target (spec 1 r32 seed sentences): a receptive
+    picture-introduced Target wanting more than one sentence (r30). Its
+    wanted count is met only within the seed span
+    (Syllabus.counts_toward_wanted), and open seed Targets are drafted in
+    an ask of their own (spec 3 r65)."""
+    return (target.introduction == "picture_card" and target.skill == "receptive"
+            and target.sentences > 1)
+
+
 def name_word_ids_of(graphemes: Sequence[Grapheme]) -> frozenset[WordId]:
     """Every Word that is some Grapheme's recited name (spec 1 r16). The
     aggregate reads it as `Syllabus.name_word_ids`; wiring needs the same
@@ -179,6 +189,20 @@ class Syllabus:
         same set to `derive_productive_targets` (I4).
         """
         return name_word_ids_of(self.graphemes)
+
+    @cached_property
+    def recited_name_words(self) -> tuple[WordId, ...]:
+        """Every Grapheme's recited-name Word, in grapheme order: each
+        keeps a chart-cell picture need and a recording need, Target or
+        not (spec 1 r32)."""
+        return tuple(dict.fromkeys(g.name_word for g in self.graphemes
+                                   if g.name_word is not None))
+
+    @cached_property
+    def pair_member_words(self) -> tuple[WordId, ...]:
+        """Every MinimalPair member Word, in pair order: each has a picture
+        need, Target or not (spec 3 r65)."""
+        return tuple(dict.fromkeys(m for p in self.pairs for m in p.members))
 
     @cached_property
     def grapheme_keyword_ids(self) -> frozenset[WordId]:
@@ -780,11 +804,57 @@ class Syllabus:
         """The adopted sentences whose fill set contains `target`."""
         return self._fill_counts.get(target.id, 0)
 
+    @cached_property
+    def _seed_span_end(self) -> int | None:
+        """The placement position the seed span ends at: the last seed
+        Target's word's last position in `_ordered_targets`
+        (`_word_last_position`); None with no seed Target."""
+        ends = [self._word_last_position[t.word] for t in self.targets
+                if seed_target(t) and t.word in self._word_last_position]
+        return max(ends, default=None)
+
+    def placed_within_seed_span(self, word_id: WordId) -> bool:
+        """Whether `word_id`'s last Target sits at or before the seed span's
+        end, so a sentence whose last used word it is lands in the span."""
+        position = self._word_last_position.get(word_id)
+        return (self._seed_span_end is not None and position is not None
+                and position <= self._seed_span_end)
+
+    def seed_span_met_targets(self) -> frozenset[TargetId]:
+        """The sentence-introduced Targets whose first fill is placed
+        within the seed span: a seed ask's glue vocabulary (spec 3 r65)."""
+        end = self._seed_span_end
+        if end is None:
+            return frozenset()
+        return frozenset(tid for tid, key in self._placement.first_fills.items()
+                         if key[0] <= end)
+
+    def counts_toward_wanted(self, sentence: Sentence, target: Target) -> bool:
+        """Whether `sentence` filling `target` counts toward the sentences
+        it wants (spec 1 r32): always, except for a seed Target, whose
+        count is met only by sentences placed within the seed span (at or
+        before `_seed_span_end`). A later fill still fills it for every
+        other purpose."""
+        return (not seed_target(target)
+                or self._placement_key(sentence)[0] <= self._seed_span_end)
+
+    @cached_property
+    def _wanted_fill_counts(self) -> dict[TargetId, int]:
+        """Per Target, the adopted sentences filling it that count toward
+        its wanted sentences (`counts_toward_wanted`)."""
+        counts: dict[TargetId, int] = {}
+        for s in self.sentences:
+            for t in self._adopted_fill_sets.get(s.text_sha, ()):
+                if self.counts_toward_wanted(s, t):
+                    counts[t.id] = counts.get(t.id, 0) + 1
+        return counts
+
     def sentences_wanted(self, target: Target) -> int:
         """How many more adopted sentences `target` wants (spec 1 r30):
-        `target.sentences` less the adopted sentences filling it, never
-        below zero. A Target is open while this is positive."""
-        return max(0, target.sentences - self.fill_count(target))
+        `target.sentences` less the adopted sentences filling it that
+        count toward it (`counts_toward_wanted`), never below zero. A
+        Target is open while this is positive."""
+        return max(0, target.sentences - self._wanted_fill_counts.get(target.id, 0))
 
     def has_scene_picture_need(self, sentence: Sentence) -> bool:
         """Whether `sentence` has a scene-picture need (spec 3 r61): it
@@ -878,7 +948,8 @@ class Syllabus:
         chosen: list[tuple[Sentence, tuple[Target, ...]]] = []
 
         def gains(draft: tuple[Sentence, Sequence[Target]]) -> tuple[Target, ...]:
-            return tuple(t for t in draft[1] if wanted.get(t.id, 0) > 0)
+            return tuple(t for t in draft[1] if wanted.get(t.id, 0) > 0
+                         and self.counts_toward_wanted(draft[0], t))
 
         while remaining:
             best = max(remaining, key=lambda d: len(gains(d)))
@@ -949,6 +1020,18 @@ class Syllabus:
             s.text_sha for s in self.sentences
             if self.media.picture_sha(s.text_sha) is None and self.has_scene_picture_need(s)
         )
+        # spec 1 r32, spec 3 r65: a recited-name Word keeps its picture
+        # and recording needs and every pair member has a picture need,
+        # Target or not. Neither is a rule finding (a gap, not a gate
+        # error), so these read the media index, as scene pictures do.
+        pictures = tuple(dict.fromkeys(
+            (*note_ids("target/picture-required"),
+             *(w for w in (*self.recited_name_words, *self.pair_member_words)
+               if not self.media.has_picture(w)))))
+        recordings = tuple(dict.fromkeys(
+            (*note_ids("target/recording-required"),
+             *(w for w in self.recited_name_words
+               if self.media.recording_provenance(w) is None))))
         # spec 1 r30: an open Target has no sentence (target/sentence-
         # required) or fewer than it wants (target/sentences-wanted); both
         # in target order
@@ -963,8 +1046,8 @@ class Syllabus:
                        and self.media.recording_provenance(slot.key) is None)
         return Gaps(pairs_missing_renditions=note_ids("pair/rendition-required"),
                     unfilled_targets=open_targets,
-                    words_missing_pictures=note_ids("target/picture-required"),
-                    words_missing_recordings=note_ids("target/recording-required"),
+                    words_missing_pictures=pictures,
+                    words_missing_recordings=recordings,
                     graphemes_missing_keyword_data=note_ids("grapheme/keyword-picture-required"),
                     sentence_recordings=note_ids("sentence/recording-required"),
                     scene_pictures=scene_pictures,

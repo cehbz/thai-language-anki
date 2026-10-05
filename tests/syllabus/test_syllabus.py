@@ -165,6 +165,111 @@ def test_a_word_with_no_pronunciation_touches_no_segmental_confusion():
     assert _staged_syllabus(bare).segmental_confusions_of("bare") == frozenset()
 
 
+# --- seed Targets: the wanted count is met within the seed span ------------
+
+_THIS = word("this", "นี่", "this")       # นี่: this
+_GOOD = word("good", "ดี", "good")        # ดี: good
+_GO = word("go", "ไป", "go")              # ไป: go
+_DOCTOR = word("doctor", "หมอ", "doctor")  # หมอ: doctor
+_SEED_WORDS = (_THIS, _GOOD, _GO, _DOCTOR)
+
+
+def _seeded(*sentence_words) -> Syllabus:
+    """นี่ (this) and ดี (good) are seed Targets wanting two sentences; the
+    seed span ends at ดี. ไป (go) and หมอ (doctor) come after it."""
+    sentences = tuple(sentence((tuple(w.id for w in ws),), thai_of(*_SEED_WORDS))
+                      for ws in sentence_words)
+    return Syllabus(words=_SEED_WORDS,
+                    targets=(target("this/receptive", "this", sentences=2),
+                             target("good/receptive", "good", sentences=2),
+                             target("go/receptive", "go"),
+                             target("doctor/receptive", "doctor")),
+                    sentences=sentences,
+                    frequency={"this": 1, "good": 2, "go": 3, "doctor": 4})
+
+
+def _target(syllabus: Syllabus, target_id: str):
+    return next(t for t in syllabus.targets if t.id == target_id)
+
+
+def test_a_seed_targets_wanted_count_is_met_only_by_fills_in_the_seed_span():
+    # นี่ดี (this is good) is placed at ดี, inside the span; หมอดี (the
+    # doctor is good) at หมอ, after it
+    syllabus = _seeded((_THIS, _GOOD), (_DOCTOR, _GOOD))
+    good = _target(syllabus, "good/receptive")
+    assert syllabus.fill_count(good) == 2
+    assert syllabus.sentences_wanted(good) == 1
+    assert "good/receptive" in syllabus.gaps().unfilled_targets
+
+
+def test_a_seed_target_filled_only_after_the_span_is_wanted_not_required():
+    """The later fill still fills it for the gate: target/sentences-wanted
+    (warn), not target/sentence-required (error)."""
+    syllabus = _seeded((_DOCTOR, _GOOD))
+    rules = {(f.rule, f.note_id): f for f in syllabus.report().findings}
+    assert ("target/sentence-required", "good/receptive") not in rules
+    assert rules[("target/sentences-wanted", "good/receptive")].evidence == (
+        "0 of 2 adopted sentences fill it")
+    assert syllabus.sentences_wanted(_target(syllabus, "good/receptive")) == 2
+
+
+def test_cover_counts_no_gain_for_a_seed_target_from_a_draft_after_the_span():
+    syllabus = _seeded((_DOCTOR, _GO))
+    late = sentence(((_THIS.id, _DOCTOR.id),), thai_of(*_SEED_WORDS))   # นี่หมอ: this is a doctor
+    assert _target(syllabus, "this/receptive") in syllabus.fill_set(late)
+    assert syllabus.cover([(late, syllabus.fill_set(late))]) == []
+
+
+def test_an_ordinary_targets_wanted_count_reads_every_fill():
+    syllabus = dataclasses.replace(
+        _seeded((_DOCTOR, _GOOD)),
+        targets=(target("this/receptive", "this"), target("good/receptive", "good", sentences=2,
+                                                          introduction="sentence"),
+                 target("go/receptive", "go"), target("doctor/receptive", "doctor")))
+    assert syllabus.sentences_wanted(_target(syllabus, "good/receptive")) == 1
+
+
+# --- the needs of untargeted Words (spec 1 r32, spec 3 r65) ----------------
+
+_TONE = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"))
+_NEAR = word("near", "ใกล้", syllables=(syl(tone="mid"),))   # ใกล้: near
+_FAR = word("far", "ไกล", syllables=(syl(tone="low"),))      # ไกล: far
+_CHICKEN = word("chicken", "ไก่")                             # ไก่: chicken
+_NAME = word("name-chicken", "กอ ไก่")                        # กอ ไก่: the recited name of ก
+
+
+def _untargeted_syllabus(media=None) -> Syllabus:
+    """ใกล้ (near) targeted, ไกล (far) a pair member with no Target, and
+    the recited name of ก with no Target."""
+    pair = MinimalPair.create(id=PairId("tone:mid-low/near-far"), confusion=_TONE,
+                              members=(_NEAR, _FAR))
+    g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
+                        keyword_word=_CHICKEN, name_word=_NAME)
+    return Syllabus(words=(_NEAR, _FAR, _CHICKEN, _NAME), targets=(target("near/r", "near"),),
+                    pairs=(pair,), graphemes=(g,), confusions=(_TONE,),
+                    media=media or FakeMediaIndex(pictures={"chicken"}))
+
+
+def test_gaps_lists_a_pair_member_without_a_target_lacking_a_picture():
+    assert _untargeted_syllabus().gaps().words_missing_pictures == (
+        "near", "name-chicken", "far")
+
+
+def test_gaps_omits_a_pair_member_that_has_its_picture():
+    media = FakeMediaIndex(pictures={"chicken", "far", "name-chicken"})
+    assert _untargeted_syllabus(media).gaps().words_missing_pictures == ("near",)
+
+
+def test_gaps_lists_a_recited_name_without_a_target_lacking_its_recording():
+    assert _untargeted_syllabus().gaps().words_missing_recordings == ("near", "name-chicken")
+
+
+def test_an_untargeted_words_missing_artifacts_are_gaps_not_gate_errors():
+    findings = {(f.rule, f.note_id) for f in _untargeted_syllabus().report().findings}
+    assert not {f for f in findings if f[1] in ("far", "name-chicken")
+                and f[0] in ("target/picture-required", "target/recording-required")}
+
+
 # --- cover(): the fewest drafts that fill the still-unfilled Targets -------
 
 def _open_syllabus() -> Syllabus:
