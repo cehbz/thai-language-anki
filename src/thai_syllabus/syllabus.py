@@ -958,6 +958,27 @@ class Syllabus:
             grouped.setdefault(confusion, []).append(record)
         return grouped
 
+    # --- the segmental confusions a word's reading waits on (spec 1 r32) ---
+
+    @cached_property
+    def trained_confusions(self) -> frozenset[ConfusionId]:
+        """The confusions some pair in the deck trains."""
+        return frozenset(p.confusion for p in self.pairs)
+
+    @cached_property
+    def _trained_segmental_confusions(self) -> tuple[SoundConfusion, ...]:
+        return tuple(c for c in self.confusions
+                     if c.segmental and c.id in self.trained_confusions)
+
+    def segmental_confusions_of(self, word_id: WordId) -> frozenset[ConfusionId]:
+        """The trained segmental confusions whose sounds `word_id`'s
+        pronunciation carries (`SoundConfusion.touched_by`): the ones its
+        reading waits on. Tone and vowel-length confusions are never among
+        them."""
+        pron = self.word(word_id).pron
+        return frozenset(c.id for c in self._trained_segmental_confusions
+                         if c.touched_by(pron))
+
     # --- content-hash staleness marker ------------------------------------
 
     def state_id(self) -> str:

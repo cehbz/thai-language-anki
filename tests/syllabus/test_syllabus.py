@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from thai_syllabus.entities import Category, Grapheme, MinimalPair, SoundConfusion
+from thai_syllabus.entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion
 from thai_syllabus.ids import CategoryName, ConfusionId, PairId, WordId
 from thai_syllabus.ports import StudyRecord
 from thai_syllabus.store import SyllabusDb
@@ -95,6 +95,73 @@ def test_study_by_confusion_ignores_a_non_pair_family_row(db):
     db.append_study(_study(family="word", anchor="p1", card_kind="listening"))
 
     assert syllabus.study_by_confusion(db) == {}
+
+
+# --- segmental_confusions_of: the confusions a word's reading waits on -----
+
+_D_T = SoundConfusion(id=ConfusionId("consonant:d-t"), dimension="consonant", sounds=("d", "t"))
+_T_K = SoundConfusion(id=ConfusionId("final:place-t-k"), dimension="final", sounds=("t", "k"))
+_VELAR = SoundConfusion(id=ConfusionId("aspiration:velar"), dimension="aspiration",
+                        sounds=("k", "kʰ"))
+_E_AE = SoundConfusion(id=ConfusionId("vowel_quality:e-ɛ"), dimension="vowel_quality",
+                       sounds=("e", "ɛ"))
+_LOW_FALL = SoundConfusion(id=ConfusionId("tone:low-falling"), dimension="tone",
+                           sounds=("low", "falling"))
+_LENGTH = SoundConfusion(id=ConfusionId("vowel_length:short-long"), dimension="length",
+                         sounds=("short", "long"))
+
+_DII = word("dii", "ดี", syllables=(syl("d", "iː", "", "long", "mid"),))       # ดี: good
+_TII = word("tii", "ตี", syllables=(syl("t", "iː", "", "long", "mid"),))       # ตี: hit
+_TAAK = word("taak", "ตาก", syllables=(syl("t", "aː", "k", "long", "low"),))    # ตาก: dry in the sun
+_KAT = word("kat", "กัด", syllables=(syl("k", "a", "t", "short", "low"),))      # กัด: bite
+_KHAT = word("khat", "ขัด", syllables=(syl("kʰ", "a", "t", "short", "low"),))   # ขัด: scrub
+_PEN = word("pen", "เป็น", syllables=(syl("p", "e", "n", "short", "mid"),))     # เป็น: to be
+_TRAA = word("traa", "ตรา", syllables=(syl("tr", "aː", "", "long", "mid"),))    # ตรา: seal, brand
+_MAA = word("maa", "มา", syllables=(syl("m", "aː", "", "long", "mid"),))        # มา: come
+
+
+def _staged_syllabus(*extra_words) -> Syllabus:
+    """d/t, t/k, k/kʰ, tone and length trained by pairs; e/ɛ curated with
+    no pair in the deck."""
+    pairs = (MinimalPair.create(id=PairId("consonant:d-t/dii"), confusion=_D_T,
+                                members=(_DII, _TII)),
+             MinimalPair.create(id=PairId("aspiration:velar/kat"), confusion=_VELAR,
+                                members=(_KAT, _KHAT)),
+             MinimalPair(id=PairId("final:place-t-k/x"), confusion=_T_K.id,
+                         members=("kat", "taak")),
+             MinimalPair(id=PairId("tone:low-falling/x"), confusion=_LOW_FALL.id,
+                         members=("kat", "maa")),
+             MinimalPair(id=PairId("vowel_length:short-long/x"), confusion=_LENGTH.id,
+                         members=("kat", "taak")))
+    return Syllabus(words=(_DII, _TII, _TAAK, _KAT, _KHAT, _PEN, _TRAA, _MAA, *extra_words),
+                    pairs=pairs, confusions=(_D_T, _T_K, _VELAR, _E_AE, _LOW_FALL, _LENGTH))
+
+
+def test_a_words_segmental_confusions_are_the_trained_ones_its_sounds_touch():
+    syllabus = _staged_syllabus()
+    assert syllabus.segmental_confusions_of("taak") == {"consonant:d-t", "final:place-t-k"}
+    assert syllabus.segmental_confusions_of("kat") == {"aspiration:velar", "final:place-t-k"}
+
+
+def test_tone_and_vowel_length_are_not_segmental_confusions():
+    # มา (come) touches only the length and tone pairs' sounds
+    assert _staged_syllabus().segmental_confusions_of("maa") == frozenset()
+
+
+def test_a_confusion_with_no_pair_is_not_among_a_words_segmental_confusions():
+    # เป็น (to be) carries e, a sound of the untrained e/ɛ confusion
+    assert _staged_syllabus().segmental_confusions_of("pen") == frozenset()
+
+
+def test_a_cluster_onset_touches_the_segmental_confusions_of_its_head():
+    # ตรา (seal): onset tr's head is t
+    assert _staged_syllabus().segmental_confusions_of("traa") == {"consonant:d-t"}
+
+
+def test_a_word_with_no_pronunciation_touches_no_segmental_confusion():
+    bare = dataclasses.replace(word("bare", "ดุ"),                          # ดุ: fierce
+                               pron=Pronunciation(syllables=(), corroboration="disputed"))
+    assert _staged_syllabus(bare).segmental_confusions_of("bare") == frozenset()
 
 
 # --- cover(): the fewest drafts that fill the still-unfilled Targets -------

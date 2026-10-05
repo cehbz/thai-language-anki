@@ -1,6 +1,6 @@
 """Derivations (spec 3 section 6): pure folds over the cache, never
 stored. current_best, pending, next_source, exhausted, improved, directed,
-queue, challengers, reasks, confusion_weights.
+queue, challengers, reasks, confusion_weights, sound_stage.
 
 record.py holds the row-selecting folds (rows_for, source_asks,
 candidate_shas, learner_ratings, directions, judge_verdicts, ratings_for_role,
@@ -30,7 +30,7 @@ from . import record
 from .assessor import MechanicalKeyOf, mechanical_question
 from .authority import AUTHORITY_ORDER, ROLE_FOR_VOICE, role_for, sentence_role
 from .entities import Sentence, Syllable, Target, is_corroborated
-from .ids import WordId, sentence_cloze_key
+from .ids import ConfusionId, WordId, sentence_cloze_key
 from .media import Speaker
 from .phonology import syllables_from_verdict
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
@@ -58,6 +58,7 @@ __all__ = [
     "Challenger", "challengers",
     "Reask", "reasks", "DEFAULT_REASK_LAPSES",
     "confusion_weights",
+    "SoundStage", "sound_stage", "STABILITY_WINDOW", "STABILITY_CORRECT",
     "LEARNER_RANK",
     "stale",
     "DEFAULT_ATTEMPT_CAP",
@@ -1572,6 +1573,56 @@ def confusion_weights(seed: Mapping[str, float], syllabus: Syllabus,
         lapse_rate = lapses / len(records)
         weights[cid] = base * (1.0 + lapse_rate)
     return weights
+
+
+# --- sound_stage -----------------------------------------------------------
+
+# Spec 2 r21: a confusion is stable once any STABILITY_WINDOW consecutive
+# reviews of its pairs, ordered by time, hold at least STABILITY_CORRECT
+# correct (grade > 1), and it stays stable; with no such window on record
+# it is unstable.
+STABILITY_WINDOW = 10
+STABILITY_CORRECT = 0.8
+
+
+def _stable(records: Sequence[StudyRecord]) -> bool:
+    correct = [r.grade > 1 for r in sorted(records, key=lambda r: r.ts)]
+    need = STABILITY_CORRECT * STABILITY_WINDOW
+    return any(sum(correct[i:i + STABILITY_WINDOW]) >= need
+               for i in range(len(correct) - STABILITY_WINDOW + 1))
+
+
+@dataclass(frozen=True)
+class SoundStage:
+    """The sound stage's hold on reading (spec 1 r32, spec 2 r21): which
+    confusions the study record shows stable, and so which words' reading
+    is held back. `stable` holds the confusions some STABILITY_WINDOW
+    consecutive reviews of whose pairs met STABILITY_CORRECT."""
+    syllabus: Syllabus
+    stable: frozenset[ConfusionId]
+
+    def confusion_stable(self, confusion_id: ConfusionId) -> bool:
+        return confusion_id in self.stable
+
+    def blocking_confusions(self) -> frozenset[ConfusionId]:
+        """The unstable confusions with a pair in the deck; one with no
+        pair blocks nothing."""
+        return self.syllabus.trained_confusions - self.stable
+
+    def word_reading_blocked(self, word_id: WordId) -> bool:
+        """Whether a segmental confusion `word_id`'s pronunciation touches
+        is blocking."""
+        return bool(self.syllabus.segmental_confusions_of(word_id) & self.blocking_confusions())
+
+
+def sound_stage(syllabus: Syllabus, study: StudyReader) -> SoundStage:
+    """The SoundStage of `syllabus` over the pair reviews in `study`,
+    grouped by the aggregate's own `study_by_confusion`. A grade <= 1,
+    Anki's "again" or a manual entry's 0, is incorrect."""
+    grouped = syllabus.study_by_confusion(study)
+    return SoundStage(syllabus=syllabus,
+                      stable=frozenset(cid for cid, records in grouped.items()
+                                       if _stable(records)))
 
 
 # --- adoptable_drafts -------------------------------------------------------

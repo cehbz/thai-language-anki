@@ -111,6 +111,55 @@ def test_pair_count_is_weight_proportional_5to4_4to3_3to2_else_1():
     assert confusion(1).pair_count == 1
 
 
+def test_a_confusion_is_segmental_unless_it_contrasts_tone_or_vowel_length():
+    def confusion(dimension):
+        return SoundConfusion(id=ConfusionId(f"{dimension}:x-y"), dimension=dimension,
+                              sounds=("x", "y"))
+
+    assert [d for d in ("tone", "length", "aspiration", "consonant", "vowel_quality", "final")
+            if confusion(d).segmental] == ["aspiration", "consonant", "vowel_quality", "final"]
+
+
+def test_a_pronunciation_touches_a_confusion_carrying_one_of_its_sounds_at_any_syllable():
+    # ตาก tàak (to dry in the sun), then ปู puu (crab): t onset, k coda
+    taak_puu = pron(syl("t", "aː", "k", "long", "low"), syl("p", "uː", "", "long", "mid"))
+    d_t = SoundConfusion(id=ConfusionId("consonant:d-t"), dimension="consonant",
+                         sounds=("d", "t"))
+    t_k = SoundConfusion(id=ConfusionId("final:place-t-k"), dimension="final",
+                         sounds=("t", "k"))
+    e_ae = SoundConfusion(id=ConfusionId("vowel_quality:e-ɛ"), dimension="vowel_quality",
+                          sounds=("e", "ɛ"))
+    labial = SoundConfusion(id=ConfusionId("aspiration:labial"), dimension="aspiration",
+                            sounds=("p", "pʰ"))
+    assert d_t.touched_by(taak_puu)
+    assert t_k.touched_by(taak_puu)
+    assert labial.touched_by(taak_puu)       # the second syllable's p
+    assert not e_ae.touched_by(taak_puu)
+
+
+def test_a_cluster_onset_touches_the_onset_confusions_of_its_head_consonant():
+    # กราบ kràap (to prostrate): kr's head is k; ขวา kʰwǎa (right): kʰw's is kʰ
+    kraap = pron(syl("kr", "aː", "p", "long", "low"))
+    khwaa = pron(syl("kʰw", "aː", "", "long", "rising"))
+    velar = SoundConfusion(id=ConfusionId("aspiration:velar"), dimension="aspiration",
+                           sounds=("k", "kʰ"))
+    assert velar.touched_by(kraap)
+    assert velar.touched_by(khwaa)
+
+
+def test_a_cluster_onset_does_not_touch_by_its_second_consonant():
+    # ปลา plaa (fish): the cluster's l is no onset of its own
+    plaa = pron(syl("pl", "aː", "", "long", "mid"))
+    l_r = SoundConfusion(id=ConfusionId("consonant:l-r"), dimension="consonant",
+                         sounds=("l", "r"))
+    assert not l_r.touched_by(plaa)
+
+
+def test_a_pronunciation_without_syllables_touches_no_confusion():
+    tone = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"))
+    assert not tone.touched_by(pron())
+
+
 # --- onset diff classification: aspiration marker moves with cluster onsets
 # A cluster onset (e.g. "kʰw", the fix in engines.py that makes these
 # reachable) carries the aspiration marker ʰ mid-string, not trailing --

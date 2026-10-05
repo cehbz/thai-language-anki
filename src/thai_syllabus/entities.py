@@ -128,6 +128,36 @@ class SoundConfusion:
     def pair_count(self) -> int:
         return {5: 4, 4: 3, 3: 2}.get(self.weight, 1)
 
+    @property
+    def segmental(self) -> bool:
+        """Whether the contrast lies in a segment (onset, vowel or coda)
+        rather than in tone or vowel length, which every syllable carries
+        (spec 1 r32)."""
+        return self.dimension not in ("tone", "length")
+
+    def touched_by(self, pron: Pronunciation) -> bool:
+        """Whether some syllable of `pron` carries one of `sounds` on this
+        confusion's dimension, by the value `exact_confusion_violation`
+        reads; on an onset dimension a cluster onset (kr, pʰl) also
+        touches by its head consonant (k, pʰ), its second consonant
+        never. A pronunciation without syllables touches none."""
+        onset = self.dimension in ("aspiration", "consonant")
+        return any(_dimension_value(syl, self.dimension) in self.sounds
+                   or (onset and _cluster_head(syl.onset) in self.sounds)
+                   for syl in pron.syllables)
+
+
+# The second consonants of Thai onset clusters.
+_CLUSTER_SECONDS = ("r", "l", "w")
+
+
+def _cluster_head(onset: str) -> str | None:
+    """A cluster onset's head consonant (kʰw -> kʰ, tr -> t); None for an
+    onset that is no cluster."""
+    if len(onset) > 1 and onset.endswith(_CLUSTER_SECONDS):
+        return onset[:-1]
+    return None
+
 
 def _dimension_value(syllable: Syllable, dimension: Dimension) -> str:
     if dimension == "tone":

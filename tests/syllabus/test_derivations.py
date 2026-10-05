@@ -42,6 +42,7 @@ from thai_syllabus.derivations import (
     reasks,
     refused_drafts,
     sentence_exhausted,
+    sound_stage,
     tried_sources,
     unjudged_candidates,
 )
@@ -2224,6 +2225,137 @@ def test_confusion_weights_increases_with_lapse_rate():
     reader = _FakeStudyReader(records)
     weights = confusion_weights({"tone:mid-low": 1.0}, syllabus, reader)
     assert weights["tone:mid-low"] == pytest.approx(1.0 * (1 + 2 / 3))
+
+
+# --- sound_stage: confusion stability and the reading it holds back ------
+
+_D_T = SoundConfusion(id=ConfusionId("consonant:d-t"), dimension="consonant", sounds=("d", "t"))
+_VELAR = SoundConfusion(id=ConfusionId("aspiration:velar"), dimension="aspiration",
+                        sounds=("k", "kʰ"))
+_E_AE = SoundConfusion(id=ConfusionId("vowel_quality:e-ɛ"), dimension="vowel_quality",
+                       sounds=("e", "ɛ"))
+_MID_LOW = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"))
+
+
+def _stage_syllabus() -> Syllabus:
+    """d/t, k/kʰ and mid/low trained by one pair each; e/ɛ curated with no
+    pair in the deck."""
+    dii = word("dii", "ดี", syllables=(syl("d", "iː", "", "long", "mid"),))       # ดี: good
+    tii = word("tii", "ตี", syllables=(syl("t", "iː", "", "long", "mid"),))       # ตี: hit
+    kat = word("kat", "กัด", syllables=(syl("k", "a", "t", "short", "low"),))     # กัด: bite
+    khat = word("khat", "ขัด", syllables=(syl("kʰ", "a", "t", "short", "low"),))  # ขัด: scrub
+    maa = word("maa", "มา", syllables=(syl("m", "aː", "", "long", "mid"),))       # มา: come
+    pen = word("pen", "เป็น", syllables=(syl("p", "e", "n", "short", "mid"),))    # เป็น: to be
+    near = word("near", "ใกล้", syllables=(syl(tone="mid"),))                      # ใกล้: near
+    far = word("far", "ไกล", syllables=(syl(tone="low"),))                         # ไกล: far
+    pairs = (MinimalPair.create(id=PairId("consonant:d-t/dii"), confusion=_D_T,
+                                members=(dii, tii)),
+             MinimalPair.create(id=PairId("aspiration:velar/kat"), confusion=_VELAR,
+                                members=(kat, khat)),
+             MinimalPair.create(id=PairId("tone:mid-low/klai"), confusion=_MID_LOW,
+                                members=(near, far)))
+    return Syllabus(words=(dii, tii, kat, khat, maa, pen, near, far), pairs=pairs,
+                    confusions=(_D_T, _VELAR, _E_AE, _MID_LOW))
+
+
+def _reviews(pair_id: str, grades: list[int], *, first_ts: int = 1) -> list[_Rec]:
+    return [_Rec(anchor=pair_id, ts=first_ts + i, grade=g) for i, g in enumerate(grades)]
+
+
+def _stage(study):
+    return sound_stage(_stage_syllabus(), study)
+
+
+def _stable(grades: list[int]) -> bool:
+    study = _FakeStudyReader(_reviews("consonant:d-t/dii", grades))
+    return _stage(study).confusion_stable("consonant:d-t")
+
+
+def test_a_confusion_is_stable_at_eight_correct_of_ten_consecutive_reviews():
+    assert _stable([3] * 8 + [1] * 2)
+
+
+def test_a_confusion_is_unstable_at_seven_correct_of_ten():
+    assert not _stable([3] * 7 + [1] * 3)
+
+
+def test_a_confusion_with_fewer_than_ten_reviews_is_unstable():
+    assert not _stable([4] * 9)
+
+
+def test_early_misses_before_a_window_of_ten_do_not_unsettle_it():
+    # 9 of 12 correct overall (75%); the last ten hold 9 of 10
+    rows = _reviews("consonant:d-t/dii", [1, 1, 1] + [3] * 9)
+    study = _FakeStudyReader(reversed(rows))
+    assert _stage(study).confusion_stable("consonant:d-t")
+
+
+def test_a_confusion_stays_stable_after_its_newest_reviews_drop_below():
+    # spec 2 r21: stability latches -- ten good reviews, then ten misses
+    assert _stable([3] * 10 + [1] * 10)
+
+
+def test_any_ten_consecutive_reviews_settle_it_not_only_the_newest_ten():
+    # the first ten reviews hold 8 correct; the newest ten hold 7
+    assert _stable([1, 1] + [3] * 8 + [1] * 3)
+
+
+def test_the_windows_run_over_reviews_ordered_by_time():
+    # alternating by ts: every ten consecutive reviews hold 5 correct; the
+    # rows arrive grouped by grade, ten correct ones first
+    rows = [_Rec(anchor="consonant:d-t/dii", ts=i, grade=3 if i % 2 else 1)
+            for i in range(20)]
+    study = _FakeStudyReader(sorted(rows, key=lambda r: -r.grade))
+    assert not _stage(study).confusion_stable("consonant:d-t")
+
+
+def test_a_grade_zero_entry_is_a_review_and_incorrect():
+    assert _stable([3] * 8 + [0] * 2)
+    assert not _stable([3] * 7 + [0] * 3)
+
+
+def test_reviews_of_another_confusions_pair_do_not_count():
+    study = _FakeStudyReader(_reviews("aspiration:velar/kat", [4] * 10))
+    stage = _stage(study)
+    assert stage.confusion_stable("aspiration:velar")
+    assert not stage.confusion_stable("consonant:d-t")
+
+
+def test_with_no_reviews_every_confusion_with_a_pair_blocks():
+    stage = _stage(_FakeStudyReader([]))
+    assert stage.blocking_confusions() == {"consonant:d-t", "aspiration:velar", "tone:mid-low"}
+
+
+def test_every_confusion_with_a_pair_blocks_whatever_its_pairs_pictures():
+    # spec 1 r32 (M1): a pair in the deck is enough; its Recognition card's
+    # presence is not consulted
+    stage = sound_stage(_stage_syllabus(), _FakeStudyReader([]))
+    assert stage.blocking_confusions() == {"consonant:d-t", "aspiration:velar", "tone:mid-low"}
+    assert stage.word_reading_blocked("dii")    # ดี (good)
+
+
+def test_a_stable_confusion_does_not_block():
+    study = _FakeStudyReader(_reviews("aspiration:velar/kat", [4] * 10))
+    assert _stage(study).blocking_confusions() == {"consonant:d-t", "tone:mid-low"}
+
+
+def test_a_words_reading_is_blocked_by_an_unstable_segmental_confusion_it_touches():
+    study = _FakeStudyReader(_reviews("aspiration:velar/kat", [4] * 10))
+    stage = _stage(study)
+    assert stage.word_reading_blocked("dii")        # ดี (good): d/t unstable
+    assert not stage.word_reading_blocked("khat")   # ขัด (scrub): k/kʰ stable
+
+
+def test_an_unstable_tone_confusion_does_not_block_a_words_reading():
+    # มา (come), ไกล (far): only tone and the untrained e/ɛ are near them
+    stage = _stage(_FakeStudyReader([]))
+    assert not stage.word_reading_blocked("maa")
+    assert not stage.word_reading_blocked("far")
+
+
+def test_a_confusion_with_no_pair_does_not_block_a_words_reading():
+    # เป็น (to be) carries e, a sound of the untrained e/ɛ confusion
+    assert not _stage(_FakeStudyReader([])).word_reading_blocked("pen")
 
 
 # --- authority-driven current_best, preference, provenance prior -----------
