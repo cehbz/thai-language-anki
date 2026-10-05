@@ -1,8 +1,11 @@
 """tools/quota_pacer.py: the pace-line arithmetic, the probe file, the
-commands, the log line, and main() with the probe and the cycle injected.
-No test runs `claude` or `thai-syllabus`."""
+commands, the log line, the re-import, and main() with the probe, the
+cycle, the compile and AnkiConnect injected. No test runs `claude` or
+`thai-syllabus` or reaches Anki."""
 import json
+import sqlite3
 import sys
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,7 +15,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import quota_pacer as qp  # noqa: E402
 
+from thai_syllabus.cachekeys import RunReportKey  # noqa: E402
 from thai_syllabus.curated import PacerConfig  # noqa: E402
+from thai_syllabus.store import SyllabusDb  # noqa: E402
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 CFG = PacerConfig()  # reserve 15, ceiling 50, max 40, min 5, 0.05 / 0.5 per call
@@ -259,14 +264,31 @@ def test_the_log_line_carries_the_tick_numbers():
 
 # --- main, with the probe and the cycle injected ----------------------------
 
+ANKI_OK = {"version": {"result": 6, "error": None},
+           "importPackage": {"result": True, "error": None}}
+ANKI_CLOSED = {"version": ConnectionRefusedError(61, "Connection refused")}
+OPEN = ["probe", "anki:version", "harvest"]      # a tick's start with Anki open
+
+
 class Runner:
-    """Stands in for subprocess: the probe writes `usage` to the file the
-    environment names; the cycle returns `cycle_code`."""
+    """Stands in for subprocess and AnkiConnect: the probe writes `usage`
+    to the file the environment names; the cycle appends `cycle_rows`
+    record rows and returns `cycle_code`; the compile returns
+    `compile_code` with `compile_stdout`; the harvest appends
+    `harvest_reviews` study rows and returns `harvest_code` with
+    `harvest_stderr`; AnkiConnect answers each action from `anki` (a dict
+    body, or an exception to raise)."""
 
     def __init__(self, usage=None, probe_code=0, cycle_code=0, stdout="", stderr="",
-                 raises=None):
+                 raises=None, cycle_rows=0, compile_code=0, compile_stdout="", anki=None,
+                 harvest_code=0, harvest_stderr="", harvest_reviews=0):
         self.usage, self.probe_code, self.cycle_code = usage, probe_code, cycle_code
         self.stdout, self.stderr, self.raises = stdout, stderr, raises
+        self.cycle_rows = cycle_rows
+        self.compile_code, self.compile_stdout = compile_code, compile_stdout
+        self.anki_answers = {**ANKI_OK, **(anki or {})}
+        self.harvest_code, self.harvest_stderr = harvest_code, harvest_stderr
+        self.harvest_reviews = harvest_reviews
         self.calls = []
         self.usage_path = None
 
@@ -281,7 +303,58 @@ class Runner:
 
     def cycle(self, cmd, *, cwd):
         self.calls.append(("cycle", cmd, cwd))
+        deck = Path(cmd[cmd.index("--deck") + 1])
+        for _ in range(self.cycle_rows):
+            add_row(deck)
         return self.cycle_code
+
+    def harvest(self, cmd, *, cwd):
+        self.calls.append(("harvest", cmd, cwd))
+        deck = Path(cmd[cmd.index("--deck") + 1])
+        for _ in range(self.harvest_reviews):
+            add_review(deck)
+        return qp.ProbeResult(self.harvest_code, "", self.harvest_stderr)
+
+    def compile(self, cmd, *, cwd):
+        self.calls.append(("compile", cmd, cwd))
+        return qp.ProbeResult(self.compile_code, self.compile_stdout, "")
+
+    def anki(self, url, body, timeout):
+        request = json.loads(body)
+        self.calls.append(("anki", url, request, timeout))
+        answer = self.anki_answers[request["action"]]
+        if isinstance(answer, BaseException):
+            raise answer
+        return json.dumps(answer).encode()
+
+    def kinds(self):
+        return [c[0] if c[0] != "anki" else f"anki:{c[2]['action']}" for c in self.calls]
+
+
+def add_review(deck, ts=None):
+    """One harvested study row; `ts` defaults past every row already there."""
+    db = SyllabusDb(deck / "syllabus.db")
+    db.close()
+    con = sqlite3.connect(deck / "syllabus.db")
+    try:
+        with con:
+            if ts is None:
+                ts = (con.execute("select max(ts) from study").fetchone()[0] or 0) + 1
+            con.execute("insert into study (family, anchor, card_kind, compile_id, ts, grade, "
+                        "time_ms) values ('word', 'w1', 'listening', 'c', ?, 3, 1000)", (ts,))
+    finally:
+        con.close()
+    return ts
+
+
+def add_row(deck, port="assess", ts=None):
+    """One record row, as run would append it; the db is created on first use."""
+    db = SyllabusDb(deck / "syllabus.db")
+    try:
+        return db.append(port=port, backend="judge", key=RunReportKey(), subject="s",
+                         question={}, answer={}, ts=ts)
+    finally:
+        db.close()
 
 
 def write_deck(root, *, judge=None, pacer=None, **extra):
@@ -300,14 +373,17 @@ def deck(tmp_path):
 
 def run_main(deck, runner, *extra):
     return qp.main(["--deck", str(deck), "--now", "2026-10-03T12:00:00+00:00", *extra],
-                   probe_runner=runner.probe, cycle_runner=runner.cycle)
+                   probe_runner=runner.probe, cycle_runner=runner.cycle,
+                   compile_runner=runner.compile, harvest_runner=runner.harvest,
+                   http=runner.anki)
 
 
 def test_main_probes_then_runs_one_capped_cycle(deck, capsys):
     runner = Runner(usage=probe_json(weekly=20, weekly_reset="2026-10-07T00:00:00Z"),
                     cycle_code=0)
     assert run_main(deck, runner) == 0
-    (_, probe_cmd, timeout), (_, cycle_cmd, cwd) = runner.calls
+    (_, probe_cmd, timeout), (_, cycle_cmd, cwd) = [c for c in runner.calls
+                                                    if c[0] in ("probe", "cycle")]
     assert probe_cmd[:4] == ["claude", "-p", "--model", "haiku"]
     assert timeout == 90
     assert cycle_cmd == qp.run_command(deck, 40)
@@ -324,8 +400,8 @@ def test_main_exits_with_the_cycles_code(deck):
 def test_main_with_nothing_to_do_logs_and_exits_3(deck, capsys):
     runner = Runner(usage=probe_json(weekly=90))
     assert run_main(deck, runner) == 3
-    assert [c[0] for c in runner.calls] == ["probe"]
-    assert capsys.readouterr().out.rstrip().endswith("· M 0 · skip")
+    assert [c[0] for c in runner.calls] == ["probe", "anki", "harvest"]
+    assert capsys.readouterr().out.splitlines()[0].endswith("· M 0 · skip")
 
 
 def error_line(capsys):
@@ -409,7 +485,7 @@ def test_require_measured_accepts_a_measured_figure_equal_to_the_placeholder(tmp
                                        "session_points_per_call": 0.5})
     runner = Runner(usage=probe_json(weekly=20, weekly_reset="2026-10-07T00:00:00Z"))
     assert run_main(deck, runner, "--require-measured") == 0
-    assert [c[0] for c in runner.calls] == ["probe", "cycle"]
+    assert [c[0] for c in runner.calls] == ["probe", "anki", "harvest", "cycle"]
 
 
 def test_require_measured_passes_measured_figures(tmp_path):
@@ -417,7 +493,7 @@ def test_require_measured_passes_measured_figures(tmp_path):
                                        "session_points_per_call": 0.4})
     runner = Runner(usage=probe_json(weekly=20, weekly_reset="2026-10-07T00:00:00Z"))
     assert run_main(deck, runner, "--require-measured") == 0
-    assert [c[0] for c in runner.calls] == ["probe", "cycle"]
+    assert [c[0] for c in runner.calls] == ["probe", "anki", "harvest", "cycle"]
 
 
 def test_dry_run_with_a_usage_file_neither_probes_nor_runs(deck, tmp_path, capsys):
@@ -436,3 +512,258 @@ def test_a_stale_usage_file_is_refused_by_main(deck, tmp_path, capsys):
     usage.write_text(probe_json(read_at="2026-10-03T11:00:00Z"))
     assert run_main(deck, Runner(), "--usage-file", str(usage)) == 1
     assert "stale" in capsys.readouterr().err
+
+
+# --- the harvest and the re-import (spec 3 section 8 `pacer`) ---------------
+# Each tick harvests the collection's reviews before its cycle. "Changed" is
+# the record's newest cache row (run's own report rows aside) or its newest
+# study row being newer than the ones the last successful import saw; both
+# are kept in a state file beside the log, so a failed import stays pending
+# for later ticks, run or not.
+
+RUN_USAGE = dict(weekly=20, weekly_reset="2026-10-07T00:00:00Z")
+GATE_CLOSED = ("compile refused: gate is closed (12 finding(s)); pass --force to compile "
+               "anyway\n  sentence/recording-required: no recording (note n1)\n")
+
+
+def test_the_record_marks_are_the_newest_cache_and_study_rows(tmp_path):
+    assert qp.record_marks(tmp_path) == qp.Marks(-1, -1)     # no syllabus.db yet
+    add_row(tmp_path, ts=100)
+    add_row(tmp_path, port="attempt", ts=150)               # run's adoption rows count
+    add_row(tmp_path, port="run", ts=200)                   # run's own report does not
+    add_review(tmp_path, ts=70)
+    assert qp.record_marks(tmp_path) == qp.Marks(150, 70)
+
+
+def test_marks_are_newer_when_either_table_moved():
+    assert qp.Marks(2, 1).newer_than(qp.Marks(1, 1))
+    assert qp.Marks(1, 2).newer_than(qp.Marks(1, 1))
+    assert not qp.Marks(1, 1).newer_than(qp.Marks(1, 1))
+
+
+def test_the_state_file_round_trips_and_is_absent_as_never_imported(tmp_path):
+    path = tmp_path / "work" / "pacer-import.json"
+    assert qp.read_imported(path) == qp.Marks(-1, -1)
+    qp.write_imported(path, qp.Marks(42, 7))
+    assert qp.read_imported(path) == qp.Marks(42, 7)
+    assert json.loads(path.read_text()) == {"cache_ts": 42, "study_ts": 7}
+
+
+def test_the_harvest_command_reads_the_collection_file_or_the_open_anki():
+    deck = Path("/decks/thai-ff")
+    assert qp.harvest_command(deck, collection=Path("/A/User 1/collection.anki2")) == [
+        "uv", "run", "thai-syllabus", "import", "--deck", "/decks/thai-ff",
+        "--collection", "/A/User 1/collection.anki2"]
+    assert qp.harvest_command(deck, anki_connect="http://127.0.0.1:8765") == [
+        "uv", "run", "thai-syllabus", "import", "--deck", "/decks/thai-ff",
+        "--anki-connect", "http://127.0.0.1:8765"]
+
+
+def test_the_state_file_sits_beside_the_log():
+    assert qp.state_path(Path("/decks/thai-ff")) == Path("/decks/thai-ff/work/pacer-import.json")
+
+
+def test_the_compile_command_writes_the_decks_package_and_never_forces():
+    deck = Path("/decks/thai-ff")
+    assert qp.package_path(deck) == Path("/decks/thai-ff/thai-ff.apkg")
+    assert qp.compile_command(deck) == [
+        "uv", "run", "thai-syllabus", "compile", "--deck", "/decks/thai-ff",
+        "--out", "/decks/thai-ff/thai-ff.apkg"]
+
+
+def test_the_import_request_names_the_absolute_package():
+    assert qp.import_request(Path("/decks/thai-ff/thai-ff.apkg")) == {
+        "action": "importPackage", "version": 6,
+        "params": {"path": "/decks/thai-ff/thai-ff.apkg"}}
+
+
+def test_a_run_that_changed_the_deck_compiles_and_imports(deck, capsys):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1)
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == [*OPEN, "cycle", "anki:version", "compile",
+                              "anki:importPackage"]
+    _, compile_cmd, cwd = runner.calls[runner.kinds().index("compile")]
+    assert compile_cmd == qp.compile_command(deck) and "--force" not in compile_cmd
+    assert cwd == qp.REPO
+    _, url, request, timeout = runner.calls[runner.kinds().index("anki:importPackage")]
+    assert url == "http://127.0.0.1:8765"
+    assert request == {"action": "importPackage", "version": 6,
+                       "params": {"path": str(deck / f"{deck.name}.apkg")}}
+    assert Path(request["params"]["path"]).is_absolute()
+    assert timeout == 120
+    assert qp.read_imported(qp.state_path(deck)) == qp.record_marks(deck)
+    assert "imported" in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_a_run_that_changed_nothing_imports_nothing(deck, capsys):
+    add_row(deck)
+    qp.write_imported(qp.state_path(deck), qp.record_marks(deck))
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=0)
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == [*OPEN, "cycle"]
+    assert capsys.readouterr().out.splitlines()[-1].endswith(
+        "deck unchanged since the last import; not imported")
+
+
+def test_import_off_neither_harvests_nor_compiles_nor_calls_anki(tmp_path):
+    deck = write_deck(tmp_path, pacer={"import": False})
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1)
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == ["probe", "cycle"]
+
+
+def test_a_closed_gate_is_logged_and_not_imported(deck, capsys):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, compile_code=1,
+                    compile_stdout=GATE_CLOSED)
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == [*OPEN, "cycle", "anki:version", "compile"]
+    assert capsys.readouterr().out.splitlines()[-1].endswith(
+        " gate closed: 12 finding(s); not imported")
+    assert not qp.state_path(deck).exists()
+
+
+def test_a_compile_that_fails_otherwise_is_logged_and_not_imported(deck, capsys):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, compile_code=2,
+                    compile_stdout="Traceback ...\nKeyError: 'x'\n")
+    assert run_main(deck, runner) == 0
+    line = capsys.readouterr().out.splitlines()[-1]
+    assert "compile exited 2" in line and "KeyError" in line and line.endswith("not imported")
+    assert not qp.state_path(deck).exists()
+
+
+@pytest.mark.parametrize("refusal", [
+    urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")),
+    ConnectionRefusedError(61, "Connection refused")])
+def test_anki_not_running_is_logged_and_nothing_is_compiled(deck, capsys, refusal):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, anki={"version": refusal})
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == ["probe", "anki:version", "harvest", "cycle", "anki:version"]
+    assert capsys.readouterr().out.splitlines()[-1].endswith(
+        " Anki not running; not imported")
+    assert not qp.state_path(deck).exists()
+
+
+def test_anki_closing_during_the_compile_is_anki_not_running(deck, capsys):
+    refusal = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1,
+                    anki={"importPackage": refusal})
+    assert run_main(deck, runner) == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith(
+        " Anki not running; not imported")
+    assert not qp.state_path(deck).exists()
+
+
+@pytest.mark.parametrize("answer,shown", [
+    ({"result": None, "error": "collection is not available"}, "collection is not available"),
+    ({"result": False, "error": None}, "returned false"),
+])
+def test_an_anki_connect_error_is_logged_and_not_imported(deck, capsys, answer, shown):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1,
+                    anki={"importPackage": answer})
+    assert run_main(deck, runner) == 0
+    line = capsys.readouterr().out.splitlines()[-1]
+    assert "importPackage" in line and shown in line and line.endswith("not imported")
+    assert not qp.state_path(deck).exists()
+
+
+def test_a_failed_import_is_retried_by_the_next_tick_without_a_run(deck, capsys):
+    refused = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, anki=ANKI_CLOSED)
+    assert run_main(deck, refused) == 0
+    idle = Runner(usage=probe_json(weekly=90))        # M 0: the tick skips its cycle
+    assert run_main(deck, idle) == 3
+    assert idle.kinds() == [*OPEN, "anki:version", "compile", "anki:importPackage"]
+    assert qp.read_imported(qp.state_path(deck)) == qp.record_marks(deck)
+    again = Runner(usage=probe_json(weekly=90))
+    assert run_main(deck, again) == 3
+    assert again.kinds() == OPEN
+
+
+def test_a_failed_cycle_attempts_no_import(deck):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, cycle_code=1)
+    assert run_main(deck, runner) == 1
+    assert runner.kinds() == [*OPEN, "cycle"]
+
+
+def test_dry_run_prints_the_import_it_would_make_without_making_it(deck, tmp_path, capsys):
+    add_row(deck, ts=7)
+    usage = tmp_path / "usage.json"
+    usage.write_text(probe_json(**RUN_USAGE))
+    runner = Runner()
+    assert run_main(deck, runner, "--dry-run", "--usage-file", str(usage)) == 0
+    assert runner.calls == []
+    out = capsys.readouterr().out
+    assert "harvest (Anki open): " + " ".join(
+        qp.harvest_command(deck, anki_connect="http://127.0.0.1:8765")) in out
+    assert "harvest (Anki closed): " + " ".join(
+        qp.harvest_command(deck, collection=PacerConfig().collection_path)) in out
+    assert "import pending: record ts 7, study ts -1; last imported -1, -1" in out
+    assert " ".join(qp.compile_command(deck)) in out
+    assert f"POST http://127.0.0.1:8765 importPackage {deck / f'{deck.name}.apkg'}" in out
+    assert not qp.state_path(deck).exists()
+
+
+def test_dry_run_with_import_off_says_so(tmp_path, capsys):
+    deck = write_deck(tmp_path, pacer={"import": False})
+    usage = tmp_path / "usage.json"
+    usage.write_text(probe_json(**RUN_USAGE))
+    assert run_main(deck, Runner(), "--dry-run", "--usage-file", str(usage)) == 0
+    assert "import off (pacer.import: false)" in capsys.readouterr().out
+
+
+def harvest_call(runner):
+    return runner.calls[runner.kinds().index("harvest")]
+
+
+def test_with_anki_open_the_tick_harvests_through_anki_connect_before_its_cycle(deck):
+    runner = Runner(usage=probe_json(**RUN_USAGE))
+    assert run_main(deck, runner) == 0
+    _, harvest_cmd, cwd = harvest_call(runner)
+    assert harvest_cmd == qp.harvest_command(deck, anki_connect="http://127.0.0.1:8765")
+    assert cwd == qp.REPO
+    assert runner.kinds()[:4] == [*OPEN, "cycle"]
+
+
+def test_with_anki_closed_the_tick_harvests_the_collection_file_and_imports_nothing(tmp_path,
+                                                                                   capsys):
+    deck = write_deck(tmp_path, pacer={"collection_path": "~/A/collection.anki2"})
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, anki=ANKI_CLOSED)
+    assert run_main(deck, runner) == 0
+    _, harvest_cmd, _cwd = harvest_call(runner)
+    assert harvest_cmd == qp.harvest_command(
+        deck, collection=Path.home() / "A" / "collection.anki2")
+    assert runner.kinds() == ["probe", "anki:version", "harvest", "cycle", "anki:version"]
+    assert capsys.readouterr().out.splitlines()[-1].endswith(" Anki not running; not imported")
+    assert not qp.state_path(deck).exists()
+
+
+LOCKED = ("Traceback (most recent call last):\n  ...\n"
+          "sqlite3.OperationalError: database is locked\n")
+
+
+def test_a_locked_collection_is_logged_and_the_tick_still_runs(deck, capsys):
+    # Anki open with AnkiConnect not answering: the file is locked
+    runner = Runner(usage=probe_json(**RUN_USAGE), harvest_code=1, harvest_stderr=LOCKED,
+                    cycle_rows=1, anki=ANKI_CLOSED)
+    assert run_main(deck, runner) == 0
+    assert runner.kinds()[:4] == ["probe", "anki:version", "harvest", "cycle"]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].endswith(" collection locked (Anki open); reviews not harvested")
+
+
+def test_a_harvest_that_fails_otherwise_is_logged_and_the_tick_continues(deck, capsys):
+    runner = Runner(usage=probe_json(**RUN_USAGE), harvest_code=1,
+                    harvest_stderr="FileNotFoundError: no collection\n")
+    assert run_main(deck, runner) == 0
+    assert runner.kinds()[:4] == [*OPEN, "cycle"]
+    line = capsys.readouterr().out.splitlines()[1]
+    assert "harvest exited 1" in line and "FileNotFoundError" in line
+    assert line.endswith("reviews not harvested")
+
+
+def test_harvested_reviews_alone_make_the_deck_changed(deck):
+    add_row(deck)
+    qp.write_imported(qp.state_path(deck), qp.record_marks(deck))
+    runner = Runner(usage=probe_json(weekly=90), harvest_reviews=1)   # a skip tick
+    assert run_main(deck, runner) == 3
+    assert runner.kinds() == [*OPEN, "anki:version", "compile", "anki:importPackage"]
+    assert qp.read_imported(qp.state_path(deck)).study_ts == qp.record_marks(deck).study_ts

@@ -283,6 +283,11 @@ class SyllabusDb:
             "and card_kind=? order by ts asc", (family, anchor, card_kind)).fetchall()
         return [_row_to_study_record(r) for r in rows]
 
+    def newest_study_ts(self) -> int:
+        """The highest `study` ts (a revlog id), or -1 with no study row."""
+        newest = self._con.execute("select max(ts) from study").fetchone()[0]
+        return -1 if newest is None else newest
+
     def study_rows(self) -> list[StudyRecord]:
         """Every `study` row, ordered by ts, for a caller that groups
         study history itself (the Syllabus aggregate does).

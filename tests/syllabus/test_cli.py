@@ -280,6 +280,48 @@ def test_import_prints_each_warning_on_its_own_line(tmp_path, monkeypatch, capsy
     assert "warnings=" not in out
 
 
+def test_import_through_anki_connect_reads_the_open_anki_at_the_url(tmp_path, monkeypatch,
+                                                                    capsys):
+    from thai_syllabus.anki_import import ImportReport
+
+    root = _write_curated_dir(tmp_path / "deck")
+    captured = {}
+
+    def fake_import_anki_connect(client, db, *, current_rubric, prior, provenance_source):
+        captured["url"] = client.url
+        return ImportReport(revlog_imported=2)
+
+    monkeypatch.setattr(cli.anki_import, "import_anki_connect", fake_import_anki_connect)
+    monkeypatch.setattr(cli.anki_import, "import_collection",
+                        lambda *a, **k: pytest.fail("the file path was read"))
+    assert cli.main(["import", "--deck", str(root),
+                     "--anki-connect", "http://127.0.0.1:8765"]) == 0
+    assert captured["url"] == "http://127.0.0.1:8765"
+    assert "revlog_imported=2" in capsys.readouterr().out
+
+
+def test_import_through_anki_connect_with_anki_closed_exits_1(tmp_path, monkeypatch, capsys):
+    from thai_syllabus.ankiconnect import AnkiDown
+
+    root = _write_curated_dir(tmp_path / "deck")
+
+    def refused(*a, **k):
+        raise AnkiDown()
+
+    monkeypatch.setattr(cli.anki_import, "import_anki_connect", refused)
+    assert cli.main(["import", "--deck", str(root),
+                     "--anki-connect", "http://127.0.0.1:8765"]) == 1
+    assert "Anki not running" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("sources", [[], ["--collection", "c.anki2", "--anki-connect", "http://x"]])
+def test_import_takes_exactly_one_source(tmp_path, sources):
+    root = _write_curated_dir(tmp_path / "deck")
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["import", "--deck", str(root), *sources])
+    assert exit_.value.code == 2
+
+
 # --- run: wiring plumbing (monkeypatched run_pipeline only) ----------------
 #
 # build_levers/Lever are gone (Task 10); cli._cmd_run now wires its Sourcing

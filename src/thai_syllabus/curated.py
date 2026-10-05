@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -757,7 +758,10 @@ class PacerConfig:
     """providers.yaml `pacer` (spec 3 r64 section 8): tools/quota_pacer.py's
     settings. Allowance is in weekly percentage points; `points_per_call`
     and `session_points_per_call` are one judge call's measured share of the
-    weekly and the 5-hour window."""
+    weekly and the 5-hour window. `import_` is the `import` key: after a
+    tick that changed the deck, compile and import it through the
+    AnkiConnect server at `anki_connect_url`. `collection_path` is the
+    Anki collection each tick harvests reviews from, `~` expanded."""
     reserve_percent: float = 15
     session_ceiling_percent: float = 50
     max_calls_per_tick: int = 40
@@ -766,6 +770,10 @@ class PacerConfig:
     session_points_per_call: float = 0.5
     probe_model: str = "haiku"
     probe_timeout_seconds: int = 120
+    anki_connect_url: str = "http://127.0.0.1:8765"
+    import_: bool = True
+    collection_path: Path = field(default_factory=lambda: Path(
+        "~/Library/Application Support/Anki2/User 1/collection.anki2").expanduser())
 
 
 @dataclass(frozen=True)
@@ -969,6 +977,26 @@ def _pacer_config(data: Mapping, errors: list[str]) -> PacerConfig:
                 values[name] = model.strip()
             else:
                 errors.append(f"providers.pacer.probe_model: {model!r} must be a non-empty string")
+        elif name == "import":
+            if isinstance(cfg[name], bool):
+                values["import_"] = cfg[name]
+            else:
+                errors.append(f"providers.pacer.import: {cfg[name]!r} must be true or false")
+        elif name == "collection_path":
+            path = cfg[name]
+            if isinstance(path, str) and path.strip():
+                values[name] = Path(path.strip()).expanduser()
+            else:
+                errors.append(f"providers.pacer.collection_path: {path!r} must be a "
+                              "non-empty path")
+        elif name == "anki_connect_url":
+            url = cfg[name]
+            parsed = urlparse(url) if isinstance(url, str) else None
+            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+                values[name] = url
+            else:
+                errors.append(f"providers.pacer.anki_connect_url: {url!r} must be an "
+                              "http:// or https:// URL")
         elif name in checks:
             if checks[name](name):
                 values[name] = cfg[name]

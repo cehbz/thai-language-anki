@@ -20,6 +20,20 @@ floor(min(allowance / points_per_call,
 Runs only for a deck whose judge is on the cli transport. `--require-measured`
 refuses a deck whose `pacer` block does not set both per-call figures.
 
+Harvest and re-import (`pacer.import`, on by default). Every tick, cycle
+or not, first harvests reviews, flags and ReviewNotes (`thai-syllabus
+import`): through AnkiConnect (`pacer.anki_connect_url`) when it answers,
+since Anki locks its collection file while open, else from
+`pacer.collection_path`. A failed harvest is a log line and the tick goes
+on. After a cycle that exited 0, and on a tick that skipped its cycle, an
+import is pending while the record's newest cache row (run's own report
+rows aside) or newest study row is newer than the ones the last successful
+import compiled from, kept in <deck>/work/pacer-import.json. A pending
+import checks that AnkiConnect answers, compiles <deck>/<deck name>.apkg
+without `--force`, and POSTs `importPackage`. A closed gate, Anki not
+running, or an AnkiConnect error is a log line and leaves the import
+pending for the next tick; none changes the exit code.
+
 Exit codes: the cycle's own when it ran (0 done), 3 nothing to do
 (M < min_calls), 1 error (config, probe, missing or stale usage file).
 """
@@ -29,6 +43,8 @@ import argparse
 import json
 import math
 import os
+import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -39,6 +55,8 @@ from typing import Any, Callable
 
 import yaml
 
+from thai_syllabus.ankiconnect import (API_VERSION, AnkiConnect, AnkiDown, AnkiFailed, HttpPost,
+                                       urllib_post)
 from thai_syllabus.curated import (CuratedValidationError, PacerConfig, ProvidersConfig,
                                    load_providers_config)
 
@@ -52,6 +70,13 @@ MAX_AHEAD = timedelta(seconds=60)
 NO_FILE_HINT = "mod not loaded? check `claude --plugin-dir` / plugin_errors in the JSON"
 # A quotient within this of a whole number is that number (15 / 0.05).
 _EPSILON = 1e-9
+STATE_NAME = "pacer-import.json"
+ANKI_PROBE_TIMEOUT = 5
+ANKI_IMPORT_TIMEOUT = 120
+# sqlite's message when Anki holds its collection open
+COLLECTION_LOCKED = "database is locked"
+# cli.py _cmd_compile's refusal line
+GATE_CLOSED = re.compile(r"gate is closed \((\d+) finding\(s\)\)")
 
 
 class PacerError(Exception):
@@ -91,6 +116,7 @@ class ProbeResult:
 
 ProbeRunner = Callable[..., ProbeResult]
 CycleRunner = Callable[..., int]
+CompileRunner = Callable[..., ProbeResult]
 
 
 def _parse_time(text: str, what: str) -> datetime:
@@ -258,8 +284,190 @@ def check_config(providers: ProvidersConfig, require_measured: bool,
     return cfg
 
 
+@dataclass(frozen=True)
+class Marks:
+    """The record's newest cache row (run's own report rows aside) and its
+    newest study row: the deck changed since an import when either moved."""
+    cache_ts: int
+    study_ts: int
+
+    def newer_than(self, other: "Marks") -> bool:
+        return self.cache_ts > other.cache_ts or self.study_ts > other.study_ts
+
+
+NEVER = Marks(-1, -1)
+
+
+def record_marks(deck: Path) -> Marks:
+    """Read through a read-only connection; -1 for an empty table or no
+    syllabus.db. port="run" rows are only run's RunReport summaries, which
+    every cycle appends whether or not it changed anything."""
+    db_path = deck / "syllabus.db"
+    if not db_path.exists():
+        return NEVER
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cache = con.execute("select max(ts) from cache where port!='run'").fetchone()[0]
+        study = con.execute("select max(ts) from study").fetchone()[0]
+    finally:
+        con.close()
+    return Marks(-1 if cache is None else cache, -1 if study is None else study)
+
+
+def state_path(deck: Path) -> Path:
+    """The re-import state, beside the pacer's log (tools/launchd/README.md)."""
+    return deck / "work" / STATE_NAME
+
+
+def read_imported(path: Path) -> Marks:
+    """The marks the last successful import compiled from; NEVER when
+    nothing has been imported (or the file is unreadable), so the next
+    tick with any record imports."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        marks = Marks(data["cache_ts"], data["study_ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return NEVER
+    ok = all(isinstance(v, int) and not isinstance(v, bool)
+             for v in (marks.cache_ts, marks.study_ts))
+    return marks if ok else NEVER
+
+
+def write_imported(path: Path, marks: Marks) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_suffix(".tmp")
+    scratch.write_text(json.dumps({"cache_ts": marks.cache_ts,
+                                   "study_ts": marks.study_ts}) + "\n", encoding="utf-8")
+    scratch.replace(path)
+
+
+def harvest_command(deck: Path, *, collection: Path | None = None,
+                    anki_connect: str | None = None) -> list[str]:
+    source = (["--anki-connect", anki_connect] if anki_connect is not None
+              else ["--collection", str(collection)])
+    return ["uv", "run", "thai-syllabus", "import", "--deck", str(deck), *source]
+
+
+def _last_line(result: ProbeResult) -> str:
+    output = (result.stdout + result.stderr).strip().splitlines()
+    return output[-1].strip()[-300:] if output else "no output"
+
+
+def harvest(deck: Path, cfg: PacerConfig, *, harvest_runner: CompileRunner,
+            anki: AnkiConnect, dry_run: bool = False) -> None:
+    """Imports the collection's reviews, flags and ReviewNotes into the
+    record: through AnkiConnect while Anki is open (its collection file is
+    locked then), from the file while it is closed. Every failure is a log
+    line."""
+    if not cfg.import_:
+        return
+    open_command = harvest_command(deck, anki_connect=cfg.anki_connect_url)
+    closed_command = harvest_command(deck, collection=cfg.collection_path)
+    if dry_run:
+        print(f"harvest (Anki open): {' '.join(open_command)}", flush=True)
+        print(f"harvest (Anki closed): {' '.join(closed_command)}", flush=True)
+        return
+    command = open_command if anki_answers(anki) else closed_command
+    result = harvest_runner(command, cwd=REPO)
+    if result.returncode == 0:
+        return
+    if COLLECTION_LOCKED in result.stdout + result.stderr:
+        _say("collection locked (Anki open); reviews not harvested")
+    else:
+        _say(f"harvest exited {result.returncode}: {_last_line(result)}; "
+             "reviews not harvested")
+
+
+def package_path(deck: Path) -> Path:
+    return deck / f"{deck.name}.apkg"
+
+
+def compile_command(deck: Path) -> list[str]:
+    return ["uv", "run", "thai-syllabus", "compile", "--deck", str(deck),
+            "--out", str(package_path(deck))]
+
+
+def import_request(apkg: Path) -> dict:
+    return {"action": "importPackage", "version": API_VERSION, "params": {"path": str(apkg)}}
+
+
+def anki_answers(anki: AnkiConnect) -> bool:
+    """Whether AnkiConnect answers `version`: Anki is open."""
+    try:
+        anki.call_within(ANKI_PROBE_TIMEOUT, "version")
+    except (AnkiDown, AnkiFailed):
+        return False
+    return True
+
+
+def _stamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _say(message: str) -> None:
+    print(f"{_stamp()} {message}", flush=True)
+
+
+def reimport(deck: Path, cfg: PacerConfig, *, compile_runner: CompileRunner,
+             anki: AnkiConnect, dry_run: bool = False) -> None:
+    """Compiles and imports the deck when the record has moved past the
+    last successful import. Best-effort: every outcome is a log line, and
+    an import that does not land leaves the state file where it was, so
+    the next tick tries again."""
+    if not cfg.import_:
+        if dry_run:
+            _say("import off (pacer.import: false)")
+        return
+    state = state_path(deck)
+    newest, imported = record_marks(deck), read_imported(state)
+    apkg = package_path(deck)
+    if dry_run:
+        status = "pending" if newest.newer_than(imported) else "up to date"
+        _say(f"import {status}: record ts {newest.cache_ts}, study ts {newest.study_ts}; "
+             f"last imported {imported.cache_ts}, {imported.study_ts}")
+        print(" ".join(compile_command(deck)), flush=True)
+        print(f"POST {cfg.anki_connect_url} importPackage {apkg}", flush=True)
+        return
+    if not newest.newer_than(imported):
+        _say("deck unchanged since the last import; not imported")
+        return
+    try:
+        anki.call_within(ANKI_PROBE_TIMEOUT, "version")
+        result = compile_runner(compile_command(deck), cwd=REPO)
+        if result.returncode != 0:
+            closed = GATE_CLOSED.search(result.stdout)
+            if closed:
+                _say(f"gate closed: {closed.group(1)} finding(s); not imported")
+            else:
+                _say(f"compile exited {result.returncode}: {_last_line(result)}; "
+                     "not imported")
+            return
+        request = import_request(apkg)
+        if anki.call_within(ANKI_IMPORT_TIMEOUT, request["action"],
+                            **request["params"]) is not True:
+            raise AnkiFailed("AnkiConnect importPackage returned false (no collection open)")
+    except AnkiDown:
+        _say("Anki not running; not imported")
+        return
+    except AnkiFailed as exc:
+        _say(f"{exc}; not imported")
+        return
+    write_imported(state, newest)
+    _say(f"imported {apkg} (record ts {newest.cache_ts}, study ts {newest.study_ts})")
+
+
+def _subprocess_capture(cmd: list[str], *, cwd: Path) -> ProbeResult:
+    done = subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True)
+    return ProbeResult(done.returncode, done.stdout, done.stderr)
+
+
 def main(argv: list[str] | None = None, *, probe_runner: ProbeRunner = _subprocess_probe,
-         cycle_runner: CycleRunner = _subprocess_cycle) -> int:
+         cycle_runner: CycleRunner = _subprocess_cycle,
+         compile_runner: CompileRunner = _subprocess_capture,
+         harvest_runner: CompileRunner = _subprocess_capture,
+         http: HttpPost = urllib_post) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--deck", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true")
@@ -287,16 +495,32 @@ def main(argv: list[str] | None = None, *, probe_runner: ProbeRunner = _subproce
 
     tick = plan_tick(reading, cfg, now)
     action = decide(tick.calls, cfg)
+    anki = AnkiConnect(cfg.anki_connect_url, post=http)
+
+    def deck_harvest() -> None:
+        harvest(deck, cfg, harvest_runner=harvest_runner, anki=anki, dry_run=args.dry_run)
+
+    def deck_import() -> None:
+        reimport(deck, cfg, compile_runner=compile_runner, anki=anki, dry_run=args.dry_run)
+
     if action == "skip":
         print(log_line(now, tick, "skip"), flush=True)
+        deck_harvest()
+        deck_import()
         return 3
     command = run_command(deck, tick.calls)
     if args.dry_run:
         print(log_line(now, tick, "dry-run"), flush=True)
+        deck_harvest()
         print(" ".join(command), flush=True)
+        deck_import()
         return 0
     print(log_line(now, tick, "run"), flush=True)
-    return cycle_runner(command, cwd=REPO)
+    deck_harvest()
+    code = cycle_runner(command, cwd=REPO)
+    if code == 0:
+        deck_import()
+    return code
 
 
 if __name__ == "__main__":

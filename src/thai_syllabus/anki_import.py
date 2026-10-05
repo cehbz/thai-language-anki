@@ -25,7 +25,8 @@ card's own template's kind (compile.card_kind_of), via `col.models` and
 the card's `ord`, which names one sibling where a note-level `kind::` tag
 names them all.
 
-Revlog import appends one `study` row per revlog entry, keyed (spec 2
+Revlog import appends one `study` row per review in the revlog (a
+manual or rescheduled entry is none, NOT_REVIEW_TYPES), keyed (spec 2
 section 2) by (family, anchor, card_kind, ts); `anchor` is the card's own
 anchor (word id, grapheme symbol, sentence text_sha, a Cloze card's
 TEXT_SHA:TARGET_ID), or a pair id for family "minimal_pair" (the member's
@@ -69,7 +70,7 @@ import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .authority import role_for
 from .cachekeys import FlagKey, LearnerNoteKey, ReverifyKey, sha
@@ -78,7 +79,8 @@ from .ids import sentence_cloze_key
 from .ports import StudyRecord
 from .store import SyllabusDb
 
-__all__ = ["ImportReport", "card_identities", "import_collection"]
+__all__ = ["FAMILY_QUERY", "ImportReport", "card_identities", "import_anki_connect",
+           "import_collection", "read_anki_connect", "read_collection_file"]
 
 # (family, card kind slug) -> the tone-correctness role its flag queues
 # machine re-verification for (spec 4 section 4), as a {"kind":
@@ -388,12 +390,25 @@ def _study_anchor(identity: _CardIdentity) -> str | None:
 
 # --- revlog import -------------------------------------------------------
 
-def _import_revlog(conn: sqlite3.Connection, col: _Collection, db: SyllabusDb,
-                   skips: list[tuple[str, str, str]]) -> tuple[int, int]:
+# Revlog types that record no review (Anki 26.8 RevlogEntry.ReviewKind):
+# MANUAL (4: Forget, Reset) and RESCHEDULED (5: Set Due Date). LEARNING,
+# REVIEW, RELEARNING and FILTERED (0-3) are reviews.
+NOT_REVIEW_TYPES = frozenset({4, 5})
+
+
+def _import_revlog(rows: Sequence[tuple[int, int, int, int, int]], col: _Collection,
+                   db: SyllabusDb, skips: list[tuple[str, str, str]]) -> tuple[int, int]:
+    """`rows`: revlog (id, cid, ease, time, type), ordered by id. An entry
+    whose type is in NOT_REVIEW_TYPES lands no study row (spec 2
+    section 2), skipped with its reason."""
     imported = 0
     skipped = 0
-    rows = conn.execute("select id, cid, ease, time from revlog order by id").fetchall()
-    for rev_id, card_id, ease, time_ms in rows:
+    for rev_id, card_id, ease, time_ms, kind in rows:
+        if int(kind) in NOT_REVIEW_TYPES:
+            skipped += 1
+            skips.append(("revlog", f"{card_id}@{rev_id}",
+                          f"not a review: revlog type {kind} (manual or rescheduled)"))
+            continue
         identity = _identify_card(col, card_id)
         if identity is None:
             skipped += 1
@@ -542,14 +557,7 @@ def _deck_presets(conn: sqlite3.Connection) -> dict[int, tuple[str, str, tuple[s
             preset = presets.get(str(deck.get("conf")), presets.get("1"))
             if deck.get("dyn") or preset is None:
                 continue
-            off = []
-            for label, path, _number in _BURY_SETTINGS:
-                value: Any = preset
-                for key in path:
-                    value = value.get(key) if isinstance(value, dict) else None
-                if not value:
-                    off.append(label)
-            out[int(deck["id"])] = (deck["name"], preset["name"], tuple(off))
+            out[int(deck["id"])] = (deck["name"], preset["name"], _bury_off(preset))
         return out
     presets = {pid: (name, _proto_fields(config)) for pid, name, config in
                conn.execute("select id, name, config from deck_config")}
@@ -566,6 +574,26 @@ def _deck_presets(conn: sqlite3.Connection) -> dict[int, tuple[str, str, tuple[s
     return out
 
 
+def _bury_off(preset: Mapping[str, Any]) -> tuple[str, ...]:
+    """The bury settings a legacy-JSON preset (col.dconf's, or AnkiConnect's
+    getDeckConfig) has off."""
+    off = []
+    for label, path, _number in _BURY_SETTINGS:
+        value: Any = preset
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if not value:
+            off.append(label)
+    return tuple(off)
+
+
+def _bury_warning(deck_name: str | None, preset_name: str | None,
+                  off: Sequence[str]) -> str:
+    return (f"deck {deck_name!r} uses preset {preset_name!r} with {', '.join(off)} off, "
+            "so Anki can show a note's sibling cards on the same day; turn them on in "
+            "that preset (spec 4 section 2)")
+
+
 def _bury_warnings(conn: sqlite3.Connection, col: _Collection) -> tuple[str, ...]:
     """One warning per deck holding a compiled card whose preset has a
     bury setting off, naming the deck, the preset and the settings."""
@@ -577,10 +605,7 @@ def _bury_warnings(conn: sqlite3.Connection, col: _Collection) -> tuple[str, ...
     for did in sorted(decks):
         deck_name, preset_name, off = presets.get(did, (None, None, ()))
         if off:
-            warnings.append(
-                f"deck {deck_name!r} uses preset {preset_name!r} with {', '.join(off)} off, "
-                "so Anki can show a note's sibling cards on the same day; turn them on in "
-                "that preset (spec 4 section 2)")
+            warnings.append(_bury_warning(deck_name, preset_name, off))
     return tuple(warnings)
 
 
@@ -628,7 +653,102 @@ def _import_review_notes(col: _Collection, db: SyllabusDb,
     return imported, skipped
 
 
+# --- the two readers --------------------------------------------------------
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """What an import reads from a collection, by either reader: the cards,
+    notes and notetypes it needs, the revlog (id, cid, ease, time, type)
+    ordered by id, and the deck-preset warnings."""
+    col: _Collection
+    revlog: tuple[tuple[int, int, int, int, int], ...]
+    warnings: tuple[str, ...]
+
+
+def read_collection_file(collection_path: str | Path) -> _Snapshot:
+    """Every card, note and revlog row of the collection file, read-only."""
+    conn = _connect_readonly(collection_path)
+    try:
+        col = _load_collection(conn)
+        revlog = tuple(conn.execute("select id, cid, ease, time, type from revlog order by id"))
+        warnings = _bury_warnings(conn, col)
+    finally:
+        conn.close()
+    return _Snapshot(col, revlog, warnings)
+
+
+# The compiled notes: every one carries a family:: tag (compile.py).
+FAMILY_QUERY = "tag:family::*"
+
+
+class AnkiConnectClient(Protocol):
+    def call(self, action: str, **params: Any) -> Any: ...
+
+
+def read_anki_connect(client: AnkiConnectClient, since: int = -1) -> _Snapshot:
+    """The compiled cards' revlog after `since` (a revlog id) from each deck
+    holding one (`cardReviews` per deck: it reads a deck's own cards, so a
+    card in a filtered deck is read from that deck), and the cards, notes
+    and notetypes those reviews, the flagged cards and the notes with
+    ReviewNote text name. `cardsInfo` renders each card it is asked about,
+    so it is asked only about those. Notetypes are keyed by id as the
+    file's are, so _identify_card reads either snapshot. A deck's preset
+    comes from `getDeckConfig`; a filtered deck's has no bury settings and
+    is passed over."""
+    cards_ids = client.call("findCards", query=FAMILY_QUERY)
+    compiled = set(cards_ids)
+    decks = client.call("getDecks", cards=cards_ids) if cards_ids else {}
+    revlog = tuple(sorted({
+        (int(row[0]), int(row[1]), int(row[3]), int(row[7]), int(row[8]))
+        for deck in decks for row in client.call("cardReviews", deck=deck, startID=since)
+        if int(row[1]) in compiled}))
+    flagged = client.call("findCards", query=FAMILY_QUERY + " -flag:0")
+    wanted = sorted({row[1] for row in revlog} | set(flagged))
+    infos = [info for info in client.call("cardsInfo", cards=wanted) if info] if wanted else []
+    note_ids = sorted({info["note"] for info in infos}
+                      | set(client.call("findNotes", query=FAMILY_QUERY + " ReviewNote:_*")))
+    notes_info = ([info for info in client.call("notesInfo", notes=note_ids) if info]
+                  if note_ids else [])
+    names = sorted({info["modelName"] for info in notes_info})
+    models = ({str(m["id"]): m for m in client.call("findModelsByName", modelNames=names)}
+              if names else {})
+    mid_of = {model["name"]: mid for mid, model in models.items()}
+    notes = {info["noteId"]: {
+        "mid": mid_of[info["modelName"]],
+        "flds": [f["value"] for f in sorted(info["fields"].values(), key=lambda f: f["order"])],
+        "tags": list(info["tags"])} for info in notes_info}
+    cards = {info["cardId"]: {"nid": info["note"], "ord": info["ord"], "flags": info["flags"],
+                              "deck": info["deckName"]} for info in infos}
+    warnings = []
+    for deck in sorted(decks):
+        preset = client.call("getDeckConfig", deck=deck)
+        if not preset or preset.get("dyn"):
+            continue
+        off = _bury_off(preset)
+        if off:
+            warnings.append(_bury_warning(deck, preset.get("name"), off))
+    return _Snapshot(_Collection(models=models, notes=notes, cards=cards), revlog,
+                     tuple(warnings))
+
+
 # --- the one command -------------------------------------------------------
+
+def _import(snapshot: _Snapshot, db: SyllabusDb, *, current_rubric: Mapping[str, str],
+            prior: Sequence[str], provenance_source: Callable[[str], str | None]
+            ) -> ImportReport:
+    col = snapshot.col
+    skips: list[tuple[str, str, str]] = []
+    revlog_imported, revlog_skipped = _import_revlog(snapshot.revlog, col, db, skips)
+    flags_imported, flags_skipped = _import_flags(
+        col, db, skips, current_rubric=current_rubric, prior=prior,
+        provenance_source=provenance_source)
+    notes_harvested, notes_skipped = _import_review_notes(col, db, skips)
+    return ImportReport(
+        revlog_imported=revlog_imported, revlog_skipped=revlog_skipped,
+        flags_imported=flags_imported, flags_skipped=flags_skipped,
+        notes_harvested=notes_harvested, notes_skipped=notes_skipped,
+        skips=tuple(skips), warnings=snapshot.warnings)
+
 
 def import_collection(collection_path: str | Path, db: SyllabusDb, *,
                       current_rubric: Mapping[str, str], prior: Sequence[str],
@@ -640,20 +760,17 @@ def import_collection(collection_path: str | Path, db: SyllabusDb, *,
     `prior`/`provenance_source` are the flag import's own current_best
     parameters (wiring.Derivations carries the deck's real ones).
     """
-    conn = _connect_readonly(collection_path)
-    try:
-        col = _load_collection(conn)
-        skips: list[tuple[str, str, str]] = []
-        revlog_imported, revlog_skipped = _import_revlog(conn, col, db, skips)
-        flags_imported, flags_skipped = _import_flags(
-            col, db, skips, current_rubric=current_rubric, prior=prior,
-            provenance_source=provenance_source)
-        notes_harvested, notes_skipped = _import_review_notes(col, db, skips)
-        warnings = _bury_warnings(conn, col)
-    finally:
-        conn.close()
-    return ImportReport(
-        revlog_imported=revlog_imported, revlog_skipped=revlog_skipped,
-        flags_imported=flags_imported, flags_skipped=flags_skipped,
-        notes_harvested=notes_harvested, notes_skipped=notes_skipped,
-        skips=tuple(skips), warnings=warnings)
+    return _import(read_collection_file(collection_path), db, current_rubric=current_rubric,
+                   prior=prior, provenance_source=provenance_source)
+
+
+def import_anki_connect(client: AnkiConnectClient, db: SyllabusDb, *,
+                        current_rubric: Mapping[str, str], prior: Sequence[str],
+                        provenance_source: Callable[[str], str | None]) -> ImportReport:
+    """import_collection's rows, read through AnkiConnect from the open
+    Anki: reviews since the newest one `db` holds, every flag, every
+    ReviewNote. A row lands under the same key by either path."""
+    return _import(read_anki_connect(client, since=db.newest_study_ts()), db,
+                   current_rubric=current_rubric, prior=prior,
+                   provenance_source=provenance_source)
+

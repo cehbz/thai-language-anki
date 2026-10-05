@@ -4,6 +4,7 @@ curated/*.yaml, round-tripped through spec 1's entities. Atomic saves
 failing on the first one.
 """
 import textwrap
+from pathlib import Path
 
 import pytest
 import yaml
@@ -1911,6 +1912,45 @@ def test_a_bad_pacer_value_refuses_naming_the_field(tmp_path, field_name, value)
     write_providers(tmp_path, pacer={field_name: value})
     with pytest.raises(curated.CuratedValidationError,
                        match=rf"providers\.pacer\.{field_name}"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+def test_pacer_import_defaults_to_on_against_the_local_anki_connect(tmp_path):
+    write_providers(tmp_path)
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert (pacer.anki_connect_url, pacer.import_) == ("http://127.0.0.1:8765", True)
+
+
+def test_pacer_import_and_anki_connect_url_are_read(tmp_path):
+    write_providers(tmp_path, pacer={"import": False,
+                                     "anki_connect_url": "http://localhost:9000"})
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert (pacer.anki_connect_url, pacer.import_) == ("http://localhost:9000", False)
+
+
+def test_pacer_collection_path_defaults_to_the_anki_profile_expanded(tmp_path):
+    write_providers(tmp_path)
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert pacer.collection_path == (Path.home() / "Library" / "Application Support"
+                                     / "Anki2" / "User 1" / "collection.anki2")
+
+
+def test_pacer_collection_path_is_read_and_expanded(tmp_path):
+    write_providers(tmp_path, pacer={"collection_path": "~/Anki2/Other/collection.anki2"})
+    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
+    assert pacer.collection_path == Path.home() / "Anki2" / "Other" / "collection.anki2"
+
+
+@pytest.mark.parametrize("field_name,value", [
+    ("collection_path", ""), ("collection_path", 3), ("collection_path", None),
+    ("import", "yes please"), ("import", 1), ("import", None),
+    ("anki_connect_url", ""), ("anki_connect_url", "127.0.0.1:8765"),
+    ("anki_connect_url", "ftp://127.0.0.1:8765"), ("anki_connect_url", 8765),
+])
+def test_a_bad_pacer_import_value_refuses_naming_the_key(tmp_path, field_name, value):
+    write_providers(tmp_path, pacer={field_name: value})
+    with pytest.raises(curated.CuratedValidationError,
+                       match=rf"providers\.pacer\.{field_name}: .* must be"):
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 

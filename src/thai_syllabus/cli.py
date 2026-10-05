@@ -2,7 +2,7 @@
 
     thai-syllabus migrate  --old-deck DIR --old-data DIR --new-root DIR
     thai-syllabus review   --deck DIR [--port 8877]
-    thai-syllabus import   --deck DIR --collection PATH
+    thai-syllabus import   --deck DIR (--collection PATH | --anki-connect URL)
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...] [--judge-asks M]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
@@ -26,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import anki_import, migrate as migrate_mod, record, reviewserver
+from .ankiconnect import AnkiConnect, AnkiDown, AnkiFailed
 from .assessor import JudgeUnreachable
 from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
@@ -294,7 +295,11 @@ def main(argv: list[str] | None = None, *,
 
     p = sub.add_parser("import", help="revlog, flags, and ReviewNote harvest from Anki")
     p.add_argument("--deck", type=Path, required=True)
-    p.add_argument("--collection", type=Path, required=True)
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--collection", type=Path,
+                        help="the collection.anki2 file, read while Anki is closed")
+    source.add_argument("--anki-connect", metavar="URL",
+                        help="the open Anki's AnkiConnect, e.g. http://127.0.0.1:8765")
 
     p = sub.add_parser("compile", help="translate a Syllabus into an Anki .apkg (spec 4)")
     p.add_argument("--deck", type=Path, required=True)
@@ -369,9 +374,23 @@ def main(argv: list[str] | None = None, *,
         if args.command == "import":
             with writing_command(args.deck, "import"):
                 derivations = load_derivations(args.deck)
-                report = anki_import.import_collection(
-                    args.collection, derivations.db, current_rubric=derivations.current_rubric,
-                    prior=derivations.prior, provenance_source=derivations.provenance_source)
+                provenance = dict(current_rubric=derivations.current_rubric,
+                                  prior=derivations.prior,
+                                  provenance_source=derivations.provenance_source)
+                if args.anki_connect:
+                    try:
+                        report = anki_import.import_anki_connect(
+                            AnkiConnect(args.anki_connect), derivations.db, **provenance)
+                    except AnkiDown:
+                        print(f"import: Anki not running (no AnkiConnect at "
+                              f"{args.anki_connect})", file=sys.stderr)
+                        return 1
+                    except AnkiFailed as e:
+                        print(f"import: {e}", file=sys.stderr)
+                        return 1
+                else:
+                    report = anki_import.import_collection(args.collection, derivations.db,
+                                                           **provenance)
                 print(report)
                 for warning in report.warnings:
                     print(f"warning: {warning}")

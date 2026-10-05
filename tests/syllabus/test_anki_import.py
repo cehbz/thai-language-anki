@@ -116,6 +116,29 @@ def test_revlog_import_appends_a_study_row_with_the_revlogs_own_ts(compiled):
     assert records[0].compile_id == compile_result.compile_id
 
 
+def test_revlog_import_skips_manual_and_rescheduled_entries(compiled):
+    """Spec 2 section 2: a revlog entry of kind MANUAL (4: Forget, Reset)
+    or RESCHEDULED (5: Set Due Date), Anki 26.8's RevlogEntry.ReviewKind,
+    is no review and lands no study row; a FILTERED one (3) is a review."""
+    fx, _compile_result, collection_path = compiled
+    conn = _open_rw(collection_path)
+    card_id, _note_id = _find_word_card(conn, "ข้าว", "Listening")
+    for ts, ease, kind in ((1_700_000_000_000, 0, 4), (1_700_000_000_100, 0, 5),
+                           (1_700_000_000_200, 3, 3)):
+        conn.execute("insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                    (ts, card_id, 0, ease, 1, 1, 2500, 0, kind))
+    conn.commit()
+    conn.close()
+
+    report = import_collection(collection_path, fx.db,
+                               current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+    assert [r.ts for r in fx.db.records("word", "rice", "listening")] == [1_700_000_000_200]
+    assert report.revlog_imported == 1 and report.revlog_skipped == 2
+    assert sum(1 for k, _i, reason in report.skips
+               if k == "revlog" and reason.startswith("not a review")) == 2
+
+
 def test_revlog_import_is_idempotent_by_family_anchor_kind_and_ts(compiled):
     fx, compile_result, collection_path = compiled
     conn = _open_rw(collection_path)
