@@ -8,15 +8,59 @@ still run against them.
 
 ## Priority (user, 2026-09-17): by value to learning
 
-1. Sound stage part 2 (steps 5 to 7 below): pairs are in; vowel signs
-   and tone marks next. 3 words stay disputed; a pair member must be
-   corroborated, nothing else.
-2. Re-import after the enrichment settles: the deck in Anki is the
-   2026-10-03 package (1,425 notes); sentences the pacer adopts since
-   reach it only through a compile and a re-import (note guids are
-   stable, so an updated package adds cards and keeps the schedule).
-   Then `import` after a study session; verify study rows (family,
-   anchor, card_kind) and flag rows.
+1. Watch the hearing-first deck settle (principles r8, cutover
+   2026-10-05: 1,304 notes, 1,790 cards in Anki; 3,339 cards staged
+   out until their gates open). The pacer harvests reviews, sources the
+   803 gapped clips and the 37 pairs' member pictures, and re-imports;
+   check its log after the first studied days: Reading cards appearing
+   at D, letters before them, AudioCloze cards once clips exist, and
+   that no imported card ever blanks (the "Open after the cutover"
+   items below are the known risks).
+2. Sound stage part 2 (steps 5 to 7 below): vowel signs and tone marks
+   are reading cards and come after the first spoken words under r8;
+   3 words stay disputed; a pair member must be corroborated, nothing
+   else.
+
+## Open after the hearing-first cutover (arc review 2026-10-04)
+
+- **Block drift.** A sentence adopted mid-order shifts every later block
+  by one; cards already in Anki keep their dues while cards entering
+  later use the new numbering, so the effective lags P and D grow with
+  adoption (the importer never re-dues a card; pre-existing since spec
+  1 r24). Fix candidates: re-due through AnkiConnect (`setDueDate`), or
+  dues from an index that adoption does not shift.
+- **Every re-import rewrites every note**: `CompileId` changes each
+  compile. Detect an unchanged build by content hash before importing.
+- After a notetype change `importPackage` returns true while skipping
+  every note update, and the pacer logs "imported". Compare note
+  fields or counts after the import.
+- **Harvest cost on Anki's main thread**: `getDecks` with all card ids
+  makes about two backend calls per card (7,564 for 3,782 cards) each
+  tick, freezing the Anki window (unmeasured). Use `findCards
+  "deck:…"` or look up only the reviewed cards.
+- Every tick's harvest runs under the writing command: a `curated/`
+  commit and the single `backup/syllabus.db` slot overwritten hourly.
+- `cardReviews`' `since` cut is exclusive in ms; reviews synced in
+  late from another device are missed (latent: no sync in use).
+- An unreviewed Reading card is withdrawn when a pair is added to an
+  unstable confusion it touches; a sentence-introduced word's
+  readability can flip back (no Reading review to latch on).
+- Two drafting asks per run can overrun an `llm-sentence` budget by
+  one; gapped needs exist for fills beyond `CLOZE_SLOTS` (unreachable
+  at `sentence_max_words` 8).
+- `pacer.anki_connect_url` accepts any host (card contents and the
+  package path go to it); an AnkiConnect `apiKey` is unsupported and
+  reads as "collection locked".
+- `GAP_BREAK` and the 0.6 s bound are two constants that must agree.
+- Content: `season-colloquial`'s Meaning holds หน้าร้อน ("hot season"),
+  so Thai leaks onto `face`'s Listening back through OtherSenses;
+  สีเหลือง ("yellow") is curated as one syllable and its pair back shows
+  [siː˨˩˦].
+- The first seed ask's vocabulary is the five seed words themselves
+  (no glue word is met within the span, which ends at position 118);
+  measure what the drafter makes of it before widening the span.
+- The Reddit half of the script-timing research failed on agy's quota;
+  rerun `/agy-research` with the saved prompt when it resets.
 
 ## Sentence drafting: the judge on the subscription (2026-10-04)
 
@@ -94,9 +138,11 @@ tick (allowance 8.15 points, 40 calls) adopted 12 sentences. Reports:
   section 1). Between the 2026-10-03 compiles before and after the
   enrichment run, its sentences, placed earlier, pushed 25 pairs on 23
   later sentences out under the cap; 6 of those sentences lost every
-  Cloze card. None was studied yet: the cutover is pending.
-- **799 Cloze cards arrive as new cards at the cutover**; nothing caps
-  productive new cards (F12, under Doctrine divergences).
+  Cloze card. Under r8 a text Cloze card enters only once every word is
+  read, so none is in Anki yet.
+- **803 text Cloze cards and 803 AudioCloze cards enter as new cards**
+  as their gates open; nothing caps productive new cards (F12, under
+  Doctrine divergences).
 - `sentence/synthetic-productive` warns on 377 sentences.
 - 124 sentences carry no Cloze card, and the scene pictures of 94 of
   them show on no card: the sentence Listening card shows none.
@@ -291,7 +337,8 @@ pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
    reverted to one `vowel_length:short-long` row (Task 1) and
    `pair/exact-confusion` is retired (Task 2, spec 1 r19: re-checked what
    `MinimalPair.create` already refuses).
-7. Principles F6: the recited names are learned as speech.
+7. Principles F6 (r8): the recited names are heard on the grapheme
+   cards; saying them is a later skill with no card yet.
 - Design §5's "stats shows sound-stage coverage" is unimplemented: nothing reads `coverage/sound-stage` (not `compute_stats`, the CLI, or the page).
 - `rendition/synthetic` warns about a rendition that does not exist: with no pair-level rendition row, `_DbMediaIndex.rendition_provenance` falls back to the members' own word recordings, so a pair with no rendition and TTS member clips gets a synthetic-rendition finding, and `speakers_of("rendition")` counts speakers who gave none.
 
