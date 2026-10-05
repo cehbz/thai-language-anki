@@ -14,14 +14,13 @@ from typing import Any, Literal
 
 Severity = Literal["error", "warn", "info"]
 RuleShape = Literal["check", "measure", "judged", "compile"]
-OrderKind = Literal["word_target", "pair", "grapheme", "sentence"]
+OrderKind = Literal["word_target", "pair", "sentence"]
 
 
 @dataclass(frozen=True)
 class OrderEntry:
     """One entry in Syllabus.order(): id is a TargetId for word_target, a
-    PairId for pair, a grapheme symbol for grapheme, a text_sha for
-    sentence.
+    PairId for pair, a text_sha for sentence.
     """
     kind: OrderKind
     id: str
@@ -91,7 +90,8 @@ class DroppedCard:
     "gated: ..."), or a current-best artifact its front depends on is
     missing (spec 4 section 3's "never an empty front" -- reason starts
     "no current-best ", or is "no name word"/"no name recording" for a
-    grapheme, "no rendition" for a minimal pair).
+    grapheme, "no rendition" for a minimal pair), or the staging holds it
+    back (spec 4 r13 -- reason starts "staged: ").
     """
     family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
     kind: str      # the template name, e.g. "Listening", "Production"

@@ -266,6 +266,8 @@ def fully_seeded_syllabus(world: SyllabusWorld) -> Syllabus:
     syllabus = full_syllabus()
     seed_full(world, syllabus)
     world.seed_rendition(syllabus.pairs[0], {"near": "near", "far": "far"})
+    for member in syllabus.pairs[0].members:
+        world.seed_picture(member, member)
     return dataclasses.replace(
         syllabus, media=_DbMediaIndex(db=world.db, pairs=syllabus.pairs))
 

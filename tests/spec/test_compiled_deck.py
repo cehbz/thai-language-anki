@@ -111,11 +111,21 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
         note = next(n for n in _notes_of(pkg, model_name) if n["flds"][idx] == thai_value)
         return [c["due"] for c in _cards_of(pkg, note["id"])]
 
-    # F8: order() guarantees sounds-first -- graphemes and pairs precede
-    # every word target -- by construction (spec 1 section 4 r10).
+    def due_of_kind(model_name: str, thai_field: str, thai_value: str, template: str) -> int:
+        idx = _field_index(pkg, model_name)[thai_field]
+        model = _models_by_name(pkg)[model_name]
+        note = next(n for n in _notes_of(pkg, model_name) if n["flds"][idx] == thai_value)
+        return next(c["due"] for c in _cards_of(pkg, note["id"])
+                    if model["tmpls"][c["ord"]]["name"] == template)
+
+    # E1, spec 4 r13: the grapheme ก is dealt just before the first
+    # Reading card of a word spelled with it, กิน (eat).
     grapheme_due = due_of("grapheme", "Symbol", "ก")  # ก: the letter k, "gɔɔ gài"
+    gin_reading = due_of_kind("word", "Thai", "กิน", "Reading")  # eat
+    every_due = [c["due"] for c in pkg["cards"]]
+    assert max(grapheme_due) < gin_reading
+    assert not [d for d in every_due if max(grapheme_due) < d < gin_reading]
     rice_due = due_of("word", "Thai", "ข้าว")  # rice
-    assert max(grapheme_due) < min(rice_due)
 
     # sibling cards of one note (rice: Listening/Production/Reading/Spelling)
     # each land on their own due value -- never collapsed onto one.
@@ -129,16 +139,15 @@ def test_due_order_separates_siblings_and_pair_members_by_a_stride(world):
     assert len(member_dues) == 2
     assert member_dues[1] - member_dues[0] == STRIDE
 
-    # F8: order() guarantees sentence-after-words -- the sentence
-    # "ผมกินข้าว" (I eat rice) uses pom, gin and rice -- its cards are due
-    # after every one of them, by construction (spec 1 section 4 r10).
-    pom_due = due_of("word", "Thai", "ผม")     # I
-    gin_due = due_of("word", "Thai", "กิน")    # eat
+    # F8, spec 4 r13: the sentence "ผมกินข้าว" (I eat rice) uses pom, gin
+    # and rice -- it is heard after every one of them is heard.
+    listening = [due_of_kind("word", "Thai", thai, "Listening")
+                 for thai in ("ผม", "กิน", "ข้าว")]  # I, eat, rice
     s_model = _models_by_name(pkg)["sentence"]
     sentence_dues = [c["due"] for n in pkg["notes"] if str(n["mid"]) == s_model["id"]
                     for c in _cards_of(pkg, n["id"])]
     assert sentence_dues
-    assert all(used < s for used in (*pom_due, *gin_due, *rice_due) for s in sentence_dues)
+    assert all(heard < s for heard in listening for s in sentence_dues)
 
 
 # --- CompileId stamped on every note ----------------------------------------

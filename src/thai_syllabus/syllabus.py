@@ -239,13 +239,13 @@ class Syllabus:
 
     def order(self) -> list[OrderEntry]:
         sounds = [OrderEntry("pair", p.id) for p in sorted(self.pairs, key=lambda p: p.id)]
-        # Spec 1 r16: a grapheme's recited-name Word is met right after the
-        # grapheme itself, inside the sounds block -- the chart cell shows
-        # the letter, so the name is learned with it (design 2026-09-12
-        # step 7). Placed here and nowhere else: _ordered_targets below
-        # leaves these Targets out, so no word_target entry repeats one.
+        # Spec 1 r32: a grapheme is no entry; compile deals its card before
+        # the first Reading card that needs it. A recited-name Word's
+        # Targets (spec 1 r16; r32 gives it none) follow the pairs, in
+        # grapheme symbol order. Placed here and nowhere else:
+        # _ordered_targets below leaves these Targets out, so no
+        # word_target entry repeats one.
         for g in sorted(self.graphemes, key=lambda g: g.symbol):
-            sounds.append(OrderEntry("grapheme", g.symbol))
             sounds += [OrderEntry("word_target", t.id)
                       for t in self._name_targets.get(g.name_word, ())]
 

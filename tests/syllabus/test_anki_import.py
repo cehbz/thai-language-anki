@@ -493,6 +493,8 @@ def test_flag_on_a_pair_recognition_card_lands_under_the_pair_id(fx):
     # the assessment row must land under the pair id, not a member's key.
     syllabus, pair = _pair_only_syllabus()
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
+    for member in pair.members:
+        fx.seed_picture(member, member)
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -738,6 +740,8 @@ def test_pair_member_cards_have_distinct_anchors(fx):
     # is now each member's own MemberKey (pair id, speaker, index).
     syllabus, pair = _pair_only_syllabus()
     fx.seed_rendition(pair, {"near": "near", "far": "far"}, speaker="s1")
+    for member in pair.members:
+        fx.seed_picture(member, member)
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                     current_rubric={}, prior=(), provenance_source=lambda sha: None)

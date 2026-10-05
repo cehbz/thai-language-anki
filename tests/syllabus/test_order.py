@@ -43,8 +43,9 @@ def test_sounds_stage_precedes_every_word_target():
     ordering = syllabus.order()
     positions = {(e.kind, e.id): i for i, e in enumerate(ordering)}
     assert positions[("pair", pair.id)] < positions[("word_target", t1.id)]
-    assert positions[("grapheme", grapheme.symbol)] < positions[("word_target", t1.id)]
     assert positions[("pair", pair.id)] < positions[("word_target", t2.id)]
+    # spec 1 r32: a grapheme is no entry; compile deals its card
+    assert not [e for e in ordering if e.kind == "grapheme"]
 
 
 def test_receptive_precedes_productive_for_the_same_word():
@@ -359,7 +360,7 @@ def test_a_sentence_anchored_on_a_letter_name_sentence_stays_ahead_of_every_word
     assert positions[("sentence", b.text_sha)] == positions[("sentence", a.text_sha)] + 1
     assert positions[("sentence", b.text_sha)] < positions[("word_target", "rice/receptive")]
     assert positions[("sentence", a.text_sha)] > max(
-        i for i, e in enumerate(entries) if e.kind == "grapheme")
+        positions[("word_target", t)] for t in ("n3/receptive", "n4/receptive"))
 
 
 # --- Syllabus.last_used_word ------------------------------------------------
@@ -405,7 +406,8 @@ def test_category_of_is_none_for_a_word_in_no_category():
     assert syllabus.category_of(keyword.id) is None
 
 
-# --- a name word's Targets sit inside the sounds block (spec 1 r16) -------
+# --- a name word's Targets sit inside the sounds block (spec 1 r16; r32
+# gives a name word none and takes graphemes out of order()) -------------
 
 def _grapheme_syllabus():
     chicken = word("chicken", "ไก่", "chicken")            # ไก่: chicken
@@ -422,11 +424,10 @@ def _grapheme_syllabus():
         frequency={"rice": 1})
 
 
-def test_a_name_words_targets_follow_its_grapheme_receptive_first():
+def test_a_name_words_targets_open_the_order_receptive_first():
     ordering = _grapheme_syllabus().order()
     kinds_ids = [(e.kind, e.id) for e in ordering]
-    assert kinds_ids[:3] == [("grapheme", "ก"),
-                             ("word_target", "name-chicken/receptive"),
+    assert kinds_ids[:2] == [("word_target", "name-chicken/receptive"),
                              ("word_target", "name-chicken/productive")]
 
 

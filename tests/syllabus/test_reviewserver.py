@@ -1891,6 +1891,19 @@ def test_gallery_cards_render_front_and_back_html_in_introduction_order(derivati
         assert set(card["shown"]) == {"picture", "recordings", "text_sha", "syllabus_state_id"}
 
 
+def test_the_gallery_lists_every_card_the_compile_builds(derivations, db, w1):
+    """Spec 4 r13 spreads a note's cards over the order; the gallery still
+    lists each one the build holds."""
+    from thai_syllabus.compile import build_deck
+
+    _judge(db, w1.id, "picture", "sha-w1", True)
+    built_deck = build_deck(derivations.syllabus, derivations.db, derivations.media_store,
+                            current_rubric=derivations.current_rubric, prior=derivations.prior,
+                            provenance_source=derivations.provenance_source)
+    cards = rs.compiled_cards(derivations)
+    assert len(cards) == sum(len(b.note.cards) for b in built_deck.built) > 0
+
+
 def test_gallery_shows_a_spelling_groups_form_side_cards_under_its_first_word(db, media_store):
     """spec 4 r12: the gallery's cards are the compile's -- a spelling
     group's Reading card once, on its first Word, its back giving both
@@ -1940,6 +1953,7 @@ def test_compiled_cards_carry_pair_confusion_and_stimulus_member(
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id=speaker)
         shas[member] = sha
+    _seed_member_pictures(db, media_store, pair)
     rendition_key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
                                   artifact_sha=rendition_identity(shas))
     db.append(port="assess", backend="rendition", key=rendition_key, subject=pair.id,
@@ -1987,6 +2001,9 @@ def test_compiled_cards_list_one_cloze_card_per_productive_target_of_a_sentence(
     syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(s,),
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial"), assessments=db)
+    for n, w in enumerate((eat, rice)):   # each word's Reading card reviewed (spec 4 r13)
+        db.append_study(StudyRecord(family="word", anchor=w.id, card_kind="reading",
+                                    compile_id="C", ts=n, grade=3, time_ms=1000))
     derivations = Derivations(syllabus=syllabus, db=db, media_store=media_store,
                               current_rubric={}, mechanical_key=_MECH_KEY, prior=(),
                               provenance_source=lambda sha: None,
@@ -2026,6 +2043,7 @@ def test_compiled_cards_notes_are_scoped_by_anchor_not_just_subject_and_kind(
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id=speaker)
         shas[member] = sha
+    _seed_member_pictures(db, media_store, pair)
     rendition_key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
                                   artifact_sha=rendition_identity(shas))
     db.append(port="assess", backend="rendition", key=rendition_key, subject=pair.id,
@@ -2082,6 +2100,7 @@ def test_compiled_cards_pair_card_names_both_recordings_and_stales_on_the_second
                      origin="https://forvo.com/x", licence="cc-by",
                      acquired=date(2026, 1, 1), speaker_id=speaker)
         shas[member] = sha
+    _seed_member_pictures(db, media_store, pair)
 
     def _write_rendition(members_shas):
         key = MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
@@ -2122,6 +2141,14 @@ def test_compiled_cards_pair_card_names_both_recordings_and_stales_on_the_second
     member0 = next(c for c in pair_cards if c["stimulus_member"] == 0)
     assert member0["shown"]["recordings"] == [shas[w1.id], new_other_sha]
     assert member0["notes"][0]["stale"] is True
+
+
+def _seed_member_pictures(db, media_store, pair):
+    """A judge-passed current-best picture for each member of `pair`: its
+    Recognition card compiles only with both (spec 4 r13)."""
+    for member in pair.members:
+        _judge(db, member, "picture",
+               _seed_picture(db, media_store, member, payload=f"pic:{member}".encode()), True)
 
 
 def _seed_picture(db, media_store, subject, payload=b"pic"):

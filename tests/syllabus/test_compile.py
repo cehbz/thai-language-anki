@@ -118,6 +118,15 @@ class Fixture:
         self._pass_judge(subject, "recording", sha)
         return sha
 
+    def seed_read(self, *word_ids: str) -> None:
+        """A review of each word's Reading card in the study record: the
+        word's Thai shows on its backs and counts as read for a sentence
+        (spec 4 r13)."""
+        from thai_syllabus.ports import StudyRecord
+        for n, word_id in enumerate(word_ids, start=1):
+            self.db.append_study(StudyRecord(family="word", anchor=word_id, card_kind="reading",
+                                             compile_id="C", ts=n, grade=3, time_ms=1000))
+
     def seed_picture(self, subject: str, text: str, content: bytes | None = None) -> str:
         sha = self.media.write(content or f"image:{subject}:{text}".encode(), ext="jpg")
         self.db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
@@ -204,7 +213,9 @@ def _small_syllabus(extra_targets=()) -> Syllabus:
     )
 
 
-def _fully_seeded(fx) -> Syllabus:
+def _fully_seeded(fx, *, read: bool = True) -> Syllabus:
+    """_small_syllabus with every artifact seeded, and, when `read`, a
+    review of each picture word's Reading card."""
     syllabus = _small_syllabus()
 
     fx.seed_picture("rice", "cooked rice")
@@ -218,6 +229,8 @@ def _fully_seeded(fx) -> Syllabus:
     text_sha = sentence_note_id(syllabus.sentences[0])
     fx.seed_recording(text_sha, "ผมกินข้าว")
     fx.seed_picture(text_sha, "a man eating rice")
+    if read:
+        fx.seed_read("pom", "gin", "rice")
     return syllabus
 
 
@@ -764,13 +777,15 @@ def _pair_only_syllabus() -> tuple[Syllabus, MinimalPair]:
 
 def _compile_pair(fx, *, with_rendition: bool):
     """Compiles a Syllabus holding one pair (p1: near/far), its `media`
-    port a real _DbMediaIndex over `fx.db`; seeds a passing rendition
-    first unless `with_rendition` is False. Returns (compiled, shas, notes)
+    port a real _DbMediaIndex over `fx.db`; seeds both members' pictures
+    and a passing rendition first unless `with_rendition` is False. Returns (compiled, shas, notes)
     where `shas` is member id -> the seeded rendition's sha (empty when
     none was seeded) and each of `notes` is {fields, tags, due}.
     """
     syllabus, pair = _pair_only_syllabus()
     shas = fx.seed_rendition(pair, {"near": "near", "far": "far"}) if with_rendition else {}
+    for member in pair.members:
+        fx.seed_picture(member, member)
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -822,7 +837,9 @@ def test_pair_without_a_rendition_is_dropped_and_counted(fx):
 def test_pair_choices_are_in_member_order_on_both_notes(fx):
     _compiled, _shas, notes = _compile_pair(fx, with_rendition=True)
     choices = {n["fields"]["Choices"] for n in notes}
-    assert choices == {"ใกล้ / ไกล"}  # near / far, in member order on every note
+    by_stimulus = {n["fields"]["Stimulus"]: n["fields"]["StimulusPicture"] for n in notes}
+    # near's picture, then far's, on every note
+    assert choices == {f'{by_stimulus["ใกล้"]} {by_stimulus["ไกล"]}'}
 
 
 def test_pair_member_notes_are_not_adjacent(fx):
@@ -854,6 +871,8 @@ def test_two_pair_blocks_and_a_following_word_target_never_overlap(fx):
                         rules=_RULES_WITHOUT_COMPLETENESS)
     fx.seed_rendition(pair_a, {"near": "near", "far": "far"})
     fx.seed_rendition(pair_b, {"dog": "dog", "horse": "horse"})
+    for member in (*pair_a.members, *pair_b.members):
+        fx.seed_picture(member, member)
     syllabus = dataclasses.replace(
         syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair_a, pair_b)))
 
@@ -975,6 +994,7 @@ def _two_productive_words(fx, *, rice_productive: bool = True):
     fx.seed_recording("rice", "cooked rice")
     fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
     fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
+    fx.seed_read("eat", "rice")
     return syllabus, kin_khaao
 
 
@@ -1025,6 +1045,7 @@ def _capped_eat(fx, cap: int):
     for s in (kin, kin_khaao):
         fx.seed_recording(sentence_note_id(s), s.text)
         fx.seed_picture(sentence_note_id(s), s.gloss)
+    fx.seed_read("eat", "rice")
     syllabus = Syllabus(words=(eat, rice), targets=targets, sentences=(kin, kin_khaao),
                         frequency={eat.id: 1, rice.id: 2},
                         profile=Profile(register="male_colloquial",
@@ -1090,6 +1111,7 @@ def _slot_of_rice(fx, words, clauses) -> tuple[set[str], dict[str, str]]:
         fx.seed_recording(w.id, w.meaning)
     fx.seed_recording(sentence_note_id(sentence), sentence.text)
     fx.seed_picture(sentence_note_id(sentence), sentence.gloss)
+    fx.seed_read(*(w.id for w in words))
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                      current_rubric={}, prior=(), provenance_source=lambda sha: None)
     pkg = read_apkg(fx.out_path)
@@ -1141,6 +1163,7 @@ def _four_rice_sentences(fx):
     for s in sentences:
         fx.seed_recording(sentence_note_id(s), s.text)
         fx.seed_picture(sentence_note_id(s), s.gloss)
+    fx.seed_read(*(w.id for w in words))
     return Syllabus(words=words, targets=targets, sentences=sentences,
                     frequency={w.id: n for n, w in enumerate(words, start=1)},
                     profile=Profile(register="male_colloquial"),
@@ -1220,6 +1243,7 @@ def test_a_second_productive_target_on_a_slotted_word_is_dropped_and_counted(fx)
         fx.seed_recording(w.id, w.meaning)
     fx.seed_recording(sentence_note_id(kin_khaao), kin_khaao.text)
     fx.seed_picture(sentence_note_id(kin_khaao), kin_khaao.gloss)
+    fx.seed_read("eat", "rice")
 
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -1324,6 +1348,7 @@ def test_a_productive_target_off_the_last_used_word_gets_its_cloze_card(fx):
     fx.seed_recording("rice", "cooked rice")
     fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
     fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
+    fx.seed_read("eat", "rice")
 
     compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -1355,6 +1380,7 @@ def _rice_sentence(fx, *, picture: bool, recording: bool = True):
         fx.seed_recording(sentence_note_id(kin_khaao), "กินข้าว")
     if picture:
         fx.seed_picture(sentence_note_id(kin_khaao), "a man eating rice")
+    fx.seed_read("eat", "rice")
     return syllabus, kin_khaao
 
 
@@ -1461,6 +1487,7 @@ def _two_sentences(fx, *, first_picture: bool):
     fx.seed_picture(sentence_note_id(second), "a chicken")
     if first_picture:
         fx.seed_picture(sentence_note_id(first), "a man eating rice")
+    fx.seed_read(*(w.id for w in words))
     return Syllabus(words=words, targets=targets, sentences=(first, second),
                     frequency={w.id: n for n, w in enumerate(words, start=1)},
                     profile=Profile(register="male_colloquial"),
@@ -1550,6 +1577,7 @@ def test_cloze_cards_of_two_sentences_in_different_slots_are_compared_for_one_fr
     for s in (two, three):
         fx.seed_recording(sentence_note_id(s), s.gloss)
         fx.seed_picture(sentence_note_id(s), "a man eating", content=b"one scene")
+    fx.seed_read(*(w.id for w in words))
 
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=True,
                                 current_rubric={}, prior=(), provenance_source=lambda sha: None)
@@ -1579,21 +1607,6 @@ def test_sibling_cards_get_distinct_due_values(fx):
     assert len(rice_cards) > 1
     dues = [c["due"] for c in rice_cards]
     assert len(set(dues)) == len(dues)  # every sibling gets its own due
-
-
-def test_graphemes_are_due_before_any_word(fx):
-    syllabus = _fully_seeded(fx)
-    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
-                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
-    pkg = read_apkg(fx.out_path)
-    models = pkg["models"]
-    g_model = next(m for m in models.values() if m["name"] == "grapheme")
-    word_model = next(m for m in models.values() if m["name"] == "word")
-    g_note = next(n for n in pkg["notes"] if str(n["mid"]) == g_model["id"])
-    g_due = min(c["due"] for c in pkg["cards"] if c["nid"] == g_note["id"])
-    word_dues = [c["due"] for n in pkg["notes"] if str(n["mid"]) == word_model["id"]
-                for c in pkg["cards"] if c["nid"] == n["id"]]
-    assert all(g_due < d for d in word_dues)
 
 
 def test_sentence_cards_are_due_after_every_word_target_they_use(fx):
@@ -1780,12 +1793,13 @@ def test_sentence_listening_back_labels_the_target_words():
         assert '<span class="label">' not in cloze["afmt"]
 
 
-# --- positions over the interleaved name Targets (spec 1 r16) ------------
+# --- positions over the name Targets (spec 1 r16, r32) ---------------------
 
-def test_a_name_words_targets_take_one_block_each_between_grapheme_and_word():
-    """R6: compile's due blocks follow order() exactly -- the grapheme, then
-    its name word's two Targets one block apiece, then the ordinary word
-    targets. Nothing overlaps and nothing is skipped.
+def test_a_name_words_targets_take_one_block_each_before_every_word():
+    """R6: compile's due blocks follow order() exactly -- a name word's
+    two Targets one block apiece, then the ordinary word targets; a
+    grapheme takes no block (spec 1 r32). Nothing overlaps and nothing is
+    skipped.
 
     Characterization: `_positions` gives every non-pair order entry a
     width-1 block (`_order_entry_width`) and a name word's Targets arrive
@@ -1809,12 +1823,12 @@ def test_a_name_words_targets_take_one_block_each_between_grapheme_and_word():
 
     positions = _positions(syllabus)
 
-    assert positions.entry_index["ก"] == 0
-    assert positions.target_index["name-chicken/receptive"] == 1
-    assert positions.target_index["name-chicken/productive"] == 2
-    assert positions.target_index["rice/receptive"] == 3
-    assert positions.word_index["name-chicken"] == 1
-    assert positions.order_length == 4
+    assert positions.entry_index == {}
+    assert positions.target_index["name-chicken/receptive"] == 0
+    assert positions.target_index["name-chicken/productive"] == 1
+    assert positions.target_index["rice/receptive"] == 2
+    assert positions.word_index["name-chicken"] == 0
+    assert positions.order_length == 3
 
 
 # --- spelling groups: one set of form-side cards per spelling (spec 4 r12) --
@@ -1850,7 +1864,7 @@ def glass_group(fx, *, drinking_productive: bool = True, material_productive: bo
     """แก้ว (kɛ̂ːw): glass (drinking), introduced first, and glass (the
     material), each picture-introduced, with its own picture and
     recording. -> (syllabus, word id -> (picture sha, recording sha)).
-    card/unique-front is enabled."""
+    card/unique-front is enabled; the group's Reading card has a review."""
     drinking = _word("glass-drinking", "แก้ว", "glass (drinking)")
     material = _word("glass-material", "แก้ว", "glass (the material)")
     targets = [Target(id=TargetId("glass-drinking/receptive"), word=drinking.id,
@@ -1869,6 +1883,7 @@ def glass_group(fx, *, drinking_productive: bool = True, material_productive: bo
                         rules=_RULES_FOR_UNIQUE_FRONT)
     media = {w.id: (fx.seed_picture(w.id, w.meaning), fx.seed_recording(w.id, w.meaning))
              for w in (drinking, material)}
+    fx.seed_read(drinking.id)
     return syllabus, media
 
 
@@ -2020,13 +2035,13 @@ def test_a_word_alone_in_its_form_compiles_what_it_compiled_before(fx):
     rice_picture = '<img src="2aa102b2ef4b1b3f72a348c100d5a91ffd7ff8de2f2b9ad94d8b3a984349e6ba.jpg">'
     rice_audio = "[sound:842576699068fc9b6e70177dbe3f5df21e01f82a356c994901d1b4350a57bac7.mp3]"
     expected = {
-        "pom": (400, [0, 2], ["family::word", "word::pom", "compile::C", *kinds,
+        "pom": (300, [0, 2], ["family::word", "word::pom", "compile::C", *kinds,
                               "audio-src::forvo"],
                 ["ผม", "I (male speaker)", "", pom_audio, "ma˧", "", "", "", "", "", "C"]),
-        "gin": (300, [0, 2], ["family::word", "word::gin", "compile::C", *kinds,
+        "gin": (200, [0, 2], ["family::word", "word::gin", "compile::C", *kinds,
                               "audio-src::forvo"],
                 ["กิน", "to eat", "", gin_audio, "ma˧", "", "", "", "", "", "C"]),
-        "rice": (500, [0, 1, 2, 3], ["family::word", "word::rice", "compile::C", *kinds,
+        "rice": (400, [0, 1, 2, 3], ["family::word", "word::rice", "compile::C", *kinds,
                                      "img-src::openverse", "audio-src::forvo"],
                  ["ข้าว", "cooked rice", rice_picture, rice_audio, "ma˧", "", "", "1", "1",
                   "", "C"]),
@@ -2046,3 +2061,398 @@ def test_a_word_alone_in_its_form_compiles_what_it_compiled_before(fx):
         ("gin", "Production", "gated: no productive Target"),
         ("gin", "Spelling", "gated: spelling not tested"),
     }
+
+
+# --- staging by kind (spec 4 r13, spec 1 r32 Staging) ----------------------
+
+from thai_syllabus.compile import GRAPHEME_MODEL, MINIMAL_PAIR_MODEL
+from thai_syllabus.ports import StudyRecord
+
+
+def _seed_pair_reviews(fx, pair: MinimalPair, *, correct: int, total: int = 10,
+                       start: int = 1000) -> None:
+    """`total` Recognition reviews of `pair` from ts `start`, the last
+    `correct` of them correct (grade 3), the rest "again" (grade 1)."""
+    for n in range(total):
+        fx.db.append_study(StudyRecord(
+            family="minimal_pair", anchor=pair.id, card_kind="recognition", compile_id="C",
+            ts=start + n, grade=3 if n >= total - correct else 1, time_ms=1000,
+            member_index=str(n % 2), speaker_id="somchai"))
+
+
+def _card_dues(fx, syllabus) -> dict[tuple[str, str], int]:
+    """(note guid, template name) -> due over one compile of `syllabus`."""
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    pkg = read_apkg(fx.out_path)
+    models = {str(m["id"]): m for m in pkg["models"].values()}
+    notes = {n["id"]: n for n in pkg["notes"]}
+    return {(notes[c["nid"]]["guid"],
+             models[str(notes[c["nid"]]["mid"])]["tmpls"][c["ord"]]["name"]): c["due"]
+            for c in pkg["cards"]}
+
+
+def _word_guid(word_id: str) -> str:
+    return genanki.guid_for("word", word_id)
+
+
+def test_a_words_production_card_is_due_p_after_its_listening_card_and_reading_d_after(fx):
+    dues = _card_dues(fx, _fully_seeded(fx))
+    rice = {kind: dues[(_word_guid("rice"), kind)]
+            for kind in ("Listening", "Production", "Reading", "Spelling")}
+    assert 5 * STRIDE <= rice["Production"] - rice["Listening"] < 6 * STRIDE
+    assert 50 * STRIDE <= rice["Reading"] - rice["Listening"] < 51 * STRIDE
+    assert 50 * STRIDE <= rice["Spelling"] - rice["Listening"] < 51 * STRIDE
+    assert rice["Reading"] < rice["Spelling"]
+    assert len(set(dues.values())) == len(dues)  # no two cards share a due
+
+
+# A velar aspiration confusion (k / kʰ) with one pair, กา "crow" / คา
+# "stuck"; ข้าว (rice) is kʰâaw, touching it; ผม (I) is pʰǒm, touching
+# nothing segmental.
+_VELAR = SoundConfusion(id=ConfusionId("aspiration:velar"), dimension="aspiration",
+                        sounds=("k", "kʰ"))
+
+
+def _velar_syllabus(fx, *, carded: bool = True) -> tuple[Syllabus, MinimalPair]:
+    """ผม and ข้าว, each receptive and productive, with every picture and
+    recording; the velar pair's Recognition card is in the build when
+    `carded` (its rendition and both members' pictures seeded)."""
+    pom = Word(id=WordId("pom"), thai="ผม", meaning="I (male speaker)",
+               pron=_pron(_syl(onset="pʰ", vowel="o", coda="m", tone="rising")))
+    rice = Word(id=WordId("rice"), thai="ข้าว", meaning="cooked rice",
+                pron=_pron(_syl(onset="kʰ", vowel="a", coda="w", length="long",
+                                tone="falling")))
+    kaa = Word(id=WordId("kaa"), thai="กา", meaning="crow",
+               pron=_pron(_syl(onset="k", vowel="a", length="long")))
+    khaa = Word(id=WordId("khaa"), thai="คา", meaning="stuck",
+                pron=_pron(_syl(onset="kʰ", vowel="a", length="long")))
+    pair = MinimalPair.create(id=PairId("aspiration:velar/kaa"), confusion=_VELAR,
+                              members=(kaa, khaa))
+    targets = tuple(Target(id=TargetId(f"{w}/{skill}"), word=WordId(w), skill=skill)
+                    for w in ("pom", "rice") for skill in ("receptive", "productive"))
+    syllabus = Syllabus(words=(pom, rice, kaa, khaa), targets=targets, pairs=(pair,),
+                        confusions=(_VELAR,), frequency={pom.id: 1, rice.id: 2},
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS,
+                        media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
+    for w in (pom, rice):
+        fx.seed_picture(w.id, w.meaning)
+        fx.seed_recording(w.id, w.meaning)
+    if carded:
+        fx.seed_rendition(pair, {"kaa": "kaa", "khaa": "khaa"})
+        for w in (kaa, khaa):
+            fx.seed_picture(w.id, w.meaning)
+    return syllabus, pair
+
+
+def test_reading_and_spelling_are_absent_while_a_segmental_confusion_is_unstable(fx):
+    syllabus, pair = _velar_syllabus(fx)
+    _seed_pair_reviews(fx, pair, correct=7)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck) == {"pom": {"Listening", "Production", "Reading", "Spelling"},
+                                 "rice": {"Listening", "Production"}}
+    assert {(d.subject, d.kind, d.reason) for d in deck.dropped if d.subject == "rice"} == {
+        ("rice", "Reading", "staged: reading blocked by aspiration:velar"),
+        ("rice", "Spelling", "staged: reading blocked by aspiration:velar")}
+
+
+def test_a_staged_out_reading_card_names_only_the_confusions_holding_it_back(fx):
+    # ข้าวผัด (fried rice), kʰâaw pʰàt: its kʰ touches the velar
+    # confusion, stable, and its pʰ the labial one, unstable (its pair has
+    # no card in the build, which does not matter).
+    syllabus, pair = _velar_syllabus(fx)
+    _seed_pair_reviews(fx, pair, correct=10)
+    labial = SoundConfusion(id=ConfusionId("aspiration:labial"), dimension="aspiration",
+                            sounds=("p", "pʰ"))
+    paa = Word(id=WordId("paa"), thai="ป้า", meaning="aunt",
+               pron=_pron(_syl(onset="p", vowel="a", length="long", tone="falling")))
+    phaa = Word(id=WordId("phaa"), thai="ผ้า", meaning="cloth",
+                pron=_pron(_syl(onset="pʰ", vowel="a", length="long", tone="falling")))
+    labial_pair = MinimalPair.create(id=PairId("aspiration:labial/paa"), confusion=labial,
+                                     members=(paa, phaa))
+    fried_rice = Word(id=WordId("fried-rice"), thai="ข้าวผัด", meaning="fried rice",
+                      pron=_pron(_syl(onset="kʰ", vowel="a", coda="w", length="long",
+                                      tone="falling"),
+                                 _syl(onset="pʰ", vowel="a", coda="t", tone="low")))
+    syllabus = dataclasses.replace(
+        syllabus, words=(*syllabus.words, paa, phaa, fried_rice),
+        pairs=(pair, labial_pair), confusions=(_VELAR, labial),
+        targets=(*syllabus.targets, Target(id=TargetId("fried-rice/receptive"),
+                                           word=fried_rice.id, skill="receptive")),
+        media=_DbMediaIndex(db=fx.db, pairs=(pair, labial_pair)))
+    fx.seed_recording("fried-rice", "fried rice")
+    deck = _built_deck(fx, syllabus)
+    assert [d.reason for d in deck.dropped
+            if d.subject == "fried-rice" and d.kind == "Reading"] == [
+        "staged: reading blocked by aspiration:labial"]
+
+
+def test_a_confusion_blocks_while_its_pair_has_no_card_in_the_build(fx):
+    syllabus, _pair = _velar_syllabus(fx, carded=False)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck)["rice"] == {"Listening", "Production"}
+
+
+def _without_pairs(syllabus: Syllabus) -> Syllabus:
+    return dataclasses.replace(syllabus, pairs=(), media=_DbMediaIndex(db=None, pairs=()))
+
+
+def test_a_reviewed_words_reading_stays_when_a_new_pair_would_block_it(fx):
+    # ข้าว (rice) is readable while the velar confusion has no pair; its
+    # Reading card gets a review; then the pair arrives, unstable.
+    syllabus, _pair = _velar_syllabus(fx)
+    assert _word_cards(_built_deck(fx, _without_pairs(syllabus)))["rice"] == {
+        "Listening", "Production", "Reading", "Spelling"}
+    fx.seed_read("rice")
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck)["rice"] == {"Listening", "Production", "Reading", "Spelling"}
+    assert field_values(WORD_MODEL, _word_built(deck, "rice").note)["Readable"] == "1"
+
+
+def test_an_unreviewed_words_reading_is_withdrawn_when_a_new_pair_blocks_it(fx):
+    # The remaining non-monotone case: a Reading card dealt but never
+    # reviewed leaves the build when a new pair makes its word unreadable.
+    syllabus, _pair = _velar_syllabus(fx)
+    assert "Reading" in _word_cards(_built_deck(fx, _without_pairs(syllabus)))["rice"]
+    assert "Reading" not in _word_cards(_built_deck(fx, syllabus))["rice"]
+
+
+def test_reading_and_spelling_are_present_once_the_confusion_is_stable(fx):
+    syllabus, pair = _velar_syllabus(fx)
+    _seed_pair_reviews(fx, pair, correct=8)
+    deck = _built_deck(fx, syllabus)
+    assert _word_cards(deck)["rice"] == {"Listening", "Production", "Reading", "Spelling"}
+    assert not [d for d in deck.dropped if d.subject == "rice"]
+
+
+def _rendered(deck, word_id: str, template: str) -> tuple[str, str]:
+    built = _word_built(deck, word_id)
+    return render_card(WORD_MODEL, built.note, _word_template_ord(template))
+
+
+def test_a_words_backs_hide_thai_and_ipa_until_its_reading_card_has_a_review(fx):
+    deck = _built_deck(fx, _fully_seeded(fx, read=False))
+    assert field_values(WORD_MODEL, _word_built(deck, "rice").note)["ScriptShown"] == ""
+    for template in ("Listening", "Production"):
+        _front, back = _rendered(deck, "rice", template)
+        assert "ข้าว" not in back and '<div class="ipa">' not in back
+    assert "[sound:" in _rendered(deck, "rice", "Production")[1]
+
+
+def test_a_words_backs_show_thai_and_ipa_once_its_reading_card_has_a_review(fx):
+    syllabus = _fully_seeded(fx, read=False)
+    fx.seed_read("rice")
+    deck = _built_deck(fx, syllabus)
+    assert field_values(WORD_MODEL, _word_built(deck, "rice").note)["ScriptShown"] == "1"
+    for template in ("Listening", "Production"):
+        _front, back = _rendered(deck, "rice", template)
+        assert '<div class="thai">ข้าว</div>' in back and '<div class="ipa">ma˧</div>' in back
+
+
+def test_the_spelling_back_shows_the_thai_before_any_reading_review(fx):
+    deck = _built_deck(fx, _fully_seeded(fx, read=False))
+    _front, back = _rendered(deck, "rice", "Spelling")
+    assert '<div class="thai">ข้าว</div>' in back
+
+
+def test_a_grapheme_is_due_just_before_the_first_reading_card_of_a_word_spelled_with_it(fx):
+    # กิน (eat) is the only word with a Reading card whose form holds ก.
+    dues = _card_dues(fx, _fully_seeded(fx))
+    grapheme = dues[(genanki.guid_for("grapheme", "ก"), "Reading")]
+    reading = dues[(_word_guid("gin"), "Reading")]
+    assert grapheme < reading
+    assert not [d for d in dues.values() if grapheme < d < reading]
+
+
+def test_graphemes_dealt_before_one_reading_card_come_in_symbol_order(fx):
+    syllabus = _fully_seeded(fx)
+    mouse = _word("mouse", "หนู", "mouse")
+    no_name = _word("letter-name:no", "นอ หนู", "the letter น (recited name)")
+    no = Grapheme.create(symbol="น", kind="consonant", sound="n", consonant_class="low",
+                         keyword_word=mouse, name_word=no_name)
+    syllabus = dataclasses.replace(syllabus, words=(*syllabus.words, mouse, no_name),
+                                   graphemes=(no, *syllabus.graphemes))
+    fx.seed_recording("letter-name:no", "nɔɔ")
+    dues = _card_dues(fx, syllabus)
+    ko = dues[(genanki.guid_for("grapheme", "ก"), "Reading")]
+    no_due = dues[(genanki.guid_for("grapheme", "น"), "Reading")]
+    reading = dues[(_word_guid("gin"), "Reading")]
+    assert ko < no_due < reading
+    assert not [d for d in dues.values() if ko < d < reading and d != no_due]
+
+
+def test_a_grapheme_no_present_reading_card_needs_is_absent_and_counted(fx):
+    chicken = _word("chicken", "ไก่", "chicken")
+    ko_name = _word("letter-name:ko", "กอ ไก่", "the letter ก (recited name)")
+    rice = _word("rice", "ข้าว", "cooked rice")
+    grapheme = Grapheme.create(symbol="ก", kind="consonant", sound="k",
+                               consonant_class="mid", keyword_word=chicken, name_word=ko_name)
+    syllabus = Syllabus(words=(chicken, ko_name, rice), graphemes=(grapheme,),
+                        targets=(Target(id=TargetId("rice/receptive"), word=rice.id,
+                                        skill="receptive"),),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    fx.seed_recording("rice", "rice")
+    fx.seed_recording("letter-name:ko", "gɔɔ")
+    deck = _built_deck(fx, syllabus)
+    assert not [b for b in deck.built if b.family == "grapheme"]
+    assert [(d.subject, d.reason) for d in deck.dropped if d.family == "grapheme"] == [
+        ("ก", "staged: no Reading card present")]
+
+
+def _wo_syllabus(fx) -> tuple[Syllabus, MinimalPair]:
+    """_velar_syllabus plus วัน (day), after ข้าว (rice), and the letter ว
+    (its name วอ แหวน recorded), spelled in both: ข้าว's Reading card is
+    the first to need ว, but it waits on the velar confusion."""
+    syllabus, pair = _velar_syllabus(fx)
+    wan = Word(id=WordId("wan"), thai="วัน", meaning="day",
+               pron=_pron(_syl(onset="w", vowel="a", coda="n")))
+    ring = _word("ring", "แหวน", "ring")
+    wo_name = _word("letter-name:wo", "วอ แหวน", "the letter ว (recited name)")
+    wo = Grapheme.create(symbol="ว", kind="consonant", sound="w", consonant_class="low",
+                         keyword_word=ring, name_word=wo_name)
+    syllabus = dataclasses.replace(
+        syllabus, words=(*syllabus.words, wan, ring, wo_name), graphemes=(wo,),
+        targets=(*syllabus.targets, Target(id=TargetId("wan/receptive"), word=wan.id,
+                                           skill="receptive")),
+        frequency={**syllabus.frequency, wan.id: 3})
+    fx.seed_recording("wan", "day")
+    fx.seed_recording("letter-name:wo", "wɔɔ wɛ̌ɛn")
+    return syllabus, pair
+
+
+def test_a_grapheme_is_due_before_the_first_reading_card_needing_it_present_or_not(fx):
+    syllabus, _pair = _wo_syllabus(fx)
+    dues = _card_dues(fx, syllabus)
+    assert (_word_guid("rice"), "Reading") not in dues
+    letter = dues[(genanki.guid_for("grapheme", "ว"), "Reading")]
+    # ข้าว's Reading slot lies between ผม's (I) and วัน's (day) Reading cards
+    assert dues[(_word_guid("pom"), "Reading")] < letter < dues[(_word_guid("wan"), "Reading")]
+
+
+def test_stabilising_a_confusion_changes_no_grapheme_due(fx):
+    syllabus, pair = _wo_syllabus(fx)
+    before = _card_dues(fx, syllabus)[(genanki.guid_for("grapheme", "ว"), "Reading")]
+    _seed_pair_reviews(fx, pair, correct=10)
+    after = _card_dues(fx, syllabus)
+    assert after[(genanki.guid_for("grapheme", "ว"), "Reading")] == before
+    assert before < after[(_word_guid("rice"), "Reading")]
+    assert not [d for d in after.values()
+                if before < d < after[(_word_guid("rice"), "Reading")]]
+
+
+def test_more_letters_before_one_reading_card_than_its_lane_holds_is_an_error(fx):
+    consonants = "กขคงจฉชซญดตถทธนบปผพฟม"   # 21 letters in one made-up form
+    word = _word("all", consonants, "every letter")
+    graphemes = tuple(Grapheme.create(symbol=c, kind="consonant", sound="k",
+                                      consonant_class="mid", keyword_word=word)
+                      for c in consonants)
+    syllabus = Syllabus(words=(word,), graphemes=graphemes,
+                        targets=(Target(id=TargetId("all/receptive"), word=word.id,
+                                        skill="receptive"),),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    fx.seed_recording("all", "all")
+    with pytest.raises(ValueError, match="21 letters .* lane holds 20"):
+        _built_deck(fx, syllabus)
+
+
+def test_a_graphemes_front_plays_its_recited_name(fx):
+    deck = _built_deck(fx, _fully_seeded(fx))
+    (built,) = [b for b in deck.built if b.family == "grapheme"]
+    front, _back = render_card(GRAPHEME_MODEL, built.note, 0)
+    assert '<div class="thai">ก</div>' in front and "[sound:" in front
+
+
+def test_order_has_no_grapheme_entries():
+    assert not [e for e in _small_syllabus().order() if e.kind == "grapheme"]
+
+
+def _pair_with_pictures(fx, *pictured: str):
+    """p1 (near/far) with its rendition and a picture for each of `pictured`."""
+    syllabus, pair = _pair_only_syllabus()
+    fx.seed_rendition(pair, {"near": "near", "far": "far"})
+    pictures = {w: fx.seed_picture(w, w) for w in pictured}
+    syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(pair,)))
+    return _built_deck(fx, syllabus), pictures
+
+
+def test_a_pairs_front_offers_its_members_as_pictures_in_member_order(fx):
+    deck, pictures = _pair_with_pictures(fx, "near", "far")
+    pair_notes = [b for b in deck.built if b.family == "minimal_pair"]
+    assert len(pair_notes) == 2
+    near_img, far_img = (f'<img src="{pictures[w]}.jpg">' for w in ("near", "far"))
+    for built in pair_notes:
+        front, back = render_card(MINIMAL_PAIR_MODEL, built.note, 0)
+        assert near_img in front and far_img in front
+        assert front.index(near_img) < front.index(far_img)
+        assert "ใกล้" not in front and "ไกล" not in front  # near / far
+        assert "ipa" not in front
+        values = field_values(MINIMAL_PAIR_MODEL, built.note)
+        heard_img = near_img if values["Stimulus"] == "ใกล้" else far_img
+        other_thai = "ไกล" if values["Stimulus"] == "ใกล้" else "ใกล้"
+        answer = back[back.index('<hr id="answer">'):]
+        assert values["Stimulus"] in answer and values["Ipa"] in answer
+        assert heard_img in answer
+        assert other_thai in answer and values["OtherIpa"] in answer
+
+
+def test_a_pair_with_a_member_lacking_a_picture_is_absent_and_counted(fx):
+    deck, _pictures = _pair_with_pictures(fx, "near")
+    assert not [b for b in deck.built if b.family == "minimal_pair"]
+    assert [(d.family, d.kind, d.subject, d.reason) for d in deck.dropped] == [
+        ("minimal_pair", "Recognition", "p1", "no current-best picture")]
+
+
+def _sentence_built(deck):
+    (built,) = [b for b in deck.built if b.family == "sentence"]
+    return built
+
+
+def test_a_sentence_hides_its_text_and_cloze_until_every_word_it_uses_is_read(fx):
+    syllabus = _fully_seeded(fx, read=False)
+    fx.seed_read("pom", "rice")   # กิน (eat) not yet read
+    deck = _built_deck(fx, syllabus)
+    built = _sentence_built(deck)
+    assert field_values(SENTENCE_MODEL, built.note)["ScriptShown"] == ""
+    assert {c.ord for c in built.note.cards} == {0}
+    _front, back = render_card(SENTENCE_MODEL, built.note, 0)
+    assert "ผมกินข้าว" not in back and "I eat rice" in back
+    text_sha = sentence_note_id(syllabus.sentences[0])
+    assert [(d.kind, d.subject, d.reason) for d in deck.dropped if d.family == "sentence" and d.kind != "AudioCloze"] == [
+        ("Cloze", sentence_cloze_key(text_sha, "rice/productive"),
+         "staged: words not yet readable")]
+
+
+def test_a_sentence_shows_its_text_and_cloze_once_every_word_it_uses_is_read(fx):
+    syllabus = _fully_seeded(fx, read=False)
+    fx.seed_read("pom", "gin", "rice")
+    deck = _built_deck(fx, syllabus)
+    built = _sentence_built(deck)
+    assert field_values(SENTENCE_MODEL, built.note)["ScriptShown"] == "1"
+    assert {c.ord for c in built.note.cards} == {0, 3}
+    _front, back = render_card(SENTENCE_MODEL, built.note, 0)
+    assert '<div class="thai">ผมกินข้าว</div>' in back
+
+
+def test_a_sentence_introduced_word_is_read_once_its_segmental_confusions_are_stable(fx):
+    # กา "crow" is sentence-introduced (no Reading card ever); its onset k
+    # touches the velar confusion.
+    syllabus, pair = _velar_syllabus(fx)
+    kaa = syllabus.word(WordId("kaa"))
+    s = _sentence(syllabus.words, ((WordId("pom"), kaa.id),), gloss="I crow")
+    syllabus = dataclasses.replace(
+        syllabus, sentences=(s,),
+        targets=(*syllabus.targets, Target(id=TargetId("kaa/receptive"), word=kaa.id,
+                                           skill="receptive", introduction="sentence")))
+    fx.seed_recording(sentence_note_id(s), s.text)
+    fx.seed_read("pom")
+    _seed_pair_reviews(fx, pair, correct=7)
+    assert field_values(SENTENCE_MODEL, _sentence_built(_built_deck(fx, syllabus)).note)[
+        "ScriptShown"] == ""
+    _seed_pair_reviews(fx, pair, correct=10, start=2000)
+    assert field_values(SENTENCE_MODEL, _sentence_built(_built_deck(fx, syllabus)).note)[
+        "ScriptShown"] == "1"
+
+

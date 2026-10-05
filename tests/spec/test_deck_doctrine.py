@@ -496,18 +496,39 @@ def _dues_by_family(tmp_path, d):
     return out
 
 
-def test_every_grapheme_is_due_before_any_word_and_a_sentence_after_its_words(tmp_path):
+def test_a_grapheme_is_due_just_before_the_reading_card_that_needs_it(tmp_path):
+    """E1, spec 4 r13: the card due right after ก's is the first Reading
+    card of a word spelled with it (here the name word กอ ไก่, which the
+    golden deck still gives Targets), and no Reading card of such a word
+    comes before it."""
+    compile_to(deck(DeckBuilder(tmp_path)), tmp_path)
+    pkg = read_apkg(tmp_path / "deck.apkg")
+    by_mid = {str(m["id"]): m for m in pkg["models"].values()}
+    by_nid = {n["id"]: n for n in pkg["notes"]}
+
+    def kind_and_text(card) -> tuple[str, str, str]:
+        note = by_nid[card["nid"]]
+        model = by_mid[str(note["mid"])]
+        return model["name"], model["tmpls"][card["ord"]]["name"], note["flds"][0]
+
+    cards = sorted(pkg["cards"], key=lambda c: c["due"])
+    at = next(i for i, c in enumerate(cards) if kind_and_text(c)[0] == "grapheme")
+    assert kind_and_text(cards[at])[2] == "ก"
+    model, template, thai = kind_and_text(cards[at + 1])
+    assert (model, template) == ("word", "Reading") and "ก" in thai
+    assert not [c for c in cards[:at] if kind_and_text(c)[:2] == ("word", "Reading")
+                and "ก" in kind_and_text(c)[2]]
+
+
+def test_a_sentence_is_heard_after_every_word_it_uses_is_heard(tmp_path):
     dues = _dues_by_family(tmp_path, deck(DeckBuilder(tmp_path)))
-    assert max(due for _, due in dues["grapheme"]) < min(due for _, due in dues["word"])
-    assert max(due for _, due in dues["word"]) < min(due for _, due in dues["sentence"])
+    listening = [due for template, due in dues["word"] if template == "Listening"]
+    assert max(listening) < min(due for _, due in dues["sentence"])
 
 
 def test_a_words_receptive_cards_are_due_before_its_production_card(tmp_path):
     """Per word: the listening card of "rice" precedes its production
-    card. (Compile stamps one note per word at its earliest Target's block
-    and separates the siblings by ord; order() places a word's productive
-    Target directly after its receptive one, so nothing sits between.)
-    """
+    card, P order positions later (spec 4 r13)."""
     d = deck(DeckBuilder(tmp_path))
     compile_to(d, tmp_path)
     pkg = read_apkg(tmp_path / "deck.apkg")

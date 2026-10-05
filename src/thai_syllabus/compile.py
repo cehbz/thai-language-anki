@@ -5,9 +5,14 @@ One note per picture-introduced word (a spelling group's later members
 only when productive: the group's first such Word carries its
 Listening, Reading and Spelling cards), grapheme, and adopted sentence
 that fills a target (its Listening card and a Cloze card per productive
-Target it fills), one per minimal-pair member; every note tagged,
-due-stamped from Syllabus.order(), and stamped with this compile's
-CompileId.
+Target it fills), one per minimal-pair member; every note tagged, each
+card due-stamped by its kind from Syllabus.order() (spec 4 r13), and
+stamped with this compile's CompileId. The study record stages the
+cards (spec 1 r32 Staging): a word's Reading and Spelling cards wait
+for its segmental confusions to be stable, its Thai and IPA for a review
+of its Reading card, a sentence's text and Cloze cards for every word it
+uses to be read, a pair for both members' pictures, and a grapheme for
+the first Reading card that needs it.
 
 It raises GateRefusal when Syllabus.report().gate is False, or when the
 compiled notes duplicate a card front (rule card/unique-front), unless
@@ -34,9 +39,9 @@ from typing import TYPE_CHECKING, Any, Callable
 import genanki
 
 from . import ipa
-from .derivations import current_best
+from .derivations import SoundStage, current_best, sound_stage
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word, render
-from .ids import WordId, sentence_cloze_key
+from .ids import ConfusionId, WordId, sentence_cloze_key
 from .rulebook import _picture_introduced_words, sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
 from .syllabus import Syllabus
@@ -98,12 +103,14 @@ def _model(name: str, fields: list[str], templates: list[dict],
                          templates=templates, css=CARD_CSS)
 
 
-# The word note (spec 4 r12). Listening, Reading and Spelling are the
-# spelling's form-side cards: their fronts nest in FormSide, set on the
-# note of the spelling group's first picture-introduced Word only. The
-# Listening and Reading backs follow the note's own picture and meaning
-# with OtherSenses, the group's other members' (empty for a Word alone
-# in its form).
+# The word note (spec 4 r12, r13). Listening, Reading and Spelling are
+# the spelling's form-side cards: their fronts nest in FormSide, set on
+# the note of the spelling group's first picture-introduced Word only.
+# The Listening and Reading backs follow the note's own picture and
+# meaning with OtherSenses, the group's other members' (empty for a Word
+# alone in its form). Readable (the word's segmental confusions stable)
+# gates the Reading and Spelling fronts; ScriptShown (its Reading card
+# reviewed) gates the Thai and IPA on the Listening and Production backs.
 WORD_MODEL = _model(
     "word",
     ["Thai", "Meaning", "Picture", "Audio", "Ipa", "Classifier", "FrontGloss",
@@ -112,7 +119,8 @@ WORD_MODEL = _model(
         "name": "Listening",
         "qfmt": "{{#FormSide}}{{Audio}}{{/FormSide}}",
         "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}'
-               '<div class="thai">{{Thai}}</div><div class="ipa">{{Ipa}}</div>'
+               '{{#ScriptShown}}<div class="thai">{{Thai}}</div>'
+               '<div class="ipa">{{Ipa}}</div>{{/ScriptShown}}'
                '<div class="gloss">{{Meaning}}</div>{{OtherSenses}}',
     }, {
         # Picture nests inside its own section, not just ProductiveTarget's
@@ -130,21 +138,28 @@ WORD_MODEL = _model(
         "qfmt": '{{#ProductiveTarget}}{{#Picture}}{{Picture}}'
                '{{#FrontGloss}}<div class="gloss">{{FrontGloss}}</div>{{/FrontGloss}}'
                '{{/Picture}}{{/ProductiveTarget}}',
-        "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
-               '{{Audio}}<div class="ipa">{{Ipa}}</div>',
+        "afmt": '{{FrontSide}}<hr id="answer">'
+               '{{#ScriptShown}}<div class="thai">{{Thai}}</div>{{/ScriptShown}}'
+               '{{Audio}}{{#ScriptShown}}<div class="ipa">{{Ipa}}</div>{{/ScriptShown}}',
     }, {
         "name": "Reading",
-        "qfmt": '{{#FormSide}}<div class="thai">{{Thai}}</div>{{/FormSide}}',
+        "qfmt": '{{#FormSide}}{{#Readable}}<div class="thai">{{Thai}}</div>'
+               '{{/Readable}}{{/FormSide}}',
         "afmt": '{{FrontSide}}<hr id="answer">{{Picture}}{{Audio}}'
                '<div class="gloss">{{Meaning}}</div>{{OtherSenses}}',
     }, {
         "name": "Spelling",
-        "qfmt": "{{#FormSide}}{{#TestSpelling}}{{Audio}}{{/TestSpelling}}{{/FormSide}}",
+        "qfmt": "{{#FormSide}}{{#Readable}}{{#TestSpelling}}{{Audio}}"
+                "{{/TestSpelling}}{{/Readable}}{{/FormSide}}",
         "afmt": '{{#TestSpelling}}{{FrontSide}}<hr id="answer">'
                '<div class="thai">{{Thai}}</div>{{/TestSpelling}}',
     }],
-    appended=("OtherSenses", "FormSide"))
+    appended=("OtherSenses", "FormSide", "ScriptShown", "Readable"))
 
+# The minimal_pair note (spec 4 r13): Choices is every member's picture
+# in member order, so the front asks by ear and by picture alone; the
+# heard member's picture, Thai and IPA are on the back, with every other
+# member's Thai, IPA and recording.
 MINIMAL_PAIR_MODEL = _model(
     "minimal_pair",
     ["MemberKey", "Speaker", "Choices", "Audio", "Stimulus", "Ipa", "OtherIpa", "OtherAudio"],
@@ -154,24 +169,26 @@ MINIMAL_PAIR_MODEL = _model(
                '<div class="choices">{{Choices}}</div>',
         "afmt": '{{FrontSide}}<hr id="answer">'
                '<div class="answer">you heard: {{Stimulus}} '
-               '<span class="ipa">[{{Ipa}}]</span></div>'
-               '<div class="other"><span class="ipa">[{{OtherIpa}}]</span> {{OtherAudio}}</div>',
-    }])
+               '<span class="ipa">[{{Ipa}}]</span></div>{{StimulusPicture}}'
+               '<div class="other">{{OtherThai}} <span class="ipa">[{{OtherIpa}}]</span> '
+               '{{OtherAudio}}</div>',
+    }],
+    appended=("StimulusPicture", "OtherThai"))
 
-# Audio is a field but not referenced by qfmt: a grapheme's front is
-# always its Symbol -- media never gates this card (spec 4 section 1:
-# "one card; no reverse family"); Audio renders on the back only.
+# The grapheme's front is its Symbol and the recited name's recording
+# (spec 4 r13: the name is heard on this card); the back carries both
+# through {{FrontSide}}. One card; no reverse family (spec 4 section 1).
 GRAPHEME_MODEL = _model(
     "grapheme",
     ["Symbol", "Sound", "NameThai", "KeywordThai", "KeywordGloss",
      "KeywordPicture", "Audio"],
     [{
         "name": "Reading",
-        "qfmt": '<div class="thai">{{Symbol}}</div>',
+        "qfmt": '<div class="thai">{{Symbol}}</div>{{Audio}}',
         "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{NameThai}}</div>'
                '{{KeywordPicture}}<div class="thai">{{KeywordThai}}</div>'
                '{{#KeywordGloss}}<div class="gloss">{{KeywordGloss}}</div>{{/KeywordGloss}}'
-               '{{Audio}}<div class="ipa">{{Sound}}</div>',
+               '<div class="ipa">{{Sound}}</div>',
     }])
 
 # A sentence note's Cloze card slots (spec 4 r11): slot k, card ord k,
@@ -196,15 +213,15 @@ def cloze_target_field(ord_: int) -> str:
 
 def _cloze_template(slot: int) -> dict[str, str]:
     """Slot `slot`'s Cloze card. The front nests in the sections of its
-    Cloze field, ScenePicture and Audio, so genanki computes all three as
-    required: no Target in the slot, no picture or no recording, no card
-    (spec 4 r10, r11)."""
+    Cloze field, ScriptShown, ScenePicture and Audio, so genanki computes
+    all four as required: no Target in the slot, a word not yet read, no
+    picture or no recording, no card (spec 4 r10, r11, r13)."""
     cloze, word, _target = _cloze_fields(slot)
     return {
         "name": f"Cloze {slot}",
-        "qfmt": f'{{{{#{cloze}}}}}{{{{#ScenePicture}}}}{{{{#Audio}}}}'
+        "qfmt": f'{{{{#{cloze}}}}}{{{{#ScriptShown}}}}{{{{#ScenePicture}}}}{{{{#Audio}}}}'
                 f'<div class="cloze">{{{{{cloze}}}}}</div>{{{{ScenePicture}}}}'
-                f'{{{{/Audio}}}}{{{{/ScenePicture}}}}{{{{/{cloze}}}}}',
+                f'{{{{/Audio}}}}{{{{/ScenePicture}}}}{{{{/ScriptShown}}}}{{{{/{cloze}}}}}',
         "afmt": f'{{{{FrontSide}}}}<hr id="answer"><div class="target">{{{{{word}}}}}</div>'
                 '{{Audio}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
     }
@@ -212,7 +229,8 @@ def _cloze_template(slot: int) -> dict[str, str]:
 
 # The sentence note: its Listening card, then one Cloze card per slot.
 # TargetWord is the sentence's target words (Syllabus.target_words),
-# joined.
+# joined. ScriptShown (every word it uses read) gates the Thai text and
+# target words on the Listening back and every Cloze front (spec 4 r13).
 SENTENCE_MODEL = _model(
     "sentence",
     ["Thai", "TargetWord", "Audio", "Gloss", "ScenePicture",
@@ -220,10 +238,11 @@ SENTENCE_MODEL = _model(
     [{
         "name": "Listening",
         "qfmt": "{{Audio}}",
-        "afmt": '{{FrontSide}}<hr id="answer"><div class="thai">{{Thai}}</div>'
+        "afmt": '{{FrontSide}}<hr id="answer">{{#ScriptShown}}<div class="thai">{{Thai}}</div>'
                '<div class="target"><span class="label">target words</span> {{TargetWord}}</div>'
-               '{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
-    }, *(_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1))])
+               '{{/ScriptShown}}{{#Gloss}}<div class="gloss">{{Gloss}}</div>{{/Gloss}}',
+    }, *(_cloze_template(slot) for slot in range(1, CLOZE_SLOTS + 1))],
+    appended=("ScriptShown",))
 
 # Spec 5 r9 (design ruling 4): one line per card type -- what the front
 # asks, what the back shows -- keyed by the family and kind /api/cards
@@ -231,14 +250,14 @@ SENTENCE_MODEL = _model(
 # the card type's tooltip and the comment pass hands it to the reader
 # with the comment; both read this one table.
 CARD_MEANINGS: dict[tuple[str, str], str] = {
-    ("word", "listening"): "Front plays the word; back shows its picture, Thai, IPA and meaning, then any other meaning of that spelling with its picture.",
-    ("word", "production"): "Front shows the picture (and a gloss when set); back shows the Thai, plays it and gives the IPA.",
+    ("word", "listening"): "Front plays the word; back shows its picture and meaning, then any other meaning of that spelling with its picture, and its Thai and IPA once its reading has begun.",
+    ("word", "production"): "Front shows the picture (and a gloss when set); back plays the word, with its Thai and IPA once its reading has begun.",
     ("word", "reading"): "Front shows the Thai; back shows the picture, plays the word and gives the meaning, then any other meaning of that spelling with its picture.",
     ("word", "spelling"): "Front plays the word; back shows the Thai spelling.",
-    ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and offers both; back names the one heard, with IPA, and plays the other.",
-    ("grapheme", "reading"): "Front shows the letter; back shows its recited name, the keyword picture, the keyword's Thai and gloss, plays it and gives the sound.",
+    ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and shows both members' pictures; back names the one heard, with its picture, Thai and IPA, and gives the other's Thai and IPA and plays it.",
+    ("grapheme", "reading"): "Front shows the letter and plays its recited name; back shows the name, the keyword picture, the keyword's Thai and gloss, and gives the sound.",
     ("sentence", "cloze"): "Front shows the sentence with the target word blanked, plus the scene picture; back shows the target word, plays the sentence and gives the gloss.",
-    ("sentence", "listening"): "Front plays the sentence; back shows its Thai, names its target words and gives the gloss.",
+    ("sentence", "listening"): "Front plays the sentence; back gives the gloss, with its Thai and target words once every word it uses is read.",
 }
 
 
@@ -246,9 +265,29 @@ def card_meaning(family: str, kind: str) -> str | None:
     return CARD_MEANINGS.get((family, kind))
 
 
-STRIDE = 100  # due-per-order-position block size, in which a note's
-             # cards are due at base + ord; above the most templates any
-             # one note has (word: 4; sentence: 1 + CLOZE_SLOTS).
+STRIDE = 100  # due-per-order-position block size; the lanes below keep
+             # every card dealt into one block on its own due.
+
+# Spec 4 r13 section 2: a word's Production card is due P order
+# positions after its Listening card, its Reading and Spelling cards D
+# after it.
+PRODUCTION_OFFSET = 5
+READING_OFFSET = 50
+
+# A card's offset inside its block, by kind, so no two cards share a due
+# (spec 4 r13 section 2): the block's own entry's cards at their ords (a
+# word's Listening card, a sentence's Listening and Cloze cards, 0 to
+# CLOZE_SLOTS), the Production card of the word P blocks back, the
+# graphemes dealt before the Reading card of the word D blocks back (one
+# lane each, symbol order), then that word's Reading and Spelling cards.
+PRODUCTION_LANE = 20
+GRAPHEME_LANE = 40
+READING_LANE = 60
+if not CLOZE_SLOTS < PRODUCTION_LANE < GRAPHEME_LANE < READING_LANE < READING_LANE + 1 < STRIDE:
+    raise RuntimeError(
+        f"compile's due lanes overlap: CLOZE_SLOTS {CLOZE_SLOTS} must stay below "
+        f"PRODUCTION_LANE {PRODUCTION_LANE} < GRAPHEME_LANE {GRAPHEME_LANE} < "
+        f"READING_LANE {READING_LANE}, and Spelling's READING_LANE + 1 below STRIDE {STRIDE}")
 
 
 def _guid(family: str, *parts: str) -> str:
@@ -372,7 +411,7 @@ class _Positions:
     is due at its own order() position. A block is `width` units wide
     (a pair: len(members); everything else: 1); blocks never overlap.
     """
-    entry_index: dict[str, int]           # grapheme symbol / pair id -> block start
+    entry_index: dict[str, int]           # pair id -> block start
     target_index: dict[str, int]          # target id -> block start
     word_index: dict[str, int]            # word id -> min block start of its targets
     # one entry per adopted sentence: (sentence, filled targets in target-id
@@ -440,10 +479,70 @@ def _positions(syllabus: "Syllabus") -> _Positions:
                       order_length=len(order_list))
 
 
+# --- staging (spec 1 r32) -----------------------------------------------
+
+_READING_BLOCKED = "staged: reading blocked"
+_WORDS_NOT_READ = "staged: words not yet readable"
+_NO_READING_PRESENT = "staged: no Reading card present"
+
+
+@dataclass(frozen=True)
+class _Staging:
+    """What the study record lets this build deal (spec 1 r32 Staging):
+    the sound stage's hold on reading and the words whose Reading card has
+    a review. A word's form-side cards, and so its Reading card, are its
+    spelling group's carrier's (spec 4 r12). Readability latches on that
+    card's review: a confusion newly blocking takes no reviewed Reading
+    card back out of the build."""
+    syllabus: "Syllabus"
+    sound_stage: SoundStage
+    reviewed_readings: frozenset[str]
+    picture_introduced: frozenset[WordId]
+
+    def carrier(self, word_id: WordId) -> WordId | None:
+        """The first picture-introduced Word of `word_id`'s spelling
+        group, the one whose note holds the group's Reading card; None
+        when the group has none."""
+        return next((w.id for w in self.syllabus.spelling_group(word_id)
+                     if w.id in self.picture_introduced), None)
+
+    def readable(self, word_id: WordId) -> bool:
+        """Whether `word_id`'s Reading card is dealt: its spelling's
+        Reading card has a review, or no segmental confusion it touches is
+        blocking."""
+        carrier = self.carrier(word_id)
+        return ((carrier is not None and self.reading_reviewed(carrier))
+                or not self.sound_stage.word_reading_blocked(word_id))
+
+    def blocking(self, word_id: WordId) -> list[ConfusionId]:
+        """The segmental confusions holding back `word_id`'s reading."""
+        return sorted(self.syllabus.segmental_confusions_of(word_id)
+                      & self.sound_stage.blocking_confusions())
+
+    def reading_reviewed(self, word_id: WordId) -> bool:
+        return word_id in self.reviewed_readings
+
+    def read(self, word_id: WordId) -> bool:
+        """Whether `word_id` counts as read for a sentence's text: its
+        spelling's Reading card has a review, or, with no Reading card in
+        its group, it is readable."""
+        carrier = self.carrier(word_id)
+        return self.reading_reviewed(carrier) if carrier is not None else self.readable(word_id)
+
+
+def _staging(syllabus: "Syllabus", db: "SyllabusDb") -> _Staging:
+    """The staging over `db`'s study record."""
+    reviewed = frozenset(r.anchor for r in db.study_rows()
+                         if r.family == "word" and r.card_kind == "reading")
+    return _Staging(syllabus=syllabus, sound_stage=sound_stage(syllabus, db),
+                    reviewed_readings=reviewed,
+                    picture_introduced=frozenset(_picture_introduced_words(syllabus)))
+
+
 # --- note builders -----------------------------------------------------
 # One builder per family, called from that family's *_items generator
-# below; each returns (genanki.Note, due) or None for an item with
-# nothing to compile.
+# below; each returns (genanki.Note, due per template ord) or None for an
+# item with nothing to compile.
 
 def _other_senses(word: Word, group: Sequence[Word], resolver: _Resolver) -> str:
     """The OtherSenses field (spec 4 r12): each other member of `word`'s
@@ -453,12 +552,28 @@ def _other_senses(word: Word, group: Sequence[Word], resolver: _Resolver) -> str
                    for w in group if w.id != word.id)
 
 
-def _word_note(syllabus: "Syllabus", word: Word, carries_form_side: bool,
+def _word_dues(block: int) -> dict[int, int]:
+    """A word note's card dues by ord, its first Target at `block`:
+    Listening there, Production P blocks on, Reading and Spelling D
+    blocks on (spec 4 r13 section 2)."""
+    return {0: block * STRIDE,
+            1: (block + PRODUCTION_OFFSET) * STRIDE + PRODUCTION_LANE,
+            2: (block + READING_OFFSET) * STRIDE + READING_LANE,
+            3: (block + READING_OFFSET) * STRIDE + READING_LANE + 1}
+
+
+_READING_ORD = 2
+
+
+def _word_note(syllabus: "Syllabus", word: Word, carrier: WordId,
                productive_words: frozenset[WordId], resolver: _Resolver,
-               compile_id: str, positions: _Positions) -> tuple[genanki.Note, int] | None:
-    """`word`'s note; `carries_form_side` when it is its spelling group's
-    first picture-introduced Word, whose note holds the group's
-    Listening, Reading and Spelling cards (spec 4 r12)."""
+               compile_id: str, positions: _Positions,
+               staging: _Staging) -> tuple[genanki.Note, dict[int, int]] | None:
+    """`word`'s note; `carrier` its spelling group's first
+    picture-introduced Word, whose note holds the group's Listening,
+    Reading and Spelling cards (spec 4 r12) and whose readability and
+    Reading review stage this note's (spec 4 r13)."""
+    carries_form_side = carrier == word.id
     if word.id not in positions.word_index:
         return None  # no Target at all -- not a compiled word (spec 4 section 1)
 
@@ -486,27 +601,29 @@ def _word_note(syllabus: "Syllabus", word: Word, carries_form_side: bool,
         compile_id,
         _other_senses(word, group, resolver),
         "1" if carries_form_side else "",   # FormSide
+        "1" if staging.reading_reviewed(carrier) else "",   # ScriptShown
+        "1" if staging.readable(carrier) else "",   # Readable
     ]
     note = genanki.Note(model=WORD_MODEL, fields=fields, tags=tags,
                         guid=_guid("word", word.id))
-    due = positions.word_index[word.id] * STRIDE
-    return note, due
+    return note, _word_dues(positions.word_index[word.id])
 
 
 def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
-                resolver: _Resolver, compile_id: str,
-                positions: _Positions) -> list[tuple[genanki.Note, int]]:
+                pictures: Sequence[str], resolver: _Resolver, compile_id: str,
+                positions: _Positions) -> list[tuple[genanki.Note, dict[int, int]]]:
     """One note per member of `pair`, all playing `recordings` (the
-    pair's current-best rendition, in member order). `Choices` lists
-    every member in that same order on every note, so choice position
-    never gives away the stimulus. Member notes sit one STRIDE apart.
+    pair's current-best rendition, in member order). `Choices` shows
+    `pictures`, every member's, in that same order on every note, so
+    choice position never gives away the stimulus. Member notes sit one
+    STRIDE apart.
     """
     base_due = positions.entry_index[pair.id] * STRIDE
     members = [syllabus.find_word(m) for m in pair.members]
     if any(m is None for m in members):
         return []  # the loader's registration check already enforces this (spec 1 section 4 r10)
 
-    choices = " / ".join(m.thai for m in members)
+    choices = " ".join(pictures)
     notes = []
     for i, member in enumerate(members):
         other_indices = [j for j in range(len(members)) if j != i]
@@ -527,10 +644,12 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
             "".join(resolver.rendition_sound(pair.id, recordings[j].sha) for j in other_indices),
             "",
             compile_id,
+            pictures[i],   # StimulusPicture
+            " / ".join(members[j].thai for j in other_indices),   # OtherThai
         ]
         note = genanki.Note(model=MINIMAL_PAIR_MODEL, fields=fields, tags=tags,
                             guid=_guid("minimal_pair", member_key))
-        notes.append((note, base_due + i * STRIDE))
+        notes.append((note, {0: base_due + i * STRIDE}))
     return notes
 
 
@@ -546,9 +665,9 @@ class _GraphemeBuild:
 
 
 def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver,
-                   compile_id: str, positions: _Positions) -> _GraphemeBuild:
-    if grapheme.symbol not in positions.entry_index:
-        return _GraphemeBuild(None, None, None)
+                   compile_id: str, due: int | None) -> _GraphemeBuild:
+    """`grapheme`'s note at `due`, None when no Reading card in the build
+    needs it (spec 4 r13 section 2)."""
     keyword = syllabus.find_word(grapheme.keyword)
     if keyword is None:
         # the loader's registration check already enforces this (spec 1 section 4 r10)
@@ -563,6 +682,8 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     audio = resolver.sound(name_word.id, "recording")
     if not audio:
         return _GraphemeBuild(None, None, "no name recording")
+    if due is None:
+        return _GraphemeBuild(None, None, _NO_READING_PRESENT)
 
     tags = ["family::grapheme", f"grapheme::{grapheme.symbol}",
            f"compile::{compile_id}", "kind::reading"]
@@ -582,8 +703,35 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     ]
     note = genanki.Note(model=GRAPHEME_MODEL, fields=fields, tags=tags,
                         guid=_guid("grapheme", grapheme.symbol))
-    due = positions.entry_index[grapheme.symbol] * STRIDE
     return _GraphemeBuild(note, due, None)
+
+
+def _grapheme_dues(syllabus: "Syllabus", positions: _Positions, staging: _Staging,
+                   words: Sequence["Built"]) -> dict[str, int]:
+    """Each grapheme's due: just before the first Reading card in order,
+    in the build or not, of a word whose form contains its symbol, several
+    before one Reading card in symbol order (spec 4 r13 section 2), so the
+    staging never moves it. Only a grapheme some Reading card among
+    `words` needs has one, so no Reading front precedes its letter.
+    Raises ValueError when more letters fall before one Reading card than
+    the grapheme lane holds."""
+    slots = sorted((_word_dues(positions.word_index[w])[_READING_ORD], syllabus.word(w).thai)
+                   for w in staging.picture_introduced
+                   if w in positions.word_index and staging.carrier(w) == w)
+    present = [field_values(WORD_MODEL, b.note)["Thai"] for b in words
+               if any(c.ord == _READING_ORD for c in b.note.cards)]
+    before: dict[int, list[str]] = {}
+    for symbol in sorted(g.symbol for g in syllabus.graphemes):
+        if any(symbol in thai for thai in present):
+            due = next(d for d, thai in slots if symbol in thai)
+            before.setdefault(due, []).append(symbol)
+    lane = READING_LANE - GRAPHEME_LANE
+    for reading_due, symbols in before.items():
+        if len(symbols) > lane:
+            raise ValueError(f"{len(symbols)} letters ({''.join(symbols)}) fall before the "
+                             f"Reading card at due {reading_due}; the grapheme lane holds {lane}")
+    return {symbol: reading_due - READING_LANE + GRAPHEME_LANE + i
+            for reading_due, symbols in before.items() for i, symbol in enumerate(symbols)}
 
 
 def _cloze_slots(sentence: Sentence, productive: tuple[Target, ...]
@@ -608,12 +756,13 @@ def _cloze_slots(sentence: Sentence, productive: tuple[Target, ...]
 
 def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], slots: Mapping[int, Target],
                    productive_of: Mapping[WordId, Target], due_block: int,
-                   syllabus: "Syllabus", resolver: _Resolver,
-                   compile_id: str) -> tuple[genanki.Note, int]:
+                   syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
+                   script_shown: bool) -> tuple[genanki.Note, dict[int, int]]:
     """The sentence note, `targets` the ones it fills (target-id order),
     `slots` its filled Cloze slots' Targets, `productive_of` each word's
-    productive Target (named in its slot whether filled or not), due at
-    the start of its order() block.
+    productive Target (named in its slot whether filled or not), its
+    cards due in its order() block at their ords; `script_shown` when
+    every word it uses is read.
     """
     text_sha = sentence_note_id(sentence)
     target_words = ", ".join(syllabus.word(w).thai for w in syllabus.target_words(sentence))
@@ -645,10 +794,11 @@ def _sentence_note(sentence: Sentence, targets: tuple[Target, ...], slots: Mappi
         *slot_fields,
         "",  # ReviewNote
         compile_id,
+        "1" if script_shown else "",   # ScriptShown
     ]
     note = genanki.Note(model=SENTENCE_MODEL, fields=fields, tags=tags,
                         guid=_guid("sentence", text_sha))
-    return note, due_block * STRIDE
+    return note, {ord_: due_block * STRIDE + ord_ for ord_ in range(len(SENTENCE_MODEL.templates))}
 
 
 # --- card/unique-front (A3) -------------------------------------------------
@@ -782,14 +932,17 @@ _TEMPLATE_DROP_CAUSES: dict[tuple[str, str], _DropCause] = {
     # (spec 4 section 1/3) -- is what's missing.
     ("word", "Production"): _DropCause((("ProductiveTarget", "gated: no productive Target"),),
                                        (("Picture", "picture"),)),
-    ("word", "Reading"): _DropCause((_FORM_SIDE_GATE,), (("Audio", "recording"),)),
+    ("word", "Reading"): _DropCause((_FORM_SIDE_GATE, ("Readable", _READING_BLOCKED)),
+                                    (("Audio", "recording"),)),
     ("word", "Spelling"): _DropCause(
-        (_FORM_SIDE_GATE, ("TestSpelling", "gated: spelling not tested")),
+        (_FORM_SIDE_GATE, ("TestSpelling", "gated: spelling not tested"),
+         ("Readable", _READING_BLOCKED)),
         (("Audio", "recording"),)),
     ("sentence", "Listening"): _DropCause((), (("Audio", "recording"),)),
     # A slot holding no Target is no card and no drop (spec 4 r11).
     **{("sentence", f"Cloze {slot}"): _DropCause(
-        ((_cloze_fields(slot)[0], None),), (("ScenePicture", "picture"), ("Audio", "recording")))
+        ((_cloze_fields(slot)[0], None), ("ScriptShown", _WORDS_NOT_READ)),
+        (("ScenePicture", "picture"), ("Audio", "recording")))
        for slot in range(1, CLOZE_SLOTS + 1)},
 }
 
@@ -830,8 +983,7 @@ def _dropped_for(note: genanki.Note, model: genanki.Model, family: str,
 
 def _stamp_due(apkg_path: Path, due_by_guid_ord: dict[tuple[str, int], int]) -> None:
     """Reopens the written .apkg's collection.anki2 and sets `cards.due`
-    per (note guid, card ord), so sibling cards land at distinct,
-    stride-separated due values.
+    per (note guid, card ord).
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -867,14 +1019,15 @@ def _blocking_findings(findings: tuple[Finding, ...], syllabus: "Syllabus") -> l
 
 @dataclass(frozen=True)
 class Built:
-    """One compiled note ready for the deck. `base_due` is card ord 0's
-    due value; siblings land at base_due + card.ord. `subject` is the
-    note's anchor, `card_subjects` a card's own where it differs (a
-    sentence's Cloze card: its (sentence, Target)); `model` and the card
-    subjects record its fronts for card/unique-front.
+    """One compiled note ready for the deck. `dues` is each template
+    ord's card due (spec 4 r13 section 2); `base_due` the earliest among
+    the cards the note generated. `subject` is the note's anchor,
+    `card_subjects` a card's own where it differs (a sentence's Cloze
+    card: its (sentence, Target)); `model` and the card subjects record
+    its fronts for card/unique-front.
     """
     note: genanki.Note
-    base_due: int
+    dues: Mapping[int, int]
     family: str
     subject: str
     model: genanki.Model
@@ -883,8 +1036,15 @@ class Built:
     def subject_of(self, ord_: int) -> str:
         return self.card_subjects.get(ord_, self.subject)
 
+    def due_of(self, ord_: int) -> int:
+        return self.dues[ord_]
 
-def _gated_items(built: tuple[genanki.Note, int] | None, model: genanki.Model,
+    @property
+    def base_due(self) -> int:
+        return min(self.dues[c.ord] for c in self.note.cards)
+
+
+def _gated_items(built: tuple[genanki.Note, Mapping[int, int]] | None, model: genanki.Model,
                  family: str, subject: str,
                  card_subjects: Mapping[int, str] | None = None) -> Iterator[Built | DroppedCard]:
     """DroppedCards for `built`'s un-produced templates, then its Built
@@ -892,39 +1052,43 @@ def _gated_items(built: tuple[genanki.Note, int] | None, model: genanki.Model,
     """
     if built is None:
         return
-    note, base_due = built
-    item = Built(note, base_due, family, subject, model, dict(card_subjects or {}))
+    note, dues = built
+    item = Built(note, dues, family, subject, model, dict(card_subjects or {}))
     yield from _dropped_for(note, model, family, item.subject_of)
     if note.cards:
         yield item
 
 
 def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
-                positions: _Positions) -> Iterator[Built | DroppedCard]:
+                positions: _Positions, staging: _Staging) -> Iterator[Built | DroppedCard]:
     # A word note is compiled only for a word with a picture-introduced
     # Target (spec 4 section 1); a sentence-introduced word compiles no
     # word note, it is carried by its sentence note. The first
     # picture-introduced Word of a spelling group carries the group's
     # form-side cards; every other member's note holds its Production
     # card only, so a member with no productive Target has no note
-    # (spec 4 r12).
-    picture_introduced_word_ids = set(_picture_introduced_words(syllabus))
+    # (spec 4 r12). A Reading or Spelling card staged out names the
+    # confusions holding it back.
     productive_words = frozenset(t.word for t in syllabus.targets if t.skill == "productive")
     for word in syllabus.words:
-        if word.id not in picture_introduced_word_ids:
+        if word.id not in staging.picture_introduced:
             continue
-        carrier = next(w for w in syllabus.spelling_group(word.id)
-                       if w.id in picture_introduced_word_ids)
-        carries_form_side = carrier.id == word.id
-        if not carries_form_side and word.id not in productive_words:
+        carrier = staging.carrier(word.id)
+        if carrier != word.id and word.id not in productive_words:
             continue
-        built = _word_note(syllabus, word, carries_form_side, productive_words, resolver,
-                           compile_id, positions)
-        yield from _gated_items(built, WORD_MODEL, "word", word.id)
+        built = _word_note(syllabus, word, carrier, productive_words, resolver,
+                           compile_id, positions, staging)
+        for item in _gated_items(built, WORD_MODEL, "word", word.id):
+            if isinstance(item, DroppedCard) and item.reason == _READING_BLOCKED:
+                item = replace(item, reason=f"{_READING_BLOCKED} by "
+                                            f"{', '.join(staging.blocking(carrier))}")
+            yield item
 
 
 def _pair_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> Iterator[Built | DroppedCard]:
+    """Per pair: its member notes, or one DroppedCard when it has no
+    rendition or a member has no current-best picture (spec 4 r13)."""
     for pair in syllabus.pairs:
         if pair.id not in positions.entry_index:
             continue
@@ -933,36 +1097,42 @@ def _pair_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
             yield DroppedCard(family="minimal_pair", kind="Recognition",
                               subject=pair.id, reason="no rendition")
             continue
-        for note, base_due in _pair_notes(pair, syllabus, recordings, resolver,
-                                          compile_id, positions):
-            yield Built(note, base_due, "minimal_pair", note.fields[0], MINIMAL_PAIR_MODEL)
+        pictures = [resolver.img(member, "picture") for member in pair.members]
+        if not all(pictures):
+            yield DroppedCard(family="minimal_pair", kind="Recognition",
+                              subject=pair.id, reason="no current-best picture")
+            continue
+        for note, dues in _pair_notes(pair, syllabus, recordings, pictures, resolver,
+                                      compile_id, positions):
+            yield Built(note, dues, "minimal_pair", note.fields[0], MINIMAL_PAIR_MODEL)
 
 
 def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
-                    positions: _Positions) -> Iterator[Built | DroppedCard]:
+                    dues: Mapping[str, int]) -> Iterator[Built | DroppedCard]:
     for grapheme in syllabus.graphemes:
-        built = _grapheme_note(grapheme, syllabus, resolver, compile_id, positions)
+        built = _grapheme_note(grapheme, syllabus, resolver, compile_id,
+                               dues.get(grapheme.symbol))
         if built.dropped_reason is not None:
             yield DroppedCard(family="grapheme", kind="Reading",
                               subject=grapheme.symbol, reason=built.dropped_reason)
             continue
         if built.note is None:
             continue
-        note, base_due = built.note, built.due
+        note = built.note
         if not note.cards:
             yield DroppedCard(family="grapheme", kind="Reading", subject=grapheme.symbol,
                               reason="Symbol field unexpectedly empty")
             continue
-        yield Built(note, base_due, "grapheme", grapheme.symbol, GRAPHEME_MODEL)
+        yield Built(note, {0: built.due}, "grapheme", grapheme.symbol, GRAPHEME_MODEL)
 
 
-def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
-                    compile_id: str, positions: _Positions) -> Iterator[Built | DroppedCard]:
+def _sentence_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
+                    positions: _Positions, staging: _Staging) -> Iterator[Built | DroppedCard]:
     """Per adopted sentence: its note at the start of its block, the
     Listening card and each Cloze card siblings due at base + ord; a
     Cloze card is subject (sentence, Target), and a productive fill with
-    no slot, or a slotted card without the picture or recording, yields a
-    DroppedCard.
+    no slot, or a slotted card staged out or without the picture or
+    recording, yields a DroppedCard.
     """
     productive_of: dict[WordId, Target] = {}
     for t in sorted(syllabus.targets, key=lambda t: t.id):
@@ -975,7 +1145,8 @@ def _sentence_items(syllabus: "Syllabus", resolver: _Resolver,
             yield DroppedCard(family="sentence", kind="Cloze",
                               subject=sentence_cloze_key(text_sha, target.id), reason=reason)
         built = _sentence_note(sentence, targets, slots, productive_of, due_block, syllabus,
-                               resolver, compile_id)
+                               resolver, compile_id,
+                               all(staging.read(w) for w in sentence.words))
         yield from _gated_items(built, SENTENCE_MODEL, "sentence", text_sha,
                                 {slot: sentence_cloze_key(text_sha, t.id)
                                  for slot, t in slots.items()})
@@ -1018,11 +1189,15 @@ def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore"
     built: list[Built] = []
     front_entries: list[tuple[str, str, str]] = []
 
+    staging = _staging(syllabus, db)
+    word_items = list(_word_items(syllabus, resolver, compile_id, positions, staging))
+    grapheme_dues = _grapheme_dues(syllabus, positions, staging,
+                                   [i for i in word_items if isinstance(i, Built)])
     family_items = chain(
-        _word_items(syllabus, resolver, compile_id, positions),
+        word_items,
         _pair_items(syllabus, resolver, compile_id, positions),
-        _grapheme_items(syllabus, resolver, compile_id, positions),
-        _sentence_items(syllabus, resolver, compile_id, positions))
+        _grapheme_items(syllabus, resolver, compile_id, grapheme_dues),
+        _sentence_items(syllabus, resolver, compile_id, positions, staging))
     for item in family_items:
         if isinstance(item, DroppedCard):
             dropped.append(item)
@@ -1079,7 +1254,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     for item in built_deck.built:
         deck.add_note(item.note)
         for c in item.note.cards:
-            due_by_guid_ord[(item.note.guid, c.ord)] = item.base_due + c.ord
+            due_by_guid_ord[(item.note.guid, c.ord)] = item.due_of(c.ord)
         notes_written += 1
         cards_written += len(item.note.cards)
 
