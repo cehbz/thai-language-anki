@@ -40,8 +40,11 @@ still run against them.
   "deck:…"` or look up only the reviewed cards.
 - Every tick's harvest runs under the writing command: a `curated/`
   commit and the single `backup/syllabus.db` slot overwritten hourly.
-- `cardReviews`' `since` cut is exclusive in ms; reviews synced in
-  late from another device are missed (latent: no sync in use).
+- The AnkiConnect harvest reads only reviews newer than the newest one
+  the syllabus holds, so phone reviews that sync after a Mac review was
+  harvested are never read (the file harvest reads the whole revlog).
+  Live since AnkiWeb sync (2026-10-06); worked around by syncing the
+  phone before reviewing on the Mac.
 - An unreviewed Reading card is withdrawn when a pair is added to an
   unstable confusion it touches; a sentence-introduced word's
   readability can flip back (no Reading review to latch on).
