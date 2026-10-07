@@ -1982,6 +1982,32 @@ def test_a_bad_anki_value_refuses_naming_the_key(tmp_path, anki, named):
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 
+# --- review: the review site's bind address (spec 5 r21 section 2) --------
+
+def test_the_review_site_binds_to_loopback_by_default(tmp_path):
+    write_providers(tmp_path)
+    review = curated.load_providers_config(tmp_path / "providers.yaml").review
+    assert review == curated.ReviewConfig()
+    assert review.host == "127.0.0.1"
+
+
+def test_the_review_block_names_the_address_the_site_binds_to(tmp_path):
+    write_providers(tmp_path, review={"host": "10.8.0.1"})
+    assert curated.load_providers_config(tmp_path / "providers.yaml").review.host == "10.8.0.1"
+
+
+@pytest.mark.parametrize("review,named", [
+    (None, "review"), ("x", "review"),
+    ({"host": ""}, "review.host"), ({"host": 7}, "review.host"),
+    ({"port": 8877}, "review.port"),
+])
+def test_a_bad_review_value_refuses_naming_the_key(tmp_path, review, named):
+    write_providers(tmp_path, review=review)
+    with pytest.raises(curated.CuratedValidationError,
+                       match=rf"providers\.{re.escape(named)}"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
 def test_a_pacer_min_calls_above_max_calls_per_tick_refuses(tmp_path):
     write_providers(tmp_path, pacer={"min_calls": 41, "max_calls_per_tick": 40})
     with pytest.raises(curated.CuratedValidationError, match=r"providers\.pacer\.min_calls"):

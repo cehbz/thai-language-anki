@@ -9,6 +9,7 @@ handler functions directly.
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
 import http.client
 import io
@@ -390,6 +391,28 @@ def test_render_rate_offers_supply_for_a_picture_or_recording_need():
     # own text -- renderRate gates the call by kind.
     assert ('if (q.kind === "picture" || q.kind === "recording") '
             '{ actions.appendChild(supplyButton(q)); }') in rs.INDEX_HTML
+
+
+def test_the_supply_box_takes_a_pasted_dropped_or_picked_file_and_posts_its_bytes():
+    """Spec 5 r21: the supply box takes a file pasted into it, dropped on
+    it, or chosen with its picker (a phone's photo library or camera),
+    and posts the bytes; a typed value is a URL. Supply by path is gone
+    from the page."""
+    html = rs.INDEX_HTML
+    assert '<input id="supplyFile" type="file" hidden>' in html
+    assert 'id="supplyPick"' in html
+    assert 'box.onpaste = function (e)' in html
+    assert 'box.ondrop = function (e)' in html
+    assert 'box.ondragover = function (e)' in html
+    assert 'picker.onchange = ' in html
+    assert 'picker.accept = q.kind === "recording" ? "audio/*" : "image/*";' in html
+    assert "readAsDataURL(file)" in html
+    assert 'source: "bytes", name: name, type: file.type || "", data: data' in html
+    assert 'source: "url", value: val' in html
+    assert '"path"' not in html
+    assert "file path" not in html
+    # the page refuses an oversized file before reading it, at the server's cap
+    assert f"var MAX_SUPPLY_BYTES = {rs.MAX_SUPPLY_BYTES};" in html
 
 
 # --- the page: card type labels, subject headers, comments (spec 5 r9) -----
@@ -1483,12 +1506,10 @@ def test_a_rating_on_a_sentence_subject_carries_its_subject_kind(db):
 
 
 def test_a_supplied_recording_on_a_sentence_subject_carries_its_subject_kind(
-        tmp_path, derivations, db):
+        derivations, db):
     ctx = rs.ReviewContext(derivations=derivations)
-    src = tmp_path / "clip.mp3"
-    src.write_bytes(clip())
-    rs.append_supply(ctx, {"subject": "sent-sha-2", "kind": "recording", "source": "path",
-                          "value": str(src), "subject_kind": "sentence"})
+    rs.append_supply(ctx, _bytes_supply("sent-sha-2", "recording", clip(), "clip.mp3",
+                                        subject_kind="sentence"))
     rows = db.assessments_of("sent-sha-2")
     assert record_mod.subject_kind_of(rows) == "sentence"
     assert record_mod.ratings_for_role(rows, "recording-for-sentence") != []
@@ -1590,47 +1611,31 @@ def _png_bytes() -> bytes:
     return buf.getvalue()
 
 
-# --- supplied-path resolution (spec 5 r15) -----------------------------------
-
-def test_resolve_supply_path_expands_the_home_directory():
-    assert rs._resolve_supply_path("~/x.jpg") == Path.home() / "x.jpg"
-
-
-@pytest.mark.parametrize("value", ["file:///abs/x.jpg", "file:/abs/x.jpg"])
-def test_resolve_supply_path_accepts_a_file_url(value):
-    """Both shapes seen live in the review log (a triple-slash URL and
-    the schema-only form some clients send) resolve to the same plain
-    path.
-    """
-    assert rs._resolve_supply_path(value) == Path("/abs/x.jpg")
+def _bytes_supply(subject, kind, data, name, **extra):
+    """A supply of posted bytes (spec 5 r21): what the page sends for a
+    file pasted, dropped or picked -- the bytes base64 in the JSON body,
+    the file's name and its media type."""
+    payload = {"subject": subject, "kind": kind, "source": "bytes", "name": name,
+               "data": base64.b64encode(data).decode("ascii")}
+    payload.update(extra)
+    return payload
 
 
-def test_resolve_supply_path_leaves_an_ordinary_path_alone(tmp_path):
-    assert rs._resolve_supply_path(str(tmp_path / "x.jpg")) == tmp_path / "x.jpg"
+def _jpeg_bytes() -> bytes:
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
+    return buf.getvalue()
 
 
-@pytest.mark.parametrize("value", ["file:/abs/my%20file.jpg", "file:///abs/my%20file.jpg"])
-def test_resolve_supply_path_percent_decodes_both_file_url_shapes(value):
-    """Fix round 1 (Important): the schema-only `file:/abs/...` form
-    used to skip percent-decoding (only the triple-slash form went
-    through `unquote`), so `file:/abs/my%20file.jpg` resolved to the
-    literal, still-encoded name rather than the file it named.
-    """
-    assert rs._resolve_supply_path(value) == Path("/abs/my file.jpg")
+# --- append_supply: bytes and url flows -------------------------------------
 
-
-# --- append_supply: path and url flows --------------------------------------
-
-def test_supplied_picture_is_normalized_recorded_and_visible(tmp_path, derivations, db,
+def test_supplied_picture_is_normalized_recorded_and_visible(derivations, db,
                                                              media_store, w1):
     """spec 5 section 1 kind 2: a supplied picture goes through the media
     ingest path (normalized, provenance row source=learner) and is what
     current_best picks (the implicit use-this)."""
-    src = tmp_path / "candidate.png"
-    src.write_bytes(_png_bytes())
     ctx = rs.ReviewContext(derivations=derivations)
-    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
-                                 "value": str(src)})
+    out = rs.append_supply(ctx, _bytes_supply(w1.id, "picture", _png_bytes(), "candidate.png"))
     assert out["ok"] is True
     sha = out["artifact_sha"]
     assert media_store.has(sha, "png")  # add_image normalized it, not a raw write
@@ -1641,7 +1646,7 @@ def test_supplied_picture_is_normalized_recorded_and_visible(tmp_path, derivatio
     assert rating_row.answer["value"] == "unacceptable-use-this"
     assert rating_row.answer["provenance"]["source"] == "learner"
     assert rating_row.question["kind"] == "rating"  # record.learner_ratings reads this back
-    # a local path also appends its own provide row (F1 defect 8), so
+    # posted bytes also append their own provide row (F1 defect 8), so
     # record.candidate_shas and derivations._anchor_ts see the artifact.
     provide_rows = [r for r in db.assessments_of(w1.id) if r.port == "provide"]
     assert len(provide_rows) == 1
@@ -1727,9 +1732,9 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
     assert best.source == "mechanical"
 
 
-def test_supplied_recording_from_local_path_is_stored_conditioned(
-        tmp_path, derivations, db, media_store, w1):
-    """A local recording is ingested through MediaStore.add_recording:
+def test_supplied_recording_bytes_are_stored_conditioned(
+        derivations, db, media_store, w1):
+    """A posted recording is ingested through MediaStore.add_recording:
     the stored, sha'd artifact is the conditioned mp3 (spec 1 r33, spec 4
     section 3). It still appends its own `provide` row
     (backend="learner"), matching what a URL supply gets through
@@ -1741,11 +1746,9 @@ def test_supplied_recording_from_local_path_is_stored_conditioned(
     mechanical verdict, same as any other Source-provided artifact, and
     becomes current-best once one passes it.
     """
-    src = tmp_path / "candidate.wav"
-    src.write_bytes(clip(fmt="wav"))
     ctx = rs.ReviewContext(derivations=derivations)
-    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "recording", "source": "path",
-                                 "value": str(src)})
+    out = rs.append_supply(ctx, _bytes_supply(w1.id, "recording", clip(fmt="wav"),
+                                              "candidate.wav"))
     assert out["ok"] is True
     sha = out["artifact_sha"]
     assert media_store.has(sha, "mp3")
@@ -1762,19 +1765,78 @@ def test_supplied_recording_from_local_path_is_stored_conditioned(
     assert best.source == "mechanical"
 
 
-def test_a_supplied_picture_from_local_path_also_appends_a_provide_row(
-        tmp_path, derivations, db, media_store, w1):
+def test_supplied_picture_bytes_also_append_a_provide_row(derivations, db, media_store, w1):
     """The same fix (F1 defect 8), on the picture ingest path."""
-    src = tmp_path / "candidate.jpg"
-    buf = io.BytesIO()
-    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
-    src.write_bytes(buf.getvalue())
     ctx = rs.ReviewContext(derivations=derivations)
-    out = rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
-                                 "value": str(src)})
+    out = rs.append_supply(ctx, _bytes_supply(w1.id, "picture", _jpeg_bytes(), "candidate.jpg"))
     assert out["ok"] is True
     sha = out["artifact_sha"]
     assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "picture"))
+
+
+def test_supplied_bytes_name_their_file_as_the_origin(derivations, db, w1):
+    """Spec 5 r21: posted bytes carry no path or URL; the origin the
+    provenance and the rating row record is the file's own name."""
+    ctx = rs.ReviewContext(derivations=derivations)
+    out = rs.append_supply(ctx, _bytes_supply(w1.id, "picture", _jpeg_bytes(), "IMG_0412.jpg"))
+    assert db.media_provenance(out["artifact_sha"])["origin"] == "IMG_0412.jpg"
+    rating_row = next(r for r in db.assessments_of(w1.id) if r.port == "assess")
+    assert rating_row.answer["provenance"] == {"source": "learner", "origin": "IMG_0412.jpg"}
+    provide_row = next(r for r in db.assessments_of(w1.id) if r.port == "provide")
+    assert provide_row.question["params"] == {"name": "IMG_0412.jpg"}
+
+
+def test_a_pasted_picture_with_no_file_name_takes_its_format_from_its_type(
+        derivations, db, media_store, w1):
+    """A pasted image arrives named "pasted"; its media type names the
+    format the ingest decodes it as."""
+    ctx = rs.ReviewContext(derivations=derivations)
+    out = rs.append_supply(ctx, _bytes_supply(w1.id, "picture", _png_bytes(), "pasted",
+                                              type="image/png"))
+    assert out["ok"] is True
+    assert db.media_provenance(out["artifact_sha"])["origin"] == "pasted"
+
+
+def test_supplied_bytes_over_the_cap_are_refused_and_write_nothing(
+        derivations, db, monkeypatch, w1):
+    monkeypatch.setattr(rs, "MAX_SUPPLY_BYTES", 100)
+    ctx = rs.ReviewContext(derivations=derivations)
+    with pytest.raises(ValueError, match=r"is 101 bytes; a supply is at most 100 bytes"):
+        rs.append_supply(ctx, _bytes_supply(w1.id, "picture", b"x" * 101, "big.jpg"))
+    assert db.assessments_of(w1.id) == []
+
+
+def test_supplied_bytes_that_are_not_base64_are_refused(derivations, db, w1):
+    ctx = rs.ReviewContext(derivations=derivations)
+    payload = _bytes_supply(w1.id, "picture", _jpeg_bytes(), "x.jpg")
+    payload["data"] = "not base64 !!"
+    with pytest.raises(ValueError, match="base64"):
+        rs.append_supply(ctx, payload)
+    assert db.assessments_of(w1.id) == []
+
+
+def test_supply_by_path_is_gone(derivations, db, tmp_path, w1):
+    """Spec 5 r21: a path names a file on the machine the server runs on,
+    not the learner's; the page posts bytes instead."""
+    src = tmp_path / "candidate.jpg"
+    src.write_bytes(_jpeg_bytes())
+    ctx = rs.ReviewContext(derivations=derivations)
+    with pytest.raises(ValueError, match="unknown supply source 'path'"):
+        rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "path",
+                               "value": str(src)})
+    assert db.assessments_of(w1.id) == []
+    assert not hasattr(rs, "_resolve_supply_path")
+    assert not hasattr(rs, "_read_supplied_bytes")
+
+
+@pytest.mark.parametrize("value", ["/Users/x/Downloads/a.jpg", "~/a.jpg", "file:///a.jpg"])
+def test_a_typed_supply_that_is_not_a_web_url_is_refused(derivations, db, w1, value):
+    ctx = rs.ReviewContext(derivations=derivations,
+                           url_fetchers={"picture": lambda url: pytest.fail("fetched")})
+    with pytest.raises(ValueError, match="paste, drop or choose the file"):
+        rs.append_supply(ctx, {"subject": w1.id, "kind": "picture", "source": "url",
+                               "value": value})
+    assert db.assessments_of(w1.id) == []
 
 
 def test_http_supply_of_a_picture_overrides_a_non_exhausted_machine_current_best(
@@ -1798,12 +1860,8 @@ def test_http_supply_of_a_picture_overrides_a_non_exhausted_machine_current_best
     assert seed_ctx.exhausted(w1.id, "picture").exhausted is False
     seed_db.close()
 
-    src = tmp_path / "candidate.jpg"
-    buf = io.BytesIO()
-    PILImage.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="JPEG")
-    src.write_bytes(buf.getvalue())
-    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
-                                               "source": "path", "value": str(src)})
+    status, body = _post(port, "/api/supply",
+                         _bytes_supply(w1.id, "picture", _jpeg_bytes(), "candidate.jpg"))
     assert status == 200
     result = json.loads(body)
     assert result["ok"] is True
@@ -2786,6 +2844,42 @@ def _post(port, path, payload):
     return resp.status, out
 
 
+def test_serve_binds_to_the_host_it_is_given(monkeypatch, derivations):
+    bound = []
+
+    class FakeServer:
+        def __init__(self, address, handler):
+            bound.append(address)
+
+        def serve_forever(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(rs.http.server, "HTTPServer", FakeServer)
+    rs.serve(rs.ReviewContext(derivations=derivations), 8899, host="10.8.0.1")
+    assert bound == [("10.8.0.1", 8899)]
+
+
+@pytest.mark.parametrize("review,host", [(None, "127.0.0.1"), ({"host": "10.8.0.1"}, "10.8.0.1")])
+def test_main_binds_to_the_address_providers_yaml_names(tmp_path, monkeypatch, review, host):
+    """Spec 5 r21: the review site binds to providers.yaml `review.host`,
+    loopback by default."""
+    import yaml
+    providers = {"imgfetch_path": "/opt/bin/imgfetch", "audiofetch_path": "/opt/bin/audiofetch",
+                 "judge": {"transport": "cli", "model": "m"}}
+    if review is not None:
+        providers["review"] = review
+    (tmp_path / "curated").mkdir()
+    (tmp_path / "curated" / "providers.yaml").write_text(yaml.safe_dump(providers))
+    served = []
+    monkeypatch.setattr(rs, "load_context", lambda deck, **kw: ("ctx", deck))
+    monkeypatch.setattr(rs, "serve", lambda ctx, port, host: served.append((ctx, port, host)))
+    assert rs.main(["--deck", str(tmp_path), "--port", "8899"]) == 0
+    assert served == [(("ctx", tmp_path), 8899, host)]
+
+
 def test_http_index_serves_html(live_server):
     port, _db_path = live_server
     status, body = _get(port, "/")
@@ -3256,71 +3350,67 @@ def test_http_refuses_a_body_that_is_not_a_json_object(live_server, body):
     assert record_mod.vetoed_readings_all(SyllabusDb(db_path)) == frozenset()
 
 
-def test_http_supply_of_a_missing_home_relative_path_answers_400_and_writes_nothing(
-        live_server, w1):
-    """Spec 5 r15: a supplied path expands `~` before it is read, and a
-    path that still resolves to nothing is a 400 naming the resolved
-    path, not a 500 -- two live supplies in this shape (a `~/...` path
-    and a `file:` URL) crashed the handler outright, the connection
-    dropped, and the page reloaded the queue with no message.
-    """
-    port, db_path = live_server
-    value = "~/thai-language-anki-test-missing-file-does-not-exist.jpg"
-    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
-                                               "source": "path", "value": value})
-    assert status == 400
-    resolved = Path(value).expanduser()
-    assert json.loads(body) == {"ok": False, "error": f"no such file: {resolved}"}
-    verify_db = SyllabusDb(db_path)
-    assert verify_db.assessments_of(w1.id) == []
-
-
 def test_http_supply_of_a_recording_with_no_speech_answers_400_and_writes_nothing(
         live_server, w1, tmp_path, no_speech):
     """Spec 1 r33: a clip holding no speech is refused at ingest."""
     port, db_path = live_server
-    src = tmp_path / "quiet.mp3"
-    src.write_bytes(clip())
-    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "recording",
-                                               "source": "path", "value": str(src)})
+    status, body = _post(port, "/api/supply",
+                         _bytes_supply(w1.id, "recording", clip(), "quiet.mp3"))
     assert status == 400
-    assert "no speech" in json.loads(body)["error"]
+    assert json.loads(body) == {"ok": False, "error": "no speech: the clip holds no speech"}
     verify_db = SyllabusDb(db_path)
     assert verify_db.assessments_of(w1.id) == []
     assert verify_db.speaker("learner") is None
     assert verify_db.latest("provide", "learner",
-                            ProvideKey(source="learner", kind="", query=str(src))) is None
+                            ProvideKey(source="learner", kind="", query="quiet.mp3")) is None
     assert list((tmp_path / "media" / "objects").iterdir()) == []
 
 
-def test_http_supply_of_a_missing_file_url_answers_400_with_the_plain_path(live_server, w1):
-    port, db_path = live_server
-    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
-                                               "source": "path",
-                                               "value": "file:/no/such/path.jpg"})
-    assert status == 400
-    assert json.loads(body) == {"ok": False, "error": "no such file: /no/such/path.jpg"}
-    verify_db = SyllabusDb(db_path)
-    assert verify_db.assessments_of(w1.id) == []
-
-
-def test_http_supply_of_a_directory_path_answers_400_distinctly_from_missing(
+def test_http_supply_of_bytes_that_are_not_an_image_answers_400_and_writes_nothing(
         live_server, w1, tmp_path):
-    """Defect: a path that EXISTS but is not a regular file (a directory)
-    hit the same `is_file()` check as a path that resolves to nothing at
-    all, and got the same "no such file" message -- misleading, since the
-    path is right there. It must be a distinct 400 naming the resolved
-    path as "not a file", and write nothing.
-    """
     port, db_path = live_server
-    value = str(tmp_path)
-    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
-                                               "source": "path", "value": value})
+    status, body = _post(port, "/api/supply",
+                         _bytes_supply(w1.id, "picture", b"%PDF-1.4 not a picture", "doc.pdf"))
     assert status == 400
-    resolved = Path(value).expanduser()
-    assert json.loads(body) == {"ok": False, "error": f"not a file: {resolved}"}
-    verify_db = SyllabusDb(db_path)
-    assert verify_db.assessments_of(w1.id) == []
+    assert json.loads(body)["error"].startswith("cannot decode image: ")
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []
+    assert list((tmp_path / "media" / "objects").iterdir()) == []
+
+
+def test_http_supply_of_a_recording_posts_bytes_through_the_ingest(live_server, w1, tmp_path):
+    port, db_path = live_server
+    status, body = _post(port, "/api/supply",
+                         _bytes_supply(w1.id, "recording", clip(fmt="wav"), "Memo 3.wav"))
+    assert status == 200
+    sha = json.loads(body)["artifact_sha"]
+    provenance = SyllabusDb(db_path).media_provenance(sha)
+    assert (provenance["origin"], provenance["ext"], provenance["speaker_id"]) == (
+        "Memo 3.wav", "mp3", "learner")
+
+
+def test_http_supply_by_path_answers_400_and_writes_nothing(live_server, w1, tmp_path):
+    port, db_path = live_server
+    src = tmp_path / "candidate.jpg"
+    src.write_bytes(_jpeg_bytes())
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "picture",
+                                               "source": "path", "value": str(src)})
+    assert status == 400
+    assert json.loads(body) == {"ok": False, "error": "unknown supply source 'path'"}
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []
+
+
+def test_http_post_over_the_body_cap_answers_413_and_writes_nothing(
+        live_server, monkeypatch, w1):
+    """A body larger than a capped supply could encode to is refused
+    before it is parsed, with an error the page shows."""
+    monkeypatch.setattr(rs, "MAX_SUPPLY_BYTES", 300)
+    port, db_path = live_server
+    status, body = _post(port, "/api/supply",
+                         _bytes_supply(w1.id, "picture", b"x" * 6000, "big.jpg"))
+    assert status == 413
+    error = json.loads(body)["error"]
+    assert error.startswith("request is ") and "a supply is at most 300 bytes" in error
+    assert SyllabusDb(db_path).assessments_of(w1.id) == []
 
 
 def test_http_post_answers_500_instead_of_dropping_the_connection_on_a_bug(

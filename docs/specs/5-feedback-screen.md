@@ -1,7 +1,7 @@
 # Spec 5: The feedback screen
 
-Revision 20, proposed 2026-10-04 against principles r8 and architecture
-r5. Revision process: docs/principles.md.
+Revision 21, proposed 2026-10-07 against principles r8 and architecture
+r6. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -112,6 +112,7 @@ Revision log:
 - r18 2026-10-02: a word's sentence need is a direction request at spec 3 r60's ask cap, whatever the asks answered, once no draft of those asks awaits its verdict; what was tried is how many of those asks drafted and their no-fit reasons; a classifier's question names its nouns; a word wanting several sentences (spec 1 r30) shows how many fill it of how many it wants; the typed direction is given to the drafter on the word's prompt line. User ruling 2026-10-02.
 - r19 2026-10-03: the direction question waits only on a pending sentence verdict on a text the word's asks drafted; a scene-picture question on such a text does not hold it. Evidence: 6 of the 8 words at the cap were off the screen while a scene-picture batch was unresolved. Defect fix.
 - r20 2026-10-04: the gallery orders cards by their own due, not note by note; the AudioCloze card (spec 4 r13) carries its type and one-line meaning like every card type, in the gallery, on a rate question and in the comment pass. Evidence: the gallery sorted notes by their first card's due and showed each note's cards in ord order, which spec 4 r13's per-kind dues no longer match (a word's Reading card 50 positions after its Listening card). User ruling 2026-10-04.
+- r21 2026-10-07: a supply is a file's bytes, pasted into the supply box, dropped on it or chosen with its picker (a phone's photo library or camera), posted with the answer and ingested as a URL's bytes are, its origin the file's name; or a URL; supply by path is removed. The review site binds to the address providers.yaml `review.host` names, loopback by default. Evidence: all 35 supplies so far were local paths, 34 from ~/Downloads on the Mac; with the deck and the review site moving to a server, a path names a file on the wrong machine. User ruling 2026-10-07.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -183,11 +184,14 @@ stops; unanswered questions stay queued. Question kinds:
    sources, best candidates (judge-passed first, then each source's
    newest, newest first, five at most; r13), judge reasons — plus two
    actions: type a
-   direction, or supply an artifact (file path or URL; a URL is fetched
-   by kind, imgfetch for pictures and audiofetch for recordings; the
+   direction, or supply an artifact (a file pasted into the supply box,
+   dropped on it or chosen with its picker, its bytes posted with the
+   answer, at most 25 MB; or a URL, fetched by kind, imgfetch for
+   pictures and audiofetch for recordings; r21; the
    bytes go through the media ingest path, a picture normalized and a
    recording conditioned (spec 4 §3), with a
-   provenance row source=learner, and an implicit use-this). The supply
+   provenance row source=learner, origin the URL or the file's name, and
+   an implicit use-this). The supply
    action also appears on every rating question about a picture or
    recording, not only here once exhausted (r16). A typed
    direction is recorded as a direction, not as a rating. A word's
@@ -228,11 +232,12 @@ budget and can be closed at any point with nothing lost.
 
 One process: `thai-syllabus review --deck DIR [--port 8877]`. Reads
 Syllabus state, the cache (via AssessmentReader), and media/objects;
-writes only via RecordWriter appends. Port 8877 (8765 reserved for
-AnkiConnect). Endpoints: / (app), /api/queue, /api/cards, /api/answer
-(POST), /api/supply (POST), /api/note (POST), /api/veto (POST),
-/api/drill (POST), /media/SHA, /stats. No external resources; inline
-CSS/JS; keyboard-first (1-4 rate, n comment, arrows navigate, g gloss, s
+writes only via RecordWriter appends. Port 8877 (8765 is
+scripts/proof_gallery.py's), bound to the address providers.yaml
+`review: {host}` names, default 127.0.0.1 (r21). Endpoints: / (app),
+/api/queue, /api/cards, /api/answer (POST), /api/supply (POST),
+/api/note (POST), /api/veto (POST), /api/drill (POST), /media/SHA,
+/stats. No external resources; inline CSS/JS; keyboard-first (1-4 rate, n comment, arrows navigate, g gloss, s
 stats; the strike is a button, not a key). localStorage for
 UI conveniences only (position, mode, gloss toggle); nothing of record
 lives in the browser.

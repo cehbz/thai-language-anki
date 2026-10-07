@@ -789,6 +789,13 @@ class AnkiConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    """providers.yaml `review` (spec 5 r21 section 2): `host` is the
+    address the review site binds to."""
+    host: str = "127.0.0.1"
+
+
+@dataclass(frozen=True)
 class ProvidersConfig:
     secrets: dict[str, str | None] = field(default_factory=dict)
     search_proxy: str | None = None
@@ -843,6 +850,7 @@ class ProvidersConfig:
     wiktionary_contact: str | None = None
     pacer: PacerConfig = field(default_factory=PacerConfig)
     anki: AnkiConfig = field(default_factory=AnkiConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -1040,6 +1048,26 @@ def _anki_config(data: Mapping, errors: list[str]) -> AnkiConfig:
                           + ("path" if name == "collection" else
                              "reference (an owner-only file or an op:// path)"))
     return AnkiConfig(**values)
+
+def _review_config(data: Mapping, errors: list[str]) -> ReviewConfig:
+    """providers.yaml `review` (spec 5 r21 section 2) over ReviewConfig's
+    defaults. A bare `review:` refuses, as a bare `anki:` does."""
+    if "review" not in data:
+        return ReviewConfig()
+    cfg = data["review"]
+    if not isinstance(cfg, Mapping):
+        errors.append(f"providers.review: {cfg!r} must be a mapping of host")
+        return ReviewConfig()
+    values: dict[str, Any] = {}
+    for name, value in cfg.items():
+        if name != "host":
+            errors.append(f"providers.review.{name}: not a review setting (known: host)")
+        elif isinstance(value, str) and value.strip():
+            values[name] = value.strip()
+        else:
+            errors.append(f"providers.review.host: {value!r} must be a non-empty address")
+    return ReviewConfig(**values)
+
 
 def load_providers_config(path: str | Path) -> ProvidersConfig:
     path = Path(path)
@@ -1285,6 +1313,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
 
     pacer = _pacer_config(data, errors)
     anki = _anki_config(data, errors)
+    review = _review_config(data, errors)
 
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
@@ -1352,7 +1381,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, illustrator=illustrator,
-        glyph=glyph, pacer=pacer, anki=anki,
+        glyph=glyph, pacer=pacer, anki=anki, review=review,
         image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,

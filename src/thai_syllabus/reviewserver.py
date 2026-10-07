@@ -17,6 +17,8 @@ One process: `python -m thai_syllabus.reviewserver --deck DIR
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import http.server
 import json
 import mimetypes
@@ -86,7 +88,8 @@ from .store import MediaStore
 from .syllabus import Syllabus
 
 if TYPE_CHECKING:                       # wiring reaches for provider/assessor; the
-    from .wiring import Derivations     # screen needs only the bundle's values.
+    from .curated import ProvidersConfig  # screen needs only the bundle's values.
+    from .wiring import Derivations
 
 __all__ = [
     "ReviewContext", "SessionStats", "build_app", "serve", "load_context", "main",
@@ -95,6 +98,7 @@ __all__ = [
 ]
 
 DEFAULT_PORT = 8877          # 8765 is proof_gallery.py's
+MAX_SUPPLY_BYTES = 25 * 1024 * 1024   # one supplied file, decoded (spec 5 r21)
 
 # The rank an artifact must reach to count as covered (spec 5 section 3's
 # current-best coverage per need).
@@ -945,67 +949,48 @@ def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -
 
 _LEARNER_SPEAKER = Speaker(id="learner", kind="native")
 
-# Fallback extension when neither payload["ext"] nor the value's own
-# filename suffix names one. A picture re-encodes through add_image
-# regardless; a recording keeps the guess.
+# Fallback extension when neither the supplied file's name nor its media
+# type names one. A picture re-encodes through add_image regardless; a
+# recording keeps the guess.
 _DEFAULT_EXT = {"picture": "jpg", "recording": "mp3"}
 
 
-def _guessed_ext(value: str, payload: Mapping[str, Any], kind: str) -> str:
-    if payload.get("ext"):
-        return str(payload["ext"])
-    suffix = Path(value).suffix.lstrip(".").lower()
-    return suffix or _DEFAULT_EXT[kind]
+def _size(n: int) -> str:
+    return f"{n / 2**20:.1f} MB" if n >= 2**20 else f"{n} bytes"
 
 
-def _resolve_supply_path(value: str) -> Path:
-    """A supplied path value (spec 5 r15), read the way a shell or a
-    file manager would: `~` expands to the caller's home directory, and
-    a `file:` URL -- both the ordinary triple-slash `file:///abs/x.jpg`
-    and the schema-only `file:/abs/x.jpg` some clients send -- resolves
-    to the plain filesystem path it names, percent-decoded either way
-    (`urlparse` puts the whole remainder in `.path` for both shapes, so
-    one `unquote` covers both -- fix round 1: the schema-only form used
-    to skip it, so `file:/abs/my%20file.jpg` resolved to the literal,
-    still-encoded name instead of the file it named). Anything else is
-    read as an ordinary (relative or absolute) path. Bare
-    `Path(value).read_bytes()` took either shape literally and raised
-    FileNotFoundError, which escaped do_POST's (KeyError, ValueError)
-    clause and dropped the connection outright (two supplies seen live
-    in the review log).
-    """
-    if value.startswith("file:"):
-        parsed = urllib.parse.urlparse(value)
-        path = Path(urllib.parse.unquote(parsed.path))
-    else:
-        path = Path(value)
-    return path.expanduser()
+def _max_post_bytes() -> int:
+    """The largest POST body read: a MAX_SUPPLY_BYTES file base64 (4/3 of
+    it) plus the supply's other fields."""
+    return MAX_SUPPLY_BYTES * 4 // 3 + 4096
 
 
-def _read_supplied_bytes(value: str) -> bytes:
-    """The bytes at a supplied path value, resolved through
-    `_resolve_supply_path`. A path that resolves to nothing is refused
-    as a ValueError naming the resolved path -- do_POST's existing
-    (KeyError, ValueError) clause turns that into a 400 and appends no
-    row, rather than a FileNotFoundError escaping as a dropped
-    connection (spec 5 r15). A path that DOES exist but names something
-    other than a regular file (a directory, most likely) gets its own
-    distinct "not a file" message rather than the misleading "no such
-    file" -- the path is right there, it just isn't readable as one.
-    """
-    path = _resolve_supply_path(value)
-    if not path.exists():
-        raise ValueError(f"no such file: {path}")
-    if not path.is_file():
-        raise ValueError(f"not a file: {path}")
-    return path.read_bytes()
+def _supplied_ext(payload: Mapping[str, Any], name: str, kind: str) -> str:
+    suffix = Path(name).suffix.lstrip(".").lower()
+    if suffix:
+        return suffix
+    guessed = mimetypes.guess_extension(str(payload.get("type") or ""))
+    return guessed.lstrip(".") if guessed else _DEFAULT_EXT[kind]
+
+
+def _posted_bytes(payload: Mapping[str, Any], name: str) -> bytes:
+    """A bytes supply's file (spec 5 r21): `data` is base64, at most
+    MAX_SUPPLY_BYTES decoded."""
+    try:
+        data = base64.b64decode(payload["data"], validate=True)
+    except (binascii.Error, TypeError) as e:
+        raise ValueError(f"supply data is not base64: {e}") from e
+    if len(data) > MAX_SUPPLY_BYTES:
+        raise ValueError(f"{name} is {_size(len(data))}; a supply is at most "
+                         f"{_size(MAX_SUPPLY_BYTES)}")
+    return data
 
 
 def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
                              source: str, value: str) -> tuple[str, str]:
     """A picture always normalizes (spec 4 section 3): a URL's bytes
     normalize inside imgfetch's FetchBackend (provides="picture-bytes");
-    a local file's bytes normalize through MediaStore.add_image directly.
+    posted bytes normalize through MediaStore.add_image directly.
     """
     if source == "url":
         provider = Provider(ctx.record, ctx.cache,
@@ -1019,9 +1004,9 @@ def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], s
             raise ValueError(f"append_supply: imgfetch produced no artifact for {value!r}")
         item = answer.items[0]
         return str(item["sha"]), str(item["ext"])
-    if source == "path":
-        data = _read_supplied_bytes(value)
-        ingest = ctx.media_store.add_image(data, _guessed_ext(value, payload, "picture"))
+    if source == "bytes":
+        data = _posted_bytes(payload, value)
+        ingest = ctx.media_store.add_image(data, _supplied_ext(payload, value, "picture"))
         _append_supply_provide_row(ctx, subject=subject, value=value, kind="picture",
                                    provides="picture-bytes", sha=ingest.sha, ext=ingest.ext,
                                    subject_kind=payload.get("subject_kind", "word"))
@@ -1031,23 +1016,23 @@ def _ingest_supplied_picture(ctx: "ReviewContext", payload: Mapping[str, Any], s
 
 def _append_supply_provide_row(ctx: "ReviewContext", *, subject: str, value: str, kind: str,
                                provides: str, sha: str, ext: str, subject_kind: str) -> None:
-    """The provide row a local-path supply owes (spec 3 section 1: "an
+    """The provide row a bytes supply owes (spec 3 section 1: "an
     attempt appends"), matching what a URL supply already gets through
-    Provider.ask. record.candidate_shas and derivations._anchor_ts read
-    this row to see the artifact a path supply added.
+    Provider.ask; `value` is the file's name. record.candidate_shas and
+    derivations._anchor_ts read this row to see the artifact it added.
     """
     ctx.record.append(port="provide", backend="learner",
                       key=ProvideKey(source="learner", kind="", query=value), subject=subject,
                       question={"provides": provides, "kind": kind, "subject_kind": subject_kind,
-                               "params": {"path": value}},
+                               "params": {"name": value}},
                       answer={"items": [{"sha": sha, "ext": ext}]})
 
 
 def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
                                source: str, value: str) -> tuple[str, str]:
     """A recording is conditioned at ingest (spec 1 r33, spec 4 section
-    3): a URL's bytes are fetched through audiofetch's FetchBackend, a
-    local file's read here, and either way stored through
+    3): a URL's bytes are fetched through audiofetch's FetchBackend,
+    posted bytes taken as they come, and either way stored through
     MediaStore.add_recording as the conditioned mp3.
     """
     if source == "url":
@@ -1062,9 +1047,9 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
             raise ValueError(f"append_supply: audiofetch produced no artifact for {value!r}")
         item = answer.items[0]
         return str(item["sha"]), str(item["ext"])
-    if source == "path":
-        data = _read_supplied_bytes(value)
-        ingest = ctx.media_store.add_recording(data, _guessed_ext(value, payload, "recording"))
+    if source == "bytes":
+        data = _posted_bytes(payload, value)
+        ingest = ctx.media_store.add_recording(data, _supplied_ext(payload, value, "recording"))
         sha, ext = ingest.sha, ingest.ext
         _append_supply_provide_row(ctx, subject=subject, value=value, kind="recording",
                                    provides="recording-bytes", sha=sha, ext=ext,
@@ -1075,17 +1060,29 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
 
 def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str, Any]:
     """Spec 5 section 1 kind 2's supply action: {subject, kind:
-    "picture"|"recording", source: "path"|"url", value, note?, ext?}. The
+    "picture"|"recording", note?} and either {source: "url", value: URL}
+    or (spec 5 r21) {source: "bytes", name, type?, data: base64} -- a
+    file pasted, dropped or picked on the page, `name` its file name
+    ("pasted" for a clipboard image) and `type` its media type. The
     bytes go through the ingest path for their kind (imgfetch/add_image
     for a picture, audiofetch/add_recording for a recording), then a
-    provenance row with source=learner and, for a recording, the
-    "learner" Speaker row. A URL goes through Provider.ask, appending its
-    own cache-first `provide` row; a local path appends its own
-    (backend="learner"). Either way the artifact lands with an implicit
-    use-this rating, so derivations.current_best picks it.
+    provenance row with source=learner, origin the URL or the file name,
+    and, for a recording, the "learner" Speaker row. A URL goes through
+    Provider.ask, appending its own cache-first `provide` row; posted
+    bytes append their own (backend="learner"). Either way the artifact
+    lands with an implicit use-this rating, so derivations.current_best
+    picks it.
     """
-    subject, kind = payload["subject"], payload["kind"]
-    source, value = payload["source"], payload["value"]
+    subject, kind, source = payload["subject"], payload["kind"], payload["source"]
+    if source == "url":
+        value = payload["value"]
+        if urllib.parse.urlparse(value).scheme not in ("http", "https"):
+            raise ValueError(f"{value!r} is not a web URL; paste, drop or choose the file "
+                             "instead")
+    elif source == "bytes":
+        value = str(payload.get("name") or "pasted")
+    else:
+        raise ValueError(f"unknown supply source {source!r}")
 
     if kind == "picture":
         artifact_sha, ext = _ingest_supplied_picture(ctx, payload, subject, source, value)
@@ -1115,6 +1112,10 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
                                     "kind": "rating", "subject_kind": subject_kind},
                            answer=answer_row)
     return {"ok": True, "ts": ts, "artifact_sha": artifact_sha}
+
+
+class _TooLarge(ValueError):
+    """A POST body over _max_post_bytes(): answered 413."""
 
 
 # --- stats (spec 5 section 3) -----------------------------------------------
@@ -1516,9 +1517,20 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             number, a bare string) is a bad request, not something to
             call `.get` on: an AttributeError would escape the handlers'
             own (KeyError, ValueError) clause and answer 500 instead of
-            400, so the shape is checked once, here.
+            400, so the shape is checked once, here. A body over
+            _max_post_bytes() is drained unread and refused as _TooLarge,
+            so the reply reaches a client still sending it.
             """
             length = int(self.headers.get("Content-Length", 0) or 0)
+            if length > _max_post_bytes():
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 1 << 16))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                raise _TooLarge(f"request is {_size(length)}; a supply is at most "
+                                f"{_size(MAX_SUPPLY_BYTES)}")
             body = self.rfile.read(length) if length else b"{}"
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, Mapping):
@@ -1567,6 +1579,9 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
                 payload = self._read_json()
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._send_json_safely({"ok": False, "error": "invalid json"}, status=400)
+                return
+            except _TooLarge as e:
+                self._send_json_safely({"ok": False, "error": str(e)}, status=413)
                 return
             except ValueError as e:
                 # `_read_json`'s own shape check: valid JSON, wrong kind
@@ -1660,10 +1675,10 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(ctx: ReviewContext, port: int) -> None:
+def serve(ctx: ReviewContext, port: int, host: str = "127.0.0.1") -> None:
     handler = build_app(ctx)
-    httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
-    print(f"review: http://127.0.0.1:{port}/")
+    httpd = http.server.HTTPServer((host, port), handler)
+    print(f"review: http://{host}:{port}/")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1672,8 +1687,8 @@ def serve(ctx: ReviewContext, port: int) -> None:
         httpd.server_close()
 
 
-def load_context(deck_dir: str | Path, *, learner_budget: int | None = None
-                 ) -> ReviewContext:
+def load_context(deck_dir: str | Path, *, learner_budget: int | None = None,
+                 cfg: "ProvidersConfig | None" = None) -> ReviewContext:
     """A ReviewContext over a deck directory (spec 2 section 1 layout).
     wiring.load_derivations supplies the same assembly build_sourcing
     hands the run: the Syllabus, one db connection as CacheReader/
@@ -1682,14 +1697,16 @@ def load_context(deck_dir: str | Path, *, learner_budget: int | None = None
     own. `learner_budget` left None takes the session cap from that
     bundle's own budgets["learner"] (spec 3 section 7); an explicit value
     (the CLI's --budget) overrides it. The supplied-URL fetchers are
-    providers.yaml's own imgfetch_path/audiofetch_path. wiring is imported
+    providers.yaml's own imgfetch_path/audiofetch_path; `cfg` is that
+    providers.yaml when the caller already loaded it. wiring is imported
     inside the function, off cli.py's import path.
     """
     from .curated import load_providers_config
     from .wiring import load_derivations
 
     root = Path(deck_dir)
-    cfg = load_providers_config(root / "curated" / "providers.yaml")
+    if cfg is None:
+        cfg = load_providers_config(root / "curated" / "providers.yaml")
     derivations = load_derivations(root, cfg)
     url_fetchers = {"picture": tool_fetcher(cfg.imgfetch_path),
                    "recording": tool_fetcher(cfg.audiofetch_path)}
@@ -1706,8 +1723,10 @@ def main(argv: list[str] | None = None) -> int:
                              "\"learner\" Budget; default: providers.yaml's own quota)")
     args = parser.parse_args(argv)
 
-    ctx = load_context(args.deck, learner_budget=args.budget)
-    serve(ctx, args.port)
+    from .curated import load_providers_config
+    cfg = load_providers_config(args.deck / "curated" / "providers.yaml")
+    ctx = load_context(args.deck, learner_budget=args.budget, cfg=cfg)
+    serve(ctx, args.port, host=cfg.review.host)
     return 0
 
 
@@ -1816,8 +1835,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     padding: 10px 14px; display: flex; gap: 8px; align-items: center; z-index: 5;
   }
   #noteInput input, #directionInput input, #supplyInput input {
-    width: 420px; background: #0e1114; color: #e8e8e8; border: 1px solid #333;
+    width: min(420px, 60vw); background: #0e1114; color: #e8e8e8; border: 1px solid #333;
     border-radius: 4px; padding: 6px 10px; font-size: 15px;
+  }
+  #supplyInput button {
+    background: #262b31; color: #e8e8e8; border: 1px solid #3a4048; border-radius: 6px;
+    padding: 6px 10px; cursor: pointer; font-size: 14px; white-space: nowrap;
   }
   #noteError, .save-error { color: #d9534f; font-size: 13px; }
   #status { text-align: center; padding: 6px 0 0; font-size: 13px; color: #b9c2cd; }
@@ -1857,7 +1880,9 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   </div>
   <div id="directionInput" hidden><input id="directionText" placeholder="direction (Enter to save, Esc to cancel)"></div>
   <div id="supplyInput" hidden>
-    <input id="supplyValue" placeholder="file path or URL (Enter to save, Esc to cancel)">
+    <input id="supplyValue" placeholder="URL, or paste or drop a file (Enter to save, Esc to cancel)">
+    <button id="supplyPick" type="button">choose file…</button>
+    <input id="supplyFile" type="file" hidden>
   </div>
   <div id="overlay" hidden><img id="overlayImg" src=""></div>
   <div id="statsOverlay" hidden><div class="panel" id="statsPanel"></div></div>
@@ -2639,13 +2664,91 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     }, advanceQueue);
   }
 
+  // Spec 5 r21: a supply is a URL typed into the box (Enter), or a
+  // file's bytes -- pasted into the box, dropped on it, or chosen with its
+  // picker (on a phone, the photo library or camera) -- posted base64 in
+  // the JSON body. A file over the server's cap is refused here, unread.
+  // Either way the post goes through withStatus, and a failure leaves the
+  // box open with the server's error (r15).
+  var MAX_SUPPLY_BYTES = __MAX_SUPPLY_BYTES__;
+
+  function megabytes(n) { return (n / 1048576).toFixed(1) + " MB"; }
+
+  function readBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var url = String(reader.result);
+        resolve(url.slice(url.indexOf(",") + 1));
+      };
+      reader.onerror = function () { reject(reader.error); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // The first file a clipboard or drag carries: `items` where the browser
+  // exposes the clipboard only there, else `files`.
+  function firstFile(transfer) {
+    if (!transfer) { return null; }
+    var items = transfer.items || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file") { return items[i].getAsFile(); }
+    }
+    return transfer.files && transfer.files.length ? transfer.files[0] : null;
+  }
+
   function openSupplyBox(q) {
+    var box = document.getElementById("supplyInput");
+    var input = document.getElementById("supplyValue");
+    var picker = document.getElementById("supplyFile");
+    function supplyBody(fields) {
+      return Object.assign({ subject: q.subject, kind: q.kind,
+                             subject_kind: q.subject_kind, role: q.role }, fields);
+    }
+    function sendFile(file, name) {
+      if (busy || !file) { return; }
+      if (file.size > MAX_SUPPLY_BYTES) {
+        setStatus(name + " is " + megabytes(file.size) + "; a supply is at most " +
+                  megabytes(MAX_SUPPLY_BYTES), true);
+        return;
+      }
+      var posted = readBase64(file).then(function (data) {
+        return postJson("/api/supply", supplyBody({
+          source: "bytes", name: name, type: file.type || "", data: data }));
+      }, function () { return { ok: false, error: "could not read " + name }; });
+      withStatus(posted, function () {
+        box.hidden = true;
+        advanceQueue();
+      });
+    }
     openBox("supplyInput", "supplyValue", function (val) {
-      var source = /^https?:\\/\\//.test(val) ? "url" : "path";
-      return postJson("/api/supply", { subject: q.subject, kind: q.kind,
-                                subject_kind: q.subject_kind, role: q.role,
-                                source: source, value: val });
+      return postJson("/api/supply", supplyBody({ source: "url", value: val }));
     }, advanceQueue);
+    // A pasted file is sent at once; pasted text lands in the box as typed.
+    box.onpaste = function (e) {
+      var file = firstFile(e.clipboardData);
+      if (!file) { return; }
+      e.preventDefault();
+      sendFile(file, "pasted");
+    };
+    box.ondragover = function (e) { e.preventDefault(); };
+    // A dropped file is sent at once; a dropped link lands in the box.
+    box.ondrop = function (e) {
+      e.preventDefault();
+      var file = firstFile(e.dataTransfer);
+      if (file) { sendFile(file, file.name || "dropped"); return; }
+      var link = (e.dataTransfer.getData("text/uri-list") ||
+                  e.dataTransfer.getData("text/plain") || "").split("\\n")[0].trim();
+      if (link) { input.value = link; input.focus(); }
+    };
+    picker.accept = q.kind === "recording" ? "audio/*" : "image/*";
+    picker.value = "";
+    picker.onchange = function () {
+      var file = picker.files[0];
+      picker.value = "";
+      if (file) { sendFile(file, file.name || "chosen"); }
+    };
+    document.getElementById("supplyPick").onclick = function () { picker.click(); };
   }
 
   // --- overlay / stats -------------------------------------------------------
@@ -2786,6 +2889,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 # rendered card carries reads its tooltip off the one table that lives
 # with the models -- never a copy maintained in the script.
 INDEX_HTML = (_INDEX_HTML_TEMPLATE.replace("__CARD_CSS__", CARD_CSS)
+              .replace("__MAX_SUPPLY_BYTES__", str(MAX_SUPPLY_BYTES))
               .replace("__CARD_MEANINGS__", json.dumps(
                   {f"{family}/{kind}": meaning
                    for (family, kind), meaning in CARD_MEANINGS.items()},
