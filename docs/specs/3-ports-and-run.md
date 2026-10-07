@@ -1,7 +1,7 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 66, proposed 2026-10-07 against principles r8 and architecture
-r5. Revision process: docs/principles.md.
+Revision 67, proposed 2026-10-07 against principles r8 and architecture
+r6. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -260,6 +260,7 @@ Revision log:
 - r64 2026-10-03: `pacer` (§8) configures the quota pacer: judge calls are released each tick up to the week's unused pace-line allowance, under a 5-hour-window ceiling and a per-tick cap. Evidence: the subscription exposes no scriptable quota except through a mod's usage() call, and the weekly window is several 5-hour windows deep, so spreading is the only way to spend it. User ruling 2026-10-03.
 - r65 2026-10-04: a filled Cloze slot of an adopted sentence has a gapped recording need, the sentence by TTS with a 600 ms SSML break in place of the slot's word, in the sentence's voice or its marking's pool, checked as a sentence recording (subject kind `slot`, its bound plus 0.6 s per break), for spec 4 r13's AudioCloze front; every pair member Word has a picture need, judged as a word's, for the identification front; a recited-name Word is adopted with no Target (spec 1 r32) and keeps its recording and chart-cell picture needs; a drafting ask hands seed Targets or the others, never both, a run making one ask of each kind when both are open, and only the others get the vocabulary floor, so a seed Target's sentences are drafted over the picture words up to the furthest handed Target and the met glue words; `pacer.import` (true), `pacer.anki_connect_url` and `pacer.collection_path` (§8): a tick harvests the collection's reviews through AnkiConnect while Anki is open and from the collection file while it is closed, and while Anki is open compiles a deck changed since the last import and imports it through AnkiConnect. Evidence: the text Cloze front shows the Thai sentence, so it waits for every word's reading (principles r8 E1) and the hearing stage needs a production card by ear; 18 of 55 pairs have pictures for both members, 34 for one and 3 for none, since a member without a Target has no picture need; 2 adopted sentences use only the first 50 picture words, none of their Targets open; adopted sentences reached Anki only by a hand import. User rulings 2026-10-02 (the floor keeps applying to sentence-introduced Targets) and 2026-10-04.
 - r66 2026-10-07: the mechanical recording check's floor is 0.1 s (was 0.2), measured on the conditioned clip (spec 1 r33); a clip refused at ingest for holding no speech is a failed fetch that caches no answer, so a later attempt asks the source again (a tts key is voice and text, so a cached refusal would answer that ask forever); a learner supply of one is refused with the reason and appends no row. Evidence: two Chirp3-HD pair clips, จะ "will" and ไป "go", were 0.26 s peaking at −39.5/−38.6 dBFS and passed the duration-only check with floor 0.2 s; at peak−40 the shortest trimmed real clip is 0.232 s. User ruling 2026-10-07.
+- r67 2026-10-07: the pacer carries reviews in and the deck out through the deck's own Anki collection, synced with AnkiWeb, in place of AnkiConnect and the Mac's collection file (architecture r6, spec 4 r16), and a systemd timer runs it. Evidence: the AnkiConnect harvest read only reviews newer than the newest held and missed late-synced phone reviews; harvest and import needed Anki open on a Mac that sleeps and travels. User ruling 2026-10-07.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -1156,8 +1157,8 @@ through (Openverse refuses a Thai egress); no other request uses it. The provena
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
 `rubrics` and `severities` are spec 1 §4's.
 
-`pacer` (r64) configures tools/quota_pacer.py, which a launchd agent runs
-hourly for a deck whose judge is on the cli transport (it refuses any other):
+`pacer` (r64) configures tools/quota_pacer.py, which a systemd timer runs
+hourly (r67) for a deck whose judge is on the cli transport (it refuses any other):
 `reserve_percent` (15), `session_ceiling_percent` (50),
 `max_calls_per_tick` (40), `min_calls` (5), `points_per_call` (0.05) and
 `session_points_per_call` (0.5), `probe_model` (haiku),
@@ -1174,22 +1175,22 @@ figures are one judge call's measured share of each window; the scheduled
 tick refuses a `pacer` block that does not set both. Unspent
 allowance carries over to later ticks. With the key `import` (true |
 false; true, r65) on, the pacer also carries reviews in and the deck
-out. Each tick first harvests reviews, flags and ReviewNotes (the
-`import` command, spec 4 §4, before `run`): through AnkiConnect at
-`anki_connect_url` (`http://127.0.0.1:8765`) while Anki is open, since
-Anki locks its collection file while it runs, and from `collection_path`
-(`~/Library/Application Support/Anki2/User 1/collection.anki2`) while it
-is closed; both read the same cards, notes and revlog and land the same
-rows under the same keys. The deck has changed when the record (cache,
-any row but run's own report) or the study table holds a newer ts than
-at the last import, so an adoption, a new current-best and a review that
-flips a staging gate (spec 1 §3) all count. While Anki is open, a tick
-with a changed deck compiles its package, never forced, and has Anki
-import it through AnkiConnect's `importPackage`; it logs and skips the
-import when nothing changed, the gate is closed or AnkiConnect does not
-answer. The pacer keeps between ticks the ts of its last import, and so
-what is pending. The import is Anki's note update by guid, which changes
-no existing card's due (spec 4 §5).
+out, through the deck's own Anki collection synced with AnkiWeb (r67;
+spec 4 §4): providers.yaml `anki` names its `collection` (default
+`anki/collection.anki2` in the deck), the `sync_key` secret that
+`anki-login` writes, and an optional `endpoint`. Each tick first syncs
+the collection, then harvests reviews, flags and ReviewNotes from its
+file (the `import` command, spec 4 §4, before `run`). The deck has
+changed when the record (cache, any row but run's own report) or the
+study table holds a newer ts than at the last import, so an adoption, a
+new current-best and a review that flips a staging gate (spec 1 §3) all
+count. A tick with a changed deck compiles its package, never forced,
+imports it into the collection and syncs again; it logs and skips the
+import when nothing changed, the gate is closed, the sync failed or
+AnkiWeb demands a full sync other than the first download into an empty
+collection. The pacer keeps between ticks the ts of its last import, and
+so what is pending. The import is Anki's note update by guid, which
+changes no existing card's due (spec 4 §5).
 
 ## 9. Explicitly out
 

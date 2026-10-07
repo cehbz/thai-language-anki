@@ -1,7 +1,7 @@
 # Spec 2: Durable state
 
-Revision 21, proposed 2026-10-04 against principles r8 and architecture
-r5. Revision process: docs/principles.md.
+Revision 22, proposed 2026-10-07 against principles r8 and architecture
+r6. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -67,6 +67,7 @@ Revision log:
   2026-09-18.
 - r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. Evidence: spec 4 r9 gives each productive Target a sentence fills its own Cloze note. User ruling 2026-10-01.
 - r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). Evidence: principles r8 (F1) gates a word's reading on its segmental confusions; the study table holds 12 rows, none on a pair, so every confusion is unstable today. User ruling 2026-10-04.
+- r22 2026-10-07: the revlog import reads the deck's own collection file only; AnkiConnect is removed (spec 4 r16). User ruling 2026-10-07.
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -180,7 +181,7 @@ study(family, anchor, card_kind, member_index, speaker_id, compile_id,
   -- revlog, except manual and rescheduled entries (revlog type 4,
   -- MANUAL: Forget and Reset; 5, RESCHEDULED: Set Due Date; Anki 26.8's
   -- RevlogEntry.ReviewKind), which are not reviews: the import, from the
-  -- collection file and through AnkiConnect alike, reads the revlog type
+  -- deck's collection file (r22), reads the revlog type
   -- and writes no row for them (r21); append-only, insert-or-ignore. Anki flags do NOT land here:
   -- a flag imports as a learner assessment row in cache.
 ```
