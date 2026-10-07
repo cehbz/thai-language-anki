@@ -27,33 +27,18 @@ still run against them.
   by one; cards already in Anki keep their dues while cards entering
   later use the new numbering, so the effective lags P and D grow with
   adoption (the importer never re-dues a card; pre-existing since spec
-  1 r24). Fix candidates: re-due through AnkiConnect (`setDueDate`), or
+  1 r24). Fix candidates: re-due in the deck's collection (`set_due_date`), or
   dues from an index that adoption does not shift.
 - **Every re-import rewrites every note**: `CompileId` changes each
   compile. Detect an unchanged build by content hash before importing.
-- After a notetype change `importPackage` returns true while skipping
-  every note update, and the pacer logs "imported". Compare note
-  fields or counts after the import.
-- **Harvest cost on Anki's main thread**: `getDecks` with all card ids
-  makes about two backend calls per card (7,564 for 3,782 cards) each
-  tick, freezing the Anki window (unmeasured). Use `findCards
-  "deck:…"` or look up only the reviewed cards.
 - Every tick's harvest runs under the writing command: a `curated/`
   commit and the single `backup/syllabus.db` slot overwritten hourly.
-- The AnkiConnect harvest reads only reviews newer than the newest one
-  the syllabus holds, so phone reviews that sync after a Mac review was
-  harvested are never read (the file harvest reads the whole revlog).
-  Live since AnkiWeb sync (2026-10-06); worked around by syncing the
-  phone before reviewing on the Mac.
 - An unreviewed Reading card is withdrawn when a pair is added to an
   unstable confusion it touches; a sentence-introduced word's
   readability can flip back (no Reading review to latch on).
 - Two drafting asks per run can overrun an `llm-sentence` budget by
   one; gapped needs exist for fills beyond `CLOZE_SLOTS` (unreachable
   at `sentence_max_words` 8).
-- `pacer.anki_connect_url` accepts any host (card contents and the
-  package path go to it); an AnkiConnect `apiKey` is unsupported and
-  reads as "collection locked".
 - `GAP_BREAK` and the 0.6 s bound are two constants that must agree.
 - Content: `season-colloquial`'s Meaning holds หน้าร้อน ("hot season"),
   so Thai leaks onto `face`'s Listening back through OtherSenses;
@@ -64,6 +49,31 @@ still run against them.
   measure what the drafter makes of it before widening the span.
 - The Reddit half of the script-timing research failed on agy's quota;
   rerun `/agy-research` with the saved prompt when it resets.
+
+## Open after audio conditioning and the move to hbd (2026-10-07)
+
+- A structural notetype change (a field or card template added) changes
+  the collection's schema, so the next sync demands a full sync and the
+  pacer skips every import until a one-way upload; hbd has no Anki
+  window, so that upload needs a command before the next such change.
+  Template text and CSS changes sync normally (measured on scratch
+  collections, anki 26.8.1).
+- The two silent pairs, จะ/ฉะ ("will"/"to hack") and ไป/ใบ ("go"/leaf
+  classifier), wait for the pacer to synthesize them again; until the
+  re-import updates them, their notes in Anki still play the hiss.
+- Tools › Check Media in Anki removes the ~2,700 unconditioned clips no
+  note uses since the migration.
+- The review site's check-this question kind (user 2026-10-07): a run or
+  a session appends a request (subject, artifact, note) and the site
+  asks it like a rate question; spec 5 revision. First use: the clips
+  VAD scored 0.31–0.47 (Forvo แพง "expensive", a TTS interjection, the
+  TTS lone vowel แอ).
+- Two classifier words' review questions show "(classifier -- no gloss
+  migrated)" instead of a meaning.
+- The supply box's paste, drop and picker are untested in a browser:
+  Cmd-V on the Mac, a drag from Finder, the picker on the phone.
+- The Mac's deck copy stays read-only after the move until the user
+  retires it.
 
 ## Sentence drafting: the judge on the subscription (2026-10-04)
 
