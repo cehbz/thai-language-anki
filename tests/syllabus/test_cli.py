@@ -1198,6 +1198,60 @@ def test_review_subcommand_returns_reviewserver_mains_exit_code(deck, monkeypatc
     assert rc == 1
 
 
+# --- check-request (spec 5 r22) --------------------------------------------
+
+def _deck_picture(deck, sha="c" * 64):
+    db = SyllabusDb(deck / "syllabus.db")
+    db.add_media(sha=sha, kind="picture", ext="jpg", source="openverse",
+                 origin="https://example.com/x.jpg", licence="cc0", acquired=date(2026, 1, 1))
+    db.close()
+    return sha
+
+
+def test_check_request_appends_one_request_row_naming_subject_artifact_and_note(deck, capsys):
+    sha = _deck_picture(deck)
+
+    rc = cli.main(["check-request", "--deck", str(deck), "--subject", "rice", "--sha", sha,
+                   "--note", "is the bowl rice or noodles?"])
+
+    assert rc == 0
+    rows = [r for r in SyllabusDb(deck / "syllabus.db").assessments_of("rice")
+            if r.question.get("kind") == "check-request"]
+    assert len(rows) == 1
+    (row,) = rows
+    assert (row.port, row.backend) == ("assess", "check-request")
+    assert row.key.startswith(f"check-request:rice:{sha}:")
+    assert row.question == {"kind": "check-request", "artifact_sha": sha,
+                            "artifact_kind": "picture", "subject_kind": "word"}
+    assert row.answer == {"note": "is the bowl rice or noodles?"}
+    assert "rice" in capsys.readouterr().out
+    # An append, like review's: no curated commit, no snapshot.
+    assert not (deck / "curated" / ".git").exists()
+    assert not (deck / "backup" / "syllabus.db").exists()
+
+
+def test_check_request_refuses_an_artifact_with_no_media_row_and_writes_nothing(deck, capsys):
+    SyllabusDb(deck / "syllabus.db").close()
+
+    rc = cli.main(["check-request", "--deck", str(deck), "--subject", "rice", "--sha", "d" * 64,
+                   "--note", "look"])
+
+    assert rc == 1
+    assert "d" * 64 in capsys.readouterr().err
+    assert SyllabusDb(deck / "syllabus.db").assessments_of("rice") == []
+
+
+def test_check_request_refuses_a_subject_the_syllabus_does_not_hold(deck, capsys):
+    sha = _deck_picture(deck)
+
+    rc = cli.main(["check-request", "--deck", str(deck), "--subject", "noodles", "--sha", sha,
+                   "--note", "look"])
+
+    assert rc == 1
+    assert "noodles" in capsys.readouterr().err
+    assert SyllabusDb(deck / "syllabus.db").assessments_of("noodles") == []
+
+
 # --- existing subcommands keep working -------------------------------------
 
 # --- restore (spec 2 section 6) --------------------------------------------

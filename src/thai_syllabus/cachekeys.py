@@ -369,3 +369,28 @@ class RunReportKey(CacheKey):
     """
     def encode(self) -> str:
         return "runreport"
+
+
+
+@dataclass(frozen=True)
+class CheckRequestKey(CacheKey):
+    """check-request:SUBJECT:ARTIFACT_SHA:NOTE_SHA -- one check request
+    (spec 5 r22): a run or a session puts `artifact_sha` (a picture or
+    recording sha, or a rendition identity) to the learner as it is used
+    on `subject`'s cards, with a note. NOTE_SHA is sha() of the note, so
+    two notes on one artifact are two keys.
+    """
+    subject: str
+    artifact_sha: str
+    note_sha: str
+
+    def encode(self) -> str:
+        return f"check-request:{self.subject}:{self.artifact_sha}:{self.note_sha}"
+
+
+def check_request_identity(key_sha: str, ts: int) -> str:
+    """A check request's identity (spec 5 r22): sha() of its own cache
+    row's primary key (key_sha, ts), the identity the learner's answer
+    row names. A request put again is a new row, so a new request.
+    """
+    return sha(f"{key_sha}:{ts}")

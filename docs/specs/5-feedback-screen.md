@@ -1,7 +1,7 @@
 # Spec 5: The feedback screen
 
-Revision 21, proposed 2026-10-07 against principles r8 and architecture
-r6. Revision process: docs/principles.md.
+Revision 22, proposed 2026-10-07 against principles r8 and architecture r6.
+Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -113,6 +113,7 @@ Revision log:
 - r19 2026-10-03: the direction question waits only on a pending sentence verdict on a text the word's asks drafted; a scene-picture question on such a text does not hold it. Evidence: 6 of the 8 words at the cap were off the screen while a scene-picture batch was unresolved. Defect fix.
 - r20 2026-10-04: the gallery orders cards by their own due, not note by note; the AudioCloze card (spec 4 r13) carries its type and one-line meaning like every card type, in the gallery, on a rate question and in the comment pass. Evidence: the gallery sorted notes by their first card's due and showed each note's cards in ord order, which spec 4 r13's per-kind dues no longer match (a word's Reading card 50 positions after its Listening card). User ruling 2026-10-04.
 - r21 2026-10-07: a supply is a file's bytes, pasted into the supply box, dropped on it or chosen with its picker (a phone's photo library or camera), posted with the answer and ingested as a URL's bytes are, its origin the file's name; or a URL; supply by path is removed. The review site binds to the address providers.yaml `review.host` names, loopback by default. Evidence: all 35 supplies so far were local paths, 34 from ~/Downloads on the Mac; with the deck and the review site moving to a server, a path names a file on the wrong machine. User ruling 2026-10-07.
+- r22 2026-10-07: a check request (subject, artifact, note) put by a run or a session is asked first: the artifact, the cards that use it and the note, rated unacceptable/acceptable/good with an optional note; an answer closes it, as does the artifact leaving every card. Evidence: an artifact that passed its checks never became a question, so three clips voice activity detection scored 0.31–0.47 could be put to the learner only in chat. User ruling 2026-10-07.
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -145,8 +146,8 @@ so beside the control and the reading is left as it was. Drill results
 append as study-adjacent evidence rows.
 
 **Question session**: serves the spec-3 queue, capped by the
-learner-attention budget (default 20/session, configurable), highest
-expected gain first. Pull-based: the learner answers any number and
+learner-attention budget (default 20/session, configurable), open check
+requests first (kind 5, r22), then highest expected gain first. Pull-based: the learner answers any number and
 stops; unanswered questions stay queued. Question kinds:
 
 1. **Rate a picture** (word or scene role): shows the English gloss (and
@@ -215,6 +216,20 @@ stops; unanswered questions stay queued. Question kinds:
    never auto-switched.
 4. **Re-ask with evidence** (StudyRecord contradiction): the original
    answer, the lapse evidence, re-rate.
+5. **Check request** (r22): a run or a session puts an artifact to the
+   learner -- the subject (a word id, a sentence text_sha, a pair id),
+   the artifact (a picture or recording sha, or a pair's rendition) and
+   a note saying what to look at -- as one row under the subject
+   (`thai-syllabus check-request --deck D --subject S --sha X --note
+   TEXT`). The question shows the note first, the artifact as a rate
+   question shows it (a picture or a player with its deciding verdict; a
+   rendition's members), and every compiled card of the subject that
+   uses it. Actions: 1 unacceptable (the veto row a rate question's
+   unacceptable-none writes on that sha, so the need is re-sourced) / 3
+   acceptable / 4 good, each with an optional one-line note; no "use
+   this". The answer is a learner rating row naming the request, which
+   closes it. A request whose artifact is on no compiled card of its
+   subject is stale: closed, not asked.
 
 `n` on any question comments on its subject (r9): the row is the gallery
 comment's shape anchored on the subject under card kind `question`,

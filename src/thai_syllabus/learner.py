@@ -72,9 +72,12 @@ def append_comment(record: RecordWriter, *, subject: str, card_id: str, kind: st
 
 def append_rating(record: RecordWriter, *, subject: str, role: str, rating: str,
                   artifact_sha: str | None, subject_kind: str = "word", note: str | None = None,
-                  derived_from: CommentRef | None = None) -> int:
+                  derived_from: CommentRef | None = None,
+                  check_request: str | None = None) -> int:
     """One rating row (spec 3 section 4's learner key), the shape the
-    screen's 1-4 answers write. Refuses a value outside LEARNER_RANK."""
+    screen's 1-4 answers write; `check_request` names the check request
+    (spec 5 r22) the rating answers. Refuses a value outside
+    LEARNER_RANK."""
     if rating not in LEARNER_RANK:
         raise ValueError(f"unknown rating {rating!r}")
     answer: dict[str, Any] = {"value": rating}
@@ -82,6 +85,8 @@ def append_rating(record: RecordWriter, *, subject: str, role: str, rating: str,
         answer["note"] = note
     question = _derived({"role": role, "artifact_sha": artifact_sha, "rubric": None,
                          "kind": "rating", "subject_kind": subject_kind}, derived_from)
+    if check_request is not None:
+        question["check_request"] = check_request
     return record.append(port="assess", backend="learner",
                          key=LearnerKey(artifact_sha=artifact_sha, role=role), subject=subject,
                          question=question, answer=answer)

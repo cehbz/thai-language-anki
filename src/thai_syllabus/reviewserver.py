@@ -63,6 +63,7 @@ from .derivations import (
     vetoed,
 )
 from .attempts import classifier_nouns_of
+from .checkrequest import CheckRequest, check_requests, open_check_requests
 from .ids import PairId, WordId
 from .learner import (ACTION_RATINGS, append_comment, append_comment_veto, append_direction,
                       append_rating)
@@ -94,7 +95,8 @@ if TYPE_CHECKING:                       # wiring reaches for provider/assessor; 
 __all__ = [
     "ReviewContext", "SessionStats", "build_app", "serve", "load_context", "main",
     "build_queue", "compiled_cards", "compute_stats",
-    "append_answer", "append_supply", "append_gallery_note", "append_drill_result",
+    "append_answer", "append_check_answer", "append_supply", "append_gallery_note",
+    "append_drill_result",
 ]
 
 DEFAULT_PORT = 8877          # 8765 is proof_gallery.py's
@@ -576,13 +578,80 @@ def _reask_questions(d: "Derivations", study: StudyReader,
     return out
 
 
+def _check_uses(d: "Derivations", request: CheckRequest) -> list[str]:
+    """What a card shows when it uses the request's artifact (spec 5
+    r22): the sha itself, or a rendition's member recordings."""
+    if request.artifact_kind == "rendition":
+        return _rendition_member_shas(d, request.subject, request.artifact_sha)
+    return [request.artifact_sha]
+
+
+def _card_uses(card: Mapping[str, Any], uses: Sequence[str]) -> bool:
+    shown = card["shown"]
+    return any(sha == shown.get("picture") or sha in (shown.get("recordings") or [])
+               for sha in uses)
+
+
+def _check_question(d: "Derivations", request: CheckRequest, uses: Sequence[str], *,
+                    syllabus_state_id: str) -> dict[str, Any]:
+    """A check question (spec 5 r22): the artifact as a rate question
+    shows it (a player or a picture with its deciding verdict; a
+    rendition's members), the note, and `uses` -- what the subject's
+    cards show of it, by which the page picks the cards to show."""
+    subject, kind, subject_kind = request.subject, request.artifact_kind, request.subject_kind
+    role = role_for(kind, subject_kind)
+    artifact = None
+    if kind != "rendition":
+        artifact = _artifact(d, request.artifact_sha)
+        artifact["verdict"] = _verdict_line(
+            deciding_verdict(d.db, subject, kind, request.artifact_sha,
+                             current_rubric=d.current_rubric))
+    item = {
+        "type": "check", "request": request.identity, "note": request.note,
+        "subject": subject, "kind": kind, "subject_kind": subject_kind, "role": role,
+        "learner_ranks": learner_ranks(role), "artifact": artifact, "uses": list(uses),
+        "gloss": _gloss_for(d.syllabus, subject, subject_kind),
+        "label": _subject_label(d.syllabus, subject, subject_kind),
+        "shown": _question_shown(kind, subject, subject_kind, request.artifact_sha,
+                                 syllabus_state_id,
+                                 member_shas=uses if kind == "rendition" else ()),
+        "comments": _comment_views(d.db.assessments_of(subject)),
+    }
+    if kind == "rendition":
+        item["members"] = _rendition_members(d, subject, request.artifact_sha)
+        item["confusion"] = _confusion_of(d.syllabus, subject)
+    return item
+
+
+def _check_questions(d: "Derivations", *, budget: int,
+                     syllabus_state_id: str) -> list[dict[str, Any]]:
+    """Every open check request whose artifact is on a compiled card of
+    its subject, oldest first, at most `budget`; a request whose artifact
+    is on none is stale and not asked (spec 5 r22). The deck is compiled
+    only when a request is open."""
+    requests = open_check_requests(d.db)
+    if not requests or budget <= 0:
+        return []
+    cards = compiled_cards(d)
+    items: list[dict[str, Any]] = []
+    for request in requests:
+        uses = _check_uses(d, request)
+        if not any(c["subject"] == request.subject and _card_uses(c, uses) for c in cards):
+            continue
+        items.append(_check_question(d, request, uses, syllabus_state_id=syllabus_state_id))
+        if len(items) >= budget:
+            break
+    return items
+
+
 def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                 budget: int) -> list[dict[str, Any]]:
-    """The question session (spec 5 section 1): four kinds from
-    derivations.py under `d`'s parameters, capped by the learner-attention
+    """The question session (spec 5 section 1): the check requests on
+    record and four kinds from derivations.py under `d`'s parameters, capped by the learner-attention
     budget (spec 3 section 7's "learner" Budget, ReviewContext's own
-    learner_budget). The F10-ordered rate questions fill it first; direction
-    requests, challenger comparisons and re-asks fill what is left. A
+    learner_budget). Open check requests fill it first (spec 5 r22), then
+    the F10-ordered rate questions; direction requests, challenger
+    comparisons and re-asks fill what is left. A
     kind with no derivation input yields no questions.
 
     One build reads the record once: every derivation below goes through
@@ -603,27 +672,28 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                     transient_cap=d.transient_cap, requery_cap=d.requery_cap,
                     provenance_source=d.provenance_source,
                     nothing_ttl=d.nothing_ttl, now_ns=now_ns, needs=needs)
-    items: list[dict[str, Any]] = []
-    for e in entries:
-        rows = rows_for(d.db, e.subject, e.kind)
-        role = role_for(e.kind, e.subject_kind)
-        if all(vetoed(d.db, e.subject, role, sha) for sha in candidate_shas(rows)):
-            # Spec 5 r7 section 1: nothing to rate -- no candidate on
-            # record, or (r13) every one of them already rejected by the
-            # learner's "none of these". The need reaches the learner only
-            # as a direction request once its sources are exhausted
-            # (below); with a source left it is the machine's.
-            continue
-        items.append(_rate_question(d, e.subject, e.kind, e.subject_kind, directed=e.directed,
-                                    rank=e.rank, attempts=e.attempts,
-                                    syllabus_state_id=syllabus_state_id))
-        if len(items) >= budget:
-            break
+    items = _check_questions(d, budget=budget, syllabus_state_id=syllabus_state_id)
+    if len(items) < budget:
+        for e in entries:
+            rows = rows_for(d.db, e.subject, e.kind)
+            role = role_for(e.kind, e.subject_kind)
+            if all(vetoed(d.db, e.subject, role, sha) for sha in candidate_shas(rows)):
+                # Spec 5 r7 section 1: nothing to rate -- no candidate on
+                # record, or (r13) every one of them already rejected by the
+                # learner's "none of these". The need reaches the learner only
+                # as a direction request once its sources are exhausted
+                # (below); with a source left it is the machine's.
+                continue
+            items.append(_rate_question(d, e.subject, e.kind, e.subject_kind,
+                                        directed=e.directed, rank=e.rank, attempts=e.attempts,
+                                        syllabus_state_id=syllabus_state_id))
+            if len(items) >= budget:
+                break
     # A need kept queued for a candidate awaiting a verdict under the
     # current rubric (derivations.queue's bucket 2) can also be exhausted
     # on attempts -- already rated above, it is skipped here so the
     # screen lists it once (spec 5 section 1).
-    queued = {(i["subject"], i["kind"]) for i in items}
+    queued = {(i["subject"], i["kind"]) for i in items if i["type"] == "rate"}
 
     if len(items) < budget:
         for subject, kind, subject_kind in needs:
@@ -927,6 +997,39 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
                        artifact_sha=artifact_sha, subject_kind=subject_kind,
                        note=payload.get("note") or None)
     return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": artifact_sha}
+
+
+_CHECK_ACTIONS = (1, 3, 4)
+
+
+def append_check_answer(record: RecordWriter, request: CheckRequest,
+                        payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer to a check request (spec 5 r22): action 1, 3 or 4 as
+    the rating a rate question's action writes on the request's artifact
+    (1 is the veto, unacceptable-none), with the payload's optional
+    one-line `note`, naming the request -- which closes it. There is no
+    "use this" (2).
+    """
+    action = payload.get("action")
+    if action not in _CHECK_ACTIONS:
+        raise ValueError(f"a check answer is action 1, 3 or 4, not {action!r}")
+    rating = ACTION_RATINGS[action]
+    ts = append_rating(record, subject=request.subject,
+                       role=role_for(request.artifact_kind, request.subject_kind),
+                       rating=rating, artifact_sha=request.artifact_sha,
+                       subject_kind=request.subject_kind, note=payload.get("note") or None,
+                       check_request=request.identity)
+    return {"ok": True, "ts": ts, "rating": rating, "artifact_sha": request.artifact_sha,
+            "check_request": request.identity}
+
+
+
+def _check_request(ctx: "ReviewContext", identity: Any) -> CheckRequest:
+    """The check request `identity` names; ValueError when none does."""
+    for request in check_requests(ctx.cache):
+        if request.identity == identity:
+            return request
+    raise ValueError(f"no check request {identity!r}")
 
 
 def _refuses_stale_rejection(ctx: "ReviewContext", payload: Mapping[str, Any]) -> str | None:
@@ -1425,7 +1528,7 @@ def _valid_shown_value(v: Any) -> bool:
 # question carries as its `kind`. A comment recording anything else
 # could never be read back as evidence against a question, so the
 # handler refuses it the way it refuses a malformed `shown`.
-_QUESTION_KINDS = frozenset({"rate", "direction", "challenger", "reask"})
+_QUESTION_KINDS = frozenset({"rate", "direction", "challenger", "reask", "check"})
 _ARTIFACT_KINDS = frozenset({"picture", "recording", "rendition"})
 
 # The kinds of thing a subject can be (record.subject_kind_of's own
@@ -1601,7 +1704,11 @@ def build_app(ctx: ReviewContext) -> type[http.server.BaseHTTPRequestHandler]:
             # second response on the same connection.
             status = 200
             try:
-                if parsed.path == "/api/answer":
+                if parsed.path == "/api/answer" and "check_request" in payload:
+                    result = append_check_answer(
+                        ctx.record, _check_request(ctx, payload["check_request"]), payload)
+                    ctx.session.answered += 1
+                elif parsed.path == "/api/answer":
                     refusal = _refuses_stale_rejection(ctx, payload)
                     if refusal is not None:
                         raise ValueError(refusal)
@@ -1778,6 +1885,16 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .current-artifact { max-width: min(90vw, 640px); }
   .rendition-members .member { margin: 6px 0; }
   .verdict { color: #9aa4b1; font-size: 14px; }
+  /* spec 5 r22: a check question's note is what the learner is asked to
+     look at -- it leads the block. */
+  .check-note {
+    border-left: 4px solid #e0b84f; background: #2a2412; color: #f3dc9a;
+    padding: 10px 14px; border-radius: 6px; font-size: 20px; max-width: 640px; text-align: left;
+  }
+  input.check-note-input {
+    width: min(420px, 80vw); background: #0e1114; color: #e8e8e8; border: 1px solid #333;
+    border-radius: 4px; padding: 6px 10px; font-size: 15px;
+  }
   .provenance { font-size: 11px; color: #9aa4b1; text-transform: uppercase; letter-spacing: 0.04em; }
   .subject-cards { display: flex; flex-direction: column; gap: 14px; width: 100%; }
   /* spec 5 r9: the type label reads the same on a gallery card and on a
@@ -2123,6 +2240,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     else if (q.type === "direction") { renderDirection(q, box); }
     else if (q.type === "challenger") { renderChallenger(q, box); }
     else if (q.type === "reask") { renderReask(q, box); }
+    else if (q.type === "check") { renderCheck(q, box); }
     main.appendChild(box);
     saveProgress();
   }
@@ -2184,9 +2302,17 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     });
   }
 
-  function fillSubjectCards(container, subject) {
+  // `uses` (a check question's, spec 5 r22), when given, keeps only the
+  // cards that show one of those shas.
+  function fillSubjectCards(container, subject, uses) {
     container.innerHTML = "";
-    var mine = galleryCards.filter(function (c) { return c.subject === subject; });
+    var mine = galleryCards.filter(function (c) {
+      if (c.subject !== subject) { return false; }
+      if (!uses) { return true; }
+      return uses.some(function (sha) {
+        return c.shown.picture === sha || (c.shown.recordings || []).indexOf(sha) !== -1;
+      });
+    });
     if (!mine.length) {
       container.appendChild(el("div", { "class": "empty" }, "no card compiles for this subject yet"));
       return;
@@ -2295,6 +2421,43 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     // artifact of its own, nor a sentence's own text).
     if (q.kind === "picture" || q.kind === "recording") { actions.appendChild(supplyButton(q)); }
     box.appendChild(actions);
+  }
+
+  // Spec 5 r22: a check question -- the note first, the artifact as a
+  // rate question shows it, the subject's cards that use it, and 1/3/4
+  // with an optional one-line note; no "use this".
+  function renderCheck(q, box) {
+    box.appendChild(subjectHeader(q, " — check request"));
+    box.appendChild(el("div", { "class": "check-note" }, q.note));
+    if (q.kind === "rendition") {
+      renderRenditionMembers(q, box);
+    } else if (q.artifact) {
+      var cur = el("div", { "class": "current-artifact card" });
+      cur.appendChild(artifactView(q.kind, q.artifact, null));
+      box.appendChild(cur);
+      if (q.artifact.verdict) { box.appendChild(el("div", { "class": "verdict" }, q.artifact.verdict)); }
+    }
+    var cards = el("div", { "class": "subject-cards" });
+    cards.appendChild(el("div", { "class": "empty" }, "loading the subject's cards"));
+    box.appendChild(cards);
+    ensureCards(function () { fillSubjectCards(cards, q.subject, q.uses); });
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
+    box.appendChild(el("input", { id: "checkNote", "class": "check-note-input",
+                                  placeholder: "optional note, then 1 / 3 / 4" }));
+    var actions = el("div", { "class": "actions" });
+    var labels = { 1: "1 unacceptable", 3: "3 acceptable", 4: "4 good" };
+    [1, 3, 4].forEach(function (n) {
+      var btn = el("button", { "class": n >= 3 ? "good" : "bad" }, labels[n]);
+      btn.addEventListener("click", function () { answerCheck(q, n); });
+      actions.appendChild(btn);
+    });
+    box.appendChild(actions);
+  }
+
+  function answerCheck(q, action) {
+    var noteBox = document.getElementById("checkNote");
+    finishAnswer({ check_request: q.request, action: action,
+                   note: noteBox ? noteBox.value.trim() : "" });
   }
 
   function pickCandidateForAction2(q, cb) {
@@ -2867,6 +3030,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     if (["1", "2", "3", "4"].indexOf(e.key) !== -1 && mode === "session" && queueItems.length) {
       var q = queueItems[qIdx];
       if (q.type === "rate" || q.type === "reask") { answerRate(q, parseInt(e.key, 10)); }
+      if (q.type === "check" && ["1", "3", "4"].indexOf(e.key) !== -1) { answerCheck(q, parseInt(e.key, 10)); }
     }
   });
 

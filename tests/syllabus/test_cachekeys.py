@@ -10,6 +10,7 @@ from thai_syllabus.cachekeys import (
     AttemptOutcomeKey,
     BatchMarkerKey,
     CacheKey,
+    CheckRequestKey,
     CommentReadingKey,
     CommentVetoKey,
     DictionaryKey,
@@ -27,6 +28,7 @@ from thai_syllabus.cachekeys import (
     RetirementKey,
     ReverifyKey,
     WaiverKey,
+    check_request_identity,
     comment_identity,
     preference_identity,
     rendition_identity,
@@ -255,3 +257,15 @@ def test_dictionary_key_encodes_source_and_form():
 
 def test_dictionary_key_is_a_cache_key():
     assert isinstance(DictionaryKey(source="wiktionary", form="x"), CacheKey)
+
+
+def test_check_request_key_encodes_subject_artifact_and_note_sha():
+    key = CheckRequestKey(subject="rice", artifact_sha="a" * 64, note_sha=sha("is it rice?"))
+    assert key.encode() == f"check-request:rice:{'a' * 64}:{sha('is it rice?')}"
+    assert isinstance(key, CacheKey)
+
+
+def test_check_request_identity_is_sixteen_hex_over_the_rows_own_primary_key():
+    a = check_request_identity("k" * 64, 5)
+    assert len(a) == 16 and a == check_request_identity("k" * 64, 5)
+    assert a != check_request_identity("k" * 64, 6)

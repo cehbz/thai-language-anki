@@ -444,13 +444,15 @@ def test_every_rendered_card_carries_its_type_label_with_the_meaning_tooltip():
 
 
 def test_every_question_names_its_subject_in_words_never_a_bare_sha():
-    """Design ruling 5: all four question renderers head with
+    """Design ruling 5: every question renderer (five, with spec 5 r22's
+    check question) heads with
     subjectHeader (q.label's Thai, then id and kind), never the old
     `q.subject + " (" + q.kind + ")"` sha line.
     """
     assert "function subjectHeader(q, suffix)" in rs.INDEX_HTML
     assert "var thai = (q.label && q.label.thai)" in rs.INDEX_HTML
-    assert rs.INDEX_HTML.count("subjectHeader(q") == 5  # the definition + four renderers
+    assert rs.INDEX_HTML.count("subjectHeader(q") == 6  # the definition + five renderers
+    assert 'subjectHeader(q, " — check request")' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — exhausted, attempts=" + q.attempts)' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — a new candidate outranks your pick")' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — lapse evidence contradicts a past rating")' in rs.INDEX_HTML
@@ -487,7 +489,7 @@ def test_the_subjects_comments_are_listed_under_a_question_each_unread():
     assert "function renderComments(items, box, subject, subjectKind, reload)" in rs.INDEX_HTML
     assert "function renderCardNotes" not in rs.INDEX_HTML
     assert "renderComments(card.notes, box, card.subject," in rs.INDEX_HTML
-    assert rs.INDEX_HTML.count("renderComments(q.comments, box, q.subject,") == 4
+    assert rs.INDEX_HTML.count("renderComments(q.comments, box, q.subject,") == 5
     assert 'el("div", { "class": "reading unread" }, "unread")' in rs.INDEX_HTML
     assert 'on a " + (n.question_kind || "") + " question"' in rs.INDEX_HTML
 
@@ -552,7 +554,7 @@ def test_every_comment_list_names_the_subject_the_strike_would_veto():
         "word", "sentence", "minimal_pair", "grapheme"}
     assert '|| "word"' not in rs.INDEX_HTML
     assert rs.INDEX_HTML.count(
-        "renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue)") == 4
+        "renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue)") == 5
     # no call site left on the r9 two-argument form
     assert "renderComments(card.notes, box)" not in rs.INDEX_HTML
     assert "renderComments(q.comments, box)" not in rs.INDEX_HTML
@@ -4218,3 +4220,272 @@ def test_a_file_dropped_outside_the_supply_box_does_not_leave_the_page():
     html = rs.INDEX_HTML
     assert 'window.addEventListener("dragover", function (e) { e.preventDefault(); });' in html
     assert 'window.addEventListener("drop", function (e) { e.preventDefault(); });' in html
+
+
+# --- check requests (spec 5 r22) --------------------------------------------
+
+def _check(derivations, db, subject, sha, note="is this rice?"):
+    """One check request appended the way `thai-syllabus check-request`
+    appends it; returns the open request it became."""
+    from thai_syllabus import checkrequest
+
+    request = checkrequest.resolve(derivations.syllabus, db, subject=subject,
+                                   artifact_sha=sha, note=note)
+    checkrequest.append_check_request(db, request)
+    matches = [r for r in checkrequest.check_requests(db)
+               if r.subject == subject and r.artifact_sha == sha and r.note == note]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _carded_picture(db, media_store, subject, payload=b"pic"):
+    """A judge-passed picture: current-best, so the word's cards show it."""
+    sha = _seed_picture(db, media_store, subject, payload)
+    _judge(db, subject, "picture", sha, True)
+    return sha
+
+
+def test_an_open_check_request_is_asked_first_with_its_artifact_and_note(
+        derivations, db, media_store, w1, w2):
+    _provide(db, w2.id, "picture", items=[{"sha": "sA"}])   # a rate question
+    sha = _carded_picture(db, media_store, w1.id)
+    request = _check(derivations, db, w1.id, sha, note="the bowl may be noodles")
+
+    items = rs.build_queue(derivations, budget=50)
+
+    first = items[0]
+    assert first["type"] == "check"
+    assert first["request"] == request.identity
+    assert (first["subject"], first["kind"], first["subject_kind"]) == (w1.id, "picture", "word")
+    assert first["note"] == "the bowl may be noodles"
+    assert first["artifact"]["sha"] == sha and first["artifact"]["url"] == f"/media/{sha}"
+    assert first["uses"] == [sha]
+    assert first["label"]["thai"] == w1.thai
+    assert first["role"] == "picture-for-word"
+    assert [i["type"] for i in items[1:]].count("rate") >= 1
+
+
+def test_check_requests_count_against_the_learner_budget(derivations, db, media_store, w1, w2):
+    _provide(db, w2.id, "picture", items=[{"sha": "sA"}])
+    sha = _carded_picture(db, media_store, w1.id)
+    _check(derivations, db, w1.id, sha, note="first")
+    _check(derivations, db, w1.id, sha, note="second")
+
+    items = rs.build_queue(derivations, budget=1)
+
+    assert [(i["type"], i["note"]) for i in items] == [("check", "first")]
+    assert [i["type"] for i in rs.build_queue(derivations, budget=2)] == ["check", "check"]
+
+
+@pytest.mark.parametrize("action,rating", [(1, "unacceptable-none"), (3, "acceptable"),
+                                           (4, "good")])
+def test_answering_a_check_request_writes_a_rating_naming_it_and_closes_it(
+        derivations, db, media_store, w1, action, rating):
+    sha = _carded_picture(db, media_store, w1.id)
+    request = _check(derivations, db, w1.id, sha)
+
+    result = rs.append_check_answer(db, request, {"action": action, "note": "bowl is rice"})
+
+    assert result["ok"] is True and result["rating"] == rating
+    row = db.assessments_of(w1.id)[-1]
+    assert (row.port, row.backend, row.key) == ("assess", "learner",
+                                                f"learner:{sha}:picture-for-word")
+    assert row.question == {"role": "picture-for-word", "artifact_sha": sha, "rubric": None,
+                            "kind": "rating", "subject_kind": "word",
+                            "check_request": request.identity}
+    assert row.answer == {"value": rating, "note": "bowl is rice"}
+    assert not [i for i in rs.build_queue(derivations, budget=50) if i["type"] == "check"]
+
+
+def test_a_check_answer_without_a_note_writes_none(derivations, db, media_store, w1):
+    sha = _carded_picture(db, media_store, w1.id)
+    request = _check(derivations, db, w1.id, sha)
+    rs.append_check_answer(db, request, {"action": 3, "note": ""})
+    assert db.assessments_of(w1.id)[-1].answer == {"value": "acceptable"}
+
+
+def test_a_check_answer_offers_no_use_this(derivations, db, media_store, w1):
+    sha = _carded_picture(db, media_store, w1.id)
+    request = _check(derivations, db, w1.id, sha)
+    with pytest.raises(ValueError):
+        rs.append_check_answer(db, request, {"action": 2})
+
+
+def test_unacceptable_on_a_check_request_vetoes_the_sha_so_the_need_re_sources(
+        derivations, db, media_store, w1):
+    from thai_syllabus.derivations import vetoed
+
+    sha = _carded_picture(db, media_store, w1.id)
+    request = _check(derivations, db, w1.id, sha)
+
+    rs.append_check_answer(db, request, {"action": 1})
+
+    assert vetoed(db, w1.id, "picture-for-word", sha)
+    assert rs._best(derivations, w1.id, "picture").artifact_sha is None
+    assert (w1.id, "picture", "word") in available_needs(derivations.syllabus)
+    assert not [c for c in rs.compiled_cards(derivations)
+                if c["subject"] == w1.id and c["shown"]["picture"] == sha]
+
+
+def test_a_check_request_whose_artifact_is_on_no_card_of_its_subject_is_not_asked(
+        derivations, db, media_store, w1):
+    carded = _carded_picture(db, media_store, w1.id, b"current")
+    other = _seed_picture(db, media_store, w1.id, b"a failed candidate")
+    _judge(db, w1.id, "picture", other, False)
+    _check(derivations, db, w1.id, other)
+    current = _check(derivations, db, w1.id, carded)
+
+    checks = [i for i in rs.build_queue(derivations, budget=50) if i["type"] == "check"]
+
+    assert [i["request"] for i in checks] == [current.identity]
+
+
+def _carded_rendition(db, media_store, pair):
+    """A mechanically passed rendition of `pair` whose members' recordings
+    are on the pair's cards; returns (rendition identity, member shas)."""
+    from thai_syllabus.cachekeys import rendition_identity
+    from thai_syllabus.media import Speaker
+
+    db.add_speaker(Speaker(id="somchai", kind="native"))
+    shas = {}
+    for member in pair.members:
+        sha = media_store.write(f"rendition:{pair.id}:{member}".encode(), ext="mp3")
+        db.add_media(sha=sha, kind="recording", ext="mp3", source="forvo",
+                     origin="https://forvo.com/x", licence="cc-by",
+                     acquired=date(2026, 1, 1), speaker_id="somchai")
+        shas[member] = sha
+    _seed_member_pictures(db, media_store, pair)
+    identity = rendition_identity(shas)
+    db.append(port="assess", backend="rendition",
+              key=MechanicalKey(check="rendition", params="v1", subject=str(pair.id),
+                                artifact_sha=identity),
+              subject=pair.id,
+              question={"role": "rendition-for-pair", "artifact_sha": identity, "rubric": None,
+                        "kind": "rendition", "subject_kind": "pair",
+                        "params": {"members": shas}},
+              answer={"value": True})
+    return identity, shas
+
+
+def test_a_rendition_check_request_shows_its_members_and_uses_their_recordings(
+        db, media_store, w1, w2, pair, confusion):
+    from thai_syllabus.wiring import _DbMediaIndex
+
+    identity, shas = _carded_rendition(db, media_store, pair)
+    syllabus = Syllabus(words=(w1, w2), pairs=(pair,), confusions=(confusion,),
+                        media=_DbMediaIndex(db=db, pairs=(pair,)), assessments=db)
+    d = _derivations_for(syllabus, db, media_store)
+    request = _check(d, db, pair.id, identity, note="does the second voice rise?")
+
+    (item,) = [i for i in rs.build_queue(d, budget=50) if i["type"] == "check"]
+
+    assert item["request"] == request.identity
+    assert (item["kind"], item["subject_kind"], item["role"]) == (
+        "rendition", "pair", "rendition-for-pair")
+    assert item["uses"] == [shas[w1.id], shas[w2.id]]
+    assert [m["sha"] for m in item["members"]] == [shas[w1.id], shas[w2.id]]
+    assert item["artifact"] is None
+
+
+def test_the_page_renders_a_check_question_with_its_note_and_keys_1_3_4():
+    html = rs.INDEX_HTML
+    assert 'else if (q.type === "check") { renderCheck(q, box); }' in html
+    assert "function renderCheck(q, box)" in html
+    assert 'el("div", { "class": "check-note" }, q.note)' in html
+    assert ".check-note {" in html
+    # the subject's cards that use the artifact, from /api/cards
+    assert "ensureCards(function () { fillSubjectCards(cards, q.subject, q.uses); });" in html
+    # 1/3/4 only, each with the optional one-line note
+    assert "[1, 3, 4].forEach(function (n) {" in html
+    assert 'id: "checkNote"' in html
+    assert ('if (q.type === "check" && ["1", "3", "4"].indexOf(e.key) !== -1) '
+            '{ answerCheck(q, parseInt(e.key, 10)); }') in html
+    assert "check_request: q.request" in html
+
+
+def test_http_a_check_answer_names_the_request_and_closes_it(live_server, w1, media_store):
+    port, db_path = live_server
+    verify_db = SyllabusDb(db_path)
+    sha = _seed_picture(verify_db, media_store, w1.id)
+    _judge(verify_db, w1.id, "picture", sha, True)
+    from thai_syllabus import checkrequest
+    checkrequest.append_check_request(verify_db, checkrequest.CheckRequest(
+        subject=w1.id, artifact_sha=sha, artifact_kind="picture", subject_kind="word",
+        note="look at the bowl"))
+
+    _status, body = _get(port, "/api/queue")
+    checks = [i for i in json.loads(body) if i["type"] == "check"]
+    assert len(checks) == 1
+    item = checks[0]
+    status, out = _post(port, "/api/answer", {"check_request": item["request"], "action": 1,
+                                              "note": "noodles"})
+
+    assert status == 200 and json.loads(out)["ok"] is True
+    row = SyllabusDb(db_path).assessments_of(w1.id)[-1]
+    assert row.question["check_request"] == item["request"]
+    assert row.answer == {"value": "unacceptable-none", "note": "noodles"}
+    _status, body = _get(port, "/api/queue")
+    assert not [i for i in json.loads(body) if i["type"] == "check"]
+
+
+def test_http_a_check_answer_naming_no_request_answers_400(live_server):
+    port, _db_path = live_server
+    status, out = _post(port, "/api/answer", {"check_request": "0" * 16, "action": 3})
+    assert status == 400 and json.loads(out)["ok"] is False
+
+
+def test_http_note_accepts_a_check_question(live_server, w1):
+    port, _db_path = live_server
+    status, _body = _post(port, "/api/note",
+                          {"subject": w1.id, "card_id": w1.id, "kind": "question",
+                           "subject_kind": "word", "question_kind": "check",
+                           "artifact_kind": "picture", "text": "fine"})
+    assert status == 200
+
+
+_CHECK_VIEW_HARNESS = r"""
+const src = require("fs").readFileSync(0, "utf8");
+function node(tag) {
+  return { tag: tag, text: "", children: [],
+           appendChild(c) { this.children.push(c); return c; },
+           setAttribute() {}, addEventListener() {},
+           set textContent(v) { this.text = String(v); } };
+}
+global.document = { createElement: node };
+const fn = (name) => {
+  const start = src.indexOf("  function " + name + "(");
+  const end = src.indexOf("\n  }\n", start);
+  return src.slice(start, end + 4);
+};
+eval(fn("el") + fn("renderCheck"));
+function subjectHeader(q, suffix) { return el("div", {}, q.subject + suffix); }
+function artifactView(kind, art) { return el("div", {}, kind + " " + art.sha); }
+function renderRenditionMembers(q, box) { box.appendChild(el("div", {}, "members")); }
+function renderComments() {}
+function ensureCards() {}
+function loadQueue() {}
+const box = node("div");
+renderCheck(JSON.parse(process.argv[1]), box);
+const texts = [];
+(function walk(n) { if (n.text) texts.push(n.text); n.children.forEach(walk); })(box);
+process.stdout.write(JSON.stringify(texts));
+"""
+
+
+def test_the_check_view_shows_the_note_the_artifact_and_only_1_3_4(
+        derivations, db, media_store, w1):
+    import shutil
+    import subprocess
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    sha = _carded_picture(db, media_store, w1.id)
+    _check(derivations, db, w1.id, sha, note="the bowl may be noodles")
+    (item,) = [i for i in rs.build_queue(derivations, budget=50) if i["type"] == "check"]
+
+    out = subprocess.run(["node", "-e", _CHECK_VIEW_HARNESS, json.dumps(item)],
+                         input=rs.INDEX_HTML, capture_output=True, text=True, check=True)
+    texts = json.loads(out.stdout)
+
+    assert texts[:3] == [f"{w1.id} — check request", "the bowl may be noodles",
+                         f"picture {sha}"]
+    assert [t for t in texts if t[0] in "1234"] == ["1 unacceptable", "3 acceptable", "4 good"]

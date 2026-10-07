@@ -8,6 +8,7 @@
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...] [--judge-asks M]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
                           [--poll-max-seconds S] [--max-wait-seconds S]
+    thai-syllabus check-request --deck DIR --subject S --sha X --note TEXT
     thai-syllabus restore  --deck DIR
 
 Each command wires itself through wiring.py: load_syllabus() for the
@@ -27,7 +28,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import anki_collection, anki_import, migrate as migrate_mod, record, reviewserver
+from . import (anki_collection, anki_import, checkrequest, migrate as migrate_mod, record,
+               reviewserver)
 from .assessor import JudgeUnreachable
 from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
@@ -95,6 +97,24 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         print("dropped cards:")
         for d in report.dropped:
             print(f"  {d.family}/{d.kind} {d.subject}: {d.reason}")
+    return 0
+
+
+def _cmd_check_request(args: argparse.Namespace) -> int:
+    """Appends one check request (spec 5 r22): the review site asks it
+    first. An append, as review's are: no snapshot, no curated commit
+    (spec 2 section 6)."""
+    derivations = load_derivations(args.deck)
+    try:
+        request = checkrequest.resolve(derivations.syllabus, derivations.db,
+                                       subject=args.subject, artifact_sha=args.sha,
+                                       note=args.note)
+    except ValueError as e:
+        print(f"check-request: {e}", file=sys.stderr)
+        return 1
+    checkrequest.append_check_request(derivations.db, request)
+    print(f"check request on {request.subject} ({request.subject_kind}): "
+          f"{request.artifact_kind} {request.artifact_sha}")
     return 0
 
 
@@ -372,6 +392,16 @@ def main(argv: list[str] | None = None, *,
                         "it); default 21600 (6 hours) -- the longest of eleven "
                         "measured batches took 188 minutes")
 
+    p = sub.add_parser("check-request",
+                       help="put an artifact to the learner on the review site, with a note "
+                            "saying what to look at (spec 5 r22)")
+    p.add_argument("--deck", type=Path, required=True)
+    p.add_argument("--subject", required=True,
+                   help="a word id, a sentence text_sha or a pair id")
+    p.add_argument("--sha", required=True,
+                   help="a picture or recording sha, or a pair's rendition identity")
+    p.add_argument("--note", required=True, help="what to look at")
+
     p = sub.add_parser(
         "restore",
         help="put the last snapshot and the pre-command curated state back "
@@ -417,6 +447,8 @@ def main(argv: list[str] | None = None, *,
             return _cmd_compile(args)
         if args.command == "run":
             return _cmd_run(args, sleep=sleep)
+        if args.command == "check-request":
+            return _cmd_check_request(args)
         if args.command == "restore":
             try:
                 report = restore(args.deck)
