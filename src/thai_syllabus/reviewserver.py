@@ -1890,6 +1890,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 <script>
 (function () {
   "use strict";
+  // A file dropped anywhere but the supply box would make the browser
+  // open it in place of the page.
+  window.addEventListener("dragover", function (e) { e.preventDefault(); });
+  window.addEventListener("drop", function (e) { e.preventDefault(); });
 
   var POS_KEY = "review_pos";
   var GLOSS_KEY = "review_gloss";

@@ -4210,3 +4210,11 @@ def test_the_gallery_clears_the_loading_the_queue_status():
     set_mode = rs.INDEX_HTML[rs.INDEX_HTML.index("function setMode(next)"):]
     set_mode = set_mode[:set_mode.index("\n  }\n")]
     assert 'setStatus("");' in set_mode
+
+
+def test_a_file_dropped_outside_the_supply_box_does_not_leave_the_page():
+    """A drop the box doesn't catch would make the browser open the file
+    in place of the page."""
+    html = rs.INDEX_HTML
+    assert 'window.addEventListener("dragover", function (e) { e.preventDefault(); });' in html
+    assert 'window.addEventListener("drop", function (e) { e.preventDefault(); });' in html
