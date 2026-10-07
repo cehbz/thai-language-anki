@@ -33,7 +33,9 @@ from .assessor import LearnerAskNotSupported, Price
 from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
 from .record import search_form
 from .ports import CacheReader, RecordWriter
-from .transport import Completion, FetchRefused, QuotaExhausted, TransportError, Usage
+from .audio import NoSpeech
+from .transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused, TransportError,
+                        Usage)
 
 __all__ = [
     "Question", "ProviderAnswer", "RawAnswer", "Backend", "MediaWriter",
@@ -100,10 +102,12 @@ class Backend(Protocol):
 class MediaWriter(Protocol):
     """The slice of store.MediaStore that binary-artifact backends
     (imgfetch, audiofetch, tts) need: content-addressed bytes-in, sha-out;
-    `add_image` additionally normalizes (spec 4 section 3).
+    `add_image` additionally normalizes a picture (spec 4 section 3) and
+    `add_recording` conditions a recording (spec 1 r33).
     """
     def write(self, data: bytes, ext: str) -> str: ...
-    def add_image(self, data: bytes, ext: str) -> "ImageIngestResult": ...
+    def add_image(self, data: bytes, ext: str) -> "IngestResult": ...
+    def add_recording(self, data: bytes, ext: str) -> "IngestResult": ...
 
 
 @runtime_checkable
@@ -722,7 +726,10 @@ def _refusal_line(stdout: str) -> dict | None:
 @dataclass
 class FetchBackend:
     """url -> bytes -> media store -> sha, for pictures (normalized
-    through add_image) and recordings (stored raw), at cost 0. Every
+    through add_image) and recordings (conditioned through
+    add_recording), at cost 0; bytes neither can decode are a format
+    refusal, a recording with no speech (spec 1 r33) a no-speech refusal.
+    Every
     question param but url is echoed into the item (speaker,
     speaker_kind, source, origin), the attempt's provenance.
     """
@@ -735,15 +742,15 @@ class FetchBackend:
     def fetch(self, question: Question) -> RawAnswer:
         url = question.params["url"]
         data, ext = self.fetcher(url)
-        if question.provides == "picture-bytes":
-            try:
-                ingest = self.media.add_image(data, ext)
-            except ValueError as e:
-                raise FetchRefused(reason="format", detail=str(e)) from e
-            sha_, ext = ingest.sha, ingest.ext
-        else:
-            ext = ext if ext in ("mp3", "ogg", "wav") else "mp3"
-            sha_ = self.media.write(data, ext)
+        add = (self.media.add_image if question.provides == "picture-bytes"
+               else self.media.add_recording)
+        try:
+            ingest = add(data, ext)
+        except NoSpeech as e:
+            raise FetchRefused(reason="no-speech", detail=str(e)) from e
+        except ValueError as e:
+            raise FetchRefused(reason="format", detail=str(e)) from e
+        sha_, ext = ingest.sha, ingest.ext
         item = {k: v for k, v in question.params.items() if k != "url"}
         item.update({"sha": sha_, "ext": ext})
         return RawAnswer(items=(item,), cost=0.0)
@@ -826,7 +833,9 @@ class TtsBackend:
     `params["ssml"]` through the engine's SSML input (spec 3 r65), keyed
     and costed over whichever the ask carries. `cost_per_char` is the
     configured rate (providers.yaml `tts`), carried by the backend that
-    incurs it (spec 3 section 2's "measured by the backend").
+    incurs it (spec 3 section 2's "measured by the backend"). An answer
+    with no speech (spec 1 r33) is a SynthesisRefused, so it caches
+    nothing and a later attempt asks again (spec 3 r66).
     """
     tts: Any  # thai_syllabus.tts.Tts -- synthesize(text, voice) -> bytes
     voices: Sequence[str]
@@ -850,8 +859,11 @@ class TtsBackend:
         voice = self._voice(question)
         audio = (self.tts.synthesize_ssml(text, voice) if question.params.get("ssml")
                  else self.tts.synthesize(text, voice))
-        artifact_sha = self.media.write(audio, "mp3")
-        return RawAnswer(items=({"sha": artifact_sha, "ext": "mp3", "voice": voice,
+        try:
+            ingest = self.media.add_recording(audio, "mp3")
+        except NoSpeech as e:
+            raise SynthesisRefused(f"tts answered {voice} with {e}") from e
+        return RawAnswer(items=({"sha": ingest.sha, "ext": ingest.ext, "voice": voice,
                                  "speaker_kind": "synthetic", "source": "tts",
                                  "origin": voice},),
                          cost=len(text) * self.cost_per_char)

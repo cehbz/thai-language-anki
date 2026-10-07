@@ -27,6 +27,7 @@ from thai_syllabus import record as record_mod
 from thai_syllabus import reviewserver as rs
 from thai_syllabus.assessor import RecordingCheckBackend, mechanical_question
 from thai_syllabus.attempts import sources_for
+from thai_syllabus.audio import condition_recording
 from thai_syllabus.authority import role_for
 from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, CommentReadingKey, DirectionKey, FlagKey,
                                     JudgeKey, LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
@@ -42,7 +43,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import Derivations, sources_for_need_of
 
-from .builders import PROV, sentence, syl, pron, target, thai_of, word
+from .builders import PROV, clip, sentence, syl, pron, target, thai_of, word
 
 # The recording check's current key (wiring._recording_check's params).
 _MECH_KEY = RecordingCheckBackend(resolve_path=lambda sha: None).cache_key
@@ -1485,7 +1486,7 @@ def test_a_supplied_recording_on_a_sentence_subject_carries_its_subject_kind(
         tmp_path, derivations, db):
     ctx = rs.ReviewContext(derivations=derivations)
     src = tmp_path / "clip.mp3"
-    src.write_bytes(b"fake-mp3-bytes")
+    src.write_bytes(clip())
     rs.append_supply(ctx, {"subject": "sent-sha-2", "kind": "recording", "source": "path",
                           "value": str(src), "subject_kind": "sentence"})
     rows = db.assessments_of("sent-sha-2")
@@ -1701,7 +1702,7 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
 
     def fake_audio_fetcher(url):
         calls.append(url)
-        return b"fake-mp3-bytes", "mp3"
+        return clip(), "mp3"
 
     ctx = rs.ReviewContext(derivations=derivations, url_fetchers={"recording": fake_audio_fetcher})
     out = rs.append_supply(ctx, {"subject": w1.id, "kind": "recording", "source": "url",
@@ -1726,11 +1727,11 @@ def test_supplied_recording_url_uses_audiofetch(derivations, db, media_store, w1
     assert best.source == "mechanical"
 
 
-def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
+def test_supplied_recording_from_local_path_is_stored_conditioned(
         tmp_path, derivations, db, media_store, w1):
-    """A local recording is a direct learner act -- MediaStore.write, not
-    add_image: recordings are never normalized (spec 4 section 3
-    normalizes pictures only). It still appends its own `provide` row
+    """A local recording is ingested through MediaStore.add_recording:
+    the stored, sha'd artifact is the conditioned mp3 (spec 1 r33, spec 4
+    section 3). It still appends its own `provide` row
     (backend="learner"), matching what a URL supply gets through
     Provider.ask; record.candidate_shas and derivations._anchor_ts read
     the artifact through that row (F1 defect 8). recording-for-word names
@@ -1741,14 +1742,15 @@ def test_supplied_recording_from_local_path_writes_the_real_ext_unnormalized(
     becomes current-best once one passes it.
     """
     src = tmp_path / "candidate.wav"
-    src.write_bytes(b"fake-wav-bytes")
+    src.write_bytes(clip(fmt="wav"))
     ctx = rs.ReviewContext(derivations=derivations)
     out = rs.append_supply(ctx, {"subject": w1.id, "kind": "recording", "source": "path",
                                  "value": str(src)})
     assert out["ok"] is True
     sha = out["artifact_sha"]
-    assert media_store.has(sha, "wav")
-    assert media_store.path_for(sha, "wav").read_bytes() == b"fake-wav-bytes"
+    assert media_store.has(sha, "mp3")
+    assert media_store.path_for(sha, "mp3").read_bytes() == condition_recording(clip(fmt="wav"), "wav")
+    assert db.media_provenance(sha)["ext"] == "mp3"
     assert db.media_provenance(sha)["speaker_id"] == "learner"
 
     assert sha in record_mod.candidate_shas(record_mod.rows_for(db, w1.id, "recording"))
@@ -3271,6 +3273,24 @@ def test_http_supply_of_a_missing_home_relative_path_answers_400_and_writes_noth
     assert json.loads(body) == {"ok": False, "error": f"no such file: {resolved}"}
     verify_db = SyllabusDb(db_path)
     assert verify_db.assessments_of(w1.id) == []
+
+
+def test_http_supply_of_a_recording_with_no_speech_answers_400_and_writes_nothing(
+        live_server, w1, tmp_path, no_speech):
+    """Spec 1 r33: a clip holding no speech is refused at ingest."""
+    port, db_path = live_server
+    src = tmp_path / "quiet.mp3"
+    src.write_bytes(clip())
+    status, body = _post(port, "/api/supply", {"subject": w1.id, "kind": "recording",
+                                               "source": "path", "value": str(src)})
+    assert status == 400
+    assert "no speech" in json.loads(body)["error"]
+    verify_db = SyllabusDb(db_path)
+    assert verify_db.assessments_of(w1.id) == []
+    assert verify_db.speaker("learner") is None
+    assert verify_db.latest("provide", "learner",
+                            ProvideKey(source="learner", kind="", query=str(src))) is None
+    assert list((tmp_path / "media" / "objects").iterdir()) == []
 
 
 def test_http_supply_of_a_missing_file_url_answers_400_with_the_plain_path(live_server, w1):

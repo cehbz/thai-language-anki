@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 65, proposed 2026-10-04 against principles r8 and architecture
+Revision 66, proposed 2026-10-07 against principles r8 and architecture
 r5. Revision process: docs/principles.md.
 
 Revision log:
@@ -259,6 +259,7 @@ Revision log:
 - r63 2026-10-03: the cli judge transport sends the judge's or role's model and effort per request, keeps no session, runs in safe mode and offers no tool but Read; a cli call costs no cash, and every LLM answer's row records the tokens its completion reported, which the run report shows per subscription backend; `drafter.model` and `drafter.effort` (§8) are the cli drafter's own, unset sending nothing; the judge's asks are capped per invocation (`run --judge-asks M`) and per day (its budget, counted from its verdict rows), and at the cap a need the judge decides counts budgeted; the sentence attempt waits until every unjudged draft on record has been served (§5). Evidence: the judge moves to the subscription for the sentence enrichment; the pronunciation role keeps Opus 5.5 at high; a run with `--backend-cap judge=0` made 7 verdicts. User rulings 2026-10-03: subscription work is measured in quota, never dollars; the drafter keeps the CLI's default model unless configured.
 - r64 2026-10-03: `pacer` (§8) configures the quota pacer: judge calls are released each tick up to the week's unused pace-line allowance, under a 5-hour-window ceiling and a per-tick cap. Evidence: the subscription exposes no scriptable quota except through a mod's usage() call, and the weekly window is several 5-hour windows deep, so spreading is the only way to spend it. User ruling 2026-10-03.
 - r65 2026-10-04: a filled Cloze slot of an adopted sentence has a gapped recording need, the sentence by TTS with a 600 ms SSML break in place of the slot's word, in the sentence's voice or its marking's pool, checked as a sentence recording (subject kind `slot`, its bound plus 0.6 s per break), for spec 4 r13's AudioCloze front; every pair member Word has a picture need, judged as a word's, for the identification front; a recited-name Word is adopted with no Target (spec 1 r32) and keeps its recording and chart-cell picture needs; a drafting ask hands seed Targets or the others, never both, a run making one ask of each kind when both are open, and only the others get the vocabulary floor, so a seed Target's sentences are drafted over the picture words up to the furthest handed Target and the met glue words; `pacer.import` (true), `pacer.anki_connect_url` and `pacer.collection_path` (§8): a tick harvests the collection's reviews through AnkiConnect while Anki is open and from the collection file while it is closed, and while Anki is open compiles a deck changed since the last import and imports it through AnkiConnect. Evidence: the text Cloze front shows the Thai sentence, so it waits for every word's reading (principles r8 E1) and the hearing stage needs a production card by ear; 18 of 55 pairs have pictures for both members, 34 for one and 3 for none, since a member without a Target has no picture need; 2 adopted sentences use only the first 50 picture words, none of their Targets open; adopted sentences reached Anki only by a hand import. User rulings 2026-10-02 (the floor keeps applying to sentence-introduced Targets) and 2026-10-04.
+- r66 2026-10-07: the mechanical recording check's floor is 0.1 s (was 0.2), measured on the conditioned clip (spec 1 r33); a clip refused at ingest for holding no speech is a failed fetch that caches no answer, so a later attempt asks the source again (a tts key is voice and text, so a cached refusal would answer that ask forever); a learner supply of one is refused with the reason and appends no row. Evidence: two Chirp3-HD pair clips, จะ "will" and ไป "go", were 0.26 s peaking at −39.5/−38.6 dBFS and passed the duration-only check with floor 0.2 s; at peak−40 the shortest trimmed real clip is 0.232 s. User ruling 2026-10-07.
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -347,7 +348,7 @@ one speaker answers empty.
 | wikimedia | picture (search hits with url, via generator=search + prop=imageinfo; gsrsearch carries `filetype:bitmap`; imageinfo asks `iiurlwidth` = providers.yaml `image_width`, default 1600, and the hit's url is the scaled `thumburl`, origin the file page) | wikimedia:query | free HTTP | same |
 | imgfetch, audiofetch (bytes) | picture-bytes, recording-bytes | url | free | a refusal is typed (§6a): served or wire; never cached against the url |
 | forvo | recording; rendition (intersection of members' lookups: same username across members); an item is a candidate of the asked form only when its recorded `word` is that form (NFC, zero-width marks removed; r49) | forvo:WORD (per member) | 1 request per lookup and per mp3 download (an audiofetch row attributed to forvo counts as one); the day budget is §8's; a `Limit/day reached.` body is Quota (§6a) | re-asked once per attempt when a url has expired (§6a) |
-| tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked |
+| tts | recording; rendition (one voice across members) | tts:VOICE:sha(TEXT) | cash per character | never re-asked; an answer refused at ingest (no speech, spec 1 r33) caches nothing (r66) |
 | commission | recording; rendition | batch item id | money + weeks | out/in via batch files |
 | llm | sentence (per run over open targets), parse (clauses for given texts), phrase (a picture need's image query in two forms, r36), comment (readings of learner comments, per run), entry | llm:PRODUCER:MODEL:sha(PROMPT) | cash or quota per transport | never re-asked; the prompt text is the contract |
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
@@ -360,7 +361,7 @@ one speaker answers empty.
 | backend | roles | key | authority |
 |---|---|---|---|
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), sentence-for-target-other-voice (naturalness as its marked speaker's sentence), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
-| mechanical | recording: duration (a word 0.2-5 s; a sentence at least 0.2 s and at most 1 s plus 1 s per deck word, r55; a gapped recording that bound plus 0.6 s per break, r65), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.2-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.2-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence, mech:recording:0.2-1.0+1.0pw+0.6pb;own-word-v1:SUBJECT:sha for a gapped recording | ground truth for what it checks |
+| mechanical | recording: duration of the conditioned clip (spec 1 r33; a word 0.1-5 s; a sentence at least 0.1 s and at most 1 s plus 1 s per deck word, r55, r66; a gapped recording that bound plus 0.6 s per break, r65), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.1-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.1-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence, mech:recording:0.1-1.0+1.0pw+0.6pb;own-word-v1:SUBJECT:sha for a gapped recording | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
 | learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
@@ -588,12 +589,14 @@ contradicts it is vetoed once through the learner path (an
 recording-for-sentence) and re-sourced under the constraint. Forvo attempt: lookup (cached; the §6a
 re-ask rule on an expired url; only items recording the asked form are
 candidates, r49), download each candidate's mp3 with its recorded word on
-the bytes row, the mechanical recording check on each (duration: 0.2-5 s
-for a word, 0.2 s to 1 s plus 1 s per deck word for a sentence, r55; a
+the bytes row, the mechanical recording check on each (duration: 0.1-5 s
+for a word, 0.1 s to 1 s plus 1 s per deck word for a sentence, r55, r66; a
 Forvo clip's recorded word is the subject's own form); the item's sex and
 country are recorded on the speaker (spec 2); current-best by authority
 then provenance prior. TTS attempt: synthesize with a pool voice (the
-roster's sex is recorded on the speaker), then mechanical. TTS supplies
+roster's sex is recorded on the speaker), then mechanical; a synthesis
+refused at ingest (no speech) caches nothing and is asked again by a
+later attempt (r66). TTS supplies
 sex and timbre only; Forvo and commissions supply age and accent.
 `recording/synthetic` warns when current-best is TTS.
 
@@ -962,8 +965,8 @@ Every ask and fetch ends in one of four states:
 A backend appends a row only for an answer it positively recognized
 (§2). A refusal carries a typed reason, never matched as text: the
 fetchers report `{"refused": kind, "detail": ...}` on stdout, kind one
-of wire | http | content-type | too-large | format | io; wire is not
-served, every other kind is.
+of wire | http | content-type | too-large | format | io, and audiofetch's
+ingest adds no-speech (r66); wire is not served, every other kind is.
 
 **Re-ask rule.** A served refusal of a url taken from a cached answer
 (a Forvo lookup, an image search) re-asks that answer once within the

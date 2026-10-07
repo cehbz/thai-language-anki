@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 32, proposed 2026-10-04 against principles r8 and architecture
+Revision 33, proposed 2026-10-07 against principles r8 and architecture
 r5. Revision process: docs/principles.md.
 
 Revision log:
@@ -80,6 +80,7 @@ Revision log:
 - r30 2026-10-02: a Target may want several sentences (default one) and is open until that many adopted sentences fill it; one with a sentence and short of its count is target/sentences-wanted (warn), which leaves the gate open. Evidence: a sentence-introduced word has no card of its own, and none of the 424 adopted sentences used ไม่ (not), มี (have), เป็น (be), จะ (will), ได้ (can) or แล้ว (already). User ruling 2026-10-02.
 - r31 2026-10-03: a sentence is placed where clause 3 first admits it: its entry, or directly after the adopted sentence whose fill leaves at most one of its sentence-introduced words unmet; order() deals it there. Evidence: all 23 draft rows for the last 8 open Targets paired the Target with a word met only by a later-placed sentence and were refused as introducing two words, though the prompt offers every met word. User ruling 2026-10-03.
 - r32 2026-10-04: the sounds stage is the pairs; a grapheme is no order() entry, its card placed by compile just before the first Reading card in order of a word containing it and present while any such Reading card is; a cluster onset touches its head consonant's confusions; a recited-name Word carries no Target and keeps its category, its recording need and its chart-cell picture need (it is not a closure word); staging (§3): a word is heard at its position, said P later and read D after it is heard once readable, readable meaning no segmental confusion its pronunciation touches blocks it (spec 2 r21) or its Reading card has a review, so readability latches, its script on its other cards once its Reading card has a review, and a sentence's text and its text Cloze wait until every word it uses is read, its AudioCloze card P after its Listening card; a studied AudioCloze pair counts for clause 4 as a studied Cloze pair; order() reads no study, the staging does; seed sentences: the first picture words' receptive Targets want two sentences (r30), drafted over spec 3 r65's vocabulary; gaps() adds gapped recordings, pair members' pictures and the recited-name Words' needs. Evidence: principles r8 (F1, F6, F8, E1); on the live deck every picture word touches the tone and length confusions (776 of 776) and 100/187/489 touch 0/1/2+ segmental ones; the sounds block put 42 graphemes and their 84 name-word Targets ahead of every vocabulary word; 2 adopted sentences use only the first 50 picture words. User ruling 2026-10-04.
+- r33 2026-10-07: a Recording's bytes are conditioned before they are hashed: a clip in which voice activity detection finds no speech (Silero VAD: no window's speech probability reaches 0.25) is refused at ingest; leading and trailing audio more than 40 dB below the clip's own peak is trimmed, 50 ms kept at each end, inner silence untouched; loudness is normalized to −20 LUFS by linear gain, true peak held below −1.5 dBTP. Evidence: two Chirp3-HD pair clips, จะ "will" and ไป "go", were 0.26 s peaking at −39.5/−38.6 dBFS and passed the duration-only check with floor 0.2 s; 15 Forvo clips peak −25 to −33 dB; at peak−40 the shortest trimmed real clip is 0.232 s; under VAD the two silent clips scored 0.046 and 0.059, a flat Forvo clip 0.103, every other of the deck's 2,696 clips 0.31 or more (2,690 at 0.73 or more); a peak floor would have had 3 dB of margin (silent −39.5/−38.6 dBFS, quietest real −33.3) and a floor-relative spread did not separate them; under the −1.5 dBTP ceiling 93% of the trimmed clips reach −20 LUFS by linear gain and 32% reach −16. User ruling 2026-10-07.
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -241,6 +242,14 @@ Speaker   { id: str, kind: Literal[native, synthetic],
                                              # as coverage
 Provenance{ source: str, origin: str, licence: str, acquired: date }
 ```
+
+A Recording's bytes are conditioned before they are hashed. A clip in
+which voice activity detection finds no speech (Silero VAD: no window's
+speech probability reaches 0.25) is refused at ingest. Otherwise leading
+and trailing audio more than 40 dB below the clip's own peak is trimmed,
+50 ms kept at each end; inner silence is untouched (a gapped clip's
+breaks survive); loudness is normalized to −20 LUFS (integrated, linear
+gain, true peak held below −1.5 dBTP).
 
 Media relationships live on the consuming side and are derived from the
 record (spec 2), never fields of the entities above: word→picture (single

@@ -28,6 +28,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .audio import condition_recording
 from .cachekeys import CacheKey, WaiverKey
 from .entities import Clauses, Sentence, clauses_from_json, clauses_to_json
 from .media import Provenance, Speaker
@@ -522,9 +523,9 @@ _FORMAT_EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 
 
 @dataclass(frozen=True)
-class ImageIngestResult:
-    """MediaStore.add_image's return value: the sha (and extension) the
-    normalized bytes were written under.
+class IngestResult:
+    """MediaStore.add_image's and add_recording's return value: the sha
+    (and extension) the normalized or conditioned bytes were written under.
     """
     sha: str
     ext: str
@@ -586,7 +587,7 @@ class MediaStore:
             tmp.replace(path)
         return sha
 
-    def add_image(self, data: bytes, ext: str) -> ImageIngestResult:
+    def add_image(self, data: bytes, ext: str) -> IngestResult:
         """Ingest normalization (spec 4 section 3): the stored, sha'd bytes
         are the normalized file -- what a judge or the card itself sees is
         identical.
@@ -596,7 +597,13 @@ class MediaStore:
         except Exception as exc:
             raise ValueError(f"cannot decode image: {exc}") from exc
         written_sha = self.write(normalized, out_ext)
-        return ImageIngestResult(sha=written_sha, ext=out_ext)
+        return IngestResult(sha=written_sha, ext=out_ext)
+
+    def add_recording(self, data: bytes, ext: str) -> IngestResult:
+        """Ingest conditioning (spec 1 r33, spec 4 section 3): the stored,
+        sha'd, checked bytes are the conditioned mp3 (audio.condition_recording).
+        """
+        return IngestResult(sha=self.write(condition_recording(data, ext), "mp3"), ext="mp3")
 
     def has(self, sha: str, ext: str) -> bool:
         return self._object_path(sha, ext).exists()

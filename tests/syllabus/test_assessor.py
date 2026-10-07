@@ -410,12 +410,12 @@ def _sentence_check(tmp_path, *, words, duration):
 @pytest.mark.parametrize("words,duration,passes", [
     (2, 2.9, True), (2, 3.1, False),
     (8, 6.5, True), (8, 9.1, False),
-    (2, 0.1, False),
+    (2, 0.09, False), (2, 0.1, True),
 ])
 def test_a_sentence_recordings_duration_bound_is_one_second_plus_one_per_deck_word(
         tmp_path, words, duration, passes):
-    """Spec 3 r55: a sentence clip passes from 0.2 s up to 1 s plus 1 s
-    per deck word (Sentence.word_count)."""
+    """Spec 3 r55, r66: a sentence clip passes from 0.1 s up to 1 s plus
+    1 s per deck word (Sentence.word_count)."""
     raw = _sentence_check(tmp_path, words=words, duration=duration)
     assert raw.value is passes, raw.evidence
 
@@ -447,7 +447,7 @@ def test_a_sentence_with_no_word_count_is_a_preparation_error(tmp_path):
 
 
 def test_the_sentence_recording_key_differs_from_the_word_window_key():
-    """A sentence clip checked under the 0.2-5.0 window is re-checked by
+    """A sentence clip checked under the 0.1-5.0 window is re-checked by
     the run's re-verification pass (spec 3 r49) under its own key; a word
     clip keeps its key."""
     backend = RecordingCheckBackend(resolve_path=lambda sha: sha)
@@ -457,8 +457,8 @@ def test_the_sentence_recording_key_differs_from_the_word_window_key():
             subject="s", role=f"recording-for-{subject_kind}", artifact_sha="deadbeef",
             kind="recording", subject_kind=subject_kind)).encode()
 
-    assert key("word") == "mech:recording:0.2-5.0;own-word-v1:s:deadbeef"
-    assert key("sentence") == "mech:recording:0.2-1.0+1.0pw;own-word-v1:s:deadbeef"
+    assert key("word") == "mech:recording:0.1-5.0;own-word-v1:s:deadbeef"
+    assert key("sentence") == "mech:recording:0.1-1.0+1.0pw;own-word-v1:s:deadbeef"
 
 
 def test_format_mechanical_key_uses_code_version_when_no_params_express_it():
@@ -519,6 +519,11 @@ def test_ffprobe_failing_on_an_existing_file_is_a_preparation_error(tmp_path):
     corrupt.write_bytes(b"junk")
     with pytest.raises(PreparationError):
         ffprobe_duration_seconds(str(corrupt), runner=lambda cmd, **k: sp.CompletedProcess(cmd, 1, "", "Invalid data"))
+
+
+def test_the_recording_floor_is_a_tenth_of_a_second():
+    """Spec 3 r66: the floor is measured on the conditioned clip."""
+    assert RecordingCheckBackend(resolve_path=lambda sha: sha).lo == 0.1
 
 
 def test_ffprobe_that_cannot_run_is_a_transport_error(tmp_path):

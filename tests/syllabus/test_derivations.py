@@ -1713,7 +1713,7 @@ def test_a_word_clip_decided_under_the_current_word_key_does_not_await(cache):
     cache.rows.append(mechanical_row("rice", "recording-for-word", "a" * 64, True))
     cache.rows.append(mechanical_row("rice", "recording-for-word", "b" * 64, False))
     assert _MECH_KEY(mechanical_question("rice", "recording", "word", "a" * 64)).encode() == (
-        f"mech:recording:0.2-5.0;own-word-v1:rice:{'a' * 64}")
+        f"mech:recording:0.1-5.0;own-word-v1:rice:{'a' * 64}")
     assert unjudged_candidates(cache, "rice", "recording", current_rubric={},
                                mechanical_key=_MECH_KEY) == ()
 

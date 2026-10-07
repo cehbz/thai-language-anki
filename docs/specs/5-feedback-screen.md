@@ -185,7 +185,8 @@ stops; unanswered questions stay queued. Question kinds:
    actions: type a
    direction, or supply an artifact (file path or URL; a URL is fetched
    by kind, imgfetch for pictures and audiofetch for recordings; the
-   bytes go through the media ingest path, normalized, with a
+   bytes go through the media ingest path, a picture normalized and a
+   recording conditioned (spec 4 §3), with a
    provenance row source=learner, and an implicit use-this). The supply
    action also appears on every rating question about a picture or
    recording, not only here once exhausted (r16). A typed

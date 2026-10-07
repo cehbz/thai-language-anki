@@ -22,7 +22,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion
 from thai_syllabus.wiring import build_sourcing, load_syllabus
 
-from .builders import sentence, target, thai_of, word
+from .builders import clip_for, sentence, target, thai_of, word
 from .test_run import (RICE, _Llm as _DraftLlm, _LlmPhrase, _deck as _batch_fixture_deck, _wire,
                        fake_batch, fake_search)
 
@@ -120,7 +120,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
         "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
-        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
+        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (clip_for(url), "mp3"))})
     ctx.assessor._backends["judge"].complete = _judge_complete
     ctx.assessor._backends["mechanical"].duration_of = lambda path: 1.0
 
@@ -562,7 +562,7 @@ def test_a_runs_judge_spend_sums_the_tokens_its_verdicts_reported(tmp_path):
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
         "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
-        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
+        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (clip_for(url), "mp3"))})
 
     def complete(prompt, attachments=(), **kw):
         verdict = _judge_complete(prompt, attachments)
@@ -584,7 +584,7 @@ def _counting_ctx(root, calls: list):
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
         "imgfetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
-        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (url.encode(), "mp3"))})
+        "audiofetch": FetchBackend(media=ctx.media_store, fetcher=lambda url: (clip_for(url), "mp3"))})
 
     def complete(prompt, attachments=(), **kw):
         calls.append(prompt)

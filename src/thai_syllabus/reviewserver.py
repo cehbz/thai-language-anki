@@ -1045,10 +1045,10 @@ def _append_supply_provide_row(ctx: "ReviewContext", *, subject: str, value: str
 
 def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any], subject: str,
                                source: str, value: str) -> tuple[str, str]:
-    """A recording is never normalized (spec 4 section 3 normalizes
-    pictures only): a URL's bytes are fetched through audiofetch's
-    FetchBackend, which stores them raw under their real ext; a local
-    file's bytes go straight to MediaStore.write under the same real ext.
+    """A recording is conditioned at ingest (spec 1 r33, spec 4 section
+    3): a URL's bytes are fetched through audiofetch's FetchBackend, a
+    local file's read here, and either way stored through
+    MediaStore.add_recording as the conditioned mp3.
     """
     if source == "url":
         provider = Provider(ctx.record, ctx.cache,
@@ -1064,8 +1064,8 @@ def _ingest_supplied_recording(ctx: "ReviewContext", payload: Mapping[str, Any],
         return str(item["sha"]), str(item["ext"])
     if source == "path":
         data = _read_supplied_bytes(value)
-        ext = _guessed_ext(value, payload, "recording")
-        sha = ctx.media_store.write(data, ext)
+        ingest = ctx.media_store.add_recording(data, _guessed_ext(value, payload, "recording"))
+        sha, ext = ingest.sha, ingest.ext
         _append_supply_provide_row(ctx, subject=subject, value=value, kind="recording",
                                    provides="recording-bytes", sha=sha, ext=ext,
                                    subject_kind=payload.get("subject_kind", "word"))
@@ -1077,7 +1077,7 @@ def append_supply(ctx: "ReviewContext", payload: Mapping[str, Any]) -> dict[str,
     """Spec 5 section 1 kind 2's supply action: {subject, kind:
     "picture"|"recording", source: "path"|"url", value, note?, ext?}. The
     bytes go through the ingest path for their kind (imgfetch/add_image
-    for a picture, audiofetch/MediaStore.write for a recording), then a
+    for a picture, audiofetch/add_recording for a recording), then a
     provenance row with source=learner and, for a recording, the
     "learner" Speaker row. A URL goes through Provider.ask, appending its
     own cache-first `provide` row; a local path appends its own

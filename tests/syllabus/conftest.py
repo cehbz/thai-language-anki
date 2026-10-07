@@ -43,3 +43,21 @@ def real_default_engines(request, monkeypatch):
                    and getattr(m, "default_engines", None) is real]:
         monkeypatch.setattr(module, "default_engines", _refuse)
     return real
+
+
+@pytest.fixture
+def no_speech(monkeypatch):
+    """Every clip holds no speech (`audio.holds_speech` answers False): the
+    ingest refusal's plumbing, tested apart from the rule that decides it."""
+    from thai_syllabus import audio
+    monkeypatch.setattr(audio, "holds_speech", lambda data, ext, runner=None: False)
+
+
+@pytest.fixture(autouse=True)
+def clips_hold_speech(monkeypatch):
+    """Every clip holds speech (`audio.holds_speech` answers True): the
+    suite's clips are synthetic tones, which Silero VAD hears as no speech.
+    test_audio.py tests the real rule through its own import of the
+    function; `no_speech` turns the answer to False."""
+    from thai_syllabus import audio
+    monkeypatch.setattr(audio, "holds_speech", lambda data, ext, runner=None: True)

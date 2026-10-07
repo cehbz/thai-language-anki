@@ -62,7 +62,7 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
 from thai_syllabus.wiring import build_sourcing
 
-from .builders import sentence, syl, target, thai_of, word
+from .builders import clip_for, sentence, syl, target, thai_of, word
 
 # --- a fixture deck and fake backends --------------------------------------
 
@@ -289,7 +289,7 @@ def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None,
         "imgfetch": FetchBackend(media=ctx.media_store,
                                  fetcher=lambda url: (_jpeg_bytes(url), "jpg")),
         "audiofetch": FetchBackend(media=ctx.media_store,
-                                   fetcher=lambda url: (url.encode(), "mp3"))})
+                                   fetcher=lambda url: (clip_for(url), "mp3"))})
     if batch is not None:
         ctx.assessor._backends["judge"].batch_transport = batch
     if complete is not None:
@@ -1264,7 +1264,7 @@ def test_the_fake_assessor_keys_only_the_mechanical_backend():
     q = AssessQuestion(subject="rice", role="recording-for-word", artifact_sha="a" * 64,
                        kind="recording", subject_kind="word")
     assert _Assessor().key_of("mechanical", q).encode() == (
-        f"mech:recording:0.2-5.0;own-word-v1:rice:{'a' * 64}")
+        f"mech:recording:0.1-5.0;own-word-v1:rice:{'a' * 64}")
     with pytest.raises(KeyError):
         _Assessor().key_of("judge", q)
 
@@ -2709,7 +2709,7 @@ def test_a_directed_sentence_with_no_passing_candidate_is_untouched(db, monkeypa
 
 class _FakeTtsEngine:
     def synthesize(self, text, voice):
-        return f"{text}-{voice}".encode()
+        return clip_for(f"{text}-{voice}")
 
 
 def test_a_same_pass_retirement_skips_the_sentences_other_still_queued_needs(

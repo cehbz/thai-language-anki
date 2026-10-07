@@ -903,7 +903,7 @@ def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.
 
 @dataclass
 class RecordingCheckBackend:
-    """The mechanical recording check (spec 3 section 4, r49, r55): the
+    """The mechanical recording check (spec 3 section 4, r49, r55, r66): the
     clip's duration lies within [lo, hi] seconds for a word subject,
     within [lo, sentence_base + sentence_per_word * N] for a sentence
     subject of N deck words (`word_count_of(subject)`, Sentence.word_count),
@@ -923,7 +923,7 @@ class RecordingCheckBackend:
     (PreparationError otherwise).
     """
     resolve_path: Callable[[str | None], str | Path | None]
-    lo: float = 0.2
+    lo: float = 0.1
     hi: float = 5.0
     sentence_base: float = 1.0
     sentence_per_word: float = 1.0

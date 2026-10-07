@@ -61,7 +61,7 @@ from thai_syllabus.tts import pick_voice
 from thai_syllabus.wiring import _DbMediaIndex, _recorded_form_of
 
 from .builders import sentence as compose_sentence
-from .builders import syl, target, thai_of, word
+from .builders import clip_for, syl, target, thai_of, word
 from .fakes import FakeMediaIndex
 
 # This fixture's own role -> rubric map (rulebook.rubrics_for covers only
@@ -166,12 +166,12 @@ class _Tts:
 
     def synthesize(self, text, voice):
         self.voices.append(voice)
-        return f"{text}-{voice}".encode()
+        return clip_for(f"{text}-{voice}")
 
     def synthesize_ssml(self, ssml, voice):
         self.voices.append(voice)
         self.ssml.append(ssml)
-        return f"{ssml}-{voice}".encode()
+        return clip_for(f"{ssml}-{voice}")
 
     @property
     def last_voice(self):
@@ -334,7 +334,7 @@ def _recording_ctx(tmp_path, syllabus, forvo_items=(), *, mechanical=None, durat
         rubrics=dict(_RUBRICS), provenance_prior=("commission", "forvo", "tts")))
     ctx = _sourcing(tmp_path, syllabus, media=media, backends={
         "forvo": _Forvo(forvo_items),
-        "audiofetch": FetchBackend(media=media, fetcher=lambda url: (url.encode(), "mp3")),
+        "audiofetch": FetchBackend(media=media, fetcher=lambda url: (clip_for(url), "mp3")),
         "tts": TtsBackend(tts=tts, voices=list(_MALE) + list(_FEMALE), media=media,
                           pick_voice=pick_voice)},
         assess={"mechanical": mechanical or default_mechanical,
@@ -3210,7 +3210,7 @@ class _PartialTts:
         self.calls += 1
         if self.calls > 1:
             raise TransportError("tts down after the first member")
-        return f"{text}-{voice}".encode()
+        return clip_for(f"{text}-{voice}")
 
 
 def test_a_forvo_recording_attempt_writes_a_candidates_outcome(tmp_path):

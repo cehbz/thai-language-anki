@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 14, proposed 2026-10-07 against principles r8 and architecture
+Revision 15, proposed 2026-10-07 against principles r8 and architecture
 r5. Revision process: docs/principles.md.
 
 Revision log:
@@ -28,6 +28,7 @@ Revision log:
 - r12 2026-10-02: a spelling group's Listening, Reading and Spelling cards are compiled once, on its first picture-introduced Word's note (gated by the appended field FormSide); the Listening and Reading backs list the group's other members, each with its picture and meaning, after the note's own (the appended field OtherSenses); the Spelling back is unchanged; each member keeps its Production card. A Word alone in its form compiles and renders as under r11. Evidence: 29 of the 33 card/unique-front findings on the live deck were same-spelling Words (12 groups). The notetype change needs "Merge note types" on an import into a collection that holds r11's word notetype, or that notetype is deleted with the deck at a cutover (§5). User ruling 2026-10-02.
 - r13 2026-10-04: cards are staged by kind (§2): a word's Listening card at its position, Production P = 5 later, Reading and Spelling D = 50 after Listening and present only once the word is readable (spec 1 r32, the field Readable); ScriptShown, set once the word is read (its Reading card reviewed), gates Thai and IPA on a word's other backs, and a sentence's, set once every word it uses is read, gates the text on its Listening back and the text Cloze fronts; an AudioCloze card per filled slot plays spec 3 r65's gapped recording over the scene picture, P after the sentence's Listening card; a grapheme, no longer an order() entry, sits just before the first Reading card in order of a word whose form contains it, present while any such Reading card is, the recited name playing on its front; a pair's Recognition card is present only once every member has a picture, its front offering them, its script on the back only; the notetype changes and the new dues are taken at a cutover (§5). Evidence: all four word cards were due in one block, so a word's Reading card followed its Listening card; the deck's first cards, the pair fronts, showed Thai script; the sounds block put 42 graphemes and 84 name-word Targets ahead of every vocabulary word; only 18 of the 42 keyword Words carry a Target, so a letter cannot ride its keyword's Reading card; Anki's import skips an existing (guid, ord), so it never re-dues a card. User ruling 2026-10-04.
 - r14 2026-10-07: the pair Recognition card takes a tap: a tapped picture is the learner's choice and shows the back, which says whether it was the stimulus; the pictures stack in portrait and sit side by side otherwise, both on one screen; the back plays the stimulus first, then the other members, and no longer repeats the front's pictures. Evidence: on AnkiDroid the two pictures overflowed the screen, any tap revealed the back, and the back autoplayed only the other member beside "you heard" (audio inside FrontSide never autoplays). User ruling 2026-10-07.
+- r15 2026-10-07: recordings are conditioned at ingest (spec 1 r33) as images are normalized (§3); the stored, sha'd, checked artifact is the conditioned file. Evidence: two Chirp3-HD pair clips, จะ "will" and ไป "go", were 0.26 s peaking at −39.5/−38.6 dBFS and passed the duration-only check with floor 0.2 s; 15 Forvo clips peak −25 to −33 dB. User ruling 2026-10-07.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -238,8 +239,11 @@ package manifest maps them; a missing current-best artifact drops the
 dependent card (never an empty front), counted in the compile report.
 Images are normalized at ingest — bounded long edge, aspect preserved,
 metadata stripped, re-encoded — and the stored, sha'd, judged artifact
-is the normalized file: the judge sees the pixels the card shows. CSS
-retains only final fit-to-viewport.
+is the normalized file: the judge sees the pixels the card shows.
+Recordings are conditioned at ingest (spec 1 §1: no-speech refusal,
+trimmed ends, normalized loudness) and the stored, sha'd, checked
+artifact is the conditioned file: the check measures the clip the card
+plays. CSS retains only final fit-to-viewport.
 
 ## 4. Return path
 

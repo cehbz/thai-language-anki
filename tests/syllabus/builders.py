@@ -1,6 +1,8 @@
 """Terse constructors for tests -- not part of the domain, just less
 boilerplate around the frozen dataclasses' full field lists.
 """
+import functools
+import hashlib
 from collections.abc import Callable
 from datetime import date
 
@@ -49,3 +51,19 @@ def sentence(clauses: Clauses, thai_of: Callable[[WordId], str], *,
              gloss: str = "", voice: str = "learner_voice") -> Sentence:
     return Sentence(clauses=clauses, text=render(clauses, thai_of), gloss=gloss,
                     voice=voice, provenance=PROV)
+
+
+def clip(seconds: float = 0.4, freq: int = 440, fmt: str = "mp3") -> bytes:
+    """A real audio clip (a sine tone, ffmpeg lavfi), for paths that
+    condition recordings (spec 1 r33); distinct `freq` gives distinct bytes."""
+    import subprocess
+    return subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                           f"sine=f={freq}:r=24000:d={seconds}", "-f", fmt, "pipe:1"],
+                          capture_output=True, check=True).stdout
+
+
+@functools.lru_cache(maxsize=None)
+def clip_for(text: str) -> bytes:
+    """A real clip standing for `text` (a fake TTS's or fetcher's answer):
+    equal text gives equal bytes, distinct text a distinct tone."""
+    return clip(freq=200 + int(hashlib.sha256(text.encode()).hexdigest()[:6], 16) % 3000)

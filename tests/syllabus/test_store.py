@@ -658,3 +658,41 @@ def test_add_image_refuses_undecodable_bytes(tmp_path):
     media_store = MediaStore(tmp_path)
     with pytest.raises(ValueError, match="decode"):
         media_store.add_image(b"not really an image", ext="jpg")
+
+
+# --- MediaStore.add_recording: ingest conditioning (spec 1 r33) -----------
+
+def _tone_clip(tmp_path) -> bytes:
+    import subprocess
+    out = tmp_path / "in.mp3"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "anullsrc=r=24000:cl=mono:d=0.4", "-f", "lavfi", "-i", "sine=f=440:r=24000:d=0.4",
+                    "-filter_complex", "[0][1]concat=n=2:v=0:a=1[out]", "-map", "[out]",
+                    str(out)], check=True)
+    return out.read_bytes()
+
+
+def test_add_recording_stores_and_hashes_the_conditioned_bytes(tmp_path):
+    from thai_syllabus.audio import condition_recording
+    import hashlib
+    raw = _tone_clip(tmp_path)
+    store = MediaStore(tmp_path / "media")
+    result = store.add_recording(raw, ext="mp3")
+    conditioned = condition_recording(raw, "mp3")
+    assert result.ext == "mp3"
+    assert result.sha == hashlib.sha256(conditioned).hexdigest()
+    assert store.path_for(result.sha, "mp3").read_bytes() == conditioned
+    assert not store.has(hashlib.sha256(raw).hexdigest(), "mp3")
+
+
+def test_add_recording_refuses_undecodable_bytes(tmp_path):
+    with pytest.raises(ValueError, match="decode"):
+        MediaStore(tmp_path).add_recording(b"not really audio", ext="mp3")
+
+
+def test_add_recording_refuses_a_clip_with_no_speech_and_stores_nothing(tmp_path, no_speech):
+    from thai_syllabus.audio import NoSpeech
+    store = MediaStore(tmp_path / "media")
+    with pytest.raises(NoSpeech):
+        store.add_recording(_tone_clip(tmp_path), ext="mp3")
+    assert list((tmp_path / "media" / "objects").iterdir()) == []

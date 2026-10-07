@@ -47,9 +47,11 @@ from thai_syllabus.provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from thai_syllabus.store import ImageIngestResult, MediaStore, SyllabusDb
-from thai_syllabus.transport import Completion, QuotaExhausted, TransportError, Usage
+from thai_syllabus.store import IngestResult, MediaStore, SyllabusDb
+from thai_syllabus.transport import Completion, QuotaExhausted, SynthesisRefused, TransportError, Usage
 from thai_syllabus.tts import GoogleTts, pick_voice
+
+from .builders import clip
 
 
 @pytest.fixture
@@ -949,7 +951,7 @@ def test_require_image_generator_refuses_an_unknown_provider_by_name():
 
 class _Media:
     def __init__(self):
-        self.written, self.images = [], []
+        self.written, self.images, self.recordings = [], [], []
 
     def write(self, data, ext):
         self.written.append((data, ext))
@@ -957,7 +959,11 @@ class _Media:
 
     def add_image(self, data, ext):
         self.images.append((data, ext))
-        return ImageIngestResult(sha="img-" + ext, ext=ext)
+        return IngestResult(sha="img-" + ext, ext=ext)
+
+    def add_recording(self, data, ext):
+        self.recordings.append((data, ext))
+        return IngestResult(sha="rec-" + ext, ext="mp3")
 
 
 def test_fetch_backend_key_is_the_url():
@@ -967,17 +973,18 @@ def test_fetch_backend_key_is_the_url():
     assert key.encode() == "::https://x/y.jpg"
 
 
-def test_fetch_backend_stores_recording_bytes_raw_and_echoes_params():
+def test_fetch_backend_ingests_recording_bytes_through_add_recording_and_echoes_params():
     media = _Media()
-    b = FetchBackend(media=media, fetcher=lambda url: (b"mp3bytes", "mp3"))
+    b = FetchBackend(media=media, fetcher=lambda url: (b"oggbytes", "ogg"))
     q = Question(subject="w", provides="recording-bytes",
                  params={"url": "https://apifree.forvo.com/x.mp3", "speaker": "krisflyer",
                         "speaker_kind": "native"})
     assert b.cache_key(q).encode() == "::https://apifree.forvo.com/x.mp3"
     ans = b.fetch(q)
-    assert media.written == [(b"mp3bytes", "mp3")] and media.images == []
+    assert media.recordings == [(b"oggbytes", "ogg")]
+    assert media.written == [] and media.images == []
     item = ans.items[0]
-    assert item["sha"] == "sha-mp3" and item["speaker"] == "krisflyer"
+    assert item["sha"] == "rec-ogg" and item["ext"] == "mp3" and item["speaker"] == "krisflyer"
     assert item["speaker_kind"] == "native"
     assert "url" not in item and ans.cost == 0.0
 
@@ -1123,6 +1130,29 @@ def test_fetch_backend_reports_an_undecodable_image_as_a_format_refusal(tmp_path
     assert err.value.reason == "format" and err.value.served is True
 
 
+def test_fetch_backend_reports_an_undecodable_recording_as_a_format_refusal(tmp_path):
+    from thai_syllabus.transport import FetchRefused
+    backend = FetchBackend(media=MediaStore(tmp_path / "media"),
+                           fetcher=lambda url: (b"not audio", "mp3"))
+    with pytest.raises(FetchRefused) as err:
+        backend.fetch(Question(subject="w", provides="recording-bytes", params={"url": "https://x/a.mp3"},
+                               kind="recording", subject_kind="word"))
+    assert err.value.reason == "format"
+
+
+def test_fetch_backend_refuses_a_recording_with_no_speech_uncached(tmp_path, db, no_speech):
+    from thai_syllabus.transport import FetchRefused
+    provider = Provider(db, db, {"audiofetch": FetchBackend(
+        media=MediaStore(tmp_path / "media"), fetcher=lambda url: (clip(), "mp3"))})
+    q = Question(subject="w", provides="recording-bytes", params={"url": "https://x/a.mp3"},
+                 kind="recording", subject_kind="word")
+    with pytest.raises(FetchRefused) as err:
+        provider.ask("audiofetch", q)
+    assert err.value.reason == "no-speech" and err.value.served is True
+    assert db.latest("provide", "audiofetch", ProvideKey(source="", kind="",
+                                                         query="https://x/a.mp3")) is None
+
+
 # --- forvo: never re-asked, key = forvo:WORD ----------------------------
 
 def test_forvo_cache_key_is_forvo_colon_word():
@@ -1258,19 +1288,20 @@ def test_tts_cache_key_includes_the_picked_voice_and_sha_of_text(tmp_path):
     assert key.query == sha("ผมกินข้าว")  # I eat rice
 
 
-def test_tts_fetch_writes_synthesized_audio_content_addressed(tmp_path):
+def test_tts_fetch_ingests_synthesized_audio_through_add_recording():
     from thai_syllabus.provider import TtsBackend
 
     class _FakeTts:
         def synthesize(self, text, voice):
             return f"{voice}:{text}".encode()
 
-    media = MediaStore(tmp_path / "media")
+    media = _Media()
     backend = TtsBackend(tts=_FakeTts(), voices=["v1"], media=media, pick_voice=pick_voice)
     answer = backend.fetch(Question(subject="s", provides="recording",
                                     params={"text": "hi", "voice": "v1"}))
     assert answer.items[0]["voice"] == "v1"
-    assert media.has(answer.items[0]["sha"], "mp3")
+    assert media.recordings == [(b"v1:hi", "mp3")] and media.written == []
+    assert answer.items[0]["sha"] == "rec-mp3" and answer.items[0]["ext"] == "mp3"
 
 
 def test_tts_synthesizes_an_ssml_ask_as_ssml_keyed_over_its_text(tmp_path):
@@ -1291,15 +1322,41 @@ def test_tts_synthesizes_an_ssml_ask_as_ssml_keyed_over_its_text(tmp_path):
             return b"gapped"
 
     tts = _FakeTts()
+    media = _Media()
     ssml = '<speak>กิน<break time="600ms"/></speak>'   # กิน: eat, then the gap
-    backend = TtsBackend(tts=tts, voices=["v1"], media=MediaStore(tmp_path / "media"),
+    backend = TtsBackend(tts=tts, voices=["v1"], media=media,
                          pick_voice=pick_voice, cost_per_char=0.5)
     question = Question(subject="sha:rice/productive", provides="recording",
                         params={"ssml": ssml, "voice": "v1"})
     assert backend.cache_key(question) == ProvideKey(source="tts", kind="v1", query=sha(ssml))
     answer = backend.fetch(question)
     assert tts.asked == [("ssml", ssml)]
+    assert media.recordings == [(b"gapped", "mp3")]
     assert answer.cost == len(ssml) * 0.5
+
+
+def test_a_tts_answer_with_no_speech_is_refused_uncached_and_asked_again(tmp_path, db, no_speech):
+    """Spec 3 r66: an ingest refusal caches no answer -- a tts key is
+    voice + text, so a cached refusal would answer that ask forever."""
+    from thai_syllabus.provider import TtsBackend
+
+    class _SilentTts:
+        calls = 0
+
+        def synthesize(self, text, voice):
+            self.calls += 1
+            return clip()
+
+    tts = _SilentTts()
+    backend = TtsBackend(tts=tts, voices=["v1"], media=MediaStore(tmp_path / "media"),
+                         pick_voice=pick_voice)
+    provider = Provider(db, db, {"tts": backend})
+    q = Question(subject="w", provides="recording", params={"text": "จะ", "voice": "v1"})  # จะ: will
+    for _ in range(2):
+        with pytest.raises(SynthesisRefused, match="no speech"):
+            provider.ask("tts", q)
+    assert tts.calls == 2
+    assert db.latest("provide", "tts", backend.cache_key(q)) is None
 
 
 def test_tts_is_deterministic_same_subject_same_voice():
