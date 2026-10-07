@@ -46,29 +46,22 @@ Revision log:
   r10); the `word_form` target kind, which no spec defines, removed from
   F5 and E5; the card taxonomy table moved to spec 4 §1; the open-items
   section moved to TODO.md. No other principle's meaning changed.
-- r4 2026-09-11: F13, nothing is grandfathered. Evidence: 15 adopted
-  sentences whose every recording exceeded the duration cap sat in the
-  deck with no path to a recording; user ruling 2026-09-11.
+- r4 2026-09-11: F13, nothing is grandfathered. User ruling 2026-09-11.
+  Evidence: KB thai-language-anki/revision-evidence (principles r4).
 - r5 2026-09-17: F6 gains one sentence -- the recited names are learned
-  as speech, receptively and productively. Evidence: Thai speakers spell
-  with the names (กอ ไก่ "gɔɔ gài", the name of ก), so a learner who
-  cannot say them cannot ask how a word is spelled; design 2026-09-12
-  step 7. No other principle's meaning changed. User approval 2026-09-17.
+  as speech, receptively and productively. No other principle's meaning
+  changed. User approval 2026-09-17. Evidence: KB
+  thai-language-anki/revision-evidence (principles r5).
 - r6 2026-09-18: E4 narrowed to pair membership -- corroboration is
   required where a pronunciation is computed on (minimal-pair
   membership), not merely where it is shown as reference beside audio.
-  Evidence: TTS synthesizes from Thai script, never from the stored IPA,
-  so the transcription never reaches the learner's ear; user ruling
-  2026-09-18.
+  User ruling 2026-09-18. Evidence: KB
+  thai-language-anki/revision-evidence (principles r6).
 - r7 2026-10-01: E7 -- a sentence's recording follows its speaker marking
   and is otherwise any voice, productive backs included; a word's
-  productive audio keeps a male voice. Evidence: since spec 1 r25, 416 of
-  424 sentences serve a productive Target, so the male-voice rule would
-  have made every future sentence recording male (94 of 413 are female
-  today); the learner must also recognize female speakers, and a sentence
-  marked for the learner's own sex is voiced male by its marking. F7's
-  sentence clause names the text's register, not the voice. User ruling
-  2026-10-01.
+  productive audio keeps a male voice. F7's sentence clause names the
+  text's register, not the voice. User ruling 2026-10-01. Evidence: KB
+  thai-language-anki/revision-evidence (principles r7).
 - r8 2026-10-04: hearing before reading. F1: the pairs are the first
   cards, and a word's reading waits until every segmental confusion its
   pronunciation touches is stable in the study evidence; F6: a recited
@@ -82,16 +75,8 @@ Revision log:
   that needs it; F8: the derived order reorders freely, but an imported
   card keeps its due, so a reorder reaches Anki only through a cutover;
   E6: study evidence also decides when a word's reading and script are
-  dealt. Evidence: an unfamiliar script shown while words are learned
-  inhibited a hard contrast against no orthography (Mathieu 2016) and,
-  for 114 learners, into high proficiency (Shepperd, Hellmuth & Roberts
-  2026); a new script beat familiar letters with incongruent values
-  (Hayes-Harb & Cheng 2016); Wyner's own order is ear training first and
-  claims no listening benefit from the script; no study varies when a
-  script is introduced, so reading opens on a signal, not a word count;
-  on the live deck every picture word touches the tone and length
-  confusions and 100/187/489 touch 0/1/2+ segmental ones; research log
-  2026-10-04. User ruling 2026-10-04.
+  dealt. User ruling 2026-10-04. Evidence: KB
+  thai-language-anki/revision-evidence (principles r8).
 
 ## Lens 1 — "Is this a well-formed Anki deck?"
 

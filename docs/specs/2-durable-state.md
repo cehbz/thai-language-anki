@@ -24,10 +24,8 @@ Revision log:
   key rule; §4 reduced to the standing carry-over contract (spec 3 §10
   merged here); §5 retired. No behavior changed.
 - r13 2026-09-11: review is not a writing command (§6): it appends
-  learner rows only and runs alongside a writing command. Evidence: the
-  screen was stopped three times in one day to make way for a run and an
-  import while the user was reviewing; every image and audio on the open
-  page broke and the notes typed meanwhile were lost.
+  learner rows only and runs alongside a writing command. Evidence: KB
+  thai-language-anki/revision-evidence (spec 2 r13).
 - r14 2026-09-12: words.yaml is learner-owned; the run writes adjudicated
   pronunciations and adopted rows under its writing command (spec 3 r28).
   User approval 2026-09-12.
@@ -45,10 +43,8 @@ Revision log:
   graphemes.yaml by adoption (spec 3 r40's grapheme pass), under the
   writing command like every other curated write; it never removes one,
   so the Guard has nothing to account for and the additions show in
-  curated git. Evidence: the sound stage's 42 adoptable consonants carry
-  42 Grapheme rows, 42 recited-name Words with two Targets each and the
-  keyword Words the vocabulary lacks; proposing each by hand is the work
-  the run exists to do. User approval 2026-09-17.
+  curated git. User approval 2026-09-17. Evidence: KB
+  thai-language-anki/revision-evidence (spec 2 r17).
 - r18 2026-09-17: `media.source` may be `glyph` (spec 3 r41's chart cell:
   licence `generated`, origin the grapheme's symbol), the value the
   provenance prior and the feedback screen's caption read; providers.yaml
@@ -57,16 +53,12 @@ Revision log:
 - r19 2026-09-18: an old-deck IPA string that parses to a degenerate
   reading (spec 3 r44) is refused at the migration boundary and
   reported like an unparseable one, rather than written as
-  `curated_exception`. Evidence: eleven of the live deck's seventeen
-  looped pronunciations arrived this way -- migrate labelled every
-  parsed old-deck IPA `curated_exception`, the one corroboration the
-  adjudication pass never revisits, so a decoder loop became the
-  curator's own ruling and nothing could correct it. The label is
-  unchanged for every reading that is not degenerate, so a fresh
-  migration does not block the ~600 sound rows' cards. User approval
-  2026-09-18.
-- r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. Evidence: spec 4 r9 gives each productive Target a sentence fills its own Cloze note. User ruling 2026-10-01.
-- r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). Evidence: principles r8 (F1) gates a word's reading on its segmental confusions; the study table holds 12 rows, none on a pair, so every confusion is unstable today. User ruling 2026-10-04.
+  `curated_exception`. The label is unchanged for every reading that is
+  not degenerate, so a fresh migration does not block the ~600 sound rows'
+  cards. User approval 2026-09-18. Evidence: KB
+  thai-language-anki/revision-evidence (spec 2 r19).
+- r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. User ruling 2026-10-01. Evidence: KB thai-language-anki/revision-evidence (spec 2 r20).
+- r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 2 r21).
 - r22 2026-10-07: the revlog import reads the deck's own collection file only; AnkiConnect is removed (spec 4 r16). User ruling 2026-10-07.
 
 Scope: what persists, where, in what shape; the interfaces the domain core

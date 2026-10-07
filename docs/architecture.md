@@ -26,7 +26,7 @@ Revision log:
   TODO.md. No other statement changed.
 - r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7; a sentence's cards as siblings of one note and its guid after spec 4 r11. No new decision.
 - r5 2026-10-04: a sentence's cards gain an AudioCloze card per filled productive Target (spec 4 r13); order() puts the pairs first and compile stages the rest, so dues come from order() and the staging, which reads the study record (spec 1 r32, spec 4 r13); a reorder reaches Anki only through a cutover (principles r8 F8). No new decision.
-- r6 2026-10-07: the deck holds its own Anki collection, synced with AnkiWeb by the deck's own process; the Mac and the phone are study clients (§5, §6, §7; spec 4 r16). Evidence: the AnkiConnect harvest read only reviews newer than the newest held and missed late-synced phone reviews; harvest and import needed Anki open on a Mac that sleeps and travels; a harvest made 7,564 per-card getDecks backend calls. User ruling 2026-10-07.
+- r6 2026-10-07: the deck holds its own Anki collection, synced with AnkiWeb by the deck's own process; the Mac and the phone are study clients (§5, §6, §7; spec 4 r16). User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (architecture r6).
 
 ## 1. Shape of the system
 
