@@ -691,11 +691,11 @@ def _shown_of(entry: Mapping[str, Any]) -> dict[str, Any]:
     most simply: direct list equality, order and count both meaningful,
     no prefix-scanning of dynamic key names.
 
-    Deduplicated, first-seen order: every model's own afmt opens with
-    `{{FrontSide}}` (compile.py's convention -- the back replays the
-    front, then adds its own content), so `back_html` already repeats
-    whatever `front_html` shows; scanning the concatenation raw would
-    double-count a front recording as if it were a second one.
+    Deduplicated, first-seen order: most models' afmt opens with
+    `{{FrontSide}}`, and the minimal_pair back places the front's
+    `{{Audio}}` itself, so `back_html` repeats a front recording;
+    scanning the concatenation raw would double-count it as if it were
+    a second one.
     """
     html = entry["front_html"] + entry["back_html"]
     picture = _SHOWN_PICTURE_RE.search(html)

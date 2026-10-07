@@ -16,7 +16,7 @@ import pytest
 from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.compile import (
-    CLOZE_SLOTS, GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
+    CARD_CSS, CLOZE_SLOTS, GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
     compile_syllabus, thai_cloze,
 )
 from thai_syllabus.entities import (
@@ -2398,6 +2398,86 @@ def test_a_pairs_front_offers_its_members_as_pictures_in_member_order(fx):
         assert values["Stimulus"] in answer and values["Ipa"] in answer
         assert heard_img in answer
         assert other_thai in answer and values["OtherIpa"] in answer
+
+
+def _pair_cards(fx):
+    """(field values, front, back, pictures) for each p1 member note."""
+    deck, pictures = _pair_with_pictures(fx, "near", "far")
+    pair_notes = [b for b in deck.built if b.family == "minimal_pair"]
+    assert len(pair_notes) == 2
+    for built in pair_notes:
+        front, back = render_card(MINIMAL_PAIR_MODEL, built.note, 0)
+        yield field_values(MINIMAL_PAIR_MODEL, built.note), front, back, pictures
+
+
+def test_a_pair_back_does_not_repeat_the_fronts_pictures(fx):
+    """Spec 4 r14: the back shows the stimulus's picture only."""
+    assert "{{FrontSide}}" not in MINIMAL_PAIR_MODEL.templates[0]["afmt"]
+    for values, front, back, pictures in _pair_cards(fx):
+        heard, other = ("near", "far") if values["Stimulus"] == "ใกล้" else ("far", "near")  # near
+        assert back.count("<img") == 1
+        assert f'<img src="{pictures[heard]}.jpg">' in back
+        assert f'<img src="{pictures[other]}.jpg">' not in back
+        assert back.startswith('<hr id="answer">')
+
+
+def test_a_pair_back_plays_the_stimulus_then_the_other_members(fx):
+    """Spec 4 r14: {{Audio}} sits on the back itself (FrontSide audio
+    never autoplays), ahead of {{OtherAudio}}."""
+    for values, _front, back, _pictures in _pair_cards(fx):
+        assert back.count(values["Audio"]) == 1
+        assert back.index(values["Audio"]) < back.index(values["OtherAudio"])
+        stimulus_at = back.index(values["Audio"])
+        assert back.index(values["Stimulus"]) < stimulus_at
+        assert stimulus_at < back.index(values["OtherThai"])
+
+
+def test_a_pair_front_picture_tap_records_the_choice_and_reveals(fx):
+    """Spec 4 r14: each picture is wrapped in an anchor whose handler is
+    the onclick property (what AnkiDroid's reviewers detect); a tap
+    clears any stored choice on load, stores the tapped index and shows
+    the back. MemberKey stays off the front, so fronts compare by audio
+    and pictures alone."""
+    for values, front, _back, _pictures in _pair_cards(fx):
+        assert values["MemberKey"] not in front
+        assert front.index('sessionStorage.removeItem') < front.index("sessionStorage.setItem")
+        assert 'href = "javascript:void(0)"' in front
+        assert '"tappable"' in front
+        assert ".onclick = function" in front
+        assert "addEventListener" not in front
+        assert "sessionStorage.setItem" in front and "window.pairChoice" in front
+        assert front.index('pycmd("ans")') < front.index("showAnswer()")
+        assert 'typeof pycmd !== "undefined"' in front
+        assert 'typeof showAnswer === "function"' in front
+
+
+def test_a_pair_back_says_whether_the_tapped_choice_was_the_stimulus(fx):
+    """Spec 4 r14: the result line compares the stored tapped index
+    with the stimulus's index from MemberKey, which is never
+    shown as text."""
+    for values, _front, back, _pictures in _pair_cards(fx):
+        assert f'id="pair-result" class="result" data-key="{values["MemberKey"]}"' in back
+        assert back.count(values["MemberKey"]) == 1
+        assert "window.pairChoice" in back and "sessionStorage.getItem" in back
+        assert "sessionStorage.removeItem" in back
+        assert 'key.split(":").pop()' in back
+        assert "right" in back and "you chose the other word" in back
+
+
+def test_the_pair_choices_sit_side_by_side_or_stack_in_portrait():
+    """Spec 4 r14: both pictures on one screen in either orientation."""
+    import re
+    assert re.search(r"\.choices \{[^}]*display: flex;[^}]*flex-direction: row;", CARD_CSS)
+    assert re.search(r"\.choices img \{[^}]*max-height: 80vh;", CARD_CSS)
+    portrait = CARD_CSS[CARD_CSS.index("@media (orientation: portrait)"):]
+    assert re.search(r"\.choices \{[^}]*flex-direction: column;", portrait)
+    assert re.search(r"\.choices img \{[^}]*max-height: 38vh;", portrait)
+    assert MINIMAL_PAIR_MODEL.css == CARD_CSS
+
+
+def test_the_pair_recognition_meaning_describes_the_tap():
+    meaning = CARD_MEANINGS[("minimal_pair", "recognition")]
+    assert "tap" in meaning and "played" in meaning
 
 
 def test_a_pair_with_a_member_lacking_a_picture_is_absent_and_counted(fx):

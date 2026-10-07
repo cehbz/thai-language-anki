@@ -84,6 +84,17 @@ img { max-width: 100%; height: auto; }
 .gloss, .grammar, .classifier { font-size: 20px; color: #555; }
 .nightMode .card { color: #ddd; background: #2f2f31; }
 .nightMode .ipa, .nightMode .other { color: #999; }
+.choices { display: flex; flex-direction: row; justify-content: center;
+           align-items: center; gap: 12px; }
+.choices > a, .choices > img { max-width: 48%; }
+.choices img { display: block; max-height: 80vh; object-fit: contain; }
+.stimulus img { max-height: 40vh; }
+.result { font-weight: bold; }
+@media (orientation: portrait) {
+  .choices { flex-direction: column; }
+  .choices > a, .choices > img { max-width: 100%; }
+  .choices img { max-height: 38vh; }
+}
 """
 
 
@@ -157,22 +168,70 @@ WORD_MODEL = _model(
     }],
     appended=("OtherSenses", "FormSide", "ScriptShown", "Readable"))
 
-# The minimal_pair note (spec 4 r13): Choices is every member's picture
-# in member order, so the front asks by ear and by picture alone; the
-# heard member's picture, Thai and IPA are on the back, with every other
-# member's Thai, IPA and recording.
+# The minimal_pair note (spec 4 r13, r14): Choices is every member's
+# picture in member order, so the front asks by ear and by picture
+# alone. The front's script clears any stored choice, then wraps each
+# picture in an anchor whose onclick property (what AnkiDroid's
+# reviewers detect as a tap target) stores the picture's index and
+# shows the back. The back carries no {{FrontSide}}: its result line compares the
+# stored index with the stimulus's (MemberKey's last component), then
+# come the stimulus's picture, Thai, IPA and {{Audio}}, then every other
+# member's Thai, IPA and {{OtherAudio}}, autoplaying in that order.
+_PAIR_FRONT_SCRIPT = """<script>
+(function () {
+  window.pairChoice = undefined;
+  try { sessionStorage.removeItem("pairChoice"); } catch (e) {}
+  var box = document.getElementById("pair-choices");
+  if (!box) return;
+  var imgs = Array.prototype.slice.call(box.getElementsByTagName("img"));
+  imgs.forEach(function (img, i) {
+    var a = document.createElement("a");
+    a.href = "javascript:void(0)";
+    a.className = "tappable";
+    img.parentNode.insertBefore(a, img);
+    a.appendChild(img);
+    a.onclick = function () {
+      window.pairChoice = String(i);
+      try { sessionStorage.setItem("pairChoice", String(i)); } catch (e) {}
+      if (typeof pycmd !== "undefined") pycmd("ans");
+      else if (typeof showAnswer === "function") showAnswer();
+      return false;
+    };
+  });
+})();
+</script>"""
+
+_PAIR_BACK_SCRIPT = """<script>
+(function () {
+  var el = document.getElementById("pair-result");
+  if (!el) return;
+  var key = el.getAttribute("data-key");
+  var raw = window.pairChoice;
+  if (!raw) { try { raw = sessionStorage.getItem("pairChoice"); } catch (e) {} }
+  window.pairChoice = undefined;
+  try { sessionStorage.removeItem("pairChoice"); } catch (e) {}
+  if (raw === undefined || raw === null) return;
+  var heard = key.split(":").pop();
+  el.textContent = raw === heard ? "\u2713 right" : "\u2717 you chose the other word";
+})();
+</script>"""
+
 MINIMAL_PAIR_MODEL = _model(
     "minimal_pair",
     ["MemberKey", "Speaker", "Choices", "Audio", "Stimulus", "Ipa", "OtherIpa", "OtherAudio"],
     [{
         "name": "Recognition",
         "qfmt": '{{Audio}}<div>Which word did you hear?</div>'
-               '<div class="choices">{{Choices}}</div>',
-        "afmt": '{{FrontSide}}<hr id="answer">'
-               '<div class="answer">you heard: {{Stimulus}} '
-               '<span class="ipa">[{{Ipa}}]</span></div>{{StimulusPicture}}'
-               '<div class="other">{{OtherThai}} <span class="ipa">[{{OtherIpa}}]</span> '
-               '{{OtherAudio}}</div>',
+               '<div class="choices" id="pair-choices">{{Choices}}</div>'
+               + _PAIR_FRONT_SCRIPT,
+        "afmt": '<hr id="answer">'
+               '<div id="pair-result" class="result" data-key="{{MemberKey}}"></div>'
+               + _PAIR_BACK_SCRIPT +
+               '<div class="stimulus"><div class="answer">played:</div>{{StimulusPicture}}'
+               '<div class="thai">{{Stimulus}}</div><div class="ipa">[{{Ipa}}]</div>'
+               '{{Audio}}</div>'
+               '<div class="other"><div class="thai">{{OtherThai}}</div>'
+               '<div class="ipa">[{{OtherIpa}}]</div>{{OtherAudio}}</div>',
     }],
     appended=("StimulusPicture", "OtherThai"))
 
@@ -284,7 +343,7 @@ CARD_MEANINGS: dict[tuple[str, str], str] = {
     ("word", "production"): "Front shows the picture (and a gloss when set); back plays the word, with its Thai and IPA once its reading has begun.",
     ("word", "reading"): "Front shows the Thai; back shows the picture, plays the word and gives the meaning, then any other meaning of that spelling with its picture.",
     ("word", "spelling"): "Front plays the word; back shows the Thai spelling.",
-    ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and shows both members' pictures; back names the one heard, with its picture, Thai and IPA, and gives the other's Thai and IPA and plays it.",
+    ("minimal_pair", "recognition"): "Front plays one member of a minimal pair and shows both members' pictures, and a tap on a picture is the choice and shows the back; back says whether the choice was the word played, then shows that word's picture, Thai and IPA and plays it, then gives the other's Thai and IPA and plays it.",
     ("grapheme", "reading"): "Front shows the letter and plays its recited name; back shows the name, the keyword picture, the keyword's Thai and gloss, and gives the sound.",
     ("sentence", "cloze"): "Front shows the sentence with the target word blanked, plus the scene picture; back shows the target word, plays the sentence and gives the gloss.",
     ("sentence", "audio_cloze"): "Front shows the scene picture and plays the sentence with a pause for the target word; back plays the whole sentence and gives the gloss, with the target word once every word it uses is read.",

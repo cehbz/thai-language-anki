@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 13, proposed 2026-10-04 against principles r8 and architecture
+Revision 14, proposed 2026-10-07 against principles r8 and architecture
 r5. Revision process: docs/principles.md.
 
 Revision log:
@@ -27,6 +27,7 @@ Revision log:
 - r11 2026-10-02: a sentence's Listening card and its Cloze cards are siblings of one note, a Cloze card in the slot of its word's position in the sentence; a Cloze card needs the sentence's recording as well as its scene picture. Evidence: under r9 each Cloze card was its own note, so Anki's sibling burying no longer separated a sentence's cards: 336 Listening cards were followed at once by a Cloze card on the same sentence and 225 sentences dealt two to seven Cloze cards back to back, each front showing the words the others blank; 4 Cloze cards compiled with no audio on the back. The notetype changes again before any import of r9, and the cutover deletes the stale notetypes with the deck; a notetype change updates a collection in place only under Anki's "Merge note types". Sibling burying is the learner's deck preset, which an import does not set: the import warns when it is off. User ruling 2026-10-02.
 - r12 2026-10-02: a spelling group's Listening, Reading and Spelling cards are compiled once, on its first picture-introduced Word's note (gated by the appended field FormSide); the Listening and Reading backs list the group's other members, each with its picture and meaning, after the note's own (the appended field OtherSenses); the Spelling back is unchanged; each member keeps its Production card. A Word alone in its form compiles and renders as under r11. Evidence: 29 of the 33 card/unique-front findings on the live deck were same-spelling Words (12 groups). The notetype change needs "Merge note types" on an import into a collection that holds r11's word notetype, or that notetype is deleted with the deck at a cutover (§5). User ruling 2026-10-02.
 - r13 2026-10-04: cards are staged by kind (§2): a word's Listening card at its position, Production P = 5 later, Reading and Spelling D = 50 after Listening and present only once the word is readable (spec 1 r32, the field Readable); ScriptShown, set once the word is read (its Reading card reviewed), gates Thai and IPA on a word's other backs, and a sentence's, set once every word it uses is read, gates the text on its Listening back and the text Cloze fronts; an AudioCloze card per filled slot plays spec 3 r65's gapped recording over the scene picture, P after the sentence's Listening card; a grapheme, no longer an order() entry, sits just before the first Reading card in order of a word whose form contains it, present while any such Reading card is, the recited name playing on its front; a pair's Recognition card is present only once every member has a picture, its front offering them, its script on the back only; the notetype changes and the new dues are taken at a cutover (§5). Evidence: all four word cards were due in one block, so a word's Reading card followed its Listening card; the deck's first cards, the pair fronts, showed Thai script; the sounds block put 42 graphemes and 84 name-word Targets ahead of every vocabulary word; only 18 of the 42 keyword Words carry a Target, so a letter cannot ride its keyword's Reading card; Anki's import skips an existing (guid, ord), so it never re-dues a card. User ruling 2026-10-04.
+- r14 2026-10-07: the pair Recognition card takes a tap: a tapped picture is the learner's choice and shows the back, which says whether it was the stimulus; the pictures stack in portrait and sit side by side otherwise, both on one screen; the back plays the stimulus first, then the other members, and no longer repeats the front's pictures. Evidence: on AnkiDroid the two pictures overflowed the screen, any tap revealed the back, and the back autoplayed only the other member beside "you heard" (audio inside FrontSide never autoplays). User ruling 2026-10-07.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -107,15 +108,23 @@ fields MemberKey, Choices, Audio, OtherAudio, Stimulus, Speaker, plus
 per-member Thai/IPA, ReviewNote, CompileId. Both notes of a pair play the
 pair's current-best rendition (one speaker across members); a pair with
 no rendition compiles no notes and is counted as dropped. First field =
-MemberKey "PAIRID:SPEAKER:INDEX" (unique; the guid source; nothing reads
-it back). Back shows both members, marks the stimulus ("you heard: ..."),
-each member's audio individually playable (F6b).
+MemberKey "PAIRID:SPEAKER:INDEX" (unique; the guid source; r14: the
+back's script reads the stimulus's index from it, nothing else reads
+it back). Back shows both members, marks the stimulus ("played:"), each
+member's audio individually playable by its own button (F6b).
 - Recognition (r13: present only when every member has a current-best
   picture; otherwise no card, counted with the reason "no current-best
   picture"): front stimulus audio + the Choices field, each member's
   picture, rendered in member order on every note so position never
   marks the stimulus. No Thai or IPA on the front; the back gives both
-  members' Thai and IPA.
+  members' Thai and IPA. (r14) Front pictures stack in portrait and sit
+  side by side otherwise, both on one screen. Tapping a picture records
+  it as the learner's choice and shows the back; showing the back
+  without a tap records no choice. Back: whether the choice was the
+  stimulus (only when one was made); the stimulus's picture, Thai, IPA
+  and audio; the other members' Thai, IPA and audio; the audio autoplays
+  in that order. The front's pictures are not repeated. The learner
+  still grades; the choice is not harvested.
 
 **grapheme**:
 fields Symbol, Sound, NameThai, KeywordThai, KeywordGloss,
