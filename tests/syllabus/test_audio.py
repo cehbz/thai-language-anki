@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from thai_syllabus import audio
+from thai_syllabus.assessor import decoded_duration_seconds
 from thai_syllabus.audio import (TARGET_LUFS, TRIM_PAD_S,
                                  TRUE_PEAK_CEILING_DBTP, NoSpeech, condition_recording,
                                  holds_speech)
@@ -57,7 +58,8 @@ def _probe(path: Path) -> dict:
 
 
 def _duration(path: Path) -> float:
-    return float(_probe(path)["format"]["duration"])
+    """Decoded length: ffprobe 5.1 counts an mp3's encoder padding."""
+    return decoded_duration_seconds(str(path))
 
 
 def _conditioned_loudness(path: Path) -> tuple[float, float]:
@@ -71,7 +73,7 @@ def _loudness(path: Path, loops: int = 0) -> tuple[float, float]:
     for a clip shorter than its 400 ms gating block."""
     err = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-nostats",
                           "-stream_loop", str(loops), "-i", str(path),
-                          "-af", "ebur128=peak=true:framelog=quiet", "-f", "null", "-"],
+                          "-af", "ebur128=peak=true", "-f", "null", "-"],
                          capture_output=True, text=True, check=True).stderr
     summary = err[err.rindex("Summary:"):]
     i = float(re.search(r"I:\s+(-?[\d.]+) LUFS", summary).group(1))

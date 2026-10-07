@@ -33,7 +33,7 @@ __all__ = [
     "picture_fit_prompt", "picture_preference_prompt", "sentence_prompt",
     "pronunciation_prompt", "parse_preference", "parse_pronunciation", "last_json_object",
     "RecordingCheckBackend", "FormatBackend", "RenditionBackend",
-    "ffprobe_duration_seconds", "MechanicalKeyOf", "mechanical_question",
+    "decoded_duration_seconds", "MechanicalKeyOf", "mechanical_question",
 ]
 
 _log = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class LearnerAskNotSupported(RuntimeError):
 
 class PreparationError(Exception):
     """Raised by a backend's prompt builder or attachment resolver, and by
-    RecordingCheckBackend.fetch, ffprobe_duration_seconds and
+    RecordingCheckBackend.fetch, decoded_duration_seconds and
     RenditionBackend.fetch: the question cannot be asked (a missing or
     unreadable artifact). Never cached: the candidate is unusable, the
     backend is not unreachable.
@@ -881,24 +881,26 @@ class JudgeBackend:
 
 # --- mechanical: ground truth for what it checks ----------------------------
 
-def ffprobe_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.run) -> float:
-    """The audio file's duration in seconds, read through ffprobe.
-    PreparationError when ffprobe rejects the file; TransportError when
-    ffprobe cannot run or answers unparseably.
+def decoded_duration_seconds(path: str, runner: Callable[..., Any] = subprocess.run) -> float:
+    """The audio file's duration in seconds, counted from its decoded
+    samples (mono, 16 kHz): an mp3's container duration counts its encoder
+    padding on some ffprobe versions (5.1) and not on others (9.0).
+    PreparationError when ffmpeg rejects the file; TransportError when
+    ffmpeg cannot run.
     """
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-          "-of", "json", str(path)]
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+           "-ac", "1", "-ar", str(_DECODE_RATE), "-f", "s16le", "-"]
     try:
-        result = runner(cmd, capture_output=True, text=True)
+        result = runner(cmd, capture_output=True)
     except OSError as e:
-        raise TransportError(f"cannot run ffprobe: {e}") from e
+        raise TransportError(f"cannot run ffmpeg: {e}") from e
     if result.returncode != 0:
-        raise PreparationError(f"ffprobe rejected {path!r}: {result.stderr.strip()[:200]}")
-    try:
-        data = json.loads(result.stdout)
-        return float(data.get("format", {}).get("duration", 0))
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        raise TransportError(f"ffprobe returned unparseable output for {path!r}: {e}") from e
+        err = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else (result.stderr or "")
+        raise PreparationError(f"ffmpeg rejected {path!r}: {err.strip()[:200]}")
+    return len(result.stdout or b"") / (2 * _DECODE_RATE)
+
+
+_DECODE_RATE = 16000
 
 
 @dataclass
@@ -966,7 +968,7 @@ class RecordingCheckBackend:
             raise PreparationError(f"recording: no readable artifact for {question.artifact_sha!r}")
         hi = self._hi(question)
         duration = (self.duration_of(str(path)) if self.duration_of is not None
-                    else ffprobe_duration_seconds(str(path), runner=self.runner))
+                    else decoded_duration_seconds(str(path), runner=self.runner))
         evidence = f"duration={duration:.3f}s"
         if not (self.lo <= duration <= hi):
             return RawVerdict(value=False, evidence=f"{evidence}, window {self.lo}-{hi:g}s")

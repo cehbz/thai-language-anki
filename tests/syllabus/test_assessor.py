@@ -512,13 +512,25 @@ def test_a_mechanical_verdict_is_keyed_by_subject_as_well_as_artifact(db, tmp_pa
     assert rows_b[0].question["artifact_sha"] == "shared"
 
 
-def test_ffprobe_failing_on_an_existing_file_is_a_preparation_error(tmp_path):
-    from thai_syllabus.assessor import PreparationError, ffprobe_duration_seconds
+def test_ffmpeg_failing_on_an_existing_file_is_a_preparation_error(tmp_path):
+    from thai_syllabus.assessor import PreparationError, decoded_duration_seconds
     import subprocess as sp
     corrupt = tmp_path / "a.mp3"
     corrupt.write_bytes(b"junk")
     with pytest.raises(PreparationError):
-        ffprobe_duration_seconds(str(corrupt), runner=lambda cmd, **k: sp.CompletedProcess(cmd, 1, "", "Invalid data"))
+        decoded_duration_seconds(str(corrupt), runner=lambda cmd, **k: sp.CompletedProcess(cmd, 1, b"", b"Invalid data"))
+
+
+def test_an_mp3s_duration_is_its_decoded_length_not_its_padding(tmp_path):
+    """ffprobe 5.1 reads an mp3's container duration with the encoder
+    padding counted (a 0.76 s clip read 0.816 s on hbd); the decoded
+    samples are the same on every version."""
+    import subprocess as sp
+    from thai_syllabus.assessor import decoded_duration_seconds
+    clip = tmp_path / "half.mp3"
+    sp.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:r=24000:d=0.5",
+            "-ac", "1", "-c:a", "libmp3lame", "-q:a", "4", str(clip)], check=True)
+    assert decoded_duration_seconds(str(clip)) == pytest.approx(0.5, abs=0.02)
 
 
 def test_the_recording_floor_is_a_tenth_of_a_second():
@@ -526,16 +538,16 @@ def test_the_recording_floor_is_a_tenth_of_a_second():
     assert RecordingCheckBackend(resolve_path=lambda sha: sha).lo == 0.1
 
 
-def test_ffprobe_that_cannot_run_is_a_transport_error(tmp_path):
-    from thai_syllabus.assessor import ffprobe_duration_seconds
+def test_ffmpeg_that_cannot_run_is_a_transport_error(tmp_path):
+    from thai_syllabus.assessor import decoded_duration_seconds
     f = tmp_path / "a.mp3"
     f.write_bytes(b"x")
 
     def runner(cmd, **k):
-        raise OSError("no ffprobe")
+        raise OSError("no ffmpeg")
 
     with pytest.raises(TransportError):
-        ffprobe_duration_seconds(str(f), runner=runner)
+        decoded_duration_seconds(str(f), runner=runner)
 
 
 # --- authority table ------------------------------------------------------

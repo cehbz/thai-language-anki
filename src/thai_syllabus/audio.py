@@ -95,7 +95,7 @@ def loudness(path: Path, duration: float,
     LOUDNESS_BLOCK_S when shorter."""
     loops = max(0, math.ceil(LOUDNESS_BLOCK_S / duration) - 1)
     err = _run([*_FFMPEG, "-stream_loop", str(loops), "-i", str(path),
-                "-af", "ebur128=peak=true:framelog=quiet", "-f", "null", "-"], runner)
+                "-af", "ebur128=peak=true", "-f", "null", "-"], runner)
     summary = err[err.rfind("Summary:"):]
     return (_number(r"I:\s+(-?inf|-?[\d.]+) LUFS", summary),
             _number(r"Peak:\s+(-?inf|-?[\d.]+) dBFS", summary))
