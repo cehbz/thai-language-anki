@@ -2,7 +2,8 @@
 
     thai-syllabus migrate  --old-deck DIR --old-data DIR --new-root DIR
     thai-syllabus review   --deck DIR [--port 8877]
-    thai-syllabus import   --deck DIR (--collection PATH | --anki-connect URL)
+    thai-syllabus import   --deck DIR --collection PATH
+    thai-syllabus anki-login --deck DIR
     thai-syllabus compile  --deck DIR --out PATH [--force]
     thai-syllabus run      --deck DIR [--backend-cap NAME=N ...] [--judge-asks M]
                           [--cycles N] [--spend-cap USD] [--poll-seconds S]
@@ -19,14 +20,14 @@ Exit codes: 0 done, 1 refused/incomplete (`compile` hit a closed gate;
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import anki_import, migrate as migrate_mod, record, reviewserver
-from .ankiconnect import AnkiConnect, AnkiDown, AnkiFailed
+from . import anki_collection, anki_import, migrate as migrate_mod, record, reviewserver
 from .assessor import JudgeUnreachable
 from .attempts import Sourcing
 from .compile import GateRefusal, compile_syllabus
@@ -34,11 +35,37 @@ from .curated import load_providers_config
 from .run import Budget, RunReport, Spend
 from .run import run as run_pipeline
 from .safety import HistoryError, SafetyCheckFailed, restore, writing_command
+from .secrets import OP_PREFIX, write_secret_file
 from .wiring import build_sourcing, default_budgets, load_derivations
 
 
 def _providers_config_path(deck: Path) -> Path:
     return deck / "curated" / "providers.yaml"
+
+
+def _cmd_anki_login(args: argparse.Namespace) -> int:
+    """Asks for the AnkiWeb username and password, logs in, and writes the
+    sync key alone to the owner-only file providers.yaml `anki.sync_key`
+    names. The password is neither kept nor shown."""
+    anki = load_providers_config(_providers_config_path(args.deck)).anki
+    if anki.sync_key is None:
+        print("anki-login: providers.yaml anki.sync_key is unset; name the owner-only file "
+              "the sync key goes to", file=sys.stderr)
+        return 1
+    if anki.sync_key.startswith(OP_PREFIX):
+        print(f"anki-login: anki.sync_key {anki.sync_key} is a 1Password reference; "
+              "anki-login writes only a file", file=sys.stderr)
+        return 1
+    username = input("AnkiWeb username: ")
+    password = getpass.getpass("AnkiWeb password: ")
+    try:
+        key = anki_collection.login(username, password, endpoint=anki.endpoint)
+    except anki_collection.CollectionError as e:
+        print(f"anki-login: {e}", file=sys.stderr)
+        return 1
+    write_secret_file(anki.sync_key, key.hkey, name="anki.sync_key")
+    print(f"AnkiWeb sync key written to {Path(anki.sync_key).expanduser()} (mode 600)")
+    return 0
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
@@ -295,11 +322,12 @@ def main(argv: list[str] | None = None, *,
 
     p = sub.add_parser("import", help="revlog, flags, and ReviewNote harvest from Anki")
     p.add_argument("--deck", type=Path, required=True)
-    source = p.add_mutually_exclusive_group(required=True)
-    source.add_argument("--collection", type=Path,
-                        help="the collection.anki2 file, read while Anki is closed")
-    source.add_argument("--anki-connect", metavar="URL",
-                        help="the open Anki's AnkiConnect, e.g. http://127.0.0.1:8765")
+    p.add_argument("--collection", type=Path, required=True,
+                   help="the collection.anki2 file, read-only")
+
+    p = sub.add_parser("anki-login",
+                       help="log in to AnkiWeb once and keep the deck's sync key (spec 4 §4)")
+    p.add_argument("--deck", type=Path, required=True)
 
     p = sub.add_parser("compile", help="translate a Syllabus into an Anki .apkg (spec 4)")
     p.add_argument("--deck", type=Path, required=True)
@@ -377,24 +405,14 @@ def main(argv: list[str] | None = None, *,
                 provenance = dict(current_rubric=derivations.current_rubric,
                                   prior=derivations.prior,
                                   provenance_source=derivations.provenance_source)
-                if args.anki_connect:
-                    try:
-                        report = anki_import.import_anki_connect(
-                            AnkiConnect(args.anki_connect), derivations.db, **provenance)
-                    except AnkiDown:
-                        print(f"import: Anki not running (no AnkiConnect at "
-                              f"{args.anki_connect})", file=sys.stderr)
-                        return 1
-                    except AnkiFailed as e:
-                        print(f"import: {e}", file=sys.stderr)
-                        return 1
-                else:
-                    report = anki_import.import_collection(args.collection, derivations.db,
-                                                           **provenance)
+                report = anki_import.import_collection(args.collection, derivations.db,
+                                                       **provenance)
                 print(report)
                 for warning in report.warnings:
                     print(f"warning: {warning}")
                 return 0
+        if args.command == "anki-login":
+            return _cmd_anki_login(args)
         if args.command == "compile":
             return _cmd_compile(args)
         if args.command == "run":

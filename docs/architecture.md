@@ -1,6 +1,6 @@
 # Architecture
 
-Revision 5, proposed 2026-10-04 (r4 approved 2026-10-02). Written from the
+Revision 6, proposed 2026-10-07 (r5 proposed 2026-10-04). Written from the
 entity pass and behavior walk of 2026-09-01/02. The principles
 (docs/principles.md) are the companion: every rule traces to a principle,
 every principle to one of the three charter meta-rules: is it a
@@ -26,6 +26,7 @@ Revision log:
   TODO.md. No other statement changed.
 - r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7; a sentence's cards as siblings of one note and its guid after spec 4 r11. No new decision.
 - r5 2026-10-04: a sentence's cards gain an AudioCloze card per filled productive Target (spec 4 r13); order() puts the pairs first and compile stages the rest, so dues come from order() and the staging, which reads the study record (spec 1 r32, spec 4 r13); a reorder reaches Anki only through a cutover (principles r8 F8). No new decision.
+- r6 2026-10-07: the deck holds its own Anki collection, synced with AnkiWeb by the deck's own process; the Mac and the phone are study clients (§5, §6, §7; spec 4 r16). Evidence: the AnkiConnect harvest read only reviews newer than the newest held and missed late-synced phone reviews; harvest and import needed Anki open on a Mac that sleeps and travels; a harvest made 7,564 per-card getDecks backend calls. User ruling 2026-10-07.
 
 ## 1. Shape of the system
 
@@ -184,6 +185,10 @@ reopens.
    compile id, timestamp, grade, time). Kept across regenerations;
    card-level evidence expires with its card, confusion/word-level
    aggregates are about the learner and survive.
+5. **The deck's Anki collection** — Anki's own store of the compiled
+   cards, their scheduling and the revlog, synced with AnkiWeb. Anki
+   owns it; the deck imports into it and reads it, and the learner's
+   clients reach it only through AnkiWeb.
 
 Derived, never stored: order, met-at, current-best artifact, exhausted,
 the sourcing queue, confusion weights (seed × StudyRecords), reports,
@@ -192,7 +197,9 @@ fills edges.
 ## 6. Boundaries
 
 **Anki** — adopted wholesale (note, card, template, guid, due, tags,
-scheduling); zero re-litigation. `compile()` translates: stable model
+scheduling); zero re-litigation. The deck's own process holds the deck's
+collection and syncs it with AnkiWeb; the Mac and the phone are study
+clients that sync with AnkiWeb, and nothing of the deck runs on them. `compile()` translates: stable model
 ids; guid from durable identity (the text for a sentence's note, whose
 Cloze cards keep their words' slots; the Word for word cards); due from
 order() and the staging (spec 1 §3); sibling separation for renditions;
@@ -219,6 +226,7 @@ question.
   attempted / improved / exhausted against available. Any thickness here
   is misplaced domain logic.
 - **Feedback session**: serve the screen, append learner answers.
-- **Import**: revlog and flags.
+- **Import**: revlog and flags, from the deck's collection after a sync.
 - **Compile**: gate on report(), translate order(), the staging and the
   current-best artifacts into Anki's domain, label.
+  The package is imported into the deck's collection, which then syncs.

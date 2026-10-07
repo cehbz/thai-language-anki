@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.1",
     "pillow",
     "pysilero-vad>=3.4.0",
+    "anki==26.8.1",
 ]
 
 [project.optional-dependencies]

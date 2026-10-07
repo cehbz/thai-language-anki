@@ -758,10 +758,9 @@ class PacerConfig:
     """providers.yaml `pacer` (spec 3 r64 section 8): tools/quota_pacer.py's
     settings. Allowance is in weekly percentage points; `points_per_call`
     and `session_points_per_call` are one judge call's measured share of the
-    weekly and the 5-hour window. `import_` is the `import` key: after a
-    tick that changed the deck, compile and import it through the
-    AnkiConnect server at `anki_connect_url`. `collection_path` is the
-    Anki collection each tick harvests reviews from, `~` expanded."""
+    weekly and the 5-hour window. `import_` is the `import` key: each tick
+    syncs the deck's collection (AnkiConfig), harvests it, and after a
+    change compiles and imports the deck into it."""
     reserve_percent: float = 15
     session_ceiling_percent: float = 50
     max_calls_per_tick: int = 40
@@ -770,10 +769,23 @@ class PacerConfig:
     session_points_per_call: float = 0.5
     probe_model: str = "haiku"
     probe_timeout_seconds: int = 120
-    anki_connect_url: str = "http://127.0.0.1:8765"
     import_: bool = True
-    collection_path: Path = field(default_factory=lambda: Path(
-        "~/Library/Application Support/Anki2/User 1/collection.anki2").expanduser())
+
+
+@dataclass(frozen=True)
+class AnkiConfig:
+    """providers.yaml `anki` (spec 4 r16 section 4): the deck's own Anki
+    collection and its sync. `collection` is the collection file, relative
+    to the deck unless absolute or under `~`; `sync_key` references the
+    AnkiWeb sync key as a `secrets` entry does (an owner-only file or an
+    op:// path), the file `thai-syllabus anki-login` writes; `endpoint` is
+    a sync server other than AnkiWeb."""
+    collection: Path = Path("anki/collection.anki2")
+    sync_key: str | None = None
+    endpoint: str | None = None
+
+    def collection_path(self, deck: Path) -> Path:
+        return Path(deck) / self.collection.expanduser()
 
 
 @dataclass(frozen=True)
@@ -830,6 +842,7 @@ class ProvidersConfig:
     # sends the bare `thai-syllabus/0.1`.
     wiktionary_contact: str | None = None
     pacer: PacerConfig = field(default_factory=PacerConfig)
+    anki: AnkiConfig = field(default_factory=AnkiConfig)
 
     def secret_store(self, runner=None) -> SecretStore:
         kwargs: dict[str, Any] = {"specs": self.secrets}
@@ -982,21 +995,6 @@ def _pacer_config(data: Mapping, errors: list[str]) -> PacerConfig:
                 values["import_"] = cfg[name]
             else:
                 errors.append(f"providers.pacer.import: {cfg[name]!r} must be true or false")
-        elif name == "collection_path":
-            path = cfg[name]
-            if isinstance(path, str) and path.strip():
-                values[name] = Path(path.strip()).expanduser()
-            else:
-                errors.append(f"providers.pacer.collection_path: {path!r} must be a "
-                              "non-empty path")
-        elif name == "anki_connect_url":
-            url = cfg[name]
-            parsed = urlparse(url) if isinstance(url, str) else None
-            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
-                values[name] = url
-            else:
-                errors.append(f"providers.pacer.anki_connect_url: {url!r} must be an "
-                              "http:// or https:// URL")
         elif name in checks:
             if checks[name](name):
                 values[name] = cfg[name]
@@ -1008,6 +1006,40 @@ def _pacer_config(data: Mapping, errors: list[str]) -> PacerConfig:
                       f"max_calls_per_tick ({pacer.max_calls_per_tick}), so no tick could run")
     return pacer
 
+
+
+_ANKI_KEYS = ("collection", "sync_key", "endpoint")
+
+
+def _anki_config(data: Mapping, errors: list[str]) -> AnkiConfig:
+    """providers.yaml `anki` (spec 4 r16 section 4) over AnkiConfig's
+    defaults. A bare `anki:` refuses, as a bare `pacer:` does."""
+    if "anki" not in data:
+        return AnkiConfig()
+    cfg = data["anki"]
+    if not isinstance(cfg, Mapping):
+        errors.append(f"providers.anki: {cfg!r} must be a mapping of "
+                      f"{', '.join(_ANKI_KEYS)}")
+        return AnkiConfig()
+    values: dict[str, Any] = {}
+    for name, value in cfg.items():
+        if name not in _ANKI_KEYS:
+            errors.append(f"providers.anki.{name}: not an anki setting "
+                          f"(known: {', '.join(_ANKI_KEYS)})")
+        elif name == "endpoint":
+            parsed = urlparse(value) if isinstance(value, str) else None
+            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+                values[name] = value
+            else:
+                errors.append(f"providers.anki.endpoint: {value!r} must be an "
+                              "http:// or https:// URL")
+        elif isinstance(value, str) and value.strip():
+            values[name] = Path(value.strip()) if name == "collection" else value.strip()
+        else:
+            errors.append(f"providers.anki.{name}: {value!r} must be a non-empty "
+                          + ("path" if name == "collection" else
+                             "reference (an owner-only file or an op:// path)"))
+    return AnkiConfig(**values)
 
 def load_providers_config(path: str | Path) -> ProvidersConfig:
     path = Path(path)
@@ -1252,6 +1284,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         wiktionary_contact = None
 
     pacer = _pacer_config(data, errors)
+    anki = _anki_config(data, errors)
 
     quotas_cfg = dict(data.get("quotas") or {})
     for source, quota in quotas_cfg.items():
@@ -1319,7 +1352,7 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         audiofetch_path=audiofetch_path, tts_male_voices=male,
         tts_female_voices=female, tts_cost_per_char=float(tts_cost_per_char),
         judge=judge, drafter=drafter, illustrator=illustrator,
-        glyph=glyph, pacer=pacer,
+        glyph=glyph, pacer=pacer, anki=anki,
         image_candidates=image_candidates,
         image_width=image_width,
         batch=dict(data.get("batch") or {}), quotas=quotas_cfg,

@@ -1,7 +1,7 @@
 # Spec 4: The Anki boundary
 
-Revision 15, proposed 2026-10-07 against principles r8 and architecture
-r5. Revision process: docs/principles.md.
+Revision 16, proposed 2026-10-07 against principles r8 and architecture
+r6. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -29,6 +29,7 @@ Revision log:
 - r13 2026-10-04: cards are staged by kind (§2): a word's Listening card at its position, Production P = 5 later, Reading and Spelling D = 50 after Listening and present only once the word is readable (spec 1 r32, the field Readable); ScriptShown, set once the word is read (its Reading card reviewed), gates Thai and IPA on a word's other backs, and a sentence's, set once every word it uses is read, gates the text on its Listening back and the text Cloze fronts; an AudioCloze card per filled slot plays spec 3 r65's gapped recording over the scene picture, P after the sentence's Listening card; a grapheme, no longer an order() entry, sits just before the first Reading card in order of a word whose form contains it, present while any such Reading card is, the recited name playing on its front; a pair's Recognition card is present only once every member has a picture, its front offering them, its script on the back only; the notetype changes and the new dues are taken at a cutover (§5). Evidence: all four word cards were due in one block, so a word's Reading card followed its Listening card; the deck's first cards, the pair fronts, showed Thai script; the sounds block put 42 graphemes and 84 name-word Targets ahead of every vocabulary word; only 18 of the 42 keyword Words carry a Target, so a letter cannot ride its keyword's Reading card; Anki's import skips an existing (guid, ord), so it never re-dues a card. User ruling 2026-10-04.
 - r14 2026-10-07: the pair Recognition card takes a tap: a tapped picture is the learner's choice and shows the back, which says whether it was the stimulus; the pictures stack in portrait and sit side by side otherwise, both on one screen; the back plays the stimulus first, then the other members, and no longer repeats the front's pictures. Evidence: on AnkiDroid the two pictures overflowed the screen, any tap revealed the back, and the back autoplayed only the other member beside "you heard" (audio inside FrontSide never autoplays). User ruling 2026-10-07.
 - r15 2026-10-07: recordings are conditioned at ingest (spec 1 r33) as images are normalized (§3); the stored, sha'd, checked artifact is the conditioned file. Evidence: two Chirp3-HD pair clips, จะ "will" and ไป "go", were 0.26 s peaking at −39.5/−38.6 dBFS and passed the duration-only check with floor 0.2 s; 15 Forvo clips peak −25 to −33 dB. User ruling 2026-10-07.
+- r16 2026-10-07: the return path reads the deck's own collection file, and the package is imported into that collection with notetypes merged, the collection synced with AnkiWeb before the harvest and after the import (§4); only a full download into a collection with no cards is taken, any other full sync is logged and the import skipped; AnkiConnect is gone (§5). Evidence: the AnkiConnect harvest read only reviews newer than the newest held and missed late-synced phone reviews; harvest and import needed Anki open on a Mac that sleeps and travels; a harvest made 7,564 per-card getDecks backend calls. User ruling 2026-10-07.
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -247,9 +248,26 @@ plays. CSS retains only final fit-to-viewport.
 
 ## 4. Return path
 
-- **Revlog import**: read collection.anki2 read-only — the live
-  collection (Anki's current schema keeps notetypes in tables) or an
-  .apkg's own (the legacy schema keeps them in `col.models`), both read;
+- **The deck's collection** (r16): the deck holds its own Anki
+  collection (providers.yaml `anki.collection`, default
+  `anki/collection.anki2` under the deck), synced with AnkiWeb under a
+  sync key referenced as a `secrets` entry is (`anki.sync_key`, written by
+  `thai-syllabus anki-login`; the password is not kept). The pacer opens
+  it for its syncs and its import and closes it; nothing else opens it.
+  A tick syncs it (collection, then media), harvests its file, runs its
+  cycle, and when the deck changed compiles the package, imports it and
+  syncs again. The import is Anki's package import with note types
+  merged, a note or notetype updated when the package's is newer, a new
+  card at the package's due, deck presets not imported (§2, §5). A full
+  download demanded into a collection with no cards (the first tick) is
+  taken; any other full sync (an upload, a download into a collection
+  with cards, a conflict) is logged and the tick's import skipped, its
+  harvest reading what is local; a failed sync skips the import the same
+  way. A merged notetype change modifies the collection's schema, so the
+  sync after that import demands a full sync.
+- **Revlog import**: read the deck's collection file read-only — Anki's
+  current schema keeps notetypes in tables; an .apkg's own collection
+  (the legacy schema keeps them in `col.models`) is read too;
   map card -> (card_key, compile id) via tags/CompileId; append study
   rows. Idempotent by (card_key, ts). A sentence Cloze card's Target is
   named by its slot's ClozeTarget field (the card ord is the slot), and
@@ -294,9 +312,9 @@ plays. CSS retains only final fit-to-viewport.
 ## 5. Explicitly out
 
 - No deck deletion/orphan cleanup in v1 (delete-and-reimport is the
-  current practice). AnkiConnect is the pacer's import path (spec 3 §8):
-  Anki's note update by guid, which skips every (guid, ord) already in
-  the collection, so it never changes an existing card's due and a new
+  current practice). The pacer's import into the deck's collection
+  (§4) is Anki's note update by guid, which skips every (guid, ord)
+  already in the collection, so it never changes an existing card's due and a new
   card takes the package's. The
   r11 cutover deletes the stale notetypes as well as the deck: r11's
   import expects absent a `sentence` notetype with the pre-r11 fields
@@ -320,5 +338,5 @@ plays. CSS retains only final fit-to-viewport.
   (element replacement).
 - Scheduling migration: out of scope, not prohibited. Guid stability
   preserves scheduling across reimports, which covers current needs;
-  cross-collection migration (AnkiConnect/colpkg) is possible if ever
+  cross-collection migration (colpkg) is possible if ever
   wanted.

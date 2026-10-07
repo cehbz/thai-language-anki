@@ -17,20 +17,17 @@ sed -e "s|__REPO__|$REPO|g" -e "s|__DECK__|$DECK|g" -e "s|__LOG__|$LOG|g" \
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ceh.thai-syllabus.pacer.plist
 ```
 
-After a tick that changed the deck the pacer compiles it (never with
-`--force`) and imports it into Anki through AnkiConnect (spec 3 §8
-`pacer.import`, `pacer.anki_connect_url`). Install AnkiConnect once: in
-Anki, Tools > Add-ons > Get Add-ons, code `2055492159`, then restart Anki.
-AnkiConnect serves only while Anki is open, so imports happen only while
-Anki runs; a tick with Anki closed or the build gate closed logs why and
-leaves the import pending in `$DECK/work/pacer-import.json` for a later
-tick.
-
-Each tick first harvests reviews, flags and ReviewNotes into the record:
-through AnkiConnect while Anki is open (its collection file is locked
-then), else from `pacer.collection_path` (default
-`~/Library/Application Support/Anki2/User 1/collection.anki2`).
-`pacer: {import: false}` turns off the harvest as well as the import.
+Each tick syncs the deck's own Anki collection with AnkiWeb (providers.yaml
+`anki`, default `$DECK/anki/collection.anki2`) and harvests reviews, flags
+and ReviewNotes from it; after a tick that changed the deck the pacer
+compiles it (never with `--force`), imports it into that collection and
+syncs again (spec 4 §4). Log in to AnkiWeb once so the pacer holds a sync
+key: `uv run thai-syllabus anki-login --deck $DECK` writes it to the
+owner-only file `anki.sync_key` names. A tick whose sync fails or meets a
+full sync other than the first download, or whose build gate is closed,
+logs why and leaves the import pending in `$DECK/work/pacer-import.json`
+for a later tick. `pacer: {import: false}` turns off the sync and the
+harvest as well as the import.
 
 Try a tick without running a cycle:
 `uv run python tools/quota_pacer.py --deck $DECK --dry-run --require-measured`.

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from thai_syllabus.secrets import SecretError, SecretStore, resolve_secret
+from thai_syllabus.secrets import SecretError, SecretStore, resolve_secret, write_secret_file
 
 
 def _key_file(tmp_path, text="k3y\n", mode=0o600):
@@ -109,3 +109,33 @@ def test_store_with_an_already_resolved_value_reports_configured():
     assert store.get("forvo") == "s3cret"
     assert not store.configured("google_tts")
     assert runner.calls == []
+
+
+# --- writing a file reference (anki-login's sync key) -------------------------
+
+def test_a_written_secret_is_owner_only_and_reads_back(tmp_path):
+    path = tmp_path / "conf" / "ankiweb.key"
+    write_secret_file(str(path), "h3y", name="anki.sync_key")
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text() == "h3y\n"
+    assert resolve_secret(str(path), name="anki.sync_key") == "h3y"
+
+
+def test_writing_over_a_readable_file_makes_it_owner_only(tmp_path):
+    path = tmp_path / "ankiweb.key"
+    path.write_text("old\n")
+    path.chmod(0o644)
+    write_secret_file(str(path), "new", name="anki.sync_key")
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text() == "new\n"
+
+
+def test_writing_expands_tilde(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_secret_file("~/k.key", "v", name="anki.sync_key")
+    assert (tmp_path / "k.key").read_text() == "v\n"
+
+
+def test_a_1password_reference_is_not_written(tmp_path):
+    with pytest.raises(SecretError, match=r"anki\.sync_key: .*op://"):
+        write_secret_file("op://vault/ankiweb/hkey", "v", name="anki.sync_key")

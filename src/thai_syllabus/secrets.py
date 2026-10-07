@@ -7,6 +7,7 @@ itself: either a 1Password secret reference (`op://<vault>/<item>/
 refused.
 """
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,3 +86,17 @@ class SecretStore:
         value = resolve_secret(spec, name=name, runner=self.runner)
         self._resolved[name] = value
         return value
+
+
+def write_secret_file(spec: str, value: str, *, name: str) -> None:
+    """Writes `value` to the owner-only file `spec` references, creating
+    its directory owner-only; a 1Password reference is not written."""
+    if spec.startswith(OP_PREFIX):
+        raise SecretError(f"secrets.{name}: {spec} is a 1Password reference; only a file "
+                          "reference is written")
+    path = Path(spec).expanduser()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(value + "\n")

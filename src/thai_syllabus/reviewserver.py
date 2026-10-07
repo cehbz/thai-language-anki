@@ -94,7 +94,7 @@ __all__ = [
     "append_answer", "append_supply", "append_gallery_note", "append_drill_result",
 ]
 
-DEFAULT_PORT = 8877          # 8765 is reserved for AnkiConnect / proof_gallery.py
+DEFAULT_PORT = 8877          # 8765 is proof_gallery.py's
 
 # The rank an artifact must reach to count as covered (spec 5 section 3's
 # current-best coverage per need).

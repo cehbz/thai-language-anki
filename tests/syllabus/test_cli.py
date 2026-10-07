@@ -280,46 +280,85 @@ def test_import_prints_each_warning_on_its_own_line(tmp_path, monkeypatch, capsy
     assert "warnings=" not in out
 
 
-def test_import_through_anki_connect_reads_the_open_anki_at_the_url(tmp_path, monkeypatch,
-                                                                    capsys):
-    from thai_syllabus.anki_import import ImportReport
-
-    root = _write_curated_dir(tmp_path / "deck")
-    captured = {}
-
-    def fake_import_anki_connect(client, db, *, current_rubric, prior, provenance_source):
-        captured["url"] = client.url
-        return ImportReport(revlog_imported=2)
-
-    monkeypatch.setattr(cli.anki_import, "import_anki_connect", fake_import_anki_connect)
-    monkeypatch.setattr(cli.anki_import, "import_collection",
-                        lambda *a, **k: pytest.fail("the file path was read"))
-    assert cli.main(["import", "--deck", str(root),
-                     "--anki-connect", "http://127.0.0.1:8765"]) == 0
-    assert captured["url"] == "http://127.0.0.1:8765"
-    assert "revlog_imported=2" in capsys.readouterr().out
-
-
-def test_import_through_anki_connect_with_anki_closed_exits_1(tmp_path, monkeypatch, capsys):
-    from thai_syllabus.ankiconnect import AnkiDown
-
-    root = _write_curated_dir(tmp_path / "deck")
-
-    def refused(*a, **k):
-        raise AnkiDown()
-
-    monkeypatch.setattr(cli.anki_import, "import_anki_connect", refused)
-    assert cli.main(["import", "--deck", str(root),
-                     "--anki-connect", "http://127.0.0.1:8765"]) == 1
-    assert "Anki not running" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("sources", [[], ["--collection", "c.anki2", "--anki-connect", "http://x"]])
-def test_import_takes_exactly_one_source(tmp_path, sources):
+def test_import_needs_the_collection_file(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     with pytest.raises(SystemExit) as exit_:
-        cli.main(["import", "--deck", str(root), *sources])
+        cli.main(["import", "--deck", str(root)])
     assert exit_.value.code == 2
+
+
+# --- anki-login: the deck's AnkiWeb sync key (spec 4 r16 section 4) ---------
+
+def _with_anki(root, anki):
+    providers = root / "curated" / "providers.yaml"
+    data = yaml.safe_load(providers.read_text())
+    providers.write_text(yaml.safe_dump({**data, "anki": anki}))
+    return root
+
+
+def _login_prompts(monkeypatch, username="me@example.org", password="s3cret-pw"):
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or username)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: asked.append(prompt) or password)
+    return asked
+
+
+def test_anki_login_writes_only_the_sync_key_owner_only(tmp_path, monkeypatch, capsys):
+    from thai_syllabus.anki_collection import SyncKey
+
+    key_file = tmp_path / "conf" / "ankiweb.key"
+    root = _with_anki(_write_curated_dir(tmp_path / "deck"),
+                      {"sync_key": str(key_file), "endpoint": "https://sync.example.org/"})
+    asked = _login_prompts(monkeypatch)
+    logins = []
+
+    def fake_login(username, password, *, endpoint):
+        logins.append((username, password, endpoint))
+        return SyncKey("h-key", endpoint)
+
+    monkeypatch.setattr(cli.anki_collection, "login", fake_login)
+    assert cli.main(["anki-login", "--deck", str(root)]) == 0
+    assert logins == [("me@example.org", "s3cret-pw", "https://sync.example.org/")]
+    assert asked == ["AnkiWeb username: ", "AnkiWeb password: "]
+    assert key_file.read_text() == "h-key\n"
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    captured = capsys.readouterr()
+    assert "s3cret-pw" not in captured.out + captured.err
+    assert "h-key" not in captured.out + captured.err
+    assert str(key_file) in captured.out
+
+
+def test_anki_login_refused_writes_nothing_and_exits_1(tmp_path, monkeypatch, capsys):
+    from thai_syllabus.anki_collection import CollectionError
+
+    key_file = tmp_path / "ankiweb.key"
+    root = _with_anki(_write_curated_dir(tmp_path / "deck"), {"sync_key": str(key_file)})
+    _login_prompts(monkeypatch)
+
+    def refused(username, password, *, endpoint):
+        raise CollectionError("AnkiWeb ID or password was incorrect")
+
+    monkeypatch.setattr(cli.anki_collection, "login", refused)
+    assert cli.main(["anki-login", "--deck", str(root)]) == 1
+    assert not key_file.exists()
+    captured = capsys.readouterr()
+    assert "password was incorrect" in captured.err
+    assert "s3cret-pw" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("anki,shown", [
+    (None, "anki.sync_key is unset"),
+    ({"sync_key": "op://vault/ankiweb/hkey"}, "1Password reference")])
+def test_anki_login_needs_a_file_to_write_the_key_to(tmp_path, monkeypatch, capsys, anki,
+                                                      shown):
+    root = _write_curated_dir(tmp_path / "deck")
+    if anki is not None:
+        _with_anki(root, anki)
+    _login_prompts(monkeypatch)
+    monkeypatch.setattr(cli.anki_collection, "login",
+                        lambda *a, **k: pytest.fail("logged in with nowhere to keep the key"))
+    assert cli.main(["anki-login", "--deck", str(root)]) == 1
+    assert shown in capsys.readouterr().err
 
 
 # --- run: wiring plumbing (monkeypatched run_pipeline only) ----------------

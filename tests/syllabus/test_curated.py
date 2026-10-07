@@ -3,6 +3,7 @@ curated/*.yaml, round-tripped through spec 1's entities. Atomic saves
 (temp+os.replace); loading collects every validation error instead of
 failing on the first one.
 """
+import re
 import textwrap
 from pathlib import Path
 
@@ -1915,42 +1916,69 @@ def test_a_bad_pacer_value_refuses_naming_the_field(tmp_path, field_name, value)
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 
-def test_pacer_import_defaults_to_on_against_the_local_anki_connect(tmp_path):
+def test_pacer_import_defaults_to_on(tmp_path):
     write_providers(tmp_path)
-    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
-    assert (pacer.anki_connect_url, pacer.import_) == ("http://127.0.0.1:8765", True)
+    assert curated.load_providers_config(tmp_path / "providers.yaml").pacer.import_ is True
 
 
-def test_pacer_import_and_anki_connect_url_are_read(tmp_path):
-    write_providers(tmp_path, pacer={"import": False,
-                                     "anki_connect_url": "http://localhost:9000"})
-    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
-    assert (pacer.anki_connect_url, pacer.import_) == ("http://localhost:9000", False)
+def test_pacer_import_is_read(tmp_path):
+    write_providers(tmp_path, pacer={"import": False})
+    assert curated.load_providers_config(tmp_path / "providers.yaml").pacer.import_ is False
 
 
-def test_pacer_collection_path_defaults_to_the_anki_profile_expanded(tmp_path):
-    write_providers(tmp_path)
-    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
-    assert pacer.collection_path == (Path.home() / "Library" / "Application Support"
-                                     / "Anki2" / "User 1" / "collection.anki2")
-
-
-def test_pacer_collection_path_is_read_and_expanded(tmp_path):
-    write_providers(tmp_path, pacer={"collection_path": "~/Anki2/Other/collection.anki2"})
-    pacer = curated.load_providers_config(tmp_path / "providers.yaml").pacer
-    assert pacer.collection_path == Path.home() / "Anki2" / "Other" / "collection.anki2"
-
-
-@pytest.mark.parametrize("field_name,value", [
-    ("collection_path", ""), ("collection_path", 3), ("collection_path", None),
-    ("import", "yes please"), ("import", 1), ("import", None),
-    ("anki_connect_url", ""), ("anki_connect_url", "127.0.0.1:8765"),
-    ("anki_connect_url", "ftp://127.0.0.1:8765"), ("anki_connect_url", 8765),
-])
-def test_a_bad_pacer_import_value_refuses_naming_the_key(tmp_path, field_name, value):
-    write_providers(tmp_path, pacer={field_name: value})
+@pytest.mark.parametrize("value", ["yes please", 1, None])
+def test_a_bad_pacer_import_value_refuses_naming_the_key(tmp_path, value):
+    write_providers(tmp_path, pacer={"import": value})
     with pytest.raises(curated.CuratedValidationError,
-                       match=rf"providers\.pacer\.{field_name}: .* must be"):
+                       match=r"providers\.pacer\.import: .* must be"):
+        curated.load_providers_config(tmp_path / "providers.yaml")
+
+
+# --- anki: the deck's own collection (spec 4 r16 section 4) -----------------
+
+def test_the_decks_collection_defaults_to_its_anki_directory_with_no_sync_key(tmp_path):
+    write_providers(tmp_path)
+    anki = curated.load_providers_config(tmp_path / "providers.yaml").anki
+    assert anki == curated.AnkiConfig()
+    assert anki.collection_path(Path("/decks/thai-ff")) == Path(
+        "/decks/thai-ff/anki/collection.anki2")
+    assert (anki.sync_key, anki.endpoint) == (None, None)
+
+
+def test_the_anki_block_is_read_a_relative_collection_under_the_deck(tmp_path):
+    write_providers(tmp_path, anki={"collection": "col/c.anki2",
+                                    "sync_key": "~/.config/thai-deck-gen/ankiweb.key",
+                                    "endpoint": "https://sync.example.org/"})
+    anki = curated.load_providers_config(tmp_path / "providers.yaml").anki
+    assert anki.collection_path(Path("/decks/d")) == Path("/decks/d/col/c.anki2")
+    assert anki.sync_key == "~/.config/thai-deck-gen/ankiweb.key"
+    assert anki.endpoint == "https://sync.example.org/"
+
+
+def test_an_absolute_or_home_collection_path_stands_alone(tmp_path):
+    write_providers(tmp_path, anki={"collection": "~/anki/c.anki2"})
+    anki = curated.load_providers_config(tmp_path / "providers.yaml").anki
+    assert anki.collection_path(Path("/decks/d")) == Path.home() / "anki" / "c.anki2"
+
+
+def test_the_sync_key_takes_a_1password_reference(tmp_path):
+    write_providers(tmp_path, anki={"sync_key": "op://vault/ankiweb/hkey"})
+    anki = curated.load_providers_config(tmp_path / "providers.yaml").anki
+    assert anki.sync_key == "op://vault/ankiweb/hkey"
+
+
+@pytest.mark.parametrize("anki,named", [
+    (None, "anki"), ("x", "anki"),
+    ({"collection": ""}, "anki.collection"), ({"collection": 3}, "anki.collection"),
+    ({"sync_key": ""}, "anki.sync_key"), ({"sync_key": 7}, "anki.sync_key"),
+    ({"endpoint": "sync.example.org"}, "anki.endpoint"),
+    ({"endpoint": "ftp://sync.example.org"}, "anki.endpoint"),
+    ({"password": "x"}, "anki.password"),
+])
+def test_a_bad_anki_value_refuses_naming_the_key(tmp_path, anki, named):
+    write_providers(tmp_path, anki=anki)
+    with pytest.raises(curated.CuratedValidationError,
+                       match=rf"providers\.{re.escape(named)}"):
         curated.load_providers_config(tmp_path / "providers.yaml")
 
 
