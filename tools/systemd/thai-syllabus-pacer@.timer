@@ -1,0 +1,8 @@
+[Unit]
+Description=Hourly quota pacer tick, deck %i
+
+[Timer]
+OnCalendar=hourly
+
+[Install]
+WantedBy=timers.target

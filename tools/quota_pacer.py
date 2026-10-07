@@ -334,7 +334,7 @@ def record_marks(deck: Path) -> Marks:
 
 
 def state_path(deck: Path) -> Path:
-    """The re-import state, beside the pacer's log (tools/launchd/README.md)."""
+    """The re-import state, beside the pacer's log (tools/systemd/README.md)."""
     return deck / "work" / STATE_NAME
 
 

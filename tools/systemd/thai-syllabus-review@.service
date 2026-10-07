@@ -1,0 +1,15 @@
+[Unit]
+Description=Thai syllabus review site, deck %i
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/thai-language-anki
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run thai-syllabus review --deck %h/decks/%i --port 8877
+Restart=on-failure
+StandardOutput=append:%h/decks/%i/work/review.log
+StandardError=append:%h/decks/%i/work/review.log
+
+[Install]
+WantedBy=default.target
