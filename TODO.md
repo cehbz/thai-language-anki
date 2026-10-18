@@ -72,6 +72,58 @@ still run against them.
 - The Mac's deck copy stays read-only after the move until the user
   retires it.
 
+## Pronunciation oracles (user 2026-10-18)
+
+Decided: a status (a word's pronunciation, a draft's acceptance, a
+row's adoption) is derived from the evidence on record and memoised on
+its inputs, as a verdict is; an unresolved problem stays on a standing
+list every tick until it is resolved, and an event is logged once.
+Pronunciation settles per feature (segments, length, tone) on agreement
+across error families, not on a count of oracles: the Wiktionary family
+(Wiktionary; thaig2p, trained on a Wiktionary dump; the judge,
+inferred) and the spelling-rule family (tltk, the rule tone engine, a
+Royal Institute respelling). Agreement within one family counts once.
+Weights are measured, not chosen. `curated_exception` goes.
+
+- Measure first: the per-feature agreement matrix over the deck's 912
+  forms for thaig2p, thaig2p-v2.0, tltk, the rule tone engine,
+  Wiktionary (about 795 forms to fetch at 1 s, capped per run) and the
+  judge's cached verdicts. There is no expert to rule on a sample;
+  what stands in for a gold set is open.
+- thaig2p-v2.0 (`engine="thaig2p_v2"`, trained on
+  wiktionary-23-7-2022-clean.tsv) against the deck's v1 on 15 hard
+  forms: no decoder loop on ภาพวาด, ชานมไข่มุก or น้ำแข็งเปล่า (v1 loops on
+  all three); reads ไม้ in ฤดูใบไม้ผลิ (v1 drops it); ข้าว still short;
+  ช็อกโกแลต's first syllable falling (v1 high). It spells aspiration `kh`
+  and joins vowel and coda in one token (`aːj`, `oʔ`), so it needs its
+  own converter, and pythainlp's wrapper needs transformers < 5. Same
+  family as v1: it would replace v1, never add a vote.
+- The 566 `curated_exception` readings are thaig2p's output (80/80
+  sampled) that migrate labelled curator rulings. tltk disagrees with
+  93 of them and their cards are not blocked; 11 more keep a ʔ coda the
+  engines' convention drops. They are picked up under the new rule.
+- Adjudication tests only the judge's verdict against each oracle,
+  never agreement among the oracles: ฤดูใบไม้ผลิ (tltk and Wiktionary
+  agree) and พลาสติก (thaig2p and Wiktionary, one family) stay disputed,
+  and น้ำแข็งเปล่า has no dictionary entry and only tltk reads it. Adding
+  Wiktionary as an oracle re-derived nothing.
+- A human ruling, when there is one, is curated evidence with its
+  provenance (who ruled, what was consulted), not a status label, and
+  dissenting oracles stay visible against it.
+- Drop ฃ and ฅ from the consonant inventory (amends Decision 12): their
+  keywords are spelled with ข and ค, so the adoption pass refuses and
+  warns about both every tick.
+- Research before adoption: an acoustic oracle on the native Forvo
+  recordings (tone from the pitch contour, length from duration), the
+  one family independent of written sources. Its accuracy on Thai
+  citation forms is unknown and the work is large; TTS clips do not
+  qualify, since the TTS engine runs its own G2P.
+- To discuss separately: why the drafts the adoption pass refuses
+  exist (the log-noise item under the pacer section). The drafting
+  prompt does not say a sentence has one recorded voice (25 drafts mix
+  ผม with a quoted ดิฉัน), ๆ is parsed as a word, one draft names an
+  unregistered word id, and one's clauses render ไฟสีแดง for ไฟแดง.
+
 ## Sentence drafting: the judge on the subscription (2026-10-04)
 
 The live judge runs on the cli transport (Sonnet 5.5, `--safe-mode`)
