@@ -48,3 +48,6 @@ docs/handoff-*.md
 *-api-key.txt
 *.key
 secrets.yaml
+
+# thai-language.com scrape (copyrighted; scripts/fetch_paiboon.py)
+data/paiboon/
