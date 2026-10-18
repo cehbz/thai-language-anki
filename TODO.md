@@ -99,7 +99,7 @@ Weights are measured, not chosen. `curated_exception` goes.
   linking syllables in compounds.
 - Paiboon as a third family (user decision), from thai-language.com:
   `scripts/fetch_paiboon.py` keeps its raw search answers and a
-  `form, entry id, paiboon` table in the gitignored `data/paiboon/`.
+  `form, entry id, paiboon, ipa` table in the gitignored `data/paiboon/`.
   The site derives every romanization it shows from one editor-curated
   phonemic respelling, so it is that site's lineage, not the Paiboon
   publisher's; whether Wiktionary editors copied from it is unchecked,
@@ -107,9 +107,9 @@ Weights are measured, not chosen. `curated_exception` goes.
   On a feature its notation does not write (the glottal coda at least),
   the oracle abstains rather than voting; the full list is read off the
   scraped readings. The 59.5% Paiboon ceiling in the research notes is
-  the old 1000-word deck's ASCII variant, not this notation. The same
-  site shows IPA from the same respelling, lossless, at one more
-  request per entry.
+  the old 1000-word deck's ASCII variant, not this notation. The script
+  also fetches each matched entry's IPA, rendered from the same
+  respelling, so it is the same oracle without Paiboon's losses.
 - thaig2p-v2.0 (`engine="thaig2p_v2"`, trained on
   wiktionary-23-7-2022-clean.tsv) against the deck's v1 on 15 hard
   forms: no decoder loop on ภาพวาด, ชานมไข่มุก or น้ำแข็งเปล่า (v1 loops on
