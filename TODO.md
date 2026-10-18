@@ -44,9 +44,6 @@ still run against them.
   so Thai leaks onto `face`'s Listening back through OtherSenses;
   สีเหลือง ("yellow") is curated as one syllable and its pair back shows
   [siː˨˩˦].
-- The first seed ask's vocabulary is the five seed words themselves
-  (no glue word is met within the span, which ends at position 118);
-  measure what the drafter makes of it before widening the span.
 - The Reddit half of the script-timing research failed on agy's quota;
   rerun `/agy-research` with the saved prompt when it resets.
 
