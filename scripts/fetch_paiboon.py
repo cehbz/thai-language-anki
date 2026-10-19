@@ -6,7 +6,9 @@ a deck.
 <out-dir> defaults to data/paiboon/ (gitignored: the site's content is
 copyrighted). One dictionary search per form gives each exact headword
 match's entry id and Paiboon reading; one request per matched entry gives
-its IPA (tone bars, the deck's Chao letters). Requests keep the site's
+its IPA (tone bars), kept only when the entry page's headword is the
+form: a compound listed as a sense of its base word (การแสดง under แสดง)
+links to the base word's page, whose IPA is the base word's. Requests keep the site's
 robots.txt crawl delay of 10 s; each answer is kept raw in <out-dir>/html/
 (entries under html/id/) and nothing already fetched is fetched again, so
 an interrupted run resumes. <out-dir>/paiboon.tsv holds `form, entry id,
@@ -39,6 +41,7 @@ RESULT = re.compile(
     r"<td class=th[^>]*><a href='/id/(\d+)[^']*'>(?:<img[^>]*>&nbsp;)?([^<]+)</a>"
     r".*?</td><td[^>]*><span class='xf'>([^<]*)</span>", re.S)
 IPA = re.compile(r"<td style='font-size:x-small;'>IPA</td><td><span class='ipa'>([^<]*)</span>")
+TITLE = re.compile(r"<title>thai-language.com - ([^<]*)")
 
 
 class Site:
@@ -72,7 +75,10 @@ def readings(page: str, form: str) -> list[tuple[str, str]]:
     return seen
 
 
-def ipa(page: str) -> list[str]:
+def ipa(page: str, form: str) -> list[str]:
+    title = TITLE.search(page)
+    if title is None or html.unescape(title.group(1)).strip() != form:
+        return []
     return list(dict.fromkeys(html.unescape(m).strip() for m in IPA.findall(page)))
 
 
@@ -102,7 +108,7 @@ def main(deck: str, out: str = "data/paiboon") -> None:
     for form in forms:
         for entry, paiboon in found[form]:
             rows.append(f"{form}\t{entry}\t{paiboon}\t"
-                        + " | ".join(ipa(cache.page(f"id/{entry}", f"/id/{entry}"))))
+                        + " | ".join(ipa(cache.page(f"id/{entry}", f"/id/{entry}"), form)))
         if not found[form]:
             rows.append(f"{form}\t\t\t")
     (out_dir / "paiboon.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
