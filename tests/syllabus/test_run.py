@@ -2863,7 +2863,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
                            "spend", "unserved", "budgeted", "deferred", "preferences",
                            "requeried", "adopted_graphemes", "adopted_words",
                            "adoption_skipped", "adopted_pairs", "candidate_asks",
-                           "candidates_dropped", "reverified", "demoted"}
+                           "candidates_dropped", "reverified", "demoted", "spoken_dissent"}
 
 
 # --- the comment pass (spec 3 r30 section 5): one reading ask per run,
@@ -3239,6 +3239,15 @@ def test_the_tally_sums_an_attempts_adoption_counts():
     tally.collect(AttemptResult(True, adopted_graphemes=1, adopted_words=2,
                                 adoption_skipped=0))
     assert (tally.adopted_graphemes, tally.adopted_words, tally.adoption_skipped) == (3, 7, 1)
+
+
+def test_the_evidence_passs_spoken_dissent_reaches_the_report(db, monkeypatch):
+    """Spec 3 r68 §7: Words whose spoken witness dissents, counted every
+    run -- an event count outside the identity."""
+    _patch(monkeypatch, {}, evidence_result=AttemptResult(True, spoken_dissent=3))
+    report = run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
+    assert report.spoken_dissent == 3
+    assert db.latest("run", "runreport", RunReportKey()).answer["spoken_dissent"] == 3
 
 
 def test_an_ordinary_attempt_leaves_the_adoption_counts_at_zero():

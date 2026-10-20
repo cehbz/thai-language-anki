@@ -2755,6 +2755,15 @@ def test_stats_history_carries_requeried_on_every_run(ctx_with_an_old_and_a_new_
     assert [r["requeried"] for r in hist] == [0, 0, 4]
 
 
+def test_stats_history_carries_spoken_dissent_on_every_run(ctx_with_an_old_and_a_new_run, db):
+    """Spec 3 r68: a per-run column, 0 on a row written before it."""
+    db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
+             question={"kind": "runreport"}, answer=_run_report_answer(spoken_dissent=4),
+             cost=0.0)
+    hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
+    assert [r["spoken_dissent"] for r in hist] == [0, 0, 4]
+
+
 def test_stats_history_carries_adopted_pairs_and_candidate_asks_per_run(derivations, db):
     """Spec 3 r47/r48: all three counts are per-run columns of the run
     history, and a row written before r47/r48 reads as 0 rather than

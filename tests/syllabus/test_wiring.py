@@ -738,7 +738,7 @@ def test_load_syllabus_reads_the_settled_threshold_from_the_rulebook(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     assert load_syllabus(root).settled_threshold == 0.99
     (root / "curated" / "rulebook.yaml").write_text(
-        "thresholds: {pair/pronunciation-corroborated: 0.9}\n", encoding="utf-8")
+        "thresholds: {pair/pronunciation-settled: 0.9}\n", encoding="utf-8")
     assert load_syllabus(root).settled_threshold == 0.9
 
 

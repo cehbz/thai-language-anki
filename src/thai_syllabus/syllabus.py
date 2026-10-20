@@ -157,8 +157,9 @@ class Syllabus:
     # a study record (spec 1 section 3, r26), handed in at load from the
     # study table; none without one.
     studied_cloze_pairs: frozenset[tuple[str, TargetId]] = frozenset()
-    # The posterior a settled reading reaches (spec 1 section 4, E4's
-    # rulebook threshold), handed in at load from rulebook.yaml.
+    # The posterior a settled reading reaches (spec 1 section 4,
+    # pair/pronunciation-settled's rulebook threshold), handed in at load
+    # from rulebook.yaml.
     settled_threshold: float = DEFAULT_SETTLED_THRESHOLD
 
     # --- lookups -------------------------------------------------------
@@ -1101,6 +1102,12 @@ class Syllabus:
         """Whether a reading is settled: its posterior at least the
         threshold (spec 3 section 6). No reading is not."""
         return pron is not None and pron.posterior >= self.settled_threshold
+
+    def pairable(self, pron: Pronunciation | None) -> bool:
+        """Whether a reading may stand in a pair (E4,
+        pair/pronunciation-settled): settled, and its spoken witness not
+        dissenting."""
+        return self.settled(pron) and not pron.spoken_dissent
 
     # --- content-hash staleness marker ------------------------------------
 

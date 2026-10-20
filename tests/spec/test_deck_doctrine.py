@@ -307,7 +307,7 @@ def test_an_unsettled_pronunciation_off_a_pair_blocks_no_card(tmp_path):
     """
     b = _with_unsettled(DeckBuilder(tmp_path), "rice")
     rep = report(b)
-    assert "pair/pronunciation-corroborated" not in {f.rule for f in rep.findings}
+    assert "pair/pronunciation-settled" not in {f.rule for f in rep.findings}
     assert rep.gate is True
     assert "rice" in {subject for subject, _, _ in cards(deck(b), "Production")}
 
@@ -318,7 +318,7 @@ def test_an_unsettled_pronunciation_on_a_pair_member_closes_the_gate(tmp_path):
     """
     b = _with_unsettled(DeckBuilder(tmp_path), "near")
     rep = report(b)
-    assert "pair/pronunciation-corroborated" in {f.rule for f in rep.findings}
+    assert "pair/pronunciation-settled" in {f.rule for f in rep.findings}
     assert rep.gate is False
 
 

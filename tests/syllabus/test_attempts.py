@@ -5577,6 +5577,24 @@ def test_the_evidence_pass_logs_each_changed_reading_once(tmp_path, caplog):
     assert not [r for r in caplog.records if "ข้าว" in r.message]
 
 
+def test_the_evidence_pass_counts_and_logs_every_word_whose_spoken_witness_dissents(
+        tmp_path, caplog):
+    """Spec 3 r68 section 5: a standing list, logged every run until the
+    witness no longer dissents. Wiktionary lists ข้าว short; the engines
+    and thai-language.com read it long."""
+    ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว"), word("rice-2", "ข้าว"),
+                        word("good", "ดี"))                          # ดี: good
+    ctx.dictionary = _Dictionary(ctx.db, "wiktionary", {"ข้าว": ["/kʰaw˥˩/"]})
+    ctx.thai_language_com = _Dictionary(ctx.db, "thai-language.com", {"ข้าว": ["kʰaːw˥˩"]})
+    for _ in range(2):
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="thai_syllabus.attempts"):
+            result = evidence_attempt(ctx)
+        assert result.spoken_dissent == 2
+        assert [r.message for r in caplog.records if r.message.startswith("spoken dissent")] == [
+            "spoken dissent: rice ข้าว kʰaːw˥˩", "spoken dissent: rice-2 ข้าว kʰaːw˥˩"]
+
+
 # --- the pair search: the adoption pass for minimal pairs (spec 3 r47) -----
 
 TONE = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"),
@@ -5619,6 +5637,30 @@ def test_pair_search_never_pairs_an_unsettled_vocabulary_word(tmp_path):
                posterior=0.98)
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))
     assert pair_search_attempt(ctx) == AttemptResult(attempted=False)
+
+
+def test_pair_search_never_pairs_a_word_whose_spoken_witness_dissents(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))
+    far = replace(far, pron=replace(far.pron, spoken_dissent=True))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))
+    assert pair_search_attempt(ctx) == AttemptResult(attempted=False)
+
+
+def test_pair_search_drops_an_outside_form_whose_spoken_witness_dissents(tmp_path):
+    """Its evidence all on record (the judge's gloss, both wired
+    dictionaries' rows), Wiktionary listing it falling: out of the pool."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    _candidate_verdict(ctx, "ไกล", _KLAI_LOW, "far")
+    ctx.dictionary = _Dictionary(ctx.db, "wiktionary", {"ไกล": ["/kla˥˩/"]})
+    ctx.thai_language_com = _Dictionary(ctx.db, "thai-language.com", {"ไกล": ["kla˨˩"]})
+    ctx.dictionary("ไกล")
+    ctx.thai_language_com("ไกล")
+    result = pair_search_attempt(ctx)
+    assert (result.candidates_dropped, result.adopted_pairs) == (1, 0)
 
 
 def test_pair_search_reads_the_frequency_pool_into_the_record(tmp_path):

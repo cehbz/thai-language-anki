@@ -74,7 +74,7 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import (DEFAULT_SETTLED_THRESHOLD, PAIR_PRONUNCIATION_CORROBORATED,
+from .rulebook import (DEFAULT_SETTLED_THRESHOLD, PAIR_PRONUNCIATION_SETTLED,
                        PRONUNCIATION_RUBRICS, RULES, SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
                        SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
                        rubrics_for, sentence_note_id)
@@ -1032,7 +1032,7 @@ def load_syllabus(deck_root: str | Path, *,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
         media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules,
         studied_cloze_pairs=studied_cloze_pairs(db, resolved_sentences, targets),
-        settled_threshold=bundle.rulebook.thresholds.get(PAIR_PRONUNCIATION_CORROBORATED.id,
+        settled_threshold=bundle.rulebook.thresholds.get(PAIR_PRONUNCIATION_SETTLED.id,
                                                          DEFAULT_SETTLED_THRESHOLD))
 
     syllabus = Syllabus(**kwargs)

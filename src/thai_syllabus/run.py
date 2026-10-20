@@ -154,6 +154,10 @@ class RunReport:
     # outside the identity above
     reverified: int = 0
     demoted: int = 0
+    # Words whose spoken witness dissents from their settled reading (spec
+    # 3 r68 section 5, the evidence pass's standing list), every run until
+    # it no longer does -- an event count outside the identity
+    spoken_dissent: int = 0
     # picture needs that gained a first accepted picture this run (spec 3
     # r34 section 7): open before the run's resolve, covered by its end
     # -- an event count outside the identity; with a batch judge the
@@ -208,6 +212,7 @@ class _Tally:
     candidates_dropped: int = 0
     reverified: int = 0
     demoted: int = 0
+    spoken_dissent: int = 0
     covered_new: int = 0
     requeried: int = 0
     # the picture needs gaps() listed before this run's resolve -- what
@@ -288,6 +293,7 @@ class _Tally:
         # counts above.
         self.reverified += result.reverified
         self.demoted += result.demoted
+        self.spoken_dissent += result.spoken_dissent
         self.comments_read += result.comments_read
         self.comment_actions += result.comment_actions
         self.comment_unactionable += result.comment_unactionable
@@ -1285,6 +1291,7 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         adoption_skipped=tally.adoption_skipped, adopted_pairs=tally.adopted_pairs,
         candidate_asks=tally.candidate_asks, candidates_dropped=tally.candidates_dropped,
         reverified=tally.reverified, demoted=tally.demoted,
+        spoken_dissent=tally.spoken_dissent,
         covered_new=tally.covered_new,
         requeried=tally.requeried,
         comments_read=tally.comments_read, comment_actions=tally.comment_actions,
@@ -1319,6 +1326,7 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
                 "candidates_dropped": report.candidates_dropped,
                 "reverified": report.reverified,
                 "demoted": report.demoted,
+                "spoken_dissent": report.spoken_dissent,
                 "covered_new": report.covered_new,
                 "requeried": report.requeried,
                 "comments_read": report.comments_read,

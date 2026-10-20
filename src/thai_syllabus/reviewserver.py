@@ -1268,7 +1268,7 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     with the fields a row older than the field itself would be missing
     filled in at 0 (spec 3 r30's three comment counts, r34's `covered_new`, r35's `requeried`, r47's
     `adopted_pairs`/`candidate_asks`, r48's `candidates_dropped`, r49's
-    `reverified`/`demoted`), plus `spend_per_covered_new` (spec 5 r11,
+    `reverified`/`demoted`, r68's `spoken_dissent`), plus `spend_per_covered_new` (spec 5 r11,
     decision 12): the run's judge and illustrator dollars over
     `covered_new`, None when nothing was newly covered. The page reads
     its columns off the oldest row, so a field missing there is a column
@@ -1285,6 +1285,7 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
             "candidates_dropped": answer.get("candidates_dropped", 0),
             "reverified": answer.get("reverified", 0),
             "demoted": answer.get("demoted", 0),
+            "spoken_dissent": answer.get("spoken_dissent", 0),
             "comments_read": answer.get("comments_read", 0),
             "comment_actions": answer.get("comment_actions", 0),
             "comment_unactionable": answer.get("comment_unactionable", 0),
@@ -1315,9 +1316,9 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     `comment_actions`, `comment_unactionable` (spec 3 r30) -- and
     `covered_new` (spec 3 r34) and `requeried` (spec 3 r35) -- and
     `adopted_pairs`/`candidate_asks` (spec 3 r47), `candidates_dropped`
-    (spec 3 r48), and `reverified`/`demoted` (spec 3 r49) -- whether or
-    not the row itself recorded them: a row written before any of them
-    reads 0 for its fields, so all ten are columns of every run in
+    (spec 3 r48), `reverified`/`demoted` (spec 3 r49) and `spoken_dissent`
+    (spec 3 r68) -- whether or not the row itself recorded them: a row
+    written before any of them reads 0 for its fields, so all eleven are columns of every run in
     the history and not only of the runs since (the page takes the
     history's columns from its oldest row).
     Each row also carries `spend_per_covered_new`, derived not stored

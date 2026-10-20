@@ -107,7 +107,7 @@ def test_registered_rules_match_the_spec_table():
         "sentence/recording-required", "recording/synthetic",
         "sentence/synthetic-productive",
         "sentence/register-natural",
-        "pair/pronunciation-corroborated", "word/classifier-known",
+        "pair/pronunciation-settled", "word/classifier-known",
         "coverage/speakers", "card/unique-front", "rulebook/traceability",
     }
     assert {r.id for r in RULES} == expected
@@ -745,15 +745,16 @@ def test_picture_preference_role_and_shape():
     assert PICTURE_PREFERENCE.judged_subjects(_syl()) == []
 
 
-# --- pair/pronunciation-corroborated (E4) -----------------------------------
+# --- pair/pronunciation-settled (E4) -----------------------------------
 # Spec 1 r34: E4 is scoped to minimal-pair membership -- a pronunciation
 # blocks a word's cards only when the word is a pair member, where pair
 # validity (exact_confusion_violation) is computed on it. A member is
 # settled when its posterior reaches the rule's threshold (rulebook.yaml
-# `thresholds`, default 0.99). Outside a pair the IPA is reference beside
-# audio, not something a card computes on.
+# `thresholds`, default 0.99), and its spoken witness must not dissent.
+# Outside a pair the IPA is reference beside audio, not something a card
+# computes on.
 
-def _tone_pair(mid_posterior=1.0, *, mid_pron=True, threshold=None):
+def _tone_pair(mid_posterior=1.0, *, mid_pron=True, threshold=None, dissent=False):
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
@@ -764,13 +765,13 @@ def _tone_pair(mid_posterior=1.0, *, mid_pron=True, threshold=None):
         mid_word = dataclasses.replace(mid_word, pron=None)
     else:
         mid_word = dataclasses.replace(mid_word, pron=dataclasses.replace(
-            mid_word.pron, posterior=mid_posterior))
+            mid_word.pron, posterior=mid_posterior, spoken_dissent=dissent))
     syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
                              confusions=(confusion,))
     if threshold is not None:
         syllabus = dataclasses.replace(syllabus, settled_threshold=threshold)
     return [f.note_id for f in syllabus.report().findings
-            if f.rule == "pair/pronunciation-corroborated"]
+            if f.rule == "pair/pronunciation-settled"]
 
 
 def test_an_unsettled_word_not_in_a_pair_is_silent():
@@ -778,7 +779,7 @@ def test_an_unsettled_word_not_in_a_pair_is_silent():
     t = target("rice/receptive", "rice", "receptive")
     syllabus = make_syllabus(words=(rice,), targets=(t,))
     findings = [f for f in syllabus.report().findings
-               if f.rule == "pair/pronunciation-corroborated"]
+               if f.rule == "pair/pronunciation-settled"]
     assert findings == []
 
 
@@ -796,6 +797,10 @@ def test_a_settled_pair_member_is_silent():
 
 def test_the_settled_threshold_is_the_syllabus_s():
     assert _tone_pair(0.95, threshold=0.9) == []
+
+
+def test_a_settled_pair_member_whose_spoken_witness_dissents_is_an_error():
+    assert _tone_pair(1.0, dissent=True) == ["near"]
 
 
 # --- word/classifier-known (E5) ---------------------------------------------

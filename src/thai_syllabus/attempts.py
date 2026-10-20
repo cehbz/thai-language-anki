@@ -383,12 +383,17 @@ class AttemptResult:
     adopted_pairs: int = 0
     candidate_asks: int = 0
     # outside forms the pair search dropped from its pool this run: their
-    # evidence is all on record and they are unsettled (r48, r68)
+    # evidence is all on record and they are unsettled or their spoken
+    # witness dissents (r48, r68)
     candidates_dropped: int = 0
     # the re-verification pass (spec 3 r49 section 5): checks asked and
     # artifacts demoted -- events outside the needs identity
     reverified: int = 0
     demoted: int = 0
+    # the evidence pass (spec 3 r68 section 5): Words whose spoken witness
+    # dissents from their settled reading -- an event outside the needs
+    # identity
+    spoken_dissent: int = 0
 
 
 # --- the outcome row (spec 3 section 6; spec 2 section 2) -------------------
@@ -1556,6 +1561,8 @@ def evidence_attempt(ctx: Sourcing) -> AttemptResult:
     and a dead dictionary asks nothing more this run). The settlement is
     fitted before and after; each form whose settled reading changed is
     logged once, and the Words take their readings from the fit after.
+    Every Word whose spoken witness dissents from its settled reading is
+    a standing list: logged every run and counted `spoken_dissent`.
     Words are not needs: the pass owns no bucket.
     """
     words = ctx.syllabus.words
@@ -1578,7 +1585,10 @@ def evidence_attempt(ctx: Sourcing) -> AttemptResult:
             _log.info("settlement: %s %s -> %s", form, ipa.render(old) or "(none)",
                       ipa.render(new) or "(none)")
     ctx.syllabus = ctx.syllabus.with_words(with_readings(words, after))
-    return AttemptResult(attempted=True)
+    dissenting = [w for w in ctx.syllabus.words if w.pron is not None and w.pron.spoken_dissent]
+    for w in dissenting:
+        _log.info("spoken dissent: %s %s %s", w.id, w.thai, ipa.render(w.pron))
+    return AttemptResult(attempted=True, spoken_dissent=len(dissenting))
 
 
 # --- graphemes (the consonant inventory): the adoption pass -----------------
@@ -1804,7 +1814,8 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     """One pass per run (design 2026-09-12 section 2; spec 3 r47, r68
     section 5): for every confusion still short of its weight-proportional
     pair count, the best exact pairs are selected over settled readings
-    (spec 3 section 6) -- the vocabulary Words whose reading is settled,
+    (spec 3 section 6) -- the vocabulary Words whose reading is settled
+    and whose spoken witness does not dissent (E4),
     then the frequency pool's forms, each read by the local engines into
     the record. A pair of Words is adopted now, into pairs.yaml. For an
     outside form a selected pair needs, and only for those, Wiktionary and
@@ -1812,15 +1823,16 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     judge is asked for its reading and a gloss, at most
     `ctx.pair_search_asks` forms per run, the judge's asks riding the
     run's batch; once that evidence is all on record and the form is
-    settled, it is minted as a closure Word (id and meaning from the
-    gloss) in words.yaml and its pair adopted. Both files are rewritten
+    settled with no spoken dissent, it is minted as a closure Word (id and
+    meaning from the gloss) in words.yaml and its pair adopted. Both files are rewritten
     whole from the loaded rows plus the new ones -- rows added, none
     removed (spec 2 r17). The search never makes a Forvo lookup; a shared
     speaker on the record is a preference.
 
     An outside form whose evidence is all on record and that is unsettled
-    leaves the pool altogether: kept, it would be selected every run and
-    asked about again as a cache hit for ever. The engines are resolved
+    or whose spoken witness dissents leaves the pool altogether: kept, it
+    would be selected every run and asked about again as a cache hit for
+    ever. The engines are resolved
     only when a pool form has no reading on record.
     """
     if ctx.curated_dir is None or not ctx.search_pairs:
@@ -1839,10 +1851,10 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     by_thai = {w.thai: w for w in words}
     by_id = {w.id: w for w in words}
     rank_of = ctx.syllabus.frequency
-    settled = ctx.syllabus.settled
+    pairable = ctx.syllabus.pairable
     candidates: list[Candidate] = [
         Candidate(thai=w.thai, pron=w.pron, word_id=w.id, rank=rank_of.get(w.id))
-        for w in words if settled(w.pron)]
+        for w in words if pairable(w.pron)]
     pool = [(rank, form) for rank, form in
             enumerate(ctx.frequency_words()[:ctx.pair_search_depth], 1) if form not in by_thai]
     glosses = candidate_glosses(ctx.db, current_rubric=ctx.rubrics)
@@ -1857,7 +1869,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
         # row: "dropped from its pool this run"), not a standing gauge: a
         # form only counts when its newest evidence is newer than the
         # previous run's own RunReport row, so a form the last run already
-        # counted is not counted again just for still sitting unsettled.
+        # counted is not counted again just for still sitting out.
         prev = ctx.db.latest("run", "runreport", RunReportKey())
         since = prev.ts if prev is not None else 0
         for rank, form in pool:
@@ -1865,11 +1877,11 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
             if reading is None:
                 continue
             on_record = complete.get(form)
-            if on_record is not None and not settled(reading):
+            if on_record is not None and not pairable(reading):
                 if on_record > since:
                     dropped += 1
-                _log.info("pair search: candidate %s dropped -- unsettled with its evidence "
-                          "all on record", form)
+                _log.info("pair search: candidate %s dropped -- unsettled or its spoken "
+                          "witness dissenting, with its evidence all on record", form)
                 continue
             outside[form] = Candidate(thai=form, pron=reading, word_id=None, rank=rank)
     candidates += outside.values()
@@ -1898,7 +1910,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
                     resolved.append((m, by_id[m.word_id]))
                     continue
                 gloss = glosses.get(m.thai)
-                if gloss is None or complete.get(m.thai) is None or not settled(m.pron):
+                if gloss is None or complete.get(m.thai) is None or not pairable(m.pron):
                     unresolved.append(m.thai)
                     continue
                 try:
@@ -1952,7 +1964,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
             pairs=list(ctx.syllabus.pairs) + new_pairs)
     if new_pairs or dropped:
         _log.info("pair search: %d pair(s) adopted, %d outside word(s) minted, "
-                  "%d candidate(s) dropped unsettled on their evidence",
+                  "%d candidate(s) dropped on their evidence",
                   len(new_pairs), len(new_words), dropped)
     questions: list = []
     excluded: dict = {}

@@ -552,34 +552,38 @@ COVERAGE_SPEAKERS = Rule(id="coverage/speakers", principle="E7", severity="info"
                          shape="measure", measure=_measure_coverage_speakers)
 
 
-# --- pair/pronunciation-corroborated (E4) ------------------------------------
+# --- pair/pronunciation-settled (E4) -----------------------------------------
 # Spec 1 r34: E4 is scoped to minimal-pair membership. A member's
 # pronunciation must be settled -- its posterior at least this rule's
 # rulebook.yaml threshold, DEFAULT_SETTLED_THRESHOLD when none is set --
-# because pair validity (exact_confusion_violation) is computed on it, and
-# only there.
+# and its spoken witness must not dissent, because pair validity
+# (exact_confusion_violation) is computed on it, and only there.
 
 DEFAULT_SETTLED_THRESHOLD = 0.99
 
 
-def _check_pair_pronunciation_corroborated(syllabus: "Syllabus") -> list[Finding]:
+def _check_pair_pronunciation_settled(syllabus: "Syllabus") -> list[Finding]:
     members = {m for p in syllabus.pairs for m in p.members}
     findings = []
     for word_id in sorted(members):
         word = syllabus.find_word(word_id)
-        if word is None or syllabus.settled(word.pron):
+        if word is None or syllabus.pairable(word.pron):
             continue
-        evidence = ("no pronunciation on record" if word.pron is None else
-                    f"pronunciation posterior {word.pron.posterior:.3f} below "
-                    f"{syllabus.settled_threshold}")
-        findings.append(Finding(rule="pair/pronunciation-corroborated", note_id=word.id,
+        if word.pron is None:
+            evidence = "no pronunciation on record"
+        elif not syllabus.settled(word.pron):
+            evidence = (f"pronunciation posterior {word.pron.posterior:.3f} below "
+                        f"{syllabus.settled_threshold}")
+        else:
+            evidence = "its spoken witness dissents from its settled reading"
+        findings.append(Finding(rule="pair/pronunciation-settled", note_id=word.id,
                                 evidence=evidence))
     return findings
 
 
-PAIR_PRONUNCIATION_CORROBORATED = Rule(id="pair/pronunciation-corroborated", principle="E4",
-                                       severity="error", shape="check",
-                                       check=_check_pair_pronunciation_corroborated)
+PAIR_PRONUNCIATION_SETTLED = Rule(id="pair/pronunciation-settled", principle="E4",
+                                  severity="error", shape="check",
+                                  check=_check_pair_pronunciation_settled)
 
 
 # --- word/classifier-known (E5) ----------------------------------------------
@@ -682,7 +686,7 @@ RULES: list[Rule] = [
     COVERAGE_PICTURES,
     PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
-    PAIR_PRONUNCIATION_CORROBORATED,
+    PAIR_PRONUNCIATION_SETTLED,
     WORD_CLASSIFIER_KNOWN,
     SENTENCE_RECORDING_REQUIRED,
     CARD_UNIQUE_FRONT,
