@@ -1,5 +1,5 @@
 """Repo inventories the sound stage is built from (design 2026-09-12 §1):
-the 44 consonants and the vowel signs, tone marks and diacritics, each
+the 42 consonants in use and the vowel signs, tone marks and diacritics, each
 with the recited name Thai speakers spell with. Fixed knowledge;
 validated on load, never proposed."""
 from __future__ import annotations
@@ -10,7 +10,7 @@ from typing import Literal
 
 import yaml
 
-_CONSONANTS = {chr(c) for c in range(0x0E01, 0x0E2F)} - {"ฤ", "ฦ"}   # 44 letters
+_CONSONANTS = {chr(c) for c in range(0x0E01, 0x0E2F)} - {"ฤ", "ฦ", "ฃ", "ฅ"}   # 42 letters
 
 # The repo's own data/ (spec 2 section 1: fixed knowledge, authored once,
 # never per-deck), resolved relative to the package exactly as
@@ -55,14 +55,14 @@ def load_consonants(path: str | Path) -> tuple[ConsonantRow, ...]:
             raise InventoryError(f"consonants[{i}] ({row.symbol}): name {row.name_thai!r} does not start with the symbol")
         out.append(row)
     symbols = [r.symbol for r in out]
-    if set(symbols) != _CONSONANTS or len(symbols) != 44:
+    if set(symbols) != _CONSONANTS or len(symbols) != 42:
         missing = sorted(_CONSONANTS - set(symbols)); extra = sorted(set(symbols) - _CONSONANTS)
-        raise InventoryError(f"consonants: expected the 44 letters once each; missing {missing}, extra {extra}")
+        raise InventoryError(f"consonants: expected the 42 letters once each; missing {missing}, extra {extra}")
     return tuple(out)
 
 
 def consonants() -> tuple[ConsonantRow, ...]:
-    """The repo's 44 consonants (spec 3 r40 section 5): the rows the run's
+    """The repo's 42 consonants (spec 3 r40 section 5): the rows the run's
     grapheme pass adopts, validated on load like any other read."""
     return load_consonants(DATA_DIR / "thai_consonants.yaml")
 

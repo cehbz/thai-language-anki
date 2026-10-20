@@ -113,7 +113,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     root = _deck(tmp_path)
     ctx = build_sourcing(root)
     # The adoption pass off, as test_run._wire does it (spec 3 r40 section
-    # 5): the real pass would write the repo's 44 consonants into this
+    # 5): the real pass would write the repo's 42 consonants into this
     # fixture deck and load pythainlp/torch to read them.
     ctx.adopt_graphemes = False
     ctx.provider._backends.update({

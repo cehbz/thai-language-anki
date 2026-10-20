@@ -267,7 +267,7 @@ def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None,
     """Replaces every backend that would touch the network."""
     # The adoption pass off by default (spec 3 r40 section 5): a fixture
     # deck is wired to exercise one thing at a time, and the real pass
-    # would write the repo's 44 consonants into every one of them and
+    # would write the repo's 42 consonants into every one of them and
     # load pythainlp/torch to read them. The one test that wants it
     # (test_the_run_adopts_two_consonants_into_the_decks_curated_files)
     # turns it back on with its own rows and its own fake engines.

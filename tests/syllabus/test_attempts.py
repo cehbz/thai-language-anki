@@ -5312,17 +5312,16 @@ def test_a_keyword_gloss_already_taken_is_suffixed(tmp_path):
     assert ctx.syllabus.word("name-snake-2").thai == "งอ งู"     # งอ งู: the name of ง
 
 
-# ฃ (kho khuat) is obsolete and its acrophonic keyword ขวด (bottle) is
-# spelled with the modern ข, so the containment invariant refuses it.
+# A row whose keyword ขวด (bottle) is spelled without the symbol ฃ, so the
+# containment invariant refuses it.
 KHO_KHUAT = ConsonantRow(symbol="ฃ", consonant_class="high", sound="kʰ", name_thai="ฃอ ขวด",
                          keyword_thai="ขวด", keyword_gloss="bottle")
 
 
 def test_a_keyword_that_does_not_contain_the_symbol_is_skipped_and_counted(tmp_path):
     """Decision 12: Grapheme.create enforces containment and
-    grapheme/keyword-contains-symbol is an error-severity rule, so the two
-    obsolete letters are reported, not adopted -- the other rows still
-    are."""
+    grapheme/keyword-contains-symbol is an error-severity rule, so such a
+    row is reported, not adopted -- the other rows still are."""
     ctx = _grapheme_ctx(tmp_path, Syllabus())
 
     result = grapheme_attempt(ctx, consonants=[KHO_KHUAT, NGO])

@@ -1742,9 +1742,9 @@ def grapheme_attempt(ctx: Sourcing, *,
                                            consonant_class=row.consonant_class,
                                            keyword_word=keyword, name_word=name_word)
         except ValueError as e:
-            # Decision 12: the obsolete ฃ and ฅ carry acrophonic keywords
-            # spelled with the modern ข and ค, so containment refuses
-            # them. Nothing staged for this row is kept.
+            # Decision 12: Grapheme.create refuses a keyword whose form
+            # does not contain the symbol. Nothing staged for this row is
+            # kept.
             skipped += 1
             _log.warning("grapheme %s not adopted: %s", row.symbol, e)
             continue

@@ -1,13 +1,11 @@
-# The 44 Thai consonants (spec 1 r14; sound-stage design 2026-09-12 §1):
+# The 42 Thai consonants (spec 1 r14; sound-stage design 2026-09-12 §1):
 # class, onset sound, the recited name Thai speakers spell with, and the
 # acrophonic keyword with its gloss. Pronunciations are corroborated by
-# the adjudication pass; nothing here is proposed per symbol. ฃ and ฅ are
-# obsolete letters kept for completeness of the recited alphabet.
+# the adjudication pass; nothing here is proposed per symbol. The
+# obsolete ฃ and ฅ are left out.
 - {symbol: ก, class: mid,  sound: k,   name: กอ ไก่,     keyword: ไก่,     gloss: chicken}
 - {symbol: ข, class: high, sound: kʰ,  name: ขอ ไข่,     keyword: ไข่,     gloss: egg}
-- {symbol: ฃ, class: high, sound: kʰ,  name: ฃอ ขวด,     keyword: ขวด,     gloss: bottle}
 - {symbol: ค, class: low,  sound: kʰ,  name: คอ ควาย,    keyword: ควาย,    gloss: water buffalo}
-- {symbol: ฅ, class: low,  sound: kʰ,  name: ฅอ คน,      keyword: คน,      gloss: person}
 - {symbol: ฆ, class: low,  sound: kʰ,  name: ฆอ ระฆัง,   keyword: ระฆัง,   gloss: bell}
 - {symbol: ง, class: low,  sound: ŋ,   name: งอ งู,      keyword: งู,      gloss: snake}
 - {symbol: จ, class: mid,  sound: tɕ,  name: จอ จาน,     keyword: จาน,     gloss: plate}

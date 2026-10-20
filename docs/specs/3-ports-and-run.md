@@ -496,9 +496,8 @@ disputed ones next run, and E4 blocks their cards meanwhile. words.yaml
 and graphemes.yaml are then written whole from the rows the
 loaders produced with the new ones appended, under the writing command
 (spec 2 r17): rows added, none removed. A row the pass cannot adopt --
-a keyword whose form does not contain the symbol (the obsolete ฃ and ฅ,
-whose acrophonic keywords are spelled with the modern ข and ค), or a form
-no engine reads -- is logged with its reason and counted
+a keyword whose form does not contain the symbol, or a form no engine
+reads -- is logged with its reason and counted
 `adoption_skipped`; a name alone that no engine reads leaves the Grapheme
 row standing with no name word, and compile() drops its Reading card,
 counted. The pass is idempotent: a second run finds every symbol present
