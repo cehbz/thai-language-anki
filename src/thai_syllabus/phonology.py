@@ -60,11 +60,10 @@ class Engines:
         dead-open-syllable word -- a failure that looks exactly like "the
         engines disagree" and is very hard to diagnose from the outside.
         """
-        tokens = thai.split()
         out = []
         for engine in self.g2p:
-            reading = _read_tokens(engine, tokens)
-            if reading is not None and not is_degenerate(reading, thai):
+            reading = read_form(engine, thai)
+            if reading is not None:
                 out.append(reading)
         return tuple(out)
 
@@ -95,6 +94,16 @@ class Engines:
             if reading and not is_degenerate(reading, thai):
                 out.append(reading)
         return tuple(dict.fromkeys(out))
+
+
+def read_form(engine, thai: str) -> tuple[Syllable, ...] | None:
+    """One engine's reading of `thai` as `Engines.readings` presents it:
+    token by token, ʔ-coda convention applied, None when unread or
+    degenerate."""
+    reading = _read_tokens(engine, thai.split())
+    if reading is None or is_degenerate(reading, thai):
+        return None
+    return reading
 
 
 def _read_tokens(engine, tokens: list[str]) -> tuple[Syllable, ...] | None:

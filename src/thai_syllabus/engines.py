@@ -384,6 +384,14 @@ def extract_standard_ipa(html: str) -> list[str]:
     return []
 
 
+# Engine versions, the `version` of a recorded engine's `EngineKey`: bump
+# one when its answers change (a library upgrade, a converter fix), and the
+# form is read again under the new key.
+THAIG2P_VERSION = "1"
+TLTK_VERSION = "1"
+RULE_TONE_VERSION = "1"
+
+
 class Thaig2p:
     """pythainlp's thaig2p as an `Engines.g2p` callable. The pythainlp
     import (which pulls torch) happens when one is constructed, not at

@@ -234,6 +234,20 @@ class DictionaryKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class EngineKey(CacheKey):
+    """engine:NAME:VERSION:FORM -- one local engine's answer for one Thai
+    form. `version` is the engine's own version string; a bump is a new
+    key, and rows under the old one are not migrated.
+    """
+    engine: str
+    version: str
+    form: str
+
+    def encode(self) -> str:
+        return f"engine:{self.engine}:{self.version}:{self.form}"
+
+
+@dataclass(frozen=True)
 class LlmPromptKey(CacheKey):
     """llm:PRODUCER:MODEL:PROMPT_SHA -- one drafting ask. The prompt text
     is the whole contract, so it goes in as sha() of itself.

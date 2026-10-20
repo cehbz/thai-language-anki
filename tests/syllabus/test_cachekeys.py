@@ -14,6 +14,7 @@ from thai_syllabus.cachekeys import (
     CommentReadingKey,
     CommentVetoKey,
     DictionaryKey,
+    EngineKey,
     DrillKey,
     FlagKey,
     JudgeKey,
@@ -269,3 +270,9 @@ def test_check_request_identity_is_sixteen_hex_over_the_rows_own_primary_key():
     a = check_request_identity("k" * 64, 5)
     assert len(a) == 16 and a == check_request_identity("k" * 64, 5)
     assert a != check_request_identity("k" * 64, 6)
+
+
+def test_engine_key_encodes_engine_version_and_form():
+    assert EngineKey("tltk", "1", "ปา").encode() == "engine:tltk:1:ปา"
+    assert EngineKey("tltk", "1", "ปา") != EngineKey("tltk", "2", "ปา")
+    assert isinstance(EngineKey("tltk", "1", "x"), CacheKey)
