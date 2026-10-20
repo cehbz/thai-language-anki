@@ -37,6 +37,8 @@ from thai_syllabus.profile import Profile
 from thai_syllabus.rulebook import RULES, rubrics_for, sentence_note_id
 from thai_syllabus.store import MediaStore, SyllabusDb
 
+from tests.syllabus.builders import record_pronunciations
+
 PROV = Provenance(source="test", origin="fixture", licence="cc0",
                   acquired=date(2026, 1, 1))
 ACQUIRED = date(2026, 1, 1)
@@ -53,11 +55,11 @@ def syllable(onset: str = "m", vowel: str = "a", coda: str = "",
 
 
 def word(id: str, thai: str, meaning: str, *, tone: str = "mid", onset: str = "m",
-         corroboration: str = "engines_agree", classifier: str | None = None,
+         posterior: float = 1.0, classifier: str | None = None,
          speaker: str | None = None) -> Word:
     return Word(id=WordId(id), thai=thai, meaning=meaning,
                 pron=Pronunciation(syllables=(syllable(onset=onset, tone=tone),),
-                                   corroboration=corroboration),
+                                   posterior=posterior, spoken_dissent=False),
                 classifier=WordId(classifier) if classifier else None,
                 speaker=speaker)
 
@@ -214,6 +216,9 @@ class DeckBuilder:
             (root / "curated" / name).write_text(text, encoding="utf-8")
 
         db = SyllabusDb(root / "syllabus.db")
+        # words.yaml stores no pronunciation (spec 2 r23): each word's is
+        # put on the record for load_syllabus to settle again.
+        record_pronunciations(db, self.words)
         media = MediaStore(root / "media")
         shas: list[tuple[str, str]] = []
         for s in self.sentences:

@@ -64,7 +64,7 @@ from thai_syllabus.wiring import (
     sources_for_config,
 )
 
-from .builders import PROV, sentence, syl, pron, target, thai_of, word
+from .builders import PROV, on_record, sentence, syl, pron, target, thai_of, word
 
 
 # --- fixtures ----------------------------------------------------------
@@ -700,12 +700,8 @@ def _write_curated_dir(root):
     curated = root / "curated"
     curated.mkdir(parents=True)
     words = [
-        {"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",
-         "pron": {"syllables": [{"segments": ["kh", "aa", ""], "vowel_length": "long",
-                                 "tone": "low"}], "corroboration": "engines_agree"}},
-        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives",
-         "pron": {"syllables": [{"segments": ["kl", "ai", ""], "vowel_length": "long",
-                                 "tone": "falling"}], "corroboration": "engines_agree"}},
+        {"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food"},
+        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives"},
     ]
     (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
     targets = [{"id": "t-rice", "word": "rice", "skill": "receptive"}]
@@ -725,6 +721,27 @@ def test_load_syllabus_round_trips_words_and_targets(tmp_path):
     assert {t.id for t in syllabus.targets} == {"t-rice"}
 
 
+def test_load_syllabus_gives_each_word_its_forms_settled_reading(tmp_path):
+    """Spec 1 r34: Word.pron is the settlement of its form's readings on
+    record (read, never computed: loading runs no engine); a form with no
+    evidence has none."""
+    root = _write_curated_dir(tmp_path / "deck")
+    db = SyllabusDb(root / "syllabus.db")
+    khaaw = (syl("kʰ", "a", "w", length="long", tone="falling"),)
+    on_record(db, "ข้าว", khaaw)                                    # ข้าว: rice
+    syllabus = load_syllabus(root, db=db)
+    assert syllabus.word("rice").pron == pron(*khaaw)
+    assert syllabus.word("near").pron is None
+
+
+def test_load_syllabus_reads_the_settled_threshold_from_the_rulebook(tmp_path):
+    root = _write_curated_dir(tmp_path / "deck")
+    assert load_syllabus(root).settled_threshold == 0.99
+    (root / "curated" / "rulebook.yaml").write_text(
+        "thresholds: {pair/pronunciation-corroborated: 0.9}\n", encoding="utf-8")
+    assert load_syllabus(root).settled_threshold == 0.9
+
+
 def test_load_syllabus_derives_a_productive_target_at_the_cutoff(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     (root / "curated" / "frequency_th.txt").write_text("ข้าว\n", encoding="utf-8")
@@ -738,12 +755,8 @@ def test_load_syllabus_no_productive_suppresses_the_derived_target(tmp_path):
     root = _write_curated_dir(tmp_path / "deck")
     words = [
         {"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",
-         "no_productive": True,
-         "pron": {"syllables": [{"segments": ["kh", "aa", ""], "vowel_length": "long",
-                                 "tone": "low"}], "corroboration": "engines_agree"}},
-        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives",
-         "pron": {"syllables": [{"segments": ["kl", "ai", ""], "vowel_length": "long",
-                                 "tone": "falling"}], "corroboration": "engines_agree"}},
+         "no_productive": True},
+        {"id": "near", "thai": "ใกล้", "meaning": "near", "category": "Adjectives"},
     ]
     (root / "curated" / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
     (root / "curated" / "frequency_th.txt").write_text("ข้าว\n", encoding="utf-8")
@@ -759,9 +772,7 @@ def _write_female_marked_word(root, targets):
     curated = root / "curated"
     words = yaml.safe_load((curated / "words.yaml").read_text(encoding="utf-8"))
     words.append({"id": "dichan", "thai": "ดิฉัน", "meaning": "I (female, polite)",
-                  "category": "Pronouns", "speaker": "female",
-                  "pron": {"syllables": [{"segments": ["d", "i", ""], "vowel_length": "short",
-                                          "tone": "low"}], "corroboration": "engines_agree"}})
+                  "category": "Pronouns", "speaker": "female"})
     (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
     (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
     (curated / "frequency_th.txt").write_text("ดิฉัน\n", encoding="utf-8")
@@ -800,12 +811,10 @@ def test_load_syllabus_loads_an_adopted_grapheme_whose_name_word_is_ranked(tmp_p
     """
     root = _write_curated_dir(tmp_path / "deck")
     curated = root / "curated"
-    pron = {"syllables": [{"segments": ["k", "a", ""], "vowel_length": "short",
-                           "tone": "mid"}], "corroboration": "engines_agree"}
     words = [
-        {"id": "chicken", "thai": "ไก่", "meaning": "chicken", "pron": pron},   # ไก่: chicken
+        {"id": "chicken", "thai": "ไก่", "meaning": "chicken"},   # ไก่: chicken
         {"id": "name-chicken", "thai": "กอ ไก่", "category": "Letter names",   # กอ ไก่
-         "meaning": "recited name of the letter ก", "pron": pron},
+         "meaning": "recited name of the letter ก"},
     ]
     (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
     targets = [{"id": "name-chicken/receptive", "word": "name-chicken", "skill": "receptive"},

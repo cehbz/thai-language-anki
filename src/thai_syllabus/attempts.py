@@ -36,8 +36,9 @@ from . import ipa, record
 from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnreachable,
                        PreparedQuestion, deck_field, mechanical_question)
 from .authority import role_for, sentence_role
-from .cachekeys import (AttemptOutcomeKey, CacheKey, CommentReadingKey, DirectionKey, PhraseKey, ProvideKey,
-                        RenditionAskKey, RetirementKey, RunReportKey, rendition_identity, sha)
+from .cachekeys import (AttemptOutcomeKey, CacheKey, CommentReadingKey, DictionaryKey, DirectionKey,
+                        PhraseKey, ProvideKey, RenditionAskKey, RetirementKey, RunReportKey,
+                        rendition_identity, sha)
 from .compile import card_meaning
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
@@ -50,7 +51,7 @@ from .derivations import (
     aged_out,
     all_needs,
     available_needs,
-    candidate_adjudications,
+    candidate_glosses,
     current_best,
     need_sources,
     passing_pictures,
@@ -63,18 +64,20 @@ from .derivations import (
 from .dictionary import Wiktionary
 from .thailanguagecom import ThaiLanguageCom
 from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, LETTER_NAMES_CATEGORY,
-                       MinimalPair, Pronunciation, Sentence, Target, Word, _same_form,
-                       clauses_to_json, element_word, is_corroborated)
+                       MinimalPair, Sentence, Target, Word, _same_form,
+                       clauses_to_json, element_word, is_phrase)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, consonants as repo_consonants
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
 from .media import Speaker
 from .pairsearch import Candidate, pair_id_for, select_pairs, wanted
-from .phonology import Engines, corroborates, default_engines, engines_pronunciation
+from .phonology import Engines, default_engines
 from .provider import Provider, ProviderAnswer, Question, forvo_limit_body
 from .record import (COMMENT_PROMPT_VERSION, COMMENT_SUBJECT, DRAFT_SUBJECT, PARSE_SUBJECT,
                      PHRASE_SUBJECT)
+from .recorded import record_readings
 from .safety import Guard
+from .settlement import ENGINE_VERSIONS, Settlement, settlement_of, with_readings
 from .store import MediaStore, SyllabusDb
 from .syllabus import Syllabus, seed_target
 from .transport import FetchRefused, QuotaExhausted, SynthesisRefused, TransportError, Usage
@@ -86,7 +89,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "current_best_of", "classifier_nouns_of",
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "ChartCell", "chart_cell", "GLYPH_SOURCE",
-           "phrase_attempt", "picture_query_for", "adjudication_attempt", "grapheme_attempt",
+           "phrase_attempt", "picture_query_for", "grapheme_attempt", "evidence_attempt",
            "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
            "reverify_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "draft_question", "OpenTargets",
@@ -270,31 +273,28 @@ class Sourcing:
     # guarded.
     guard: Guard | None = None
     # The deck's curated/ directory (spec 2 section 1), so the run can
-    # write back the curated files it owns a change to: words.yaml, for
-    # the adjudicated pronunciations (spec 3 r28 section 5,
-    # run._materialize_adjudications), and words.yaml, targets.yaml and
-    # graphemes.yaml together for the rows the adoption pass adds (spec 3
-    # r40 section 5, grapheme_attempt). None outside a wired deck, in
-    # which case an adjudication is derived, nothing is adopted and
-    # nothing is written.
+    # write back the curated files it owns a change to: words.yaml,
+    # targets.yaml and graphemes.yaml together for the rows the adoption
+    # passes add (spec 3 r40 section 5, grapheme_attempt; r47,
+    # pair_search_attempt). None outside a wired deck, in which case
+    # nothing is adopted and nothing is written.
     curated_dir: Path | None = None
-    # The pronunciation engines the adjudication check runs against
-    # (phonology.Engines). None means the real ones, resolved lazily on
-    # the first verdict there is to check -- pythainlp/torch never load
-    # for a run with nothing to materialize, and a test injects fakes.
+    # The local engines (phonology.Engines) whose readings the evidence
+    # pass and the pair search record (spec 3 r68). None means the real
+    # ones, resolved on the first form with no reading on record --
+    # pythainlp/torch never load for a run whose forms are all read, and
+    # a test injects fakes.
     engines: Engines | None = None
-    # The deck's dictionary oracle (design 2026-09-20 §2), handed to
-    # default_engines when no Engines are injected: the Engines it builds
-    # consult it lazily, only where the local engines fail to agree or to
-    # corroborate. None -- a test, or a deck wired without one -- leaves
-    # the engines exactly as they were.
+    # The two dictionaries (spec 3 section 3, r68): Wiktionary and
+    # thai-language.com, each asked cache-first within its per-run cap
+    # about a deck Word's form (the evidence pass) or an outside form the
+    # pair search selects. None -- a test, or a deck wired without one --
+    # asks nothing of it.
     #
     # The backend itself, not a bare `Callable[[str], ...]`: run() calls
     # its `begin_run()` at the top of every pass, so what goes here owes
     # more than a lookup, and a test's stand-in must offer both.
     dictionary: "Wiktionary | None" = None
-    # thai-language.com, the second dictionary backend: wired beside
-    # Wiktionary and not yet consumed by any fold.
     thai_language_com: "ThaiLanguageCom | None" = None
     # The adoption pass (spec 3 r40 section 5): whether this run adopts
     # the repo's consonant inventory at all, and the table it reads. A
@@ -311,11 +311,15 @@ class Sourcing:
     search_pairs: bool = True
     pair_search_depth: int = 5000
     pair_search_asks: int = 40
-    # The engines' reading of each frequency form the pair search has
-    # already read (None when they read nothing), so a second pass of the
-    # same invocation pays no engine time for a form the first one read.
-    # Per-Sourcing, not global: it lives exactly as long as the run does.
-    reading_memo: dict[str, Pronunciation | None] = field(default_factory=dict)
+
+    def local_engines(self) -> Engines:
+        """The injected engines, else the real ones (loaded here)."""
+        return self.engines or default_engines()
+
+    def settlement(self, forms: Iterable[str] = ()) -> Settlement:
+        """The settlement over the readings on record of the syllabus's
+        Words' forms and `forms` (spec 3 section 6)."""
+        return settlement_of(self.db, self.syllabus.words, forms, current_rubric=self.rubrics)
 
     def mechanical_key(self, question: AssessQuestion) -> CacheKey:
         """The key the mechanical check answers `question` under now: what
@@ -359,9 +363,8 @@ class AttemptResult:
     retired: int = 0
     # the grapheme pass (spec 3 r40 section 5): Grapheme rows and Words
     # this run adopted from the repo inventory, and the rows it could not
-    # adopt (each logged with its reason: a keyword the symbol is not in,
-    # a form no engine reads) -- events, all outside the run's needs
-    # identity
+    # adopt (each logged with its reason: a keyword the symbol is not in)
+    # -- events, all outside the run's needs identity
     adopted_graphemes: int = 0
     adopted_words: int = 0
     adoption_skipped: int = 0
@@ -379,8 +382,8 @@ class AttemptResult:
     # the run's needs identity
     adopted_pairs: int = 0
     candidate_asks: int = 0
-    # outside forms the pair search dropped from its pool this run because
-    # the judge's syllables do not corroborate the engines (r48)
+    # outside forms the pair search dropped from its pool this run: their
+    # evidence is all on record and they are unsettled (r48, r68)
     candidates_dropped: int = 0
     # the re-verification pass (spec 3 r49 section 5): checks asked and
     # artifacts demoted -- events outside the needs identity
@@ -1543,32 +1546,39 @@ def comment_attempt(ctx: Sourcing) -> AttemptResult:
                          judge_unreachable=unreachable)
 
 
-# --- adjudication (Word): the pronunciation ask ------------------------------
+# --- evidence (Word forms): every reading of a deck form on record ---------
 
-def adjudication_attempt(ctx: Sourcing) -> AttemptResult:
-    """One judge question per Word whose pronunciation is not corroborated
-    (spec 3 r28 section 5): the pronunciation-for-word role, text only,
-    cache-first through the assessor -- a word answered under the current
-    rubric collects nothing new. The verdicts land with the run's batch;
-    run._materialize_adjudications reads them back next run.
-
-    A Word is not a need (it is curated data, not a gap gaps() lists), so
-    this pass owns no RunReport bucket: its questions ride the run's one
-    batch and `pending` never counts them.
+def evidence_attempt(ctx: Sourcing) -> AttemptResult:
+    """One pass per run (spec 3 r68 section 5): every deck Word's form is
+    read by each local engine at its installed version with no reading of
+    it on record, and asked of Wiktionary and thai-language.com,
+    cache-first within their per-run caps (a phrase is never looked up,
+    and a dead dictionary asks nothing more this run). The settlement is
+    fitted before and after; each form whose settled reading changed is
+    logged once, and the Words take their readings from the fit after.
+    Words are not needs: the pass owns no bucket.
     """
-    words = [w for w in ctx.syllabus.words if not is_corroborated(w.pron.corroboration)]
+    words = ctx.syllabus.words
     if not words:
         return AttemptResult(attempted=False)
-    role = role_for("pronunciation")
-    questions = [AssessQuestion(subject=str(w.id), role=role, artifact_sha=None,
-                                rubric=ctx.rubrics[role],
-                                params={"thai": w.thai, "meaning": w.meaning},
-                                kind="pronunciation", subject_kind="word") for w in words]
-    spend: dict[str, Spend] = {}
-    result = ctx.assessor.ask_many("judge", questions)
-    _count_verdicts(spend, "judge", result)
-    return AttemptResult(attempted=True, questions=list(result.collected),
-                         excluded=dict(result.excluded), spend=spend)
+    forms = list(dict.fromkeys(w.thai for w in words))
+    before = ctx.settlement()
+    record_readings(ctx.db, ctx.local_engines, forms, versions=ENGINE_VERSIONS)
+    for dictionary in (ctx.dictionary, ctx.thai_language_com):
+        if dictionary is None:
+            continue
+        for form in forms:
+            if dictionary.dead:
+                break
+            dictionary(form)
+    after = ctx.settlement()
+    for form in forms:
+        old, new = before.reading(form), after.reading(form)
+        if (old and old.syllables) != (new and new.syllables):
+            _log.info("settlement: %s %s -> %s", form, ipa.render(old) or "(none)",
+                      ipa.render(new) or "(none)")
+    ctx.syllabus = ctx.syllabus.with_words(with_readings(words, after))
+    return AttemptResult(attempted=True)
 
 
 # --- graphemes (the consonant inventory): the adoption pass -----------------
@@ -1594,10 +1604,9 @@ def grapheme_attempt(ctx: Sourcing, *,
     keyword Word (matched in the vocabulary by `thai`, else created as a
     closure Word: no category, no Target) and its recited-name Word (the
     category `Letter names`, no Target: spec 1 r32, the name is heard on
-    the grapheme card). Pronunciations are
-    seeded from the engines alone, no judge (r40: `engines_agree` when the
-    rule tone engine settles a monosyllable's tone, else `disputed`, which
-    the adjudication pass asks about next run).
+    the grapheme card). A new Word carries no pronunciation of its own
+    and the pass reads nothing: its reading is its form's settlement once
+    the evidence pass has recorded readings of the form (spec 3 r68).
 
     The two curated files are rewritten whole from the rows the loaders
     produced, with the new rows appended -- rows added, none removed, so
@@ -1618,17 +1627,15 @@ def grapheme_attempt(ctx: Sourcing, *,
     """
     if ctx.curated_dir is None:
         # No curated store to write the rows to (a caller outside a wired
-        # deck), so nothing is adopted -- the same guard
-        # run._materialize_adjudications takes before writing words.yaml.
+        # deck), so nothing is adopted.
         return AttemptResult(attempted=False)
     table = list(consonants) if consonants is not None else list(ctx.consonants())
     # R7: the pass is idempotent. A symbol the deck already holds AND
     # already carries a name word is fully adopted, so only the rest of
     # the table is looked at. A symbol the deck holds but with
-    # `name_word: None` (r43: a recited name no engine could read as a
-    # phrase, the previous pass's evidence) is not skipped -- it is
-    # looked at again below, on the chance the token-wise fallback now
-    # reads it. `incomplete` is a snapshot at the start of this call; the
+    # `name_word: None` (r43: left by a pass that needed an engine
+    # reading to mint the name) is not skipped -- it is completed below.
+    # `incomplete` is a snapshot at the start of this call; the
     # pass discards a symbol from it as it completes that row, so a
     # symbol named twice in `table` is still caught as a duplicate.
     known = {g.symbol for g in ctx.syllabus.graphemes}
@@ -1641,10 +1648,8 @@ def grapheme_attempt(ctx: Sourcing, *,
         _log.warning("grapheme pass: %s absent from %s -- %d row(s) not adopted",
                      ", ".join(missing), ctx.curated_dir, len(rows))
         return AttemptResult(attempted=False, adoption_skipped=len(rows))
-    engines = ctx.engines or default_engines(ctx.dictionary)
     # Deferred: curated.py imports run.py, which imports this module, so a
-    # top-level import here would be a cycle (the same reason
-    # run._materialize_adjudications defers its own).
+    # top-level import here would be a cycle.
     from .curated import build_categories, save_graphemes, save_words
 
     words = list(ctx.syllabus.words)
@@ -1684,22 +1689,12 @@ def grapheme_attempt(ctx: Sourcing, *,
         staged: list[Word] = []
         taken_now = set(taken)
         if completing_at is None and keyword is None:
-            keyword_pron = engines_pronunciation(row.keyword_thai, engines)
-            if keyword_pron is None:
-                # R2: a Word is never written with an empty syllable
-                # tuple, and without its keyword the row has no card at
-                # all -- the whole consonant waits for a better engine.
-                skipped += 1
-                _log.warning("grapheme %s: no engine reading of keyword %r (%s); "
-                             "the row is not adopted", row.symbol, row.keyword_thai,
-                             row.keyword_gloss)
-                continue
             # A closure Word (design 2026-09-12 §1): no category, no
             # Target -- it exists so the grapheme card can show its
             # picture, and its id is the slug of the gloss the table
             # gives, suffixed while taken (the live convention).
             keyword = Word(id=slug_id(row.keyword_gloss, taken_now), thai=row.keyword_thai,
-                           pron=keyword_pron, meaning=row.keyword_gloss)
+                           pron=None, meaning=row.keyword_gloss)
             staged.append(keyword)
             taken_now.add(str(keyword.id))
         # C1: a pass that died after words.yaml left the recited name in
@@ -1709,29 +1704,11 @@ def grapheme_attempt(ctx: Sourcing, *,
         # the first copy orphaned of any grapheme.
         name_word: Word | None = by_thai.get(row.name_thai)
         if name_word is None:
-            name_pron = engines_pronunciation(row.name_thai, engines)
-            if name_pron is None:
-                skipped += 1
-                if completing_at is not None:
-                    # The row is unchanged: still no name word, so there
-                    # is nothing to replace it with -- a later pass tries
-                    # again (r43).
-                    _log.warning("grapheme %s: still no engine reading of the recited name %r "
-                                 "(%s); the row is left as it was", row.symbol, row.name_thai,
-                                 GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
-                    continue
-                # The row still stands: Grapheme.name_word is optional,
-                # and compile() drops that grapheme's Reading card,
-                # counted (spec 1 section 1).
-                _log.warning("grapheme %s: no engine reading of the recited name %r (%s); the "
-                             "row is adopted with no name word", row.symbol, row.name_thai,
-                             GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
-            else:
-                name_id = slug_id(f"name {keyword.id}", taken_now)
-                name_word = Word(id=name_id, thai=row.name_thai, pron=name_pron,
-                                 meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
-                staged.append(name_word)
-                taken_now.add(str(name_id))
+            name_id = slug_id(f"name {keyword.id}", taken_now)
+            name_word = Word(id=name_id, thai=row.name_thai, pron=None,
+                             meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+            staged.append(name_word)
+            taken_now.add(str(name_id))
         try:
             if completing_at is not None:
                 # Same symbol/kind/sound/class/keyword; the one field that
@@ -1791,11 +1768,6 @@ def grapheme_attempt(ctx: Sourcing, *,
 
 _PAIR_FILES = ("words.yaml", "pairs.yaml")
 
-# `Sourcing.reading_memo` holds None for a form the engines read nothing
-# for, so "absent" needs a sentinel of its own.
-_MISSING = object()
-
-
 def _forvo_usernames(ctx: Sourcing, word_id: WordId) -> frozenset[str]:
     """The Forvo speakers the record already holds for a word's recording
     lookups -- read, never asked (the search makes no lookup)."""
@@ -1807,25 +1779,49 @@ def _forvo_usernames(ctx: Sourcing, word_id: WordId) -> frozenset[str]:
     return frozenset(names)
 
 
-def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
-    """One pass per run (design 2026-09-12 section 2; spec 3 r47 section 5):
-    for every confusion still short of its weight-proportional pair count,
-    the best exact pairs the vocabulary can form are adopted now, into
-    pairs.yaml; a pair needing an outside form waits until the judge has
-    glossed and the engines corroborated that form (derivations.
-    candidate_adjudications), when the form is minted as a closure Word in
-    words.yaml and the pair adopted; the outside forms still wanted are
-    asked about, at most `ctx.pair_search_asks` per run, riding the run's
-    batch. Both files are rewritten whole from the loaded rows plus the
-    new ones -- rows added, none removed (spec 2 r17). The search never
-    makes a Forvo lookup; a shared speaker on the record is a preference.
+def _evidence_complete(ctx: Sourcing, form: str, glosses: Mapping[str, Any]) -> int | None:
+    """When every reading of an outside form that can be asked for is on
+    record -- the judge's glossed verdict and each wired dictionary's row
+    (none for a phrase, which is never looked up) -- the newest of those
+    rows' ts; None while one is missing."""
+    gloss = glosses.get(form)
+    if gloss is None:
+        return None
+    newest = gloss.ts
+    if not is_phrase(form):
+        for dictionary, source in ((ctx.dictionary, "wiktionary"),
+                                   (ctx.thai_language_com, "thai-language.com")):
+            if dictionary is None:
+                continue
+            row = ctx.db.latest("provide", source, DictionaryKey(source, form))
+            if row is None:
+                return None
+            newest = max(newest, row.ts)
+    return newest
 
-    An outside form whose fresh verdict does NOT corroborate the engines
-    leaves the pool altogether rather than falling back to its engine
-    reading: kept, it would be selected every run and re-asked for ever
-    as a cache hit. The engines' reading of a form is memoised on the ctx
-    (`Sourcing.reading_memo`) and the engines themselves are resolved
-    only when there is a frequency form to read.
+
+def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
+    """One pass per run (design 2026-09-12 section 2; spec 3 r47, r68
+    section 5): for every confusion still short of its weight-proportional
+    pair count, the best exact pairs are selected over settled readings
+    (spec 3 section 6) -- the vocabulary Words whose reading is settled,
+    then the frequency pool's forms, each read by the local engines into
+    the record. A pair of Words is adopted now, into pairs.yaml. For an
+    outside form a selected pair needs, and only for those, Wiktionary and
+    thai-language.com are asked (cache-first, within their caps) and the
+    judge is asked for its reading and a gloss, at most
+    `ctx.pair_search_asks` forms per run, the judge's asks riding the
+    run's batch; once that evidence is all on record and the form is
+    settled, it is minted as a closure Word (id and meaning from the
+    gloss) in words.yaml and its pair adopted. Both files are rewritten
+    whole from the loaded rows plus the new ones -- rows added, none
+    removed (spec 2 r17). The search never makes a Forvo lookup; a shared
+    speaker on the record is a preference.
+
+    An outside form whose evidence is all on record and that is unsettled
+    leaves the pool altogether: kept, it would be selected every run and
+    asked about again as a cache hit for ever. The engines are resolved
+    only when a pool form has no reading on record.
     """
     if ctx.curated_dir is None or not ctx.search_pairs:
         return AttemptResult(attempted=False)
@@ -1838,61 +1834,44 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
                      ", ".join(missing), ctx.curated_dir)
         return AttemptResult(attempted=False, adoption_skipped=1)
     from .curated import save_pairs, save_words
-    engines = ctx.engines
-
-    def resolve_engines() -> Engines:
-        # Resolved on the first frequency form there is to read, never
-        # before: constructing the real engines pulls in pythainlp/torch,
-        # and a deck whose pairs come out of the vocabulary reads none.
-        nonlocal engines
-        if engines is None:
-            engines = default_engines(ctx.dictionary)
-        return engines
 
     words = list(ctx.syllabus.words)
     by_thai = {w.thai: w for w in words}
     by_id = {w.id: w for w in words}
     rank_of = ctx.syllabus.frequency
-    verdicts = candidate_adjudications(ctx.db, current_rubric=ctx.rubrics)
+    settled = ctx.syllabus.settled
     candidates: list[Candidate] = [
         Candidate(thai=w.thai, pron=w.pron, word_id=w.id, rank=rank_of.get(w.id))
-        for w in words if is_corroborated(w.pron.corroboration)]
+        for w in words if settled(w.pron)]
+    pool = [(rank, form) for rank, form in
+            enumerate(ctx.frequency_words()[:ctx.pair_search_depth], 1) if form not in by_thai]
+    glosses = candidate_glosses(ctx.db, current_rubric=ctx.rubrics)
+    complete = {form: _evidence_complete(ctx, form, glosses) for form in glosses}
     outside: dict[str, Candidate] = {}
-    uncorroborated = 0
-    # candidates_dropped is a per-run delta (spec 3 r48's RunReport row:
-    # "dropped from its pool this run"), not a standing gauge: a form
-    # only counts when its verdict is newer than the previous run's own
-    # RunReport row, so a form the last run already counted is not
-    # counted again just for still sitting on a disagreeing verdict.
-    prev = ctx.db.latest("run", "runreport", RunReportKey())
-    since = prev.ts if prev is not None else 0
-    for rank, form in enumerate(ctx.frequency_words()[:ctx.pair_search_depth], 1):
-        if form in by_thai:
-            continue
-        reading = ctx.reading_memo.get(form, _MISSING)
-        if reading is _MISSING:
-            reading = engines_pronunciation(form, resolve_engines())
-            ctx.reading_memo[form] = reading
-        if reading is None:
-            continue
-        verdict = verdicts.get(form)
-        if verdict is not None:
-            # The judge has spoken about this form and the engines do not
-            # back it: the form leaves the pool altogether. Falling back
-            # to its `engines_agree` reading would select it again every
-            # run and re-ask the same question as a cache hit for ever.
-            if not corroborates(verdict.syllables, form, resolve_engines()):
-                if verdict.ts > since:
-                    uncorroborated += 1
-                _log.info("pair search: candidate %s dropped -- its verdict does not "
-                          "corroborate the engines", form)
+    dropped = 0
+    if pool:
+        record_readings(ctx.db, ctx.local_engines, [form for _rank, form in pool],
+                        versions=ENGINE_VERSIONS)
+        settlement = ctx.settlement(form for _rank, form in pool)
+        # candidates_dropped is a per-run delta (spec 3 r48's RunReport
+        # row: "dropped from its pool this run"), not a standing gauge: a
+        # form only counts when its newest evidence is newer than the
+        # previous run's own RunReport row, so a form the last run already
+        # counted is not counted again just for still sitting unsettled.
+        prev = ctx.db.latest("run", "runreport", RunReportKey())
+        since = prev.ts if prev is not None else 0
+        for rank, form in pool:
+            reading = settlement.reading(form)
+            if reading is None:
                 continue
-            pron = Pronunciation(syllables=verdict.syllables, corroboration="adjudicated")
-        elif reading.corroboration == "engines_agree":
-            pron = reading
-        else:
-            continue
-        outside[form] = Candidate(thai=form, pron=pron, word_id=None, rank=rank)
+            on_record = complete.get(form)
+            if on_record is not None and not settled(reading):
+                if on_record > since:
+                    dropped += 1
+                _log.info("pair search: candidate %s dropped -- unsettled with its evidence "
+                          "all on record", form)
+                continue
+            outside[form] = Candidate(thai=form, pron=reading, word_id=None, rank=rank)
     candidates += outside.values()
     usernames = {w.id: _forvo_usernames(ctx, w.id) for w in words}
 
@@ -1918,29 +1897,30 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
                 if m.word_id is not None:
                     resolved.append((m, by_id[m.word_id]))
                     continue
-                verdict = verdicts.get(m.thai)
-                if verdict is None or m.pron.corroboration != "adjudicated":
+                gloss = glosses.get(m.thai)
+                if gloss is None or complete.get(m.thai) is None or not settled(m.pron):
                     unresolved.append(m.thai)
                     continue
                 try:
-                    word_id = slug_id(verdict.gloss, taken_ids)
+                    word_id = slug_id(gloss.gloss, taken_ids)
                 except ValueError as e:
                     # The gloss is the judge's, not ours: one that names
                     # no id leaves the form unresolved rather than killing
-                    # the pass. `candidate_adjudications` already skips
-                    # such a verdict; this is the belt under that brace.
+                    # the pass. `candidate_glosses` already skips such a
+                    # verdict; this is the belt under that brace.
                     _log.warning("pair search: %s keeps no id from its gloss (%s) -- skipped",
                                  m.thai, e)
                     unresolved.append(m.thai)
                     continue
-                new = Word(id=word_id, thai=m.thai, pron=m.pron, meaning=verdict.gloss)
+                new = Word(id=word_id, thai=m.thai, pron=m.pron, meaning=gloss.gloss)
                 taken_ids.add(str(new.id))
                 resolved.append((m, new))
             if unresolved:
                 # Both outside forms of a pair the run cannot yet complete
                 # are collected -- the pair itself waits, and stays out of
                 # taken/new_pairs, for a later pass once every member is
-                # adjudicated (r47: a pair is adopted whole or not at all).
+                # settled on its evidence (r47: a pair is adopted whole or
+                # not at all).
                 for thai in unresolved:
                     if thai not in to_ask:
                         to_ask.append(thai)
@@ -1970,26 +1950,35 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
             words=[w for w, _ in rows], targets=ctx.syllabus.targets,
             graphemes=ctx.syllabus.graphemes, categories=ctx.syllabus.categories,
             pairs=list(ctx.syllabus.pairs) + new_pairs)
-    if new_pairs or uncorroborated:
+    if new_pairs or dropped:
         _log.info("pair search: %d pair(s) adopted, %d outside word(s) minted, "
-                  "%d candidate(s) dropped on a verdict the engines do not corroborate",
-                  len(new_pairs), len(new_words), uncorroborated)
+                  "%d candidate(s) dropped unsettled on their evidence",
+                  len(new_pairs), len(new_words), dropped)
     questions: list = []
     excluded: dict = {}
     spend: dict[str, Spend] = {}
     asked = 0
-    if to_ask:
+    asking = to_ask[:ctx.pair_search_asks]
+    for dictionary in (ctx.dictionary, ctx.thai_language_com):
+        if dictionary is None:
+            continue
+        for form in asking:
+            if dictionary.dead:
+                break
+            dictionary(form)
+    judge_forms = [form for form in asking if form not in glosses]
+    if judge_forms:
         role = role_for("pronunciation")
         asks = [AssessQuestion(subject=f"{CANDIDATE_SUBJECT_PREFIX}{form}", role=role,
                                artifact_sha=None, rubric=ctx.rubrics[role],
                                params={"thai": form, "meaning": "(unknown: give the gloss)"},
                                kind="pronunciation", subject_kind="candidate")
-                for form in to_ask[:ctx.pair_search_asks]]
+                for form in judge_forms]
         asked = len(asks)
         result = ctx.assessor.ask_many("judge", asks)
         _count_verdicts(spend, "judge", result)
         questions, excluded = list(result.collected), dict(result.excluded)
-    if not new_pairs and not asked and not uncorroborated:
+    if not new_pairs and not asked and not dropped:
         return AttemptResult(attempted=False)
     # `candidate_asks` is what the pass asked about, not what came back to
     # ride the batch: a cache hit and a question that could not be
@@ -1998,7 +1987,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     return AttemptResult(attempted=bool(new_pairs or asked), questions=questions,
                          excluded=excluded, spend=spend,
                          adopted_pairs=len(new_pairs), adopted_words=len(new_words),
-                         candidate_asks=asked, candidates_dropped=uncorroborated)
+                         candidate_asks=asked, candidates_dropped=dropped)
 
 
 # --- recordings (Word) and sentence recordings ------------------------------

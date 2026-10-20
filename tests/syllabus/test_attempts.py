@@ -19,14 +19,15 @@ from thai_syllabus.assessor import (UNTRUSTED, Assessor, Excluded, JudgeBackend,
 from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
                                     ChartCell, Need, Sourcing,
                                     _phrase_prompt, _picture_params, _pool, _sentence_prompt,
-                                    adjudication_attempt, assess_first, attempt, chart_cell,
+                                    assess_first, attempt, chart_cell, evidence_attempt,
                                     OpenTargets,
                                     comment_attempt, current_best_of, draft_refusal,
                                     grapheme_attempt,
                                     pair_search_attempt, phrase_attempt,
                                     picture_query_for, retire_sentence, reverify_attempt,
                                     sentence_attempt, sources_for, sources_for_need)
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, DirectionKey, JudgeKey, LlmPromptKey,
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, DictionaryKey, DirectionKey,
+                                    EngineKey, JudgeKey, LlmPromptKey,
                                     MechanicalKey, PhraseKey, ProvideKey, RenditionAskKey,
                                     RetirementKey, RunReportKey, rendition_identity, sha)
 from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, attempts_since_change, exhausted
@@ -53,6 +54,7 @@ from thai_syllabus.rulebook import (PICTURE_FIT_RUBRIC, PICTURE_PREFERENCE_RUBRI
                                     SENTENCE_FOR_TARGET_RUBRIC)
 from thai_syllabus.run import _Tally
 from thai_syllabus.safety import Guard
+from thai_syllabus.settlement import ENGINE_VERSIONS
 from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused,
@@ -61,7 +63,7 @@ from thai_syllabus.tts import pick_voice
 from thai_syllabus.wiring import _DbMediaIndex, _recorded_form_of
 
 from .builders import sentence as compose_sentence
-from .builders import clip_for, syl, target, thai_of, word
+from .builders import clip_for, pron, syl, target, thai_of, word
 from .fakes import FakeMediaIndex
 
 # This fixture's own role -> rubric map (rulebook.rubrics_for covers only
@@ -4473,25 +4475,6 @@ def test_a_source_is_asked_in_the_form_it_declares(tmp_path, monkeypatch):
     assert _outcome(ctx.db, "rice", "picture", "openverse").question["query"] == "rice bowl steam"
 
 
-# --- adjudication_attempt: one pronunciation ask per uncorroborated word ----
-
-def test_adjudication_attempt_collects_one_question_per_disputed_word(tmp_path):
-    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),
-                               word("eat", "กิน", "eat")),
-                        targets=(target("rice/receptive", "rice"),))
-    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={"judge": _batch_judge()})
-    res = adjudication_attempt(ctx)
-    assert res.attempted and [q.question.subject for q in res.questions] == ["rice"]
-    q = res.questions[0].question
-    assert q.role == "pronunciation-for-word" and q.kind == "pronunciation"
-    assert q.params == {"thai": "ข้าว", "meaning": "rice"}
-
-
-def test_adjudication_attempt_is_not_attempted_when_every_word_is_corroborated(tmp_path):
-    ctx = _sourcing(tmp_path, _word_syllabus(), backends={}, assess={"judge": _batch_judge()})
-    assert adjudication_attempt(ctx).attempted is False
-
-
 # --- retire_sentence: one retirement mechanism (F13 and the comment pass) ----
 
 def _adopted_sentence_ctx(tmp_path):
@@ -5138,23 +5121,19 @@ KO = ConsonantRow(symbol="ก", consonant_class="mid", sound="k", name_thai="ก
 
 
 def _engines(g2p=None, tone=None):
-    """Two fake engines: one monosyllable they agree on unless a test says
-    otherwise (thai -> syllables; thai -> tone)."""
+    """The local engines faked: thaig2p and tltk read alike, one
+    monosyllable unless a test says otherwise (thai -> syllables; thai ->
+    tone)."""
     one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
-    return Engines(g2p=(g2p or (lambda thai: one),), tone=tone or (lambda thai: "mid"))
+    g2p = g2p or (lambda thai: one)
+    return Engines(g2p={"thaig2p": g2p, "tltk": g2p}, tone=tone or (lambda thai: "mid"))
 
 
-def _reads_normally_except(*unreadable_thai: str):
-    """A g2p that reads the same monosyllable as `_engines`'s own default
-    for anything but the given strings -- which it reads as thaig2p reads
-    a form it cannot read at all. A phrase is read token by token (design
-    2026-09-20 §3), so naming one of a recited name's own tokens makes the
-    whole phrase unreadable too."""
-    one = (Syllable(segments=("k", "a", ""), vowel_length="short", tone="mid"),)
-
-    def g2p(thai: str):
-        return None if thai in unreadable_thai else one
-    return g2p
+def _no_engines():
+    """Engines a test must never reach."""
+    def refuse(thai):
+        raise AssertionError(f"an engine was run on {thai!r}")
+    return Engines(g2p={"thaig2p": refuse, "tltk": refuse}, tone=refuse)
 
 
 def _grapheme_ctx(tmp_path, syllabus, *, engines=None,
@@ -5252,25 +5231,18 @@ def test_a_pass_without_its_two_files_writes_nothing_and_counts_the_skip(tmp_pat
     assert ctx.syllabus.graphemes == ()
 
 
-def test_a_multi_syllable_recited_name_is_written_disputed(tmp_path):
-    """R2: the rule tone engine settles one syllable's tone only, so a
-    recited name is disputed and the adjudication pass asks the judge next
-    run (E4 blocks its cards until then)."""
-    two = (Syllable(segments=("k", "ɔ", ""), vowel_length="long", tone="mid"),
-           Syllable(segments=("k", "a", ""), vowel_length="short", tone="low"))
+def test_the_pass_seeds_no_pronunciation_and_runs_no_engine(tmp_path):
+    """Spec 3 r68: a new Word's reading is its form's settlement once the
+    evidence pass has recorded readings of it; the pass itself reads
+    nothing."""
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     syllabus = Syllabus(words=(chicken,), targets=(target("chicken/receptive", "chicken"),),
                         categories=(Category(name="Animals", members=frozenset({"chicken"})),))
-    # "กอ ไก่" is read token by token (design 2026-09-20 §3): "กอ" reads as
-    # `two`'s first syllable, "ไก่" as its second -- concatenated, the
-    # engine's own reading of the phrase is `two`.
-    tokens = {"กอ": two[:1], "ไก่": two[1:]}
-    ctx = _grapheme_ctx(tmp_path, syllabus,
-                        engines=_engines(g2p=lambda thai: tokens.get(thai, two[:1])))
+    ctx = _grapheme_ctx(tmp_path, syllabus, engines=_no_engines())
 
     grapheme_attempt(ctx, consonants=[KO])
 
-    assert ctx.syllabus.word("name-chicken").pron.corroboration == "disputed"
+    assert ctx.syllabus.word("name-chicken").pron is None
 
 
 NGO = ConsonantRow(symbol="ง", consonant_class="low", sound="ŋ", name_thai="งอ งู",
@@ -5291,7 +5263,7 @@ def test_a_keyword_new_to_the_vocabulary_enters_as_a_closure_word(tmp_path):
     assert (result.adopted_graphemes, result.adopted_words) == (1, 2)
     snake = ctx.syllabus.word("snake")
     assert (snake.thai, snake.meaning) == ("งู", "snake")       # งู: snake
-    assert snake.pron.corroboration == "engines_agree"
+    assert snake.pron is None
     assert ctx.syllabus.category_of("snake") is None
     assert [t.id for t in ctx.syllabus.targets if t.word == "snake"] == []
     assert ctx.syllabus.graphemes[0].keyword == "snake"
@@ -5332,33 +5304,6 @@ def test_a_keyword_that_does_not_contain_the_symbol_is_skipped_and_counted(tmp_p
     assert load_words(ctx.curated_dir / "words.yaml") != []
 
 
-def test_a_name_no_engine_reads_leaves_the_row_with_no_name_word(tmp_path):
-    """R2: a Word is never written with an empty syllable tuple. The
-    grapheme row still stands (compile drops its Reading card, counted)
-    and the skip is reported. A phrase is read token by token (design
-    2026-09-20 §3): one of "งอ งู"'s own tokens ("งอ") is unreadable, so
-    the engine cannot read the phrase at all."""
-    one = (Syllable(segments=("ŋ", "u", ""), vowel_length="long", tone="mid"),)
-    ctx = _grapheme_ctx(tmp_path, Syllabus(),
-                        engines=_engines(g2p=lambda thai: None if thai == "งอ" else one))
-
-    result = grapheme_attempt(ctx, consonants=[NGO])
-
-    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 1, 1)
-    assert ctx.syllabus.graphemes[0].name_word is None
-    assert ctx.syllabus.find_word("name-snake") is None
-    assert ctx.syllabus.name_word_ids == frozenset()
-
-
-def test_a_keyword_no_engine_reads_leaves_the_row_unadopted(tmp_path):
-    ctx = _grapheme_ctx(tmp_path, Syllabus(), engines=_engines(g2p=lambda thai: None))
-
-    result = grapheme_attempt(ctx, consonants=[NGO])
-
-    assert (result.adopted_graphemes, result.adoption_skipped) == (0, 1)
-    assert ctx.syllabus.graphemes == ()
-
-
 def test_a_second_pass_adopts_nothing(tmp_path):
     """R7: the pass is idempotent -- the second run over the same
     inventory finds every symbol already in the syllabus, asks nothing and
@@ -5376,8 +5321,8 @@ def test_a_second_pass_adopts_nothing(tmp_path):
 
 
 def test_a_pass_with_no_curated_store_adopts_nothing(tmp_path):
-    """Outside a wired deck (run._materialize_adjudications takes the same
-    guard): nothing to write the rows to, so nothing is derived."""
+    """Outside a wired deck: nothing to write the rows to, so nothing is
+    derived."""
     ctx = _grapheme_ctx(tmp_path, Syllabus())
     ctx.curated_dir = None
 
@@ -5408,32 +5353,9 @@ def test_the_phrase_drafter_is_not_handed_a_chart_cells_need(tmp_path):
     assert _phrase_drafter(ctx).prompts == []
 
 
-def test_a_grapheme_on_file_without_a_name_word_that_still_does_not_read_survives_unchanged(
-        tmp_path):
-    """Spec 2 r17 section 6, for the third file too, and spec 3 r43: a row
-    on file with no name word is rewritten only once the engines can read
-    it (below); until then it comes back out of graphemes.yaml unchanged
-    beside the newly adopted row -- rows added, none removed."""
-    chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
-    already = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
-                              keyword_word=chicken)          # ก: k, no name word on file
-    syllabus = Syllabus(words=(chicken,), graphemes=(already,))
-    ctx = _grapheme_ctx(tmp_path, syllabus,
-                        engines=_engines(g2p=_reads_normally_except("กอ")))
-
-    result = grapheme_attempt(ctx, consonants=[KO, NGO])
-
-    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 2, 1)
-    rows = load_words(ctx.curated_dir / "words.yaml")
-    saved = load_graphemes(ctx.curated_dir / "graphemes.yaml", {w.id: w for w, _ in rows})
-    assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
-        ("ก", "chicken", None), ("ง", "snake", "name-snake")]     # ก kept as it was; ง added
-
-
-def test_a_grapheme_on_file_without_a_name_word_completes_when_the_engines_now_read_it(tmp_path):
-    """Spec 3 r43: a recited name thaig2p cannot read as a phrase but can
-    read token by token (2026-09-17 evidence, phonology.engines_pronunciation)
-    leaves a row on file with `name_word: None`; a later pass, over the
+def test_a_grapheme_on_file_without_a_name_word_is_completed(tmp_path):
+    """Spec 3 r43: a row on file with `name_word: None` (left by a pass
+    that needed an engine reading to mint the name); a later pass, over the
     same table, mints (or re-uses) that name Word (no Target, spec 1 r32) and
     REPLACES the Grapheme row in place -- the one case a curated row
     changes rather than being added. The Guard's row counts are unchanged
@@ -5573,6 +5495,88 @@ def test_a_pass_that_died_before_graphemes_yaml_re_adopts_a_closure_keyword_too(
     assert ctx.syllabus.graphemes[0].name_word == "name-snake"
 
 
+# --- the evidence pass: every deck form's readings on record (spec 3 r68) ---
+
+class _Dictionary:
+    """A dictionary backend faked (Wiktionary's and thai-language.com's
+    shape: cache-first, its answer a row on the record): it records each
+    form asked and appends the row the real one would."""
+
+    def __init__(self, db, source, readings=None):
+        self.db, self.source, self.readings = db, source, readings or {}
+        self.asked: list[str] = []
+        self.dead = False
+
+    def begin_run(self):
+        pass
+
+    def __call__(self, form):
+        self.asked.append(form)
+        key = DictionaryKey(self.source, form)
+        if self.db.latest("provide", self.source, key) is None:
+            answer = ({"revid": 1, "ipa": self.readings.get(form, [])}
+                      if self.source == "wiktionary" else
+                      {"entries": [{"id": "1", "paiboon": "", "ipa": self.readings.get(form, [])}]})
+            self.db.append(port="provide", backend=self.source, key=key,
+                           subject=f"dictionary:{form}", question={"form": form}, answer=answer)
+        return ()
+
+
+KHAAW = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="falling"),)
+
+
+def _evidence_ctx(tmp_path, *words, engines=None):
+    syllabus = Syllabus(words=tuple(words), targets=(target(f"{words[0].id}/receptive",
+                                                            words[0].id),))
+    ctx = _sourcing(tmp_path, syllabus, backends={}, assess={})
+    ctx.engines = engines or _engines(g2p=lambda thai: KHAAW, tone=lambda thai: "falling")
+    return ctx
+
+
+def test_the_evidence_pass_records_every_local_engines_reading_of_every_deck_form(tmp_path):
+    rice, rice_2 = word("rice", "ข้าว"), word("rice-2", "ข้าว")        # ข้าว: rice (homograph)
+    ctx = _evidence_ctx(tmp_path, rice, rice_2, word("good", "ดี"))    # ดี: good
+    evidence_attempt(ctx)
+    for form in ("ข้าว", "ดี"):
+        for engine in ("thaig2p", "tltk", "rule-tone"):
+            assert ctx.db.latest("provide", engine,
+                                 EngineKey(engine, ENGINE_VERSIONS[engine], form)) is not None
+
+
+def test_the_evidence_pass_runs_no_engine_on_a_form_already_on_record(tmp_path):
+    ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว"))
+    evidence_attempt(ctx)
+    ctx.engines = _no_engines()
+    evidence_attempt(ctx)
+
+
+def test_the_evidence_pass_asks_both_dictionaries_about_every_deck_form(tmp_path):
+    ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว"), word("good", "ดี"))
+    ctx.dictionary = _Dictionary(ctx.db, "wiktionary")
+    ctx.thai_language_com = _Dictionary(ctx.db, "thai-language.com")
+    evidence_attempt(ctx)
+    assert ctx.dictionary.asked == ["ข้าว", "ดี"]
+    assert ctx.thai_language_com.asked == ["ข้าว", "ดี"]
+
+
+def test_the_evidence_pass_gives_the_words_their_settled_readings(tmp_path):
+    ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว", syllables=(syl(),)))
+    evidence_attempt(ctx)
+    assert ctx.syllabus.word("rice").pron == pron(*KHAAW)
+
+
+def test_the_evidence_pass_logs_each_changed_reading_once(tmp_path, caplog):
+    ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว"), word("rice-2", "ข้าว"))
+    with caplog.at_level(logging.INFO, logger="thai_syllabus.attempts"):
+        evidence_attempt(ctx)
+    changed = [r.message for r in caplog.records if "ข้าว" in r.message]
+    assert changed == ["settlement: ข้าว (none) -> kʰaːw˥˩"]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="thai_syllabus.attempts"):
+        evidence_attempt(ctx)
+    assert not [r for r in caplog.records if "ข้าว" in r.message]
+
+
 # --- the pair search: the adoption pass for minimal pairs (spec 3 r47) -----
 
 TONE = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone", sounds=("mid", "low"),
@@ -5585,13 +5589,13 @@ def _confusion_syllabus(*words, confusions=(TONE,), pairs=()):
                     confusions=tuple(confusions), pairs=tuple(pairs))
 
 
-def _engines_reading(readings: dict[str, tuple[Syllable, ...]]):
-    """Two engines that agree on every reading in `readings` (an outside
-    form's `engines_pronunciation` is then `engines_agree`), built the
-    same shape `_engines` builds its own fake pair."""
-    def g2p(thai: str):
-        return readings.get(thai)
-    return Engines(g2p=(g2p, g2p), tone=lambda thai: None)
+def _engines_reading(readings: dict[str, tuple[Syllable, ...]], tltk=None):
+    """thaig2p and tltk reading `readings` (tltk its own `tltk` where
+    given): agreeing, they settle a form at posterior 1; differing, they
+    leave it unsettled."""
+    tltk_readings = {**readings, **(tltk or {})}
+    return Engines(g2p={"thaig2p": readings.get, "tltk": tltk_readings.get},
+                   tone=lambda thai: None)
 
 
 def test_pair_search_adopts_a_vocabulary_pair_and_writes_pairs_yaml(tmp_path):
@@ -5609,39 +5613,86 @@ def test_pair_search_adopts_a_vocabulary_pair_and_writes_pairs_yaml(tmp_path):
     assert [(p.confusion, p.members) for p in saved] == [("tone:mid-low", ("near", "far"))]
 
 
-def test_pair_search_asks_the_judge_about_an_outside_form_it_needs(tmp_path):
+def test_pair_search_never_pairs_an_unsettled_vocabulary_word(tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),),
+               posterior=0.98)
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))
+    assert pair_search_attempt(ctx) == AttemptResult(attempted=False)
+
+
+def test_pair_search_reads_the_frequency_pool_into_the_record(tmp_path):
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
     ctx.frequency_words = lambda: ("ไกล",)
     ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    pair_search_attempt(ctx)
+    assert ctx.db.latest("provide", "thaig2p",
+                         EngineKey("thaig2p", ENGINE_VERSIONS["thaig2p"], "ไกล")) is not None
+
+
+def test_pair_search_asks_the_judge_and_the_dictionaries_about_an_outside_form_it_selects(
+        tmp_path):
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล", "ปลา")                  # ปลา: fish, no partner
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),),
+                                   "ปลา": (syl(onset="pl", vowel="a", tone="mid"),)})
+    ctx.dictionary = _Dictionary(ctx.db, "wiktionary")
+    ctx.thai_language_com = _Dictionary(ctx.db, "thai-language.com")
     result = pair_search_attempt(ctx)
     assert (result.adopted_pairs, result.candidate_asks) == (0, 1)
     assert [q.question.subject for q in result.questions] == [f"{CANDIDATE_SUBJECT_PREFIX}ไกล"]
     assert result.questions[0].question.subject_kind == "candidate"
+    assert ctx.dictionary.asked == ["ไกล"] and ctx.thai_language_com.asked == ["ไกล"]
 
 
-def test_pair_search_adopts_an_outside_form_once_the_judge_glossed_it(tmp_path):
+def _candidate_verdict(ctx, thai, syllables, gloss):
+    """A fresh judge verdict on an outside form, as the pair search's own
+    ask records it. Returns the row's ts."""
+    return ctx.db.append(port="assess", backend="judge",
+                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
+                                        f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
+                                        "pronunciation-for-word"),
+                  subject=f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
+                  question={"role": "pronunciation-for-word", "artifact_sha": None,
+                            "rubric": ctx.rubrics["pronunciation-for-word"],
+                            "kind": "pronunciation", "subject_kind": "candidate"},
+                  answer={"value": {"syllables": syllables, "gloss": gloss}})
+
+
+_KLAI_LOW = [{"segments": ["kl", "a", ""], "vowel_length": "short", "tone": "low"}]
+
+
+def test_pair_search_adopts_an_outside_form_once_its_evidence_is_on_record_and_settled(tmp_path):
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
     ctx.frequency_words = lambda: ("ไกล",)
     ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
-    ctx.db.append(port="assess", backend="judge",
-                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
-                                        f"{CANDIDATE_SUBJECT_PREFIX}ไกล", "pronunciation-for-word"),
-                  subject=f"{CANDIDATE_SUBJECT_PREFIX}ไกล",
-                  question={"role": "pronunciation-for-word", "artifact_sha": None,
-                            "rubric": ctx.rubrics["pronunciation-for-word"],
-                            "kind": "pronunciation", "subject_kind": "candidate"},
-                  answer={"value": {"syllables": [{"segments": ["kl", "a", ""],
-                                                   "vowel_length": "short", "tone": "low"}],
-                                    "gloss": "far"}})
+    _candidate_verdict(ctx, "ไกล", _KLAI_LOW, "far")
     result = pair_search_attempt(ctx)
     assert (result.adopted_pairs, result.adopted_words, result.candidate_asks) == (1, 1, 0)
     far = ctx.syllabus.word("far")
-    assert (far.thai, far.meaning, far.pron.corroboration) == ("ไกล", "far", "adjudicated")
+    assert (far.thai, far.meaning) == ("ไกล", "far")
+    assert far.pron.syllables == (syl(onset="kl", vowel="a", tone="low"),)
+    assert far.pron.posterior >= 0.99
     assert ctx.syllabus.category_of("far") is None
     assert [p.members for p in ctx.syllabus.pairs] == [("near", "far")]
     assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["near", "far"]
+
+
+def test_pair_search_waits_for_a_wired_dictionarys_row_before_minting(tmp_path):
+    """Evidence all on record: every wired dictionary's row as well as the
+    judge's; the run that asks the dictionary mints nothing yet."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
+    _candidate_verdict(ctx, "ไกล", _KLAI_LOW, "far")
+    ctx.dictionary = _Dictionary(ctx.db, "wiktionary")
+    first = pair_search_attempt(ctx)
+    assert (first.adopted_pairs, ctx.dictionary.asked) == (0, ["ไกล"])
+    assert pair_search_attempt(ctx).adopted_pairs == 1
 
 
 def test_pair_search_stops_at_the_wanted_count_and_never_reuses_a_member(tmp_path):
@@ -5690,16 +5741,16 @@ def test_pair_search_run_twice_does_not_duplicate_an_adopted_pair(tmp_path):
     assert sorted(p.id for p in saved) == ["tone:mid-low-5/a-b", "tone:mid-low-5/c-d"]
 
 
-def test_pair_search_adopts_a_late_pair_once_its_member_is_corroborated(tmp_path):
-    """The first run can only form a-b (c is not yet corroborated); once c
-    becomes corroborated the second run adopts c-d alone -- a-b, already
-    adopted, is never reconsidered."""
+def test_pair_search_adopts_a_late_pair_once_its_member_is_settled(tmp_path):
+    """The first run can only form a-b (c is not yet settled); once c
+    settles the second run adopts c-d alone -- a-b, already adopted, is
+    never reconsidered."""
     a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
     b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
-    c_disputed = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),),
-                      corroboration="disputed")
+    c_unsettled = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),),
+                       posterior=0.5)
     d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
-    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b, c_disputed, d, confusions=(TONE5,)))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b, c_unsettled, d, confusions=(TONE5,)))
 
     first = pair_search_attempt(ctx)
     assert first.adopted_pairs == 1
@@ -5723,16 +5774,7 @@ def test_pair_search_gives_an_outside_members_pair_the_minted_word_id(tmp_path):
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
     ctx.frequency_words = lambda: ("ไกล",)
     ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
-    ctx.db.append(port="assess", backend="judge",
-                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
-                                        f"{CANDIDATE_SUBJECT_PREFIX}ไกล", "pronunciation-for-word"),
-                  subject=f"{CANDIDATE_SUBJECT_PREFIX}ไกล",
-                  question={"role": "pronunciation-for-word", "artifact_sha": None,
-                            "rubric": ctx.rubrics["pronunciation-for-word"],
-                            "kind": "pronunciation", "subject_kind": "candidate"},
-                  answer={"value": {"syllables": [{"segments": ["kl", "a", ""],
-                                                   "vowel_length": "short", "tone": "low"}],
-                                    "gloss": "far"}})
+    _candidate_verdict(ctx, "ไกล", _KLAI_LOW, "far")
     result = pair_search_attempt(ctx)
     assert result.adopted_pairs == 1
     assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/far-near"]
@@ -5789,32 +5831,22 @@ def test_pair_search_resolves_a_homograph_by_word_id_not_thai(tmp_path):
     assert [p.members for p in ctx.syllabus.pairs] == [("w1a", "w3")]
 
 
-def _candidate_verdict(ctx, thai, syllables, gloss):
-    """A fresh judge verdict on an outside form, as the pair search's own
-    ask records it. Returns the row's ts."""
-    return ctx.db.append(port="assess", backend="judge",
-                  key=JudgeKey.for_rule(ctx.rubrics["pronunciation-for-word"], None,
-                                        f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
-                                        "pronunciation-for-word"),
-                  subject=f"{CANDIDATE_SUBJECT_PREFIX}{thai}",
-                  question={"role": "pronunciation-for-word", "artifact_sha": None,
-                            "rubric": ctx.rubrics["pronunciation-for-word"],
-                            "kind": "pronunciation", "subject_kind": "candidate"},
-                  answer={"value": {"syllables": syllables, "gloss": gloss}})
+def _unsettled_klai(ctx):
+    """ไกล (far) read low by thaig2p and falling by tltk and the judge: two
+    error families split, so the form stays unsettled with its evidence
+    all on record (no dictionary is wired)."""
+    ctx.frequency_words = lambda: ("ไกล",)
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)},
+                                   tltk={"ไกล": (syl(onset="kl", vowel="a", tone="falling"),)})
+    return _candidate_verdict(ctx, "ไกล", [{**_KLAI_LOW[0], "tone": "falling"}], "far")
 
 
-def test_pair_search_drops_a_candidate_whose_fresh_verdict_does_not_corroborate(tmp_path):
-    """I3: a form the engines agree on, whose judge verdict then disagrees
-    with them, is out of the pool -- not kept on its `engines_agree`
-    reading, where it would be selected every run and re-asked for ever as
-    a cache hit."""
+def test_pair_search_drops_an_unsettled_form_whose_evidence_is_all_on_record(tmp_path):
+    """Spec 3 r68: kept, it would be selected every run and asked about
+    again as a cache hit for ever."""
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
-    ctx.frequency_words = lambda: ("ไกล",)
-    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
-    _candidate_verdict(ctx, "ไกล",
-                       [{"segments": ["kl", "a", ""], "vowel_length": "short",
-                         "tone": "falling"}], "far")
+    _unsettled_klai(ctx)
 
     result = pair_search_attempt(ctx)
 
@@ -5822,19 +5854,27 @@ def test_pair_search_drops_a_candidate_whose_fresh_verdict_does_not_corroborate(
     assert ctx.syllabus.pairs == ()
 
 
-def test_pair_search_candidates_dropped_is_a_per_run_delta(tmp_path):
-    """spec 3's RunReport row: candidates_dropped is what this run's pool
-    dropped, not a standing gauge. A form whose disagreeing verdict a
-    previous run already reported (its row's ts at or before that run's
-    RunReport row) does not count again just for still sitting there --
-    it still leaves the pool (the `continue` stays)."""
+def test_pair_search_keeps_an_unsettled_form_whose_evidence_is_not_all_on_record(tmp_path):
+    """Asked about, it may yet settle. Split low/rising, it is selected on
+    its winning reading (a tie goes to the first value, low)."""
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
     ctx.frequency_words = lambda: ("ไกล",)
-    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)})
-    verdict_ts = _candidate_verdict(ctx, "ไกล",
-                       [{"segments": ["kl", "a", ""], "vowel_length": "short",
-                         "tone": "falling"}], "far")
+    ctx.engines = _engines_reading({"ไกล": (syl(onset="kl", vowel="a", tone="low"),)},
+                                   tltk={"ไกล": (syl(onset="kl", vowel="a", tone="rising"),)})
+    result = pair_search_attempt(ctx)
+    assert (result.candidates_dropped, result.candidate_asks) == (0, 1)
+
+
+def test_pair_search_candidates_dropped_is_a_per_run_delta(tmp_path):
+    """spec 3's RunReport row: candidates_dropped is what this run's pool
+    dropped, not a standing gauge. A form whose evidence a previous run
+    already had (its newest row at or before that run's RunReport row)
+    does not count again just for still sitting there -- it still leaves
+    the pool."""
+    near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
+    verdict_ts = _unsettled_klai(ctx)
 
     first = pair_search_attempt(ctx)
 
@@ -5842,16 +5882,16 @@ def test_pair_search_candidates_dropped_is_a_per_run_delta(tmp_path):
 
     ctx.db.append(port="run", backend="runreport", key=RunReportKey(), subject="run",
                  question={"kind": "runreport"}, answer={"attempted": False},
-                 ts=verdict_ts + 1)
+                 ts=verdict_ts + 10**12)
 
     second = pair_search_attempt(ctx)
 
     assert second == AttemptResult(attempted=False, candidates_dropped=0)
 
 
-def test_pair_search_reads_each_frequency_form_once_across_two_passes(tmp_path):
-    """I6: the engines' reading of a frequency form is memoised on the
-    ctx, so a second pass of the same invocation pays nothing for it."""
+def test_pair_search_reads_each_frequency_form_once_ever(tmp_path):
+    """The engines' reading of a frequency form is a record row, so a
+    second pass pays nothing for it."""
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near))
     ctx.frequency_words = lambda: ("ไกล",)
@@ -5861,7 +5901,7 @@ def test_pair_search_reads_each_frequency_form_once_across_two_passes(tmp_path):
         calls.append(thai)
         return {"ไกล": (syl(onset="kl", vowel="a", tone="low"),)}.get(thai)
 
-    ctx.engines = Engines(g2p=(g2p, g2p), tone=lambda thai: None)
+    ctx.engines = Engines(g2p={"thaig2p": g2p, "tltk": g2p}, tone=lambda thai: None)
 
     pair_search_attempt(ctx)
     after_first = len(calls)
@@ -5872,9 +5912,9 @@ def test_pair_search_reads_each_frequency_form_once_across_two_passes(tmp_path):
 
 
 def test_pair_search_never_loads_the_engines_for_a_vocabulary_only_deck(tmp_path, monkeypatch):
-    """I6: `default_engines` pulls in pythainlp/torch, so it is resolved
-    only when there is a frequency form to read -- a deck whose pairs come
-    out of the vocabulary never touches it."""
+    """`default_engines` pulls in pythainlp/torch, so it is resolved only
+    when there is a form with no reading on record -- a deck whose pairs
+    come out of the vocabulary never touches it."""
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(near, far))

@@ -22,7 +22,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.transport import Completion
 from thai_syllabus.wiring import build_sourcing, load_syllabus
 
-from .builders import clip_for, sentence, target, thai_of, word
+from .builders import clip_for, offline, sentence, target, thai_of, word
 from .test_run import (RICE, _Llm as _DraftLlm, _LlmPhrase, _deck as _batch_fixture_deck, _wire,
                        fake_batch, fake_search)
 
@@ -116,6 +116,7 @@ def test_run_closes_picture_recording_and_sentence_needs(tmp_path):
     # 5): the real pass would write the repo's 42 consonants into this
     # fixture deck and load pythainlp/torch to read them.
     ctx.adopt_graphemes = False
+    offline(ctx)
     ctx.provider._backends.update({
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
@@ -558,6 +559,7 @@ def test_a_runs_judge_spend_sums_the_tokens_its_verdicts_reported(tmp_path):
     root = _deck(tmp_path)
     ctx = build_sourcing(root)
     ctx.adopt_graphemes = False
+    offline(ctx)
     ctx.provider._backends.update({
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),
@@ -580,6 +582,7 @@ def _counting_ctx(root, calls: list):
     it is asked."""
     ctx = build_sourcing(root)
     ctx.adopt_graphemes = False
+    offline(ctx)
     ctx.provider._backends.update({
         "pexels": _Search("pexels"), "openverse": _Search(), "wikimedia": _Search("wikimedia"),
         "forvo": _Forvo(), "llm-sentence": _Llm(), "llm-phrase": _LlmPhrase(),

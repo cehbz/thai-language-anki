@@ -2716,15 +2716,13 @@ def ctx_with_an_old_and_a_new_run(derivations, db):
     return derivations
 
 
-def test_stats_history_carries_adjudicated_and_stayed_disputed_per_run(
+def test_stats_history_no_longer_fills_in_the_adjudication_counts(
         ctx_with_an_old_and_a_new_run):
-    """Spec 3 r29: both counts are per-run columns of the run history,
-    and a row written before r29 reads as 0 rather than dropping the
-    column for every run (the page takes its columns from the oldest
-    row).
-    """
+    """Spec 3 r68 removed adjudication: a row that recorded its counts
+    keeps them, and no row gains them."""
     hist = rs.compute_stats(ctx_with_an_old_and_a_new_run)["run_report_history"]
-    assert [(r["adjudicated"], r["stayed_disputed"]) for r in hist] == [(0, 0), (3, 5)]
+    assert ["adjudicated" in r for r in hist] == [False, True]
+    assert hist[1]["stayed_disputed"] == 5
 
 
 def test_stats_history_carries_the_comment_counts_on_every_run(ctx_with_an_old_and_a_new_run):
@@ -4140,7 +4138,8 @@ def test_build_queue_computes_the_available_needs_once(derivations, db, w1, w2, 
 def test_a_queue_build_reads_each_subjects_rows_once(deck_with_history, monkeypatch):
     """Over a loaded deck -- its Syllabus's own media index and
     assessment reader included -- a build reads one subject's rows from
-    the db at most once."""
+    the db at most once. (Loading reads them too, for the pronunciation
+    settlement, spec 2 r23; that is the load, not the build.)"""
     from collections import Counter
 
     reads: Counter[str] = Counter()
@@ -4150,8 +4149,8 @@ def test_a_queue_build_reads_each_subjects_rows_once(deck_with_history, monkeypa
         reads[subject] += 1
         return original(self, subject)
 
-    monkeypatch.setattr(SyllabusDb, "assessments_of", counting)
     ctx = rs.load_context(deck_with_history)
+    monkeypatch.setattr(SyllabusDb, "assessments_of", counting)
     ctx.questions()
     assert reads, "the build read no subject at all"
     assert max(reads.values()) == 1, reads

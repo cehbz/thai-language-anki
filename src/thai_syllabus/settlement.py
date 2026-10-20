@@ -15,20 +15,22 @@ other. A report of several readings (a Wiktionary entry listing spoken
 variants) is a set that matches any of its values.
 
 `evidence_on_record` gathers the evidence; `settle` is the pure fold,
-memoised in-process on the evidence.
+memoised in-process on the evidence; `settlement_of` is the two over a
+set of Words (and any outside forms), what the loader and the run read
+(spec 2 r23's Settlement interface: `Settlement.reading(form)`).
 """
 from __future__ import annotations
 
 import math
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Union
 
 from .cachekeys import DictionaryKey, EngineKey
-from .derivations import stale
+from .derivations import CANDIDATE_SUBJECT_PREFIX, stale
 from .engines import RULE_TONE_VERSION, THAIG2P_VERSION, TLTK_VERSION, convert_wiktionary
-from .entities import Syllable, Tone
+from .entities import Pronunciation, Syllable, Tone, Word
 from .phonology import syllables_from_verdict
 from .ports import CacheReader
 from .thailanguagecom import readings as thai_language_com_readings
@@ -99,23 +101,19 @@ class Evidence:
 
 
 @dataclass(frozen=True)
-class SettledReading:
-    """A form's settled reading: each feature's winner, the least winning
-    posterior, and whether the spoken witness dissents (lists no reading
-    matching it on some feature)."""
-    syllables: Reading
-    posterior: float
-    spoken_dissent: bool
-
-
-@dataclass(frozen=True)
 class Settlement:
-    """The fold's result: a reading per form with any, and the fitted
-    accuracies per feature (family name -> accuracy, member -> accuracy).
-    Shared through the memo, so read-only by convention."""
-    readings: Mapping[str, SettledReading]
+    """The fold's result: a reading per form with any (the entity
+    Pronunciation: each feature's winner, the least winning posterior,
+    and whether the spoken witness dissents), and the fitted accuracies
+    per feature (family name -> accuracy, member -> accuracy). Shared
+    through the memo, so read-only by convention."""
+    readings: Mapping[str, Pronunciation]
     accuracy: Mapping[str, Mapping[str, float]]
     member_accuracy: Mapping[str, Mapping[Member, float]]
+
+    def reading(self, form: str) -> Pronunciation | None:
+        """The form's settled reading; None when no evidence reads it."""
+        return self.readings.get(form)
 
 
 def _values(reports: tuple[Report, ...], feature: str) -> frozenset[tuple]:
@@ -219,9 +217,9 @@ def settle(evidence: Evidence) -> Settlement:
         witness = [rs for m, rs in members if m.source == SPOKEN_WITNESS]
         dissent = bool(witness) and any(
             settled[feature] not in _values(witness[0], feature) for feature in FEATURES)
-        readings[form] = SettledReading(syllables=syllables,
-                                        posterior=min(p_seg, p_len, p_tone),
-                                        spoken_dissent=dissent)
+        readings[form] = Pronunciation(syllables=syllables,
+                                       posterior=min(p_seg, p_len, p_tone),
+                                       spoken_dissent=dissent)
     return Settlement(readings=readings,
                       accuracy={feature: dict(fit.p) for feature, fit in fits.items()},
                       member_accuracy={feature: dict(fit.acc) for feature, fit in fits.items()})
@@ -272,3 +270,32 @@ def evidence_on_record(cache: CacheReader, judge_subjects: Mapping[str, Collecti
                 reports[Member("judge")] = [syllables_from_verdict(value)]
         by_form[form] = reports
     return Evidence.of(by_form)
+
+
+def judge_subjects(words: Iterable[Word], forms: Iterable[str] = ()
+                   ) -> dict[str, list[str]]:
+    """Each form's judge subjects, in order: its Words' ids, then the
+    `candidate:<form>` subject the pair search asks an outside form under
+    (a Word minted from one keeps that verdict); `forms` adds outside
+    forms with the candidate subject alone."""
+    out: dict[str, list[str]] = {}
+    for w in words:
+        out.setdefault(w.thai, []).append(w.id)
+    for form in forms:
+        out.setdefault(form, [])
+    for form, subjects in out.items():
+        subjects.append(f"{CANDIDATE_SUBJECT_PREFIX}{form}")
+    return out
+
+
+def settlement_of(cache: CacheReader, words: Iterable[Word], forms: Iterable[str] = (), *,
+                  current_rubric: Mapping[str, str]) -> Settlement:
+    """The settlement over the readings on record of `words`' forms and
+    `forms`; reads the record only, never runs an engine."""
+    return settle(evidence_on_record(cache, judge_subjects(words, forms),
+                                     current_rubric=current_rubric))
+
+
+def with_readings(words: Iterable[Word], settlement: Settlement) -> tuple[Word, ...]:
+    """`words`, each given its form's settled reading (spec 1 r34)."""
+    return tuple(replace(w, pron=settlement.reading(w.thai)) for w in words)

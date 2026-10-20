@@ -593,7 +593,7 @@ def test_tltk_never_raises_on_a_form_it_cannot_read():
 
 def test_thaig2p_and_tltk_agree_once_the_glottal_coda_is_normalized():
     """thaig2p emits the coda, tltk does not; both must land on the same
-    Syllable or no dead open syllable could ever be corroborated."""
+    Syllable or no dead open syllable could ever be agreed on."""
     assert _convert("t͡ɕ a ʔ ˨˩") == _convert_tltk("ca2")
 
 

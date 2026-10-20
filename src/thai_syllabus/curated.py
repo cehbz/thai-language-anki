@@ -3,9 +3,11 @@ hand-editable data that loads into spec 1's entities.
 
 Saves are temp-file + os.replace (spec 2's ground rule). Loads validate
 references -- a grapheme's keyword resolves and contains its symbol, a
-pair's confusion and members satisfy the exact-confusion invariant, a
-target's word and a word's classifier resolve -- and collect every error
-before raising; `load_curated` does the same across a whole directory.
+pair's confusion and members resolve, a target's word and a word's
+classifier resolve -- and collect every error before raising;
+`load_curated` does the same across a whole directory. words.yaml stores
+no pronunciation (spec 2 r23): a loaded Word has none until
+wiring.load_syllabus gives it its form's settled reading.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from urllib.parse import urlparse
 import yaml
 
 from .authority import AUTHORITY_ORDER, ROLE_FOR_KIND, ROLE_FOR_SENTENCE_SUBJECT
-from .entities import Category, Grapheme, MinimalPair, Pronunciation, SoundConfusion, Syllable, Target, Word
+from .entities import Category, Grapheme, MinimalPair, SoundConfusion, Target, Word
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .profile import Profile
 # The illustrator's provider name is validated against the same registry
@@ -99,28 +101,8 @@ def _load_yaml_list(path: Path) -> list[dict]:
 
 # --- words -----------------------------------------------------------------
 
-def _syllable_to_dict(s: Syllable) -> dict:
-    return {"segments": list(s.segments), "vowel_length": s.vowel_length,
-           "tone": s.tone}
-
-
-def _syllable_from_dict(d: dict) -> Syllable:
-    return Syllable(segments=tuple(d["segments"]), vowel_length=d["vowel_length"],
-                    tone=d["tone"])
-
-
-def _pron_to_dict(p: Pronunciation) -> dict:
-    return {"syllables": [_syllable_to_dict(s) for s in p.syllables],
-           "corroboration": p.corroboration}
-
-
-def _pron_from_dict(d: dict) -> Pronunciation:
-    return Pronunciation(syllables=tuple(_syllable_from_dict(s) for s in d["syllables"]),
-                         corroboration=d["corroboration"])
-
-
 def _word_to_dict(w: Word, category: CategoryName | None) -> dict:
-    d = {"id": w.id, "thai": w.thai, "pron": _pron_to_dict(w.pron),
+    d = {"id": w.id, "thai": w.thai,
         "meaning": w.meaning, "classifier": w.classifier, "category": category}
     if w.no_productive:
         # r9: the key is written only when true, so the ~800 existing
@@ -136,7 +118,7 @@ def _word_to_dict(w: Word, category: CategoryName | None) -> dict:
 
 
 def _word_from_dict(d: dict) -> Word:
-    return Word(id=WordId(d["id"]), thai=d["thai"], pron=_pron_from_dict(d["pron"]),
+    return Word(id=WordId(d["id"]), thai=d["thai"], pron=None,
                meaning=d["meaning"],
                classifier=WordId(d["classifier"]) if d.get("classifier") else None)
 
@@ -144,7 +126,7 @@ def _word_from_dict(d: dict) -> Word:
 def save_words(path: str | Path, rows: list[tuple[Word, CategoryName | None]]) -> None:
     """Writes words.yaml (spec 1 section 1). `no_productive` (r9) and
     `speaker` (r10) are each written only for a row that carries one --
-    see `_word_to_dict`.
+    see `_word_to_dict`; a Word's pronunciation never (spec 2 r23).
     """
     _atomic_write_yaml(Path(path), [_word_to_dict(w, c) for w, c in rows])
 
@@ -155,7 +137,8 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
     refused, named. `no_productive` (r9) is optional, defaulting False;
     a row naming anything but a bool is refused, named. `speaker` (r10)
     is optional, defaulting None; a row naming anything but "male" or
-    "female" is refused, named.
+    "female" is refused, named. A row's `pron`, from before spec 2 r23,
+    is not read.
     """
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
@@ -166,11 +149,6 @@ def load_words(path: str | Path) -> list[tuple[Word, CategoryName | None]]:
             w = _word_from_dict(row)
         except (KeyError, TypeError) as e:
             errors.append(f"words[{i}]: malformed row ({e})")
-            continue
-        if w.pron.corroboration not in ("engines_agree", "curated_exception", "adjudicated",
-                                        "disputed"):
-            errors.append(f"words[{i}] ({w.id!r}): unknown corroboration "
-                          f"{w.pron.corroboration!r}")
             continue
         if w.id in seen:
             errors.append(f"words[{i}]: duplicate id {w.id!r}")
@@ -364,6 +342,10 @@ def save_pairs(path: str | Path, pairs: list[MinimalPair]) -> None:
 
 def load_pairs(path: str | Path, words_by_id: Mapping[str, Word],
                confusions_by_id: Mapping[str, SoundConfusion]) -> list[MinimalPair]:
+    """References only: the confusion and every member resolve. Exact
+    confusion is checked where a pair is made (MinimalPair.create, the
+    pair search); the members carry no pronunciation until
+    load_syllabus settles them (spec 2 r23)."""
     rows = _load_yaml_list(Path(path))
     errors: list[str] = []
     pairs: list[MinimalPair] = []
@@ -384,13 +366,11 @@ def load_pairs(path: str | Path, words_by_id: Mapping[str, Word],
             errors.append(f"pairs[{i}] ({pair_id!r}): member(s) {missing!r} "
                           f"do not resolve")
             continue
-        try:
-            pair = MinimalPair.create(id=PairId(pair_id), confusion=confusion,
-                                      members=tuple(members))
-        except ValueError as e:
-            errors.append(f"pairs[{i}] ({pair_id!r}): {e}")
+        if not 2 <= len(members) <= 3:
+            errors.append(f"pairs[{i}] ({pair_id!r}): a minimal pair has 2 or 3 members")
             continue
-        pairs.append(pair)
+        pairs.append(MinimalPair(id=PairId(pair_id), confusion=confusion.id,
+                                 members=tuple(m.id for m in members)))
     if errors:
         raise CuratedValidationError(errors)
     return pairs

@@ -16,8 +16,8 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from .cachekeys import JudgeKey
 from .entities import (
-    Category, ClozeSlot, Grapheme, MinimalPair, Sentence, SoundConfusion, Target, Voice, Word,
-    render,
+    Category, ClozeSlot, Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Target,
+    Voice, Word, render,
 )
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
@@ -25,7 +25,7 @@ from .ports import (
     StudyRecord,
 )
 from .profile import Profile
-from .rulebook import RULES
+from .rulebook import DEFAULT_SETTLED_THRESHOLD, RULES
 from .rules import Finding, Gaps, Metric, OrderEntry, Report, Rule
 
 if TYPE_CHECKING:
@@ -157,6 +157,9 @@ class Syllabus:
     # a study record (spec 1 section 3, r26), handed in at load from the
     # study table; none without one.
     studied_cloze_pairs: frozenset[tuple[str, TargetId]] = frozenset()
+    # The posterior a settled reading reaches (spec 1 section 4, E4's
+    # rulebook threshold), handed in at load from rulebook.yaml.
+    settled_threshold: float = DEFAULT_SETTLED_THRESHOLD
 
     # --- lookups -------------------------------------------------------
 
@@ -906,8 +909,8 @@ class Syllabus:
 
     def with_words(self, words: Sequence[Word]) -> "Syllabus":
         """This Syllabus over `words` in place of its own -- the whole
-        list, in its own order, not an addition (run._materialize_adjudications
-        writes back every row, the changed ones replaced). A fresh
+        list, in its own order, not an addition (the evidence pass gives
+        every Word its settled reading, attempts.evidence_attempt). A fresh
         instance, so `_word_index` and every other cached_property is
         recomputed rather than carried over stale.
         """
@@ -1087,10 +1090,17 @@ class Syllabus:
         """The trained segmental confusions whose sounds `word_id`'s
         pronunciation carries (`SoundConfusion.touched_by`): the ones its
         reading waits on. Tone and vowel-length confusions are never among
-        them."""
+        them; a word with no pronunciation touches none (spec 1 r34)."""
         pron = self.word(word_id).pron
+        if pron is None:
+            return frozenset()
         return frozenset(c.id for c in self._trained_segmental_confusions
                          if c.touched_by(pron))
+
+    def settled(self, pron: Pronunciation | None) -> bool:
+        """Whether a reading is settled: its posterior at least the
+        threshold (spec 3 section 6). No reading is not."""
+        return pron is not None and pron.posterior >= self.settled_threshold
 
     # --- content-hash staleness marker ------------------------------------
 

@@ -1,5 +1,6 @@
 """Renders a Pronunciation as the deck's authored IPA string (spec 4
-section 1: "Ipa renders the Pronunciation value with tone and length").
+section 1: "Ipa renders the Pronunciation value with tone and length"); a
+Word with none renders empty (spec 4 r17).
 
 Per syllable: onset, then vowel (followed by the length mark when
 vowel_length is long and the vowel is not a centering diphthong -- the
@@ -19,10 +20,12 @@ _TONE_LETTERS: dict[Tone, str] = {
 LENGTH_MARK = "ː"
 
 
-def render(pron: Pronunciation) -> str:
+def render(pron: Pronunciation | None) -> str:
     """`onset + vowel [+ length mark] + coda + tone letters` per syllable,
-    joined with ".".
+    joined with "."; "" for no pronunciation.
     """
+    if pron is None:
+        return ""
     return ".".join(_render_syllable(s) for s in pron.syllables)
 
 

@@ -8,13 +8,13 @@ injectable callables; these wrap them.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from .cachekeys import EngineKey
 from .dictionary import DictionaryStore
 from .entities import Syllable, Tone
-from .phonology import read_form, syllables_from_verdict
+from .phonology import Engines, read_form, syllables_from_verdict
 
 PORT = "provide"
 
@@ -50,8 +50,7 @@ def recorded_reading(cache: DictionaryStore, name: str, version: str,
                      ) -> Callable[[str], Reading | None]:
     """A g2p engine's reading of a form, recorded as
     `phonology.read_form` presents it (phrases token by token, ʔ-coda
-    convention, degenerate readings dropped), so the record yields what the
-    live engine would through `Engines.readings`."""
+    convention, degenerate readings dropped)."""
     ask = RecordedEngine(cache, name, version, lambda form: _to_json(read_form(engine, form)))
 
     def reading(form: str) -> Reading | None:
@@ -72,3 +71,29 @@ def _to_json(reading: Reading | None) -> list[dict] | None:
         return None
     return [{"segments": list(s.segments), "vowel_length": s.vowel_length,
              "tone": s.tone} for s in reading]
+
+
+def record_readings(cache: DictionaryStore, engines: Callable[[], Engines],
+                    forms: Iterable[str], *, versions: Mapping[str, str]) -> None:
+    """Every local engine's reading of every form on the record (spec 3
+    r68): each g2p engine's (thaig2p, tltk) and the rule tone engine's
+    (`rule-tone`, which itself reads no form of more than one syllable),
+    at its installed version. `engines` is called -- and the real ones
+    loaded -- only on the first form an engine has no row for."""
+    resolved: list[Engines] = []
+
+    def resolve() -> Engines:
+        if not resolved:
+            resolved.append(engines())
+        return resolved[0]
+
+    def g2p(name: str) -> Callable[[str], Any]:
+        return lambda token: resolve().g2p[name](token)
+
+    readers = [recorded_reading(cache, name, versions[name], g2p(name))
+               for name in ("thaig2p", "tltk")]
+    readers.append(recorded_tone(cache, "rule-tone", versions["rule-tone"],
+                                 lambda form: resolve().tone(form)))
+    for form in forms:
+        for read in readers:
+            read(form)

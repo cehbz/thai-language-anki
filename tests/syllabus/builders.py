@@ -18,19 +18,68 @@ def syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
     return Syllable(segments=(onset, vowel, coda), vowel_length=length, tone=tone)
 
 
-def pron(*syllables: Syllable, corroboration="engines_agree") -> Pronunciation:
+def pron(*syllables: Syllable, posterior: float = 1.0,
+         spoken_dissent: bool = False) -> Pronunciation:
     if not syllables:
         syllables = (syl(),)
-    return Pronunciation(syllables=tuple(syllables), corroboration=corroboration)
+    return Pronunciation(syllables=tuple(syllables), posterior=posterior,
+                         spoken_dissent=spoken_dissent)
 
 
 def word(id: str, thai: str, meaning: str = "", classifier: str | None = None,
          syllables: tuple[Syllable, ...] | None = None,
-         corroboration: str = "engines_agree",
+         posterior: float = 1.0,
          speaker: str | None = None) -> Word:
-    p = pron(*syllables, corroboration=corroboration) if syllables else pron(corroboration=corroboration)
+    p = pron(*syllables, posterior=posterior) if syllables else pron(posterior=posterior)
     return Word(id=WordId(id), thai=thai, pron=p, meaning=meaning or id,
                classifier=WordId(classifier) if classifier else None, speaker=speaker)
+
+
+def on_record(db, form: str, *readings: tuple[Syllable, ...]) -> None:
+    """`form`'s readings on the record as the local engines' rows (spec 3
+    section 3), what the settlement folds (spec 3 section 6): one reading,
+    read by thaig2p and tltk alike, settles at posterior 1; two, one per
+    engine (two error families), leave the form unsettled."""
+    from thai_syllabus.cachekeys import EngineKey
+    from thai_syllabus.settlement import ENGINE_VERSIONS
+    first, second = (readings[0], readings[0]) if len(readings) == 1 else readings
+    for engine, reading in (("thaig2p", first), ("tltk", second)):
+        db.append(port="provide", backend=engine,
+                  key=EngineKey(engine, ENGINE_VERSIONS[engine], form),
+                  subject=f"engine:{form}", question={"form": form},
+                  answer={"value": [{"segments": list(s.segments),
+                                     "vowel_length": s.vowel_length, "tone": s.tone}
+                                    for s in reading]})
+
+
+def offline(ctx):
+    """A wired Sourcing's evidence pass kept local (spec 3 r68): engines
+    that read nothing (conftest refuses the real ones) and no dictionary,
+    whose real backends would reach the network."""
+    from thai_syllabus.phonology import Engines
+    ctx.engines = Engines(g2p={"thaig2p": lambda thai: None, "tltk": lambda thai: None},
+                          tone=lambda thai: None)
+    ctx.dictionary = ctx.thai_language_com = None
+    return ctx
+
+
+def record_pronunciations(db, words) -> None:
+    """Each Word's own `pron` put on the record as its form's evidence
+    (`on_record`; the first Word of a form decides), so a deck loaded
+    from files settles it again: a settled one read alike by both
+    engines, an unsettled one split between them on tone; None, nothing."""
+    seen: set[str] = set()
+    for w in words:
+        if w.pron is None or w.thai in seen:
+            continue
+        seen.add(w.thai)
+        if w.pron.posterior >= 0.99:
+            on_record(db, w.thai, w.pron.syllables)
+        else:
+            other = tuple(Syllable(segments=s.segments, vowel_length=s.vowel_length,
+                                   tone="rising" if s.tone != "rising" else "mid")
+                          for s in w.pron.syllables)
+            on_record(db, w.thai, w.pron.syllables, other)
 
 
 def target(id: str, word_id: str, skill: str = "receptive",

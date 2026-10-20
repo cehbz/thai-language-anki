@@ -2,6 +2,7 @@
 every registered rule, the locked principles, and the traceability measure
 derived from both.
 """
+import dataclasses
 import re
 from datetime import date
 from pathlib import Path
@@ -745,14 +746,35 @@ def test_picture_preference_role_and_shape():
 
 
 # --- pair/pronunciation-corroborated (E4) -----------------------------------
-# Spec 1 r18: E4 is scoped to minimal-pair membership -- a disputed
-# pronunciation blocks a word's cards only when the word is a pair member,
-# because pair validity (exact_confusion_violation) is computed on stored
-# pronunciations. Outside a pair the IPA is reference beside audio, not
-# something a card computes on.
+# Spec 1 r34: E4 is scoped to minimal-pair membership -- a pronunciation
+# blocks a word's cards only when the word is a pair member, where pair
+# validity (exact_confusion_violation) is computed on it. A member is
+# settled when its posterior reaches the rule's threshold (rulebook.yaml
+# `thresholds`, default 0.99). Outside a pair the IPA is reference beside
+# audio, not something a card computes on.
 
-def test_disputed_word_not_in_a_pair_is_silent():
-    rice = word("rice", "ข้าว", corroboration="disputed")  # rice
+def _tone_pair(mid_posterior=1.0, *, mid_pron=True, threshold=None):
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("pair"), confusion=confusion,
+                              members=(mid_word, low_word))
+    if not mid_pron:
+        mid_word = dataclasses.replace(mid_word, pron=None)
+    else:
+        mid_word = dataclasses.replace(mid_word, pron=dataclasses.replace(
+            mid_word.pron, posterior=mid_posterior))
+    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
+                             confusions=(confusion,))
+    if threshold is not None:
+        syllabus = dataclasses.replace(syllabus, settled_threshold=threshold)
+    return [f.note_id for f in syllabus.report().findings
+            if f.rule == "pair/pronunciation-corroborated"]
+
+
+def test_an_unsettled_word_not_in_a_pair_is_silent():
+    rice = word("rice", "ข้าว", posterior=0.5)  # rice
     t = target("rice/receptive", "rice", "receptive")
     syllabus = make_syllabus(words=(rice,), targets=(t,))
     findings = [f for f in syllabus.report().findings
@@ -760,33 +782,20 @@ def test_disputed_word_not_in_a_pair_is_silent():
     assert findings == []
 
 
-def test_disputed_pair_member_is_an_error():
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),),
-                    corroboration="disputed")  # near
-    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
-    pair = MinimalPair.create(id=PairId("pair"), confusion=confusion,
-                              members=(mid_word, low_word))
-    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
-                             confusions=(confusion,))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "pair/pronunciation-corroborated"]
-    assert [f.note_id for f in findings] == ["near"]
+def test_an_unsettled_pair_member_is_an_error():
+    assert _tone_pair(0.98) == ["near"]
 
 
-def test_corroborated_pair_member_is_silent():
-    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
-                               sounds=("mid", "low"))
-    mid_word = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
-    low_word = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
-    pair = MinimalPair.create(id=PairId("pair"), confusion=confusion,
-                              members=(mid_word, low_word))
-    syllabus = make_syllabus(words=(mid_word, low_word), pairs=(pair,),
-                             confusions=(confusion,))
-    findings = [f for f in syllabus.report().findings
-               if f.rule == "pair/pronunciation-corroborated"]
-    assert findings == []
+def test_a_pair_member_with_no_pronunciation_is_an_error():
+    assert _tone_pair(mid_pron=False) == ["near"]
+
+
+def test_a_settled_pair_member_is_silent():
+    assert _tone_pair(0.99) == []
+
+
+def test_the_settled_threshold_is_the_syllabus_s():
+    assert _tone_pair(0.95, threshold=0.9) == []
 
 
 # --- word/classifier-known (E5) ---------------------------------------------

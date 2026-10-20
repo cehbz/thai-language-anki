@@ -16,9 +16,9 @@ CONSONANT = SoundConfusion(id=ConfusionId("consonant:place-p-t"), dimension="con
                            sounds=("p", "t"), weight=4)
 
 
-def pron(tone="mid", length="short", onset="k", vowel="a", coda="", corroboration="engines_agree"):
+def pron(tone="mid", length="short", onset="k", vowel="a", coda=""):
     return Pronunciation(syllables=(Syllable(segments=(onset, vowel, coda), vowel_length=length,
-                                             tone=tone),), corroboration=corroboration)
+                                             tone=tone),), posterior=1.0, spoken_dissent=False)
 
 
 def cand(thai, pron_, word_id=None, rank=None):
@@ -58,11 +58,6 @@ def test_select_pairs_uses_no_member_twice_and_skips_taken_forms():
     assert select_pairs(TONE, cs, wanted=4, taken=("กา",)) == []
 
 
-def test_select_pairs_ignores_an_uncorroborated_candidate():
-    cs = [cand("กา", pron("mid", corroboration="disputed"), "crow"), cand("ก่า", pron("low"))]
-    assert select_pairs(TONE, cs, wanted=1, taken=()) == []
-
-
 def test_select_pairs_stops_at_wanted():
     cs = [cand("กา", pron("mid")), cand("ก่า", pron("low")),
           cand("ตา", pron("mid")), cand("ต่า", pron("low"))]
@@ -100,7 +95,7 @@ def _two_syllables(first_tone):
     return Pronunciation(
         syllables=(Syllable(segments=("m", "a", ""), vowel_length="short", tone=first_tone),
                    Syllable(segments=("n", "a", ""), vowel_length="short", tone="falling")),
-        corroboration="engines_agree")
+        posterior=1.0, spoken_dissent=False)
 
 
 def test_select_pairs_reads_the_syllable_that_differs_in_a_polysyllabic_pair():

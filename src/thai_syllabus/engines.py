@@ -449,8 +449,8 @@ class Tltk:
     """tltk's rule-based g2p as an `Engines.g2p` callable, the second
     segmental oracle beside `Thaig2p` (design 2026-09-18). Rule-based, so
     it cannot produce the decoder loop thaig2p does on long compounds; it
-    fails the other way instead, by truncating, which is why agreement
-    between the two is what corroborates rather than either alone.
+    fails the other way instead, by truncating; the two are in different
+    error families of the settlement (settlement.FAMILY).
 
     tltk imports no torch, so this is cheap, but the import stays in
     __init__ for symmetry with Thaig2p and so that importing this module

@@ -3,6 +3,7 @@ curated/*.yaml, round-tripped through spec 1's entities. Atomic saves
 (temp+os.replace); loading collects every validation error instead of
 failing on the first one.
 """
+import dataclasses
 import re
 import textwrap
 from pathlib import Path
@@ -39,16 +40,35 @@ def test_words_round_trip(tmp_path):
     rice, rice_category = next((w, c) for w, c in loaded if w.id == "rice")
     assert rice.thai == "ข้าว"  # rice
     assert rice.meaning == "cooked rice"
-    assert rice.pron.syllables[0].tone in ("mid", "low", "falling", "high", "rising")
     assert rice_category == "Food"
 
 
-def _word(id_, thai, meaning, classifier=None, tone="falling", corroboration="engines_agree",
+def test_words_yaml_stores_no_pronunciation(tmp_path):
+    """A Word's pronunciation is derived from the record (spec 2 r23): the
+    file carries none and a loaded Word has none until load_syllabus
+    settles it."""
+    path = tmp_path / "words.yaml"
+    curated.save_words(path, [(_word("rice", "ข้าว", "cooked rice"), "Food")])   # ข้าว: rice
+    assert "pron" not in yaml.safe_load(path.read_text(encoding="utf-8"))[0]
+    (rice, _), = curated.load_words(path)
+    assert rice.pron is None
+
+
+def test_a_legacy_pronunciation_in_words_yaml_is_not_read(tmp_path):
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",                     # แดง: red
+            "pron": {"syllables": [{"segments": ["d", "ɛː", "ŋ"], "vowel_length": "long",
+                                    "tone": "mid"}], "corroboration": "guessed"}}]
+    write_words_yaml(tmp_path / "words.yaml", rows)
+    (red, _), = curated.load_words(tmp_path / "words.yaml")
+    assert red.pron is None
+
+
+def _word(id_, thai, meaning, classifier=None, tone="falling",
          no_productive=False, speaker=None):
     from thai_syllabus.entities import Pronunciation, Syllable
     syl = Syllable(segments=("k", "aː", "w"), vowel_length="long", tone=tone)
     return Word(id=WordId(id_), thai=thai,
-               pron=Pronunciation(syllables=(syl,), corroboration=corroboration),
+               pron=Pronunciation(syllables=(syl,), posterior=1.0, spoken_dissent=False),
                meaning=meaning, classifier=WordId(classifier) if classifier else None,
                no_productive=no_productive, speaker=speaker)
 
@@ -91,9 +111,9 @@ def test_load_words_a_row_without_category_loads_with_none(tmp_path):
     """A word need not name a category (spec 1: closure words are in
     none) -- load_words only rejects an unknown name, never an absent one.
     """
-    rows = [{"id": "rice", "thai": "ข้าว", "pron": _pron_dict(), "meaning": "rice",
+    rows = [{"id": "rice", "thai": "ข้าว", "meaning": "rice",
             "category": "Food"},                                       # ข้าว = rice
-           {"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red"}]  # แดง = red
+           {"id": "red", "thai": "แดง", "meaning": "red"}]  # แดง = red
     write_words_yaml(tmp_path / "words.yaml", rows)
     loaded = curated.load_words(tmp_path / "words.yaml")
     by_id = {w.id: c for w, c in loaded}
@@ -102,7 +122,7 @@ def test_load_words_a_row_without_category_loads_with_none(tmp_path):
 
 
 def test_load_words_refuses_an_unknown_category_name(tmp_path):
-    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
             "category": "Kitchen"}]  # แดง = red; "Kitchen" is not one of the 27 FF categories
     write_words_yaml(tmp_path / "words.yaml", rows)
     with pytest.raises(curated.CuratedValidationError, match="red"):
@@ -111,24 +131,8 @@ def test_load_words_refuses_an_unknown_category_name(tmp_path):
         curated.load_words(tmp_path / "words.yaml")
 
 
-def _pron_dict():
-    return {"syllables": [{"segments": ["k", "a", "w"], "vowel_length": "long",
-                          "tone": "falling"}], "corroboration": "engines_agree"}
-
-
-def test_load_words_refuses_an_unknown_corroboration_value_naming_the_row(tmp_path):
-    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
-            "pron": {"syllables": [{"segments": ["d", "ɛː", "ŋ"], "vowel_length": "long",
-                                    "tone": "mid"}], "corroboration": "guessed"}}]  # แดง = red
-    write_words_yaml(tmp_path / "words.yaml", rows)
-    with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
-        curated.load_words(tmp_path / "words.yaml")
-    with pytest.raises(curated.CuratedValidationError, match="guessed"):
-        curated.load_words(tmp_path / "words.yaml")
-
-
 def test_load_words_a_row_with_no_productive_true_loads_with_the_flag(tmp_path):
-    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
             "no_productive": True}]  # แดง = red
     write_words_yaml(tmp_path / "words.yaml", rows)
     loaded = curated.load_words(tmp_path / "words.yaml")
@@ -155,7 +159,7 @@ def test_save_words_omits_no_productive_key_when_false(tmp_path):
 
 
 def test_load_words_refuses_a_non_bool_no_productive_naming_the_row(tmp_path):
-    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
             "no_productive": "yes"}]  # แดง = red
     write_words_yaml(tmp_path / "words.yaml", rows)
     with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
@@ -167,7 +171,7 @@ def test_load_words_refuses_a_non_bool_no_productive_naming_the_row(tmp_path):
 # --- speaker (spec 1 section 1, r10) ------------------------------------
 
 def test_load_words_a_row_with_speaker_female_loads(tmp_path):
-    rows = [{"id": "khâ", "thai": "ค่ะ", "pron": _pron_dict(),
+    rows = [{"id": "khâ", "thai": "ค่ะ", 
             "meaning": "female politeness particle", "speaker": "female"}]
     write_words_yaml(tmp_path / "words.yaml", rows)
     loaded = curated.load_words(tmp_path / "words.yaml")
@@ -195,7 +199,7 @@ def test_save_words_omits_speaker_key_when_absent(tmp_path):
 
 
 def test_load_words_refuses_an_unknown_speaker_value_naming_the_row(tmp_path):
-    rows = [{"id": "red", "thai": "แดง", "pron": _pron_dict(), "meaning": "red",
+    rows = [{"id": "red", "thai": "แดง", "meaning": "red",
             "speaker": "both"}]  # แดง = red; not a valid speaker value
     write_words_yaml(tmp_path / "words.yaml", rows)
     with pytest.raises(curated.CuratedValidationError, match=r"words\[0\]"):
@@ -393,6 +397,24 @@ def test_pairs_round_trip_with_resolution(tmp_path):
     curated.save_pairs(path, [pair])
     loaded = curated.load_pairs(path, words_by_id=words, confusions_by_id=confusions)
     assert loaded == [pair]
+
+
+def test_a_pair_loads_by_its_references_while_its_members_have_no_pronunciation(tmp_path):
+    """Exact confusion is checked where a pair is made (MinimalPair.create,
+    the pair search); the loaded members carry no pronunciation until
+    load_syllabus settles them, so the loader checks references only."""
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    words = {"near": _word("near", "ใกล้", "near", tone="mid"),            # ใกล้: near
+             "far": _word("far", "ไกล", "far", tone="low")}                # ไกล: far
+    path = tmp_path / "pairs.yaml"
+    curated.save_pairs(path, [MinimalPair.create(id=PairId("tone:mid-low/kai"),
+                                                 confusion=confusion,
+                                                 members=(words["near"], words["far"]))])
+    unread = {k: dataclasses.replace(w, pron=None) for k, w in words.items()}
+    loaded = curated.load_pairs(path, words_by_id=unread,
+                                confusions_by_id={"tone:mid-low": confusion})
+    assert [p.members for p in loaded] == [("near", "far")]
 
 
 def test_pairs_load_validation_collects_all_errors(tmp_path):
@@ -1591,8 +1613,6 @@ def test_a_word_row_may_carry_the_letter_names_category(tmp_path):
     path.write_text(
         "- id: name-chicken\n"
         "  thai: กอ ไก่\n"                       # กอ ไก่: the recited name of ก
-        "  pron: {syllables: [{segments: [k, ɔ, ''], vowel_length: long, tone: mid}],\n"
-        "         corroboration: disputed}\n"
         "  meaning: the letter ก's recited name\n"
         "  classifier: null\n"
         "  category: Letter names\n",

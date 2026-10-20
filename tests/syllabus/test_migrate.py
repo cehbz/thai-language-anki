@@ -234,9 +234,8 @@ def test_migrated_curated_data_loads_cleanly(old_deck, old_data, tmp_path):
     assert "classifier:ตัว" in ids
     chicken = next(w for w in bundle.words if w.id == "chicken")
     assert chicken.classifier == "classifier:ตัว"
-    assert chicken.pron.corroboration == "curated_exception"  # ipa was found
-    dog = next(w for w in bundle.words if w.id == "dog")
-    assert dog.pron.corroboration == "disputed"  # no ipa found for หมา
+    # no pronunciation migrates (spec 2 r23): the old deck's IPA is not read
+    assert chicken.pron is None
 
 
 def test_migrated_media_bytes_are_content_addressed(old_deck, old_data, tmp_path):
@@ -732,54 +731,3 @@ def test_migrate_keeps_a_complete_curated_dir_as_is(old_deck, old_data, tmp_path
     assert report.already_present["curated"] == 1
 
 
-# --- a looped reading is refused at the boundary (2026-09-18) ---------------
-# The live deck carries seventeen words whose pronunciation is a thaig2p
-# decoder loop, and eleven of them arrived here: migrate labelled every
-# parsed old-deck IPA `curated_exception`, the one corroboration the
-# adjudication pass never revisits, so "pʰaːp pʰaːp waːt waːt waːt ..."
-# became the curator's own ruling on ภาพวาด and could never be corrected.
-
-def test_a_looped_old_deck_ipa_is_refused_rather_than_ruled_on(old_deck, old_data, tmp_path):
-    _append_word_rows(old_data, {"id": "painting", "thai": "ภาพวาด",  # ภาพวาด = painting
-                                 "gloss": "painting", "category": "Art"})
-    notes = old_deck / "notes" / "picture_words.yaml"
-    existing = yaml.safe_load(notes.read_text(encoding="utf-8"))
-    existing.append({"id": "pw-3", "thai": "ภาพวาด", "category": "Art",
-                     "ipa": "pʰaːp˥˩." + "waː˧." * 9 + "waː˧"})
-    notes.write_text(yaml.safe_dump(existing, allow_unicode=True, sort_keys=False),
-                     encoding="utf-8")
-
-    new_root = tmp_path / "new_root"
-    report = migrate(old_deck, old_data, new_root)
-
-    bundle = curated.load_curated(new_root / "curated")
-    painting = next(w for w in bundle.words if w.id == "painting")
-    assert painting.pron.corroboration != "curated_exception"
-    reasons = [u.reason for u in report.unmigratable if "ภาพวาด" in u.reason or u.identity == "painting"]
-    assert any("degenerate" in r for r in reasons), reasons
-
-
-def test_an_honest_old_deck_ipa_is_still_the_curators_ruling(old_deck, old_data, tmp_path):
-    """The guard is surgical: the ~600 sound migrated rows keep
-    curated_exception, so a fresh migration does not block their cards."""
-    new_root = tmp_path / "new_root"
-    migrate(old_deck, old_data, new_root)
-    bundle = curated.load_curated(new_root / "curated")
-    chicken = next(w for w in bundle.words if w.id == "chicken")
-    assert chicken.pron.corroboration == "curated_exception"
-
-
-def test_a_diphthong_round_trips_from_render_back_through_the_parser():
-    """The centering diphthongs are long and written unmarked (design
-    2026-09-20 §1), so `ipa.render` emits no ː for one -- and the parser
-    must read that back as `long`, not as the `short` the missing mark
-    would otherwise mean. Without this the old deck's own IPA parses to
-    a syllable the engines can never corroborate, and migrate is no
-    longer the inverse of render."""
-    from thai_syllabus import ipa
-    from thai_syllabus.entities import Pronunciation, Syllable
-    from thai_syllabus.migrate import _parse_ipa
-    one = Syllable(segments=("s", "ɯa", ""), vowel_length="long", tone="rising")
-    rendered = ipa.render(Pronunciation(syllables=(one,), corroboration="disputed"))
-    assert rendered == "sɯa˨˩˦"               # no length mark, by convention
-    assert _parse_ipa(rendered) == (one,)

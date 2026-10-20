@@ -20,7 +20,6 @@ from thai_syllabus.derivations import (
     ALPHABET_SOURCES,
     GLYPH_SOURCES,
     JudgeVerdict,
-    adjudications,
     adoptable_drafts,
     aged_out,
     all_needs,
@@ -3257,55 +3256,23 @@ def test_deciding_verdict_is_none_with_no_row(cache):
     assert deciding_verdict(cache, "rice", "picture", "c" * 64, current_rubric={}) is None
 
 
-# --- adjudications: the newest fresh pronunciation verdict per disputed word -
+# --- candidate_glosses: the judge's gloss of an outside form ---------------
 
-def _pronunciation_row(subject, tone, *, ts, rubric="R"):
-    """One pronunciation-for-word verdict row, in the shape
-    assessor.parse_pronunciation's value takes."""
-    key = JudgeKey.for_rule(rubric, "", subject, "pronunciation-for-word")
-    return Answer(port="assess", backend="judge", key=key.encode(), key_sha="k", subject=subject,
-                  question={"role": "pronunciation-for-word", "kind": "pronunciation",
-                            "rubric": rubric, "artifact_sha": None, "subject_kind": "word"},
-                  answer={"value": {"syllables": [{"segments": ["kʰ", "a", "w"],
-                                                   "vowel_length": "long", "tone": tone}],
-                                    "gloss": "rice"}}, cost=0.0, ts=ts)
-
-
-def test_adjudications_returns_the_newest_fresh_verdict_per_disputed_word(cache):
-    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),
-                               word("eat", "กิน", "eat")), targets=())
-    cache.rows.append(_pronunciation_row("rice", "low", ts=1))
-    cache.rows.append(_pronunciation_row("rice", "falling", ts=3))
-    out = adjudications(cache, syllabus, current_rubric={"pronunciation-for-word": "R"})
-    assert list(out) == ["rice"] and out["rice"][0].tone == "falling"
-
-
-def test_adjudications_ignores_a_verdict_under_a_superseded_rubric(cache):
-    """A stale verdict is not a fresh one (derivations._stale): the word
-    stays absent and its question is asked again."""
-    syllabus = Syllabus(words=(word("rice", "ข้าว", "rice", corroboration="disputed"),), targets=())
-    cache.rows.append(_pronunciation_row("rice", "falling", ts=1, rubric="old"))
-    assert adjudications(cache, syllabus, current_rubric={"pronunciation-for-word": "R"}) == {}
-
-
-# --- candidate_adjudications: the judge's answer about an outside form ----
-
-def test_candidate_adjudications_fold_the_newest_fresh_verdict_per_form(cache):
-    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_adjudications
+def test_candidate_glosses_fold_the_newest_fresh_verdict_per_form(cache):
+    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_glosses
     value = {"syllables": [{"segments": ["k", "a", ""], "vowel_length": "long", "tone": "low"}],
              "gloss": "crow"}
     row = judge_row(f"{CANDIDATE_SUBJECT_PREFIX}ก่า", "pronunciation", None, value, rubric="R")
     row.question["role"] = "pronunciation-for-word"
     row.question["subject_kind"] = "candidate"
     cache.rows.append(row)
-    got = candidate_adjudications(cache, current_rubric={"pronunciation-for-word": "R"})
+    got = candidate_glosses(cache, current_rubric={"pronunciation-for-word": "R"})
     assert set(got) == {"ก่า"}
     assert got["ก่า"].gloss == "crow"
-    assert got["ก่า"].syllables[0].tone == "low"
 
 
-def test_candidate_adjudications_skip_stale_and_glossless_verdicts(cache):
-    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_adjudications
+def test_candidate_glosses_skip_stale_and_glossless_verdicts(cache):
+    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_glosses
     good = {"syllables": [{"segments": ["k", "a", ""], "vowel_length": "long", "tone": "low"}],
             "gloss": "crow"}
     stale = judge_row(f"{CANDIDATE_SUBJECT_PREFIX}ก่า", "pronunciation", None, good, rubric="OLD")
@@ -3314,16 +3281,16 @@ def test_candidate_adjudications_skip_stale_and_glossless_verdicts(cache):
                           {**good, "gloss": ""}, rubric="R")
     glossless.question["role"] = "pronunciation-for-word"
     cache.rows += [stale, glossless]
-    assert candidate_adjudications(cache, current_rubric={"pronunciation-for-word": "R"}) == {}
+    assert candidate_glosses(cache, current_rubric={"pronunciation-for-word": "R"}) == {}
 
 
-def test_candidate_adjudications_skip_a_gloss_that_names_no_word_id(cache):
+def test_candidate_glosses_skip_a_gloss_that_names_no_word_id(cache):
     """I4: `ids.slug_id` keeps only ASCII alphanumerics, so a gloss with
     none of them (the judge answering in Thai, or in punctuation alone)
     names no closure Word and would raise where the pair search mints it.
     Such a verdict is not fresh evidence: the form is skipped and asked
     again."""
-    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_adjudications
+    from thai_syllabus.derivations import CANDIDATE_SUBJECT_PREFIX, candidate_glosses
     value = {"syllables": [{"segments": ["k", "a", ""], "vowel_length": "long", "tone": "low"}],
              "gloss": "อีกา"}      # อีกา: a Thai "gloss", no ASCII letter in it
     row = judge_row(f"{CANDIDATE_SUBJECT_PREFIX}ก่า", "pronunciation", None, value, rubric="R")
@@ -3333,7 +3300,7 @@ def test_candidate_adjudications_skip_a_gloss_that_names_no_word_id(cache):
                             {**value, "gloss": "-- ?"}, rubric="R")
     punctuation.question["role"] = "pronunciation-for-word"
     cache.rows += [row, punctuation]
-    assert candidate_adjudications(cache, current_rubric={"pronunciation-for-word": "R"}) == {}
+    assert candidate_glosses(cache, current_rubric={"pronunciation-for-word": "R"}) == {}
 
 
 # --- need_sources: the roster one need is asked (spec 3 r41 §5) ----------

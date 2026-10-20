@@ -14,14 +14,12 @@ appended its own checkpoint before this loop saw it (spec 2).
 """
 from __future__ import annotations
 
-import dataclasses
 import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from time import time_ns
-from typing import NamedTuple
 
 from .assessor import AssessQuestion, JudgeUnreachable, PreparedQuestion
 from .authority import AUTHORITY_ORDER, role_for
@@ -32,13 +30,13 @@ from .attempts import (
     OpenTargets,
     Sourcing,
     Spend,
-    adjudication_attempt,
     assess_first,
     attempt,
     comment_attempt,
     current_best_of,
     draft_question,
     draft_refusal,
+    evidence_attempt,
     grapheme_attempt,
     joined,
     pair_search_attempt,
@@ -55,7 +53,6 @@ from .derivations import (
     SENTENCE_ADOPTED_OUTCOME,
     QueuedNeeds,
     QueueEntry,
-    adjudications,
     adoptable_drafts,
     all_needs,
     available_need_keys,
@@ -66,9 +63,7 @@ from .derivations import (
     queued,
     role_of,
 )
-from .entities import Pronunciation, Sentence, Word
-from .ids import WordId
-from .phonology import corroborates, default_engines
+from .entities import Sentence
 from .ports import RecordWriter
 from .record import (
     asks_since,
@@ -131,14 +126,6 @@ class RunReport:
     # included, narrowed to needs `available` still counts
     pending: int = 0
     sentences_adopted: int = 0  # drafts this run covered open Targets with
-    # words whose adjudicated pronunciation this run wrote to words.yaml
-    # (spec 3 r28 section 5) -- an event, not a need: a Word is curated
-    # data, so it sits outside the identity above
-    adjudicated: int = 0
-    # verdicts this run checked that no engine corroborated, so the words
-    # stay disputed (spec 3 r29) -- an event count beside `adjudicated`,
-    # also outside the identity
-    stayed_disputed: int = 0
     drafted: int = 0            # drafts the sentence attempt produced
     # adopted Sentences the run deleted, whatever caused it (spec 3 r30
     # section 7): a recording need exhausted with no passing candidate
@@ -154,9 +141,9 @@ class RunReport:
     adoption_skipped: int = 0
     # the pair search (spec 3 r47 section 5): MinimalPairs adopted into
     # pairs.yaml this run, the outside forms the judge was asked about
-    # this run, and the forms whose fresh verdict the engines did not
-    # corroborate (candidates_dropped, r48) -- events, not needs, outside
-    # the identity above
+    # this run, and the forms dropped from its pool unsettled with their
+    # evidence all on record (candidates_dropped, r48, r68) -- events, not
+    # needs, outside the identity above
     adopted_pairs: int = 0
     candidate_asks: int = 0
     candidates_dropped: int = 0
@@ -211,8 +198,6 @@ class _Tally:
     excluded: int = 0
     excluded_items: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
     sentences_adopted: int = 0
-    adjudicated: int = 0
-    stayed_disputed: int = 0
     drafted: int = 0
     retired: int = 0
     adopted_graphemes: int = 0
@@ -413,59 +398,6 @@ def _recover_orphaned_drafts(ctx: Sourcing) -> tuple[AttemptResult, bool]:
             asked <= served)
 
 
-class _Adjudicated(NamedTuple):
-    """What one adjudication pass came to: `written` words whose
-    pronunciation reached words.yaml, `stayed_disputed` verdicts no
-    engine corroborated (spec 3 r29). Both are RunReport fields.
-    """
-    written: int = 0
-    stayed_disputed: int = 0
-
-
-def _materialize_adjudications(ctx: Sourcing) -> _Adjudicated:
-    """Spec 3 r28 section 5: every adjudicated pronunciation the engines
-    corroborate becomes the Word's, corroboration `adjudicated`, written
-    to curated words.yaml under this writing command; the rest stay
-    disputed, logged, and counted as `stayed_disputed` (r29). Engines
-    load lazily, only when there is a verdict to check, so a run with
-    nothing to materialize never pulls in pythainlp/torch.
-
-    words.yaml is rewritten whole, from the same (Word, category) rows
-    the loader produced, in their own order -- only the adjudicated
-    Words' `pron` differs, so no row is added, dropped or moved (spec 2
-    section 6's Guard counts the rows).
-    """
-    found = adjudications(ctx.db, ctx.syllabus, current_rubric=ctx.rubrics)
-    if not found or ctx.curated_dir is None:
-        return _Adjudicated()
-    engines = ctx.engines or default_engines(ctx.dictionary)
-    updated: dict[WordId, Word] = {}
-    not_corroborated = 0
-    for word_id, syllables in found.items():
-        w = ctx.syllabus.word(word_id)
-        if corroborates(syllables, w.thai, engines):
-            updated[word_id] = dataclasses.replace(
-                w, pron=Pronunciation(syllables=syllables, corroboration="adjudicated"))
-        else:
-            not_corroborated += 1
-            _log.info("adjudication of %s (%s) not corroborated by an engine; stays disputed",
-                      word_id, w.thai)
-    if not_corroborated:
-        _log.warning(
-            "adjudication: %d of %d verdicts not corroborated by an engine; "
-            "the words stay disputed", not_corroborated, len(found))
-    if not updated:
-        return _Adjudicated(stayed_disputed=not_corroborated)
-    # Deferred: curated.py reads parse_day_starts from this module, so a
-    # top-level import here would be a cycle.
-    from .curated import save_words
-
-    rows = [(updated.get(w.id, w), ctx.syllabus.category_of(w.id)) for w in ctx.syllabus.words]
-    save_words(ctx.curated_dir / "words.yaml", rows)
-    ctx.syllabus = ctx.syllabus.with_words(tuple(w for w, _c in rows))
-    return _Adjudicated(written=len(updated), stayed_disputed=not_corroborated)
-
-
 def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
                             outstanding: tuple[str, frozenset[tuple[str, str]]]
                             ) -> tuple[str, frozenset[tuple[str, str]]] | None:
@@ -484,9 +416,9 @@ def _resolve_previous_batch(ctx: Sourcing, tally: _Tally,
     # subject whose picture the batch just judged can have opened one.
     # Availability is not the filter -- the whole point of the
     # `preferences` bucket is a picture need that has since left
-    # `available` -- the artifact kind is. Without this, every word the
-    # adjudication ask put in the batch for its pronunciation (spec 3
-    # r28: not a need at all) would be folded over here and could raise
+    # `available` -- the artifact kind is. Without this, every outside
+    # form the pair search put in the batch for its pronunciation (spec 3
+    # r47: not a need at all) would be folded over here and could raise
     # a preference question nothing asked for.
     preference = preference_attempt(ctx, sorted(
         {subject for subject, kind in batch_needs if kind == "picture"}))
@@ -1038,9 +970,6 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
             return _finish(ctx, tally, needs, batch_id=previous[0], pending=pending,
                            extra_deferred=_unconsidered(needs, pending))
     tally.sentences_adopted += _adopt_sentences(ctx)
-    materialized = _materialize_adjudications(ctx)
-    tally.adjudicated += materialized.written
-    tally.stayed_disputed += materialized.stayed_disputed
     if still_out is not None:
         # The run ended here, before it ever looked at a need: every
         # available need this run never considered (not even pending, in
@@ -1175,21 +1104,26 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
     # the repo inventory the deck does not hold yet becomes a Grapheme row
     # with its keyword and recited-name Words, written to the three
     # curated files under this writing command. Placed here, after the
-    # sentence attempt and before the two asks below, so a newly adopted
-    # keyword's picture need is drafted a phrase and a newly adopted
-    # `disputed` name word is asked about in this same run. Curated rows
-    # are not needs: no bucket, and the queue built below already sees
-    # them. `ctx.adopt_graphemes` turns the pass off for a caller that
-    # does not want the inventory written into its deck.
+    # sentence attempt and before the evidence pass, so a newly adopted
+    # Word's form is read and its keyword's picture need drafted a phrase
+    # in this same run. Curated rows are not needs: no bucket, and the
+    # queue built below already sees them. `ctx.adopt_graphemes` turns
+    # the pass off for a caller that does not want the inventory written
+    # into its deck.
     if ctx.adopt_graphemes:
         tally.collect(grapheme_attempt(ctx))
 
-    # The pair search (spec 3 r47 section 5): after the grapheme pass (a
-    # newly adopted keyword may be a member) and before the queue is
-    # built, so an adopted pair's rendition need is attempted this run.
-    # Its candidate asks ride the run's batch, so a dead judge stops the
-    # run here exactly as it does at the adjudication ask below: the pass
-    # owns no need bucket, and every queued need is deferred.
+    # The evidence pass (spec 3 r68 section 5): every deck form's readings
+    # recorded and the settlement fitted before and after; every Word
+    # takes its reading from the fit after, so the rest of the run (the
+    # pair search, the queue, the staging) reads settled readings.
+    tally.collect(evidence_attempt(ctx))
+
+    # The pair search (spec 3 r47 section 5): after the evidence pass (a
+    # member must be settled) and before the queue is built, so an
+    # adopted pair's rendition need is attempted this run. Its candidate
+    # asks ride the run's batch, so a dead judge stops the run here: the
+    # pass owns no need bucket, and every queued need is deferred.
     if ctx.search_pairs:
         try:
             tally.collect(pair_search_attempt(ctx))
@@ -1229,19 +1163,6 @@ def _run_pass(ctx: Sourcing, budgets: Mapping[str, Budget], now_ns: int, *,
         except TransportError as e:
             tally.source_failures["llm-phrase"] = tally.source_failures.get("llm-phrase", 0) + 1
             _log.warning("drafter llm-phrase failed: %s", e)
-
-    # One adjudication ask per run (spec 3 r28 section 5): every word
-    # still lacking a corroborated pronunciation. No need bucket: words
-    # are not needs; the questions ride this run's batch and
-    # _materialize_adjudications reads the verdicts back next run.
-    try:
-        tally.collect(adjudication_attempt(ctx))
-    except JudgeUnreachable:
-        tally.unreachable = True
-        needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
-        _fold_unsubmitted(tally, collected_at_resolve, available_need_keys(ctx.syllabus))
-        tally.deferred += len(needs.entries)
-        return _finish(ctx, tally, needs, batch_id=None, pending=0)
 
     _redraw_stale_cells(ctx, budgets, carried, tally)
     needs = _needs(ctx, collected_at_resolve, now_ns=now_ns)
@@ -1359,7 +1280,6 @@ def _finish(ctx: Sourcing, tally: _Tally, needs: QueuedNeeds, *, batch_id: str |
         attempted=tally.attempted, improved=tally.improved,
         exhausted=needs.exhausted + tally.exhausted, available=needs.available,
         pending=pending, sentences_adopted=tally.sentences_adopted,
-        adjudicated=tally.adjudicated, stayed_disputed=tally.stayed_disputed,
         drafted=tally.drafted, retired=tally.retired,
         adopted_graphemes=tally.adopted_graphemes, adopted_words=tally.adopted_words,
         adoption_skipped=tally.adoption_skipped, adopted_pairs=tally.adopted_pairs,
@@ -1390,8 +1310,6 @@ def _persist_report(record: RecordWriter, report: RunReport) -> None:
         answer={"attempted": report.attempted, "improved": report.improved,
                 "exhausted": report.exhausted, "available": report.available,
                 "pending": report.pending, "sentences_adopted": report.sentences_adopted,
-                "adjudicated": report.adjudicated,
-                "stayed_disputed": report.stayed_disputed,
                 "drafted": report.drafted, "retired": report.retired,
                 "adopted_graphemes": report.adopted_graphemes,
                 "adopted_words": report.adopted_words,

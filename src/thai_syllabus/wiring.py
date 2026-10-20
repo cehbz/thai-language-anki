@@ -74,9 +74,11 @@ from .provider import (
     tool_fetcher,
     wikimedia_backend,
 )
-from .rulebook import (RULES, PRONUNCIATION_RUBRIC, SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
+from .rulebook import (DEFAULT_SETTLED_THRESHOLD, PAIR_PRONUNCIATION_CORROBORATED,
+                       PRONUNCIATION_RUBRICS, RULES, SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
                        SENTENCE_FOR_TARGET_RUBRIC, apply_overlay,
                        rubrics_for, sentence_note_id)
+from .settlement import settlement_of, with_readings
 from .run import FORVO_DEFAULT_DAILY_BUDGET, LEARNER_DEFAULT_SESSION_BUDGET, Budget
 from .store import BuildReadCache, MediaStore, SyllabusDb
 from .syllabus import Syllabus, derive_productive_targets, name_word_ids_of
@@ -669,11 +671,11 @@ def load_derivations(deck_root: str | Path, cfg: ProvidersConfig | None = None) 
     syllabus = load_syllabus(root, db=db, bundle=bundle)
     # rubrics_for covers registered judged Rules only; "sentence-for-target"
     # and "sentence-for-target-other-voice" (attempts.py, spec 3 r58) and
-    # "pronunciation-for-word" (the adjudication pass, spec 3 r28) are
-    # judge roles with no Rule, added here directly.
+    # "pronunciation-for-word" (the pair search's candidate ask, spec 3
+    # r47) are judge roles with no Rule, added here directly.
     rubrics = {**rubrics_for(syllabus.rules), "sentence-for-target": SENTENCE_FOR_TARGET_RUBRIC,
               "sentence-for-target-other-voice": SENTENCE_FOR_TARGET_OTHER_VOICE_RUBRIC,
-              "pronunciation-for-word": PRONUNCIATION_RUBRIC}
+              **PRONUNCIATION_RUBRICS}
     return Derivations(syllabus=syllabus, db=db, media_store=media_store,
                        current_rubric=rubrics,
                        mechanical_key=_recording_check(db, media_store).cache_key,
@@ -759,13 +761,12 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         frequency_words=lambda: load_frequency_words(root / "curated" / "frequency_th.txt"),
         pair_search_depth=cfg.pair_search_depth,
         pair_search_asks=cfg.pair_search_asks,
-        # The deck's own curated store, so run._materialize_adjudications
-        # can write words.yaml back (spec 2 r14 section 1; spec 3 r28
-        # section 5). `engines` stays None: the run resolves
-        # phonology.default_engines(ctx.dictionary) itself, on the first
-        # verdict there is to check, so wiring a deck never loads
-        # pythainlp/torch. The dictionary IS wired here -- it holds no
-        # model, only this deck's record and a `requests` session.
+        # The deck's own curated store, so the adoption passes can add rows
+        # (spec 2 r17). `engines` stays None: the run resolves
+        # phonology.default_engines() itself, on the first form with no
+        # reading on record, so wiring a deck never loads pythainlp/torch.
+        # The dictionaries ARE wired here -- they hold no model, only this
+        # deck's record and an HTTP session.
         curated_dir=root / "curated", engines=None,
         dictionary=_wiktionary(cfg, db), thai_language_com=_thai_language_com(cfg, db))
     return ctx
@@ -1001,8 +1002,13 @@ def load_syllabus(deck_root: str | Path, *,
     if db is None:
         db = SyllabusDb(root / "syllabus.db")
     rules = apply_overlay(RULES, bundle.rulebook)
+    # Spec 1 r34: each Word's pronunciation is its form's settled reading,
+    # folded from the readings on record (spec 3 section 6) -- read,
+    # never computed: loading runs no engine.
+    words = with_readings(bundle.words, settlement_of(db, bundle.words,
+                                                      current_rubric=PRONUNCIATION_RUBRICS))
     resolved_sentences = tuple(sentences) if sentences is not None else tuple(db.all_sentences())
-    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=bundle.words,
+    media_index = _DbMediaIndex(db=db, pairs=bundle.pairs, words=words,
                                 sentences=resolved_sentences, rubrics=rubrics_for(rules),
                                 provenance_prior=bundle.rulebook.provenance_prior)
 
@@ -1010,10 +1016,10 @@ def load_syllabus(deck_root: str | Path, *,
     if not freq_file.exists():
         raise FileNotFoundError(f"no frequency corpus at {freq_file}")
     freq_map = load_frequency_map(freq_file)
-    frequency = {w.id: rank for w in bundle.words
+    frequency = {w.id: rank for w in words
                 if (rank := freq_map.rank(w.thai)) is not None}
     targets = tuple(bundle.targets) + derive_productive_targets(
-        bundle.words, bundle.targets, bundle.categories, frequency,
+        words, bundle.targets, bundle.categories, frequency,
         bundle.profile.productive_cutoff,
         learner_speaker=bundle.profile.learner_speaker,
         name_word_ids=name_word_ids_of(bundle.graphemes))
@@ -1021,11 +1027,13 @@ def load_syllabus(deck_root: str | Path, *,
     rulebook_text = rulebook_file_text(root / "curated" / "rulebook.yaml")
 
     kwargs: dict[str, Any] = dict(
-        words=bundle.words, targets=targets, pairs=bundle.pairs,
+        words=words, targets=targets, pairs=bundle.pairs,
         graphemes=bundle.graphemes, sentences=resolved_sentences, confusions=bundle.confusions,
         profile=bundle.profile, frequency=frequency, categories=bundle.categories,
         media=media_index, assessments=db, rulebook_text=rulebook_text, rules=rules,
-        studied_cloze_pairs=studied_cloze_pairs(db, resolved_sentences, targets))
+        studied_cloze_pairs=studied_cloze_pairs(db, resolved_sentences, targets),
+        settled_threshold=bundle.rulebook.thresholds.get(PAIR_PRONUNCIATION_CORROBORATED.id,
+                                                         DEFAULT_SETTLED_THRESHOLD))
 
     syllabus = Syllabus(**kwargs)
     for s in syllabus.sentences:

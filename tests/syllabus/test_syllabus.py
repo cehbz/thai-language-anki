@@ -160,8 +160,7 @@ def test_a_cluster_onset_touches_the_segmental_confusions_of_its_head():
 
 
 def test_a_word_with_no_pronunciation_touches_no_segmental_confusion():
-    bare = dataclasses.replace(word("bare", "ดุ"),                          # ดุ: fierce
-                               pron=Pronunciation(syllables=(), corroboration="disputed"))
+    bare = dataclasses.replace(word("bare", "ดุ"), pron=None)              # ดุ: fierce
     assert _staged_syllabus(bare).segmental_confusions_of("bare") == frozenset()
 
 
@@ -832,12 +831,13 @@ def test_a_slot_whose_sentence_has_no_recording_has_no_gapped_need_yet():
 def test_a_target_wanting_one_sentence_leaves_the_state_id_as_it_was():
     """`sentences` at its default contributes nothing to the syllabus
     state id, so a deck that sets it nowhere keeps its identity (the
-    literal is the id this fixture had before `sentences` existed); a
-    Target wanting more is a different state."""
+    literal is the id of this fixture's payload with no `sentences` in
+    it, recomputed when spec 1 r34 reshaped Pronunciation); a Target
+    wanting more is a different state."""
     rice = word("rice", "ข้าว")   # ข้าว: rice
     one = Syllabus(words=(rice,), targets=(target("rice/receptive", "rice",
                                                   introduction="sentence"),))
-    assert one.state_id() == "f06d1777ad98c0c0d33080ba54422e3581c2c1fa668c51a5a1643787295d4ce5"
+    assert one.state_id() == "aa1fb6c09387ab5354c34b1e0236e545417e544ae6767eaafe218c93e4515341"
     two = dataclasses.replace(one, targets=(target("rice/receptive", "rice",
                                                    introduction="sentence", sentences=2),))
     assert two.state_id() != one.state_id()

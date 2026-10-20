@@ -6,7 +6,6 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
-from .entities import is_corroborated
 from .pairsearch import wanted
 from .rules import Finding, Metric, Rule
 
@@ -254,6 +253,11 @@ PRONUNCIATION_RUBRIC = (
     "in an unstressed syllable -- except a word written with a short sign but said long "
     "when spoken alone (น้ำ, ได้, ไม้, เจ้า, เก้า and the like), which is long in isolation "
     "and keeps its own length inside a compound. Give a two- or three-word English gloss.")
+
+# The judge role a pronunciation verdict answers under, with its rubric: a
+# verdict is settlement evidence while it is fresh under this one (spec 3
+# section 6).
+PRONUNCIATION_RUBRICS = {"pronunciation-for-word": PRONUNCIATION_RUBRIC}
 
 SCENE_FIT_RUBRIC = (
     "This picture will sit beside the sentence on its cards; on the "
@@ -549,19 +553,27 @@ COVERAGE_SPEAKERS = Rule(id="coverage/speakers", principle="E7", severity="info"
 
 
 # --- pair/pronunciation-corroborated (E4) ------------------------------------
-# Spec 1 r18: E4 is scoped to minimal-pair membership. A disputed
-# pronunciation blocks a word's cards only when the word is a pair member --
-# pair validity (exact_confusion_violation) is computed on stored
-# pronunciations, so corroboration is load-bearing there and only there.
+# Spec 1 r34: E4 is scoped to minimal-pair membership. A member's
+# pronunciation must be settled -- its posterior at least this rule's
+# rulebook.yaml threshold, DEFAULT_SETTLED_THRESHOLD when none is set --
+# because pair validity (exact_confusion_violation) is computed on it, and
+# only there.
+
+DEFAULT_SETTLED_THRESHOLD = 0.99
+
 
 def _check_pair_pronunciation_corroborated(syllabus: "Syllabus") -> list[Finding]:
     members = {m for p in syllabus.pairs for m in p.members}
     findings = []
     for word_id in sorted(members):
         word = syllabus.find_word(word_id)
-        if word is not None and not is_corroborated(word.pron.corroboration):
-            findings.append(Finding(rule="pair/pronunciation-corroborated", note_id=word.id,
-                                    evidence=f"pronunciation is {word.pron.corroboration!r}"))
+        if word is None or syllabus.settled(word.pron):
+            continue
+        evidence = ("no pronunciation on record" if word.pron is None else
+                    f"pronunciation posterior {word.pron.posterior:.3f} below "
+                    f"{syllabus.settled_threshold}")
+        findings.append(Finding(rule="pair/pronunciation-corroborated", note_id=word.id,
+                                evidence=evidence))
     return findings
 
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from .entities import (Dimension, MinimalPair, Pronunciation, SoundConfusion,
-                       exact_confusion_violation, is_corroborated)
+                       exact_confusion_violation)
 from .ids import ConfusionId, PairId, WordId
 
 _UNRANKED = 10**6
@@ -19,9 +19,9 @@ _UNRANKED = 10**6
 
 @dataclass(frozen=True)
 class Candidate:
-    """One form the search may use as a member: its corroborated
-    pronunciation, the Word it already is (None for an outside form) and
-    its frequency rank."""
+    """One form the search may use as a member: its settled reading
+    (spec 3 section 6), the Word it already is (None for an outside form)
+    and its frequency rank."""
     thai: str
     pron: Pronunciation
     word_id: WordId | None
@@ -79,15 +79,15 @@ def select_pairs(confusion: SoundConfusion, candidates: Sequence[Candidate], *, 
     """At most `wanted` exact pairs for `confusion` out of `candidates`,
     best first: both members Words, then one, then none; a pair `shares`
     says shares a Forvo speaker on the record first; then the lower rank
-    sum. A candidate whose pronunciation is not corroborated is never a
-    member (E4); no form is used twice, and a form in `taken` (already a
-    member of this confusion's pair) is skipped.
+    sum. Which forms may be members at all is the caller's (E4: the run
+    pass hands only usable readings); no form is used twice, and a form
+    in `taken` (already a member of this confusion's pair) is skipped.
 
     Candidates are bucketed by `_masked` before pairing, so this is
     linear in the pool rather than quadratic: an exact pair can only
     come from within one bucket, and `exact_confusion_violation` still
     has the final say over anything the bucket admits."""
-    pool = [c for c in candidates if is_corroborated(c.pron.corroboration) and c.thai not in taken]
+    pool = [c for c in candidates if c.thai not in taken]
     buckets: dict[tuple, list[Candidate]] = {}
     for c in pool:
         buckets.setdefault(_masked(c.pron, confusion.dimension), []).append(c)

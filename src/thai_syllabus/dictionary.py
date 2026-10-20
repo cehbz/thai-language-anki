@@ -2,7 +2,8 @@
 generated IPA for a Thai form, read from the record before the wire.
 Engines compute; a dictionary looks up -- so this is a Provide-port
 backend with I/O, beside provider.py, and never an `Engines.g2p` entry.
-`phonology.Engines.dictionary` consults it lazily.
+Its rows are settlement evidence (settlement.py); the run's evidence pass
+and the pair search ask it (spec 3 r68).
 """
 from __future__ import annotations
 

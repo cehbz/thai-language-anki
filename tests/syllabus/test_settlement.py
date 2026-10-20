@@ -6,8 +6,9 @@ synthetic; the gatherer reads a real SyllabusDb.
 import pytest
 
 from thai_syllabus.cachekeys import DictionaryKey, EngineKey, JudgeKey
-from thai_syllabus.entities import Syllable
-from thai_syllabus.settlement import (Evidence, Member, SettledReading, evidence_on_record,
+from thai_syllabus.entities import Pronunciation, Syllable
+from thai_syllabus.ids import WordId
+from thai_syllabus.settlement import (Evidence, Member, evidence_on_record, judge_subjects,
                                       settle)
 from thai_syllabus.store import SyllabusDb
 
@@ -35,7 +36,7 @@ def agreeing(n, *members):
 def test_three_families_agreeing_settle_the_form():
     ev = Evidence.of({"ข้าว": {WIKT: [KHAAW], TLTK: [KHAAW], TLC: [KHAAW]}})
     got = settle(ev).readings["ข้าว"]
-    assert got == SettledReading(syllables=KHAAW, posterior=pytest.approx(1.0),
+    assert got == Pronunciation(syllables=KHAAW, posterior=pytest.approx(1.0),
                                  spoken_dissent=False)
 
 
@@ -128,6 +129,25 @@ def test_the_rule_tone_engine_reports_a_monosyllables_tone():
 def test_a_form_with_no_reading_has_no_settlement():
     ev = Evidence.of({"ข้าว": {RULE: ["falling"]}, "ดี": {WIKT: [], TLC: []}})
     assert settle(ev).readings == {}
+
+
+def test_the_settlement_answers_a_forms_pronunciation_or_none():
+    """The Settlement port (spec 2 r23): `reading(form)`."""
+    settled = settle(Evidence.of({"ข้าว": {WIKT: [KHAAW], TLC: [KHAAW]}}))
+    assert settled.reading("ข้าว") == settled.readings["ข้าว"]
+    assert isinstance(settled.reading("ข้าว"), Pronunciation)
+    assert settled.reading("ดี") is None
+
+
+def test_a_forms_judge_subjects_are_its_words_and_its_candidate_subject():
+    """A Word minted from an outside form keeps the verdict asked under
+    `candidate:<form>`, so both subjects are the form's."""
+    from .builders import word
+    words = [word("rice", "ข้าว"), word("rice-2", "ข้าว"), word("good", "ดี")]
+    assert judge_subjects(words, ["ปา"]) == {
+        "ข้าว": [WordId("rice"), WordId("rice-2"), "candidate:ข้าว"],
+        "ดี": [WordId("good"), "candidate:ดี"],
+        "ปา": ["candidate:ปา"]}
 
 
 def test_the_settlement_is_memoised_on_the_evidence():

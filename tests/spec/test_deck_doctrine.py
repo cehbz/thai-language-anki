@@ -130,17 +130,22 @@ def test_a_minimal_pair_in_a_synthetic_voice_closes_the_gate_only_on_request(tmp
     assert report(strict).gate is False
 
 
-def test_a_pair_differing_in_more_than_the_declared_contrast_is_refused(tmp_path):
+def test_a_pair_differing_in_more_than_the_declared_contrast_is_never_made(tmp_path):
     """Two differences teach neither. The old evaluator scored the deck
-    and reported the pair; here the deck does not load at all.
+    and reported the pair; here no pair is made of it (MinimalPair.create,
+    over the members' settled readings -- spec 2 r23: the loader checks a
+    pair's references only, the members' readings being derived).
     """
     b = DeckBuilder(tmp_path)
     fried = word("fried", "ผัด", "fried", tone="low", onset="p")  # ผัด: differs in onset too
     b.words = [w for w in b.words if w.id != "far"] + [fried]
-    b.pairs = [MinimalPair(id=PairId("tone:mid-low/klai"), confusion="tone:mid-low",
-                           members=("near", "fried"))]
-    with pytest.raises(CuratedValidationError) as refusal:
-        deck(b)
+    b.pairs = []
+    d = deck(b)
+    with pytest.raises(ValueError) as refusal:
+        MinimalPair.create(id=PairId("tone:mid-low/klai"),
+                           confusion=next(c for c in d.syllabus.confusions
+                                          if c.id == "tone:mid-low"),
+                           members=(d.syllabus.word("near"), d.syllabus.word("fried")))
     assert "not exactly {'tone'}" in str(refusal.value)
 
 
@@ -288,30 +293,30 @@ def test_the_report_says_what_it_judged_and_what_judged_it(tmp_path):
 
 # --- Doctrine: pronunciation is computed on only for pair membership (E4) ---
 
-def _with_disputed(b, word_id):
+def _with_unsettled(b, word_id):
     b.words = [word(w.id, w.thai, w.meaning, tone=w.pron.syllables[0].tone,
-                    onset=w.pron.syllables[0].segments[0], corroboration="disputed")
+                    onset=w.pron.syllables[0].segments[0], posterior=0.5)
                if w.id == word_id else w for w in b.words]
     return b
 
 
-def test_a_disputed_pronunciation_off_a_pair_blocks_no_card(tmp_path):
+def test_an_unsettled_pronunciation_off_a_pair_blocks_no_card(tmp_path):
     """The learner drills pronunciation from audio; the IPA is reference.
     A transcription nobody computes on may be wrong the way a spelling
     may be non-phonetic, and the word's cards ship.
     """
-    b = _with_disputed(DeckBuilder(tmp_path), "rice")
+    b = _with_unsettled(DeckBuilder(tmp_path), "rice")
     rep = report(b)
     assert "pair/pronunciation-corroborated" not in {f.rule for f in rep.findings}
     assert rep.gate is True
     assert "rice" in {subject for subject, _, _ in cards(deck(b), "Production")}
 
 
-def test_a_disputed_pronunciation_on_a_pair_member_closes_the_gate(tmp_path):
-    """Pair validity is computed from the stored pronunciations, so there
-    and only there corroboration is load-bearing.
+def test_an_unsettled_pronunciation_on_a_pair_member_closes_the_gate(tmp_path):
+    """Pair validity is computed from the settled pronunciations, so there
+    and only there settlement is load-bearing.
     """
-    b = _with_disputed(DeckBuilder(tmp_path), "near")
+    b = _with_unsettled(DeckBuilder(tmp_path), "near")
     rep = report(b)
     assert "pair/pronunciation-corroborated" in {f.rule for f in rep.findings}
     assert rep.gate is False

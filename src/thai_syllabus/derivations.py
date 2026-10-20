@@ -29,10 +29,9 @@ from datetime import date
 from . import record
 from .assessor import MechanicalKeyOf, mechanical_question
 from .authority import AUTHORITY_ORDER, ROLE_FOR_VOICE, role_for, sentence_role
-from .entities import Sentence, Syllable, Target, is_corroborated
+from .entities import Sentence, Target
 from .ids import ConfusionId, WordId, sentence_cloze_key
 from .media import Speaker
-from .phonology import syllables_from_verdict
 from .ports import Answer, CacheReader, StudyReader, StudyRecord
 from .record import LEARNER_RANK
 from .syllabus import Syllabus
@@ -43,8 +42,8 @@ __all__ = [
     "CurrentBest", "current_best", "learner_ranks", "vetoed", "superseded_cells",
     "role_of", "adoptable_drafts", "refused_drafts",
     "JudgeVerdict", "judge_verdict", "deciding_verdict",
-    "pending", "adjudications",
-    "CANDIDATE_SUBJECT_PREFIX", "CandidateVerdict", "candidate_adjudications",
+    "pending",
+    "CANDIDATE_SUBJECT_PREFIX", "CandidateGloss", "candidate_glosses",
     "attempts_since_change", "tried_sources", "next_source",
     "GLYPH_SOURCES", "ALPHABET_SOURCES", "need_sources",
     "ExhaustedStatus", "exhausted", "sentence_exhausted", "sentence_asks",
@@ -501,35 +500,7 @@ def pending(cache: CacheReader, subject: str, kind: str) -> bool:
     return (subject, kind) in zip(subjects, kinds, strict=True)
 
 
-# --- adjudications ------------------------------------------------------
-
-def adjudications(cache: CacheReader, syllabus, *, current_rubric: Mapping[str, str]
-                  ) -> dict[WordId, tuple[Syllable, ...]]:
-    """Per word still lacking a corroborated pronunciation, the newest
-    fresh pronunciation-for-word verdict's syllables (spec 3 r28); a
-    word with none is absent. A verdict under a superseded rubric is not
-    fresh (`stale`), so the word waits for the re-ask instead.
-
-    What the run then does with the answer -- check it against the
-    engines, write the corroborated ones to words.yaml -- is
-    run._materialize_adjudications; this is the fold that says which
-    verdicts are on offer.
-    """
-    out: dict[WordId, tuple[Syllable, ...]] = {}
-    for w in syllabus.words:
-        if is_corroborated(w.pron.corroboration):
-            continue
-        rows = [r for r in cache.assessments_of(str(w.id))
-                if r.port == "assess" and r.backend == "judge"
-                and r.question.get("role") == "pronunciation-for-word"
-                and not _stale(r, current_rubric)]
-        if not rows:
-            continue
-        value = max(rows, key=lambda r: r.ts).answer.get("value")
-        if isinstance(value, Mapping) and value.get("syllables"):
-            out[w.id] = syllables_from_verdict(value)
-    return out
-
+# --- candidate glosses ---------------------------------------------------
 
 CANDIDATE_SUBJECT_PREFIX = "candidate:"
 
@@ -539,20 +510,20 @@ _ID_CHARACTER = re.compile(r"[A-Za-z0-9]")
 
 
 @dataclass(frozen=True)
-class CandidateVerdict:
-    """The judge's pronunciation and gloss for an outside form the pair
-    search asked about (spec 3 r47 section 5): what the run needs to mint
-    it as a closure Word once the engines corroborate the syllables.
-    `ts` is the deciding row's (candidates_dropped's per-run delta, spec
-    3 r48, reads it against the previous run's RunReport ts)."""
+class CandidateGloss:
+    """The judge's gloss of an outside form the pair search asked about
+    (spec 3 r47, r68 section 5): the meaning and id the form is minted
+    under once it settles; its syllables are settlement evidence
+    (settlement.evidence_on_record). `ts` is the deciding row's
+    (candidates_dropped's per-run delta, spec 3 r48, reads it against the
+    previous run's RunReport ts)."""
     thai: str
-    syllables: tuple[Syllable, ...]
     gloss: str
     ts: int
 
 
-def candidate_adjudications(cache: CacheReader, *,
-                            current_rubric: Mapping[str, str]) -> dict[str, CandidateVerdict]:
+def candidate_glosses(cache: CacheReader, *,
+                      current_rubric: Mapping[str, str]) -> dict[str, CandidateGloss]:
     """Per outside form the pair search asked the judge about (subject
     `candidate:<thai>`, role pronunciation-for-word), the newest fresh
     verdict carrying syllables and a gloss, keyed by the form. A verdict
@@ -561,7 +532,7 @@ def candidate_adjudications(cache: CacheReader, *,
     whose gloss holds no ASCII alphanumeric at all -- `ids.slug_id` keeps
     only those, so such a gloss names no id either and would raise where
     the search mints the closure Word (I4)."""
-    out: dict[str, CandidateVerdict] = {}
+    out: dict[str, CandidateGloss] = {}
     for subject in cache.subjects(CANDIDATE_SUBJECT_PREFIX):
         rows = [r for r in cache.assessments_of(subject)
                 if r.port == "assess" and r.backend == "judge"
@@ -577,8 +548,7 @@ def candidate_adjudications(cache: CacheReader, *,
         if not _ID_CHARACTER.search(gloss):
             continue
         thai = subject[len(CANDIDATE_SUBJECT_PREFIX):]
-        out[thai] = CandidateVerdict(thai=thai, syllables=syllables_from_verdict(value),
-                                     gloss=gloss, ts=deciding.ts)
+        out[thai] = CandidateGloss(thai=thai, gloss=gloss, ts=deciding.ts)
     return out
 
 

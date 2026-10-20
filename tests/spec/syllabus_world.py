@@ -92,7 +92,7 @@ def _syl(onset: str = "m", vowel: str = "a", coda: str = "",
 
 def _pron(*syllables: Syllable) -> Pronunciation:
     return Pronunciation(syllables=tuple(syllables) or (_syl(),),
-                         corroboration="engines_agree")
+                         posterior=1.0, spoken_dissent=False)
 
 
 def _word(id_: str, thai: str, meaning: str, tone: str = "mid") -> Word:

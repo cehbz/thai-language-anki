@@ -1266,21 +1266,20 @@ def _drill_stats(d: "Derivations") -> dict[str, dict[str, int]]:
 def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
     """One run's history row: the runreport answer as it was recorded,
     with the fields a row older than the field itself would be missing
-    filled in at 0 (spec 3 r29's `adjudicated`/`stayed_disputed`, r30's
-    three comment counts, r34's `covered_new`, r35's `requeried`, r47's
+    filled in at 0 (spec 3 r30's three comment counts, r34's `covered_new`, r35's `requeried`, r47's
     `adopted_pairs`/`candidate_asks`, r48's `candidates_dropped`, r49's
     `reverified`/`demoted`), plus `spend_per_covered_new` (spec 5 r11,
     decision 12): the run's judge and illustrator dollars over
     `covered_new`, None when nothing was newly covered. The page reads
     its columns off the oldest row, so a field missing there is a column
-    missing for every run.
+    missing for every run. A field a later revision removed (r29's
+    `adjudicated`/`stayed_disputed`, gone in r68) stays on the rows that
+    recorded it and is filled in on none.
     """
     covered_new = answer.get("covered_new", 0)
     spend = answer.get("spend") or {}
     cash = sum(float((spend.get(b) or {}).get("cost", 0.0)) for b in ("judge", "illustrator"))
     return {**answer,
-            "adjudicated": answer.get("adjudicated", 0),
-            "stayed_disputed": answer.get("stayed_disputed", 0),
             "adopted_pairs": answer.get("adopted_pairs", 0),
             "candidate_asks": answer.get("candidate_asks", 0),
             "candidates_dropped": answer.get("candidates_dropped", 0),
@@ -1312,14 +1311,13 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
 
     `pending`/`sentences_adopted` come from the newest run.py runreport
     row, else 0; `run_report_history` is every such row's answer, oldest
-    first, each carrying `adjudicated` and `stayed_disputed` (spec 3 r29)
-    and the comment pass's three counts -- `comments_read`,
+    first, each carrying the comment pass's three counts -- `comments_read`,
     `comment_actions`, `comment_unactionable` (spec 3 r30) -- and
     `covered_new` (spec 3 r34) and `requeried` (spec 3 r35) -- and
     `adopted_pairs`/`candidate_asks` (spec 3 r47), `candidates_dropped`
     (spec 3 r48), and `reverified`/`demoted` (spec 3 r49) -- whether or
     not the row itself recorded them: a row written before any of them
-    reads 0 for its fields, so all twelve are columns of every run in
+    reads 0 for its fields, so all ten are columns of every run in
     the history and not only of the runs since (the page takes the
     history's columns from its oldest row).
     Each row also carries `spend_per_covered_new`, derived not stored
@@ -2954,11 +2952,12 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 
       // RunReport history (spec 5 section 3): every run.py row, oldest
       // first, one table row per run with every field the row carries --
-      // `adjudicated` and `stayed_disputed` (spec 3 r29) and
       // `comments_read`/`comment_actions`/`comment_unactionable` (r30)
       // and `covered_new`/`spend_per_covered_new` (spec 5 r11) and
       // `requeried` (spec 3 r35) among them, on every row, compute_stats having filled them in
-      // where an older row recorded none of them.
+      // where an older row recorded none of them; a field only older rows
+      // carry (spec 3 r29's adjudication counts, removed in r68) is blank
+      // on the rows without it.
       panel.appendChild(el("h3", {}, "Run history"));
       var history = stats.run_report_history;
       if (history.length) {
@@ -2971,7 +2970,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
           var row = el("tr");
           fields.forEach(function (f) {
             var value = report[f];
-            var text = (value !== null && typeof value === "object")
+            var text = value === undefined ? ""
+              : (value !== null && typeof value === "object")
               ? JSON.stringify(value) : String(value);
             row.appendChild(el("td", {}, text));
           });

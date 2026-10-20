@@ -62,7 +62,7 @@ from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.transport import Completion, QuotaExhausted, TransportError
 from thai_syllabus.wiring import build_sourcing
 
-from .builders import clip_for, sentence, syl, target, thai_of, word
+from .builders import clip_for, offline, sentence, syl, target, thai_of, word
 
 # --- a fixture deck and fake backends --------------------------------------
 
@@ -89,6 +89,12 @@ def _deck(tmp_path, words, targets, *, transport="batch", pairs=(), confusions=(
     SyllabusDb(root / "syllabus.db").close()
     MediaStore(root / "media")
     return root
+
+
+def _reading(readings, tone=lambda thai: None) -> Engines:
+    """The local engines faked: thaig2p and tltk both read `readings`
+    (thai -> syllables), so a form they read settles at posterior 1."""
+    return Engines(g2p={"thaig2p": readings.get, "tltk": readings.get}, tone=tone)
 
 
 def _jpeg_bytes(seed: str) -> bytes:
@@ -272,6 +278,9 @@ def _wire(ctx, fake_search, *, llm=None, batch=None, complete=None, phrase=None,
     # (test_the_run_adopts_two_consonants_into_the_decks_curated_files)
     # turns it back on with its own rows and its own fake engines.
     ctx.adopt_graphemes = False
+    # The evidence pass (spec 3 r68) kept local; a test that wants
+    # readings injects its own engines.
+    offline(ctx)
     ctx.provider._backends["llm-comment"] = (
         comment if comment is not None else _Llm('{"readings": []}'))
     ctx.provider._backends.update({
@@ -786,127 +795,6 @@ def test_a_word_whose_targets_this_run_adopted_leaves_available_and_every_bucket
            + report.unserved + report.budgeted + report.deferred)
 
 
-# --- adjudication: the judge's pronunciation written to words.yaml ---------
-
-def _adjudication_value(prompt):
-    """The judge's answer per prompt: the pronunciation body for the
-    adjudication ask (assessor.pronunciation_prompt's own opening line),
-    a plain pass for every other question in the same batch."""
-    if "adjudicating the pronunciation" in prompt:
-        return {"syllables": [{"segments": ["kʰ", "a", "w"], "vowel_length": "long",
-                               "tone": "falling"}], "gloss": "rice"}
-    return True
-
-
-def _spy_on_the_adjudication_ask(monkeypatch) -> list[list[str]]:
-    """Per adjudication_attempt call, the words still disputed on the
-    ctx it was handed -- what the ask itself would be about."""
-    seen: list[list[str]] = []
-    real = run_mod.adjudication_attempt
-
-    def spy(ctx):
-        seen.append([str(w.id) for w in ctx.syllabus.words
-                     if w.pron.corroboration == "disputed"])
-        return real(ctx)
-
-    monkeypatch.setattr(run_mod, "adjudication_attempt", spy)
-    return seen
-
-
-def test_a_resolved_adjudication_that_the_engines_corroborate_is_written_to_words_yaml(
-        tmp_path, fake_search, fake_batch, monkeypatch, caplog):
-    disputed = word("rice", "ข้าว", "rice", corroboration="disputed",
-                    syllables=(syl(onset="k", vowel="a", coda="w", length="short", tone="mid"),))
-    root = _deck(tmp_path, (disputed, FISH),
-                 (target("rice/receptive", "rice"), target("fish/receptive", "fish")))
-    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
-    judged = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="falling"),)
-    ctx.engines = Engines(g2p=(lambda w: judged,), tone=lambda w: "falling")
-    seen = _spy_on_the_adjudication_ask(monkeypatch)
-    r1 = run(ctx, budgets={})
-    fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
-    with caplog.at_level(logging.INFO, logger="thai_syllabus.run"):
-        r2 = run(ctx, budgets={})
-    assert r2.adjudicated == 1
-    rows = load_words(root / "curated" / "words.yaml")
-    assert [w.id for w, _c in rows] == ["rice", "fish"]   # no row lost, no row moved
-    rice = next(w for w, _c in rows if w.id == "rice")
-    assert rice.pron.corroboration == "adjudicated" and rice.pron.syllables == judged
-    # The ordering _run_pass depends on: r2's resolve materialized "rice"
-    # and `with_words` put the written Word on ctx.syllabus BEFORE the
-    # adjudication ask ran, so the same run never asks about it again.
-    assert seen == [["rice"], []]
-    assert ctx.syllabus.word(WordId("rice")).pron.corroboration == "adjudicated"
-    # everything corroborated -- no "stays disputed" summary line.
-    assert "not corroborated by an engine; the words stay disputed" not in caplog.text
-    assert r2.stayed_disputed == 0
-
-
-def test_an_adjudication_the_engines_refuse_leaves_the_word_disputed(
-        tmp_path, fake_search, fake_batch, caplog):
-    """Spec 3 r28 section 5: the judge alone is not corroboration --
-    words.yaml is untouched and the word is logged and left disputed."""
-    disputed = word("rice", "ข้าว", "rice", corroboration="disputed")
-    root = _deck(tmp_path, (disputed,), (target("rice/receptive", "rice"),))
-    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
-    ctx.engines = Engines(g2p=(lambda w: None,), tone=lambda w: None)
-    r1 = run(ctx, budgets={})
-    fake_batch.complete_all(r1.batch_id, passed=True, value_for=_adjudication_value)
-    with caplog.at_level(logging.INFO, logger="thai_syllabus.run"):
-        r2 = run(ctx, budgets={})
-    assert r2.adjudicated == 0
-    assert "not corroborated" in caplog.text
-    rice = next(w for w, _c in load_words(root / "curated" / "words.yaml") if w.id == "rice")
-    assert rice.pron.corroboration == "disputed"
-    summary = [r for r in caplog.records
-               if "not corroborated by an engine; the words stay disputed" in r.message]
-    assert len(summary) == 1
-    assert summary[0].levelno == logging.WARNING
-    assert summary[0].message == (
-        "adjudication: 1 of 1 verdicts not corroborated by an engine; the words stay disputed")
-    # Spec 3 r29: the count is a report field too, so the trend is
-    # visible per run and not only in this run's own log.
-    assert r2.stayed_disputed == 1
-    assert ctx.db.latest("run", "runreport", RunReportKey()).answer["stayed_disputed"] == 1
-
-
-def test_a_judge_verdict_with_a_glottal_coda_corroborates_against_an_engine_reading_without_one(
-        tmp_path, fake_search, fake_batch):
-    """FIX 7 / design 2026-09-18 §5: thaig2p writes an explicit ʔ coda on a
-    dead open syllable (จะ -> tɕ a ʔ); a correctly normalized engine
-    reading never does, and neither does tltk. Nothing stops the judge
-    from spelling a verdict with one too -- `syllables_from_verdict`
-    normalizes it away on the way in (phonology.py), which is what lets
-    that verdict still corroborate against the engine's coda-less reading.
-    This is the run-level seam the normalization exists for, exercised end
-    to end rather than at the unit level (no `ʔ` appears anywhere in this
-    module before this test)."""
-    disputed = word("will", "จะ", "will", corroboration="disputed")
-    root = _deck(tmp_path, (disputed,), (target("will/receptive", "will"),))
-    ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
-    # A real, already-normalized engine reading of a dead open syllable:
-    # no ʔ coda (design 2026-09-18 §5).
-    engine_reading = (syl(onset="tɕ", vowel="a", coda="", length="short", tone="low"),)
-    ctx.engines = Engines(g2p=(lambda w: engine_reading,), tone=lambda w: None)
-
-    def value_for(prompt):
-        if "adjudicating the pronunciation" in prompt:
-            # The judge's verdict DOES carry a ʔ coda.
-            return {"syllables": [{"segments": ["tɕ", "a", "ʔ"], "vowel_length": "short",
-                                   "tone": "low"}], "gloss": "will"}
-        return True
-
-    r1 = run(ctx, budgets={})
-    fake_batch.complete_all(r1.batch_id, passed=True, value_for=value_for)
-    r2 = run(ctx, budgets={})
-    assert r2.adjudicated == 1
-    will = next(w for w, _c in load_words(root / "curated" / "words.yaml") if w.id == "will")
-    assert will.pron.corroboration == "adjudicated"
-    # Normalized on the way in: the written syllables carry no ʔ coda,
-    # matching the engine's own (already normalized) reading exactly.
-    assert will.pron.syllables == engine_reading
-
-
 # --- a pair's rendition need reaches the attempt (F1 defect 1) -------------
 
 def test_a_pairs_rendition_need_reaches_the_attempt(tmp_path, fake_search, fake_batch):
@@ -1067,6 +955,7 @@ def test_a_learner_supply_reopens_an_exhausted_recording_need_over_a_real_run(tm
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = build_sourcing(root)
     ctx.adopt_graphemes = False   # as _wire does: no repo inventory, no real engines
+    offline(ctx)
     forvo = _EmptyForvo()
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
@@ -1117,6 +1006,7 @@ def test_a_recording_needs_unjudged_candidate_is_assessed_before_any_source_over
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = build_sourcing(root)
     ctx.adopt_graphemes = False   # as _wire does: no repo inventory, no real engines
+    offline(ctx)
     forvo, tts = _EmptyForvo(), _EmptyTts()
     ctx.provider._backends.update({
         "openverse": _Silent("openverse"), "wikimedia": _Silent("wikimedia"),
@@ -1181,9 +1071,7 @@ class _Syl:
     # run._picture_needs folds over to keep a retired sentence's scene
     # need out of `covered_new` (spec 3 r34 section 7)
     graphemes: tuple = ()
-    # the real Syllabus's own field, read by attempts.adjudication_attempt
-    # and derivations.adjudications: no word here is uncorroborated, so
-    # neither pass does anything over this fake
+    # the real Syllabus's own field: no word here
     words: tuple = ()
 
     @property
@@ -1287,11 +1175,11 @@ class _Q:
 def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False), drafts=(),
            preference=AttemptResult(attempted=False), assess=None,
            phrase_result=AttemptResult(attempted=False), query="q",
-           adjudication_result=AttemptResult(attempted=False),
+           evidence_result=AttemptResult(attempted=False),
            comment_result=AttemptResult(attempted=False),
            pair_search_result=AttemptResult(attempted=False)):
     """Replaces attempt/assess_first/sentence_attempt/phrase_attempt/
-    adjudication_attempt/pair_search_attempt/comment_attempt/
+    evidence_attempt/pair_search_attempt/comment_attempt/
     preference_attempt/adoptable_drafts/picture_query_for. A `results`
     entry that is an exception class is raised instead of returned.
     `assess` is assess_first's fixed return for every need -- None keeps
@@ -1318,10 +1206,8 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
             raise phrase_result("no drafter")
         return phrase_result
 
-    def fake_adjudication_attempt(ctx):
-        if isinstance(adjudication_result, type) and issubclass(adjudication_result, Exception):
-            raise adjudication_result("no judge")
-        return adjudication_result
+    def fake_evidence_attempt(ctx):
+        return evidence_result
 
     def fake_comment_attempt(ctx):
         if isinstance(comment_result, type) and issubclass(comment_result, Exception):
@@ -1335,7 +1221,7 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
 
     monkeypatch.setattr(run_mod, "pair_search_attempt", fake_pair_search_attempt)
     monkeypatch.setattr(run_mod, "comment_attempt", fake_comment_attempt)
-    monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
+    monkeypatch.setattr(run_mod, "evidence_attempt", fake_evidence_attempt)
     monkeypatch.setattr(run_mod, "attempt", fake_attempt)
     monkeypatch.setattr(run_mod, "picture_query_for", lambda ctx, need: query)
     monkeypatch.setattr(run_mod, "assess_first", lambda ctx, need: assess)
@@ -1345,21 +1231,6 @@ def _patch(monkeypatch, results, sentence_result=AttemptResult(attempted=False),
     monkeypatch.setattr(run_mod, "adoptable_drafts",
                         lambda cache, syllabus, **kwargs: list(drafts))
     return calls
-
-
-def test_a_pronunciation_question_rides_the_batch_and_is_not_a_pending_need(db, monkeypatch):
-    """Spec 3 r28: the adjudication pass owns no need bucket; its question
-    is submitted with the run's batch, and `pending` still counts needs
-    only, so the identity holds with pending 0."""
-    _patch(monkeypatch, {}, adjudication_result=AttemptResult(
-        True, questions=[_Q("rice", "pronunciation")]))
-    assessor = _Assessor()                       # the module's fake; records submit()
-    report = run(_ctx(db, _Syl(_Gaps(recordings=("a",))), assessor=assessor), {})
-    assert assessor.submitted and any(q.question.kind == "pronunciation"
-                                      for q in assessor.submitted[0])
-    assert report.pending == 0 and report.attempted == 1
-    assert (report.available == report.attempted + report.exhausted + report.pending
-            + report.unserved + report.budgeted + report.deferred)
 
 
 def test_a_pronunciation_question_in_the_resolved_batch_opens_no_preference_question(
@@ -2086,23 +1957,9 @@ def test_an_unreachable_sentence_attempt_stops_the_run_too(db, monkeypatch):
     assert assessor.submitted == []                  # nothing goes out after that
 
 
-def test_an_unreachable_adjudication_attempt_stops_the_run_with_the_identity_intact(
-        db, monkeypatch):
-    """Spec 3 r28: the adjudication ask is the last one before the need
-    loop, so a judge that dies there defers every queued need -- and the
-    pass owns no bucket of its own, so the identity still holds."""
-    assessor = _Assessor()
-    calls = _patch(monkeypatch, {}, adjudication_result=JudgeUnreachable)
-    report = run(_ctx(db, _Syl(_Gaps(pictures=("a", "b"))), assessor), {})
-    assert calls == [] and report.unreachable is True and assessor.submitted == []
-    assert report.deferred == 2
-    assert (report.available == report.attempted + report.exhausted + report.pending
-            + report.unserved + report.budgeted + report.deferred)
-
-
 def test_an_unreachable_pair_search_stops_the_run_with_the_identity_intact(db, monkeypatch):
-    """Spec 3 r47: the pair search's candidate ask rides the run's batch
-    like the adjudication ask, so a judge that dies there stops the run
+    """Spec 3 r47: the pair search's candidate ask rides the run's batch,
+    so a judge that dies there stops the run
     and defers every queued need -- and the pass owns no bucket of its
     own, so the identity still holds."""
     assessor = _Assessor()
@@ -2999,7 +2856,7 @@ def test_the_persisted_row_carries_every_report_field(db, monkeypatch):
     run(_ctx(db, _Syl(_Gaps(pictures=("a",)))), {})
     answer = db.latest("run", "runreport", RunReportKey()).answer
     assert set(answer) == {"attempted", "improved", "exhausted", "available", "pending",
-                           "sentences_adopted", "adjudicated", "stayed_disputed",
+                           "sentences_adopted",
                            "drafted", "retired", "covered_new", "excluded",
                            "comments_read", "comment_actions", "comment_unactionable",
                            "excluded_items", "unreachable", "batch_id", "source_failures",
@@ -3391,10 +3248,10 @@ def test_an_ordinary_attempt_leaves_the_adoption_counts_at_zero():
 
 
 def test_the_run_makes_the_grapheme_pass_after_the_sentence_attempt(db, monkeypatch):
-    """Spec 3 r40 §7: the pass runs after the sentence attempt and before
-    the phrase and adjudication asks, so a newly adopted keyword's picture
-    need gets a phrase and a disputed name word is asked about this run.
-    Its counts are events, outside the identity."""
+    """Spec 3 r40, r68 §7: the pass runs after the sentence attempt and
+    before the evidence pass, the pair search and the phrase ask, so a
+    newly adopted Word's form is read and its keyword's picture need gets
+    a phrase this run. Its counts are events, outside the identity."""
     order = []
 
     def fake_sentence_attempt(ctx, max_targets=40):
@@ -3410,19 +3267,24 @@ def test_the_run_makes_the_grapheme_pass_after_the_sentence_attempt(db, monkeypa
         order.append("phrase")
         return AttemptResult(False)
 
-    def fake_adjudication_attempt(ctx):
-        order.append("adjudication")
+    def fake_evidence_attempt(ctx):
+        order.append("evidence")
+        return AttemptResult(False)
+
+    def fake_pair_search_attempt(ctx):
+        order.append("pair search")
         return AttemptResult(False)
 
     monkeypatch.setattr(run_mod, "sentence_attempt", fake_sentence_attempt)
     monkeypatch.setattr(run_mod, "grapheme_attempt", fake_grapheme_attempt)
     monkeypatch.setattr(run_mod, "phrase_attempt", fake_phrase_attempt)
-    monkeypatch.setattr(run_mod, "adjudication_attempt", fake_adjudication_attempt)
+    monkeypatch.setattr(run_mod, "evidence_attempt", fake_evidence_attempt)
+    monkeypatch.setattr(run_mod, "pair_search_attempt", fake_pair_search_attempt)
     monkeypatch.setattr(run_mod, "adoptable_drafts", lambda cache, syllabus, **kwargs: [])
 
     report = run(_ctx(db, _Syl(_Gaps())), {})
 
-    assert order == ["sentence", "grapheme", "phrase", "adjudication"]
+    assert order == ["sentence", "grapheme", "evidence", "pair search", "phrase"]
     assert (report.adopted_graphemes, report.adopted_words, report.adoption_skipped) == (
         42, 66, 2)
     assert report.available == (report.attempted + report.exhausted + report.pending
@@ -3458,15 +3320,15 @@ _NGO = ConsonantRow(symbol="ง", consonant_class="low", sound="ŋ", name_thai="
 def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fake_search,
                                                                     fake_batch):
     """Spec 3 r40 §5 end to end over a real deck: the pass reads the ctx's
-    own consonant table, seeds each Word's pronunciation from the injected
-    engines (no pythainlp), writes the three curated files and reports
-    what it adopted."""
+    own consonant table, writes the three curated files and reports what
+    it adopted; the evidence pass then reads the new forms with the
+    injected engines (no pythainlp)."""
     root = _deck(tmp_path, (RICE,), (target("rice/receptive", "rice"),))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
     ctx.adopt_graphemes = True
     ctx.consonants = lambda: (_KO, _NGO)
     one = (syl("k", "a", "", "short", "mid"),)
-    ctx.engines = Engines(g2p=(lambda thai: one,), tone=lambda thai: "mid")
+    ctx.engines = _reading({form: one for form in ("ไก่", "งู", "กอ", "งอ")})
 
     report = run(ctx, budgets={})
 
@@ -3486,6 +3348,8 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     assert [(g.symbol, g.keyword, g.name_word) for g in saved] == [
         ("ก", "chicken", "name-chicken"), ("ง", "snake", "name-snake")]
     assert ctx.syllabus.name_word_ids == frozenset({"name-chicken", "name-snake"})
+    # read by the evidence pass, token by token for a recited name
+    assert ctx.syllabus.word("name-snake").pron.syllables == one + one
 
 
 def test_the_run_adopts_a_vocabulary_pair_and_queues_its_rendition(tmp_path, fake_search,
@@ -3501,12 +3365,10 @@ def test_the_run_adopts_a_vocabulary_pair_and_queues_its_rendition(tmp_path, fak
                  (target("near/receptive", "near"), target("rice/receptive", "rice")),
                  confusions=(tone,))
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
-    # No outside (non-vocabulary) form is needed for this pair -- both
-    # members are already in the deck -- but the pass resolves its
-    # Engines unconditionally once any confusion is short, so a test
-    # confusion still needs one injected (conftest.real_default_engines
-    # refuses the real thing).
-    ctx.engines = Engines(g2p=(lambda thai: (),), tone=lambda thai: "mid")
+    # words.yaml stores no pronunciation: the members are paired on the
+    # readings the evidence pass records and settles this same run.
+    ctx.engines = _reading({"ใกล้": near.pron.syllables, "ไกล": far.pron.syllables})
+    assert ctx.syllabus.word("near").pron is None
     report = run(ctx, {})
     assert report.adopted_pairs == 1
     assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/far-near"]
@@ -3631,13 +3493,11 @@ def test_a_run_starts_the_dictionary_s_run(db, monkeypatch):
     dictionary = _Dictionary()
     ctx = _ctx(db, _Syl(_Gaps(recordings=("a",))))
     ctx.dictionary = dictionary
-    # injected so the real engines can never load (conftest refuses them)
-    ctx.engines = Engines(g2p=(lambda t: None,), tone=lambda t: None,
-                          dictionary=dictionary)
+    ctx.thai_language_com = dictionary
     run(ctx, {})
-    assert dictionary.runs == 1
+    assert dictionary.runs == 2              # Wiktionary's and thai-language.com's
     run(ctx, {})
-    assert dictionary.runs == 2
+    assert dictionary.runs == 4
 
 
 class _FreshDrafter:

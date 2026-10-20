@@ -69,11 +69,9 @@ from .curated import (
     CURATED_FILES,
     RulebookConfig,
 )
-from .entities import (DIPHTHONGS, Clauses, Pronunciation, Sentence, Syllable,
-                       Target, Word)
+from .entities import Clauses, Sentence, Target, Word
 from .ids import TargetId, WordId
 from .media import Provenance
-from .phonology import is_degenerate
 from .profile import Profile
 from .provider import Provider, Question
 from .store import MediaStore, SyllabusDb
@@ -91,91 +89,6 @@ LEGACY_PICTURE_RUBRIC = "legacy-picture-rules"
 # The old deck's one note model for picture-word notes -- proof_notes.jsonl
 # rows carry an Anki guid computed from this model and the note id.
 _PICTURE_WORD_MODEL = "picture_word"
-
-# --- IPA -> Pronunciation ----------------------------------------------
-#
-# Ported (not imported -- src/thai_syllabus stays stdlib+PyYAML only, and
-# this package imports nothing out of thai_deck_eval/thai_deck_gen by
-# design, see __init__.py) out of thai_deck_eval/lang/ipa.py's parse_ipa,
-# whose onset/vowel/coda token lists and 5-Chao-tone-letter table were
-# independently confirmed against this deck's actual note data (see the
-# implementation report: exactly {˧, ˨˩, ˥˩, ˦˥, ˨˩˦} appear, matching
-# mid/low/falling/high/rising one-to-one).
-
-_TONES = {"˧": "mid", "˨˩˦": "rising", "˨˩": "low", "˥˩": "falling", "˦˥": "high"}
-_ONSETS = ["tɕʰ", "tɕ", "pʰ", "tʰ", "kʰ", "b", "d", "p", "t", "k", "ʔ",
-           "m", "n", "ŋ", "f", "s", "h", "w", "l", "j", "r"]
-_VOWELS = ["ɯa", "ia", "ua", "ɯ", "ɤ", "ɛ", "ɔ", "i", "e", "a", "o", "u"]
-_CODAS = ["p", "t", "k", "ʔ", "m", "n", "ŋ", "j", "w"]
-
-
-class IpaParseError(ValueError):
-    pass
-
-
-def _take(s: str, options: list[str]) -> tuple[str | None, str]:
-    for o in options:
-        if s.startswith(o):
-            return o, s[len(o):]
-    return None, s
-
-
-def _parse_ipa_syllable(s: str) -> Syllable:
-    tone = None
-    for mark in sorted(_TONES, key=len, reverse=True):
-        if s.endswith(mark):
-            tone, s = _TONES[mark], s[: -len(mark)]
-            break
-    if tone is None:
-        raise IpaParseError(f"no tone letters in {s!r}")
-    onset, s = _take(s, _ONSETS)
-    if onset is None:
-        raise IpaParseError(f"unknown onset in {s!r}")
-    vowel, s = _take(s, _VOWELS)
-    if vowel is None:
-        raise IpaParseError(f"unknown vowel in {s!r}")
-    long = s.startswith("ː")
-    s = s[1:] if long else s
-    # A centering diphthong is long by convention and written unmarked
-    # (design 2026-09-20 §1), which is exactly what `ipa.render` emits --
-    # so reading the missing mark as `short` here would stop this parser
-    # being render's inverse, and would hand the adjudication pass a
-    # length no engine can ever corroborate.
-    long = long or vowel in DIPHTHONGS
-    coda, s = _take(s, _CODAS)
-    if s:
-        raise IpaParseError(f"trailing {s!r}")
-    return Syllable(segments=(onset, vowel, coda or ""),
-                    vowel_length="long" if long else "short", tone=tone)
-
-
-def _parse_ipa(ipa: str) -> tuple[Syllable, ...]:
-    parts = [p for p in ipa.strip().replace(" ", ".").split(".") if p]
-    if not parts:
-        raise IpaParseError("empty ipa string")
-    return tuple(_parse_ipa_syllable(p) for p in parts)
-
-
-_PLACEHOLDER_PRON = Pronunciation(
-    syllables=(Syllable(segments=("", "", ""), vowel_length="short", tone="mid"),),
-    corroboration="disputed")
-
-
-class DegenerateReadingError(IpaParseError):
-    """An old-deck IPA string that is a neural g2p decoder loop rather than
-    a reading (2026-09-18): eleven of them reached the live deck's
-    words.yaml as `curated_exception`, the one corroboration the
-    adjudication pass never revisits, so nothing could ever correct them.
-    Refused here instead, and reported like any unparseable value."""
-
-
-def _pron_from_ipa(ipa: str, thai: str) -> Pronunciation:
-    syllables = _parse_ipa(ipa)
-    if is_degenerate(syllables, thai):
-        raise DegenerateReadingError(
-            f"degenerate reading: {len(syllables)} syllables for {thai!r}")
-    return Pronunciation(syllables=syllables, corroboration="curated_exception")
-
 
 # --- report ----------------------------------------------------------------
 
@@ -312,32 +225,12 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                        ) -> tuple[list[tuple[Word, str | None]], list[Target],
                                  dict[tuple[str, str], str], set[tuple[str, str]]]:
     rows = _load_yaml(old_data / "word_list_th.yaml") or []
-    picture_words = _load_yaml(old_deck / "notes" / "picture_words.yaml") or []
-    ipa_by_thai: dict[str, str] = {}
-    for note in picture_words:
-        thai, ipa = note.get("thai"), note.get("ipa")
-        if thai and ipa and thai not in ipa_by_thai:
-            ipa_by_thai[thai] = ipa
-
     word_rows: list[tuple[Word, str | None]] = []
     targets: list[Target] = []
     seen_ids: set[str] = set()
     word_id_by_thai: dict[str, str] = {}          # first-seen, classifier lookups only
     word_ids_by_key: dict[tuple[str, str], list[str]] = {}
     classifier_words_by_thai: dict[str, Word] = {}
-
-    def pron_for(thai: str, source: str, identity: str) -> Pronunciation:
-        ipa = ipa_by_thai.get(thai)
-        if ipa is None:
-            report.bump(report.curated, "words_without_pronunciation")
-            return _PLACEHOLDER_PRON
-        try:
-            return _pron_from_ipa(ipa, thai)
-        except IpaParseError as e:
-            kind = "degenerate" if isinstance(e, DegenerateReadingError) else "unparseable"
-            report.drop(source, identity, f"{kind} ipa {ipa!r}: {e}")
-            report.bump(report.curated, "words_without_pronunciation")
-            return _PLACEHOLDER_PRON
 
     good_rows = []
     for i, row in enumerate(rows):
@@ -371,12 +264,11 @@ def _migrate_word_list(old_data: Path, old_deck: Path, db: SyllabusDb,
                 if classifier_thai not in classifier_words_by_thai:
                     classifier_words_by_thai[classifier_thai] = Word(
                         id=WordId(classifier_id), thai=classifier_thai,
-                        pron=pron_for(classifier_thai, "data/word_list_th.yaml",
-                                     f"classifier {classifier_thai}"),
+                        pron=None,
                         meaning="(classifier -- no gloss migrated)", classifier=None)
 
         word_rows.append((Word(id=WordId(word_id), thai=row["thai"],
-                              pron=pron_for(row["thai"], "data/word_list_th.yaml", word_id),
+                              pron=None,
                               meaning=row["gloss"],
                               classifier=WordId(classifier_id) if classifier_id else None),
                          category))

@@ -65,8 +65,9 @@ def _syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
     return Syllable(segments=(onset, vowel, coda), vowel_length=length, tone=tone)
 
 
-def _pron(*syllables, corroboration="engines_agree") -> Pronunciation:
-    return Pronunciation(syllables=tuple(syllables) or (_syl(),), corroboration=corroboration)
+def _pron(*syllables) -> Pronunciation:
+    return Pronunciation(syllables=tuple(syllables) or (_syl(),), posterior=1.0,
+                         spoken_dissent=False)
 
 
 def _word(id_, thai, meaning, tone="mid") -> Word:
@@ -2250,6 +2251,17 @@ def test_a_words_backs_show_thai_and_ipa_once_its_reading_card_has_a_review(fx):
     for template in ("Listening", "Production"):
         _front, back = _rendered(deck, "rice", template)
         assert '<div class="thai">ข้าว</div>' in back and '<div class="ipa">ma˧</div>' in back
+
+
+def test_a_word_with_no_pronunciation_renders_an_empty_ipa_field(fx):
+    """Spec 4 r17: no evidence on record, no reading -- the Ipa field is
+    empty and the word's cards still build."""
+    syllabus = _fully_seeded(fx)
+    syllabus = syllabus.with_words([dataclasses.replace(w, pron=None) if w.id == "rice" else w
+                                    for w in syllabus.words])
+    deck = _built_deck(fx, syllabus)
+    assert field_values(WORD_MODEL, _word_built(deck, "rice").note)["Ipa"] == ""
+    assert "Listening" in _word_cards(deck)["rice"]
 
 
 def test_the_spelling_back_shows_the_thai_before_any_reading_review(fx):

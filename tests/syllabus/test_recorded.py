@@ -8,8 +8,8 @@ import pytest
 
 from thai_syllabus.cachekeys import EngineKey
 from thai_syllabus.entities import Syllable
-from thai_syllabus.phonology import Engines
-from thai_syllabus.recorded import recorded_reading, recorded_tone
+from thai_syllabus.phonology import Engines, read_form
+from thai_syllabus.recorded import record_readings, recorded_reading, recorded_tone
 from thai_syllabus.store import SyllabusDb
 
 
@@ -67,7 +67,7 @@ def test_engines_are_recorded_apart(db):
     assert a.calls == ["ปา"] and b.calls == ["ปา"]
 
 
-def test_the_recorded_reading_is_the_one_engines_readings_presents(db):
+def test_the_recorded_reading_is_the_one_read_form_presents(db):
     """ʔ-coda convention applied, a phrase read token by token, a
     degenerate reading dropped: the same thing from the record as from the
     live engine."""
@@ -75,9 +75,8 @@ def test_the_recorded_reading_is_the_one_engines_readings_presents(db):
     loop = tuple(S("w", "a", "") for _ in range(11))
     answers = {"ปะ": DEAD_PA, "ปา": PA, "บา": ba, "ภาพวาด": loop}
     for form in ("ปะ", "ปา บา", "ภาพวาด", "ซ"):
-        live = Engines(g2p=(Counting(answers),), tone=lambda f: None).readings(form)
-        recorded = recorded_reading(db, "e", "1", Counting(answers))(form)
-        assert (recorded,) == live if live else recorded is None
+        live = read_form(Counting(answers), form)
+        assert recorded_reading(db, "e", "1", Counting(answers))(form) == live
     assert recorded_reading(db, "e", "1", Counting({}))("ปา บา") == PA + ba
 
 
@@ -94,3 +93,22 @@ def test_the_rule_tone_answer_is_recorded_including_none(db):
     assert tone("ปา") == "mid" and tone("ปา") == "mid"
     assert tone("ซซ") is None and tone("ซซ") is None
     assert eng.calls == ["ปา", "ซซ"]
+
+
+def test_every_local_engine_records_its_reading_of_every_form(db):
+    g2p, tltk, tone = Counting({"ปา": PA}), Counting({"ปา": PA}), Counting({"ปา": "mid"})
+    resolved = []
+
+    def engines():
+        resolved.append(1)
+        return Engines(g2p={"thaig2p": g2p, "tltk": tltk}, tone=tone)
+
+    versions = {"thaig2p": "1", "tltk": "2", "rule-tone": "3"}
+    record_readings(db, engines, ["ปา", "ซ"], versions=versions)
+    assert db.latest("provide", "tltk", EngineKey("tltk", "2", "ปา")).answer["value"] is not None
+    assert db.latest("provide", "rule-tone", EngineKey("rule-tone", "3", "ซ")).answer == {
+        "value": None}
+    assert resolved == [1]
+    record_readings(db, engines, ["ปา", "ซ"], versions=versions)
+    assert resolved == [1]                  # all on record: the engines are never resolved
+    assert (g2p.calls, tone.calls) == (["ปา", "ซ"], ["ปา", "ซ"])

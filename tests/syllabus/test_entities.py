@@ -24,7 +24,6 @@ from thai_syllabus.entities import (
     clauses_to_json,
     element_word,
     exact_confusion_violation,
-    is_corroborated,
     is_phrase,
     pronunciation_diff,
     render,
@@ -40,8 +39,8 @@ def syl(onset="m", vowel="a", coda="", length="short", tone="mid") -> Syllable:
     return Syllable(segments=(onset, vowel, coda), vowel_length=length, tone=tone)
 
 
-def pron(*syllables: Syllable, corroboration="engines_agree") -> Pronunciation:
-    return Pronunciation(syllables=tuple(syllables), corroboration=corroboration)
+def pron(*syllables: Syllable, posterior: float = 1.0) -> Pronunciation:
+    return Pronunciation(syllables=tuple(syllables), posterior=posterior, spoken_dissent=False)
 
 
 PROV = Provenance(source="test", origin="fixture", licence="cc0",
@@ -83,10 +82,10 @@ def test_word_classifier_references_another_word_id():
     assert w.classifier == plate
 
 
-def test_adjudicated_is_corroborated_and_disputed_is_not():
-    assert is_corroborated("adjudicated") is True
-    assert is_corroborated("engines_agree") is True
-    assert is_corroborated("disputed") is False
+def test_a_pronunciation_is_its_settled_syllables_their_posterior_and_spoken_dissent():
+    p = Pronunciation(syllables=(syl("kʰ", "a", "w", length="long", tone="falling"),),
+                      posterior=0.97, spoken_dissent=True)
+    assert (p.posterior, p.spoken_dissent) == (0.97, True)
 
 
 # --- SoundConfusion --------------------------------------------------------
@@ -366,6 +365,17 @@ def test_minimal_pair_create_accepts_members_differing_in_exactly_the_confusion(
     pair = MinimalPair.create(id=PairId("tone:mid-low/kai"), confusion=confusion,
                               members=(mid_word, low_word))
     assert pair.members == (mid_word.id, low_word.id)
+
+
+def test_minimal_pair_create_refuses_a_member_with_no_pronunciation():
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    mid_word = Word(id=WordId("near"), thai="ใกล้", pron=pron(syl("k", "ai", "", tone="mid")),
+                    meaning="near", classifier=None)
+    unread = Word(id=WordId("far"), thai="ไกล", pron=None, meaning="far", classifier=None)
+    with pytest.raises(ValueError, match="no pronunciation"):
+        MinimalPair.create(id=PairId("tone:mid-low/kai"), confusion=confusion,
+                           members=(mid_word, unread))
 
 
 def test_minimal_pair_create_rejects_members_differing_in_more_than_the_confusion():

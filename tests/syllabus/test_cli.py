@@ -40,10 +40,7 @@ from thai_syllabus.store import SyllabusDb
 def _write_curated_dir(root):
     curated = root / "curated"
     curated.mkdir(parents=True)
-    words = [{"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food",  # rice
-             "pron": {"syllables": [{"segments": ["kh", "aa", ""],
-                                     "vowel_length": "long", "tone": "low"}],
-                      "corroboration": "engines_agree"}}]
+    words = [{"id": "rice", "thai": "ข้าว", "meaning": "rice", "category": "Food"}]  # rice
     (curated / "words.yaml").write_text(yaml.safe_dump(words, allow_unicode=True))
     targets = [{"id": "t-rice", "word": "rice", "skill": "receptive"}]
     (curated / "targets.yaml").write_text(yaml.safe_dump(targets, allow_unicode=True))
@@ -915,7 +912,7 @@ def test_run_pass_that_adopted_rows_but_appended_nothing_continues(deck, monkeyp
     """M13: the grapheme pass writes curated/ files, not record rows, so a
     pass that adopted a Grapheme and its Words moves `newest_ts` nowhere --
     yet it left the next pass a syllabus full of new needs (pictures,
-    recordings, the adjudication of every `disputed` seed). Adoption is
+    recordings). Adoption is
     progress; only a pass that appended nothing AND adopted nothing is
     quiescent.
     """

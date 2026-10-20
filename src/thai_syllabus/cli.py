@@ -195,8 +195,6 @@ def _print_run_report(cycle: int, report: RunReport, spent: float) -> None:
          f"improved={report.improved} "
          f"exhausted={report.exhausted} available={report.available} "
          f"pending={report.pending} sentences_adopted={report.sentences_adopted} "
-         f"adjudicated={report.adjudicated} "
-         f"stayed_disputed={report.stayed_disputed} "
          f"drafted={report.drafted} retired={report.retired} "
          f"covered_new={report.covered_new} "
          f"requeried={report.requeried} "
@@ -247,8 +245,7 @@ def _cmd_run(args: argparse.Namespace, *,
     answer yields only refused drafts) and adopted nothing (r40's grapheme
     pass writes curated/ files rather than record rows, so `newest_ts`
     does not move for it, yet the rows it adopted are new needs -- their
-    pictures, their recordings, the adjudication of every `disputed` seed
-    -- for the next pass to work on; `adoption_skipped` is not progress,
+    pictures, their recordings -- for the next pass to work on; `adoption_skipped` is not progress,
     the rows it counts were not adopted), or when --spend-cap is set and
     the cash cost recorded since this invocation started -- the judge,
     tts and the illustrator's drawings

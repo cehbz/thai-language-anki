@@ -14,7 +14,7 @@ def _syl(onset: str, vowel: str, coda: str, *, length: str = "short",
 
 
 def _pron(*syllables: Syllable) -> Pronunciation:
-    return Pronunciation(syllables=tuple(syllables), corroboration="engines_agree")
+    return Pronunciation(syllables=tuple(syllables), posterior=1.0, spoken_dissent=False)
 
 
 def test_ipa_renders_tone_and_length():
@@ -48,3 +48,8 @@ def test_ipa_writes_no_length_mark_on_a_diphthong():
     (design 2026-09-20 §1): กล้วย is kluaj˥˩, not kluaːj˥˩."""
     assert render(_pron(_syl("kl", "ua", "j", length="long", tone="falling"))) == "kluaj˥˩"
     assert render(_pron(_syl("s", "ɯa", "", length="long", tone="rising"))) == "sɯa˨˩˦"
+
+
+def test_no_pronunciation_renders_empty():
+    """A Word with no evidence on record (spec 4 r17) has an empty Ipa field."""
+    assert render(None) == ""

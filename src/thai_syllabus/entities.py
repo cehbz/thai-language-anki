@@ -23,16 +23,6 @@ Voice = Literal["learner_voice", "other_voice"]
 Tone = Literal["mid", "low", "falling", "high", "rising"]
 VowelLength = Literal["short", "long"]
 
-# How a word's pronunciation was corroborated (spec 1 r13): both engines
-# agree; a curated exception; the judge plus one engine (the adjudication
-# pass, spec 3 r28). Only "disputed" blocks card emission.
-Corroboration = Literal["engines_agree", "curated_exception", "adjudicated", "disputed"]
-
-
-def is_corroborated(c: Corroboration) -> bool:
-    return c != "disputed"
-
-
 # The three centering diphthongs. Standard Thai phonology treats them as
 # long and the standard notation writes them unmarked (design 2026-09-20
 # §1); every converter records them `long` and ipa.render writes no ː.
@@ -44,7 +34,7 @@ def is_phrase(thai: str) -> bool:
     §3): any whitespace at all, not the ASCII space alone -- a tab or a
     no-break space separates tokens just as visibly, and a form carrying
     one must not be looked up as a single dictionary headword. The
-    engines read a phrase token by token (`phonology.Engines.readings`);
+    engines read a phrase token by token (`phonology.read_form`);
     the dictionary refuses it outright.
     """
     return any(c.isspace() for c in thai)
@@ -77,9 +67,8 @@ def without_glottal_coda(syllables: tuple["Syllable", ...]) -> tuple["Syllable",
     """The deck's one convention for a dead open syllable (design
     2026-09-18 §5): no coda. thaig2p writes a ʔ there and tltk does not,
     so without this the two engines could never agree on จะ, พระ or any
-    of the 19 rows the live deck stores with one -- and agreement is what
-    corroborates. ʔ as an *onset* is a real segment (อา is ʔaː) and is
-    untouched.
+    other dead open syllable -- and agreement is what settles a reading.
+    ʔ as an *onset* is a real segment (อา is ʔaː) and is untouched.
     """
     return tuple(
         Syllable(segments=(s.segments[0], s.segments[1], ""),
@@ -90,16 +79,23 @@ def without_glottal_coda(syllables: tuple["Syllable", ...]) -> tuple["Syllable",
 
 @dataclass(frozen=True)
 class Pronunciation:
+    """A form's settled reading (spec 1 r34; spec 3 section 6
+    settlement): each feature's winner, the least winning posterior over
+    the features, and whether the spoken witness (Wiktionary) lists no
+    reading matching it on some feature."""
     syllables: tuple[Syllable, ...]
-    corroboration: Corroboration
+    posterior: float
+    spoken_dissent: bool
 
 
 @dataclass(frozen=True)
 class Word:
-    """One sense of a Thai lexical item. Identity: id."""
+    """One sense of a Thai lexical item. Identity: id. `pron` is derived,
+    never curated: the loader gives the settled reading of `thai`, None
+    when no evidence on record reads the form (spec 1 r34)."""
     id: WordId
     thai: str
-    pron: Pronunciation
+    pron: Pronunciation | None
     meaning: str
     classifier: WordId | None = None
     no_productive: bool = False       # spec 1 section 1, r9: withholds the
@@ -330,6 +326,9 @@ class MinimalPair:
                members: tuple[Word, ...]) -> "MinimalPair":
         if not (2 <= len(members) <= 3):
             raise ValueError("a minimal pair has 2 or 3 members")
+        unread = [str(m.id) for m in members if m.pron is None]
+        if unread:
+            raise ValueError(f"member(s) {unread!r} have no pronunciation")
         reason = exact_confusion_violation(
             confusion, tuple(m.pron for m in members))
         if reason is not None:
