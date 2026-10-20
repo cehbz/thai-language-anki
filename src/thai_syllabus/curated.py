@@ -1365,11 +1365,11 @@ def load_providers_config(path: str | Path) -> ProvidersConfig:
         # convention every other uncapped source follows; zero would
         # mean "configured, and never ask", which naming no dictionary
         # at all already says.
-        if source == "wiktionary" and "max_asks" in quota:
+        if source in ("wiktionary", "thai-language.com") and "max_asks" in quota:
             max_asks = quota["max_asks"]
             if max_asks is not None and (isinstance(max_asks, bool)
                                          or not isinstance(max_asks, int) or max_asks < 1):
-                errors.append(f"providers.quotas.wiktionary.max_asks: {max_asks!r} "
+                errors.append(f"providers.quotas.{source}.max_asks: {max_asks!r} "
                               "must be a positive integer, or null to lift the cap")
 
     if errors:

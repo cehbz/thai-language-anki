@@ -1000,6 +1000,8 @@ def run(ctx: Sourcing, budgets: Mapping[str, Budget], *,
     # met in one of them must not still be slowing the next.
     if ctx.dictionary is not None:
         ctx.dictionary.begin_run()
+    if ctx.thai_language_com is not None:
+        ctx.thai_language_com.begin_run()
     # One clock read for the whole run (spec 3 r19 section 6a/9): every
     # queue build and the attempt loop's own next_source calls age a
     # `nothing` row against this same instant. The attempts read it back

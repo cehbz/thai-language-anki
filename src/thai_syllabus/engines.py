@@ -344,6 +344,38 @@ def convert_wiktionary(ipa: str) -> tuple[Syllable, ...] | None:
         return None
 
 
+# --- thai-language.com's IPA -> Syllable ------------------------------------
+#
+# The site's IPA (control panel "IPA" mode, ʔ shown) spaces syllables and
+# writes tone as bars: ˧ mid, ˨ low, ˥˩ falling, ˦ high, ˩˥ rising. The
+# rest of the notation is Wiktionary's, so each syllable is rewritten to
+# Wiktionary's tone letters and goes through the same converter.
+
+_TLC_TONE_LETTERS = {"˧": "˧", "˨": "˨˩", "˥˩": "˥˩", "˦": "˦˥", "˩˥": "˩˩˦"}
+_TLC_TONE_TAIL = re.compile(r"^(.*?)([˥˦˧˨˩]+)$")
+
+
+def _convert_thai_language_com_syllable(group: str) -> Syllable:
+    m = _TLC_TONE_TAIL.match(group)
+    letters = _TLC_TONE_LETTERS.get(m.group(2)) if m else None
+    if letters is None:
+        raise _ConvertError(f"unknown tone bars in {group!r}")
+    return _convert_wiktionary_syllable(m.group(1) + letters)
+
+
+def convert_thai_language_com(ipa: str) -> tuple[Syllable, ...] | None:
+    """Convert one thai-language.com IPA string to Syllables. Never
+    raises: None for anything unmappable, and for an empty string."""
+    groups = ipa.split()
+    if not groups:
+        return None
+    try:
+        return without_glottal_coda(
+            tuple(_convert_thai_language_com_syllable(g) for g in groups))
+    except _ConvertError:
+        return None
+
+
 _WIKTIONARY_ROW = re.compile(r"<tr>.*?</tr>", re.DOTALL)
 _WIKTIONARY_IPA_SPAN = re.compile(r'<span class="IPA">/([^/<]+)/</span>')
 # The rendered page's language headings: `<h2 id="Thai">`, inside a
@@ -586,3 +618,4 @@ def rule_tone(word: str) -> Tone | None:
     else:
         live = final in _SONORANT_FINALS
     return tone_of(cls, live, bool(long_v), mark)
+

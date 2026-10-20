@@ -1902,3 +1902,24 @@ def test_an_api_drafter_keeps_the_judges_price_when_the_judge_is_on_cli(cfg, db,
                                              price_per_mtok=(2.0, 10.0)),
                            drafter=DrafterConfig(transport="api"))
     assert build_provider(cfg2, db, media_store)._backends["llm-sentence"].price == Price(2.0, 10.0)
+
+
+def test_build_sourcing_wires_thai_language_com_beside_wiktionary(tmp_path):
+    from thai_syllabus.thailanguagecom import ThaiLanguageCom
+    root = _minimal_deck(tmp_path)
+    providers = root / "curated" / "providers.yaml"
+    providers.write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n",
+        encoding="utf-8")
+    ctx = build_sourcing(root)
+    assert isinstance(ctx.thai_language_com, ThaiLanguageCom)
+    assert ctx.thai_language_com._max_asks == 30
+    assert ctx.thai_language_com.user_agent == "thai-syllabus/0.1"
+    providers.write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas: {thai-language.com: {max_asks: 7}}\n", encoding="utf-8")
+    assert build_sourcing(root).thai_language_com._max_asks == 7
+    providers.write_text(
+        "imgfetch_path: /opt/bin/imgfetch\naudiofetch_path: /opt/bin/audiofetch\n"
+        "quotas: {thai-language.com: {max_asks: null}}\n", encoding="utf-8")
+    assert build_sourcing(root).thai_language_com._max_asks is None

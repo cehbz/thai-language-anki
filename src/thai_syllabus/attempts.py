@@ -61,6 +61,7 @@ from .derivations import (
     vetoed,
 )
 from .dictionary import Wiktionary
+from .thailanguagecom import ThaiLanguageCom
 from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, LETTER_NAMES_CATEGORY,
                        MinimalPair, Pronunciation, Sentence, Target, Word, _same_form,
                        clauses_to_json, element_word, is_corroborated)
@@ -292,6 +293,9 @@ class Sourcing:
     # its `begin_run()` at the top of every pass, so what goes here owes
     # more than a lookup, and a test's stand-in must offer both.
     dictionary: "Wiktionary | None" = None
+    # thai-language.com, the second dictionary backend: wired beside
+    # Wiktionary and not yet consumed by any fold.
+    thai_language_com: "ThaiLanguageCom | None" = None
     # The adoption pass (spec 3 r40 section 5): whether this run adopts
     # the repo's consonant inventory at all, and the table it reads. A
     # caller that does not want the 44 rows written into its deck (a test

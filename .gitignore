@@ -49,5 +49,5 @@ docs/handoff-*.md
 *.key
 secrets.yaml
 
-# thai-language.com scrape (copyrighted; scripts/fetch_paiboon.py)
+# thai-language.com scrape (copyrighted; scripts/import_paiboon.py)
 data/paiboon/

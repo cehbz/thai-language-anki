@@ -49,7 +49,9 @@ from .curated import (
     rulebook_file_text,
 )
 from .derivations import DEFAULT_REQUERY_CAP, DEFAULT_SENTENCE_NOTHING_CAP, current_best, need_sources
+from . import thailanguagecom
 from .dictionary import DEFAULT_MAX_ASKS, DEFAULT_USER_AGENT, Wiktionary
+from .thailanguagecom import ThaiLanguageCom
 from .entities import MinimalPair, Sentence, Target, Word
 from .ids import ConfusionId, PairId, TargetId, WordId, sentence_cloze_key
 from .media import Provenance, Recording, Speaker
@@ -765,7 +767,7 @@ def build_sourcing(deck_root: str | Path, cfg: ProvidersConfig | None = None) ->
         # pythainlp/torch. The dictionary IS wired here -- it holds no
         # model, only this deck's record and a `requests` session.
         curated_dir=root / "curated", engines=None,
-        dictionary=_wiktionary(cfg, db))
+        dictionary=_wiktionary(cfg, db), thai_language_com=_thai_language_com(cfg, db))
     return ctx
 
 
@@ -782,6 +784,17 @@ def _wiktionary(cfg: ProvidersConfig, db: SyllabusDb) -> Wiktionary:
     contact = cfg.wiktionary_contact
     agent = f"{DEFAULT_USER_AGENT} ({contact})" if contact else DEFAULT_USER_AGENT
     return Wiktionary(db, min_interval_s=interval, max_asks=max_asks, user_agent=agent)
+
+
+def _thai_language_com(cfg: ProvidersConfig, db: SyllabusDb) -> ThaiLanguageCom:
+    """thai-language.com as a second dictionary on this deck's record.
+    Free and secret-less; the 10 s crawl delay is fixed (robots.txt), and
+    quotas.thai-language.com.max_asks caps forms fetched per run (default
+    50; an explicit null lifts the cap). The user agent carries nothing
+    about the user."""
+    max_asks = cfg.quotas.get(thailanguagecom.SOURCE, {}).get(
+        "max_asks", thailanguagecom.DEFAULT_MAX_ASKS)
+    return ThaiLanguageCom(db, max_asks=max_asks)
 
 
 # --- load_syllabus: curated files + db-backed ports -----------------------
