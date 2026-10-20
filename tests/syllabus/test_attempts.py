@@ -5562,7 +5562,7 @@ def test_the_evidence_pass_asks_both_dictionaries_about_every_deck_form(tmp_path
 def test_the_evidence_pass_gives_the_words_their_settled_readings(tmp_path):
     ctx = _evidence_ctx(tmp_path, word("rice", "ข้าว", syllables=(syl(),)))
     evidence_attempt(ctx)
-    assert ctx.syllabus.word("rice").pron == pron(*KHAAW)
+    assert ctx.syllabus.word("rice").pron == pron(*KHAAW, posterior=pytest.approx(1, abs=1e-3))
 
 
 def test_the_evidence_pass_logs_each_changed_reading_once(tmp_path, caplog):

@@ -12,7 +12,9 @@ reports. A family's accuracy is fitted by EM over every form two or more
 families read; a member's accuracy is scored only against the posterior
 from the other families, so co-family members never vouch for each
 other. A report of several readings (a Wiktionary entry listing spoken
-variants) is a set that matches any of its values.
+variants) is a set that matches any of its values. Every form's fit
+carries an implicit value no member reported (OTHER), so a value one
+family alone reports settles at about that family's accuracy.
 
 `evidence_on_record` gathers the evidence; `settle` is the pure fold,
 memoised in-process on the evidence; `settlement_of` is the two over a
@@ -58,6 +60,13 @@ ENGINE_VERSIONS = {"thaig2p": THAIG2P_VERSION, "tltk": TLTK_VERSION,
                    "rule-tone": RULE_TONE_VERSION}
 
 ITERATIONS = 50
+# The implicit candidate every fit carries: a value no member reported.
+# A family's error mass then always has somewhere to go, so agreement
+# scores by the agreeing families' accuracies (one family alone at p
+# gives about p). It never wins: a family's accuracy is at least 0.5, so
+# a reported value scores at least OTHER's, and a tie goes to the
+# reported value.
+OTHER = None
 PRIOR = 0.8
 # A family's fitted accuracy stays within these: below 0.5 it would be
 # read as an anti-oracle, at 1 one family would decide alone.
@@ -174,18 +183,19 @@ class _Fit:
             return self.rep[f][present[0]]
         return self.rep[f][max(present, key=lambda m: self.acc[m])]
 
-    def posterior(self, f: str, families: Iterable[str]) -> dict[tuple, float]:
+    def posterior(self, f: str, families: Iterable[str]) -> dict[tuple | None, float]:
+        """Each candidate value's posterior, and OTHER's (None)."""
         C = self.cand[f]
-        if len(C) < 2:
-            return dict.fromkeys(C, 1.0)    # what the general case computes, cheaply
-        miss = max(len(C) - 1, 1)
-        lp = dict.fromkeys(C, 0.0)
+        if not C:
+            return {}
+        miss = len(C)    # K - 1, K counting OTHER
+        lp = dict.fromkeys([*C, OTHER], 0.0)
         for F in families:
             if F not in self.present[f]:
                 continue
             r = self.family_report(f, F)
             hit, wrong = math.log(self.p[F]), math.log((1 - self.p[F]) / miss)
-            for v in C:
+            for v in lp:
                 lp[v] += hit if v in r else wrong
         top = max(lp.values())
         z = sum(math.exp(x - top) for x in lp.values())
@@ -225,12 +235,13 @@ def settle(evidence: Evidence) -> Settlement:
                       member_accuracy={feature: dict(fit.acc) for feature, fit in fits.items()})
 
 
-def _winner(post: Mapping[tuple, float], count: int | None) -> tuple[tuple, float] | None:
+def _winner(post: Mapping[tuple | None, float], count: int | None) -> tuple[tuple, float] | None:
     """The value of highest posterior (the first in value order on a
     tie), among those of `count` syllables when given: a length or tone
     vector is assembled onto the winning segments, so it must have their
     syllable count."""
-    eligible = [(v, p) for v, p in post.items() if count is None or len(v) == count]
+    eligible = [(v, p) for v, p in post.items()
+                if v is not OTHER and (count is None or len(v) == count)]
     if not eligible:
         return None
     return max(eligible, key=lambda vp: vp[1])

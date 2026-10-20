@@ -126,6 +126,34 @@ def test_the_rule_tone_engine_reports_a_monosyllables_tone():
     assert settle(ev).readings["ข้าว"].syllables == low
 
 
+def _one_wrong_in(n):
+    """`n` background forms the three families read alike but for
+    Wiktionary's segments on one: its fitted accuracy is about 1 - 1/n."""
+    by_form = agreeing(n, WIKT, TLTK, TLC)
+    by_form["f0"][WIKT] = [(S("b", "o", "0"),)]
+    return by_form
+
+
+def test_a_form_one_family_reads_settles_at_about_that_familys_accuracy():
+    """Every fit carries an implicit value no member reported, so a lone
+    family's agreement with itself is not certainty."""
+    by_form = _one_wrong_in(25)
+    by_form["ปา"] = {WIKT: [(S("p", "a", ""),)]}
+    got = settle(Evidence.of(by_form))
+    accuracy = got.accuracy["segments"]["wiktionary"]
+    assert 0.9 < accuracy < 0.99
+    assert got.readings["ปา"].posterior == pytest.approx(accuracy, abs=0.01)
+
+
+def test_two_agreeing_families_settle_above_either_alone():
+    by_form = _one_wrong_in(25)
+    by_form["ปา"] = {WIKT: [(S("p", "a", ""),)]}
+    by_form["ตา"] = {WIKT: [(S("t", "a", ""),)], TLC: [(S("t", "a", ""),)]}
+    got = settle(Evidence.of(by_form)).readings
+    assert got["ตา"].posterior > got["ปา"].posterior
+    assert got["ตา"].posterior > 0.99
+
+
 def test_a_form_with_no_reading_has_no_settlement():
     ev = Evidence.of({"ข้าว": {RULE: ["falling"]}, "ดี": {WIKT: [], TLC: []}})
     assert settle(ev).readings == {}

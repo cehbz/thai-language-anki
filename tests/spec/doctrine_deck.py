@@ -24,7 +24,8 @@ from datetime import date
 from pathlib import Path
 
 from thai_syllabus.authority import ROLE_FOR_KIND
-from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
+from thai_syllabus.cachekeys import (DictionaryKey, JudgeKey, MechanicalKey, ProvideKey,
+                                     rendition_identity)
 from thai_syllabus.curated import CuratedBundle, RulebookConfig, save_curated
 from thai_syllabus.entities import (
     Category, Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Syllable,
@@ -114,6 +115,15 @@ def _golden_pair() -> MinimalPair:
 
 def _golden_sentence() -> Sentence:
     return sentence(((EAT.id, RICE.id),), (EAT, RICE), gloss="eat rice")
+
+
+# thai-language.com's tone bars (engines.convert_thai_language_com).
+_TLC_TONE = {"mid": "˧", "low": "˨", "falling": "˥˩", "high": "˦", "rising": "˩˥"}
+
+
+def _thai_language_com_ipa(pron: Pronunciation) -> str:
+    return " ".join(s.onset + s.vowel + ("ː" if s.vowel_length == "long" else "") + s.coda
+                    + _TLC_TONE[s.tone] for s in pron.syllables)
 
 
 @dataclass
@@ -219,6 +229,16 @@ class DeckBuilder:
         # words.yaml stores no pronunciation (spec 2 r23): each word's is
         # put on the record for load_syllabus to settle again.
         record_pronunciations(db, self.words)
+        # A pair member is settled (E4) by three error families agreeing:
+        # thai-language.com's row joins the two engines'.
+        members = {m for p in self.pairs for m in p.members}
+        for w in self.words:
+            if w.id in members and w.pron is not None and w.pron.posterior >= 0.99:
+                db.append(port="provide", backend="thai-language.com",
+                          key=DictionaryKey("thai-language.com", w.thai),
+                          subject=f"dictionary:{w.thai}", question={"form": w.thai},
+                          answer={"entries": [{"id": "1", "paiboon": "",
+                                               "ipa": [_thai_language_com_ipa(w.pron)]}]})
         media = MediaStore(root / "media")
         shas: list[tuple[str, str]] = []
         for s in self.sentences:

@@ -730,7 +730,7 @@ def test_load_syllabus_gives_each_word_its_forms_settled_reading(tmp_path):
     khaaw = (syl("kʰ", "a", "w", length="long", tone="falling"),)
     on_record(db, "ข้าว", khaaw)                                    # ข้าว: rice
     syllabus = load_syllabus(root, db=db)
-    assert syllabus.word("rice").pron == pron(*khaaw)
+    assert syllabus.word("rice").pron == pron(*khaaw, posterior=pytest.approx(1, abs=1e-3))
     assert syllabus.word("near").pron is None
 
 
