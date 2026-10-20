@@ -25,6 +25,7 @@ gate/forced status and the note/card counts.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -701,6 +702,11 @@ def _word_note(syllabus: "Syllabus", word: Word, carrier: WordId,
     return note, _word_dues(positions.word_index[word.id])
 
 
+def _member_key(pair: MinimalPair, speaker: str, index: int) -> str:
+    """A pair member note's MemberKey, PAIRID:SPEAKER:INDEX, its guid source."""
+    return f"{pair.id}:{speaker}:{index}"
+
+
 def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
                 pictures: Sequence[str], resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> list[tuple[genanki.Note, dict[int, int]]]:
@@ -720,7 +726,7 @@ def _pair_notes(pair: MinimalPair, syllabus: "Syllabus", recordings: tuple,
     for i, member in enumerate(members):
         other_indices = [j for j in range(len(members)) if j != i]
         speaker = recordings[i].speaker.id
-        member_key = f"{pair.id}:{speaker}:{i}"
+        member_key = _member_key(pair, speaker, i)
         tags = ["family::minimal_pair", f"pair::{pair.id}",
                f"confusion::{pair.confusion}", f"member::{i}", f"speaker::{speaker}",
                f"compile::{compile_id}",
@@ -1336,6 +1342,30 @@ def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore"
                      media_files=dict(resolver.used), warnings=tuple(resolver.warnings))
 
 
+def blocked_path(apkg: str | Path) -> Path:
+    """The package's blocked list: the guids of the notes a pair rule's
+    block withholds from it (spec 4 r19), a JSON array beside it."""
+    return Path(apkg).with_suffix(".blocked.json")
+
+
+def blocked_guids(apkg: str | Path) -> tuple[str, ...]:
+    return tuple(json.loads(blocked_path(apkg).read_text(encoding="utf-8")))
+
+
+def _blocked_pair_guids(syllabus: "Syllabus") -> tuple[str, ...]:
+    """The guids every blocked pair's member notes carry under its
+    current rendition, the ones its notes had while it was usable."""
+    usable = {p.id for p in syllabus.usable_pairs}
+    guids: list[str] = []
+    for pair in syllabus.pairs:
+        recordings = syllabus.media.rendition(pair.id)
+        if pair.id in usable or recordings is None:
+            continue
+        guids.extend(_guid("minimal_pair", _member_key(pair, r.speaker.id, i))
+                     for i, r in enumerate(recordings))
+    return tuple(guids)
+
+
 def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore",
                      out_path: str | Path, *, current_rubric: Mapping[str, str],
                      prior: Sequence[str], provenance_source: Callable[[str], str | None],
@@ -1388,6 +1418,10 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     genanki.Package(deck, media_files=media_paths).write_to_file(
         str(tmp_out), timestamp=now())
     _stamp_due(tmp_out, due_by_guid_ord)
+    blocked_out = blocked_path(out_path)
+    blocked_tmp = blocked_out.with_name(blocked_out.name + ".tmp")
+    blocked_tmp.write_text(json.dumps(list(_blocked_pair_guids(syllabus))), encoding="utf-8")
+    os.replace(blocked_tmp, blocked_out)
     os.replace(tmp_out, out_path)  # atomic
 
     compile_report = CompileReport(

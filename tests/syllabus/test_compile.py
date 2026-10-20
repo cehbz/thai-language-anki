@@ -17,7 +17,7 @@ from thai_syllabus.authority import ROLE_FOR_KIND
 from thai_syllabus.cachekeys import JudgeKey, MechanicalKey, ProvideKey, rendition_identity
 from thai_syllabus.compile import (
     CARD_CSS, CLOZE_SLOTS, GateRefusal, SENTENCE_MODEL, STRIDE, WORD_MODEL, _TEMPLATE_DROP_CAUSES,
-    compile_syllabus, thai_cloze,
+    blocked_guids, blocked_path, compile_syllabus, thai_cloze,
 )
 from thai_syllabus.entities import (
     Grapheme, MinimalPair, Pronunciation, REPEAT_MARK, Sentence, SoundConfusion, Syllable,
@@ -827,12 +827,14 @@ def test_pair_notes_use_the_rendition_not_member_recordings(fx):
     assert len({n["fields"]["Speaker"] for n in notes}) == 1
 
 
-def _compile_with_a_blocked_pair(fx, *, force=False):
+def _compile_with_a_blocked_pair(fx, *, force=False, blocked=True, now=None):
     """p1 (near/far) is usable; p2 (near2/far2) has an unsettled member
-    (pair/pronunciation-settled). Both have renditions and pictures."""
+    (pair/pronunciation-settled) while `blocked`. Both have renditions and
+    pictures."""
     near, far = _word("near", "ใกล้", "near", tone="mid"), _word("far", "ไกล", "far", tone="low")
     near2, far2 = _word("near2", "ไม้", "wood", tone="mid"), _word("far2", "ไหม", "silk", tone="low")
-    far2 = dataclasses.replace(far2, pron=dataclasses.replace(far2.pron, posterior=0.5))
+    if blocked:
+        far2 = dataclasses.replace(far2, pron=dataclasses.replace(far2.pron, posterior=0.5))
     confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
                                sounds=("mid", "low"))
     p1 = MinimalPair.create(id=PairId("p1"), confusion=confusion, members=(near, far))
@@ -846,7 +848,8 @@ def _compile_with_a_blocked_pair(fx, *, force=False):
                         rules=_RULES_WITHOUT_COMPLETENESS)
     syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(p1, p2)))
     compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=force,
-                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None,
+                                **({"now": now} if now is not None else {}))
     return syllabus, compiled
 
 
@@ -863,6 +866,26 @@ def test_a_blocked_pair_is_dropped_without_force_and_the_others_compile(fx):
     tags = [n["tags"] for n in pkg["notes"]]
     assert sum("pair::p1" in t for t in tags) == 2
     assert not any("pair::p2" in t for t in tags)
+
+
+def test_the_compile_names_a_blocked_pairs_note_guids_beside_the_package(fx):
+    _syllabus, _compiled = _compile_with_a_blocked_pair(fx)
+    pkg = read_apkg(fx.out_path)
+    assert {n["guid"] for n in pkg["notes"] if "pair::p1" in n["tags"]}.isdisjoint(
+        blocked_guids(fx.out_path))
+    # the guids p2's notes carried while it was usable
+    _compile_with_a_blocked_pair(fx, blocked=False)
+    usable = read_apkg(fx.out_path)
+    p2_guids = {n["guid"] for n in usable["notes"] if "pair::p2" in n["tags"]}
+    assert len(p2_guids) == 2
+    _compile_with_a_blocked_pair(fx)
+    assert set(blocked_guids(fx.out_path)) == p2_guids
+    assert blocked_path(fx.out_path) == fx.out_path.with_suffix(".blocked.json")
+
+
+def test_a_compile_with_no_blocked_pair_names_none(fx):
+    _compile_with_a_blocked_pair(fx, blocked=False)
+    assert blocked_guids(fx.out_path) == ()
 
 
 def test_pair_without_a_rendition_is_dropped_and_counted(fx):

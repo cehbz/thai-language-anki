@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import quota_pacer as qp  # noqa: E402
 
 from thai_syllabus.anki_collection import (CollectionError, ImportCounts,  # noqa: E402
-                                           SyncDemand, SyncKey)
+                                           SyncDemand, SyncKey, WithdrawCounts)
+from thai_syllabus.compile import blocked_path  # noqa: E402
 from thai_syllabus.cachekeys import RunReportKey  # noqa: E402
 from thai_syllabus.curated import PacerConfig  # noqa: E402
 from thai_syllabus.store import SyllabusDb  # noqa: E402
@@ -269,14 +270,15 @@ def test_the_log_line_carries_the_tick_numbers():
 # A tick's start with the collection in step: the opening sync, then the harvest.
 OPEN = ["probe", "open", "sync", "sync_media", "close", "harvest"]
 # A changed deck's import into it, and the closing sync.
-IMPORT = ["compile", "open", "import", "sync", "sync_media", "close"]
+IMPORT = ["compile", "open", "import", "withdraw", "sync", "sync_media", "close"]
 
 
 class Runner:
     """Stands in for subprocess and the deck's collection: the probe writes
     `usage` to the file the environment names; the cycle appends
     `cycle_rows` record rows and returns `cycle_code`; the compile returns
-    `compile_code` with `compile_stdout`; the harvest appends
+    `compile_code` with `compile_stdout` and, on 0, the package's blocked
+    list holding `blocked`; the harvest appends
     `harvest_reviews` study rows and returns `harvest_code` with
     `harvest_stderr`. The collection answers each sync with the next of
     `demands` (NONE once they run out), holds `cards` cards, and raises a
@@ -285,7 +287,7 @@ class Runner:
     def __init__(self, usage=None, probe_code=0, cycle_code=0, stdout="", stderr="",
                  raises=None, cycle_rows=0, compile_code=0, compile_stdout="",
                  harvest_code=0, harvest_stderr="", harvest_reviews=0, demands=(), cards=10,
-                 fails=None):
+                 fails=None, blocked=()):
         self.usage, self.probe_code, self.cycle_code = usage, probe_code, cycle_code
         self.stdout, self.stderr, self.raises = stdout, stderr, raises
         self.cycle_rows = cycle_rows
@@ -294,6 +296,7 @@ class Runner:
         self.harvest_reviews = harvest_reviews
         self.demands, self.cards = list(demands), cards
         self.fails = dict(fails or {})
+        self.blocked = tuple(blocked)
         self.calls = []
         self.usage_path = None
 
@@ -322,6 +325,9 @@ class Runner:
 
     def compile(self, cmd, *, cwd):
         self.calls.append(("compile", cmd, cwd))
+        if self.compile_code == 0:
+            out = Path(cmd[cmd.index("--out") + 1])
+            blocked_path(out).write_text(json.dumps(list(self.blocked)))
         return qp.ProbeResult(self.compile_code, self.compile_stdout, "")
 
     def open_collection(self, path, key):
@@ -362,6 +368,10 @@ class FakeCollection:
     def import_package(self, apkg):
         self._call("import", apkg)
         return ImportCounts(new=3, updated=2, duplicate=7, conflicting=0)
+
+    def withdraw(self, guids):
+        self._call("withdraw", tuple(guids))
+        return WithdrawCounts(suspended=2, unsuspended=1)
 
     def close(self):
         self.runner.calls.append(("close",))
@@ -643,9 +653,10 @@ def test_the_configured_collection_and_endpoint_are_used(tmp_path):
 
 
 def test_a_run_that_changed_the_deck_compiles_imports_and_syncs_again(deck, capsys):
-    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1)
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1, blocked=("g1", "g2"))
     assert run_main(deck, runner) == 0
     assert runner.kinds() == [*OPEN, "cycle", *IMPORT]
+    assert runner.calls[runner.kinds().index("withdraw")][1] == ("g1", "g2")
     _, compile_cmd, cwd = runner.calls[runner.kinds().index("compile")]
     assert compile_cmd == qp.compile_command(deck) and "--force" not in compile_cmd
     assert cwd == qp.REPO
@@ -655,7 +666,8 @@ def test_a_run_that_changed_the_deck_compiles_imports_and_syncs_again(deck, caps
     marks = qp.record_marks(deck)
     assert lines[-2].endswith(
         f" imported {deck / f'{deck.name}.apkg'}: 3 new, 2 updated, 7 unchanged, "
-        f"0 conflicting (record ts {marks.cache_ts}, study ts {marks.study_ts})")
+        f"0 conflicting; 2 suspended, 1 unsuspended "
+        f"(record ts {marks.cache_ts}, study ts {marks.study_ts})")
     assert lines[-1].endswith(" synced")
 
 
@@ -700,6 +712,15 @@ def test_a_failed_import_is_logged_closes_the_collection_and_stays_pending(deck,
     assert run_main(deck, runner) == 0
     assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "close"]
     assert out_lines(capsys)[-1].endswith(" import failed: package is corrupt; not imported")
+    assert not qp.state_path(deck).exists()
+
+
+def test_a_failed_withdrawal_is_logged_closes_the_collection_and_stays_pending(deck, capsys):
+    runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1,
+                    fails={"withdraw": "card is gone"})
+    assert run_main(deck, runner) == 0
+    assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "withdraw", "close"]
+    assert out_lines(capsys)[-1].endswith(" import failed: card is gone; not imported")
     assert not qp.state_path(deck).exists()
 
 
@@ -757,7 +778,7 @@ def test_a_full_sync_demanded_after_the_import_is_logged(deck, capsys):
     runner = Runner(usage=probe_json(**RUN_USAGE), cycle_rows=1,
                     demands=[SyncDemand.NONE, SyncDemand.CONFLICT])
     assert run_main(deck, runner) == 0
-    assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "sync", "close"]
+    assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "withdraw", "sync", "close"]
     assert out_lines(capsys)[-1].endswith(" full sync demanded (conflict); not synced")
     assert qp.read_imported(qp.state_path(deck)) == qp.record_marks(deck)
 
@@ -810,7 +831,7 @@ def test_a_closing_sync_that_fails_is_logged_and_the_import_stands(deck, capsys)
 
     runner.open_collection = open_twice
     assert run_main(deck, runner) == 0
-    assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "sync", "close"]
+    assert runner.kinds() == [*OPEN, "cycle", "compile", "open", "import", "withdraw", "sync", "close"]
     assert out_lines(capsys)[-1].endswith(" sync failed: network is unreachable; not synced")
     assert qp.read_imported(qp.state_path(deck)) == qp.record_marks(deck)
 
@@ -845,7 +866,8 @@ def test_dry_run_prints_the_sync_and_import_it_would_make_without_making_them(de
     assert "harvest: " + " ".join(qp.harvest_command(deck, collection)) in out
     assert "import pending: record ts 7, study ts -1; last imported -1, -1" in out
     assert " ".join(qp.compile_command(deck)) in out
-    assert f"import {deck / f'{deck.name}.apkg'} into {collection}; sync" in out
+    assert (f"import {deck / f'{deck.name}.apkg'} into {collection}; withdraw "
+            f"{deck / f'{deck.name}.blocked.json'}; sync") in out
     assert not qp.state_path(deck).exists()
 
 

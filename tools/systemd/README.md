@@ -21,8 +21,9 @@ systemctl --user enable --now thai-syllabus-pacer@thai-ff.timer thai-syllabus-re
 Each tick syncs the deck's own Anki collection with AnkiWeb (providers.yaml
 `anki`, default `~/decks/<deck>/anki/collection.anki2`) and harvests reviews, flags
 and ReviewNotes from it; after a tick that changed the deck the pacer
-compiles it (never with `--force`), imports it into that collection and
-syncs again (spec 4 §4). Log in to AnkiWeb once so the pacer holds a sync
+compiles it (never with `--force`), imports it into that collection,
+suspends the cards of pairs a pair rule blocks (and unsuspends the ones it
+suspended once the pair is usable) and syncs again (spec 4 §4). Log in to AnkiWeb once so the pacer holds a sync
 key: `uv run thai-syllabus anki-login --deck ~/decks/thai-ff` writes it to the
 owner-only file `anki.sync_key` names. A tick whose sync fails or meets a
 full sync other than the first download, or whose build gate is closed,

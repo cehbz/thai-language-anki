@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 17, proposed 2026-10-20 against principles r8 and architecture
+Revision 19, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -31,6 +31,7 @@ Revision log:
 - r16 2026-10-07: the return path reads the deck's own collection file, and the package is imported into that collection with notetypes merged, the collection synced with AnkiWeb before the harvest and after the import (§4); only a full download into a collection with no cards is taken, any other full sync is logged and the import skipped; AnkiConnect is gone (§5). User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r16).
 - r17 2026-10-20: a Word with no pronunciation (spec 1 r34: no evidence on record) renders an empty Ipa field. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r17).
 - r18 2026-10-20: a pair blocked by pair/pronunciation-settled or pair/exact-confusion (block severity, spec 1 r36) compiles no notes and is counted dropped, reason "blocked: <rule>", without closing the gate; the compile and the pacer proceed without --force and the pair's notes return, same guids, once it is usable. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r18).
+- r19 2026-10-20: a blocked pair's cards already in the deck's collection stop coming up for review: the compile writes beside the package the guids of every blocked pair's member notes (MemberKey guids under its current rendition), and the pacer's import suspends each of their cards not already suspended, marking it in the card's custom data, and unsuspends each marked card whose note the list no longer names, clearing the mark; a card the learner suspended carries no mark and is left alone; reviews and schedule are kept; the import's log line counts the cards suspended and unsuspended (§1, §4). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r19).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -112,9 +113,10 @@ per-member Thai/IPA, ReviewNote, CompileId. Both notes of a pair play the
 pair's current-best rendition (one speaker across members); a pair with
 no rendition compiles no notes and is counted as dropped, as is a pair
 a pair rule blocks (spec 1 r36; reason "blocked: pair/pronunciation-settled"
-or "blocked: pair/exact-confusion"); its notes are absent from the package
-and its cards already in the learner's collection are left as they were,
-reviews intact, until the pair is usable again. First field =
+or "blocked: pair/exact-confusion"); its notes are absent from the package,
+and its cards already in the learner's collection are suspended at the
+import, reviews and schedule intact, until the pair is usable again (r19,
+§4). First field =
 MemberKey "PAIRID:SPEAKER:INDEX" (unique; the guid source; r14: the
 back's script reads the stimulus's index from it, nothing else reads
 it back). Back shows both members, marks the stimulus ("played:"), each
@@ -270,6 +272,17 @@ plays. CSS retains only final fit-to-viewport.
   harvest reading what is local; a failed sync skips the import the same
   way. A merged notetype change modifies the collection's schema, so the
   sync after that import demands a full sync.
+- **A blocked pair's cards** (r19): the compile writes, beside the
+  package (`<name>.blocked.json`), the guids of every blocked pair's
+  member notes, MemberKey guids under the pair's current rendition. After
+  the import the pacer suspends every card of a named note that is not
+  suspended, marking it withdrawn in the card's custom data (key
+  `blocked`), and unsuspends every marked card whose note is no longer
+  named, clearing the mark. A card the learner suspended carries no mark
+  and stays as the learner left it, the pair blocked or not. Suspension
+  keeps the card's reviews and schedule. The mark is on the card, not a
+  note tag, because the import replaces an updated note's tags. The
+  import's log line counts the cards suspended and unsuspended.
 - **Revlog import**: read the deck's collection file read-only — Anki's
   current schema keeps notetypes in tables; an .apkg's own collection
   (the legacy schema keeps them in `col.models`) is read too;

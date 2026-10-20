@@ -34,7 +34,9 @@ record's newest cache row (run's own report rows aside) or newest study
 row is newer than the ones the last successful import compiled from, kept
 in <deck>/work/pacer-import.json. A pending import compiles
 <deck>/<deck name>.apkg without `--force`, imports it into the
-collection, and syncs again. A closed gate or a failed import is a log
+collection, suspends the cards of the notes its blocked list names and
+unsuspends the ones it suspended whose notes the list no longer names
+(spec 4 r19), and syncs again. A closed gate or a failed import is a log
 line and leaves the import pending for the next tick; none changes the
 exit code. The collection is open only during the two syncs and the
 import, so the harvest and the cycle run with it closed.
@@ -56,12 +58,14 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 import yaml
 
 from thai_syllabus import anki_collection
-from thai_syllabus.anki_collection import CollectionError, ImportCounts, SyncDemand, SyncKey
+from thai_syllabus.anki_collection import (CollectionError, ImportCounts, SyncDemand, SyncKey,
+                                           WithdrawCounts)
+from thai_syllabus.compile import blocked_guids, blocked_path
 from thai_syllabus.curated import (AnkiConfig, CuratedValidationError, PacerConfig,
                                    ProvidersConfig, load_providers_config)
 from thai_syllabus.secrets import SecretError, resolve_secret
@@ -124,7 +128,8 @@ CompileRunner = Callable[..., ProbeResult]
 class Collection(Protocol):
     """What a tick needs of the deck's Anki collection, open: a sync that
     answers the full sync the server demands, a full download, a media
-    sync, its card count, an import, a close. Failures raise
+    sync, its card count, an import, a blocked pair's cards withdrawn,
+    a close. Failures raise
     CollectionError."""
 
     def sync(self) -> SyncDemand: ...
@@ -132,6 +137,7 @@ class Collection(Protocol):
     def sync_media(self) -> None: ...
     def card_count(self) -> int: ...
     def import_package(self, apkg: Path) -> ImportCounts: ...
+    def withdraw(self, guids: Iterable[str]) -> WithdrawCounts: ...
     def close(self) -> None: ...
 
 
@@ -485,11 +491,12 @@ def reimport(deck: Path, anki: DeckAnki, *, compile_runner: CompileRunner) -> No
     try:
         try:
             counts = collection.import_package(apkg)
+            withdrawn = collection.withdraw(blocked_guids(apkg))
         except CollectionError as exc:
             _say(f"import failed: {exc}; not imported")
             return
         write_imported(state, newest)
-        _say(f"imported {apkg}: {counts} (record ts {newest.cache_ts}, "
+        _say(f"imported {apkg}: {counts}; {withdrawn} (record ts {newest.cache_ts}, "
              f"study ts {newest.study_ts})")
         try:
             demand = collection.sync()
@@ -518,7 +525,8 @@ def dry_run_anki(deck: Path, cfg: PacerConfig, anki: AnkiConfig) -> None:
     _say(f"import {status}: record ts {newest.cache_ts}, study ts {newest.study_ts}; "
          f"last imported {imported.cache_ts}, {imported.study_ts}")
     print(" ".join(compile_command(deck)), flush=True)
-    print(f"import {package_path(deck)} into {path}; sync", flush=True)
+    print(f"import {package_path(deck)} into {path}; withdraw "
+          f"{blocked_path(package_path(deck))}; sync", flush=True)
 
 
 def _subprocess_capture(cmd: list[str], *, cwd: Path) -> ProbeResult:

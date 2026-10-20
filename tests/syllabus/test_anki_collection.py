@@ -13,9 +13,9 @@ from anki.sync_pb2 import MediaSyncStatusResponse, SyncAuth
 
 from thai_syllabus import anki_collection as ac
 from thai_syllabus.anki_import import read_collection_file
-from thai_syllabus.compile import compile_syllabus
+from thai_syllabus.compile import blocked_guids, compile_syllabus
 
-from .test_compile import Fixture, _fully_seeded
+from .test_compile import Fixture, _compile_with_a_blocked_pair, _fully_seeded
 
 NO_PROVENANCE = dict(current_rubric={}, prior=(), provenance_source=lambda sha: None)
 KEY = ac.SyncKey(hkey="k3y", endpoint=None)
@@ -95,6 +95,113 @@ def test_a_reimport_leaves_an_existing_cards_due_alone(package, tmp_path):
 def test_the_import_counts_read_as_a_log_phrase():
     assert str(ac.ImportCounts(new=3, updated=2, duplicate=7, conflicting=1)) == (
         "3 new, 2 updated, 7 unchanged, 1 conflicting")
+
+
+# --- a blocked pair's cards, suspended and back ------------------------------
+
+_SCHEDULE = "c.type, c.queue, c.due, c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue"
+
+
+def _pair_cards(path):
+    """guid -> (card id, its schedule columns), one card per pair note."""
+    conn = sqlite3.connect(path)
+    try:
+        return {guid: (cid, rest) for guid, cid, *rest in conn.execute(
+            f"select n.guid, c.id, {_SCHEDULE} from cards c join notes n on n.id = c.nid "
+            "where n.tags like '%family::minimal_pair%'")}
+    finally:
+        conn.close()
+
+
+def _revlog(path):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("select * from revlog order by id").fetchall()
+    finally:
+        conn.close()
+
+
+def _review_every_card(path):
+    """Gives every card a review: a revlog row and a review schedule."""
+    conn = sqlite3.connect(path)
+    with conn:
+        for i, (cid,) in enumerate(conn.execute("select id from cards").fetchall()):
+            conn.execute("update cards set type = 2, queue = 2, due = ?, ivl = 3, "
+                         "factor = 2500, reps = 1 where id = ?", (40 + i, cid))
+            conn.execute("insert into revlog values (?, ?, -1, 3, 3, 0, 2500, 4000, 1)",
+                         (1_790_000_000_000 + i, cid))
+    conn.close()
+
+
+def _queue(path, card):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("select queue from cards where id = ?", (card,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _suspend_by_hand(path, card):
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.execute("update cards set queue = -1 where id = ?", (card,))
+    conn.close()
+
+
+def _import(path, package):
+    collection = ac.open_collection(path, KEY)
+    try:
+        collection.import_package(package)
+    finally:
+        collection.close()
+
+
+def _withdraw(path, guids):
+    collection = ac.open_collection(path, KEY)
+    try:
+        return collection.withdraw(guids)
+    finally:
+        collection.close()
+
+
+def test_a_blocked_pairs_cards_are_suspended_and_return_when_it_is_usable(tmp_path):
+    fx = Fixture(tmp_path)
+    path = tmp_path / "anki" / "collection.anki2"
+    _compile_with_a_blocked_pair(fx, blocked=False, now=lambda: 1_790_000_000)
+    _import(path, fx.out_path)
+    _review_every_card(path)
+    before, history = _pair_cards(path), _revlog(path)
+
+    _compile_with_a_blocked_pair(fx, now=lambda: 1_790_000_100)
+    blocked = blocked_guids(fx.out_path)
+    assert len(blocked) == 2 and set(blocked) <= set(before)
+    by_hand, withdrawn = sorted(blocked)
+    _suspend_by_hand(path, before[by_hand][0])
+    _import(path, fx.out_path)
+    counts = _withdraw(path, blocked)
+
+    assert (counts.suspended, counts.unsuspended) == (1, 0)
+    suspended = {guid for guid, (cid, _) in _pair_cards(path).items()
+                 if _queue(path, cid) == -1}
+    assert suspended == set(blocked)
+    assert _withdraw(path, blocked) == ac.WithdrawCounts(0, 0)
+
+    _compile_with_a_blocked_pair(fx, blocked=False, now=lambda: 1_790_000_200)
+    assert blocked_guids(fx.out_path) == ()
+    _import(path, fx.out_path)
+    counts = _withdraw(path, blocked_guids(fx.out_path))
+
+    assert (counts.suspended, counts.unsuspended) == (0, 1)
+    after = _pair_cards(path)
+    assert _queue(path, after[by_hand][0]) == -1
+    assert {g: v for g, v in after.items() if g != by_hand} == {
+        g: v for g, v in before.items() if g != by_hand}
+    assert _revlog(path) == history
+    assert _withdraw(path, ()) == ac.WithdrawCounts(0, 0)
+
+
+def test_the_withdrawal_counts_read_as_a_log_phrase():
+    assert str(ac.WithdrawCounts(suspended=2, unsuspended=1)) == "2 suspended, 1 unsuspended"
 
 
 # --- the sync, against a fake of anki's Collection ---------------------------

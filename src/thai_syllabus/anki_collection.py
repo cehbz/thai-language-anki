@@ -17,31 +17,49 @@ when the package's is newer, a new card arrives with the package's due
 and an existing (guid, ord) is left as it is, and deck presets are not
 imported.
 
+A blocked pair's cards are withdrawn (`withdraw`, spec 4 r19): suspended
+and marked in their custom data, then unsuspended and unmarked once their
+notes are no longer named; a card suspended by hand carries no mark.
+
 Every failure the library raises (anki.errors.AnkiException) leaves as a
 CollectionError carrying Anki's message.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from anki.collection import Collection, ImportAnkiPackageOptions, ImportAnkiPackageRequest
+from anki.consts import QUEUE_TYPE_SUSPENDED
 from anki.errors import AnkiException
 from anki.import_export_pb2 import ImportAnkiPackageUpdateCondition
 from anki.sync import SyncOutput
 from anki.sync_pb2 import SyncAuth
 
 MEDIA_POLL_SECONDS = 0.25
+# The custom-data key on a card withdraw() suspended (Anki caps keys at 8 bytes).
+WITHDRAWN = "blocked"
 
 _IF_NEWER = ImportAnkiPackageUpdateCondition.IMPORT_ANKI_PACKAGE_UPDATE_CONDITION_IF_NEWER
 IMPORT_OPTIONS = ImportAnkiPackageOptions(
     merge_notetypes=True, update_notes=_IF_NEWER, update_notetypes=_IF_NEWER,
     with_scheduling=True, with_deck_configs=False)
+
+
+def _marked(card: Any, withdrawn: bool) -> Any:
+    """`card` with the withdrawn mark set in, or cleared from, its custom data."""
+    data = json.loads(card.custom_data or "{}")
+    data.pop(WITHDRAWN, None)
+    if withdrawn:
+        data[WITHDRAWN] = 1
+    card.custom_data = json.dumps(data, separators=(",", ":")) if data else ""
+    return card
 
 
 class CollectionError(Exception):
@@ -82,6 +100,17 @@ class ImportCounts:
     def __str__(self) -> str:
         return (f"{self.new} new, {self.updated} updated, {self.duplicate} unchanged, "
                 f"{self.conflicting} conflicting")
+
+
+@dataclass(frozen=True)
+class WithdrawCounts:
+    """A withdrawal's cards: suspended, and unsuspended as their notes
+    return."""
+    suspended: int = 0
+    unsuspended: int = 0
+
+    def __str__(self) -> str:
+        return f"{self.suspended} suspended, {self.unsuspended} unsuspended"
 
 
 class DeckCollection:
@@ -132,6 +161,32 @@ class DeckCollection:
             raise CollectionError(str(exc)) from None
         return ImportCounts(new=len(log.new), updated=len(log.updated),
                             duplicate=len(log.duplicate), conflicting=len(log.conflicting))
+
+    def withdraw(self, guids: Iterable[str]) -> WithdrawCounts:
+        """Suspends every card of the notes `guids` names that is not
+        suspended, marking it withdrawn in its custom data, and
+        unsuspends every withdrawn card whose note is no longer named,
+        clearing the mark. A card suspended by hand carries no mark and
+        is left as it is; suspension keeps a card's schedule and reviews."""
+        named = set(guids)
+        col = self._col
+        try:
+            rows = col.db.all("select c.id, c.queue, n.guid from cards c "
+                              "join notes n on n.id = c.nid")
+            marked = set(col.find_cards(f"has-cd:{WITHDRAWN}"))
+            suspend = [cid for cid, queue, guid in rows
+                       if guid in named and queue != QUEUE_TYPE_SUSPENDED]
+            restore = [cid for cid, _queue, guid in rows
+                       if cid in marked and guid not in named]
+            if suspend:
+                col.update_cards([_marked(col.get_card(cid), True) for cid in suspend])
+                col.sched.suspend_cards(suspend)
+            if restore:
+                col.sched.unsuspend_cards(restore)
+                col.update_cards([_marked(col.get_card(cid), False) for cid in restore])
+        except AnkiException as exc:
+            raise CollectionError(str(exc)) from None
+        return WithdrawCounts(suspended=len(suspend), unsuspended=len(restore))
 
     def close(self) -> None:
         self._col.close()
