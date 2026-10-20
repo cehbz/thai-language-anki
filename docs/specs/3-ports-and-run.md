@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 68, proposed 2026-10-20 against principles r8 and architecture
+Revision 69, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -230,6 +230,7 @@ Revision log:
 - r66 2026-10-07: the mechanical recording check's floor is 0.1 s (was 0.2), measured on the conditioned clip (spec 1 r33); a clip refused at ingest for holding no speech is a failed fetch that caches no answer, so a later attempt asks the source again (a tts key is voice and text, so a cached refusal would answer that ask forever); a learner supply of one is refused with the reason and appends no row. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r66).
 - r67 2026-10-07: the pacer carries reviews in and the deck out through the deck's own Anki collection, synced with AnkiWeb, in place of AnkiConnect and the Mac's collection file (architecture r6, spec 4 r16), and a systemd timer runs it. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r67).
 - r68 2026-10-20: every oracle's reading of a form is a record row -- the local engines per form and engine version, Wiktionary, and thai-language.com, a new dictionary backend (one lookup per form ever, 10 s apart, at most `quotas.thai-language.com.max_asks` (30) a run, `DictionaryKey(source="thai-language.com", form)`, its entry IPA kept only when the entry's headword is the form) -- and the judge's newest pronunciation verdict on the form under the current rubric; an evidence pass records them each run; the settlement (§6) is a family-level Dawid–Skene one-coin fit per feature over three error families (Wiktionary: Wiktionary, thaig2p; spelling rules: tltk, the rule tone engine, the judge; thai-language.com), a multi-reading report a set that matches any of its values, derived and never written (memoised in-process on the hash of the evidence), a change to a form's settled reading logged once by the run, which fits before and after its evidence pass, a form settled when every feature's winning posterior reaches the threshold of pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99, spec 1 r34); adjudication is removed (no pronunciation ask for deck Words, no words.yaml rewrite, RunReport `adjudicated` and `stayed_disputed` gone); the grapheme pass seeds no pronunciation; the pair search reads settled readings, gathers dictionary evidence only for the outside forms it selects and adopts a pair only when every member is settled and its spoken witness (Wiktionary) does not dissent, which it does only when no listed reading matches the settled one on a feature; a word whose spoken witness dissents is logged every run and counted `spoken_dissent`. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r68).
+- r69 2026-10-20: the settlement is fitted over the forms in hand, not over all the evidence on record: the loader and the evidence pass fit over the deck's Words' forms, the pair search over those and its frequency pool; the result is memoised on the hash of the evidence fitted. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r69).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -897,9 +898,12 @@ need, sourced and judged as a word's (picture-for-word), Target or not
   members of a family add no votes; a member's accuracy is scored only
   against the posterior from the other families; each engine version
   is a member. A report of several readings (a Wiktionary entry listing
-  spoken variants) is a set and matches any of its values. The weights are fitted over all the evidence on record
-  and the result is memoised in-process on the hash of that evidence,
-  recomputed each run from the readings on record and never written. A form's settled reading is
+  spoken variants) is a set and matches any of its values. The weights
+  are fitted over the readings on record of the forms in hand (r69): the
+  loader and the evidence pass fit over the deck's Words' forms, the pair
+  search over those and its frequency pool. The result is memoised
+  in-process on the hash of the evidence fitted, recomputed each run from
+  the readings on record and never written. A form's settled reading is
   each feature's winner, carrying the least winning posterior; it is
   **settled** when that posterior is at least the threshold of
   pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99,
