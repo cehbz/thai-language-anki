@@ -75,6 +75,7 @@ Revision log:
 - r33 2026-10-07: a Recording's bytes are conditioned before they are hashed: a clip in which voice activity detection finds no speech (Silero VAD: no window's speech probability reaches 0.25) is refused at ingest; leading and trailing audio more than 40 dB below the clip's own peak is trimmed, 50 ms kept at each end, inner silence untouched; loudness is normalized to −20 LUFS by linear gain, true peak held below −1.5 dBTP. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 1 r33).
 - r34 2026-10-20: Word.pron is derived, the settled reading of its form (spec 3 §6 settlement), None with no evidence on record, one reading per form; Pronunciation is syllables, the least winning posterior over its features and spoken_dissent, Corroboration removed; E4's rule is pair/pronunciation-settled (a member settled, its posterior at least the rule's rulebook threshold, default 0.99, and its spoken witness not dissenting), replacing pair/pronunciation-corroborated. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r34).
 - r35 2026-10-20: a pair's exact confusion is re-checked on loaded data by pair/exact-confusion (check, error; blocks pair membership) over the members' settled readings, which can drift out of the pair's contrast as evidence arrives (r34); a member with no reading is pair/pronunciation-settled's finding; a pair either pair rule blocks does not count toward its confusion's pair count, so the pair search refills the slot; this reverses r19's "no rule re-checks loaded data". User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r35).
+- r36 2026-10-20: a fourth severity, block, is for a finding that blocks its subject and not the deck: it leaves the gate open and the finding stays in the report; pair/pronunciation-settled and pair/exact-confusion are block (they were error, so one drifted pair stopped every compile, the pacer's included); compile drops the cards of a pair they block (spec 4 r18). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r36).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -425,7 +426,7 @@ study record; the aggregate has no storage dependency.
 Rule
   id: str                           # e.g. "pair/rendition-required"
   principle: str                    # e.g. "F1" — traceability, required
-  severity: Literal[error, warn, info]
+  severity: Literal[error, block, warn, info]
   shape: check | measure | judged
 ```
 
@@ -455,7 +456,9 @@ rule only where the loader does not construct through the checking path
 can change after construction (a pair's settled readings, r35).
 
 Severity: error findings close the gate (compile refuses, spec 4 §2);
-warn and info ship as declared warnings. Per-deck severity overrides live
+block findings leave the gate open and block their subject (compile drops
+a blocked pair's cards, counted, spec 4 r18, and brings them back once it
+is usable); warn and info ship as declared warnings. Per-deck severity overrides live
 in rulebook.yaml `severities`; that and `compile --force` are the only
 relaxation paths. Judged rules' rubric texts live in rulebook.yaml
 `rubrics`.
@@ -468,7 +471,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | A2, A5, A6, A7, A8 | compile |
 | A3 | card/unique-front (check, error) |
 | A4 | compile (a missing artifact drops the card, counted) |
-| F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); coverage/sound-stage (measure: confusions at their weight-proportional pair count, graphemes whose keyword has a picture, recited-name words with a chart cell; value the least of the three); one speaker per rendition by construction; pair/exact-confusion (check, error; blocks pair membership: every pair's members' settled readings differ in exactly its confusion, `exact_confusion_violation`; a member with no reading is E4's; r35); a pair either pair rule blocks counts toward no confusion's pair count |
+| F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); coverage/sound-stage (measure: confusions at their weight-proportional pair count, graphemes whose keyword has a picture, recited-name words with a chart cell; value the least of the three); one speaker per rendition by construction; pair/exact-confusion (check, block; blocks pair membership: every pair's members' settled readings differ in exactly its confusion, `exact_confusion_violation`; a member with no reading is E4's; r35); a pair either pair rule blocks counts toward no confusion's pair count |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: no adopted sentence fills it), target/sentences-wanted (check, warn: some adopted sentence fills it, fewer than its `sentences`, r30), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
@@ -478,7 +481,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F11 | by construction: current-best ranks judged candidates only |
 | E1 | compile: a grapheme card before the first Reading card that needs it; Thai and IPA gated on the item being read (§3 Staging, spec 4 §1, §2) |
 | E3 | sentence/register-natural (judged); the speaker marking holds at sourcing (spec 3 §5) |
-| E4 | pair/pronunciation-settled (check, error; blocks pair membership: every member's pronunciation settled -- its posterior at least the rule's threshold, rulebook.yaml `thresholds`, default 0.99 -- and its spoken_dissent false) |
+| E4 | pair/pronunciation-settled (check, block; blocks pair membership: every member's pronunciation settled -- its posterior at least the rule's threshold, rulebook.yaml `thresholds`, default 0.99 -- and its spoken_dissent false) |
 | E5 | word/classifier-known (check, warn, nouns) |
 | E7 | coverage/speakers (measure: per audio corpus — word recordings, renditions, sentence recordings — distinct speakers per sex, age band and region against rulebook targets; unknown never counts) |
 | F4, F9, F10, F12, F13, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule; F13's retirement is the run's (spec 3 §5) |

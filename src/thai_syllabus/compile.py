@@ -1203,10 +1203,18 @@ def _word_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
 
 def _pair_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
                 positions: _Positions) -> Iterator[Built | DroppedCard]:
-    """Per pair: its member notes, or one DroppedCard when it has no
-    rendition or a member has no current-best picture (spec 4 r13)."""
+    """Per pair: its member notes, or one DroppedCard when a pair rule
+    blocks it (spec 1 r36), it has no rendition or a member has no
+    current-best picture (spec 4 r13)."""
+    usable = {p.id for p in syllabus.usable_pairs}
     for pair in syllabus.pairs:
         if pair.id not in positions.entry_index:
+            continue
+        if pair.id not in usable:
+            rule = ("pair/pronunciation-settled" if syllabus.pair_violation(pair) is None
+                    else "pair/exact-confusion")
+            yield DroppedCard(family="minimal_pair", kind="Recognition",
+                              subject=pair.id, reason=f"blocked: {rule}")
             continue
         recordings = syllabus.media.rendition(pair.id)
         if recordings is None:

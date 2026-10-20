@@ -37,7 +37,7 @@ from .run import parse_day_starts
 from .secrets import SecretStore
 from .tts import FEMALE_VOICES, MALE_VOICES
 
-_SEVERITIES = {"error", "warn", "info"}
+_SEVERITIES = {"error", "block", "warn", "info"}
 
 # Repo data/ directory: project input data outside curated/*.yaml (the
 # same directory frequency_th.txt and word_list_th.yaml live in). Resolved

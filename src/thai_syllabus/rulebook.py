@@ -582,7 +582,7 @@ def _check_pair_pronunciation_settled(syllabus: "Syllabus") -> list[Finding]:
 
 
 PAIR_PRONUNCIATION_SETTLED = Rule(id="pair/pronunciation-settled", principle="E4",
-                                  severity="error", shape="check",
+                                  severity="block", shape="check",
                                   check=_check_pair_pronunciation_settled)
 
 
@@ -598,7 +598,7 @@ def _check_pair_exact_confusion(syllabus: "Syllabus") -> list[Finding]:
 
 
 PAIR_EXACT_CONFUSION = Rule(id="pair/exact-confusion", principle="F1",
-                            severity="error", shape="check",
+                            severity="block", shape="check",
                             check=_check_pair_exact_confusion)
 
 

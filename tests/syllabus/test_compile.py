@@ -827,6 +827,44 @@ def test_pair_notes_use_the_rendition_not_member_recordings(fx):
     assert len({n["fields"]["Speaker"] for n in notes}) == 1
 
 
+def _compile_with_a_blocked_pair(fx, *, force=False):
+    """p1 (near/far) is usable; p2 (near2/far2) has an unsettled member
+    (pair/pronunciation-settled). Both have renditions and pictures."""
+    near, far = _word("near", "ใกล้", "near", tone="mid"), _word("far", "ไกล", "far", tone="low")
+    near2, far2 = _word("near2", "ไม้", "wood", tone="mid"), _word("far2", "ไหม", "silk", tone="low")
+    far2 = dataclasses.replace(far2, pron=dataclasses.replace(far2.pron, posterior=0.5))
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    p1 = MinimalPair.create(id=PairId("p1"), confusion=confusion, members=(near, far))
+    p2 = MinimalPair.create(id=PairId("p2"), confusion=confusion, members=(near2, far2))
+    for pair, ids in ((p1, ("near", "far")), (p2, ("near2", "far2"))):
+        fx.seed_rendition(pair, {m: m for m in ids})
+        for m in ids:
+            fx.seed_picture(m, m)
+    syllabus = Syllabus(words=(near, far, near2, far2), pairs=(p1, p2), confusions=(confusion,),
+                        profile=Profile(register="male_colloquial"),
+                        rules=_RULES_WITHOUT_COMPLETENESS)
+    syllabus = dataclasses.replace(syllabus, media=_DbMediaIndex(db=fx.db, pairs=(p1, p2)))
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path, force=force,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+    return syllabus, compiled
+
+
+def test_a_blocked_pair_is_dropped_without_force_and_the_others_compile(fx):
+    syllabus, compiled = _compile_with_a_blocked_pair(fx)
+    report = syllabus.report()
+    assert report.gate is True
+    assert [f.rule for f in report.findings] == ["pair/pronunciation-settled"]
+    assert compiled.report.gate is True and compiled.report.forced is False
+    assert compiled.report.dropped == (
+        DroppedCard(family="minimal_pair", kind="Recognition", subject="p2",
+                   reason="blocked: pair/pronunciation-settled"),)
+    pkg = read_apkg(fx.out_path)
+    tags = [n["tags"] for n in pkg["notes"]]
+    assert sum("pair::p1" in t for t in tags) == 2
+    assert not any("pair::p2" in t for t in tags)
+
+
 def test_pair_without_a_rendition_is_dropped_and_counted(fx):
     compiled, _shas, notes = _compile_pair(fx, with_rendition=False)
     assert notes == []

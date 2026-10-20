@@ -312,14 +312,14 @@ def test_an_unsettled_pronunciation_off_a_pair_blocks_no_card(tmp_path):
     assert "rice" in {subject for subject, _, _ in cards(deck(b), "Production")}
 
 
-def test_an_unsettled_pronunciation_on_a_pair_member_closes_the_gate(tmp_path):
+def test_an_unsettled_pronunciation_on_a_pair_member_blocks_its_pair_not_the_gate(tmp_path):
     """Pair validity is computed from the settled pronunciations, so there
     and only there settlement is load-bearing.
     """
     b = _with_unsettled(DeckBuilder(tmp_path), "near")
     rep = report(b)
     assert "pair/pronunciation-settled" in {f.rule for f in rep.findings}
-    assert rep.gate is False
+    assert rep.gate is True
 
 
 # --- Doctrine: a learner's answer is final (F9) ---

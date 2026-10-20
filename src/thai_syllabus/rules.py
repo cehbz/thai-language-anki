@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Severity = Literal["error", "warn", "info"]
+Severity = Literal["error", "block", "warn", "info"]
 RuleShape = Literal["check", "measure", "judged", "compile"]
 OrderKind = Literal["word_target", "pair", "sentence"]
 
@@ -92,7 +92,8 @@ class DroppedCard:
     missing (spec 4 section 3's "never an empty front" -- reason starts
     "no current-best ", or is "no name word"/"no name recording" for a
     grapheme, "no rendition" for a minimal pair), or the staging holds it
-    back (spec 4 r13 -- reason starts "staged: ").
+    back (spec 4 r13 -- reason starts "staged: "), or a pair rule blocks
+    a minimal pair (spec 1 r36 -- reason starts "blocked: ").
     """
     family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
     kind: str      # the template name, e.g. "Listening", "Production"

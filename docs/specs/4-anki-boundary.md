@@ -30,6 +30,7 @@ Revision log:
 - r15 2026-10-07: recordings are conditioned at ingest (spec 1 r33) as images are normalized (§3); the stored, sha'd, checked artifact is the conditioned file. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r15).
 - r16 2026-10-07: the return path reads the deck's own collection file, and the package is imported into that collection with notetypes merged, the collection synced with AnkiWeb before the harvest and after the import (§4); only a full download into a collection with no cards is taken, any other full sync is logged and the import skipped; AnkiConnect is gone (§5). User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r16).
 - r17 2026-10-20: a Word with no pronunciation (spec 1 r34: no evidence on record) renders an empty Ipa field. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r17).
+- r18 2026-10-20: a pair blocked by pair/pronunciation-settled or pair/exact-confusion (block severity, spec 1 r36) compiles no notes and is counted dropped, reason "blocked: <rule>", without closing the gate; the compile and the pacer proceed without --force and the pair's notes return, same guids, once it is usable. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r18).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -109,7 +110,11 @@ Listening and Reading backs, the other members' meanings after it.
 fields MemberKey, Choices, Audio, OtherAudio, Stimulus, Speaker, plus
 per-member Thai/IPA, ReviewNote, CompileId. Both notes of a pair play the
 pair's current-best rendition (one speaker across members); a pair with
-no rendition compiles no notes and is counted as dropped. First field =
+no rendition compiles no notes and is counted as dropped, as is a pair
+a pair rule blocks (spec 1 r36; reason "blocked: pair/pronunciation-settled"
+or "blocked: pair/exact-confusion"); its notes are absent from the package
+and its cards already in the learner's collection are left as they were,
+reviews intact, until the pair is usable again. First field =
 MemberKey "PAIRID:SPEAKER:INDEX" (unique; the guid source; r14: the
 back's script reads the stimulus's index from it, nothing else reads
 it back). Back shows both members, marks the stimulus ("played:"), each

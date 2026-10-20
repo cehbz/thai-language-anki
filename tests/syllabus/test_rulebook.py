@@ -824,7 +824,7 @@ def test_a_pair_whose_readings_drift_out_of_its_contrast_is_an_error():
     (finding,) = _exact_confusion_findings(syllabus)
     assert finding.note_id == "tone:mid-low/far-near"
     assert "not exactly {'tone'}" in finding.evidence
-    assert syllabus.report().gate is False
+    assert syllabus._severity("pair/exact-confusion") == "block"   # the pair, not the deck (r36)
 
 
 def test_a_pair_still_exact_is_silent():
