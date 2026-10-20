@@ -1813,7 +1813,9 @@ def _evidence_complete(ctx: Sourcing, form: str, glosses: Mapping[str, Any]) -> 
 def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     """One pass per run (design 2026-09-12 section 2; spec 3 r47, r68
     section 5): for every confusion still short of its weight-proportional
-    pair count, the best exact pairs are selected over settled readings
+    pair count -- counting only the pairs no pair rule blocks
+    (`Syllabus.usable_pairs`, spec 1 r35), a blocked pair's members staying
+    taken -- the best exact pairs are selected over settled readings
     (spec 3 section 6) -- the vocabulary Words whose reading is settled
     and whose spoken witness does not dissent (E4),
     then the frequency pool's forms, each read by the local engines into
@@ -1837,7 +1839,7 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     """
     if ctx.curated_dir is None or not ctx.search_pairs:
         return AttemptResult(attempted=False)
-    need = wanted(ctx.syllabus.confusions, ctx.syllabus.pairs)
+    need = wanted(ctx.syllabus.confusions, ctx.syllabus.usable_pairs)
     if not any(need.values()):
         return AttemptResult(attempted=False)
     missing = [name for name in _PAIR_FILES if not (ctx.curated_dir / name).exists()]

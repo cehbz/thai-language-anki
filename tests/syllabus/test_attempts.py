@@ -5639,6 +5639,23 @@ def test_pair_search_never_pairs_an_unsettled_vocabulary_word(tmp_path):
     assert pair_search_attempt(ctx) == AttemptResult(attempted=False)
 
 
+def test_pair_search_refills_a_confusion_whose_pair_is_blocked(tmp_path):
+    """Spec 1 r35: a pair blocked by a pair rule (here its readings have
+    drifted out of the contrast) is no pair toward its confusion's need,
+    so the search adopts another; the blocked one's members stay taken."""
+    a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),))
+    d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
+    blocked = MinimalPair.create(id="tone:mid-low/a-b", confusion=TONE, members=(a, b))
+    b_drifted = replace(b, pron=replace(b.pron, syllables=(syl(onset="p", vowel="a",
+                                                               tone="low"),)))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b_drifted, c, d, pairs=(blocked,)))
+    result = pair_search_attempt(ctx)
+    assert result.adopted_pairs == 1
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/a-b", "tone:mid-low/c-d"]
+
+
 def test_pair_search_never_pairs_a_word_whose_spoken_witness_dissents(tmp_path):
     near = word("near", "ใกล้", "near", syllables=(syl(onset="kl", vowel="a", tone="mid"),))
     far = word("far", "ไกล", "far", syllables=(syl(onset="kl", vowel="a", tone="low"),))

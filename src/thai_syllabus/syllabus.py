@@ -17,7 +17,7 @@ from typing import Any, Literal, TYPE_CHECKING
 from .cachekeys import JudgeKey
 from .entities import (
     Category, ClozeSlot, Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Target,
-    Voice, Word, render,
+    Voice, Word, exact_confusion_violation, render,
 )
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
@@ -1108,6 +1108,30 @@ class Syllabus:
         pair/pronunciation-settled): settled, and its spoken witness not
         dissenting."""
         return self.settled(pron) and not pron.spoken_dissent
+
+    def pair_violation(self, pair: MinimalPair) -> str | None:
+        """Why `pair`'s members' settled readings are no longer an exact
+        pair for its confusion (spec 1 r35, pair/exact-confusion:
+        `exact_confusion_violation`, the check MinimalPair.create made);
+        None while they are, or while a member has no reading (that is
+        pair/pronunciation-settled's finding)."""
+        confusion = next((c for c in self.confusions if c.id == pair.confusion), None)
+        words = [self.find_word(m) for m in pair.members]
+        if confusion is None or any(w is None or w.pron is None for w in words):
+            return None
+        return exact_confusion_violation(confusion, tuple(w.pron for w in words))
+
+    @cached_property
+    def usable_pairs(self) -> tuple[MinimalPair, ...]:
+        """The pairs neither pair rule blocks (spec 1 section 4, E4 and
+        r35): every member pairable and the readings still exact. Only
+        these count toward a confusion's pair need, so the pair search
+        refills a blocked pair's slot."""
+        def pairable(word_id: WordId) -> bool:
+            w = self.find_word(word_id)
+            return w is not None and self.pairable(w.pron)
+        return tuple(p for p in self.pairs
+                     if all(pairable(m) for m in p.members) and self.pair_violation(p) is None)
 
     # --- content-hash staleness marker ------------------------------------
 

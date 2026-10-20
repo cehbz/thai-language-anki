@@ -150,7 +150,7 @@ COVERAGE_CONFUSIONS = Rule(id="coverage/confusions", principle="F1",
 
 # --- coverage/sound-stage ------------------------------------------------
 # F1 (design 2026-09-12 section 5): the stage as built -- confusions at
-# their weight-proportional pair count, graphemes whose keyword has a
+# their weight-proportional count of pairs no pair rule blocks, graphemes whose keyword has a
 # picture, recited-name words with a chart cell. value = the least of the
 # three fractions (the stage is a gate: its least-built part is how built
 # it is); an empty part counts as full.
@@ -160,7 +160,7 @@ def _fraction(have: int, of: int) -> float:
 
 
 def _measure_coverage_sound_stage(syllabus: "Syllabus") -> Metric:
-    short = wanted(syllabus.confusions, syllabus.pairs)
+    short = wanted(syllabus.confusions, syllabus.usable_pairs)
     full = sum(1 for c in syllabus.confusions if short[c.id] == 0)
     keyworded = sum(1 for g in syllabus.graphemes if syllabus.media.has_picture(g.keyword))
     names = [g.name_word for g in syllabus.graphemes if g.name_word is not None]
@@ -586,6 +586,22 @@ PAIR_PRONUNCIATION_SETTLED = Rule(id="pair/pronunciation-settled", principle="E4
                                   check=_check_pair_pronunciation_settled)
 
 
+# --- pair/exact-confusion (F1) -------------------------------------------------
+# Spec 1 r35: a member's reading is derived (r34), so a pair
+# MinimalPair.create made exact can drift out of its contrast as evidence
+# arrives; this re-runs that check over the settled readings. A member with
+# no reading is pair/pronunciation-settled's finding, not this one's.
+
+def _check_pair_exact_confusion(syllabus: "Syllabus") -> list[Finding]:
+    return [Finding(rule="pair/exact-confusion", note_id=p.id, evidence=reason)
+            for p in syllabus.pairs if (reason := syllabus.pair_violation(p)) is not None]
+
+
+PAIR_EXACT_CONFUSION = Rule(id="pair/exact-confusion", principle="F1",
+                            severity="error", shape="check",
+                            check=_check_pair_exact_confusion)
+
+
 # --- word/classifier-known (E5) ----------------------------------------------
 
 def _check_word_classifier_known(syllabus: "Syllabus") -> list[Finding]:
@@ -687,6 +703,7 @@ RULES: list[Rule] = [
     PICTURE_PREFERENCE,
     COVERAGE_SPEAKERS,
     PAIR_PRONUNCIATION_SETTLED,
+    PAIR_EXACT_CONFUSION,
     WORD_CLASSIFIER_KNOWN,
     SENTENCE_RECORDING_REQUIRED,
     CARD_UNIQUE_FRONT,

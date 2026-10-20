@@ -107,7 +107,7 @@ def test_registered_rules_match_the_spec_table():
         "sentence/recording-required", "recording/synthetic",
         "sentence/synthetic-productive",
         "sentence/register-natural",
-        "pair/pronunciation-settled", "word/classifier-known",
+        "pair/pronunciation-settled", "pair/exact-confusion", "word/classifier-known",
         "coverage/speakers", "card/unique-front", "rulebook/traceability",
     }
     assert {r.id for r in RULES} == expected
@@ -125,14 +125,6 @@ def test_rules_holds_none_of_the_seven_ids_retired_by_construction():
         "rendition/mixed-speakers",
     }
     assert {r.id for r in RULES} & retired == set()
-
-
-def test_no_rule_re_checks_what_minimal_pair_create_refuses():
-    """spec 1 section 4: no rule for what a constraint already prevents.
-    A pair differing in more than its confusion never loads (MinimalPair.create),
-    so pair/exact-confusion could never fire on loaded data."""
-    from thai_syllabus.rulebook import RULES
-    assert "pair/exact-confusion" not in {r.id for r in RULES}
 
 
 def test_principles_matches_the_locked_principles_doc():
@@ -801,6 +793,57 @@ def test_the_settled_threshold_is_the_syllabus_s():
 
 def test_a_settled_pair_member_whose_spoken_witness_dissents_is_an_error():
     assert _tone_pair(1.0, dissent=True) == ["near"]
+
+
+# --- pair/exact-confusion (F1) ---------------------------------------------
+# Spec 1 r35: a member's reading is derived, so a pair made exact can drift
+# out of its contrast as evidence arrives; the rule re-runs the check
+# MinimalPair.create made, over the settled readings.
+
+def _drifted_pair(far_syllables):
+    confusion = SoundConfusion(id=ConfusionId("tone:mid-low"), dimension="tone",
+                               sounds=("mid", "low"))
+    near = word("near", "ใกล้", syllables=(syl(tone="mid"),))  # near
+    far = word("far", "ไกล", syllables=(syl(tone="low"),))  # far
+    pair = MinimalPair.create(id=PairId("tone:mid-low/far-near"), confusion=confusion,
+                              members=(near, far))
+    if far_syllables is None:
+        far = dataclasses.replace(far, pron=None)
+    else:
+        far = dataclasses.replace(far, pron=dataclasses.replace(far.pron,
+                                                                syllables=far_syllables))
+    return make_syllabus(words=(near, far), pairs=(pair,), confusions=(confusion,))
+
+
+def _exact_confusion_findings(syllabus):
+    return [f for f in syllabus.report().findings if f.rule == "pair/exact-confusion"]
+
+
+def test_a_pair_whose_readings_drift_out_of_its_contrast_is_an_error():
+    syllabus = _drifted_pair((syl(onset="p", tone="low"),))     # onset differs too
+    (finding,) = _exact_confusion_findings(syllabus)
+    assert finding.note_id == "tone:mid-low/far-near"
+    assert "not exactly {'tone'}" in finding.evidence
+    assert syllabus.report().gate is False
+
+
+def test_a_pair_still_exact_is_silent():
+    assert _exact_confusion_findings(_drifted_pair((syl(tone="low"),))) == []
+
+
+def test_a_member_with_no_reading_is_e4s_finding_not_this_ones():
+    syllabus = _drifted_pair(None)
+    assert _exact_confusion_findings(syllabus) == []
+    assert [f.note_id for f in syllabus.report().findings
+            if f.rule == "pair/pronunciation-settled"] == ["far"]
+
+
+def test_a_pair_blocked_by_either_pair_rule_leaves_the_usable_pairs():
+    drifted = _drifted_pair((syl(onset="p", tone="low"),))
+    unread = _drifted_pair(None)
+    exact = _drifted_pair((syl(tone="low"),))
+    assert (drifted.usable_pairs, unread.usable_pairs) == ((), ())
+    assert [p.id for p in exact.usable_pairs] == ["tone:mid-low/far-near"]
 
 
 # --- word/classifier-known (E5) ---------------------------------------------

@@ -1,6 +1,6 @@
 # Spec 1: Domain core
 
-Revision 34, proposed 2026-10-20 against principles r8 and architecture
+Revision 35, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -74,6 +74,7 @@ Revision log:
 - r32 2026-10-04: the sounds stage is the pairs; a grapheme is no order() entry, its card placed by compile just before the first Reading card in order of a word containing it and present while any such Reading card is; a cluster onset touches its head consonant's confusions; a recited-name Word carries no Target and keeps its category, its recording need and its chart-cell picture need (it is not a closure word); staging (§3): a word is heard at its position, said P later and read D after it is heard once readable, readable meaning no segmental confusion its pronunciation touches blocks it (spec 2 r21) or its Reading card has a review, so readability latches, its script on its other cards once its Reading card has a review, and a sentence's text and its text Cloze wait until every word it uses is read, its AudioCloze card P after its Listening card; a studied AudioCloze pair counts for clause 4 as a studied Cloze pair; order() reads no study, the staging does; seed sentences: the first picture words' receptive Targets want two sentences (r30), drafted over spec 3 r65's vocabulary; gaps() adds gapped recordings, pair members' pictures and the recited-name Words' needs. User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 1 r32).
 - r33 2026-10-07: a Recording's bytes are conditioned before they are hashed: a clip in which voice activity detection finds no speech (Silero VAD: no window's speech probability reaches 0.25) is refused at ingest; leading and trailing audio more than 40 dB below the clip's own peak is trimmed, 50 ms kept at each end, inner silence untouched; loudness is normalized to −20 LUFS by linear gain, true peak held below −1.5 dBTP. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 1 r33).
 - r34 2026-10-20: Word.pron is derived, the settled reading of its form (spec 3 §6 settlement), None with no evidence on record, one reading per form; Pronunciation is syllables, the least winning posterior over its features and spoken_dissent, Corroboration removed; E4's rule is pair/pronunciation-settled (a member settled, its posterior at least the rule's rulebook threshold, default 0.99, and its spoken witness not dissenting), replacing pair/pronunciation-corroborated. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r34).
+- r35 2026-10-20: a pair's exact confusion is re-checked on loaded data by pair/exact-confusion (check, error; blocks pair membership) over the members' settled readings, which can drift out of the pair's contrast as evidence arrives (r34); a member with no reading is pair/pronunciation-settled's finding; a pair either pair rule blocks does not count toward its confusion's pair count, so the pair search refills the slot; this reverses r19's "no rule re-checks loaded data". User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r35).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -197,10 +198,10 @@ MinimalPair
   id: PairId                        # identity
   confusion: ConfusionId
   members: tuple[WordId, ...]       # 2..3
-  # invariant (constructed): members' pronunciations differ in exactly
-  # the confusion's dimension, at one syllable, and both values there are
-  # the confusion's; `MinimalPair.create` is the one check and no rule
-  # re-checks loaded data for it (r19)
+  # invariant (constructed, re-checked on load): members' pronunciations
+  # differ in exactly the confusion's dimension, at one syllable, and both
+  # values there are the confusion's; `MinimalPair.create` checks it and
+  # pair/exact-confusion re-checks the settled readings (r35)
 
 Sentence                            # artifact
   clauses: tuple[tuple[Element, ...], ...]
@@ -450,7 +451,8 @@ constructor or the loader enforces (order() constraints, one category
 per word, every id registered, one speaker per rendition) gets unit
 tests, not a rule. A constructor-enforced invariant is re-checked by a
 rule only where the loader does not construct through the checking path
-(pairs, grapheme keywords).
+(pairs, grapheme keywords), or where the values it checks are derived and
+can change after construction (a pair's settled readings, r35).
 
 Severity: error findings close the gate (compile refuses, spec 4 §2);
 warn and info ship as declared warnings. Per-deck severity overrides live
@@ -466,7 +468,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | A2, A5, A6, A7, A8 | compile |
 | A3 | card/unique-front (check, error) |
 | A4 | compile (a missing artifact drops the card, counted) |
-| F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); coverage/sound-stage (measure: confusions at their weight-proportional pair count, graphemes whose keyword has a picture, recited-name words with a chart cell; value the least of the three); one speaker per rendition by construction; exact confusion by construction (MinimalPair.create; r19) |
+| F1 | pair/rendition-required (check, error); rendition/synthetic (check, warn); coverage/confusions (measure: pairs and distinct speakers per confusion against targets); coverage/sound-stage (measure: confusions at their weight-proportional pair count, graphemes whose keyword has a picture, recited-name words with a chart cell; value the least of the three); one speaker per rendition by construction; pair/exact-confusion (check, error; blocks pair membership: every pair's members' settled readings differ in exactly its confusion, `exact_confusion_violation`; a member with no reading is E4's; r35); a pair either pair rule blocks counts toward no confusion's pair count |
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: no adopted sentence fills it), target/sentences-wanted (check, warn: some adopted sentence fills it, fewer than its `sentences`, r30), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
