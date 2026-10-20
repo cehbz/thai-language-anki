@@ -1,7 +1,7 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 67, proposed 2026-10-07 against principles r8 and architecture
-r6. Revision process: docs/principles.md.
+Revision 68, proposed 2026-10-20 against principles r8 and architecture
+r7. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -229,6 +229,7 @@ Revision log:
 - r65 2026-10-04: a filled Cloze slot of an adopted sentence has a gapped recording need, the sentence by TTS with a 600 ms SSML break in place of the slot's word, in the sentence's voice or its marking's pool, checked as a sentence recording (subject kind `slot`, its bound plus 0.6 s per break), for spec 4 r13's AudioCloze front; every pair member Word has a picture need, judged as a word's, for the identification front; a recited-name Word is adopted with no Target (spec 1 r32) and keeps its recording and chart-cell picture needs; a drafting ask hands seed Targets or the others, never both, a run making one ask of each kind when both are open, and only the others get the vocabulary floor, so a seed Target's sentences are drafted over the picture words up to the furthest handed Target and the met glue words; `pacer.import` (true), `pacer.anki_connect_url` and `pacer.collection_path` (§8): a tick harvests the collection's reviews through AnkiConnect while Anki is open and from the collection file while it is closed, and while Anki is open compiles a deck changed since the last import and imports it through AnkiConnect. User rulings 2026-10-02 (the floor keeps applying to sentence-introduced Targets) and 2026-10-04. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r65).
 - r66 2026-10-07: the mechanical recording check's floor is 0.1 s (was 0.2), measured on the conditioned clip (spec 1 r33); a clip refused at ingest for holding no speech is a failed fetch that caches no answer, so a later attempt asks the source again (a tts key is voice and text, so a cached refusal would answer that ask forever); a learner supply of one is refused with the reason and appends no row. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r66).
 - r67 2026-10-07: the pacer carries reviews in and the deck out through the deck's own Anki collection, synced with AnkiWeb, in place of AnkiConnect and the Mac's collection file (architecture r6, spec 4 r16), and a systemd timer runs it. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r67).
+- r68 2026-10-20: every oracle's reading of a form is a record row -- the local engines per form and engine version, Wiktionary, and thai-language.com, a new dictionary backend (one lookup per form ever, 10 s apart, at most `quotas.thai-language.com.max_asks` (30) a run, `DictionaryKey(source="thai-language.com", form)`, its entry IPA kept only when the entry's headword is the form) -- and the judge's newest pronunciation verdict on the form under the current rubric; an evidence pass records them each run; the settlement (§6) is a family-level Dawid–Skene one-coin fit per feature over three error families (Wiktionary: Wiktionary, thaig2p; spelling rules: tltk, the rule tone engine, the judge; thai-language.com), a multi-reading report a set that matches any of its values, derived and never written (memoised in-process on the hash of the evidence), a change to a form's settled reading logged once by the run, which fits before and after its evidence pass, a form settled when every feature's winning posterior reaches the threshold of pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99, spec 1 r34); adjudication is removed (no pronunciation ask for deck Words, no words.yaml rewrite, RunReport `adjudicated` and `stayed_disputed` gone); the grapheme pass seeds no pronunciation; the pair search reads settled readings, gathers dictionary evidence only for the outside forms it selects and adopts a pair only when every member is settled and its spoken witness (Wiktionary) does not dissent, which it does only when no listed reading matches the settled one on a feature; a word whose spoken witness dissents is logged every run and counted `spoken_dissent`. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r68).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -256,13 +257,15 @@ shapes are spec 2; domain consumers are spec 1; UI surfaces are spec 5.
   no module parses, splits or prefix-matches an encoded key. A consumer
   that needs a key's parts reads the row's question and subject.
 - **Current-best / pending / exhausted**: folds over the record (section 6).
+- **Reading**: one oracle's reading of one form, a record row (§3, §4);
+  the settlement (§6) folds them into each form's pronunciation.
 
 ## 2. Port contracts
 
 ```
 Provide.ask(source, question) -> Answer
   question: {subject, provides: picture|picture-bytes|recording|rendition|
-             sentence|pair|phrase|entry, params}
+             sentence|pair|phrase|entry|reading, params}
   Answer:   {items: [...], cost, ts}      # empty items is an answer; cached
 
 Assess.ask(backend, question) -> Verdict
@@ -323,6 +326,9 @@ one speaker answers empty.
 | learner | any (supply) | none; rows are acts | attention | feedback screen only |
 | legacy-current | picture (the old deck's current picture, spec 2 §4) | legacy-current:picture:WORD | none; a candidate's provenance, never a Source ask: never tried, budgeted, or listed as asked | never |
 | illustrator | picture (one generated image per query through the configured image generator, `illustrator.provider`; bytes into the media store; the item carries its sha, provenance `generated`, licence `generated`, origin the model) | illustrator:MODEL:query | cash per image (`illustrator.price_per_image`, on the row); 429/402 is Quota (§6a) | never: the same query at the same model is the same image; a declined prompt is a cached empty answer |
+| thaig2p, tltk, tone | reading (a local engine's reading of a form: thaig2p's and tltk's syllables, the rule tone engine's tone of a monosyllable; a form containing whitespace read token by token; a reading refused as degenerate, r44, or truncated, r45, is no reading; a `ʔ` coda on a dead open syllable normalized away, r45) | ENGINE:VERSION:FORM | free; local | never: a new engine version is a new key |
+| wiktionary | reading (English Wiktionary's "(standard) IPA" for the exact form, several readings where the entry lists them, with the revision id; or absence; a reading with an empty syllable slot is no reading, r50) | DictionaryKey(wiktionary, form) | free HTTP, one request per `quotas.wiktionary.min_interval_seconds`, at most `quotas.wiktionary.max_asks` a run | never: one lookup per form ever; a 429 or 5xx backs off without a row (Quota, §6a) |
+| thai-language.com | reading (plain HTTP: the dictionary search for the exact form and each matched entry's page; answer `{"entries": [{"id", "paiboon", "ipa": [...]}]}`, an entry's IPA kept only when its page title's headword is the form, else `"ipa": []`; a form with no entry is `{"entries": []}`) | DictionaryKey(thai-language.com, form) | free HTTP, one request per 10 s (the site's robots crawl delay), at most `quotas.thai-language.com.max_asks` (30) a run | never: one lookup per form ever; a failed request or an error answer writes no row and ends its lookups for the run |
 | glyph | picture (the alphabet-chart cell for a grapheme's recited-name Word: the symbol in the configured Thai font beside the keyword's current-best picture, square white canvas, a thin rule between; drawn with Pillow into the media store, the item carrying its sha, provenance `glyph`, licence `generated`, origin the symbol) | glyph:KEYWORD_PICTURE_SHA:SYMBOL | free; no network | never: deterministic, so the same pair is the same bytes; a keyword whose picture changes is a new key, and a name word whose keyword has no picture is not attempted (§5: the need waits) |
 
 ## 4. Assess backends and authority
@@ -478,7 +484,7 @@ is asked again, and its need is not out of options while it awaits
 (r55).
 
 **Graphemes (the consonant inventory).** One pass per run, after the
-sentence attempt and before the phrase and adjudication asks. Every
+sentence attempt and before the evidence pass. Every
 consonant of `data/thai_consonants.yaml` (the repo's own inventory,
 resolved relative to the package) not already in the syllabus becomes a
 Grapheme row: its acrophonic keyword is the vocabulary Word whose `thai`
@@ -488,43 +494,56 @@ name is a new Word (id `name-<keyword id>`, `-2`, `-3` on collision like
 the keyword's, and re-used when the vocabulary already holds the recited
 name -- a run interrupted between the file writes re-adopts without
 duplicating) with the category `Letter names` (spec 1 r16) and no
-Target (spec 1 r32). Each new Word's pronunciation comes
-from the engines, never the judge: thaig2p's syllables, corroboration
-`engines_agree` when the rule tone engine settles a monosyllable's tone
-and `disputed` otherwise -- the adjudication pass (r28) asks about the
-disputed ones next run, and E4 blocks their cards meanwhile. words.yaml
+Target (spec 1 r32). A new Word carries no pronunciation of its own:
+its reading is its form's settlement (§6) once the evidence pass has
+recorded readings of the form. words.yaml
 and graphemes.yaml are then written whole from the rows the
 loaders produced with the new ones appended, under the writing command
 (spec 2 r17): rows added, none removed. A row the pass cannot adopt --
-a keyword whose form does not contain the symbol, or a form no engine
-reads -- is logged with its reason and counted
-`adoption_skipped`; a name alone that no engine reads leaves the Grapheme
-row standing with no name word, and compile() drops its Reading card,
-counted. The pass is idempotent: a second run finds every symbol present
+a keyword whose form does not contain the symbol -- is logged with its
+reason and counted `adoption_skipped`. The pass is idempotent: a second run finds every symbol present
 and adopts nothing. Curated rows are not needs: no bucket counts them,
 and the queue built after the pass already sees what it added.
 
+**Evidence (Word forms).** One pass per run, after the grapheme pass
+and before the pair search: for every deck Word's form, each local
+engine (thaig2p, tltk; the rule tone engine on a monosyllable) at its
+installed version with no reading of the form on record reads it and
+the row is appended; Wiktionary and thai-language.com are asked, cache-first, about
+every form with no row of theirs, within their per-run caps; a form
+containing whitespace is never looked up (r50). A dictionary's
+transport failure is logged once and that dictionary is dead for the
+rest of the run. The run fits the settlement (§6) before and after the
+pass and logs, once, each form whose settled reading differs. Every Word
+whose spoken witness dissents from its settled reading stays on a
+standing list: logged every run and counted `spoken_dissent`. Words
+are not needs: the pass owns no bucket.
+
 **Pair search (SoundConfusion).** The pair search (design 2026-09-12
-section 2), one pass per run after the grapheme pass and before the
+section 2), one pass per run after the evidence pass and before the
 queue: for every SoundConfusion short of `pair_count`,
-`pairsearch.select_pairs` buckets candidates by the pronunciation with
-the confusion's dimension masked and ranks the exact pairs within a
-bucket (linear, not a scan of every pair) -- corroborated vocabulary
-Words first, then the first `pair_search_depth` (§8, 5000) forms of the
-frequency list read by the engines: forms whose two engines agree, or
-whose fresh judge verdict corroborates the engines. A form whose fresh
-verdict does not corroborate them drops out of the pool altogether --
-falling back to its engine reading would select it again every run and
-re-ask the same question as a cache hit for ever. Then both members
-Words first, then a shared Forvo speaker already on the record, then the
-lower rank sum; no form is a member twice for one confusion. A pair of
-Words is adopted at once into pairs.yaml (id `<confusion>/<x>-<y>`,
-members' ids sorted). An outside form is asked about first (subject
-`candidate:<thai>`, subject_kind `candidate`, role pronunciation-for-word,
-at most `pair_search_asks` (§8, 40) per run, riding the batch) and, once
-the judge's syllables corroborate the engines (`phonology.corroborates`),
-is minted as a closure Word (id `slug_id(gloss)`, `adjudicated`, the
-judge's gloss as meaning) in words.yaml and its pair adopted.
+`pairsearch.select_pairs` buckets candidates by the settled reading
+(§6) with the confusion's dimension masked and ranks the exact pairs
+within a bucket (linear, not a scan of every pair) -- vocabulary Words
+first, then the first `pair_search_depth` (§8, 5000) forms of the
+frequency list, each read by the local engines (rows appended as the
+evidence pass appends them). Then both members Words first, then a
+shared Forvo speaker already on the record, then the lower rank sum; no
+form is a member twice for one confusion. A pair is adopted only when
+every member's pronunciation is settled and its spoken witness does not
+dissent (spec 1 §4, pair/pronunciation-settled). A pair of Words is
+adopted at once into pairs.yaml (id `<confusion>/<x>-<y>`, members' ids
+sorted). For an outside form the search selects, and only for those,
+Wiktionary and thai-language.com are asked (cache-first, within their caps) and the
+judge is asked about it (subject `candidate:<thai>`, subject_kind
+`candidate`, role pronunciation-for-word, at most `pair_search_asks`
+(§8, 40) per run, riding the batch): its syllables are spelling-rule
+evidence (§6) and its gloss names the new Word. Once that evidence is on
+record and the form is settled with no spoken dissent, it is minted as
+a closure Word (id `slug_id(gloss)`, the judge's gloss as meaning) in
+words.yaml and its pair adopted. A form whose evidence is all on record
+and that is unsettled or whose spoken witness dissents drops out of the
+pool, so it is not selected and asked about again.
 
 **Re-verification (recordings and renditions).** One pass per run, after
 the pair search and before the queue (r49): every current-best recording
@@ -737,21 +756,6 @@ learner-supplied or learner-nominated recording, or a learner direction
 on the sentence, keeps the sentence (F9) whichever check retired it; the
 screen shows it as exhausted.
 
-**Adjudication (Word).** One judge ask per run over every Word whose
-pronunciation is not corroborated: role pronunciation-for-word, text
-only, the deck's IPA convention; the verdict is syllables and a gloss.
-Next run, after resolve, each verdict is checked against the engines
-(thaig2p, tltk; the rule tone engine on a monosyllable's tone) and, only
-when no engine reading matches, against the dictionary oracle (r50:
-English Wiktionary's generated IPA, one `DictionaryKey` row per form on
-the record, read before the wire): a match on segments and vowel length
-with the tone equal or settled by the tone engine corroborates the word
-as `adjudicated` and the run
-writes the pronunciation to words.yaml; otherwise the word stays
-`disputed`, logged and counted. RunReport.adjudicated counts the words
-written; RunReport.stayed_disputed counts the verdicts no engine
-corroborated. Words are not needs: the pass owns no bucket.
-
 **Comments (any subject).** One reading ask per run on the drafter
 transport (`llm-comment`, cache-first, the prompt the contract) over
 every learner comment (spec 5: a card-flag row with note text, on a
@@ -882,6 +886,27 @@ need, sourced and judged as a word's (picture-for-word), Target or not
   transient cap is one attempt, r19); excluded: good, exhausted with no candidate awaiting
   judgement, pending (pending is reported, not queued).
 - **confusion_weights()**: unchanged.
+- **settlement()**: each form's pronunciation, from every reading on
+  record (§3: the local engines, Wiktionary, thai-language.com; §4: the judge's
+  newest pronunciation verdict on the form under the current rubric).
+  One reading per form (spec 1 §1). Per feature (segments, vowel length, tone), a
+  family-level Dawid–Skene one-coin fit over three error families:
+  Wiktionary (Wiktionary; thaig2p), the spelling rules (tltk, the rule
+  tone engine, the judge) and thai-language.com. A family
+  reports the reading of its most accurate member present on the form;
+  members of a family add no votes; a member's accuracy is scored only
+  against the posterior from the other families; each engine version
+  is a member. A report of several readings (a Wiktionary entry listing
+  spoken variants) is a set and matches any of its values. The weights are fitted over all the evidence on record
+  and the result is memoised in-process on the hash of that evidence,
+  recomputed each run from the readings on record and never written. A form's settled reading is
+  each feature's winner, carrying the least winning posterior; it is
+  **settled** when that posterior is at least the threshold of
+  pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99,
+  spec 1 §4), else **unsettled**; a form with no reading on record has none. Wiktionary
+  is the **spoken witness**, the one source that writes the spoken
+  form: it **dissents** when no reading it lists matches the
+  settled reading on some feature (thaig2p is not a spoken witness).
 
 ## 6a. Failure taxonomy
 
@@ -1010,8 +1035,11 @@ run(syllabus, budgets):
   sentence attempt over the open targets (one ask; its candidates enter
       the queue as sentence needs)
   grapheme pass (the consonant inventory adopted into curated, r40)
-  phrase ask (the picture queries), then the adjudication ask (the
-      uncorroborated pronunciations)
+  evidence pass (every deck form's readings recorded; the settlement
+      fitted before and after it, changed readings logged; spoken
+      dissent logged)
+  pair search (r47)
+  phrase ask (the picture queries)
   questions = []
   for need in queue(syllabus, budgets):        # pending excluded
       if unjudged(need): questions += assess(need); continue   # §5 assess-first
@@ -1043,14 +1071,13 @@ always. The remaining fields count events, not needs.
 | comments_read | learner comments this run read (one reading row each) |
 | comment_actions | actions those readings took (`none` writes no row) |
 | comment_unactionable | requests in those readings the deck could not act on, refused actions included |
-| adjudicated | words whose pronunciation this run wrote as adjudicated |
-| stayed_disputed | verdicts this run checked that no engine corroborated (the words stay disputed) |
+| spoken_dissent | Words whose spoken witness dissents from their settled reading (§5 Evidence), every run until it no longer does |
 | adopted_graphemes | Grapheme rows this run adopted from the repo inventory (r40) |
 | adopted_words | Words those adoptions added: keywords the vocabulary lacked, and the recited names |
 | adoption_skipped | inventory rows, and recited-name Words, the pass could not adopt (a row adopted without its name word counts one adoption and one skip), each logged with its reason (r40) |
 | adopted_pairs | MinimalPairs the pair search adopted into pairs.yaml this run, its outside members' closure Words counted under `adopted_words` (r47) |
 | candidate_asks | outside forms the pair search asked the judge about this run (r47) |
-| candidates_dropped | outside forms the pair search dropped from its pool this run: the judge's syllables do not corroborate the engines (r48) |
+| candidates_dropped | outside forms the pair search dropped from its pool this run: their evidence is all on record and they are unsettled or their spoken witness dissents (r48, r68) |
 | reverified | mechanical checks the re-verification pass asked this run: current-best recordings and renditions whose newest verdict was not under the check's current key (r49) |
 | demoted | artifacts current before the re-verification pass whose new verdict is False; their needs are gaps this same run (r49) |
 | preferences | preference questions on a picture that already satisfies its need (outside the identity) |
@@ -1090,11 +1117,13 @@ lifts a default cap for the day.
 `glyph: {font}` (r41) names the Thai .ttf/.ttc the chart cell's symbol is
 drawn with; the loader refuses a file that is not there, and a deck with
 no `glyph` section registers no chart-cell backend at all.
-`quotas.wiktionary.min_interval_seconds` (1) paces the dictionary oracle
-and `quotas.wiktionary.max_asks` (200; null lifts it) caps its wire
-fetches per run
+`quotas.wiktionary.min_interval_seconds` (1) paces the Wiktionary
+dictionary and `quotas.wiktionary.max_asks` (200; null lifts it) caps
+its wire fetches per run
 (r50); `wiktionary.contact`, optional, is appended to its user agent and
-nothing else about the user is sent.
+nothing else about the user is sent. `quotas.thai-language.com.max_asks`
+(30; null lifts it) caps thai-language.com's wire fetches per run (r68). The settlement's threshold is
+rulebook.yaml's, spec 1 §4.
 `quotas.<source>.nothing_ttl_days`
 (forvo 180; absent = never), `quotas.<source>.min_interval_seconds`
 (seconds between two requests to the source within one process;

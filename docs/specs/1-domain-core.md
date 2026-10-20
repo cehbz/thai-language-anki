@@ -1,7 +1,7 @@
 # Spec 1: Domain core
 
-Revision 33, proposed 2026-10-07 against principles r8 and architecture
-r5. Revision process: docs/principles.md.
+Revision 34, proposed 2026-10-20 against principles r8 and architecture
+r7. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -73,6 +73,7 @@ Revision log:
 - r31 2026-10-03: a sentence is placed where clause 3 first admits it: its entry, or directly after the adopted sentence whose fill leaves at most one of its sentence-introduced words unmet; order() deals it there. User ruling 2026-10-03. Evidence: KB thai-language-anki/revision-evidence (spec 1 r31).
 - r32 2026-10-04: the sounds stage is the pairs; a grapheme is no order() entry, its card placed by compile just before the first Reading card in order of a word containing it and present while any such Reading card is; a cluster onset touches its head consonant's confusions; a recited-name Word carries no Target and keeps its category, its recording need and its chart-cell picture need (it is not a closure word); staging (§3): a word is heard at its position, said P later and read D after it is heard once readable, readable meaning no segmental confusion its pronunciation touches blocks it (spec 2 r21) or its Reading card has a review, so readability latches, its script on its other cards once its Reading card has a review, and a sentence's text and its text Cloze wait until every word it uses is read, its AudioCloze card P after its Listening card; a studied AudioCloze pair counts for clause 4 as a studied Cloze pair; order() reads no study, the staging does; seed sentences: the first picture words' receptive Targets want two sentences (r30), drafted over spec 3 r65's vocabulary; gaps() adds gapped recordings, pair members' pictures and the recited-name Words' needs. User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 1 r32).
 - r33 2026-10-07: a Recording's bytes are conditioned before they are hashed: a clip in which voice activity detection finds no speech (Silero VAD: no window's speech probability reaches 0.25) is refused at ingest; leading and trailing audio more than 40 dB below the clip's own peak is trimmed, 50 ms kept at each end, inner silence untouched; loudness is normalized to −20 LUFS by linear gain, true peak held below −1.5 dBTP. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 1 r33).
+- r34 2026-10-20: Word.pron is derived, the settled reading of its form (spec 3 §6 settlement), None with no evidence on record, one reading per form; Pronunciation is syllables, the least winning posterior over its features and spoken_dissent, Corroboration removed; E4's rule is pair/pronunciation-settled (a member settled, its posterior at least the rule's rulebook threshold, default 0.99, and its spoken witness not dissenting), replacing pair/pronunciation-corroborated. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r34).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -95,7 +96,12 @@ Word                                # language model
                                     # spelling group: its Words that
                                     # carry a Target, in introduction
                                     # order (§3)
-  pron: Pronunciation               # spoken form
+  pron: Pronunciation | None        # derived, never curated: the loader
+                                    # gives the settled reading of `thai`
+                                    # (spec 3 §6 settlement); None when no
+                                    # evidence on record reads the form.
+                                    # Invariant: one reading per form, so
+                                    # Words sharing `thai` share it
   meaning: str                      # today rendered as the English gloss
   classifier: WordId | None         # nouns: unmarked colloquial classifier
   no_productive: bool = False       # withholds the derived productive
@@ -107,14 +113,21 @@ Word                                # language model
                                     # marking()
 
 Pronunciation
-  syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone;
-                                    # the centering diphthongs ia ɯa ua are
+  syllables: tuple[Syllable, ...]   # segments, vowel length, Chao tone:
+                                    # the per-feature winner of the
+                                    # settlement, the standard reading and
+                                    # what the deck shows (E4); the
+                                    # centering diphthongs ia ɯa ua are
                                     # long (r23), written unmarked by Ipa
-  corroboration: Corroboration      # engines_agree | curated_exception |
-                                    # adjudicated (r13: the judge plus one
-                                    # engine, spec 3 r28) | disputed; see
-                                    # rules R-PRON; a disputed word exists
-                                    # but blocks card emission
+  posterior: float                  # the least of the features' winning
+                                    # posteriors; the reading is settled
+                                    # when it is at least
+                                    # pair/pronunciation-settled's
+                                    # threshold (§4)
+  spoken_dissent: bool              # the spoken witness (Wiktionary,
+                                    # spec 3 §6) lists no reading of the
+                                    # form matching `syllables` on some
+                                    # feature
 
 SoundConfusion                      # language model
   id: ConfusionId                   # e.g. "tone:mid-low"
@@ -463,7 +476,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F11 | by construction: current-best ranks judged candidates only |
 | E1 | compile: a grapheme card before the first Reading card that needs it; Thai and IPA gated on the item being read (§3 Staging, spec 4 §1, §2) |
 | E3 | sentence/register-natural (judged); the speaker marking holds at sourcing (spec 3 §5) |
-| E4 | pair/pronunciation-corroborated (check, error; blocks pair membership) |
+| E4 | pair/pronunciation-settled (check, error; blocks pair membership: every member's pronunciation settled -- its posterior at least the rule's threshold, rulebook.yaml `thresholds`, default 0.99 -- and its spoken_dissent false) |
 | E5 | word/classifier-known (check, warn, nouns) |
 | E7 | coverage/speakers (measure: per audio corpus — word recordings, renditions, sentence recordings — distinct speakers per sex, age band and region against rulebook targets; unknown never counts) |
 | F4, F9, F10, F12, F13, E6 | not rule-shaped (architecture and run behavior); F12's rate cap follows the selection rule; F13's retirement is the run's (spec 3 §5) |

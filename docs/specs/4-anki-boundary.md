@@ -1,7 +1,7 @@
 # Spec 4: The Anki boundary
 
-Revision 16, proposed 2026-10-07 against principles r8 and architecture
-r6. Revision process: docs/principles.md.
+Revision 17, proposed 2026-10-20 against principles r8 and architecture
+r7. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -29,6 +29,7 @@ Revision log:
 - r14 2026-10-07: the pair Recognition card takes a tap: a tapped picture is the learner's choice and shows the back, which says whether it was the stimulus; the pictures stack in portrait and sit side by side otherwise, both on one screen; the back plays the stimulus first, then the other members, and no longer repeats the front's pictures. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r14).
 - r15 2026-10-07: recordings are conditioned at ingest (spec 1 r33) as images are normalized (§3); the stored, sha'd, checked artifact is the conditioned file. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r15).
 - r16 2026-10-07: the return path reads the deck's own collection file, and the package is imported into that collection with notetypes merged, the collection synced with AnkiWeb before the harvest and after the import (§4); only a full download into a collection with no cards is taken, any other full sync is logged and the import skipped; AnkiConnect is gone (§5). User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 4 r16).
+- r17 2026-10-20: a Word with no pronunciation (spec 1 r34: no evidence on record) renders an empty Ipa field. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r17).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -80,7 +81,7 @@ note (no card, none counted as dropped). Identity, tags and due are
 each note's own Word's (§2): a review or flag on a form-side card maps
 to the carrier. ProductiveTarget gates the Production card (non-empty
 iff the word has a productive Target). Ipa renders the Pronunciation
-value with tone and length. Readable (r13) is non-empty iff the note's
+value with tone and length, and is empty for a Word with none (r17). Readable (r13) is non-empty iff the note's
 Word is readable and gates the Reading and Spelling fronts; ScriptShown
 (r13) is non-empty iff the Word is read, its form's Reading card having
 a review in the study record (spec 1 §3 Staging), and gates the Thai

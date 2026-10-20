@@ -1,6 +1,6 @@
 # Architecture
 
-Revision 6, proposed 2026-10-07 (r5 proposed 2026-10-04). Written from the
+Revision 7, proposed 2026-10-20 (r6 proposed 2026-10-07). Written from the
 entity pass and behavior walk of 2026-09-01/02. The principles
 (docs/principles.md) are the companion: every rule traces to a principle,
 every principle to one of the three charter meta-rules: is it a
@@ -27,6 +27,7 @@ Revision log:
 - r4 2026-10-01: the fill rule and the sentence cards restated after spec 1 r25/r26 and spec 4 r9, and the recording's voice constraint after principles r7; a sentence's cards as siblings of one note and its guid after spec 4 r11. No new decision.
 - r5 2026-10-04: a sentence's cards gain an AudioCloze card per filled productive Target (spec 4 r13); order() puts the pairs first and compile stages the rest, so dues come from order() and the staging, which reads the study record (spec 1 r32, spec 4 r13); a reorder reaches Anki only through a cutover (principles r8 F8). No new decision.
 - r6 2026-10-07: the deck holds its own Anki collection, synced with AnkiWeb by the deck's own process; the Mac and the phone are study clients (§5, §6, §7; spec 4 r16). User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (architecture r6).
+- r7 2026-10-20: a Word's pronunciation is derived and never stored, the settlement of every oracle's reading of its form on the record (spec 3 r68), not a curated fact; pronunciation adjudication is removed from the word-fact roles. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (architecture r7).
 
 ## 1. Shape of the system
 
@@ -45,7 +46,8 @@ Language model (facts of Thai, learner-independent):
 
 - **Word** — identity = its sense. Written form (not unique: a form
   shared by several senses is a homograph, and a sentence names the
-  sense); spoken form (segments, length, tone); meaning; optional
+  sense); pronunciation (segments, length, tone), derived from the
+  oracles' readings of its form (§4, §5); meaning; optional
   classifier (ref to a Word); optionally the sex of the speaker the word
   marks (a particle, a pronoun). No behavior. Casual/formal counterparts
   are separate Words.
@@ -133,7 +135,9 @@ is per (backend, role).
 Pexels), Forvo, TTS, commission, the LLM (sentence drafting, parsing of
 existing texts, word-fact drafting, query phrasing, keyword proposals),
 the pair search (dictionary + G2P over Thai at large; curated seeds; LLM
-proposal mechanically verified), and the learner (supply — costliest).
+proposal mechanically verified), the pronunciation oracles (local G2P
+and tone engines, Wiktionary, thai-language.com: one recorded reading
+per form and source), and the learner (supply — costliest).
 There is no producer/filler split: all of them answer "provide X for Y"
 under a query. A recording's voice constraint follows the subject's
 speaker marking; an unmarked word recording is a male voice where the
@@ -149,9 +153,8 @@ artifact shared by two subjects is two verdicts. Roles include: (picture,
 word) fit; (scene picture, sentence); (sentence, target)
 naturalness/register; (recording, word) QA — mechanical checks now, a
 listener backend only at the rank calibration earns it; word facts
-(classifier, gloss, pronunciation adjudication — engines as cheap
-oracles, LLM as better-read oracle, disputes stay blocked, never
-guessed); findings (waiver); cards (flags). The learner is final
+(classifier, gloss, a form's pronunciation under the spelling rules —
+one oracle's reading among the others); findings (waiver); cards (flags). The learner is final
 authority on picture fit and unqualified on tone correctness — a flag
 there queues machine re-verification; on recording roles the learner
 vetoes and never ranks.
@@ -192,7 +195,8 @@ reopens.
 
 Derived, never stored: order, met-at, current-best artifact, exhausted,
 the sourcing queue, confusion weights (seed × StudyRecords), reports,
-fills edges.
+fills edges, the pronunciation settlement (each form's reading, fitted
+from the readings on record).
 
 ## 6. Boundaries
 

@@ -1,7 +1,7 @@
 # Spec 2: Durable state
 
-Revision 22, proposed 2026-10-07 against principles r8 and architecture
-r6. Revision process: docs/principles.md.
+Revision 23, proposed 2026-10-20 against principles r8 and architecture
+r7. Revision process: docs/principles.md.
 
 Revision log:
 - r1 2026-09-04: promoted as written.
@@ -60,6 +60,7 @@ Revision log:
 - r20 2026-10-01: a sentence Cloze card's study anchor is the sentence and its Target (ids.sentence_cloze_key), composed the way a pair card's MemberKey is; every other study anchor stays the entity id. User ruling 2026-10-01. Evidence: KB thai-language-anki/revision-evidence (spec 2 r20).
 - r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 2 r21).
 - r22 2026-10-07: the revlog import reads the deck's own collection file only; AnkiConnect is removed (spec 4 r16). User ruling 2026-10-07.
+- r23 2026-10-20: words.yaml stores no pronunciation and the run writes none (r14's adjudicated pronunciations go); every oracle's reading of a form is a cache row, the settlement over them derived and never written (spec 3 r68); the loader reads each Word's pronunciation through the Settlement interface; the migration brings no pronunciation. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 2 r23).
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -77,16 +78,16 @@ reference data, versioned with the deck and never hand-edited.
 ```
 <deck>/                        # the Syllabus's home directory
   curated/                     # store 1 — human-owned YAML
-    words.yaml                 # Word facts: id, thai, pron (authored IPA),
-                               # meaning, classifier, category (one per
-                               # row; the loader builds the Category
-                               # collections), no_productive and speaker
-                               # (each written only when set). Learner-
-                               # owned; the run writes adjudicated
-                               # pronunciations and adds adopted rows --
-                               # a grapheme's keyword and recited-name
-                               # Words -- under its writing command
-                               # (r14, r17, spec 3 r28/r40)
+    words.yaml                 # Word facts: id, thai, meaning,
+                               # classifier, category (one per row; the
+                               # loader builds the Category collections),
+                               # no_productive and speaker (each written
+                               # only when set); no pronunciation (spec 1
+                               # §1: derived, r23). Learner-owned; the run
+                               # adds adopted rows -- a grapheme's keyword
+                               # and recited-name Words, a pair's outside
+                               # member -- under its writing command (r17,
+                               # spec 3 r40/r47)
     targets.yaml               # id, word, skill, introduction, sentences
                                # (spec 1 r30; written only when above
                                # one) (receptive targets and productive
@@ -157,6 +158,11 @@ cache(port, backend, key_sha, subject, question, answer, cost, ts)
   -- are two further rows under the same subject, keyed comment-reading /
   -- comment-veto over (comment identity, prompt version) (r15, spec 3
   -- r30).
+  -- an oracle's reading of a form (spec 3 §3, r23) is a provide row
+  -- under the form's subject `dictionary:<form>`: a local engine's keyed
+  -- by engine, engine version and form, a dictionary's by DictionaryKey
+  -- (source, form); a judge's pronunciation verdict is its assess row.
+  -- The settlement over them (spec 3 §6) is derived, never written.
 study(family, anchor, card_kind, member_index, speaker_id, compile_id,
       ts, grade, time_ms)  -- PK (family, anchor, card_kind, ts)
   -- store 4. The import reads a card's tags once and writes their parts
@@ -201,6 +207,10 @@ FrequencyMap       .rank(word_thai) -> int | None
 RecordWriter       .append(port, backend, key, subject, question, answer,
                            cost)
 StudyReader        .records(card_key | confusion) -> list[StudyRecord]
+Settlement         .reading(form) -> Pronunciation | None
+                   # spec 3 §6 over the readings on record; consumed by
+                   # the loader, which gives each Word its form's; never
+                   # runs an engine
 ```
 
 All implemented over syllabus.db + curated files; faked in domain tests.
@@ -216,7 +226,7 @@ the rest (their drafts stay in the record).
 What the old deck's assets became, and how they rank:
 
 - **Word list** → curated/words.yaml and targets.yaml (one receptive
-  target per row); a human-authored image query migrates as a learner
+  target per row); no pronunciation migrates (r23); a human-authored image query migrates as a learner
   direction row in cache; other dropped fields are dropped.
 - **Judged images** → normalized at ingest like any picture (spec 4 §3)
   into media/objects/ by sha of the normalized bytes. Each old verdict is
