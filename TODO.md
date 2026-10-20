@@ -78,66 +78,45 @@ Decided: a status (a word's pronunciation, a draft's acceptance, a
 row's adoption) is derived from the evidence on record and memoised on
 its inputs, as a verdict is; an unresolved problem stays on a standing
 list every tick until it is resolved, and an event is logged once.
-Pronunciation settles per feature (segments, length, tone) on agreement
-across error families, not on a count of oracles: the Wiktionary family
-(Wiktionary; thaig2p, trained on a Wiktionary dump; the judge,
-inferred) and the spelling-rule family (tltk, the rule tone engine, a
-Royal Institute respelling). Agreement within one family counts once.
-Weights are measured, not chosen. `curated_exception` goes.
+Pronunciation settles per feature (segments, length, tone) by a
+family-level fit (Dawid–Skene) over three error families: Wiktionary
+(Wiktionary; thaig2p v1), the spelling rules (tltk, the rule tone
+engine, the judge, whose rubric applies the spelling rules) and
+thai-language.com (its IPA, `scripts/fetch_paiboon.py`). A family
+reports its most accurate member present; weights are measured. The
+stored and shown reading is the standard one (E4 stands, user
+2026-10-19); the spoken form matters only where a pronunciation is
+computed on, which is pair membership. `curated_exception` goes.
 
-- Measure first: the per-feature agreement matrix over the deck's 912
-  forms for thaig2p, thaig2p-v2.0, tltk, the rule tone engine,
-  Wiktionary (about 795 forms to fetch at 1 s, capped per run) and the
-  judge's cached verdicts. There is no expert to rule on a sample; the
-  agreement structure stands in for gold (user decision): each oracle
-  is measured only on the forms where the families it does not belong
-  to agree, and the weights are fitted at family level (Dawid–Skene),
-  since fitting per oracle would let correlated oracles vouch for each
-  other. Where every family can share an error the pseudo-gold is
-  blind, and those classes are settled at low confidence and listed:
-  loanword tones, words lengthened in isolation (น้ำ, ไม้, ได้), and
-  linking syllables in compounds.
-- Paiboon as a third family (user decision), from thai-language.com:
-  `scripts/fetch_paiboon.py` keeps its raw search answers and a
-  `form, entry id, paiboon, ipa` table in the gitignored `data/paiboon/`.
-  The site derives every romanization it shows from one editor-curated
-  phonemic respelling, so it is that site's lineage, not the Paiboon
-  publisher's; whether Wiktionary editors copied from it is unchecked,
-  and a shared error would make it part of the Wiktionary family.
-  On a feature its notation does not write (the glottal coda at least),
-  the oracle abstains rather than voting; the full list is read off the
-  scraped readings. The 59.5% Paiboon ceiling in the research notes is
-  the old 1000-word deck's ASCII variant, not this notation. The script
-  also fetches each matched entry's IPA, rendered from the same
-  respelling, so it is the same oracle without Paiboon's losses.
-- thaig2p-v2.0 (`engine="thaig2p_v2"`, trained on
-  wiktionary-23-7-2022-clean.tsv) against the deck's v1 on 15 hard
-  forms: no decoder loop on ภาพวาด, ชานมไข่มุก or น้ำแข็งเปล่า (v1 loops on
-  all three); reads ไม้ in ฤดูใบไม้ผลิ (v1 drops it); ข้าว still short;
-  ช็อกโกแลต's first syllable falling (v1 high). It spells aspiration `kh`
-  and joins vowel and coda in one token (`aːj`, `oʔ`), so it needs its
-  own converter, and pythainlp's wrapper needs transformers < 5. Same
-  family as v1: it would replace v1, never add a vote.
-- The 566 `curated_exception` readings are thaig2p's output (80/80
-  sampled) that migrate labelled curator rulings. tltk disagrees with
-  93 of them and their cards are not blocked; 11 more keep a ʔ coda the
-  engines' convention drops. They are picked up under the new rule.
-- Adjudication tests only the judge's verdict against each oracle,
-  never agreement among the oracles: ฤดูใบไม้ผลิ (tltk and Wiktionary
-  agree) and พลาสติก (thaig2p and Wiktionary, one family) stay disputed,
-  and น้ำแข็งเปล่า has no dictionary entry and only tltk reads it. Adding
-  Wiktionary as an oracle re-derived nothing.
+- Settle the standard reading by the fit and memoise it; the 566
+  `curated_exception` readings (thaig2p's output, labelled curator
+  rulings by migrate) are re-derived with everything else. The fit
+  replaces adjudication's test of the judge against each oracle, which
+  never looked at agreement among the oracles (ฤดูใบไม้ผลิ, พลาสติก,
+  น้ำแข็งเปล่า stay disputed under it).
+- Pair eligibility: a word whose spoken witness (Wiktionary, the only
+  source that writes the spoken form) dissents from its settled
+  standard reading goes on the standing list and is not a pair member
+  until a ruling (user decision, option 1). About 40 forms today, one of
+  them a pair member (ส้อม). thaig2p v1 counts as no spoken witness: it
+  reproduces Wiktionary at 95% and its own errors besides.
 - A human ruling, when there is one, is curated evidence with its
   provenance (who ruled, what was consulted), not a status label, and
   dissenting oracles stay visible against it.
+- Bounded research (user decision, option 2): an acoustic oracle on
+  the native Forvo recordings, length from vowel duration and tone from
+  the pitch contour, as the spoken witness the listed words lack.
+  Calibrate it on forms all three families agree on before it rules on
+  anything; adopt it only if it matches them on length and tone at least
+  as often as the weakest family does, otherwise park it. TTS clips do
+  not qualify, since the TTS engine runs its own G2P.
 - Drop ฃ and ฅ from the consonant inventory (amends Decision 12): their
   keywords are spelled with ข and ค, so the adoption pass refuses and
   warns about both every tick.
-- Research before adoption: an acoustic oracle on the native Forvo
-  recordings (tone from the pitch contour, length from duration), the
-  one family independent of written sources. Its accuracy on Thai
-  citation forms is unknown and the work is large; TTS clips do not
-  qualify, since the TTS engine runs its own G2P.
+- 36 compounds have only a Paiboon reading from thai-language.com (the
+  site lists them under their base word's entry); a Paiboon converter
+  would add them, and abstains on the glottal coda Paiboon does not
+  write.
 - To discuss separately: why the drafts the adoption pass refuses
   exist (the log-noise item under the pacer section). The drafting
   prompt does not say a sentence has one recorded voice (25 drafts mix
