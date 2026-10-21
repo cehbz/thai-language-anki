@@ -334,6 +334,20 @@ class RetirementKey(CacheKey):
 
 
 @dataclass(frozen=True)
+class PairRetirementKey(CacheKey):
+    """retired-pair:PAIR_ID -- the trace the pair search leaves when it
+    removes a pair whose readings left its contrast and which a usable
+    pair replaces (spec 3 r71): appended before pairs.yaml is rewritten,
+    carrying the member notes' guids, so compile keeps naming them in its
+    blocked list (record.retired_pairs) once the pair itself is gone.
+    """
+    pair_id: str
+
+    def encode(self) -> str:
+        return f"retired-pair:{self.pair_id}"
+
+
+@dataclass(frozen=True)
 class CommentReadingKey(CacheKey):
     """comment-reading:COMMENT_SHA:PROMPT_VERSION -- the run's one
     reading of one learner comment (spec 3 r30 section 5; spec 2 r15):

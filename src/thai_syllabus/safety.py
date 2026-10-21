@@ -145,14 +145,15 @@ def snapshot(db_path: Path, backup_path: Path) -> None:
 @dataclass(frozen=True)
 class Counts:
     """A deck's row counts, as the sanity check compares them before and
-    after a writing command: words and targets from curated/, sentences,
-    cache and media from syllabus.db (spec 2 section 6).
+    after a writing command: words, targets and pairs from curated/,
+    sentences, cache and media from syllabus.db (spec 2 section 6, r24).
     """
     words: int
     targets: int
     sentences: int
     cache: int
     media: int
+    pairs: int = 0
 
 
 def _yaml_list_len(path: Path) -> int:
@@ -171,9 +172,10 @@ def deck_counts(deck: Path) -> Counts:
     deck = Path(deck)
     words = _yaml_list_len(deck / "curated" / "words.yaml")
     targets = _yaml_list_len(deck / "curated" / "targets.yaml")
+    pairs = _yaml_list_len(deck / "curated" / "pairs.yaml")
     db_path = deck / "syllabus.db"
     if not db_path.exists():
-        return Counts(words=words, targets=targets, sentences=0, cache=0, media=0)
+        return Counts(words=words, targets=targets, sentences=0, cache=0, media=0, pairs=pairs)
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         sentences = con.execute("select count(*) from sentences").fetchone()[0]
@@ -181,17 +183,18 @@ def deck_counts(deck: Path) -> Counts:
         media = con.execute("select count(*) from media").fetchone()[0]
     finally:
         con.close()
-    return Counts(words=words, targets=targets, sentences=sentences, cache=cache, media=media)
+    return Counts(words=words, targets=targets, sentences=sentences, cache=cache, media=media,
+                  pairs=pairs)
 
 
 def check(before: Counts, after: Counts, removals: Mapping[str, int]) -> list[str]:
-    """One message per field (words, targets, sentences, cache, media)
+    """One message per field (words, targets, sentences, cache, media, pairs)
     where `after` counts fewer rows than `before` minus the removals
     reported for that field -- a writing command's sanity check (spec 2
     section 6).
     """
     problems = []
-    for field in ("words", "targets", "sentences", "cache", "media"):
+    for field in ("words", "targets", "sentences", "cache", "media", "pairs"):
         b = getattr(before, field)
         a = getattr(after, field)
         n = removals.get(field, 0)

@@ -883,6 +883,28 @@ def test_the_compile_names_a_blocked_pairs_note_guids_beside_the_package(fx):
     assert blocked_path(fx.out_path) == fx.out_path.with_suffix(".blocked.json")
 
 
+def _retire(db, pair_id, guids):
+    from thai_syllabus.cachekeys import PairRetirementKey
+    db.append(port="attempt", backend="run", key=PairRetirementKey(pair_id), subject=pair_id,
+              question={"kind": "pair-retirement", "subject_kind": "pair", "guids": list(guids)},
+              answer={"retired": True})
+
+
+def test_a_retired_pairs_note_guids_stay_in_the_blocked_list(fx):
+    """Spec 4 r20: a pair the pair search retired (spec 3 r71) is gone
+    from pairs.yaml, and its retirement row's guids keep its cards
+    suspended."""
+    _retire(fx.db, "p0", ["g1", "g2"])
+    _compile_with_a_blocked_pair(fx, blocked=False)
+    assert blocked_guids(fx.out_path) == ("g1", "g2")
+
+
+def test_a_retired_pair_back_in_the_deck_is_not_withheld_for_its_retirement(fx):
+    _retire(fx.db, "p1", ["g1", "g2"])
+    _compile_with_a_blocked_pair(fx, blocked=False)
+    assert blocked_guids(fx.out_path) == ()
+
+
 def test_a_compile_with_no_blocked_pair_names_none(fx):
     _compile_with_a_blocked_pair(fx, blocked=False)
     assert blocked_guids(fx.out_path) == ()

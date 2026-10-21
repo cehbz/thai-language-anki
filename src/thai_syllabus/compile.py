@@ -44,6 +44,7 @@ from . import ipa
 from .derivations import SoundStage, current_best, sound_stage
 from .entities import Grapheme, MinimalPair, Sentence, Target, Word, render
 from .ids import ConfusionId, WordId, sentence_cloze_key
+from .record import retired_pairs
 from .rulebook import _picture_introduced_words, sentence_note_id
 from .rules import Compile, CompileReport, DroppedCard, Finding, OrderEntry, Report
 from .syllabus import Syllabus
@@ -1352,17 +1353,26 @@ def blocked_guids(apkg: str | Path) -> tuple[str, ...]:
     return tuple(json.loads(blocked_path(apkg).read_text(encoding="utf-8")))
 
 
-def _blocked_pair_guids(syllabus: "Syllabus") -> tuple[str, ...]:
+def pair_guids(syllabus: "Syllabus", pair: MinimalPair) -> tuple[str, ...]:
+    """The guids `pair`'s member notes carry under its current rendition;
+    none without one."""
+    recordings = syllabus.media.rendition(pair.id)
+    if recordings is None:
+        return ()
+    return tuple(_guid("minimal_pair", _member_key(pair, r.speaker.id, i))
+                 for i, r in enumerate(recordings))
+
+
+def _blocked_pair_guids(syllabus: "Syllabus", db: "SyllabusDb") -> tuple[str, ...]:
     """The guids every blocked pair's member notes carry under its
-    current rendition, the ones its notes had while it was usable."""
+    current rendition, the ones its notes had while it was usable, then
+    those of every retired pair (spec 3 r71) not back in pairs.yaml."""
     usable = {p.id for p in syllabus.usable_pairs}
-    guids: list[str] = []
-    for pair in syllabus.pairs:
-        recordings = syllabus.media.rendition(pair.id)
-        if pair.id in usable or recordings is None:
-            continue
-        guids.extend(_guid("minimal_pair", _member_key(pair, r.speaker.id, i))
-                     for i, r in enumerate(recordings))
+    guids = [g for pair in syllabus.pairs if pair.id not in usable
+             for g in pair_guids(syllabus, pair)]
+    present = {p.id for p in syllabus.pairs}
+    guids += [g for pair_id, retired in retired_pairs(db).items() if pair_id not in present
+              for g in retired]
     return tuple(guids)
 
 
@@ -1420,7 +1430,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     _stamp_due(tmp_out, due_by_guid_ord)
     blocked_out = blocked_path(out_path)
     blocked_tmp = blocked_out.with_name(blocked_out.name + ".tmp")
-    blocked_tmp.write_text(json.dumps(list(_blocked_pair_guids(syllabus))), encoding="utf-8")
+    blocked_tmp.write_text(json.dumps(list(_blocked_pair_guids(syllabus, db))), encoding="utf-8")
     os.replace(blocked_tmp, blocked_out)
     os.replace(tmp_out, out_path)  # atomic
 

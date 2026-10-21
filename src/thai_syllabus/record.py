@@ -523,6 +523,15 @@ def retired_texts(cache: CacheReader) -> frozenset[str]:
     return frozenset(retirements(cache))
 
 
+def retired_pairs(cache: CacheReader) -> dict[str, tuple[str, ...]]:
+    """pair id -> its member notes' guids, over every pair retirement row
+    on record (cachekeys.PairRetirementKey, spec 3 r71), the newest per
+    pair."""
+    return {r.subject: tuple(r.question.get("guids", ()))
+            for r in cache.rows_since("attempt", "run", 0)
+            if r.question.get("kind") == "pair-retirement"}
+
+
 def retirement_evidence(r: Retirement) -> str:
     """The drafter's line for a retired text (derivations.refused_drafts):
     why it was retired, and the learner's replacement hint when the

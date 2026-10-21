@@ -37,9 +37,10 @@ from .assessor import (UNTRUSTED, AssessQuestion, Assessor, Excluded, JudgeUnrea
                        PreparedQuestion, deck_field, mechanical_question)
 from .authority import role_for, sentence_role
 from .cachekeys import (AttemptOutcomeKey, CacheKey, CommentReadingKey, DictionaryKey, DirectionKey,
-                        PhraseKey, ProvideKey, RenditionAskKey, RetirementKey, RunReportKey,
-                        rendition_identity, sha)
-from .compile import card_meaning
+                        PairRetirementKey, PhraseKey, ProvideKey, RenditionAskKey, RetirementKey,
+                        RunReportKey, rendition_identity, sha)
+from .blockedpairs import blocked_pairs
+from .compile import card_meaning, pair_guids
 from .derivations import (
     DEFAULT_ATTEMPT_CAP,
     DEFAULT_REQUERY_CAP,
@@ -1827,8 +1828,8 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     run's batch; once that evidence is all on record and the form is
     settled with no spoken dissent, it is minted as a closure Word (id and
     meaning from the gloss) in words.yaml and its pair adopted. Both files are rewritten
-    whole from the loaded rows plus the new ones -- rows added, none
-    removed (spec 2 r17). The search never makes a Forvo lookup; a shared
+    whole from the loaded rows plus the new ones -- the adoption adds
+    rows and removes none (spec 2 r17). The search never makes a Forvo lookup; a shared
     speaker on the record is a preference.
 
     An outside form whose evidence is all on record and that is unsettled
@@ -1836,7 +1837,53 @@ def pair_search_attempt(ctx: Sourcing) -> AttemptResult:
     would be selected every run and asked about again as a cache hit for
     ever. The engines are resolved
     only when a pool form has no reading on record.
+
+    Then a pair `pair/exact-confusion` blocks -- its settled readings have
+    left its contrast -- is retired once its cure is `replaced`
+    (blockedpairs, spec 3 r71): a retirement row first, keeping its member
+    notes' guids so compile keeps them suspended, then pairs.yaml
+    rewritten without it and the removal reported to the Guard. A pair
+    blocked only by an unsettled or dissenting member is kept: a ruling
+    can cure it (r70).
     """
+    result = _adopt_pairs(ctx)
+    if (ctx.curated_dir is not None and ctx.search_pairs
+            and (ctx.curated_dir / "pairs.yaml").exists()):
+        _retire_replaced_pairs(ctx)
+    return result
+
+
+def _retire_replaced_pairs(ctx: Sourcing) -> None:
+    """Retires each pair pair/exact-confusion blocks whose cure is
+    `replaced` (pair_search_attempt)."""
+    from .curated import save_pairs
+
+    retiring = [b for b in blocked_pairs(ctx.syllabus, ctx.db)
+                if b.cure.kind == "replaced"
+                and any(f.rule == "pair/exact-confusion" for f in b.findings)]
+    if not retiring:
+        return
+    for b in retiring:
+        ctx.db.append(port="attempt", backend="run", key=PairRetirementKey(b.pair.id),
+                      subject=b.pair.id,
+                      question={"kind": "pair-retirement", "subject_kind": "pair",
+                                "confusion": b.pair.confusion, "members": list(b.pair.members),
+                                "reason": "; ".join(f.evidence for f in b.findings),
+                                "replaced_by": list(b.cure.pairs),
+                                "guids": list(pair_guids(ctx.syllabus, b.pair))},
+                      answer={"retired": True})
+        _log.info("pair search: retired %s (%s), %s", b.pair.id,
+                  "; ".join(f.evidence for f in b.findings), b.cure.text())
+    gone = {b.pair.id for b in retiring}
+    pairs = [p for p in ctx.syllabus.pairs if p.id not in gone]
+    save_pairs(ctx.curated_dir / "pairs.yaml", pairs)
+    ctx.syllabus = replace(ctx.syllabus, pairs=tuple(pairs))
+    if ctx.guard is not None:
+        ctx.guard.removed("pairs", sorted(gone))
+
+
+def _adopt_pairs(ctx: Sourcing) -> AttemptResult:
+    """pair_search_attempt's adoption."""
     if ctx.curated_dir is None or not ctx.search_pairs:
         return AttemptResult(attempted=False)
     need = wanted(ctx.syllabus.confusions, ctx.syllabus.usable_pairs)

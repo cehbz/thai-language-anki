@@ -282,7 +282,23 @@ def test_deck_counts_sees_a_committed_row_while_the_writer_is_still_open(tmp_pat
     db.close()
 
 
+def test_deck_counts_reads_pairs_yaml(tmp_path):
+    curated = tmp_path / "deck" / "curated"
+    curated.mkdir(parents=True)
+    (curated / "pairs.yaml").write_text("- {id: p1}\n- {id: p2}\n", encoding="utf-8")
+    assert deck_counts(tmp_path / "deck").pairs == 2
+
+
 # -- check --------------------------------------------------------------
+
+def test_check_names_a_pairs_shortfall_the_removals_do_not_cover():
+    """Spec 2 r24: the pair search's retirement removes a pairs.yaml row."""
+    before = Counts(words=2, targets=1, sentences=3, cache=5, media=0, pairs=2)
+    after = Counts(words=2, targets=1, sentences=3, cache=5, media=0, pairs=1)
+    assert check(before, after, {}) == [
+        "pairs: 1 rows after, 2 in the snapshot, 0 removal(s) reported"]
+    assert check(before, after, {"pairs": 1}) == []
+
 
 def test_check_names_a_sentences_shortfall():
     before = Counts(words=2, targets=1, sentences=3, cache=5, media=0)

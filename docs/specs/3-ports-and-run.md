@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 70, proposed 2026-10-20 against principles r8 and architecture
+Revision 71, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -232,6 +232,7 @@ Revision log:
 - r68 2026-10-20: every oracle's reading of a form is a record row -- the local engines per form and engine version, Wiktionary, and thai-language.com, a new dictionary backend (one lookup per form ever, 10 s apart, at most `quotas.thai-language.com.max_asks` (30) a run, `DictionaryKey(source="thai-language.com", form)`, its entry IPA kept only when the entry's headword is the form) -- and the judge's newest pronunciation verdict on the form under the current rubric; an evidence pass records them each run; the settlement (§6) is a family-level Dawid–Skene one-coin fit per feature over three error families (Wiktionary: Wiktionary, thaig2p; spelling rules: tltk, the rule tone engine, the judge; thai-language.com), a multi-reading report a set that matches any of its values, derived and never written (memoised in-process on the hash of the evidence), a change to a form's settled reading logged once by the run, which fits before and after its evidence pass, a form settled when every feature's winning posterior reaches the threshold of pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99, spec 1 r34); adjudication is removed (no pronunciation ask for deck Words, no words.yaml rewrite, RunReport `adjudicated` and `stayed_disputed` gone); the grapheme pass seeds no pronunciation; the pair search reads settled readings, gathers dictionary evidence only for the outside forms it selects and adopts a pair only when every member is settled and its spoken witness (Wiktionary) does not dissent, which it does only when no listed reading matches the settled one on a feature; a word whose spoken witness dissents is logged every run and counted `spoken_dissent`. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r68).
 - r69 2026-10-20: the settlement is fitted over the forms in hand, not over all the evidence on record: the loader and the evidence pass fit over the deck's Words' forms, the pair search over those and its frequency pool; the result is memoised on the hash of the evidence fitted. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r69).
 - r70 2026-10-20: a learner ruling settles a word's reading: a blocked pair's member whose cure is a ruling (spec 5 r23) is a learner question (spec 5 r24), and its answer is a learner row under role `pronunciation-ruling` naming the form, the chosen reading or "can't tell", and a note; the settlement takes the newest ruling naming a reading as decisive (that reading, posterior 1, no spoken dissent), the oracles' readings staying on record; "can't tell" settles nothing, and a form whose newest ruling is newer than every reading of it on record is not asked again until new evidence arrives. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r70).
+- r71 2026-10-20: the pair search retires a pair pair/exact-confusion blocks once its confusion has a usable replacement (spec 5 §3's cure `replaced`): a retirement row (`PairRetirementKey`, the pair's members, the finding's evidence, the replacing pairs and its member notes' guids) is appended, then pairs.yaml is rewritten without it and the removal is reported to the writing command's Guard; compile keeps the retired guids in its blocked list (spec 4 r20). A pair blocked only by pair/pronunciation-settled is kept: a ruling can cure it (r70). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r71).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -547,6 +548,20 @@ a closure Word (id `slug_id(gloss)`, the judge's gloss as meaning) in
 words.yaml and its pair adopted. A form whose evidence is all on record
 and that is unsettled or whose spoken witness dissents drops out of the
 pool, so it is not selected and asked about again.
+
+After adopting, the pass retires each pair `pair/exact-confusion`
+blocks (its settled readings have left its contrast) whose confusion has
+a usable replacement: a usable pair for the confusion adopted after it,
+or the confusion's need met by usable pairs without it (spec 5 §3's cure
+`replaced`; r71). It runs whether or not any confusion was short. The
+retirement row comes first (port `attempt`, backend `run`,
+`PairRetirementKey(pair_id)`, kind `pair-retirement`: the confusion, the
+members, the finding's evidence, the replacing pairs and the guids of
+the pair's member notes under its current rendition), then pairs.yaml is
+rewritten without the pair and the removal reported to the writing
+command's Guard (spec 2 §6). Its member Words stay in words.yaml. A pair
+blocked only by `pair/pronunciation-settled` is never retired: the
+evidence or a learner ruling (r70) can cure it.
 
 **Re-verification (recordings and renditions).** One pass per run, after
 the pair search and before the queue (r49): every current-best recording

@@ -1,6 +1,6 @@
 # Spec 2: Durable state
 
-Revision 23, proposed 2026-10-20 against principles r8 and architecture
+Revision 24, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -61,6 +61,7 @@ Revision log:
 - r21 2026-10-04: a SoundConfusion is stable (§2) once any ten consecutive Recognition reviews of its pairs hold at least 8 correct (grade > 1), and stays stable; unstable until then; an unstable confusion with a pair in the deck blocks a word's reading; a manual or rescheduled revlog entry (Forget, Set Due Date) is not a review and writes no study row; spec 1 r32's readability reads it; an AudioCloze card's anchor is its slot's, as the Cloze card's; a recited-name Word's Targets leave targets.yaml (spec 1 r32). User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 2 r21).
 - r22 2026-10-07: the revlog import reads the deck's own collection file only; AnkiConnect is removed (spec 4 r16). User ruling 2026-10-07.
 - r23 2026-10-20: words.yaml stores no pronunciation and the run writes none (r14's adjudicated pronunciations go); every oracle's reading of a form is a cache row, the settlement over them derived and never written (spec 3 r68); the loader reads each Word's pronunciation through the Settlement interface; the migration brings no pronunciation. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 2 r23).
+- r24 2026-10-20: the run's pair search removes a retired pair's row from pairs.yaml (spec 3 r71), reported by id; the sanity check counts pairs.yaml's rows with the other stores'. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 2 r24).
 
 Scope: what persists, where, in what shape; the interfaces the domain core
 consumes; the carry-over contract. Port mechanics are spec 3; this spec
@@ -99,8 +100,9 @@ reference data, versioned with the deck and never hand-edited.
                                # a row per adopted grapheme (r17)
     confusions.yaml            # id, dimension, sounds + profile seed weight
     pairs.yaml                 # adopted MinimalPairs (written by the
-                               # run's pair search, spec 3 r47; removed
-                               # by retirement -- part 2)
+                               # run's pair search, spec 3 r47; a pair
+                               # whose readings left its contrast is
+                               # removed once replaced, spec 3 r71, r24)
     profile.yaml               # register, emphasis, productive_cutoff,
                                # production_sentences_per_word
     rulebook.yaml              # rule config: severities, thresholds,
@@ -278,11 +280,12 @@ is still there.
 **Sanity checks.** When a writing command completes, before its post
 commit, it compares the deck to the snapshot and the pre commit and
 refuses to report success when:
-- words, targets, sentences, cache rows or media rows number fewer
-  than in the snapshot, unless the command reported each removal by id
-  (migrate's unparsed sentences; a curated merge shows in the post
+- words, targets, pairs, sentences, cache rows or media rows number
+  fewer than in the snapshot, unless the command reported each removal
+  by id (migrate's unparsed sentences; a run's retired sentences and
+  retired pairs, spec 3 r71, r24; a curated merge shows in the post
   commit's diff and is reported by id). A run's adoption only adds rows
-  (r17), so it reports nothing and the check passes on the counts alone;
+  (r17), so it reports nothing for them;
 - a run's accounting identity fails (spec 3 §7);
 - curated/ fails to load (spec 1's invariants), which the loader already
   refuses; the check names the pre commit to diff against.

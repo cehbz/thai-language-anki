@@ -38,6 +38,7 @@ from thai_syllabus.record import (DRAFT_SUBJECT, QUERY_FORMS, DraftedQuery, cand
                                   reading_of, retired_texts, retirements, rows_for,
                                   sentence_drafts)
 from thai_syllabus import attempts as attempts_module
+from thai_syllabus import record as record_module
 from thai_syllabus import curated as curated_module
 from thai_syllabus.curated import (build_categories, load_graphemes, load_pairs, load_targets,
                                    load_words, save_confusions, save_graphemes, save_pairs,
@@ -5653,7 +5654,81 @@ def test_pair_search_refills_a_confusion_whose_pair_is_blocked(tmp_path):
     ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b_drifted, c, d, pairs=(blocked,)))
     result = pair_search_attempt(ctx)
     assert result.adopted_pairs == 1
+    assert "tone:mid-low/c-d" in [p.id for p in ctx.syllabus.pairs]
+
+
+def _drifted_pair_ctx(tmp_path, *, replaced=True, drift="exact"):
+    """a-b adopted for TONE; b's settled reading since drifted out of the
+    contrast (or, `drift="unsettled"`, b left unsettled); c-d, a usable
+    pair for the same confusion, adopted after it when `replaced`. a-b's
+    rendition by one Forvo speaker."""
+    a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),))
+    d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
+    ab = MinimalPair.create(id="tone:mid-low/a-b", confusion=TONE, members=(a, b))
+    cd = MinimalPair.create(id="tone:mid-low/c-d", confusion=TONE, members=(c, d))
+    if drift == "exact":
+        b = replace(b, pron=replace(b.pron, syllables=(syl(onset="p", vowel="a", tone="low"),)))
+    else:
+        b = replace(b, pron=replace(b.pron, posterior=0.6))
+    syllabus = _confusion_syllabus(a, b, c, d, pairs=(ab, cd) if replaced else (ab,))
+    speaker = Speaker(id="forvo:somchai", kind="native")
+    rendition = tuple(type("Recording", (), {"speaker": speaker})() for _ in range(2))
+    syllabus = replace(syllabus, media=FakeMediaIndex(renditions={ab.id: rendition}))
+    ctx = _grapheme_ctx(tmp_path, syllabus)
+    ctx.guard = Guard()
+    return ctx
+
+
+def test_pair_search_retires_a_drifted_pair_once_its_confusion_has_a_usable_replacement(
+        tmp_path):
+    """Spec 3 r71: a pair pair/exact-confusion blocks is removed from
+    pairs.yaml once its cure is `replaced`, the removal reported to the
+    Guard, and a retirement row keeps its member note guids."""
+    import genanki
+    ctx = _drifted_pair_ctx(tmp_path)
+    pair_search_attempt(ctx)
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/c-d"]
+    saved = load_pairs(ctx.curated_dir / "pairs.yaml", {w.id: w for w in ctx.syllabus.words},
+                       {TONE.id: TONE})
+    assert [p.id for p in saved] == ["tone:mid-low/c-d"]
+    assert ctx.guard.removals == {"pairs": 1}
+    assert record_module.retired_pairs(ctx.db) == {"tone:mid-low/a-b": tuple(
+        genanki.guid_for("minimal_pair", f"tone:mid-low/a-b:forvo:somchai:{i}")
+        for i in range(2))}
+
+
+def test_pair_search_retires_a_drifted_pair_replaced_in_the_same_pass(tmp_path):
+    a = word("a", "กา", "a", syllables=(syl(onset="k", vowel="a", tone="mid"),))
+    b = word("b", "ก่า", "b", syllables=(syl(onset="k", vowel="a", tone="low"),))
+    c = word("c", "งา", "c", syllables=(syl(onset="ng", vowel="a", tone="mid"),))
+    d = word("d", "ง่า", "d", syllables=(syl(onset="ng", vowel="a", tone="low"),))
+    blocked = MinimalPair.create(id="tone:mid-low/a-b", confusion=TONE, members=(a, b))
+    b_drifted = replace(b, pron=replace(b.pron, syllables=(syl(onset="p", vowel="a",
+                                                               tone="low"),)))
+    ctx = _grapheme_ctx(tmp_path, _confusion_syllabus(a, b_drifted, c, d, pairs=(blocked,)))
+    ctx.guard = Guard()
+    pair_search_attempt(ctx)
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/c-d"]
+
+
+def test_pair_search_keeps_a_drifted_pair_nothing_replaces(tmp_path):
+    ctx = _drifted_pair_ctx(tmp_path, replaced=False)
+    ctx.syllabus = replace(ctx.syllabus, words=tuple(
+        w for w in ctx.syllabus.words if w.id not in ("c", "d")))
+    pair_search_attempt(ctx)
+    assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/a-b"]
+    assert ctx.guard.removals == {}
+    assert record_module.retired_pairs(ctx.db) == {}
+
+
+def test_pair_search_keeps_a_pair_blocked_only_by_an_unsettled_member(tmp_path):
+    """A ruling can cure it (spec 3 r70), so it is not retired."""
+    ctx = _drifted_pair_ctx(tmp_path, drift="unsettled")
+    pair_search_attempt(ctx)
     assert [p.id for p in ctx.syllabus.pairs] == ["tone:mid-low/a-b", "tone:mid-low/c-d"]
+    assert ctx.guard.removals == {}
 
 
 def test_pair_search_never_pairs_a_word_whose_spoken_witness_dissents(tmp_path):

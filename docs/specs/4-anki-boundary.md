@@ -1,6 +1,6 @@
 # Spec 4: The Anki boundary
 
-Revision 19, proposed 2026-10-20 against principles r8 and architecture
+Revision 20, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -32,6 +32,7 @@ Revision log:
 - r17 2026-10-20: a Word with no pronunciation (spec 1 r34: no evidence on record) renders an empty Ipa field. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r17).
 - r18 2026-10-20: a pair blocked by pair/pronunciation-settled or pair/exact-confusion (block severity, spec 1 r36) compiles no notes and is counted dropped, reason "blocked: <rule>", without closing the gate; the compile and the pacer proceed without --force and the pair's notes return, same guids, once it is usable. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r18).
 - r19 2026-10-20: a blocked pair's cards already in the deck's collection stop coming up for review: the compile writes beside the package the guids of every blocked pair's member notes (MemberKey guids under its current rendition), and the pacer's import suspends each of their cards not already suspended, marking it in the card's custom data, and unsuspends each marked card whose note the list no longer names, clearing the mark; a card the learner suspended carries no mark and is left alone; reviews and schedule are kept; the import's log line counts the cards suspended and unsuspended (§1, §4). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r19).
+- r20 2026-10-20: the blocked list also names the guids on every pair retirement row (spec 3 r71) whose pair is not in pairs.yaml, so a retired pair's cards stay suspended once the pair is gone. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r20).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -274,7 +275,9 @@ plays. CSS retains only final fit-to-viewport.
   sync after that import demands a full sync.
 - **A blocked pair's cards** (r19): the compile writes, beside the
   package (`<name>.blocked.json`), the guids of every blocked pair's
-  member notes, MemberKey guids under the pair's current rendition. After
+  member notes, MemberKey guids under the pair's current rendition, and
+  the guids every pair retirement row records (spec 3 r71) for a pair no
+  longer in pairs.yaml (r20). After
   the import the pacer suspends every card of a named note that is not
   suspended, marking it withdrawn in the card's custom data (key
   `blocked`), and unsuspends every marked card whose note is no longer
