@@ -17,9 +17,7 @@ still run against them.
    that no imported card ever blanks (the "Open after the cutover"
    items below are the known risks).
 2. Sound stage part 2 (steps 5 to 7 below): vowel signs and tone marks
-   are reading cards and come after the first spoken words under r8;
-   3 words stay disputed; a pair member must be corroborated, nothing
-   else.
+   are reading cards and come after the first spoken words under r8.
 
 ## Open after the hearing-first cutover (arc review 2026-10-04)
 
@@ -41,9 +39,7 @@ still run against them.
   at `sentence_max_words` 8).
 - `GAP_BREAK` and the 0.6 s bound are two constants that must agree.
 - Content: `season-colloquial`'s Meaning holds หน้าร้อน ("hot season"),
-  so Thai leaks onto `face`'s Listening back through OtherSenses;
-  สีเหลือง ("yellow") is curated as one syllable and its pair back shows
-  [siː˨˩˦].
+  so Thai leaks onto `face`'s Listening back through OtherSenses.
 - The Reddit half of the script-timing research failed on agy's quota;
   rerun `/agy-research` with the saved prompt when it resets.
 
@@ -74,49 +70,14 @@ still run against them.
 
 ## Pronunciation oracles (user 2026-10-18)
 
-Decided: a status (a word's pronunciation, a draft's acceptance, a
-row's adoption) is derived from the evidence on record and memoised on
-its inputs, as a verdict is; an unresolved problem stays on a standing
-list every tick until it is resolved, and an event is logged once.
-Pronunciation settles per feature (segments, length, tone) by a
-family-level fit (Dawid–Skene) over three error families: Wiktionary
-(Wiktionary; thaig2p v1), the spelling rules (tltk, the rule tone
-engine, the judge, whose rubric applies the spelling rules) and
-thai-language.com (its IPA, `scripts/fetch_paiboon.py`). A family
-reports its most accurate member present; weights are measured. The
-stored and shown reading is the standard one (E4 stands, user
-2026-10-19); the spoken form matters only where a pronunciation is
-computed on, which is pair membership. `curated_exception` goes.
-
-- Settle the standard reading by the fit and memoise it; the 566
-  `curated_exception` readings (thaig2p's output, labelled curator
-  rulings by migrate) are re-derived with everything else. The fit
-  replaces adjudication's test of the judge against each oracle, which
-  never looked at agreement among the oracles (ฤดูใบไม้ผลิ, พลาสติก,
-  น้ำแข็งเปล่า stay disputed under it).
-- Pair eligibility: a word whose spoken witness (Wiktionary, the only
-  source that writes the spoken form) dissents from its settled
-  standard reading goes on the standing list and is not a pair member
-  until a ruling (user decision, option 1). About 40 forms today, one of
-  them a pair member (ส้อม). thaig2p v1 counts as no spoken witness: it
-  reproduces Wiktionary at 95% and its own errors besides.
-- A human ruling, when there is one, is curated evidence with its
-  provenance (who ruled, what was consulted), not a status label, and
-  dissenting oracles stay visible against it.
-- Bounded research (user decision, option 2): an acoustic oracle on
-  the native Forvo recordings, length from vowel duration and tone from
-  the pitch contour, as the spoken witness the listed words lack.
-  Calibrate it on forms all three families agree on before it rules on
-  anything; adopt it only if it matches them on length and tone at least
-  as often as the weakest family does, otherwise park it. TTS clips do
-  not qualify, since the TTS engine runs its own G2P.
-- Drop ฃ and ฅ from the consonant inventory (amends Decision 12): their
-  keywords are spelled with ข and ค, so the adoption pass refuses and
-  warns about both every tick.
 - 36 compounds have only a Paiboon reading from thai-language.com (the
   site lists them under their base word's entry); a Paiboon converter
   would add them, and abstains on the glottal coda Paiboon does not
   write.
+- The curated loader ignores an unknown key in a row (a leftover `pron`
+  in words.yaml loads silently), while spec 2 §4 says the loader refuses
+  anything but the shape it expects. Make the loader refuse, or revise
+  the spec.
 - To discuss separately: why the drafts the adoption pass refuses
   exist (the log-noise item under the pacer section). The drafting
   prompt does not say a sentence has one recorded voice (25 drafts mix
@@ -350,7 +311,7 @@ Still open:
   but a learner-supplied picture); `chart_cell` computed three times per
   glyph attempt; `Derivations.sources_for_need` bound to the
   construction-time Syllabus; `_DbMediaIndex.words` stale after adoption
-  until the next process; ฃ and ฅ by hand with a chosen keyword.
+  until the next process.
 - `exhausted().capped` is query-scoped while its attempt count is per
   need (spec 3 r35): a source at the transient cap under an old query
   counts no attempt; an under-count of at most one per such source.
@@ -394,10 +355,6 @@ pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
    any Forvo, 61 with TTS; 453 of the 543 Forvo-covered words have one
    speaker. Improve later: a native same-speaker rendition replaces a
    synthetic one when found, and see the hired-recordings item below.
-   Before the search: done -- the `vowel_length` three-way split is
-   reverted to one `vowel_length:short-long` row (Task 1) and
-   `pair/exact-confusion` is retired (Task 2, spec 1 r19: re-checked what
-   `MinimalPair.create` already refuses).
 7. Principles F6 (r8): the recited names are heard on the grapheme
    cards; saying them is a later skill with no card yet.
 - Design §5's "stats shows sound-stage coverage" is unimplemented: nothing reads `coverage/sound-stage` (not `compute_stats`, the CLI, or the page).
@@ -441,29 +398,7 @@ Run and screen, found while seating the alphabet (2026-09-19):
   Forvo recordings) and expect 0; `coat` (เสื้อโค้ท) is the one false
   demotion, a doubled tone mark in Forvo's headword.
 
-Adjudication follow-ups (2026-09-21, after the dictionary oracle arc:
-54 of 57 disputed words corroborated in one cycle, 3 stay disputed;
-Wiktionary was consulted for 5 forms, 1 absent):
-- **The adjudication pass never seals a disputed word on the oracles'
-  own agreement.** It tests only the judge's verdict against the
-  engines and the dictionary; for a newly adopted word two oracles
-  agreeing on a whole reading is `engines_agree` without a judge (spec 3
-  r45), but an existing disputed word gets no such check. พลาสติก
-  (thaig2p and Wiktionary agree, judge's tone wrong) and ฤดูใบไม้ผลิ
-  (tltk and Wiktionary agree, judge's tone wrong) stay disputed for
-  that reason alone. One spec 3 revision to the Adjudication paragraph:
-  materialize `engines_pronunciation` for every disputed word first and
-  accept `engines_agree`; ask the judge only for what is left.
-- **Rung 2: component reading against the dictionary** for a compound
-  Wiktionary lacks (น้ำแข็งเปล่า: the judge reads เปล่า long, correctly;
-  both engines read it short; the dictionary has เปล่า but not the
-  compound). Segment into dictionary entries (longest match, or the
-  space where there is one), concatenate, and let it corroborate the
-  judge only when the syllable counts agree. Designed 2026-09-20, not
-  built; measured need on the live deck: 1 word.
-- **Rung 3: a second LLM family as a corroborating judge** is a
-  principles revision (corroboration is the judge plus one engine); the
-  residue it would serve is zero today. Not planned.
+Run accounting, found during the dictionary oracle arc (2026-09-21):
 - The `wiktionary` line in the run's per-backend spend table is minted
   by `default_budgets` from `quotas.wiktionary` and never charged
   (asks=0 while rows are written); cosmetic. Its `judge` line never
@@ -473,8 +408,7 @@ Wiktionary was consulted for 5 forms, 1 absent):
   cycle line's `spent=` reads the record and includes it. A deck paced at 0 s never
   backs off from a 429 without a Retry-After header (the wiring default
   is 1 s). An `absent` dictionary row is final; Wiktionary grows, so a
-  `nothing_ttl_days` for it may be wanted. Spec 3 §5's grapheme-adoption
-  paragraph still describes a single engine.
+  `nothing_ttl_days` for it may be wanted.
 - The run's batch wait is 21600 s; a 57-request Message Batch took
   6 h 38 min on 2026-09-21 and the run gave up one poll short. The next
   run resolved it. Raise `--max-wait-seconds` or make the resolve free.
@@ -482,8 +416,6 @@ Wiktionary was consulted for 5 forms, 1 absent):
   `SoundConfusion.weight` and has no caller. `curated.py` imports
   `run.parse_day_starts` (move it out so `run.py` can import
   `save_words` at the top). `pair_count` above weight 5 yields one pair.
-  The stats history normalises only `adjudicated`/`stayed_disputed` for
-  old rows; a future report field needs the same or a column union.
 
 ## Content work (machine)
 
