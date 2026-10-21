@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import ipa
 from .authority import role_for
+from .blockedpairs import blocked_pairs
 from .cachekeys import DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey
 from .compile import (CARD_CSS, CARD_MEANINGS, build_deck, card_kind_of, field_values,
                       render_card, tag_value, thai_cloze)
@@ -1294,6 +1295,22 @@ def _history_row(answer: Mapping[str, Any]) -> dict[str, Any]:
             "spend_per_covered_new": round(cash / covered_new, 4) if covered_new else None}
 
 
+def _blocked_pair_rows(d: "Derivations") -> list[dict[str, Any]]:
+    """Spec 5 r23: each blocked pair (blockedpairs.blocked_pairs) with its
+    members' Thai and gloss, the blocking findings and the cure's text."""
+    rows = []
+    for b in blocked_pairs(d.syllabus, d.db):
+        members = [d.syllabus.find_word(m) for m in b.pair.members]
+        rows.append({
+            "pair": b.pair.id, "confusion": b.pair.confusion,
+            "members": [{"id": m, "thai": w.thai if w else None, "gloss": w.meaning if w else None}
+                        for m, w in zip(b.pair.members, members)],
+            "findings": [{"rule": f.rule, "note_id": f.note_id, "evidence": f.evidence}
+                         for f in b.findings],
+            "cure": b.cure.text()})
+    return rows
+
+
 def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
                   session: SessionStats | None = None) -> dict[str, Any]:
     """Spec 5 section 3's stats, every count derived under `d`'s
@@ -1324,6 +1341,8 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
     Each row also carries `spend_per_covered_new`, derived not stored
     (spec 5 r11): the run's judge and illustrator dollars over
     `covered_new`, None when nothing was newly covered.
+    `blocked_pairs` lists each pair a pair rule blocks with its cure
+    (spec 5 r23, _blocked_pair_rows).
     """
     coverage: dict[str, dict[str, int]] = {}
     ratings = {"good": 0, "acceptable": 0, "unacceptable": 0}
@@ -1364,6 +1383,7 @@ def compute_stats(d: "Derivations", study: StudyReader | None = None, *,
         "pending": runreport_answer.get("pending", 0),
         "sentences_adopted": runreport_answer.get("sentences_adopted", 0),
         "run_report_history": [_history_row(r.answer) for r in run_reports(d.db)],
+        "blocked_pairs": _blocked_pair_rows(d),
     }
 
 
@@ -2981,6 +3001,24 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
         panel.appendChild(histTable);
       } else {
         panel.appendChild(el("div", {}, "no runs yet"));
+      }
+
+      // Blocked pairs (spec 5 r23): each pair a pair rule blocks, its
+      // members, the findings with their evidence, and its cure.
+      panel.appendChild(el("h3", {}, "Blocked pairs"));
+      if (stats.blocked_pairs.length) {
+        stats.blocked_pairs.forEach(function (b) {
+          var item = el("div", { "class": "blocked" });
+          item.appendChild(el("div", {}, b.pair + " (" + b.confusion + "): " +
+            b.members.map(function (m) { return m.thai + " " + m.gloss; }).join(" / ")));
+          b.findings.forEach(function (f) {
+            item.appendChild(el("div", {}, f.rule + " on " + f.note_id + ": " + f.evidence));
+          });
+          item.appendChild(el("div", {}, "cure: " + b.cure));
+          panel.appendChild(item);
+        });
+      } else {
+        panel.appendChild(el("div", {}, "none"));
       }
 
       panel.appendChild(el("div", { style: "margin-top:10px;color:#9aa4b1;" }, "press s to close"));

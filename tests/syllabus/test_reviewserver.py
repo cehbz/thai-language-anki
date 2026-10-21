@@ -2796,6 +2796,34 @@ def test_stats_history_carries_reverified_and_demoted_per_run(derivations, db):
     assert [(r["reverified"], r["demoted"]) for r in hist] == [(0, 0), (5, 2)]
 
 
+def test_stats_list_each_blocked_pair_with_its_members_findings_and_cure(
+        w1, w2, keyword_word, confusion, pair, grapheme, db, media_store):
+    """Spec 5 r23: a pair no pair rule lets stand is listed with its
+    members (Thai and gloss), each blocking finding with its evidence,
+    and its cure."""
+    unsettled = dataclasses.replace(w1, pron=pron(*w1.pron.syllables, posterior=0.6))
+    s = _syllabus_for(unsettled, w2, keyword_word, confusion, pair, grapheme, db)
+    blocked, = rs.compute_stats(_derivations_for(s, db, media_store))["blocked_pairs"]
+    assert blocked["pair"] == "pair-rice-near"
+    assert blocked["confusion"] == "tone:mid-low"
+    assert blocked["members"] == [{"id": "rice", "thai": "ข้าว", "gloss": "rice"},
+                                  {"id": "near", "thai": "ใกล้", "gloss": "near"}]
+    assert [(f["rule"], f["note_id"]) for f in blocked["findings"]] == [
+        ("pair/pronunciation-settled", "rice")]
+    assert "posterior 0.600" in blocked["findings"][0]["evidence"]
+    assert blocked["cure"] == "awaiting evidence from wiktionary, thai-language.com"
+
+
+def test_stats_list_no_blocked_pair_when_every_pair_is_usable(derivations):
+    assert rs.compute_stats(derivations)["blocked_pairs"] == []
+
+
+def test_the_stats_page_renders_the_blocked_pairs_panel():
+    assert 'el("h3", {}, "Blocked pairs")' in rs.INDEX_HTML
+    assert "stats.blocked_pairs.forEach" in rs.INDEX_HTML
+    assert "b.cure" in rs.INDEX_HTML
+
+
 # --- HTTP layer (spec 5 section 2 endpoints, live loopback server) ---------
 
 @pytest.fixture

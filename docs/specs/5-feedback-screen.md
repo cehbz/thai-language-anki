@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 22, proposed 2026-10-07 against principles r8 and architecture r6.
+Revision 23, proposed 2026-10-20 against principles r8 and architecture r6.
 Revision process: docs/principles.md.
 
 Revision log:
@@ -96,6 +96,7 @@ Revision log:
 - r20 2026-10-04: the gallery orders cards by their own due, not note by note; the AudioCloze card (spec 4 r13) carries its type and one-line meaning like every card type, in the gallery, on a rate question and in the comment pass. User ruling 2026-10-04. Evidence: KB thai-language-anki/revision-evidence (spec 5 r20).
 - r21 2026-10-07: a supply is a file's bytes, pasted into the supply box, dropped on it or chosen with its picker (a phone's photo library or camera), posted with the answer and ingested as a URL's bytes are, its origin the file's name; or a URL; supply by path is removed. The review site binds to the address providers.yaml `review.host` names, loopback by default. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 5 r21).
 - r22 2026-10-07: a check request (subject, artifact, note) put by a run or a session is asked first: the artifact, the cards that use it and the note, rated unacceptable/acceptable/good with an optional note; an answer closes it, as does the artifact leaving every card. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 5 r22).
+- r23 2026-10-20: the stats screen lists each blocked pair (a pairs.yaml pair either pair rule blocks): its members (Thai and gloss), each blocking finding with its evidence, and its cure (replaced by a pair, awaiting evidence from named families, or needs a ruling), derived, never stored. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 5 r23).
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -253,6 +254,24 @@ per-subject screen lists excluded candidates with the reason and the
 subject's card-level flags (spec 4 §4). Every derivation the screen
 shows (current-best, exhausted, queue, coverage) comes from the same
 wired media index and parameters the run uses; the screen computes none.
+
+Per-deck, the stats also list each blocked pair (r23): a pairs.yaml pair
+outside the usable pairs (spec 1 §4, `pair/pronunciation-settled` and
+`pair/exact-confusion`), with its id, its confusion, its members (Thai
+and gloss), each finding blocking it with the finding's evidence, and
+its cure, the first of these that holds:
+- `replaced by <pairs>`: a usable pair for the same confusion was
+  adopted after it (later in pairs.yaml), or the confusion's pair need
+  is met by usable pairs without it, which are then named;
+- `awaiting evidence from <families>`: a dictionary (Wiktionary,
+  thai-language.com; spec 3 §3) has no answer on record for a blocking
+  member's form, so that family's reading can still arrive (a phrase is
+  never looked up); a blocking member is an unsettled or dissenting one,
+  and every member of a pair blocked by `pair/exact-confusion`;
+- `needs a ruling`: otherwise -- the evidence is all in and a member
+  stays unsettled, or its spoken witness dissents, or the settled
+  readings have left the pair's contrast.
+The list is derived from the record on every request, never stored.
 
 ## 4. Explicitly out
 
