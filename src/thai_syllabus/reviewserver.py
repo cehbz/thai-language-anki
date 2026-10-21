@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import ipa
+from . import ipa, paiboon
 from .authority import role_for
 from .blockedpairs import blocked_pairs
 from .cachekeys import DrillKey, LearnerKey, ProvideKey, RunReportKey, WaiverKey
@@ -66,7 +66,10 @@ from .derivations import (
 from .attempts import classifier_nouns_of
 from .checkrequest import CheckRequest, check_requests, open_check_requests
 from .ids import PairId, WordId
+from .engines import convert_thai_language_com
+from .entities import Pronunciation
 from .learner import (ACTION_RATINGS, append_comment, append_comment_veto, append_direction,
+                      append_ruling,
                       append_rating)
 from .media import Speaker
 from .ports import Answer, CacheReader, RecordWriter, StudyReader
@@ -85,7 +88,9 @@ from .record import (
     run_reports,
     source_asks,
 )
+from .phonology import syllables_from_verdict
 from .run import LEARNER_DEFAULT_SESSION_BUDGET
+from .settlement import judge_subjects, readings_on_record, rulings_on_record
 from .store import MediaStore
 from .syllabus import Syllabus
 
@@ -645,12 +650,104 @@ def _check_questions(d: "Derivations", *, budget: int,
     return items
 
 
+RULING_PROMPT = ("Ask a Thai speaker to say this word, then choose the reading they said "
+                 "(or can't tell), and note who or what you consulted.")
+
+
+def _syllable_dicts(reading: Sequence[Any]) -> list[dict[str, Any]]:
+    return [{"segments": list(s.segments), "vowel_length": s.vowel_length, "tone": s.tone}
+            for s in reading]
+
+
+def _site_paiboon(answer: Mapping[str, Any]) -> dict[tuple, str]:
+    """thai-language.com's own Paiboon string per reading its entries' IPA
+    converts to (the first entry's, where two give one reading)."""
+    out: dict[tuple, str] = {}
+    for entry in answer.get("entries", []):
+        for text in entry.get("ipa", []):
+            reading = convert_thai_language_com(text)
+            if reading and entry.get("paiboon"):
+                out.setdefault(reading, entry["paiboon"])
+    return out
+
+
+def _ruling_question(d: "Derivations", word: Any, pairs: Sequence[Any],
+                     rows: Sequence[tuple[Any, Answer, list[Any]]], *,
+                     syllabus_state_id: str) -> dict[str, Any]:
+    """A ruling question (spec 3 r70): the form, its gloss, the pairs it
+    blocks, each distinct reading on record with the oracles that gave it
+    and its Paiboon (thai-language.com's own where it gave the reading,
+    else rendered), the word's current-best recording."""
+    readings: dict[tuple, dict[str, Any]] = {}
+    for member, row, reports in rows:
+        site = _site_paiboon(row.answer) if member.source == "thai-language.com" else {}
+        for reading in reports:
+            if isinstance(reading, str):     # the rule tone engine's tone alone
+                continue
+            view = readings.setdefault(reading, {
+                "syllables": _syllable_dicts(reading), "paiboon": None, "oracles": [],
+                "ipa": ipa.render(Pronunciation(syllables=reading, posterior=0.0,
+                                                spoken_dissent=False))})
+            if member.source not in view["oracles"]:
+                view["oracles"].append(member.source)
+            if view["paiboon"] is None and reading in site:
+                view["paiboon"] = site[reading]
+    for reading, view in readings.items():
+        if view["paiboon"] is None:
+            view["paiboon"] = paiboon.render(reading)
+    subject = str(word.id)
+    recording = _artifact(d, _best(d, subject, "recording").artifact_sha)
+    return {
+        "type": "ruling", "subject": subject, "kind": "ruling", "subject_kind": "word",
+        "role": role_for("ruling"), "form": word.thai, "gloss": word.meaning,
+        "pairs": [{"pair": p.id, "confusion": p.confusion,
+                   "members": [{"id": m, "thai": w.thai if w else None,
+                                "gloss": w.meaning if w else None}
+                               for m in p.members for w in [d.syllabus.find_word(m)]]}
+                  for p in pairs],
+        "readings": list(readings.values()),
+        "recordings": [recording] if recording else [],
+        "prompt": RULING_PROMPT,
+        "label": _subject_label(d.syllabus, subject, "word"),
+        "shown": _question_shown("recording", subject, "word",
+                                 recording["sha"] if recording else None, syllabus_state_id),
+        "comments": _comment_views(d.db.assessments_of(subject)),
+    }
+
+
+def _ruling_questions(d: "Derivations", *, syllabus_state_id: str) -> list[dict[str, Any]]:
+    """One question per form of a blocking member of a pair whose cure is
+    `needs a ruling` (blockedpairs), in pairs.yaml order. A form whose
+    newest ruling, "can't tell" included, is newer than every reading on
+    record is not asked again until new evidence arrives on it."""
+    pairs_of: dict[str, list[Any]] = {}
+    for b in blocked_pairs(d.syllabus, d.db):
+        if b.cure.kind == "ruling":
+            for m in b.blocking:
+                pairs_of.setdefault(m, []).append(b.pair)
+    items: list[dict[str, Any]] = []
+    asked: set[str] = set()
+    for member, pairs in pairs_of.items():
+        word = d.syllabus.find_word(member)
+        if word is None or word.thai in asked:
+            continue
+        asked.add(word.thai)
+        subjects = judge_subjects(w for w in d.syllabus.words if w.thai == word.thai)[word.thai]
+        rows = readings_on_record(d.db, word.thai, subjects, current_rubric=d.current_rubric)
+        rulings = rulings_on_record(d.db, word.thai, subjects)
+        if rulings and rulings[0].ts > max((row.ts for _m, row, _r in rows), default=0):
+            continue
+        items.append(_ruling_question(d, word, pairs, rows, syllabus_state_id=syllabus_state_id))
+    return items
+
+
 def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                 budget: int) -> list[dict[str, Any]]:
     """The question session (spec 5 section 1): the check requests on
     record and four kinds from derivations.py under `d`'s parameters, capped by the learner-attention
     budget (spec 3 section 7's "learner" Budget, ReviewContext's own
     learner_budget). Open check requests fill it first (spec 5 r22), then
+    the pronunciation ruling questions (spec 3 r70), then
     the F10-ordered rate questions; direction requests, challenger
     comparisons and re-asks fill what is left. A
     kind with no derivation input yields no questions.
@@ -674,6 +771,8 @@ def build_queue(d: "Derivations", study: StudyReader | None = None, *,
                     provenance_source=d.provenance_source,
                     nothing_ttl=d.nothing_ttl, now_ns=now_ns, needs=needs)
     items = _check_questions(d, budget=budget, syllabus_state_id=syllabus_state_id)
+    if len(items) < budget:
+        items.extend(_ruling_questions(d, syllabus_state_id=syllabus_state_id)[:budget - len(items)])
     if len(items) < budget:
         for e in entries:
             rows = rows_for(d.db, e.subject, e.kind)
@@ -935,6 +1034,7 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
     (cachekeys.DirectionKey for a typed direction, cachekeys.WaiverKey for
     a waiver). `payload` shapes:
       rate/reask:  {subject, kind, action: 1-4, artifact_sha?, note?}
+      ruling:      {subject, kind: "ruling", form, reading: [syllable] | null, note?}
       challenger:  {subject, kind, action: "keep"|"switch", artifact_sha?}
       direction:   {subject, kind, direction: TEXT, subject_kind?}
       waiver:      {finding: {rule, note_id, artifact_sha?}, waived?, reason?}
@@ -961,6 +1061,14 @@ def append_answer(record: RecordWriter, payload: Mapping[str, Any]) -> dict[str,
     kind = payload["kind"]
     subject_kind = payload.get("subject_kind", "word")
     role = payload.get("role") or role_for(kind, subject_kind)
+
+    if kind == "ruling":
+        reading = payload.get("reading")
+        ts = append_ruling(record, subject=subject, form=payload["form"],
+                           reading=None if reading is None
+                           else syllables_from_verdict({"syllables": reading}),
+                           note=payload.get("note") or "")
+        return {"ok": True, "ts": ts, "kind": "ruling"}
 
     if "direction" in payload:
         text = payload["direction"]
@@ -1547,8 +1655,8 @@ def _valid_shown_value(v: Any) -> bool:
 # question carries as its `kind`. A comment recording anything else
 # could never be read back as evidence against a question, so the
 # handler refuses it the way it refuses a malformed `shown`.
-_QUESTION_KINDS = frozenset({"rate", "direction", "challenger", "reask", "check"})
-_ARTIFACT_KINDS = frozenset({"picture", "recording", "rendition"})
+_QUESTION_KINDS = frozenset({"rate", "direction", "challenger", "reask", "check", "ruling"})
+_ARTIFACT_KINDS = frozenset({"picture", "recording", "rendition", "ruling"})
 
 # The kinds of thing a subject can be (record.subject_kind_of's own
 # vocabulary, the one _subject_label and authority.role_for branch on).
@@ -2260,6 +2368,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     else if (q.type === "challenger") { renderChallenger(q, box); }
     else if (q.type === "reask") { renderReask(q, box); }
     else if (q.type === "check") { renderCheck(q, box); }
+    else if (q.type === "ruling") { renderRuling(q, box); }
     main.appendChild(box);
     saveProgress();
   }
@@ -2471,6 +2580,39 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       actions.appendChild(btn);
     });
     box.appendChild(actions);
+  }
+
+  // Spec 3 r70: a blocked pair's member the evidence cannot settle. The
+  // learner asks a Thai speaker and picks one reading on record, or
+  // "can't tell"; the note says who or what was consulted.
+  function renderRuling(q, box) {
+    box.appendChild(subjectHeader(q, " — which reading is right?"));
+    box.appendChild(el("div", { "class": "check-note" }, q.prompt));
+    q.pairs.forEach(function (p) {
+      box.appendChild(el("div", { "class": "query" }, "blocks " + p.pair + " (" + p.confusion + "): " +
+        p.members.map(function (m) { return m.thai + " " + m.gloss; }).join(" / ")));
+    });
+    q.recordings.forEach(function (art) { box.appendChild(artifactView("recording", art, null)); });
+    renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue);
+    box.appendChild(el("input", { id: "rulingNote", "class": "check-note-input",
+                                  placeholder: "who or what you consulted" }));
+    var actions = el("div", { "class": "actions" });
+    q.readings.forEach(function (r) {
+      var btn = el("button", { "class": "good", title: r.ipa },
+                   r.paiboon + " — " + r.oracles.join(", "));
+      btn.addEventListener("click", function () { answerRuling(q, r.syllables); });
+      actions.appendChild(btn);
+    });
+    var cantTell = el("button", { "class": "bad" }, "can't tell");
+    cantTell.addEventListener("click", function () { answerRuling(q, null); });
+    actions.appendChild(cantTell);
+    box.appendChild(actions);
+  }
+
+  function answerRuling(q, syllables) {
+    var noteBox = document.getElementById("rulingNote");
+    finishAnswer({ subject: q.subject, kind: q.kind, subject_kind: q.subject_kind,
+                   form: q.form, reading: syllables, note: noteBox ? noteBox.value.trim() : "" });
   }
 
   function answerCheck(q, action) {

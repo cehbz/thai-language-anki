@@ -1,6 +1,6 @@
 # Spec 5: The feedback screen
 
-Revision 23, proposed 2026-10-20 against principles r8 and architecture r6.
+Revision 24, proposed 2026-10-20 against principles r8 and architecture r6.
 Revision process: docs/principles.md.
 
 Revision log:
@@ -97,6 +97,7 @@ Revision log:
 - r21 2026-10-07: a supply is a file's bytes, pasted into the supply box, dropped on it or chosen with its picker (a phone's photo library or camera), posted with the answer and ingested as a URL's bytes are, its origin the file's name; or a URL; supply by path is removed. The review site binds to the address providers.yaml `review.host` names, loopback by default. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 5 r21).
 - r22 2026-10-07: a check request (subject, artifact, note) put by a run or a session is asked first: the artifact, the cards that use it and the note, rated unacceptable/acceptable/good with an optional note; an answer closes it, as does the artifact leaving every card. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence (spec 5 r22).
 - r23 2026-10-20: the stats screen lists each blocked pair (a pairs.yaml pair either pair rule blocks): its members (Thai and gloss), each blocking finding with its evidence, and its cure (replaced by a pair, awaiting evidence from named families, or needs a ruling), derived, never stored. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 5 r23).
+- r24 2026-10-20: a pronunciation ruling question (spec 3 r70), asked after the check requests: the form, its gloss, the pairs it blocks, each distinct reading on record with the oracles that gave it in Paiboon romanization, the word's current-best recording, an instruction to ask a Thai speaker, a choice of reading or "can't tell", and a note of who or what was consulted. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 5 r24).
 
 Scope: the learner-backend transport — the local web surface where the
 learner answers the system's questions and reviews the deck. Policy lives
@@ -130,7 +131,8 @@ append as study-adjacent evidence rows.
 
 **Question session**: serves the spec-3 queue, capped by the
 learner-attention budget (default 20/session, configurable), open check
-requests first (kind 5, r22), then highest expected gain first. Pull-based: the learner answers any number and
+requests first (kind 5, r22), then pronunciation rulings (kind 6, r24),
+then highest expected gain first. Pull-based: the learner answers any number and
 stops; unanswered questions stay queued. Question kinds:
 
 1. **Rate a picture** (word or scene role): shows the English gloss (and
@@ -213,6 +215,19 @@ stops; unanswered questions stay queued. Question kinds:
    this". The answer is a learner rating row naming the request, which
    closes it. A request whose artifact is on no compiled card of its
    subject is stale: closed, not asked.
+6. **Pronunciation ruling** (r24, spec 3 §6 r70): a blocking member of a
+   blocked pair whose cure is `needs a ruling` (§3), one question per
+   form. It shows the form, its gloss, the pairs it blocks (members'
+   Thai and gloss), each distinct reading on record grouped by reading
+   and naming the oracles that gave it, rendered in Paiboon romanization
+   (thai-language.com's own Paiboon string where that reading came from
+   it, otherwise rendered: unaspirated stops g, bp, dt and aspirated k,
+   p, t; long vowels doubled; tone marked on the vowel, mid unmarked,
+   low à, falling â, high á, rising ǎ; syllables hyphenated) with its
+   IPA as a tooltip, the word's current-best recording, and the
+   instruction to ask a Thai speaker. Actions: choose a reading, or
+   "can't tell", with a note of who or what was consulted. The answer is
+   one learner row under role `pronunciation-ruling`.
 
 `n` on any question comments on its subject (r9): the row is the gallery
 comment's shape anchored on the subject under card kind `question`,

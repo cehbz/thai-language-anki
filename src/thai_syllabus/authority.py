@@ -4,7 +4,7 @@ the derivations (spec 3) consume these values; they do not define them.
 """
 from __future__ import annotations
 
-__all__ = ["AUTHORITY_ORDER", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "ROLE_FOR_VOICE",
+__all__ = ["AUTHORITY_ORDER", "RULING_ROLE", "ROLE_FOR_KIND", "ROLE_FOR_SENTENCE_SUBJECT", "ROLE_FOR_VOICE",
            "SENTENCE_SUBJECT_KINDS", "role_for", "sentence_role"]
 
 
@@ -24,7 +24,12 @@ AUTHORITY_ORDER: dict[str, tuple[str, ...]] = {
     "recording-for-sentence": ("mechanical", "judge"),
     "rendition-for-pair": ("rendition",),   # the one-speaker check
     "pronunciation-for-word": ("judge",),
+    "pronunciation-ruling": ("learner",),   # decisive over every oracle (spec 3 r70)
 }
+
+# The learner's ruling on a form's reading (spec 3 r70): asked of a
+# blocked pair's member the evidence leaves unsettled or dissenting.
+RULING_ROLE = "pronunciation-ruling"
 
 
 # Need kind (or a question kind such as pronunciation -- spec 3 r28:
@@ -39,6 +44,7 @@ ROLE_FOR_KIND: dict[str, str] = {
     "rendition": "rendition-for-pair",
     "sentence": "sentence-for-target",
     "pronunciation": "pronunciation-for-word",
+    "ruling": RULING_ROLE,
 }
 
 

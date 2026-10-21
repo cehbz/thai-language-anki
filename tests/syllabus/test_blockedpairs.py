@@ -123,3 +123,14 @@ def test_a_dissenting_spoken_witness_with_all_evidence_in_needs_a_ruling(db):
     blocked, = blocked_pairs(_syllabus(db, [dissenting, B], [_pair("p1", A, B)]), db)
     assert "dissents" in blocked.findings[0].evidence
     assert blocked.cure == Cure("ruling")
+
+
+def test_an_unsettled_member_is_the_one_blocking_its_pair(db):
+    blocked, = blocked_pairs(_syllabus(db, [_unsettled(A), B], [_pair("p1", A, B)]), db)
+    assert blocked.blocking == ("a",)
+
+
+def test_every_member_of_a_drifted_pair_is_blocking(db):
+    drifted = word("b", "ข", "b", syllables=(HIGH,))
+    blocked, = blocked_pairs(_syllabus(db, [A, drifted], [_pair("p1", A, B)]), db)
+    assert blocked.blocking == ("a", "b")

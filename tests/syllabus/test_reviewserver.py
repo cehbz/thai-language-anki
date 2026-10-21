@@ -30,7 +30,8 @@ from thai_syllabus.assessor import RecordingCheckBackend, mechanical_question
 from thai_syllabus.attempts import sources_for
 from thai_syllabus.audio import condition_recording
 from thai_syllabus.authority import role_for
-from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, CommentReadingKey, DirectionKey, FlagKey,
+from thai_syllabus.cachekeys import (AttemptOutcomeKey, BatchMarkerKey, CommentReadingKey, DictionaryKey,
+                                    DirectionKey, FlagKey,
                                     JudgeKey, LearnerKey, MechanicalKey, PhraseKey, ProvideKey,
                                     RunReportKey, comment_identity, preference_identity, sha)
 from thai_syllabus.compile import CARD_CSS
@@ -44,7 +45,7 @@ from thai_syllabus.store import MediaStore, SyllabusDb
 from thai_syllabus.syllabus import Syllabus
 from thai_syllabus.wiring import Derivations, sources_for_need_of
 
-from .builders import PROV, clip, sentence, syl, pron, target, thai_of, word
+from .builders import PROV, clip, on_record, sentence, syl, pron, target, thai_of, word
 
 # The recording check's current key (wiring._recording_check's params).
 _MECH_KEY = RecordingCheckBackend(resolve_path=lambda sha: None).cache_key
@@ -451,7 +452,8 @@ def test_every_question_names_its_subject_in_words_never_a_bare_sha():
     """
     assert "function subjectHeader(q, suffix)" in rs.INDEX_HTML
     assert "var thai = (q.label && q.label.thai)" in rs.INDEX_HTML
-    assert rs.INDEX_HTML.count("subjectHeader(q") == 6  # the definition + five renderers
+    assert rs.INDEX_HTML.count("subjectHeader(q") == 7  # the definition + six renderers
+    assert 'subjectHeader(q, " — which reading is right?")' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — check request")' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — exhausted, attempts=" + q.attempts)' in rs.INDEX_HTML
     assert 'subjectHeader(q, " — a new candidate outranks your pick")' in rs.INDEX_HTML
@@ -489,7 +491,7 @@ def test_the_subjects_comments_are_listed_under_a_question_each_unread():
     assert "function renderComments(items, box, subject, subjectKind, reload)" in rs.INDEX_HTML
     assert "function renderCardNotes" not in rs.INDEX_HTML
     assert "renderComments(card.notes, box, card.subject," in rs.INDEX_HTML
-    assert rs.INDEX_HTML.count("renderComments(q.comments, box, q.subject,") == 5
+    assert rs.INDEX_HTML.count("renderComments(q.comments, box, q.subject,") == 6
     assert 'el("div", { "class": "reading unread" }, "unread")' in rs.INDEX_HTML
     assert 'on a " + (n.question_kind || "") + " question"' in rs.INDEX_HTML
 
@@ -554,7 +556,7 @@ def test_every_comment_list_names_the_subject_the_strike_would_veto():
         "word", "sentence", "minimal_pair", "grapheme"}
     assert '|| "word"' not in rs.INDEX_HTML
     assert rs.INDEX_HTML.count(
-        "renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue)") == 5
+        "renderComments(q.comments, box, q.subject, q.subject_kind, loadQueue)") == 6
     # no call site left on the r9 two-argument form
     assert "renderComments(card.notes, box)" not in rs.INDEX_HTML
     assert "renderComments(q.comments, box)" not in rs.INDEX_HTML
@@ -2816,6 +2818,89 @@ def test_stats_list_each_blocked_pair_with_its_members_findings_and_cure(
 
 def test_stats_list_no_blocked_pair_when_every_pair_is_usable(derivations):
     assert rs.compute_stats(derivations)["blocked_pairs"] == []
+
+
+KHAAW_FALLING = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="falling"),)
+KHAAW_LOW = (syl(onset="kʰ", vowel="a", coda="w", length="long", tone="low"),)
+
+
+@pytest.fixture
+def ruling_derivations(w1, w2, keyword_word, confusion, pair, grapheme, db, media_store):
+    """rice (ข้าว) unsettled with all its evidence in: thaig2p, Wiktionary
+    and thai-language.com read it falling, tltk low; its pair blocked with
+    the cure `needs a ruling` (spec 3 r70)."""
+    unsettled = dataclasses.replace(w1, pron=pron(*w1.pron.syllables, posterior=0.6))
+    s = _syllabus_for(unsettled, w2, keyword_word, confusion, pair, grapheme, db)
+    on_record(db, "ข้าว", KHAAW_FALLING, KHAAW_LOW)
+    _dictionary_row(db, "wiktionary", "ข้าว", {"revid": 1, "ipa": ["/kʰaːw˥˩/"]})
+    _dictionary_row(db, "thai-language.com", "ข้าว",
+                    {"entries": [{"id": "1", "paiboon": "kâaw", "ipa": ["kʰaːw˥˩"]}]})
+    return _derivations_for(s, db, media_store)
+
+
+def _dictionary_row(db, source, form, answer):
+    db.append(port="provide", backend=source, key=DictionaryKey(source, form),
+              subject=f"dictionary:{form}", question={"form": form}, answer=answer)
+
+
+def _rulings(d):
+    return [q for q in rs.build_queue(d, budget=20) if q["type"] == "ruling"]
+
+
+def test_a_blocked_pairs_member_needing_a_ruling_is_a_learner_question(ruling_derivations, db):
+    _provide(db, "rice", "recording", backend="forvo", items=[{"sha": "s1"}])
+    _mechanical_pass(db, "rice", "s1")
+    q, = _rulings(ruling_derivations)
+    assert (q["subject"], q["kind"], q["form"], q["gloss"]) == ("rice", "ruling", "ข้าว", "rice")
+    assert q["role"] == "pronunciation-ruling"
+    assert [p["pair"] for p in q["pairs"]] == ["pair-rice-near"]
+    assert [(r["paiboon"], r["oracles"]) for r in q["readings"]] == [
+        ("kâaw", ["thaig2p", "wiktionary", "thai-language.com"]),   # the site's own Paiboon
+        ("kàao", ["tltk"])]                                         # rendered
+    assert q["readings"][0]["syllables"] == [
+        {"segments": ["kʰ", "a", "w"], "vowel_length": "long", "tone": "falling"}]
+    assert [r["sha"] for r in q["recordings"]] == ["s1"]
+    assert "Thai speaker" in q["prompt"]
+
+
+def test_a_member_whose_dictionaries_have_not_answered_is_not_asked(
+        w1, w2, keyword_word, confusion, pair, grapheme, db, media_store):
+    unsettled = dataclasses.replace(w1, pron=pron(*w1.pron.syllables, posterior=0.6))
+    s = _syllabus_for(unsettled, w2, keyword_word, confusion, pair, grapheme, db)
+    assert _rulings(_derivations_for(s, db, media_store)) == []
+
+
+def test_a_ruling_answer_is_a_learner_row_with_the_reading_and_the_note(ruling_derivations, db):
+    q, = _rulings(ruling_derivations)
+    rs.append_answer(db, {"subject": "rice", "kind": "ruling", "form": q["form"],
+                          "reading": q["readings"][0]["syllables"], "note": "asked Khun Nok"})
+    row, = [r for r in db.assessments_of("rice") if r.question.get("role") == "pronunciation-ruling"]
+    assert (row.port, row.backend) == ("assess", "learner")
+    assert row.question["form"] == "ข้าว"
+    assert row.answer == {"value": {"syllables": q["readings"][0]["syllables"]},
+                          "note": "asked Khun Nok"}
+
+
+@pytest.mark.parametrize("choice", [0, None])
+def test_a_ruled_or_cant_tell_member_is_not_asked_again_until_new_evidence(
+        ruling_derivations, db, choice):
+    q, = _rulings(ruling_derivations)
+    reading = None if choice is None else q["readings"][choice]["syllables"]
+    rs.append_answer(db, {"subject": "rice", "kind": "ruling", "form": "ข้าว",
+                          "reading": reading, "note": ""})
+    assert _rulings(ruling_derivations) == []
+    _dictionary_row(db, "wiktionary", "ข้าว", {"revid": 2, "ipa": ["/kʰaːw˨˩/"]})
+    assert [q["subject"] for q in _rulings(ruling_derivations)] == ["rice"]
+
+
+def test_a_ruling_question_takes_comments():
+    assert "ruling" in rs._QUESTION_KINDS and "ruling" in rs._ARTIFACT_KINDS
+
+
+def test_the_page_renders_the_ruling_question():
+    assert 'else if (q.type === "ruling") { renderRuling(q, box); }' in rs.INDEX_HTML
+    assert "function renderRuling(q, box)" in rs.INDEX_HTML
+    assert '"can\'t tell"' in rs.INDEX_HTML
 
 
 def test_the_stats_page_renders_the_blocked_pairs_panel():

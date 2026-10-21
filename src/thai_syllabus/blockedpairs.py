@@ -16,7 +16,7 @@ from typing import Literal
 
 from .cachekeys import DictionaryKey
 from .entities import MinimalPair, is_phrase
-from .ids import PairId
+from .ids import PairId, WordId
 from .pairsearch import wanted
 from .ports import CacheReader
 from .rulebook import PAIR_EXACT_CONFUSION, PAIR_PRONUNCIATION_SETTLED
@@ -46,9 +46,14 @@ class Cure:
 
 @dataclass(frozen=True)
 class BlockedPair:
+    """A blocked pair, its findings and cure, and its blocking members:
+    the unsettled or dissenting ones, or every member of a pair whose
+    readings left its contrast (any member's reading may be the one
+    wrong)."""
     pair: MinimalPair
     findings: tuple[Finding, ...]
     cure: Cure
+    blocking: tuple[WordId, ...] = ()
 
 
 def unanswered(cache: CacheReader, form: str) -> tuple[str, ...]:
@@ -79,20 +84,19 @@ def blocked_pairs(syllabus: Syllabus, cache: CacheReader) -> tuple[BlockedPair, 
         findings = [f for m in pair.members for f in by_member.get(m, ())]
         if pair.id in by_pair:
             findings.append(by_pair[pair.id])
+        blocking = pair.members if pair.id in by_pair else tuple(
+            m for m in pair.members if m in by_member)
         same = [p for p in usable if p.confusion == pair.confusion]
         since = tuple(p.id for p in syllabus.pairs[i + 1:]
                       if p.id in usable_ids and p.confusion == pair.confusion)
         if since or need.get(pair.confusion, 0) == 0:
             cure = Cure("replaced", pairs=since or tuple(p.id for p in same))
         else:
-            # A drifted pair's readings may move on any member's evidence;
-            # an unsettled member's on its own.
-            blocking = pair.members if pair.id in by_pair else tuple(
-                m for m in pair.members if m in by_member)
             awaited = {source for m in blocking
                        if (w := syllabus.find_word(m)) is not None
                        for source in unanswered(cache, w.thai)}
             families = tuple(s for s in DICTIONARIES if s in awaited)
             cure = Cure("awaiting", families=families) if families else Cure("ruling")
-        out.append(BlockedPair(pair=pair, findings=tuple(findings), cure=cure))
+        out.append(BlockedPair(pair=pair, findings=tuple(findings), cure=cure,
+                               blocking=blocking))
     return tuple(out)

@@ -236,3 +236,37 @@ def test_the_judges_reading_is_its_newest_fresh_verdict_across_the_forms_subject
     got = evidence_on_record(db, {"ข้าว": ["rice", "candidate:ข้าว"], "ดี": ["good"]},
                              current_rubric={"pronunciation-for-word": RUBRIC})
     assert got == Evidence.of({"ข้าว": {JUDGE: [KHAAW]}})
+
+
+# --- the learner's ruling (spec 3 r70) -------------------------------------
+
+def test_a_ruling_is_decisive_over_the_oracles():
+    ev = Evidence.of({"ข้าว": {WIKT: [KHAAW], TLTK: [KHAAW], TLC: [KHAAW]}},
+                     rulings={"ข้าว": KHAW})
+    assert settle(ev).readings["ข้าว"] == Pronunciation(syllables=KHAW, posterior=1.0,
+                                                         spoken_dissent=False)
+
+
+def test_a_ruled_form_no_oracle_reads_is_settled():
+    assert settle(Evidence.of({}, rulings={"ข้าว": KHAW})).reading("ข้าว").syllables == KHAW
+
+
+def _rule(db, subject, form, reading, note="asked Khun Nok"):
+    from thai_syllabus.learner import append_ruling
+    append_ruling(db, subject=subject, form=form, reading=reading, note=note)
+
+
+def test_the_newest_ruling_across_the_forms_subjects_is_on_record(tmp_path):
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    _dictionary(db, "thai-language.com", "ข้าว",
+                {"entries": [{"id": "1", "paiboon": "kâao", "ipa": ["kʰaːw˥˩"]}]})
+    _rule(db, "rice", "ข้าว", KHAAW)
+    _rule(db, "candidate:ข้าว", "ข้าว", KHAW)
+    got = evidence_on_record(db, {"ข้าว": ["rice", "candidate:ข้าว"]}, current_rubric={})
+    assert got == Evidence.of({"ข้าว": {TLC: [KHAAW]}}, rulings={"ข้าว": KHAW})
+
+
+def test_cant_tell_settles_nothing(tmp_path):
+    db = SyllabusDb(tmp_path / "syllabus.db")
+    _rule(db, "rice", "ข้าว", None)
+    assert evidence_on_record(db, {"ข้าว": ["rice"]}, current_rubric={}) == Evidence.of({})

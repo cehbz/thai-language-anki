@@ -9,15 +9,17 @@ are found again (record.without_vetoed_readings).
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
+from .authority import RULING_ROLE
 from .cachekeys import CommentVetoKey, DirectionKey, LearnerKey, sha
+from .entities import Syllable
 from .ports import RecordWriter
 from .record import LEARNER_RANK
 
 __all__ = ["ACTION_RATINGS", "CommentRef", "append_comment", "append_comment_veto",
-           "append_rating", "append_direction"]
+           "append_rating", "append_direction", "append_ruling"]
 
 # action 1-4 (spec 5 section 1 kind 1) -> the learner rating vocabulary
 # derivations.py's current_best/exhausted fold over (LEARNER_RANK).
@@ -101,6 +103,22 @@ def append_direction(record: RecordWriter, *, subject: str, role: str, text: str
     return record.append(port="assess", backend="learner",
                          key=DirectionKey(subject=subject, role=role, text_sha=sha(text)),
                          subject=subject, question=question, answer={"direction": text})
+
+
+def append_ruling(record: RecordWriter, *, subject: str, form: str,
+                  reading: Sequence[Syllable] | None, note: str = "") -> int:
+    """The learner's ruling on `form`'s reading (spec 3 r70), under the
+    Word `subject` the question named: the chosen reading, or None for
+    "can't tell", and the note saying who or what was consulted."""
+    value = None if reading is None else {"syllables": [
+        {"segments": list(s.segments), "vowel_length": s.vowel_length, "tone": s.tone}
+        for s in reading]}
+    return record.append(port="assess", backend="learner",
+                         key=LearnerKey(artifact_sha=sha(form), role=RULING_ROLE),
+                         subject=subject,
+                         question={"role": RULING_ROLE, "kind": "ruling", "form": form,
+                                   "subject_kind": "word"},
+                         answer={"value": value, "note": note})
 
 
 def append_comment_veto(record: RecordWriter, *, subject: str, comment_sha: str,

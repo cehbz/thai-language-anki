@@ -16,6 +16,10 @@ variants) is a set that matches any of its values. Every form's fit
 carries an implicit value no member reported (OTHER), so a value one
 family alone reports settles at about that family's accuracy.
 
+The learner's newest ruling on a form (spec 3 r70) is decisive over
+the fit: that reading at posterior 1, no spoken dissent; the oracles'
+readings stay on record. A "can't tell" ruling settles nothing.
+
 `evidence_on_record` gathers the evidence; `settle` is the pure fold,
 memoised in-process on the evidence; `settlement_of` is the two over a
 set of Words (and any outside forms), what the loader and the run read
@@ -29,12 +33,13 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Union
 
+from .authority import RULING_ROLE
 from .cachekeys import DictionaryKey, EngineKey
 from .derivations import CANDIDATE_SUBJECT_PREFIX, stale
 from .engines import RULE_TONE_VERSION, THAIG2P_VERSION, TLTK_VERSION, convert_wiktionary
 from .entities import Pronunciation, Syllable, Tone, Word
 from .phonology import syllables_from_verdict
-from .ports import CacheReader
+from .ports import Answer, CacheReader
 from .thailanguagecom import readings as thai_language_com_readings
 
 Reading = tuple[Syllable, ...]
@@ -93,11 +98,14 @@ class Member:
 class Evidence:
     """Every member's reports of every form, frozen and canonically
     ordered so equal evidence hashes equal (the memo's key). A member
-    with no report of a form is absent; so is a form with none."""
+    with no report of a form is absent; so is a form with none.
+    `rulings` is each ruled form's learner ruling."""
     reports: tuple[tuple[str, tuple[tuple[Member, tuple[Report, ...]], ...]], ...]
+    rulings: tuple[tuple[str, Reading], ...] = ()
 
     @classmethod
-    def of(cls, by_form: Mapping[str, Mapping[Member, Iterable[Report]]]) -> Evidence:
+    def of(cls, by_form: Mapping[str, Mapping[Member, Iterable[Report]]],
+           rulings: Mapping[str, Reading] | None = None) -> Evidence:
         rows = []
         for form in sorted(by_form):
             members = tuple(sorted(
@@ -106,7 +114,7 @@ class Evidence:
             members = tuple((m, rs) for m, rs in members if rs)
             if members:
                 rows.append((form, members))
-        return cls(tuple(rows))
+        return cls(tuple(rows), tuple(sorted((rulings or {}).items())))
 
 
 @dataclass(frozen=True)
@@ -230,6 +238,8 @@ def settle(evidence: Evidence) -> Settlement:
         readings[form] = Pronunciation(syllables=syllables,
                                        posterior=min(p_seg, p_len, p_tone),
                                        spoken_dissent=dissent)
+    for form, reading in evidence.rulings:
+        readings[form] = Pronunciation(syllables=reading, posterior=1.0, spoken_dissent=False)
     return Settlement(readings=readings,
                       accuracy={feature: dict(fit.p) for feature, fit in fits.items()},
                       member_accuracy={feature: dict(fit.acc) for feature, fit in fits.items()})
@@ -247,40 +257,74 @@ def _winner(post: Mapping[tuple | None, float], count: int | None) -> tuple[tupl
     return max(eligible, key=lambda vp: vp[1])
 
 
+def readings_on_record(cache: CacheReader, form: str, subjects: Collection[str], *,
+                       current_rubric: Mapping[str, str],
+                       versions: Mapping[str, str] = ENGINE_VERSIONS
+                       ) -> list[tuple[Member, Answer, list[Report]]]:
+    """Each oracle's row reading `form` and the reports it carries: the
+    local engines' rows at `versions`, Wiktionary's and thai-language.com's
+    rows, and the newest fresh pronunciation-for-word verdict among the
+    form's `subjects`. A row that reads nothing is listed with no reports."""
+    out: list[tuple[Member, Answer, list[Report]]] = []
+    for engine, version in versions.items():
+        row = cache.latest("provide", engine, EngineKey(engine, version, form))
+        if row is not None:
+            value = row.answer.get("value")
+            out.append((Member(engine, version), row, [] if value is None else [
+                value if isinstance(value, str) else syllables_from_verdict({"syllables": value})]))
+    row = cache.latest("provide", "wiktionary", DictionaryKey("wiktionary", form))
+    if row is not None:
+        out.append((Member("wiktionary"), row,
+                    [r for r in (convert_wiktionary(ipa) for ipa in row.answer.get("ipa", [])) if r]))
+    row = cache.latest("provide", "thai-language.com", DictionaryKey("thai-language.com", form))
+    if row is not None:
+        out.append((Member("thai-language.com"), row, list(thai_language_com_readings(row.answer))))
+    verdicts = [r for s in subjects for r in cache.assessments_of(s)
+                if r.port == "assess" and r.backend == "judge"
+                and r.question.get("role") == "pronunciation-for-word"
+                and not stale(r, current_rubric)]
+    if verdicts:
+        row = max(verdicts, key=lambda r: r.ts)
+        value = row.answer.get("value")
+        out.append((Member("judge"), row,
+                    [syllables_from_verdict(value)]
+                    if isinstance(value, Mapping) and value.get("syllables") else []))
+    return out
+
+
+def rulings_on_record(cache: CacheReader, form: str, subjects: Collection[str]) -> list[Answer]:
+    """The learner's ruling rows on `form` among its `subjects`, newest first."""
+    return sorted((r for s in subjects for r in cache.assessments_of(s)
+                   if r.port == "assess" and r.backend == "learner"
+                   and r.question.get("role") == RULING_ROLE and r.question.get("form") == form),
+                  key=lambda r: r.ts, reverse=True)
+
+
+def ruled(rows: Iterable[Answer]) -> Reading | None:
+    """The reading the newest ruling naming one chose ("can't tell"
+    settles nothing); None when none does."""
+    for r in rows:
+        value = r.answer.get("value")
+        if isinstance(value, Mapping) and value.get("syllables"):
+            return syllables_from_verdict(value)
+    return None
+
+
 def evidence_on_record(cache: CacheReader, judge_subjects: Mapping[str, Collection[str]], *,
                        current_rubric: Mapping[str, str],
                        versions: Mapping[str, str] = ENGINE_VERSIONS) -> Evidence:
-    """Every reading on record of each form in `judge_subjects`: the local
-    engines' rows at `versions`, Wiktionary's and thai-language.com's
-    rows, and the newest fresh pronunciation-for-word verdict among the
-    form's subjects (`judge_subjects[form]`: its Words' ids, its
-    `candidate:` subject)."""
+    """Every reading on record of each form in `judge_subjects`
+    (`readings_on_record`; `judge_subjects[form]`: its Words' ids, its
+    `candidate:` subject) and the learner's newest ruling on it."""
     by_form: dict[str, dict[Member, list[Report]]] = {}
+    rulings: dict[str, Reading] = {}
     for form, subjects in judge_subjects.items():
-        reports: dict[Member, list[Report]] = {}
-        for engine, version in versions.items():
-            row = cache.latest("provide", engine, EngineKey(engine, version, form))
-            value = None if row is None else row.answer.get("value")
-            if value is not None:
-                reports[Member(engine, version)] = [
-                    value if isinstance(value, str) else syllables_from_verdict({"syllables": value})]
-        row = cache.latest("provide", "wiktionary", DictionaryKey("wiktionary", form))
-        if row is not None:
-            reports[Member("wiktionary")] = [
-                r for r in (convert_wiktionary(ipa) for ipa in row.answer.get("ipa", [])) if r]
-        row = cache.latest("provide", "thai-language.com", DictionaryKey("thai-language.com", form))
-        if row is not None:
-            reports[Member("thai-language.com")] = list(thai_language_com_readings(row.answer))
-        verdicts = [r for s in subjects for r in cache.assessments_of(s)
-                    if r.port == "assess" and r.backend == "judge"
-                    and r.question.get("role") == "pronunciation-for-word"
-                    and not stale(r, current_rubric)]
-        if verdicts:
-            value = max(verdicts, key=lambda r: r.ts).answer.get("value")
-            if isinstance(value, Mapping) and value.get("syllables"):
-                reports[Member("judge")] = [syllables_from_verdict(value)]
-        by_form[form] = reports
-    return Evidence.of(by_form)
+        by_form[form] = {m: reports for m, _row, reports in readings_on_record(
+            cache, form, subjects, current_rubric=current_rubric, versions=versions)}
+        reading = ruled(rulings_on_record(cache, form, subjects))
+        if reading is not None:
+            rulings[form] = reading
+    return Evidence.of(by_form, rulings)
 
 
 def judge_subjects(words: Iterable[Word], forms: Iterable[str] = ()

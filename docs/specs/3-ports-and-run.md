@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 69, proposed 2026-10-20 against principles r8 and architecture
+Revision 70, proposed 2026-10-20 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -231,6 +231,7 @@ Revision log:
 - r67 2026-10-07: the pacer carries reviews in and the deck out through the deck's own Anki collection, synced with AnkiWeb, in place of AnkiConnect and the Mac's collection file (architecture r6, spec 4 r16), and a systemd timer runs it. User ruling 2026-10-07. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r67).
 - r68 2026-10-20: every oracle's reading of a form is a record row -- the local engines per form and engine version, Wiktionary, and thai-language.com, a new dictionary backend (one lookup per form ever, 10 s apart, at most `quotas.thai-language.com.max_asks` (30) a run, `DictionaryKey(source="thai-language.com", form)`, its entry IPA kept only when the entry's headword is the form) -- and the judge's newest pronunciation verdict on the form under the current rubric; an evidence pass records them each run; the settlement (§6) is a family-level Dawid–Skene one-coin fit per feature over three error families (Wiktionary: Wiktionary, thaig2p; spelling rules: tltk, the rule tone engine, the judge; thai-language.com), a multi-reading report a set that matches any of its values, derived and never written (memoised in-process on the hash of the evidence), a change to a form's settled reading logged once by the run, which fits before and after its evidence pass, a form settled when every feature's winning posterior reaches the threshold of pair/pronunciation-settled (rulebook.yaml `thresholds`, default 0.99, spec 1 r34); adjudication is removed (no pronunciation ask for deck Words, no words.yaml rewrite, RunReport `adjudicated` and `stayed_disputed` gone); the grapheme pass seeds no pronunciation; the pair search reads settled readings, gathers dictionary evidence only for the outside forms it selects and adopts a pair only when every member is settled and its spoken witness (Wiktionary) does not dissent, which it does only when no listed reading matches the settled one on a feature; a word whose spoken witness dissents is logged every run and counted `spoken_dissent`. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r68).
 - r69 2026-10-20: the settlement is fitted over the forms in hand, not over all the evidence on record: the loader and the evidence pass fit over the deck's Words' forms, the pair search over those and its frequency pool; the result is memoised on the hash of the evidence fitted. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r69).
+- r70 2026-10-20: a learner ruling settles a word's reading: a blocked pair's member whose cure is a ruling (spec 5 r23) is a learner question (spec 5 r24), and its answer is a learner row under role `pronunciation-ruling` naming the form, the chosen reading or "can't tell", and a note; the settlement takes the newest ruling naming a reading as decisive (that reading, posterior 1, no spoken dissent), the oracles' readings staying on record; "can't tell" settles nothing, and a form whose newest ruling is newer than every reading of it on record is not asked again until new evidence arrives. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r70).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -339,14 +340,15 @@ one speaker answers empty.
 | judge (LLM) | picture-for-word (fit, preference), scene-for-sentence, sentence-for-target (naturalness, register), sentence-for-target-other-voice (naturalness as its marked speaker's sentence), word facts | judge:sha(RUBRIC):SUBJECT:IDENTITY:ROLE (IDENTITY: the artifact sha, the preference set's sha, or empty for a text-only question; a migrated legacy verdict keeps the old shape judge:sha(RUBRIC):ARTIFACT_SHA:ROLE, LegacyVerdictKey, built by migrate alone) | evidence; below learner where learner is qualified |
 | mechanical | recording: duration of the conditioned clip (spec 1 r33; a word 0.1-5 s; a sentence at least 0.1 s and at most 1 s plus 1 s per deck word, r55, r66; a gapped recording that bound plus 0.6 s per break, r65), and a Forvo clip records the subject's own form (the audiofetch row's `word`, or the media origin joined to the lookup items; r49); rendition: one speaker, every member passing, distinct member artifacts (v2, r49); media resolvable; provenance rules | parameter-explicit and subject-keyed (one verdict per (subject, artifact), as for the judge), e.g. mech:recording:0.1-5.0;own-word-v1:SUBJECT:sha for a word, mech:recording:0.1-1.0+1.0pw;own-word-v1:SUBJECT:sha for a sentence, mech:recording:0.1-1.0+1.0pw+0.6pb;own-word-v1:SUBJECT:sha for a gapped recording | ground truth for what it checks |
 | listener | recording-for-word | listener:MODEL:sha:ROLE | absent until calibrated; then above mechanical |
-| learner | picture fit, sentence quality, recording veto, waiver, card flag | learner:sha:ROLE (no rubric) | final on fit/quality/waivers; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
+| learner | picture fit, sentence quality, recording veto, waiver, card flag, pronunciation ruling (r70) | learner:sha:ROLE (no rubric; a ruling's sha is the form's) | final on fit/quality/waivers and on a form's reading; on recording and rendition roles a veto on fitness: unacceptable-none excludes the artifact from current-best and reopens the need, unacceptable-use-this nominates its artifact (it ranks once the machine verdict passes it, like a supplied one), acceptable/good is recorded and shown and never ranks, since correctness of tone and speaker is not the learner's to certify; an Anki flag queues re-verification |
 
 **Authority order per role** (domain data, spec 1 §4): picture-for-word:
 learner > judge. sentence-for-target and sentence-for-target-other-voice:
 learner > judge. recording-for-word
 and recording-for-sentence: listener (when calibrated) > mechanical;
 the learner vetoes, never ranks. rendition-for-pair: the rendition
-backend (one-speaker check); the learner vetoes, never ranks. A vetoed
+backend (one-speaker check); the learner vetoes, never ranks.
+pronunciation-ruling: learner alone (r70). A vetoed
 artifact ranks again only when the learner re-rates it.
 
 **Provenance prior** (rulebook data, an ordered list of provenance kinds,
@@ -911,6 +913,17 @@ need, sourced and judged as a word's (picture-for-word), Target or not
   is the **spoken witness**, the one source that writes the spoken
   form: it **dissents** when no reading it lists matches the
   settled reading on some feature (thaig2p is not a spoken witness).
+  The learner's **ruling** (r70) is decisive: the newest ruling on a
+  form among its Words' ids and its `candidate:` subject that names a
+  reading settles the form at that reading, posterior 1, with no
+  spoken dissent, whatever the fit says; the oracles' readings stay on
+  record and on the ruling question. A ruling of "can't tell" settles
+  nothing. A later ruling supersedes an earlier one.
+- **ruling question** (r70): a blocking member of a blocked pair whose
+  cure is a ruling (spec 5 §3) is asked of the learner (spec 5 §1), one
+  question per form, unless the form's newest ruling, "can't tell"
+  included, is newer than every reading of it on record; new evidence
+  on the form asks it again.
 
 ## 6a. Failure taxonomy
 
