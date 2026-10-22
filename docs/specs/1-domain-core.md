@@ -77,6 +77,7 @@ Revision log:
 - r35 2026-10-20: a pair's exact confusion is re-checked on loaded data by pair/exact-confusion (check, error; blocks pair membership) over the members' settled readings, which can drift out of the pair's contrast as evidence arrives (r34); a member with no reading is pair/pronunciation-settled's finding; a pair either pair rule blocks does not count toward its confusion's pair count, so the pair search refills the slot; this reverses r19's "no rule re-checks loaded data". User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r35).
 - r36 2026-10-20: a fourth severity, block, is for a finding that blocks its subject and not the deck: it leaves the gate open and the finding stays in the report; pair/pronunciation-settled and pair/exact-confusion are block (they were error, so one drifted pair stopped every compile, the pacer's included); compile drops the cards of a pair they block (spec 4 r18). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 1 r36).
 - r37 2026-10-22: the vowel signs, diacritics and tone marks of data/thai_vowels.yaml are Grapheme rows as the consonants are, each with a keyword and a recited-name Word; Grapheme.kind gains `diacritic` (็, ์); a vowel sign's or ็'s keyword carries the sign's sound in its settled reading (`keyword_sound_violation`: some syllable whose vowel and length, with any onset or coda the sound names, are the sound; วัว "cow", ua, fails for ั, a), checked at adoption and re-checked on loaded data by grapheme/keyword-carries-sound (check, block, as r36 for the pair rules: the finding stays in the report, the gate stays open, and compile drops that grapheme's card, spec 4 r21); a tone mark's and ์'s keyword are held to containment alone. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 1 r37).
+- r38 2026-10-22: a composite vowel (one written with more than one sign or around its consonant: เ◌ีย, ◌ัว, เ◌า, ◌อ and the rest) is a vowel_sign Grapheme whose symbol, its identity and its display, is its form with ◌ in the consonant's slot; a word spells it (`spells`) when its spelling has the form's shape with one consonant or cluster (a consonant and an optional ร, ล or ว) in the slot, a tone mark or ็ allowed after the slot or after a combining sign of the form (น้อง, ตั๋ว), the longest composite form winning (เ◌อะ is not also เ◌อ, เ◌าะ not เ◌า); a single sign is spelled by containment and counts inside a composite too; the keyword invariant (Grapheme.create, grapheme/keyword-contains-symbol) and the staging's placement read `spells` in place of containment. A closed syllable that drops part of the form (ขวด "bottle" writes ua without ั) is not counted, and ◌อ also matches อ read as a consonant; grapheme/keyword-carries-sound guards the keywords. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 1 r38).
 
 Scope: the entities, values, the Syllabus aggregate and its operations,
 and the rule model. Persistence formats are spec 2; port mechanics spec 3;
@@ -140,13 +141,16 @@ SoundConfusion                      # language model
                                     # 4→3, 3→2, else 1
 
 Grapheme                            # language model
-  symbol: str                       # identity
+  symbol: str                       # identity; a composite vowel's is
+                                    # its form with ◌ in the consonant's
+                                    # slot (เ◌ีย, r38), also its display
   kind: Literal[consonant, vowel_sign, diacritic, tone_mark]
   sound: str
   consonant_class: Literal[mid, high, low] | None
   keyword: WordId                   # required (F6: the card shows it);
-                                    # invariant: keyword's thai contains
-                                    # symbol, checked at construction and
+                                    # invariant: keyword's thai spells
+                                    # symbol (`spells`, r38), checked at
+                                    # construction and
                                     # re-checked on loaded data by rule;
                                     # a vowel sign's or ็'s keyword's
                                     # settled reading carries `sound`
@@ -335,8 +339,9 @@ read once readable.
   after that (one AudioCloze card per filled productive Target) and
   from its text (Cloze) only once every word it uses is read.
 - A grapheme sits just before the first Reading card, in order, of a
-  word whose form contains its symbol, and is present while any Reading
-  card of such a word is.
+  word whose form spells its symbol (r38: a single sign by
+  containment, a composite vowel by shape), and is present while any
+  Reading card of such a word is.
 
 **spelling_group(word) -> tuple[Word]** — the Words sharing the Word's
 written form (`thai`) that carry a Target, ordered by the order()
@@ -480,7 +485,7 @@ The rulebook. "compile" = enforced by compile (spec 4), not a rule;
 | F2 | coverage/categories (measure); one category per word and closure by construction |
 | F3 | picture/fit (judged), picture/preference (judged), scene/fit (judged, role scene-for-sentence), target/picture-required (check, error; words with a picture-introduced target); coverage/pictures (measure: needs with a current-best picture over picture needs, by subject kind); front-gloss policy provisional |
 | F5 | sentence/fills-novelty (check, error), target/sentence-required (check, error: no adopted sentence fills it), target/sentences-wanted (check, warn: some adopted sentence fills it, fewer than its `sentences`, r30), coverage/exercise-depth (measure: adopted sentences per word with a filled Target; value = the share used in two or more) |
-| F6 | grapheme/keyword-picture-required (check, error; the keyword Word's own picture need, spec 3 r42), grapheme/keyword-contains-symbol (check, error), grapheme/keyword-carries-sound (check, block; blocks the grapheme's card: a vowel sign's or ็'s keyword's settled reading carries its sound, `keyword_sound_violation`; a keyword with no reading is a finding; r37) |
+| F6 | grapheme/keyword-picture-required (check, error; the keyword Word's own picture need, spec 3 r42), grapheme/keyword-contains-symbol (check, error; the keyword's form spells the symbol, `spells`, r38), grapheme/keyword-carries-sound (check, block; blocks the grapheme's card: a vowel sign's or ็'s keyword's settled reading carries its sound, `keyword_sound_violation`; a keyword with no reading is a finding; r37) |
 | F7, E2 | target/recording-required (check, error), sentence/recording-required (check, error), recording/synthetic (check, warn), sentence/synthetic-productive (check, warn) |
 | F8 | by construction: order() enforces sounds-first, sentence-after-words and receptive-before-productive; compile stages hearing before reading (§3 Staging, spec 4 §2) |
 | F11 | by construction: current-best ranks judged candidates only |

@@ -34,6 +34,7 @@ Revision log:
 - r19 2026-10-20: a blocked pair's cards already in the deck's collection stop coming up for review: the compile writes beside the package the guids of every blocked pair's member notes (MemberKey guids under its current rendition), and the pacer's import suspends each of their cards not already suspended, marking it in the card's custom data, and unsuspends each marked card whose note the list no longer names, clearing the mark; a card the learner suspended carries no mark and is left alone; reviews and schedule are kept; the import's log line counts the cards suspended and unsuspended (§1, §4). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r19).
 - r20 2026-10-20: the blocked list also names the guids on every pair retirement row (spec 3 r71) whose pair is not in pairs.yaml, so a retired pair's cards stay suspended once the pair is gone. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r20).
 - r21 2026-10-22: the grapheme card serves the vowel signs, diacritics and tone marks as it serves the consonants (spec 1 r37); its Symbol field draws a combining mark on the dotted circle ◌ (U+25CC), while its guid and grapheme:: tag stay the bare symbol; a grapheme grapheme/keyword-carries-sound blocks (block severity, spec 1 r37) compiles no note and is counted dropped, reason "blocked: grapheme/keyword-carries-sound", without closing the gate, and its note's guid joins the blocked list beside the package (r19's mechanism, as for a blocked pair), so the pacer suspends its card already in the collection and unsuspends it once the keyword's reading carries its sound, the note returning under the same guid. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 4 r21).
+- r22 2026-10-22: a composite vowel's card shows its symbol as written, the ◌ in the consonant's slot its own, with no second ◌; a grapheme is placed before the first Reading card of a word whose form spells it (spec 1 r38), so a composite vowel counts by its shape and a word spelled with เ◌อะ does not place เ◌อ. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 4 r22).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -141,7 +142,8 @@ member's audio individually playable by its own button (F6b).
 fields Symbol, Sound, NameThai, KeywordThai, KeywordGloss,
 KeywordPicture, Audio, ReviewNote, CompileId.
 - Reading: front symbol (a combining mark -- ั, the upper and lower
-  vowels, ็, ์, the tone marks -- on the dotted circle ◌, r21) and the
+  vowels, ็, ์, the tone marks -- on the dotted circle ◌, r21; a
+  composite vowel as written, its ◌ the symbol's own, r22) and the
   name word's recording as Audio (r13:
   the recited name is heard here, F6); back the recited letter name
   (NameThai = the name word's own text, e.g. กอ ไก่ "gɔɔ gài", one Word
@@ -233,7 +235,7 @@ blanking "medicine" inside "hospital" cannot arise from elements).
   Cloze cards in that block in slot order, its AudioCloze cards P blocks
   later in slot order; a grapheme, which is no order() entry (spec 1
   §3), placed by compile just before the first Reading card in order,
-  present or not, of a word whose form contains its symbol, several in
+  present or not, of a word whose form spells its symbol (spec 1 r38), several in
   symbol order, and present while any Reading card of such a word is. No two cards share a due. A card gated out (Staging,
   spec 1 §3) is absent from the build and enters at its own due on a
   later compile. Anki buries siblings only when the deck's preset has its three
