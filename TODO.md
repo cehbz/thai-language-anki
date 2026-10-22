@@ -16,8 +16,6 @@ still run against them.
    at D, letters before them, AudioCloze cards once clips exist, and
    that no imported card ever blanks (the "Open after the cutover"
    items below are the known risks).
-2. Sound stage part 2 (steps 5 to 7 below): vowel signs and tone marks
-   are reading cards and come after the first spoken words under r8.
 
 ## Open after the hearing-first cutover (arc review 2026-10-04)
 
@@ -336,15 +334,13 @@ Still open:
 ## Sound stage (design approved 2026-09-12)
 
 Design: docs/superpowers/specs/2026-09-12-sound-stage-design.md
-(gitignored; rulings, sections, sequencing). Steps 1 to 4 are in (spec 5
-r7; spec 3 r28 with spec 1 r13 and spec 2 r14; spec 1 r14 with the
-inventories; step 4: 42 consonant graphemes with illustrator keyword
-pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
+(gitignored; rulings, sections, sequencing). Steps 1 to 5 and 7 are in
+(spec 5 r7; spec 3 r28 with spec 1 r13 and spec 2 r14; spec 1 r14 with
+the inventories; step 4: 42 consonant graphemes with illustrator keyword
+pictures and judged chart cells, spec 3 r41/r46; step 5: the vowel
+signs, tone marks, diacritics and 11 composite vowels, spec 1 r37/r38,
+spec 3 r72/r73).
 
-5. Keyword search for vowel signs and tone marks (spec 3): 22 rows in
-   `data/thai_vowels.yaml`, one LLM ask proposing a picturable word per
-   sign, containment checked, then the keyword-picture and chart-cell
-   pipeline the consonants went through.
 6. Pair search (weight-proportional, vocabulary first, recordability
    through Forvo): in (spec 3 r47). Part 2 in (spec 1 r21, spec 3 r48,
    spec 5 r14).
@@ -355,8 +351,6 @@ pictures and judged chart cells, spec 3 r41/r46). Next act: step 5.
    any Forvo, 61 with TTS; 453 of the 543 Forvo-covered words have one
    speaker. Improve later: a native same-speaker rendition replaces a
    synthetic one when found, and see the hired-recordings item below.
-7. Principles F6 (r8): the recited names are heard on the grapheme
-   cards; saying them is a later skill with no card yet.
 - Design §5's "stats shows sound-stage coverage" is unimplemented: nothing reads `coverage/sound-stage` (not `compute_stats`, the CLI, or the page).
 - `rendition/synthetic` warns about a rendition that does not exist: with no pair-level rendition row, `_DbMediaIndex.rendition_provenance` falls back to the members' own word recordings, so a pair with no rendition and TTS member clips gets a synthetic-rendition finding, and `speakers_of("rendition")` counts speakers who gave none.
 
