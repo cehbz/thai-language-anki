@@ -16,7 +16,7 @@ from PIL import Image as PILImage
 from thai_syllabus.assessor import (UNTRUSTED, Assessor, Excluded, JudgeBackend, JudgeUnreachable,
                                     ManyResult, RawVerdict, RecordingCheckBackend,
                                     RenditionBackend, deck_field)
-from thai_syllabus.attempts import (COMMENTS_PER_ASK, GRAPHEME_NAME_MEANING, AttemptResult,
+from thai_syllabus.attempts import (COMMENTS_PER_ASK, AttemptResult, grapheme_name_meaning,
                                     ChartCell, Need, Sourcing,
                                     _phrase_prompt, _picture_params, _pool, _sentence_prompt,
                                     assess_first, attempt, chart_cell, evidence_attempt,
@@ -44,9 +44,9 @@ from thai_syllabus.curated import (build_categories, load_graphemes, load_pairs,
                                    load_words, save_confusions, save_graphemes, save_pairs,
                                    save_targets, save_words)
 from thai_syllabus.entities import (Category, Clauses, Grapheme, MinimalPair, Sentence,
-                                    SoundConfusion, Syllable, text_sha)
+                                    SoundConfusion, Syllable, Word, text_sha)
 from thai_syllabus.ids import ConfusionId, WordId
-from thai_syllabus.inventory import ConsonantRow
+from thai_syllabus.inventory import ConsonantRow, VowelRow
 from thai_syllabus.phonology import Engines
 from thai_syllabus.media import Provenance, Speaker
 from thai_syllabus.provider import FetchBackend, LlmBackend, Provider, RawAnswer, TtsBackend
@@ -5164,6 +5164,7 @@ def _grapheme_ctx(tmp_path, syllabus, *, engines=None,
     if "confusions.yaml" in files:
         save_confusions(ctx.curated_dir / "confusions.yaml", list(syllabus.confusions))
     ctx.engines = engines or _engines()
+    ctx.vowels = lambda: ()
     return ctx
 
 
@@ -5183,7 +5184,7 @@ def test_a_consonant_whose_keyword_is_vocabulary_adopts_its_name_word_and_row(tm
     assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 1, 0)
     name = ctx.syllabus.word("name-chicken")
     assert name.thai == "กอ ไก่"                                   # กอ ไก่: the name of ก
-    assert name.meaning == GRAPHEME_NAME_MEANING.format(symbol="ก")
+    assert name.meaning == grapheme_name_meaning("consonant", "ก")
     assert ctx.syllabus.category_of("name-chicken") == "Letter names"
     assert [t.id for t in ctx.syllabus.targets if t.word == "name-chicken"] == []
     g = ctx.syllabus.graphemes[0]
@@ -5337,7 +5338,7 @@ def test_the_phrase_drafter_is_not_handed_a_chart_cells_need(tmp_path):
     ask on an item no corpus will ever be searched for."""
     chicken = word("chicken", "ไก่", "chicken")   # ไก่: chicken
     name = word("name-chicken", "กอ ไก่",          # กอ ไก่: the name of ก
-                GRAPHEME_NAME_MEANING.format(symbol="ก"))
+                grapheme_name_meaning("consonant", "ก"))
     g = Grapheme.create(symbol="ก", kind="consonant", sound="k", consonant_class="mid",
                         keyword_word=chicken, name_word=name)
     syllabus = Syllabus(words=(chicken, name), graphemes=(g,),
@@ -5494,6 +5495,130 @@ def test_a_pass_that_died_before_graphemes_yaml_re_adopts_a_closure_keyword_too(
     assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["snake", "name-snake"]
     assert list(load_targets(ctx.curated_dir / "targets.yaml")) == []
     assert ctx.syllabus.graphemes[0].name_word == "name-snake"
+
+
+# --- the grapheme pass: the vowel table adopted (spec 3 r72) --------------
+
+SARA_AA = VowelRow(symbol="า", kind="vowel_sign", sound="aː", name_thai="สระ อา",
+                   keyword_thai="กา", keyword_gloss="crow")      # า: aː; กา: crow
+MAI_HAN_AKAT = VowelRow(symbol="ั", kind="vowel_sign", sound="a", name_thai="ไม้หันอากาศ",
+                        keyword_thai="วัว", keyword_gloss="cow")  # ั: a; วัว: cow, read ua
+MAI_EK = VowelRow(symbol="่", kind="tone_mark", sound="mai-ek", name_thai="ไม้เอก",
+                  keyword_thai="ไก่", keyword_gloss="chicken")   # ่: mai ek; ไก่: chicken
+CROW = (syl("k", "a", "", "long", "mid"),)                       # กา: kaː
+COW = (syl("w", "ua", "", "long", "mid"),)                       # วัว: wua
+
+
+@pytest.mark.parametrize("kind, symbol, meaning", [
+    ("consonant", "ก", "recited name of the letter ก"),
+    ("vowel_sign", "ั", "recited name of the vowel sign ั"),
+    ("vowel_sign", "เ", "recited name of the vowel sign เ"),
+    ("diacritic", "็", "recited name of the diacritic ็"),
+    ("tone_mark", "่", "recited name of the tone mark ่"),
+])
+def test_a_recited_names_meaning_names_the_graphemes_kind(kind, symbol, meaning):
+    assert grapheme_name_meaning(kind, symbol) == meaning
+
+
+def test_a_vowel_sign_whose_keyword_reads_its_sound_is_adopted_as_a_consonant_is(tmp_path):
+    """Spec 3 r72: the vowel table's row adopts exactly as a consonant's:
+    the keyword matched by `thai`, the recited name `name-<keyword id>`
+    with the category Letter names, the row's own kind and no class."""
+    crow = word("crow", "กา", "crow", syllables=CROW)             # กา: crow
+    ctx = _grapheme_ctx(tmp_path, Syllabus(words=(crow,)))
+
+    result = grapheme_attempt(ctx, consonants=[], vowels=[SARA_AA])
+
+    assert (result.adopted_graphemes, result.adopted_words, result.adoption_skipped) == (1, 1, 0)
+    g = ctx.syllabus.graphemes[0]
+    assert (g.symbol, g.kind, g.sound, g.consonant_class) == ("า", "vowel_sign", "aː", None)
+    assert (g.keyword, g.name_word) == ("crow", "name-crow")
+    assert ctx.syllabus.word("name-crow").thai == "สระ อา"            # สระ อา: the name of า
+    assert ctx.syllabus.word("name-crow").meaning == "recited name of the vowel sign า"
+    assert ctx.syllabus.category_of("name-crow") == "Letter names"
+
+
+def test_the_pass_reads_the_ctxs_vowel_table_after_its_consonants(tmp_path):
+    crow = word("crow", "กา", "crow", syllables=CROW)             # กา: crow
+    ctx = _grapheme_ctx(tmp_path, Syllabus(words=(crow,)))
+    ctx.vowels = lambda: (SARA_AA,)
+
+    grapheme_attempt(ctx, consonants=[NGO])
+
+    assert [g.symbol for g in ctx.syllabus.graphemes] == ["ง", "า"]   # ง: ŋ; า: aː
+
+
+def test_a_vowel_signs_keyword_whose_reading_lacks_its_sound_is_skipped(tmp_path):
+    """Spec 1 r37: วัว (cow) contains ั but reads ua, not a, so it cannot
+    teach ั; nothing staged for the row is kept."""
+    cow = word("cow", "วัว", "cow", syllables=COW)                 # วัว: cow
+    ctx = _grapheme_ctx(tmp_path, Syllabus(words=(cow,)))
+
+    result = grapheme_attempt(ctx, consonants=[], vowels=[MAI_HAN_AKAT])
+
+    assert result == AttemptResult(attempted=False, adoption_skipped=1)
+    assert ctx.syllabus.graphemes == ()
+    assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["cow"]
+
+
+def test_a_vowel_signs_vocabulary_keyword_with_no_reading_waits(tmp_path):
+    """Spec 3 r72: a keyword with no settled reading cannot show it carries
+    the sound yet, so the row is not adopted this run, logged and counted;
+    nothing is written."""
+    crow = Word(id=WordId("crow"), thai="กา", pron=None, meaning="crow")   # กา: crow
+    ctx = _grapheme_ctx(tmp_path, Syllabus(words=(crow,)))
+    before = (ctx.curated_dir / "words.yaml").read_bytes()
+
+    result = grapheme_attempt(ctx, consonants=[], vowels=[SARA_AA])
+
+    assert result == AttemptResult(attempted=False, adoption_skipped=1)
+    assert ctx.syllabus.graphemes == ()
+    assert (ctx.curated_dir / "words.yaml").read_bytes() == before
+
+
+def test_a_closure_keyword_with_no_reading_is_kept_and_its_row_adopts_once_it_is_read(
+        tmp_path):
+    """Spec 3 r72: a keyword new to the vocabulary has no reading until
+    the evidence pass reads its form, so the closure Word is written while
+    its row waits; once the form is settled a later pass adopts the row
+    against that same Word."""
+    ctx = _grapheme_ctx(tmp_path, Syllabus())
+
+    first = grapheme_attempt(ctx, consonants=[], vowels=[SARA_AA])
+
+    assert (first.attempted, first.adopted_graphemes, first.adopted_words,
+            first.adoption_skipped) == (True, 0, 1, 1)
+    assert [(w.id, c) for w, c in load_words(ctx.curated_dir / "words.yaml")] == [
+        ("crow", None)]
+    assert ctx.syllabus.graphemes == ()
+
+    read = ctx.syllabus.with_words(tuple(replace(w, pron=pron(*CROW)) if w.id == "crow" else w
+                                         for w in ctx.syllabus.words))
+    ctx.syllabus = read
+    second = grapheme_attempt(ctx, consonants=[], vowels=[SARA_AA])
+
+    assert (second.adopted_graphemes, second.adopted_words, second.adoption_skipped) == (1, 1, 0)
+    assert [w.id for w, _ in load_words(ctx.curated_dir / "words.yaml")] == ["crow", "name-crow"]
+    assert ctx.syllabus.graphemes[0].keyword == "crow"
+
+
+def test_a_tone_mark_is_held_to_containment_and_may_share_a_consonants_keyword(tmp_path):
+    """Spec 1 r37: a tone mark's keyword is checked for containment alone;
+    ไก่ (chicken) keys ก and ่ both, and the second recited name takes the
+    next free id."""
+    chicken = Word(id=WordId("chicken"), thai="ไก่", pron=None, meaning="chicken")  # ไก่: chicken
+    ctx = _grapheme_ctx(tmp_path, Syllabus(words=(chicken,)))
+
+    result = grapheme_attempt(ctx, consonants=[KO], vowels=[MAI_EK])
+
+    assert (result.adopted_graphemes, result.adoption_skipped) == (2, 0)
+    assert [(g.symbol, g.kind, g.keyword, g.name_word) for g in ctx.syllabus.graphemes] == [
+        ("ก", "consonant", "chicken", "name-chicken"),
+        ("่", "tone_mark", "chicken", "name-chicken-2")]
+    assert ctx.syllabus.word("name-chicken-2").thai == "ไม้เอก"     # ไม้เอก: the name of ่
+    # the gloss names the kind
+    assert ctx.syllabus.word("name-chicken").meaning == "recited name of the letter ก"
+    assert ctx.syllabus.word("name-chicken-2").meaning == "recited name of the tone mark ่"
 
 
 # --- the evidence pass: every deck form's readings on record (spec 3 r68) ---

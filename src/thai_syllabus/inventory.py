@@ -27,6 +27,10 @@ class ConsonantRow:
     keyword_thai: str
     keyword_gloss: str
 
+    @property
+    def kind(self) -> Literal["consonant"]:
+        return "consonant"
+
 
 @dataclass(frozen=True)
 class VowelRow:
@@ -36,6 +40,10 @@ class VowelRow:
     name_thai: str
     keyword_thai: str
     keyword_gloss: str
+
+    @property
+    def consonant_class(self) -> None:
+        return None
 
 
 class InventoryError(ValueError):

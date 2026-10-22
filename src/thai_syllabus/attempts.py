@@ -64,11 +64,12 @@ from .derivations import (
 )
 from .dictionary import Wiktionary
 from .thailanguagecom import ThaiLanguageCom
-from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, LETTER_NAMES_CATEGORY,
-                       MinimalPair, Sentence, Target, Word, _same_form,
-                       clauses_to_json, element_word, is_phrase)
+from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, GraphemeKind,
+                       LETTER_NAMES_CATEGORY, MinimalPair, Sentence, Target, Word, _same_form,
+                       clauses_to_json, element_word, is_phrase,
+                       keyword_sound_violation)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
-from .inventory import ConsonantRow, consonants as repo_consonants
+from .inventory import ConsonantRow, VowelRow, consonants as repo_consonants, vowels as repo_vowels
 from .learner import ACTION_RATINGS, CommentRef, append_direction, append_rating
 from .media import Speaker
 from .pairsearch import Candidate, pair_id_for, select_pairs, wanted
@@ -91,7 +92,7 @@ __all__ = ["Need", "Sourcing", "Spend", "AttemptResult", "SOURCES", "SubjectKind
            "attempt", "assess_first", "sentence_attempt", "preference_attempt",
            "ChartCell", "chart_cell", "GLYPH_SOURCE",
            "phrase_attempt", "picture_query_for", "grapheme_attempt", "evidence_attempt",
-           "GRAPHEME_NAME_MEANING", "retire_sentence", "pair_search_attempt",
+           "grapheme_name_meaning", "retire_sentence", "pair_search_attempt",
            "reverify_attempt",
            "comment_attempt", "COMMENTS_PER_ASK", "draft_refusal", "draft_question", "OpenTargets",
            "DEFAULT_SENTENCE_MAX_CLAUSES", "DEFAULT_SENTENCE_MAX_WORDS",
@@ -297,14 +298,15 @@ class Sourcing:
     # more than a lookup, and a test's stand-in must offer both.
     dictionary: "Wiktionary | None" = None
     thai_language_com: "ThaiLanguageCom | None" = None
-    # The adoption pass (spec 3 r40 section 5): whether this run adopts
-    # the repo's consonant inventory at all, and the table it reads. A
-    # caller that does not want the 44 rows written into its deck (a test
-    # over a fixture deck, a probe) turns the pass off; `consonants` is
-    # the seam a test injects its own rows through, so the repo table --
-    # and, through it, the real engines -- is never read.
+    # The adoption pass (spec 3 r40 section 5, r72): whether this run
+    # adopts the repo's inventory at all, and the tables it reads. A
+    # caller that does not want the rows written into its deck (a test
+    # over a fixture deck, a probe) turns the pass off; `consonants` and
+    # `vowels` are the seams a test injects its own rows through, so the
+    # repo tables -- and, through them, the real engines -- are never read.
     adopt_graphemes: bool = True
     consonants: Callable[[], Sequence[ConsonantRow]] = field(default=repo_consonants)
+    vowels: Callable[[], Sequence[VowelRow]] = field(default=repo_vowels)
     # The pair search's pool beyond the vocabulary: the frequency list in
     # rank order (curated.load_frequency_words), read at most
     # `pair_search_depth` deep; `search_pairs` turns the pass off.
@@ -1592,12 +1594,19 @@ def evidence_attempt(ctx: Sourcing) -> AttemptResult:
     return AttemptResult(attempted=True, spoken_dissent=len(dissenting))
 
 
-# --- graphemes (the consonant inventory): the adoption pass -----------------
+# --- graphemes (the inventory): the adoption pass ---------------------------
 
-# The meaning a recited-name Word carries. A gloss is English (spec 1
-# section 1), and the one thing the card teaches is the symbol, so the
-# symbol stands delimited inside it.
-GRAPHEME_NAME_MEANING = "recited name of the letter {symbol}"
+# What a recited-name Word's meaning calls each kind of grapheme.
+_KIND_NAMES: dict[GraphemeKind, str] = {"consonant": "letter", "vowel_sign": "vowel sign",
+                                         "diacritic": "diacritic", "tone_mark": "tone mark"}
+
+
+def grapheme_name_meaning(kind: GraphemeKind, symbol: str) -> str:
+    """The meaning a recited-name Word carries. A gloss is English (spec 1
+    section 1), and the one thing the card teaches is the symbol, so the
+    symbol stands delimited inside it, after the grapheme's kind:
+    "recited name of the letter ก", "... of the vowel sign า"."""
+    return f"recited name of the {_KIND_NAMES[kind]} {symbol}"
 
 # The curated files the pass adds rows to (spec 2 r17 section 6). It
 # only ever adds: each is rewritten whole from the rows already on disk
@@ -1608,7 +1617,8 @@ _ADOPTION_FILES = ("words.yaml", "graphemes.yaml")
 
 
 def grapheme_attempt(ctx: Sourcing, *,
-                     consonants: Sequence[ConsonantRow] | None = None) -> AttemptResult:
+                     consonants: Sequence[ConsonantRow] | None = None,
+                     vowels: Sequence[VowelRow] | None = None) -> AttemptResult:
     """One adoption pass per run (spec 3 r40 section 5; design 2026-09-12
     §1): every consonant of the repo inventory not yet in
     `ctx.syllabus.graphemes` becomes a Grapheme row, with its acrophonic
@@ -1632,15 +1642,26 @@ def grapheme_attempt(ctx: Sourcing, *,
     A re-run after an interruption therefore completes the row it left
     half-written instead of duplicating it under `name-<id>-2`.
 
-    `consonants` is the row list to adopt; None reads the ctx's own table
-    seam (`Sourcing.consonants`, the repo inventory by default). The pass
-    is free, so one run adopts them all.
+    The vowel table's rows (spec 3 r72: vowel signs, diacritics, tone
+    marks) follow the consonants and adopt the same way, their keyword
+    named in the table. A vowel sign's or ็'s keyword must also carry
+    the sign's sound in its settled reading (spec 1 r37): a row whose
+    keyword reads otherwise is skipped, and one whose keyword has no
+    reading yet waits -- counted skipped, its minted closure keyword kept
+    so the evidence pass reads the form and a later run adopts the row.
+
+    `consonants` and `vowels` are the row lists to adopt; None reads the
+    ctx's own table seam (`Sourcing.consonants`, `Sourcing.vowels`, the
+    repo inventory by default). The pass is free, so one run adopts them
+    all.
     """
     if ctx.curated_dir is None:
         # No curated store to write the rows to (a caller outside a wired
         # deck), so nothing is adopted.
         return AttemptResult(attempted=False)
-    table = list(consonants) if consonants is not None else list(ctx.consonants())
+    table: list[ConsonantRow | VowelRow] = [
+        *(consonants if consonants is not None else ctx.consonants()),
+        *(vowels if vowels is not None else ctx.vowels())]
     # R7: the pass is idempotent. A symbol the deck already holds AND
     # already carries a name word is fully adopted, so only the rest of
     # the table is looked at. A symbol the deck holds but with
@@ -1674,6 +1695,7 @@ def grapheme_attempt(ctx: Sourcing, *,
     adopted_graphemes = 0
     adopted_words = 0
     completed_graphemes = 0
+    waiting_words = 0
     skipped = 0
 
     for row in rows:
@@ -1717,7 +1739,7 @@ def grapheme_attempt(ctx: Sourcing, *,
         if name_word is None:
             name_id = slug_id(f"name {keyword.id}", taken_now)
             name_word = Word(id=name_id, thai=row.name_thai, pron=None,
-                             meaning=GRAPHEME_NAME_MEANING.format(symbol=row.symbol))
+                             meaning=grapheme_name_meaning(row.kind, row.symbol))
             staged.append(name_word)
             taken_now.add(str(name_id))
         try:
@@ -1730,7 +1752,7 @@ def grapheme_attempt(ctx: Sourcing, *,
                                            consonant_class=existing.consonant_class,
                                            keyword_word=keyword, name_word=name_word)
             else:
-                grapheme = Grapheme.create(symbol=row.symbol, kind="consonant", sound=row.sound,
+                grapheme = Grapheme.create(symbol=row.symbol, kind=row.kind, sound=row.sound,
                                            consonant_class=row.consonant_class,
                                            keyword_word=keyword, name_word=name_word)
         except ValueError as e:
@@ -1739,6 +1761,25 @@ def grapheme_attempt(ctx: Sourcing, *,
             # kept.
             skipped += 1
             _log.warning("grapheme %s not adopted: %s", row.symbol, e)
+            continue
+        violation = keyword_sound_violation(grapheme.kind, grapheme.sound, keyword.pron)
+        if violation is not None:
+            skipped += 1
+            if keyword.pron is not None:
+                _log.warning("grapheme %s not adopted: keyword %s (%s): %s",
+                             row.symbol, keyword.id, keyword.thai, violation)
+                continue
+            # Spec 3 r72: the row waits for its keyword's reading. A closure
+            # keyword minted here is kept, so the evidence pass reads its
+            # form this run; the recited name waits with the row.
+            _log.info("grapheme %s waits: keyword %s (%s) has no settled reading",
+                      row.symbol, keyword.id, keyword.thai)
+            if keyword in staged:
+                words.append(keyword)
+                by_thai.setdefault(keyword.thai, keyword)
+                category_of.setdefault(keyword.id, None)
+                taken.add(str(keyword.id))
+                waiting_words += 1
             continue
         words += staged
         if completing_at is not None:
@@ -1761,7 +1802,7 @@ def grapheme_attempt(ctx: Sourcing, *,
         else:
             adopted_graphemes += 1
 
-    if not adopted_graphemes and not completed_graphemes:
+    if not adopted_graphemes and not completed_graphemes and not waiting_words:
         return AttemptResult(attempted=False, adoption_skipped=skipped)
     word_rows = [(w, category_of.get(w.id)) for w in words]
     save_words(ctx.curated_dir / "words.yaml", word_rows)
@@ -1769,6 +1810,7 @@ def grapheme_attempt(ctx: Sourcing, *,
     ctx.syllabus = ctx.syllabus.with_adoptions(
         words=words, targets=tuple(ctx.syllabus.targets),
         graphemes=graphemes, categories=build_categories(word_rows))
+    adopted_words += waiting_words
     _log.info("grapheme pass: adopted %d grapheme(s), completed %d row(s) and %d word(s)",
               adopted_graphemes, completed_graphemes, adopted_words)
     return AttemptResult(attempted=True, adopted_graphemes=adopted_graphemes,

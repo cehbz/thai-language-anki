@@ -3336,6 +3336,7 @@ def test_the_run_adopts_two_consonants_into_the_decks_curated_files(tmp_path, fa
     ctx = _wire(build_sourcing(root), fake_search, batch=fake_batch)
     ctx.adopt_graphemes = True
     ctx.consonants = lambda: (_KO, _NGO)
+    ctx.vowels = lambda: ()
     one = (syl("k", "a", "", "short", "mid"),)
     ctx.engines = _reading({form: one for form in ("ไก่", "งู", "กอ", "งอ")})
 
