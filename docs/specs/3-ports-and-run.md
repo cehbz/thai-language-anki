@@ -233,6 +233,7 @@ Revision log:
 - r69 2026-10-20: the settlement is fitted over the forms in hand, not over all the evidence on record: the loader and the evidence pass fit over the deck's Words' forms, the pair search over those and its frequency pool; the result is memoised on the hash of the evidence fitted. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r69).
 - r70 2026-10-20: a learner ruling settles a word's reading: a blocked pair's member whose cure is a ruling (spec 5 r23) is a learner question (spec 5 r24), and its answer is a learner row under role `pronunciation-ruling` naming the form, the chosen reading or "can't tell", and a note; the settlement takes the newest ruling naming a reading as decisive (that reading, posterior 1, no spoken dissent), the oracles' readings staying on record; "can't tell" settles nothing, and a form whose newest ruling is newer than every reading of it on record is not asked again until new evidence arrives. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r70).
 - r71 2026-10-20: the pair search retires a pair pair/exact-confusion blocks once its confusion has a usable replacement (spec 5 §3's cure `replaced`): a retirement row (`PairRetirementKey`, the pair's members, the finding's evidence, the replacing pairs and its member notes' guids) is appended, then pairs.yaml is rewritten without it and the removal is reported to the writing command's Guard; compile keeps the retired guids in its blocked list (spec 4 r20). A pair blocked only by pair/pronunciation-settled is kept: a ruling can cure it (r70). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r71).
+- r72 2026-10-22: the grapheme pass adopts data/thai_vowels.yaml (vowel signs, diacritics, tone marks) after the consonants, exactly as it adopts them: the table names each row's keyword and gloss, the keyword is the vocabulary Word whose `thai` matches, else a closure Word, and the recited name is `name-<keyword id>` (category `Letter names`, no Target); a vowel sign's or ็'s row waits while its keyword has no settled reading (logged, counted `adoption_skipped`; a minted closure keyword is kept so the evidence pass reads its form, and the row adopts on a later run) and is skipped when the reading does not carry the sign's sound (spec 1 r37); the glyph cell draws a combining mark on the dotted circle ◌ (U+25CC), its key and origin the bare symbol. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r72).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -332,7 +333,7 @@ one speaker answers empty.
 | thaig2p, tltk, tone | reading (a local engine's reading of a form: thaig2p's and tltk's syllables, the rule tone engine's tone of a monosyllable; a form containing whitespace read token by token; a reading refused as degenerate, r44, or truncated, r45, is no reading; a `ʔ` coda on a dead open syllable normalized away, r45) | ENGINE:VERSION:FORM | free; local | never: a new engine version is a new key |
 | wiktionary | reading (English Wiktionary's "(standard) IPA" for the exact form, several readings where the entry lists them, with the revision id; or absence; a reading with an empty syllable slot is no reading, r50) | DictionaryKey(wiktionary, form) | free HTTP, one request per `quotas.wiktionary.min_interval_seconds`, at most `quotas.wiktionary.max_asks` a run | never: one lookup per form ever; a 429 or 5xx backs off without a row (Quota, §6a) |
 | thai-language.com | reading (plain HTTP: the dictionary search for the exact form and each matched entry's page; answer `{"entries": [{"id", "paiboon", "ipa": [...]}]}`, an entry's IPA kept only when its page title's headword is the form, else `"ipa": []`; a form with no entry is `{"entries": []}`) | DictionaryKey(thai-language.com, form) | free HTTP, one request per 10 s (the site's robots crawl delay), at most `quotas.thai-language.com.max_asks` (30) a run | never: one lookup per form ever; a failed request or an error answer writes no row and ends its lookups for the run |
-| glyph | picture (the alphabet-chart cell for a grapheme's recited-name Word: the symbol in the configured Thai font beside the keyword's current-best picture, square white canvas, a thin rule between; drawn with Pillow into the media store, the item carrying its sha, provenance `glyph`, licence `generated`, origin the symbol) | glyph:KEYWORD_PICTURE_SHA:SYMBOL | free; no network | never: deterministic, so the same pair is the same bytes; a keyword whose picture changes is a new key, and a name word whose keyword has no picture is not attempted (§5: the need waits) |
+| glyph | picture (the alphabet-chart cell for a grapheme's recited-name Word: the symbol in the configured Thai font, a combining mark drawn on the dotted circle ◌ (U+25CC), beside the keyword's current-best picture, square white canvas, a thin rule between; drawn with Pillow into the media store, the item carrying its sha, provenance `glyph`, licence `generated`, origin the symbol) | glyph:KEYWORD_PICTURE_SHA:SYMBOL | free; no network | never: deterministic, so the same pair is the same bytes; a keyword whose picture changes is a new key, and a name word whose keyword has no picture is not attempted (§5: the need waits) |
 
 ## 4. Assess backends and authority
 
@@ -487,12 +488,15 @@ under an earlier key decides nothing, so a clip an earlier window failed
 is asked again, and its need is not out of options while it awaits
 (r55).
 
-**Graphemes (the consonant inventory).** One pass per run, after the
+**Graphemes (the inventory).** One pass per run, after the
 sentence attempt and before the evidence pass. Every
-consonant of `data/thai_consonants.yaml` (the repo's own inventory,
-resolved relative to the package) not already in the syllabus becomes a
-Grapheme row: its acrophonic keyword is the vocabulary Word whose `thai`
-matches, else a new closure Word (no category, no Target) whose id is the
+row of `data/thai_consonants.yaml`, then of `data/thai_vowels.yaml`
+(vowel signs, diacritics and tone marks; r72) -- the repo's own
+inventory, resolved relative to the package -- not already in the
+syllabus becomes a Grapheme row: its keyword (the acrophonic word for a
+consonant, the word the table names for a sign or mark) is the
+vocabulary Word whose `thai` matches the table's keyword,
+else a new closure Word (no category, no Target) whose id is the
 slug of the table's gloss, suffixed `-2`, `-3` while taken; its recited
 name is a new Word (id `name-<keyword id>`, `-2`, `-3` on collision like
 the keyword's, and re-used when the vocabulary already holds the recited
@@ -504,8 +508,12 @@ recorded readings of the form. words.yaml
 and graphemes.yaml are then written whole from the rows the
 loaders produced with the new ones appended, under the writing command
 (spec 2 r17): rows added, none removed. A row the pass cannot adopt --
-a keyword whose form does not contain the symbol -- is logged with its
-reason and counted `adoption_skipped`. The pass is idempotent: a second run finds every symbol present
+a keyword whose form does not contain the symbol, or, for a vowel sign
+or ็, whose settled reading does not carry the sign's sound (spec 1
+r37) -- is logged with its reason and counted `adoption_skipped`. A
+vowel sign's or ็'s row whose keyword has no settled reading yet waits
+the same way, logged and counted; a closure keyword it minted is kept,
+so the evidence pass reads its form and a later run adopts the row. The pass is idempotent: a second run finds every symbol present
 and adopts nothing. Curated rows are not needs: no bucket counts them,
 and the queue built after the pass already sees what it added.
 
@@ -1147,7 +1155,7 @@ has no illustrator source) with its key at
 layered field by field over the defaults; an explicit `max_asks: null`
 lifts a default cap for the day.
 `glyph: {font}` (r41) names the Thai .ttf/.ttc the chart cell's symbol is
-drawn with; the loader refuses a file that is not there, and a deck with
+drawn with, which must cover ◌ (U+25CC, r72); the loader refuses a file that is not there, and a deck with
 no `glyph` section registers no chart-cell backend at all.
 `quotas.wiktionary.min_interval_seconds` (1) paces the Wiktionary
 dictionary and `quotas.wiktionary.max_asks` (200; null lifts it) caps

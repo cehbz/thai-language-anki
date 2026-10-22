@@ -33,6 +33,7 @@ Revision log:
 - r18 2026-10-20: a pair blocked by pair/pronunciation-settled or pair/exact-confusion (block severity, spec 1 r36) compiles no notes and is counted dropped, reason "blocked: <rule>", without closing the gate; the compile and the pacer proceed without --force and the pair's notes return, same guids, once it is usable. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r18).
 - r19 2026-10-20: a blocked pair's cards already in the deck's collection stop coming up for review: the compile writes beside the package the guids of every blocked pair's member notes (MemberKey guids under its current rendition), and the pacer's import suspends each of their cards not already suspended, marking it in the card's custom data, and unsuspends each marked card whose note the list no longer names, clearing the mark; a card the learner suspended carries no mark and is left alone; reviews and schedule are kept; the import's log line counts the cards suspended and unsuspended (§1, §4). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r19).
 - r20 2026-10-20: the blocked list also names the guids on every pair retirement row (spec 3 r71) whose pair is not in pairs.yaml, so a retired pair's cards stay suspended once the pair is gone. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r20).
+- r21 2026-10-22: the grapheme card serves the vowel signs, diacritics and tone marks as it serves the consonants (spec 1 r37); its Symbol field draws a combining mark on the dotted circle ◌ (U+25CC), while its guid and grapheme:: tag stay the bare symbol. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 4 r21).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -139,7 +140,9 @@ member's audio individually playable by its own button (F6b).
 **grapheme**:
 fields Symbol, Sound, NameThai, KeywordThai, KeywordGloss,
 KeywordPicture, Audio, ReviewNote, CompileId.
-- Reading: front symbol and the name word's recording as Audio (r13:
+- Reading: front symbol (a combining mark -- ั, the upper and lower
+  vowels, ็, ์, the tone marks -- on the dotted circle ◌, r21) and the
+  name word's recording as Audio (r13:
   the recited name is heard here, F6); back the recited letter name
   (NameThai = the name word's own text, e.g. กอ ไก่ "gɔɔ gài", one Word
   whose recording says the whole name), keyword with its own picture
