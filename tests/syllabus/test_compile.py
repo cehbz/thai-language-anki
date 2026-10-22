@@ -2421,6 +2421,35 @@ def test_a_grapheme_is_due_just_before_the_first_reading_card_of_a_word_spelled_
     assert not [d for d in dues.values() if grapheme < d < reading]
 
 
+def test_a_composite_vowel_is_placed_by_its_shape_the_longest_form_winning(fx):
+    """Spec 4 r22: rice spelled เยอะ (a lot) places เ◌อะ before its Reading
+    card; เ◌อ, whose characters it also holds, no Reading card needs."""
+    syllabus = _fully_seeded(fx)
+    a_lot = dataclasses.replace(syllabus.word("rice"), thai="เยอะ",            # เยอะ: a lot
+                                pron=_pron(_syl("j", "ɤ", "", "short")))
+    you = Word(id=WordId("you"), thai="เธอ", pron=_pron(_syl("tʰ", "ɤ", "", "long")),
+               meaning="you")                                                  # เธอ: you
+    sara_oe = _word("name-you", "สระ เออ", "recited name of the vowel sign เ◌อ")
+    sara_oe_short = _word("name-rice", "สระ เออะ", "recited name of the vowel sign เ◌อะ")
+    graphemes = (Grapheme.create(symbol="เ◌อ", kind="vowel_sign", sound="ɤː",
+                                 consonant_class=None, keyword_word=you, name_word=sara_oe),
+                 Grapheme.create(symbol="เ◌อะ", kind="vowel_sign", sound="ɤ",
+                                 consonant_class=None, keyword_word=a_lot,
+                                 name_word=sara_oe_short))
+    syllabus = dataclasses.replace(
+        syllabus.with_words([a_lot if w.id == "rice" else w for w in syllabus.words]
+                            + [you, sara_oe, sara_oe_short]),
+        graphemes=syllabus.graphemes + graphemes)
+    fx.seed_recording("name-you", "sara oe")
+    fx.seed_recording("name-rice", "sara oe short")
+
+    dues = _card_dues(fx, syllabus)
+
+    assert dues[(genanki.guid_for("grapheme", "เ◌อะ"), "Reading")] < dues[(_word_guid("rice"),
+                                                                          "Reading")]
+    assert (genanki.guid_for("grapheme", "เ◌อ"), "Reading") not in dues
+
+
 def test_graphemes_dealt_before_one_reading_card_come_in_symbol_order(fx):
     syllabus = _fully_seeded(fx)
     mouse = _word("mouse", "หนู", "mouse")

@@ -42,7 +42,7 @@ import genanki
 
 from . import ipa
 from .derivations import SoundStage, current_best, sound_stage
-from .entities import Grapheme, MinimalPair, Sentence, Target, Word, display_form, render
+from .entities import Grapheme, MinimalPair, Sentence, Target, Word, display_form, render, spells
 from .ids import ConfusionId, WordId, sentence_cloze_key
 from .record import retired_pairs
 from .rulebook import _picture_introduced_words, sentence_note_id
@@ -808,7 +808,8 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
 def _grapheme_dues(syllabus: "Syllabus", positions: _Positions, staging: _Staging,
                    words: Sequence["Built"]) -> dict[str, int]:
     """Each grapheme's due: just before the first Reading card in order,
-    in the build or not, of a word whose form contains its symbol, several
+    in the build or not, of a word whose form spells its symbol (spec 1
+    r38, `spells`), several
     before one Reading card in symbol order (spec 4 r13 section 2), so the
     staging never moves it. Only a grapheme some Reading card among
     `words` needs has one, so no Reading front precedes its letter.
@@ -821,8 +822,8 @@ def _grapheme_dues(syllabus: "Syllabus", positions: _Positions, staging: _Stagin
                if any(c.ord == _READING_ORD for c in b.note.cards)]
     before: dict[int, list[str]] = {}
     for symbol in sorted(g.symbol for g in syllabus.graphemes):
-        if any(symbol in thai for thai in present):
-            due = next(d for d, thai in slots if symbol in thai)
+        if any(spells(symbol, thai) for thai in present):
+            due = next(d for d, thai in slots if spells(symbol, thai))
             before.setdefault(due, []).append(symbol)
     lane = READING_LANE - GRAPHEME_LANE
     for reading_due, symbols in before.items():

@@ -14,6 +14,7 @@ re-runs `exact_confusion_violation` over the settled readings: a pair made
 exact can drift out of its contrast as evidence arrives (r35).
 """
 import hashlib
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
@@ -308,16 +309,58 @@ DOTTED_CIRCLE = "\u25cc"
 def display_form(symbol: str) -> str:
     """`symbol` as the card and the chart cell show it: a combining mark
     (ั, the upper and lower vowels, ็, ์, the tone marks) on the dotted
-    circle ◌, anything else bare. The grapheme's identity stays the bare
+    circle ◌, anything else bare -- a composite vowel as written, its ◌
+    its own (spec 4 r22). The grapheme's identity stays the bare
     symbol."""
-    return DOTTED_CIRCLE + symbol if unicodedata.category(symbol) == "Mn" else symbol
+    if len(symbol) == 1 and unicodedata.category(symbol) == "Mn":
+        return DOTTED_CIRCLE + symbol
+    return symbol
+
+
+# Every Thai composite vowel spelled around its consonant, ◌ in the slot
+# (spec 1 r38): the inventory's and the forms it leaves out alike, since
+# the longest form wins whether or not it is taught.
+COMPOSITE_VOWELS = frozenset({"◌อ", "เ◌า", "เ◌ีย", "◌ัว", "เ◌ือ", "เ◌อ", "แ◌ะ", "โ◌ะ",
+                              "เ◌าะ", "เ◌อะ", "เ◌ะ", "เ◌ียะ", "เ◌ือะ", "◌ัวะ"})
+
+# The slot: one consonant, or a cluster of a consonant and ร, ล or ว. A
+# tone mark or ็ may follow it or any combining sign of the form (ตั๋ว
+# puts the mark on ั, น้อง on the consonant).
+_SLOT = "[\u0e01-\u0e2e][รลว]?"
+_MARK = "[\u0e47-\u0e4b]?"
+
+
+def _shape(form: str) -> "re.Pattern[str]":
+    before, after = form.split(DOTTED_CIRCLE)
+    tail = "".join(re.escape(c) + (_MARK if unicodedata.category(c) == "Mn" else "")
+                   for c in after)
+    return re.compile(re.escape(before) + _SLOT + _MARK + tail)
+
+
+def _spans(form: str, thai: str) -> list[tuple[int, int]]:
+    return [m.span() for m in _shape(form).finditer(thai)]
+
+
+def spells(symbol: str, thai: str) -> bool:
+    """Whether a word written `thai` spells grapheme `symbol` (spec 1
+    r38): a single sign, or ฤๅ, by containment, inside a composite too; a
+    composite vowel (its symbol holds ◌) by its shape with a consonant or
+    cluster in the slot, where no longer composite's shape covers the
+    match (เยอะ, a lot, spells เ◌อะ and not เ◌อ)."""
+    if DOTTED_CIRCLE not in symbol:
+        return symbol in thai
+    longer = [span for form in COMPOSITE_VOWELS if len(form) > len(symbol)
+              for span in _spans(form, thai)]
+    return any(not any(s <= start and end <= e for s, e in longer)
+               for start, end in _spans(symbol, thai))
 
 
 @dataclass(frozen=True)
 class Grapheme:
     """A spelling unit with its sound facts and an exemplar (keyword)
-    Word. Identity: symbol. Invariant: the keyword's thai contains the
-    symbol, enforced by `create`. A vowel sign's or ็'s keyword also
+    Word. Identity: symbol. Invariant: the keyword's thai spells the
+    symbol (`spells`: containment, a composite vowel by shape), enforced
+    by `create`. A vowel sign's or ็'s keyword also
     carries its sound in its settled reading (`keyword_sound_violation`,
     spec 1 r37), checked where the reading is in hand: the grapheme pass
     and the `grapheme/keyword-carries-sound` rule.
@@ -339,9 +382,9 @@ class Grapheme:
     def create(cls, *, symbol: str, kind: GraphemeKind,
                sound: str, consonant_class: Literal["mid", "high", "low"] | None,
                keyword_word: Word, name_word: Word | None = None) -> "Grapheme":
-        if symbol not in keyword_word.thai:
+        if not spells(symbol, keyword_word.thai):
             raise ValueError(
-                f"grapheme {symbol!r} is not contained in keyword word "
+                f"grapheme {symbol!r} is not spelled by keyword word "
                 f"{keyword_word.id!r} ({keyword_word.thai!r})")
         return cls(symbol=symbol, kind=kind, sound=sound,
                    consonant_class=consonant_class, keyword=keyword_word.id,

@@ -149,6 +149,19 @@ def test_grapheme_keyword_rule_flags_a_grapheme_loaded_with_a_bad_keyword():
     assert findings[0].note_id == "ก"  # the grapheme symbol
 
 
+def test_grapheme_keyword_rule_reads_a_composites_shape():
+    """Spec 1 r38: เยอะ (a lot) is spelled with เ◌อะ, so it does not spell
+    เ◌อ, though every character of เ◌อ but the slot is in it."""
+    a_lot = word("a-lot", "เยอะ")   # เยอะ: a lot
+    graphemes = (Grapheme(symbol="เ◌อ", kind="vowel_sign", sound="ɤː", consonant_class=None,
+                          keyword=a_lot.id),
+                 Grapheme(symbol="เ◌อะ", kind="vowel_sign", sound="ɤ", consonant_class=None,
+                          keyword=a_lot.id))
+    findings = [f for f in make_syllabus(words=(a_lot,), graphemes=graphemes).report().findings
+                if f.rule == "grapheme/keyword-contains-symbol"]
+    assert [f.note_id for f in findings] == ["เ◌อ"]
+
+
 # --- grapheme/keyword-carries-sound (spec 1 r37) ---------------------------
 
 def _carries_sound_findings(syllabus):

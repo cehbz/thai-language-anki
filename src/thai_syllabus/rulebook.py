@@ -6,6 +6,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
+from .entities import spells
 from .pairsearch import wanted
 from .rules import Finding, Metric, Rule
 
@@ -42,10 +43,10 @@ def _check_grapheme_keyword(syllabus: "Syllabus") -> list[Finding]:
             findings.append(Finding(rule="grapheme/keyword-contains-symbol",
                                     note_id=g.symbol,
                                     evidence=f"keyword {g.keyword!r} does not resolve"))
-        elif g.symbol not in keyword.thai:
+        elif not spells(g.symbol, keyword.thai):
             findings.append(Finding(rule="grapheme/keyword-contains-symbol",
                                     note_id=g.symbol,
-                                    evidence=f"{g.symbol!r} not in {keyword.thai!r}"))
+                                    evidence=f"{keyword.thai!r} does not spell {g.symbol!r}"))
     return findings
 
 

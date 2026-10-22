@@ -29,6 +29,7 @@ from thai_syllabus.entities import (
     keyword_sound_violation,
     pronunciation_diff,
     render,
+    spells,
     without_glottal_coda,
 )
 from thai_syllabus.media import Provenance
@@ -398,11 +399,64 @@ def test_a_consonant_a_tone_mark_and_the_silencer_are_held_to_containment_alone(
 @pytest.mark.parametrize("symbol, shown", [
     ("ั", "◌ั"), ("ิ", "◌ิ"), ("ู", "◌ู"), ("็", "◌็"), ("์", "◌์"), ("่", "◌่"), ("๋", "◌๋"),
     ("ก", "ก"), ("า", "า"), ("เ", "เ"), ("ำ", "ำ"), ("ะ", "ะ"), ("ฤ", "ฤ"),
+    ("เ◌ีย", "เ◌ีย"), ("◌อ", "◌อ"), ("◌ัว", "◌ัว"), ("ฤๅ", "ฤๅ"),   # composites as written
 ])
 def test_a_combining_mark_is_displayed_on_the_dotted_circle(symbol, shown):
     """ั ิ ี ึ ื ุ ู ็ ์ and the tone marks have no base of their own; a
     spacing letter or sign (า, เ, ำ, ะ) is shown bare."""
     assert display_form(symbol) == shown
+
+
+# --- Grapheme: a word spells a sign by containment, a composite by shape (r38)
+
+@pytest.mark.parametrize("symbol, thai", [
+    ("ั", "ตั๋ว"),          # a single sign by containment: ticket
+    ("ั", "วัว"),           # and inside a composite too: cow
+    ("ฤ", "ฤๅษี"),          # hermit
+    ("ฤๅ", "ฤๅษี"),         # hermit: ฤๅ has no slot, so containment
+    ("◌อ", "คอ"),           # neck
+    ("◌อ", "กลอง"),         # drum: a cluster in the slot
+    ("◌อ", "น้อง"),         # younger sibling: a tone mark after the slot
+    ("เ◌า", "เต่า"),         # turtle
+    ("เ◌ีย", "เตียง"),        # bed
+    ("เ◌ีย", "เปลี่ยน"),      # change: a cluster, and the tone mark after ี
+    ("◌ัว", "วัว"),          # cow
+    ("◌ัว", "ตั๋ว"),          # ticket: the tone mark after ั
+    ("เ◌ือ", "เรือ"),         # boat
+    ("เ◌อ", "เธอ"),          # you
+    ("แ◌ะ", "รองเท้าแตะ"),    # flip-flops
+    ("โ◌ะ", "โต๊ะ"),          # table
+    ("เ◌าะ", "หัวเราะ"),      # laugh
+    ("เ◌อะ", "เยอะ"),         # a lot
+])
+def test_a_word_spells_a_sign_by_containment_and_a_composite_by_shape(symbol, thai):
+    assert spells(symbol, thai)
+
+
+@pytest.mark.parametrize("symbol, thai", [
+    ("ั", "ไก่"),            # chicken
+    ("เ◌อ", "เยอะ"),         # a lot: เ◌อะ, the longer form, wins
+    ("เ◌า", "หัวเราะ"),       # laugh: เ◌าะ wins
+    ("◌อ", "เธอ"),           # you: เ◌อ wins
+    ("◌อ", "เรือ"),          # boat: ื between the slot and อ
+    ("◌ัว", "ขวด"),          # bottle: the closed syllable drops ั (accepted miss)
+    ("เ◌ีย", "เมฆ"),         # cloud
+    ("ฤๅ", "ฤดู"),           # season
+])
+def test_a_word_does_not_spell_a_composite_it_lacks_the_shape_of(symbol, thai):
+    assert not spells(symbol, thai)
+
+
+def test_grapheme_create_reads_a_composites_shape():
+    cow = Word(id=WordId("cow"), thai="วัว", pron=pron(syl("w", "ua", "", "long")),
+               meaning="cow")                                                  # วัว: cow
+    assert Grapheme.create(symbol="◌ัว", kind="vowel_sign", sound="ua", consonant_class=None,
+                           keyword_word=cow).keyword == "cow"
+    a_lot = Word(id=WordId("a-lot"), thai="เยอะ", pron=pron(syl("j", "ɤ", "")),
+                 meaning="a lot")                                              # เยอะ: a lot
+    with pytest.raises(ValueError):
+        Grapheme.create(symbol="เ◌อ", kind="vowel_sign", sound="ɤː", consonant_class=None,
+                        keyword_word=a_lot)
 
 
 # --- Target -----------------------------------------------------------------
