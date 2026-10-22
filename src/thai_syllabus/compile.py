@@ -42,7 +42,7 @@ import genanki
 
 from . import ipa
 from .derivations import SoundStage, current_best, sound_stage
-from .entities import Grapheme, MinimalPair, Sentence, Target, Word, render
+from .entities import Grapheme, MinimalPair, Sentence, Target, Word, display_form, render
 from .ids import ConfusionId, WordId, sentence_cloze_key
 from .record import retired_pairs
 from .rulebook import _picture_introduced_words, sentence_note_id
@@ -790,7 +790,7 @@ def _grapheme_note(grapheme: Grapheme, syllabus: "Syllabus", resolver: _Resolver
     tags += resolver.src_tag("audio", name_word.id, "recording")
 
     fields = [
-        grapheme.symbol,
+        display_form(grapheme.symbol),
         grapheme.sound,
         name_word.thai,
         keyword.thai,

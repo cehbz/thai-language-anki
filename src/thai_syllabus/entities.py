@@ -301,6 +301,18 @@ def keyword_sound_violation(kind: GraphemeKind, sound: str,
     return f"no syllable of its reading carries {sound!r}"
 
 
+# The placeholder a combining mark is shown on (spec 4 r21, spec 3 r72).
+DOTTED_CIRCLE = "\u25cc"
+
+
+def display_form(symbol: str) -> str:
+    """`symbol` as the card and the chart cell show it: a combining mark
+    (ั, the upper and lower vowels, ็, ์, the tone marks) on the dotted
+    circle ◌, anything else bare. The grapheme's identity stays the bare
+    symbol."""
+    return DOTTED_CIRCLE + symbol if unicodedata.category(symbol) == "Mn" else symbol
+
+
 @dataclass(frozen=True)
 class Grapheme:
     """A spelling unit with its sound facts and an exemplar (keyword)

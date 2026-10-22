@@ -707,6 +707,31 @@ def test_grapheme_note_name_thai_is_the_name_words_own_text(fx):
     assert note["guid"] == genanki.guid_for("grapheme", "ก")
 
 
+def test_a_combining_marks_card_shows_it_on_the_dotted_circle(fx):
+    """Spec 4 r21: ้ has no base of its own, so the Symbol field draws it
+    on ◌; the guid and the grapheme:: tag stay the bare symbol."""
+    syllabus = _fully_seeded(fx)
+    mai_tho = _word("name-rice", "ไม้โท", "recited name of the tone mark ◌้")   # ไม้โท: the name of ้
+    tone_mark = Grapheme.create(symbol="้", kind="tone_mark", sound="mai-tho",
+                                consonant_class=None,
+                                keyword_word=syllabus.word("rice"),     # ข้าว: rice
+                                name_word=mai_tho)
+    syllabus = dataclasses.replace(syllabus, words=syllabus.words + (mai_tho,),
+                                   graphemes=syllabus.graphemes + (tone_mark,))
+    fx.seed_recording("name-rice", "mai tho")
+
+    compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                     current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+    import genanki
+    pkg = read_apkg(fx.out_path)
+    g_model = next(m for m in pkg["models"].values() if m["name"] == "grapheme")
+    field_names = [f["name"] for f in g_model["flds"]]
+    note = next(n for n in pkg["notes"] if n["guid"] == genanki.guid_for("grapheme", "้"))
+    assert dict(zip(field_names, note["flds"]))["Symbol"] == "◌้"
+    assert "grapheme::้" in note["tags"].split()
+
+
 def test_grapheme_without_a_name_recording_is_dropped_not_substituted(fx):
     chicken = _word("chicken", "ไก่", "chicken")
     ko_name = _word("letter-name:ko", "กอ ไก่", "the letter ก (recited name)")

@@ -22,6 +22,7 @@ from thai_syllabus.entities import (
     Word,
     clauses_from_json,
     clauses_to_json,
+    display_form,
     element_word,
     exact_confusion_violation,
     is_phrase,
@@ -390,6 +391,18 @@ def test_a_vowel_signs_keyword_with_no_reading_is_a_violation():
 def test_a_consonant_a_tone_mark_and_the_silencer_are_held_to_containment_alone(kind, sound):
     assert keyword_sound_violation(kind, sound, None) is None
     assert keyword_sound_violation(kind, sound, _reading(syl("m", "aː", ""))) is None
+
+
+# --- Grapheme: a combining mark is shown on the dotted circle (spec 4 r21) -
+
+@pytest.mark.parametrize("symbol, shown", [
+    ("ั", "◌ั"), ("ิ", "◌ิ"), ("ู", "◌ู"), ("็", "◌็"), ("์", "◌์"), ("่", "◌่"), ("๋", "◌๋"),
+    ("ก", "ก"), ("า", "า"), ("เ", "เ"), ("ำ", "ำ"), ("ะ", "ะ"), ("ฤ", "ฤ"),
+])
+def test_a_combining_mark_is_displayed_on_the_dotted_circle(symbol, shown):
+    """ั ิ ี ึ ื ุ ู ็ ์ and the tone marks have no base of their own; a
+    spacing letter or sign (า, เ, ำ, ะ) is shown bare."""
+    assert display_form(symbol) == shown
 
 
 # --- Target -----------------------------------------------------------------

@@ -34,6 +34,7 @@ from .cachekeys import CacheKey, LlmPromptKey, PairSearchKey, ProvideKey, sha
 from .record import search_form
 from .ports import CacheReader, RecordWriter
 from .audio import NoSpeech
+from .entities import display_form
 from .transport import (Completion, FetchRefused, QuotaExhausted, SynthesisRefused, TransportError,
                         Usage)
 
@@ -998,8 +999,8 @@ class GlyphBackend:
                                  "origin": symbol, "licence": "generated"},), cost=0.0)
 
     def _draw(self, symbol: str, picture: Path) -> bytes:
-        """The cell's bytes: white ground, the symbol centred in the left
-        half, the keyword's picture fitted into the right half, a thin
+        """The cell's bytes: white ground, the symbol (a combining mark on
+        ◌, `display_form`) centred in the left half, the keyword's picture fitted into the right half, a thin
         rule between. The symbol is placed from its own text bounding box
         rather than an anchor, so a bitmap font (what a test substitutes)
         and a TrueType font both land centred.
@@ -1011,10 +1012,11 @@ class GlyphBackend:
         draw.line([(half, GLYPH_MARGIN), (half, size - GLYPH_MARGIN)],
                   fill=(0, 0, 0), width=GLYPH_RULE_WIDTH)
         font = self.font_loader(self.font_path, self.font_size)
-        left, top, right, bottom = draw.textbbox((0, 0), symbol, font=font)
+        shown = display_form(symbol)
+        left, top, right, bottom = draw.textbbox((0, 0), shown, font=font)
         draw.text((half // 2 - (right - left) // 2 - left,
                    size // 2 - (bottom - top) // 2 - top),
-                  symbol, font=font, fill=(0, 0, 0))
+                  shown, font=font, fill=(0, 0, 0))
         with Image.open(picture) as src:
             src.load()
             art = src.convert("RGB")

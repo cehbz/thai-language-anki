@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import requests
 from PIL import Image as PILImage
-from PIL import ImageFont
+from PIL import ImageDraw, ImageFont
 
 from thai_syllabus.assessor import Price
 from thai_syllabus.cachekeys import ProvideKey, sha
@@ -1597,6 +1597,30 @@ def test_the_cell_is_a_square_canvas_of_the_configured_size(tmp_path):
         assert cell.size == (GLYPH_CANVAS, GLYPH_CANVAS)
         assert cell.getpixel((8, 8)) == (255, 255, 255)          # white ground
         assert cell.getpixel((GLYPH_CANVAS - 40, GLYPH_CANVAS // 2)) != (255, 255, 255)
+
+
+def test_a_combining_mark_is_drawn_on_the_dotted_circle(tmp_path, monkeypatch):
+    """Spec 3 r72: ั has no base of its own, so the cell draws it on ◌
+    (U+25CC); the key and the origin stay the bare symbol."""
+    drawn = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return real_text(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    media = MediaStore(tmp_path / "media")
+    sha, ext = _keyword_picture(media)
+    backend = GlyphBackend(media=media, font_path="/nowhere/Fake.ttf",
+                           font_loader=_bitmap_font)
+    question = _cell_question(sha=sha, ext=ext, symbol="ั")       # ั: mai han akat, a
+
+    (item,) = backend.fetch(question).items
+
+    assert drawn == ["◌ั"]
+    assert item["origin"] == "ั"
+    assert backend.cache_key(question).encode() == f"glyph:{sha}:ั"
 
 
 def test_two_draws_of_the_same_pair_are_byte_identical(tmp_path):

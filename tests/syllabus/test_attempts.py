@@ -5511,10 +5511,10 @@ COW = (syl("w", "ua", "", "long", "mid"),)                       # วัว: wu
 
 @pytest.mark.parametrize("kind, symbol, meaning", [
     ("consonant", "ก", "recited name of the letter ก"),
-    ("vowel_sign", "ั", "recited name of the vowel sign ั"),
+    ("vowel_sign", "ั", "recited name of the vowel sign ◌ั"),
     ("vowel_sign", "เ", "recited name of the vowel sign เ"),
-    ("diacritic", "็", "recited name of the diacritic ็"),
-    ("tone_mark", "่", "recited name of the tone mark ่"),
+    ("diacritic", "็", "recited name of the diacritic ◌็"),
+    ("tone_mark", "่", "recited name of the tone mark ◌่"),
 ])
 def test_a_recited_names_meaning_names_the_graphemes_kind(kind, symbol, meaning):
     assert grapheme_name_meaning(kind, symbol) == meaning
@@ -5616,9 +5616,9 @@ def test_a_tone_mark_is_held_to_containment_and_may_share_a_consonants_keyword(t
         ("ก", "consonant", "chicken", "name-chicken"),
         ("่", "tone_mark", "chicken", "name-chicken-2")]
     assert ctx.syllabus.word("name-chicken-2").thai == "ไม้เอก"     # ไม้เอก: the name of ่
-    # the gloss names the kind
+    # the gloss names the kind, a combining mark on the dotted circle as on the card
     assert ctx.syllabus.word("name-chicken").meaning == "recited name of the letter ก"
-    assert ctx.syllabus.word("name-chicken-2").meaning == "recited name of the tone mark ่"
+    assert ctx.syllabus.word("name-chicken-2").meaning == "recited name of the tone mark ◌่"
 
 
 # --- the evidence pass: every deck form's readings on record (spec 3 r68) ---

@@ -66,7 +66,7 @@ from .dictionary import Wiktionary
 from .thailanguagecom import ThaiLanguageCom
 from .entities import (REPEAT_MARK, Clauses, ClozeSlot, Grapheme, GraphemeKind,
                        LETTER_NAMES_CATEGORY, MinimalPair, Sentence, Target, Word, _same_form,
-                       clauses_to_json, element_word, is_phrase,
+                       clauses_to_json, display_form, element_word, is_phrase,
                        keyword_sound_violation)
 from .ids import CategoryName, PairId, TargetId, WordId, slug_id
 from .inventory import ConsonantRow, VowelRow, consonants as repo_consonants, vowels as repo_vowels
@@ -1604,9 +1604,10 @@ _KIND_NAMES: dict[GraphemeKind, str] = {"consonant": "letter", "vowel_sign": "vo
 def grapheme_name_meaning(kind: GraphemeKind, symbol: str) -> str:
     """The meaning a recited-name Word carries. A gloss is English (spec 1
     section 1), and the one thing the card teaches is the symbol, so the
-    symbol stands delimited inside it, after the grapheme's kind:
-    "recited name of the letter ก", "... of the vowel sign า"."""
-    return f"recited name of the {_KIND_NAMES[kind]} {symbol}"
+    symbol stands delimited inside it, a combining mark on ◌
+    (`display_form`), after the grapheme's kind: "recited name of the
+    letter ก", "... of the tone mark ◌่"."""
+    return f"recited name of the {_KIND_NAMES[kind]} {display_form(symbol)}"
 
 # The curated files the pass adds rows to (spec 2 r17 section 6). It
 # only ever adds: each is rewritten whole from the rows already on disk
