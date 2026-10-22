@@ -19,6 +19,20 @@
 - {symbol: ไ, kind: vowel_sign, sound: aj,   name: สระ ไอ ไม้มลาย, keyword: ไฟ, gloss: fire}
 - {symbol: ำ, kind: vowel_sign, sound: am,   name: สระ อำ, keyword: ส้มตำ, gloss: green papaya salad}
 - {symbol: ฤ, kind: vowel_sign, sound: rɯ,   name: ตัว ฤ, keyword: ฤดู, gloss: "season (formal)"}
+# Composite vowels (spec 3 r73): the form with ◌ in the consonant's slot,
+# matched by shape (spec 1 r38). เ◌ะ, เ◌ียะ, เ◌ือะ and ◌ัวะ are left out:
+# no deck word spelled with one carries its sound.
+- {symbol: ◌อ,   kind: vowel_sign, sound: ɔː, name: สระ ออ,   keyword: กลอง, gloss: drum}
+- {symbol: เ◌า,  kind: vowel_sign, sound: aw, name: สระ เอา,  keyword: กระเป๋า, gloss: bag}
+- {symbol: เ◌ีย, kind: vowel_sign, sound: ia, name: สระ เอีย, keyword: เตียง, gloss: bed}
+- {symbol: ◌ัว,  kind: vowel_sign, sound: ua, name: สระ อัว,  keyword: วัว, gloss: cow}
+- {symbol: เ◌ือ, kind: vowel_sign, sound: ɯa, name: สระ เอือ, keyword: เกลือ, gloss: salt}
+- {symbol: เ◌อ,  kind: vowel_sign, sound: ɤː, name: สระ เออ,  keyword: เฌอ, gloss: tree}
+- {symbol: แ◌ะ,  kind: vowel_sign, sound: ɛ,  name: สระ แอะ,  keyword: รองเท้าแตะ, gloss: flip-flops}
+- {symbol: โ◌ะ,  kind: vowel_sign, sound: o,  name: สระ โอะ,  keyword: ช้อนโต๊ะ, gloss: tablespoon}
+- {symbol: เ◌าะ, kind: vowel_sign, sound: ɔ,  name: สระ เอาะ, keyword: ดาวเคราะห์, gloss: planet}
+- {symbol: เ◌อะ, kind: vowel_sign, sound: ɤ,  name: สระ เออะ, keyword: เยอะ, gloss: a lot}
+- {symbol: ฤๅ,   kind: vowel_sign, sound: rɯː, name: ตัว ฤๅ,  keyword: ฤๅษี, gloss: hermit}
 - {symbol: ็, kind: diacritic,  sound: short, name: ไม้ไต่คู้, keyword: เป็ด, gloss: duck}
 - {symbol: ์, kind: diacritic,  sound: silent, name: ทัณฑฆาต, keyword: แอร์, gloss: air conditioner}
 - {symbol: ่, kind: tone_mark,  sound: mai-ek,     name: ไม้เอก, keyword: ร่ม, gloss: umbrella}

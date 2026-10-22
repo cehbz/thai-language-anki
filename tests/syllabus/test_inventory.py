@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from thai_syllabus.entities import spells
+
 from thai_syllabus.inventory import (ConsonantRow, DATA_DIR, InventoryError, VowelRow, consonants,
                                      load_consonants, load_vowels, vowels)
 
@@ -27,12 +29,15 @@ def test_the_consonant_table_has_the_forty_two_letters_once_each():
 def test_the_vowel_table_covers_the_signs_and_the_four_tone_marks():
     rows = load_vowels(DATA / "thai_vowels.yaml")
     kinds = {r.symbol: r.kind for r in rows}
-    assert len(rows) == 22
+    assert len(rows) == 33
+    # spec 3 r73: the eleven composite vowels, ◌ in the consonant's slot
+    composites = {"◌อ", "เ◌า", "เ◌ีย", "◌ัว", "เ◌ือ", "เ◌อ", "แ◌ะ", "โ◌ะ", "เ◌าะ", "เ◌อะ", "ฤๅ"}
+    assert {kinds[c] for c in composites} == {"vowel_sign"}
     assert {kinds[m] for m in "่้๊๋"} == {"tone_mark"}
     assert kinds["า"] == "vowel_sign" and kinds["์"] == "diacritic" and kinds["็"] == "diacritic"
     assert all(r.name_thai for r in rows)
-    # spec 3 r72: every row names its keyword, spelled with the symbol
-    assert all(r.symbol in r.keyword_thai and r.keyword_gloss for r in rows)
+    # spec 3 r72: every row names its keyword, which spells the symbol (spec 1 r38)
+    assert all(spells(r.symbol, r.keyword_thai) and r.keyword_gloss for r in rows)
 
 
 def _vowel_table(tmp_path, text):
