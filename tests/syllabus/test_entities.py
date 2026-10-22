@@ -25,6 +25,7 @@ from thai_syllabus.entities import (
     element_word,
     exact_confusion_violation,
     is_phrase,
+    keyword_sound_violation,
     pronunciation_diff,
     render,
     without_glottal_coda,
@@ -343,6 +344,52 @@ def test_grapheme_is_still_constructible_directly_without_name_word():
     g = Grapheme(symbol="ก", kind="consonant", sound="k",
                 consonant_class="mid", keyword=WordId("chicken"))
     assert g.name_word is None
+
+
+# --- Grapheme: a sign's keyword carries its sound (spec 1 r37) -------------
+
+def _reading(*syllables: Syllable) -> Pronunciation:
+    return Pronunciation(syllables=syllables, posterior=1.0, spoken_dissent=False)
+
+
+@pytest.mark.parametrize("kind, sound, syllables", [
+    ("vowel_sign", "a", (syl("k", "a", "n"),)),                        # ั in กัน: together
+    ("vowel_sign", "a", (syl("tɕ", "a", ""),)),                        # ะ in จะ: will
+    ("vowel_sign", "aː", (syl("k", "a", "", "long"),)),                # า in กา: crow
+    ("vowel_sign", "eː", (syl("tʰ", "e", "", "long"),)),               # เ in เท: pour
+    ("vowel_sign", "aj", (syl("k", "a", "j"),)),                       # ไ in ไก่: chicken
+    ("vowel_sign", "am", (syl("tʰ", "a", "m"),)),                      # ำ in ทำ: do
+    ("vowel_sign", "rɯ", (syl("r", "ɯ", ""), syl("d", "u", "", "long"))),  # ฤ in ฤดู: season
+    ("vowel_sign", "uː", (syl("ŋ", "u", "", "long"),)),                # ู in งู: snake
+    ("diacritic", "short", (syl("d", "e", "k"),)),                     # ็ in เด็ก: child
+])
+def test_a_keyword_whose_reading_carries_the_signs_sound_passes(kind, sound, syllables):
+    assert keyword_sound_violation(kind, sound, _reading(*syllables)) is None
+
+
+@pytest.mark.parametrize("kind, sound, syllables", [
+    ("vowel_sign", "a", (syl("w", "ua", "", "long"),)),                # ั in วัว: cow, ua
+    ("vowel_sign", "eː", (syl("m", "a", "w"),)),                       # เ in เมา: drunk, aw
+    ("vowel_sign", "a", (syl("k", "a", "", "long"),)),                 # length matters
+    ("vowel_sign", "aː", (syl("k", "a", "n"),)),                       # length matters
+    ("vowel_sign", "iː", (syl("s", "ia", "", "long"),)),               # ี in เสีย: spoilt, ia
+    ("vowel_sign", "am", (syl("n", "a", "m", "long"),)),               # ำ in น้ำ read long
+    ("vowel_sign", "rɯ", (syl("ʔ", "a", "ŋ"), syl("kr", "i", "t"))),   # ฤ in อังกฤษ: English, ri
+    ("diacritic", "short", (syl("tʰ", "e", "", "long"),)),             # no short syllable
+])
+def test_a_keyword_whose_reading_lacks_the_signs_sound_is_a_violation(kind, sound, syllables):
+    assert keyword_sound_violation(kind, sound, _reading(*syllables)) is not None
+
+
+def test_a_vowel_signs_keyword_with_no_reading_is_a_violation():
+    assert "no settled reading" in keyword_sound_violation("vowel_sign", "a", None)
+
+
+@pytest.mark.parametrize("kind, sound", [
+    ("consonant", "k"), ("tone_mark", "mai-ek"), ("diacritic", "silent")])
+def test_a_consonant_a_tone_mark_and_the_silencer_are_held_to_containment_alone(kind, sound):
+    assert keyword_sound_violation(kind, sound, None) is None
+    assert keyword_sound_violation(kind, sound, _reading(syl("m", "aː", ""))) is None
 
 
 # --- Target -----------------------------------------------------------------

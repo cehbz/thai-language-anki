@@ -33,7 +33,7 @@ Revision log:
 - r18 2026-10-20: a pair blocked by pair/pronunciation-settled or pair/exact-confusion (block severity, spec 1 r36) compiles no notes and is counted dropped, reason "blocked: <rule>", without closing the gate; the compile and the pacer proceed without --force and the pair's notes return, same guids, once it is usable. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r18).
 - r19 2026-10-20: a blocked pair's cards already in the deck's collection stop coming up for review: the compile writes beside the package the guids of every blocked pair's member notes (MemberKey guids under its current rendition), and the pacer's import suspends each of their cards not already suspended, marking it in the card's custom data, and unsuspends each marked card whose note the list no longer names, clearing the mark; a card the learner suspended carries no mark and is left alone; reviews and schedule are kept; the import's log line counts the cards suspended and unsuspended (§1, §4). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r19).
 - r20 2026-10-20: the blocked list also names the guids on every pair retirement row (spec 3 r71) whose pair is not in pairs.yaml, so a retired pair's cards stay suspended once the pair is gone. User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence (spec 4 r20).
-- r21 2026-10-22: the grapheme card serves the vowel signs, diacritics and tone marks as it serves the consonants (spec 1 r37); its Symbol field draws a combining mark on the dotted circle ◌ (U+25CC), while its guid and grapheme:: tag stay the bare symbol. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 4 r21).
+- r21 2026-10-22: the grapheme card serves the vowel signs, diacritics and tone marks as it serves the consonants (spec 1 r37); its Symbol field draws a combining mark on the dotted circle ◌ (U+25CC), while its guid and grapheme:: tag stay the bare symbol; a grapheme grapheme/keyword-carries-sound blocks (block severity, spec 1 r37) compiles no note and is counted dropped, reason "blocked: grapheme/keyword-carries-sound", without closing the gate, and its note's guid joins the blocked list beside the package (r19's mechanism, as for a blocked pair), so the pacer suspends its card already in the collection and unsuspends it once the keyword's reading carries its sound, the note returning under the same guid. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence (spec 4 r21).
 
 Scope: compile — the translation of Syllabus state into Anki's domain —
 and the return path: revlog, flags, and ReviewNote harvests. Anki's
@@ -150,7 +150,11 @@ KeywordPicture, Audio, ReviewNote, CompileId.
   Name and keyword are Words (Grapheme.name_word, Grapheme.keyword);
   their recordings/pictures come through the normal sourcing path. No
   substitute audio: a grapheme whose name word has no current-best
-  recording drops the card, counted.
+  recording drops the card, counted. A grapheme
+  grapheme/keyword-carries-sound blocks (spec 1 r37) drops its card,
+  counted, reason "blocked: grapheme/keyword-carries-sound", the gate
+  open, and its guid joins the blocked list, so its card already in the
+  collection is suspended until it is usable (r21, §4).
 
 **sentence** (one note per adopted Sentence, at its order position):
 fields Thai, TargetWord, Audio, Gloss, ScenePicture, then per Cloze slot
@@ -278,9 +282,10 @@ plays. CSS retains only final fit-to-viewport.
   sync after that import demands a full sync.
 - **A blocked pair's cards** (r19): the compile writes, beside the
   package (`<name>.blocked.json`), the guids of every blocked pair's
-  member notes, MemberKey guids under the pair's current rendition, and
-  the guids every pair retirement row records (spec 3 r71) for a pair no
-  longer in pairs.yaml (r20). After
+  member notes, MemberKey guids under the pair's current rendition, the
+  guids every pair retirement row records (spec 3 r71) for a pair no
+  longer in pairs.yaml (r20), and every blocked grapheme's note guid
+  (r21). After
   the import the pacer suspends every card of a named note that is not
   suspended, marking it withdrawn in the card's custom data (key
   `blocked`), and unsuspends every marked card whose note is no longer

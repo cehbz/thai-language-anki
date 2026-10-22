@@ -17,7 +17,7 @@ from typing import Any, Literal, TYPE_CHECKING
 from .cachekeys import JudgeKey
 from .entities import (
     Category, ClozeSlot, Grapheme, MinimalPair, Pronunciation, Sentence, SoundConfusion, Target,
-    Voice, Word, exact_confusion_violation, render,
+    Voice, Word, exact_confusion_violation, keyword_sound_violation, render,
 )
 from .ids import CategoryName, ConfusionId, PairId, TargetId, WordId
 from .ports import (
@@ -1120,6 +1120,18 @@ class Syllabus:
         if confusion is None or any(w is None or w.pron is None for w in words):
             return None
         return exact_confusion_violation(confusion, tuple(w.pron for w in words))
+
+    def grapheme_violation(self, grapheme: Grapheme) -> str | None:
+        """Why `grapheme`'s keyword's settled reading does not carry its
+        sound (spec 1 r37, grapheme/keyword-carries-sound:
+        `keyword_sound_violation`); None while it does, for a grapheme held
+        to containment alone, or when the keyword does not resolve (that is
+        grapheme/keyword-contains-symbol's finding)."""
+        keyword = self.find_word(grapheme.keyword)
+        if keyword is None:
+            return None
+        violation = keyword_sound_violation(grapheme.kind, grapheme.sound, keyword.pron)
+        return None if violation is None else f"{keyword.thai!r}: {violation}"
 
     @cached_property
     def usable_pairs(self) -> tuple[MinimalPair, ...]:

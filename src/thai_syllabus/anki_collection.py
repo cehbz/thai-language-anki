@@ -17,7 +17,8 @@ when the package's is newer, a new card arrives with the package's due
 and an existing (guid, ord) is left as it is, and deck presets are not
 imported.
 
-A blocked pair's cards are withdrawn (`withdraw`, spec 4 r19): suspended
+A blocked pair's or grapheme's cards are withdrawn (`withdraw`, spec 4
+r19, r21): suspended
 and marked in their custom data, then unsuspended and unmarked once their
 notes are no longer named; a card suspended by hand carries no mark.
 

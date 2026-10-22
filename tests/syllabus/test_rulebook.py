@@ -103,7 +103,8 @@ def test_registered_rules_match_the_spec_table():
         "sentence/fills-novelty",
         "target/sentence-required", "target/sentences-wanted",
         "grapheme/keyword-picture-required",
-        "grapheme/keyword-contains-symbol", "target/recording-required",
+        "grapheme/keyword-contains-symbol", "grapheme/keyword-carries-sound",
+        "target/recording-required",
         "sentence/recording-required", "recording/synthetic",
         "sentence/synthetic-productive",
         "sentence/register-natural",
@@ -146,6 +147,37 @@ def test_grapheme_keyword_rule_flags_a_grapheme_loaded_with_a_bad_keyword():
                if f.rule == "grapheme/keyword-contains-symbol"]
     assert len(findings) == 1
     assert findings[0].note_id == "ก"  # the grapheme symbol
+
+
+# --- grapheme/keyword-carries-sound (spec 1 r37) ---------------------------
+
+def _carries_sound_findings(syllabus):
+    return [f for f in syllabus.report().findings
+            if f.rule == "grapheme/keyword-carries-sound"]
+
+
+def test_carries_sound_flags_a_vowel_sign_whose_keywords_reading_lacks_its_sound():
+    """A settled reading can drift as evidence arrives, so the check made
+    at adoption is re-run on loaded data: วัว (cow) reads ua, not ั's a."""
+    cow = word("cow", "วัว", syllables=(syl("w", "ua", "", "long"),))   # วัว: cow
+    g = Grapheme(symbol="ั", kind="vowel_sign", sound="a", consonant_class=None,
+                 keyword=cow.id)
+    syllabus = make_syllabus(words=(cow,), graphemes=(g,))
+    findings = _carries_sound_findings(syllabus)
+    assert [f.note_id for f in findings] == ["ั"]
+    # the grapheme, not the deck (spec 1 r37, as r36 for the pair rules)
+    assert syllabus._severity("grapheme/keyword-carries-sound") == "block"
+
+
+def test_carries_sound_passes_a_keyword_reading_the_sound_and_ignores_tone_marks():
+    together = word("together", "กัน", syllables=(syl("k", "a", "n"),))   # กัน: together
+    horse = word("horse", "ม้า", syllables=(syl("m", "a", "", "long", "high"),))  # ม้า: horse
+    graphemes = (Grapheme(symbol="ั", kind="vowel_sign", sound="a", consonant_class=None,
+                          keyword=together.id),
+                 Grapheme(symbol="้", kind="tone_mark", sound="mai-tho", consonant_class=None,
+                          keyword=horse.id))
+    assert _carries_sound_findings(make_syllabus(words=(together, horse),
+                                                 graphemes=graphemes)) == []
 
 
 # --- sentence/fills-novelty --------------------------------------------------

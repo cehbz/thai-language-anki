@@ -4,7 +4,11 @@ frozen dataclasses, identity noted per entity.
 An invariant needing a resolved Word (Grapheme's keyword containment,
 MinimalPair's exact confusion) is enforced by that entity's `create`
 classmethod; rulebook.py's `grapheme/keyword-contains-symbol` rule
-re-checks loaded data through the same pure diff functions. A pair's
+re-checks loaded data through the same pure diff functions. A sign's
+keyword carrying its sound reads a derived reading (spec 1 r37), which
+the loader does not have when it constructs a Grapheme, so the grapheme
+pass checks it and `grapheme/keyword-carries-sound` re-runs
+`keyword_sound_violation` over the settled readings. A pair's
 members' readings are derived (spec 1 r34), so `pair/exact-confusion`
 re-runs `exact_confusion_violation` over the settled readings: a pair made
 exact can drift out of its contrast as evidence arrives (r35).
@@ -252,11 +256,59 @@ def exact_confusion_violation(confusion: SoundConfusion,
     return None
 
 
+GraphemeKind = Literal["consonant", "vowel_sign", "diacritic", "tone_mark"]
+
+# The sound a diacritic carries when it is a reading rather than an effect
+# on one: ็ shortens the vowel it sits over (data/thai_vowels.yaml).
+SHORTENING = "short"
+
+
+def _carries(syllable: Syllable, sound: str) -> bool:
+    """Whether `sound` (the inventory's notation: vowel, ː when long,
+    and any onset or coda the sign spells, as rɯ, aj, am) is
+    `syllable`'s vowel at its length, flanked by a tail of its onset and
+    a head of its coda."""
+    long_mark = syllable.vowel_length == "long" and syllable.vowel not in DIPHTHONGS
+    core = syllable.vowel + ("ː" if long_mark else "")
+    start = sound.find(core)
+    while start != -1:
+        before, after = sound[:start], sound[start + len(core):]
+        if syllable.onset.endswith(before) and syllable.coda.startswith(after):
+            return True
+        start = sound.find(core, start + 1)
+    return False
+
+
+def keyword_sound_violation(kind: GraphemeKind, sound: str,
+                            pron: Pronunciation | None) -> str | None:
+    """Why a keyword read as `pron` does not carry a grapheme's `sound`
+    (spec 1 r37), None when it does. A vowel sign's keyword has some
+    syllable whose vowel and length, with any onset or coda the sound
+    names, are the sound (`_carries`); ็'s has a short syllable. A
+    consonant's, a tone mark's and ์'s keyword are held to containment
+    alone. A checked keyword with no reading carries nothing yet.
+    """
+    checked = kind == "vowel_sign" or (kind == "diacritic" and sound == SHORTENING)
+    if not checked:
+        return None
+    if pron is None:
+        return "the keyword has no settled reading"
+    if sound == SHORTENING:
+        if any(s.vowel_length == "short" for s in pron.syllables):
+            return None
+    elif any(_carries(s, sound) for s in pron.syllables):
+        return None
+    return f"no syllable of its reading carries {sound!r}"
+
+
 @dataclass(frozen=True)
 class Grapheme:
     """A spelling unit with its sound facts and an exemplar (keyword)
     Word. Identity: symbol. Invariant: the keyword's thai contains the
-    symbol, enforced by `create`.
+    symbol, enforced by `create`. A vowel sign's or ็'s keyword also
+    carries its sound in its settled reading (`keyword_sound_violation`,
+    spec 1 r37), checked where the reading is in hand: the grapheme pass
+    and the `grapheme/keyword-carries-sound` rule.
 
     `name_word` (spec 4 section 1) is the recited letter name as its own
     Word -- for ก (the letter k), "กอ ไก่" ("gɔɔ gài"), distinct from the
@@ -265,14 +317,14 @@ class Grapheme:
     then drops that grapheme's Reading card, counted.
     """
     symbol: str
-    kind: Literal["consonant", "vowel_sign", "tone_mark"]
+    kind: GraphemeKind
     sound: str
     consonant_class: Literal["mid", "high", "low"] | None
     keyword: WordId
     name_word: WordId | None = None
 
     @classmethod
-    def create(cls, *, symbol: str, kind: Literal["consonant", "vowel_sign", "tone_mark"],
+    def create(cls, *, symbol: str, kind: GraphemeKind,
                sound: str, consonant_class: Literal["mid", "high", "low"] | None,
                keyword_word: Word, name_word: Word | None = None) -> "Grapheme":
         if symbol not in keyword_word.thai:

@@ -868,6 +868,40 @@ def test_a_blocked_pair_is_dropped_without_force_and_the_others_compile(fx):
     assert not any("pair::p2" in t for t in tags)
 
 
+def test_a_grapheme_whose_keyword_lacks_its_sound_is_dropped_and_the_gate_stays_open(fx):
+    """Spec 1 r37: grapheme/keyword-carries-sound is block severity, as the
+    pair rules are (r36): the finding is reported, the gate stays open and
+    compile drops that grapheme's card alone."""
+    syllabus = _fully_seeded(fx)
+    sara_i = _word("name-gin", "สระ อิ", "recited name of the vowel sign ◌ิ")  # สระ อิ: the name of ิ
+    vowel = Grapheme.create(symbol="ิ", kind="vowel_sign", sound="i", consonant_class=None,
+                            keyword_word=syllabus.word("gin"),   # กิน: to eat, read here as ma
+                            name_word=sara_i)
+    syllabus = dataclasses.replace(syllabus, words=syllabus.words + (sara_i,),
+                                   graphemes=syllabus.graphemes + (vowel,))
+    fx.seed_recording("name-gin", "sara i")
+
+    compiled = compile_syllabus(syllabus, fx.db, fx.media, fx.out_path,
+                                current_rubric={}, prior=(), provenance_source=lambda sha: None)
+
+    report = syllabus.report()
+    assert report.gate is True
+    assert [f.note_id for f in report.findings
+            if f.rule == "grapheme/keyword-carries-sound"] == ["ิ"]
+    assert compiled.report.gate is True and compiled.report.forced is False
+    assert DroppedCard(family="grapheme", kind="Reading", subject="ิ",
+                       reason="blocked: grapheme/keyword-carries-sound") in compiled.report.dropped
+    tags = [n["tags"] for n in read_apkg(fx.out_path)["notes"]]
+    assert not any("grapheme::ิ" in t.split() for t in tags)
+    assert any("grapheme::ก" in t.split() for t in tags)
+    # spec 4 r21, r19's mechanism: the blocked grapheme's note is named
+    # beside the package, so its card already in the collection is
+    # suspended; ก's is not
+    import genanki
+    assert genanki.guid_for("grapheme", "ิ") in blocked_guids(fx.out_path)
+    assert genanki.guid_for("grapheme", "ก") not in blocked_guids(fx.out_path)
+
+
 def test_the_compile_names_a_blocked_pairs_note_guids_beside_the_package(fx):
     _syllabus, _compiled = _compile_with_a_blocked_pair(fx)
     pkg = read_apkg(fx.out_path)

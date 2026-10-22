@@ -54,6 +54,23 @@ GRAPHEME_KEYWORD_CONTAINS_SYMBOL = Rule(id="grapheme/keyword-contains-symbol",
                                         shape="check", check=_check_grapheme_keyword)
 
 
+# --- grapheme/keyword-carries-sound ------------------------------------------
+# F6 (spec 1 r37): a vowel sign's or ็'s keyword carries the sign's sound in
+# its settled reading. The reading is derived and can drift as evidence
+# arrives, so the check the grapheme pass made at adoption is re-run here
+# (Syllabus.grapheme_violation). Block severity, as the pair rules (r36):
+# the grapheme, not the deck -- compile drops its card.
+
+def _check_grapheme_keyword_sound(syllabus: "Syllabus") -> list[Finding]:
+    return [Finding(rule="grapheme/keyword-carries-sound", note_id=g.symbol, evidence=reason)
+            for g in syllabus.graphemes if (reason := syllabus.grapheme_violation(g)) is not None]
+
+
+GRAPHEME_KEYWORD_CARRIES_SOUND = Rule(id="grapheme/keyword-carries-sound",
+                                      principle="F6", severity="block",
+                                      shape="check", check=_check_grapheme_keyword_sound)
+
+
 # --- sentence/fills-novelty --------------------------------------------------
 # F5: the fill-set rule (spec 1 section 3, clause 3) -- a sentence-level
 # gate on registered vocabulary and full target coverage, then at most one
@@ -681,6 +698,7 @@ def apply_overlay(rules: Sequence[Rule], config: "RulebookConfig") -> tuple[Rule
 
 RULES: list[Rule] = [
     GRAPHEME_KEYWORD_CONTAINS_SYMBOL,
+    GRAPHEME_KEYWORD_CARRIES_SOUND,
     SENTENCE_FILLS_NOVELTY,
     COVERAGE_CATEGORIES,
     COVERAGE_EXERCISE_DEPTH,

@@ -92,8 +92,9 @@ class DroppedCard:
     missing (spec 4 section 3's "never an empty front" -- reason starts
     "no current-best ", or is "no name word"/"no name recording" for a
     grapheme, "no rendition" for a minimal pair), or the staging holds it
-    back (spec 4 r13 -- reason starts "staged: "), or a pair rule blocks
-    a minimal pair (spec 1 r36 -- reason starts "blocked: ").
+    back (spec 4 r13 -- reason starts "staged: "), or a block-severity
+    rule blocks its subject (a pair rule, spec 1 r36; a grapheme's
+    keyword-carries-sound, r37 -- reason starts "blocked: ").
     """
     family: str    # "word" | "minimal_pair" | "grapheme" | "sentence"
     kind: str      # the template name, e.g. "Listening", "Production"

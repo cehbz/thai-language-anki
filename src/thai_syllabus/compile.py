@@ -1240,7 +1240,14 @@ def _pair_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
 
 def _grapheme_items(syllabus: "Syllabus", resolver: _Resolver, compile_id: str,
                     dues: Mapping[str, int]) -> Iterator[Built | DroppedCard]:
+    """Per grapheme: its note, or one DroppedCard when
+    grapheme/keyword-carries-sound blocks it (spec 1 r37) or its note
+    cannot be built."""
     for grapheme in syllabus.graphemes:
+        if syllabus.grapheme_violation(grapheme) is not None:
+            yield DroppedCard(family="grapheme", kind="Reading", subject=grapheme.symbol,
+                              reason="blocked: grapheme/keyword-carries-sound")
+            continue
         built = _grapheme_note(grapheme, syllabus, resolver, compile_id,
                                dues.get(grapheme.symbol))
         if built.dropped_reason is not None:
@@ -1344,8 +1351,9 @@ def build_deck(syllabus: "Syllabus", db: "SyllabusDb", media_store: "MediaStore"
 
 
 def blocked_path(apkg: str | Path) -> Path:
-    """The package's blocked list: the guids of the notes a pair rule's
-    block withholds from it (spec 4 r19), a JSON array beside it."""
+    """The package's blocked list: the guids of the notes a block-severity
+    rule withholds from it (spec 4 r19: a pair rule's; r21: a grapheme's),
+    a JSON array beside it."""
     return Path(apkg).with_suffix(".blocked.json")
 
 
@@ -1363,16 +1371,19 @@ def pair_guids(syllabus: "Syllabus", pair: MinimalPair) -> tuple[str, ...]:
                  for i, r in enumerate(recordings))
 
 
-def _blocked_pair_guids(syllabus: "Syllabus", db: "SyllabusDb") -> tuple[str, ...]:
+def _blocked_guids(syllabus: "Syllabus", db: "SyllabusDb") -> tuple[str, ...]:
     """The guids every blocked pair's member notes carry under its
     current rendition, the ones its notes had while it was usable, then
-    those of every retired pair (spec 3 r71) not back in pairs.yaml."""
+    those of every retired pair (spec 3 r71) not back in pairs.yaml, then
+    every blocked grapheme's note (spec 4 r21)."""
     usable = {p.id for p in syllabus.usable_pairs}
     guids = [g for pair in syllabus.pairs if pair.id not in usable
              for g in pair_guids(syllabus, pair)]
     present = {p.id for p in syllabus.pairs}
     guids += [g for pair_id, retired in retired_pairs(db).items() if pair_id not in present
               for g in retired]
+    guids += [_guid("grapheme", g.symbol) for g in syllabus.graphemes
+              if syllabus.grapheme_violation(g) is not None]
     return tuple(guids)
 
 
@@ -1430,7 +1441,7 @@ def compile_syllabus(syllabus: "Syllabus", db: "SyllabusDb", media_store: "Media
     _stamp_due(tmp_out, due_by_guid_ord)
     blocked_out = blocked_path(out_path)
     blocked_tmp = blocked_out.with_name(blocked_out.name + ".tmp")
-    blocked_tmp.write_text(json.dumps(list(_blocked_pair_guids(syllabus, db))), encoding="utf-8")
+    blocked_tmp.write_text(json.dumps(list(_blocked_guids(syllabus, db))), encoding="utf-8")
     os.replace(blocked_tmp, blocked_out)
     os.replace(tmp_out, out_path)  # atomic
 
