@@ -1,26 +1,27 @@
 # Vowel signs, tone marks and diacritics with the recited names Thai
 # speakers spell with (sound-stage design 2026-09-12 §1). `sound` is the
-# vowel or the mark's effect in the deck's convention. Keywords are
-# adopted by the keyword search (design §2), not listed here.
-- {symbol: ะ, kind: vowel_sign, sound: a,    name: สระ อะ}
-- {symbol: ั, kind: vowel_sign, sound: a,    name: ไม้หันอากาศ}
-- {symbol: า, kind: vowel_sign, sound: aː,   name: สระ อา}
-- {symbol: ิ, kind: vowel_sign, sound: i,    name: สระ อิ}
-- {symbol: ี, kind: vowel_sign, sound: iː,   name: สระ อี}
-- {symbol: ึ, kind: vowel_sign, sound: ɯ,    name: สระ อึ}
-- {symbol: ื, kind: vowel_sign, sound: ɯː,   name: สระ อือ}
-- {symbol: ุ, kind: vowel_sign, sound: u,    name: สระ อุ}
-- {symbol: ู, kind: vowel_sign, sound: uː,   name: สระ อู}
-- {symbol: เ, kind: vowel_sign, sound: eː,   name: สระ เอ}
-- {symbol: แ, kind: vowel_sign, sound: ɛː,   name: สระ แอ}
-- {symbol: โ, kind: vowel_sign, sound: oː,   name: สระ โอ}
-- {symbol: ใ, kind: vowel_sign, sound: aj,   name: สระ ใอ ไม้ม้วน}
-- {symbol: ไ, kind: vowel_sign, sound: aj,   name: สระ ไอ ไม้มลาย}
-- {symbol: ำ, kind: vowel_sign, sound: am,   name: สระ อำ}
-- {symbol: ฤ, kind: vowel_sign, sound: rɯ,   name: ตัว ฤ}
-- {symbol: ็, kind: diacritic,  sound: short, name: ไม้ไต่คู้}
-- {symbol: ์, kind: diacritic,  sound: silent, name: ทัณฑฆาต}
-- {symbol: ่, kind: tone_mark,  sound: mai-ek,     name: ไม้เอก}
-- {symbol: ้, kind: tone_mark,  sound: mai-tho,    name: ไม้โท}
-- {symbol: ๊, kind: tone_mark,  sound: mai-tri,    name: ไม้ตรี}
-- {symbol: ๋, kind: tone_mark,  sound: mai-chattawa, name: ไม้จัตวา}
+# vowel or the mark's effect in the deck's convention. Each row's keyword
+# and its gloss are listed here, chosen from the deck's vocabulary (spec 3
+# r72); a vowel sign's or ็'s keyword reads the sign's sound (spec 1 r37).
+- {symbol: ะ, kind: vowel_sign, sound: a,    name: สระ อะ, keyword: กระทะ, gloss: "wok, frying pan"}
+- {symbol: ั, kind: vowel_sign, sound: a,    name: ไม้หันอากาศ, keyword: ผัก, gloss: vegetables}
+- {symbol: า, kind: vowel_sign, sound: aː,   name: สระ อา, keyword: ตา, gloss: eye}
+- {symbol: ิ, kind: vowel_sign, sound: i,    name: สระ อิ, keyword: หิน, gloss: "stone / rock"}
+- {symbol: ี, kind: vowel_sign, sound: iː,   name: สระ อี, keyword: หมี, gloss: bear}
+- {symbol: ึ, kind: vowel_sign, sound: ɯ,    name: สระ อึ, keyword: ตึก, gloss: building}
+- {symbol: ื, kind: vowel_sign, sound: ɯː,   name: สระ อือ, keyword: มือ, gloss: hand}
+- {symbol: ุ, kind: vowel_sign, sound: u,    name: สระ อุ, keyword: ยุง, gloss: mosquito}
+- {symbol: ู, kind: vowel_sign, sound: uː,   name: สระ อู, keyword: ปู, gloss: crab}
+- {symbol: เ, kind: vowel_sign, sound: eː,   name: สระ เอ, keyword: เมฆ, gloss: cloud}
+- {symbol: แ, kind: vowel_sign, sound: ɛː,   name: สระ แอ, keyword: แมว, gloss: cat}
+- {symbol: โ, kind: vowel_sign, sound: oː,   name: สระ โอ, keyword: โลก, gloss: "world / Earth"}
+- {symbol: ใ, kind: vowel_sign, sound: aj,   name: สระ ใอ ไม้ม้วน, keyword: หัวใจ, gloss: "heart (the organ)"}
+- {symbol: ไ, kind: vowel_sign, sound: aj,   name: สระ ไอ ไม้มลาย, keyword: ไฟ, gloss: fire}
+- {symbol: ำ, kind: vowel_sign, sound: am,   name: สระ อำ, keyword: ส้มตำ, gloss: green papaya salad}
+- {symbol: ฤ, kind: vowel_sign, sound: rɯ,   name: ตัว ฤ, keyword: ฤดู, gloss: "season (formal)"}
+- {symbol: ็, kind: diacritic,  sound: short, name: ไม้ไต่คู้, keyword: เป็ด, gloss: duck}
+- {symbol: ์, kind: diacritic,  sound: silent, name: ทัณฑฆาต, keyword: แอร์, gloss: air conditioner}
+- {symbol: ่, kind: tone_mark,  sound: mai-ek,     name: ไม้เอก, keyword: ร่ม, gloss: umbrella}
+- {symbol: ้, kind: tone_mark,  sound: mai-tho,    name: ไม้โท, keyword: น้ำ, gloss: water}
+- {symbol: ๊, kind: tone_mark,  sound: mai-tri,    name: ไม้ตรี, keyword: โต๊ะ, gloss: table}
+- {symbol: ๋, kind: tone_mark,  sound: mai-chattawa, name: ไม้จัตวา, keyword: ตั๋ว, gloss: ticket}

@@ -1,7 +1,7 @@
 """Repo inventories the sound stage is built from (design 2026-09-12 §1):
 the 42 consonants in use and the vowel signs, tone marks and diacritics, each
-with the recited name Thai speakers spell with. Fixed knowledge;
-validated on load, never proposed."""
+with the recited name Thai speakers spell with and its keyword (spec 3
+r72). Fixed knowledge; validated on load, never proposed."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -34,6 +34,8 @@ class VowelRow:
     kind: Literal["vowel_sign", "tone_mark", "diacritic"]
     sound: str
     name_thai: str
+    keyword_thai: str
+    keyword_gloss: str
 
 
 class InventoryError(ValueError):
@@ -72,7 +74,8 @@ def load_vowels(path: str | Path) -> tuple[VowelRow, ...]:
     out = []
     for i, r in enumerate(rows):
         try:
-            row = VowelRow(symbol=r["symbol"], kind=r["kind"], sound=str(r["sound"]), name_thai=r["name"])
+            row = VowelRow(symbol=r["symbol"], kind=r["kind"], sound=str(r["sound"]), name_thai=r["name"],
+                           keyword_thai=r["keyword"], keyword_gloss=r["gloss"])
         except (KeyError, TypeError) as e:
             raise InventoryError(f"vowels[{i}]: malformed row ({e})") from e
         if row.kind not in ("vowel_sign", "tone_mark", "diacritic"):
@@ -81,3 +84,9 @@ def load_vowels(path: str | Path) -> tuple[VowelRow, ...]:
     if len({r.symbol for r in out}) != len(out):
         raise InventoryError("vowels: duplicate symbol")
     return tuple(out)
+
+
+def vowels() -> tuple[VowelRow, ...]:
+    """The repo's vowel signs, diacritics and tone marks (spec 3 r72
+    section 5): the rows the grapheme pass adopts after the consonants."""
+    return load_vowels(DATA_DIR / "thai_vowels.yaml")
