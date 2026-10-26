@@ -9,12 +9,13 @@ dependencies = [
     "pillow",
     "pysilero-vad>=3.4.0",
     "anki==26.8.1",
+    "genanki",
+    "requests[socks]",
 ]
 
 [project.optional-dependencies]
 nlp = ["pythainlp>=5", "tltk>=1.9", "torch>=2", "pandas>=2"]  # pandas: undeclared tltk dep
 llm = ["anthropic>=1"]
-gen = ["genanki", "requests[socks]"]
 
 [project.scripts]
 thai-syllabus = "thai_syllabus.cli:main"

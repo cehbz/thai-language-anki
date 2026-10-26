@@ -60,8 +60,9 @@ def test_default_engines_builds_the_engines_once(monkeypatch, real_default_engin
     fallback is memoised: same Engines object, one construction. The
     injection seam is untouched; this is only about the default.
 
-    The fake stands in for Thaig2p through the function's own deferred
-    import, so nothing here loads torch. `real_default_engines` is the
+    The fakes stand in for Thaig2p and Tltk through the function's own
+    deferred import, so nothing here needs the "nlp" extra (pythainlp,
+    torch, tltk). `real_default_engines` is the
     guard fixture's handle on the unpatched function (conftest.py), and
     the memo is cleared either side so no other test inherits the fake.
     """
@@ -76,7 +77,12 @@ def test_default_engines_builds_the_engines_once(monkeypatch, real_default_engin
         def __call__(self, thai):
             return None
 
+    class _FakeTltk:
+        def __call__(self, thai):
+            return None
+
     monkeypatch.setattr(engines_module, "Thaig2p", _FakeThaig2p)
+    monkeypatch.setattr(engines_module, "Tltk", _FakeTltk)
     real_default_engines.cache_clear()
     try:
         first = real_default_engines()

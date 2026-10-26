@@ -1786,17 +1786,15 @@ source = { editable = "." }
 dependencies = [
     { name = "anki" },
     { name = "click" },
+    { name = "genanki" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pysilero-vad" },
     { name = "pyyaml" },
+    { name = "requests", extra = ["socks"] },
 ]
 
 [package.optional-dependencies]
-gen = [
-    { name = "genanki" },
-    { name = "requests", extra = ["socks"] },
-]
 llm = [
     { name = "anthropic" },
 ]
@@ -1818,18 +1816,18 @@ requires-dist = [
     { name = "anki", specifier = "==26.8.1" },
     { name = "anthropic", marker = "extra == 'llm'", specifier = ">=1" },
     { name = "click", specifier = ">=8.1" },
-    { name = "genanki", marker = "extra == 'gen'" },
+    { name = "genanki" },
     { name = "pandas", marker = "extra == 'nlp'", specifier = ">=2" },
     { name = "pillow" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pysilero-vad", specifier = ">=3.4.0" },
     { name = "pythainlp", marker = "extra == 'nlp'", specifier = ">=5" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "requests", extras = ["socks"], marker = "extra == 'gen'" },
+    { name = "requests", extras = ["socks"] },
     { name = "tltk", marker = "extra == 'nlp'", specifier = ">=1.9" },
     { name = "torch", marker = "extra == 'nlp'", specifier = ">=2" },
 ]
-provides-extras = ["nlp", "llm", "gen"]
+provides-extras = ["nlp", "llm"]
 
 [package.metadata.requires-dev]
 dev = [
