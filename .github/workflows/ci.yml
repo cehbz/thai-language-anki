@@ -27,6 +27,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      # audio.py shells out to ffmpeg and ffprobe.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: uv sync --frozen --all-groups
       # pyproject addopts already exclude the 'integration' and 'live' markers.
       - run: uv run pytest -q
