@@ -235,6 +235,7 @@ Revision log:
 - r71 2026-10-20: the pair search retires a pair pair/exact-confusion blocks once its confusion has a usable replacement (spec 5 §3's cure `replaced`): a retirement row (`PairRetirementKey`, the pair's members, the finding's evidence, the replacing pairs and its member notes' guids) is appended, then pairs.yaml is rewritten without it and the removal is reported to the writing command's Guard; compile keeps the retired guids in its blocked list (spec 4 r20). A pair blocked only by pair/pronunciation-settled is kept: a ruling can cure it (r70). User ruling 2026-10-20. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r71).
 - r72 2026-10-22: the grapheme pass adopts data/thai_vowels.yaml (vowel signs, diacritics, tone marks) after the consonants, exactly as it adopts them: the table names each row's keyword and gloss, the keyword is the vocabulary Word whose `thai` matches, else a closure Word, and the recited name is `name-<keyword id>` (category `Letter names`, no Target, its meaning naming the grapheme's kind: "recited name of the letter ก", "… of the vowel sign ◌ั", "… of the diacritic ◌็", "… of the tone mark ◌่"); a vowel sign's or ็'s row waits while its keyword has no settled reading (logged, counted `adoption_skipped`; a minted closure keyword is kept so the evidence pass reads its form, and the row adopts on a later run) and is skipped when the reading does not carry the sign's sound (spec 1 r37); the glyph cell draws a combining mark on the dotted circle ◌ (U+25CC), its key and origin the bare symbol. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r72).
 - r73 2026-10-22: data/thai_vowels.yaml gains the eleven composite vowels the deck's vocabulary gives a keyword (◌อ, เ◌า, เ◌ีย, ◌ัว, เ◌ือ, เ◌อ, แ◌ะ, โ◌ะ, เ◌าะ, เ◌อะ, ฤๅ; spec 1 r38), each with its recited name, sound, keyword and gloss, adopted by the grapheme pass as any vowel sign; เ◌ะ, เ◌ียะ, เ◌ือะ and ◌ัวะ are left out, no deck word spelled with one carrying its sound; the glyph cell draws a composite as written, its ◌ the symbol's own. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r73).
+- r74 2026-11-06: the pacer's `five_hour` window is optional: a plan without one drops the session term from the calls bound, and a missing `seven_day` stays an error. User decision 2026-11-06. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r74).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -1199,11 +1200,12 @@ hourly (r67) for a deck whose judge is on the cli transport (it refuses any othe
 `reserve_percent` (15), `session_ceiling_percent` (50),
 `max_calls_per_tick` (40), `min_calls` (5), `points_per_call` (0.05) and
 `session_points_per_call` (0.5), `probe_model` (haiku),
-`probe_timeout_seconds` (120). Each tick reads the plan's `five_hour` and
-`seven_day` windows (percent used, reset time) from one `probe_model` turn
+`probe_timeout_seconds` (120). Each tick reads the plan's `seven_day` window and, where the
+plan has one, its `five_hour` window (percent used, reset time) from one `probe_model` turn
 with the usage-probe mod loaded, and releases M = floor(min(allowance /
 `points_per_call`, (`session_ceiling_percent` − five-hour percent used) /
-`session_points_per_call`, `max_calls_per_tick`)) judge asks, where, with e
+`session_points_per_call`, `max_calls_per_tick`)) judge asks (a plan without a
+`five_hour` window drops the middle term), where, with e
 the elapsed fraction of the weekly window, allowance = 100e − weekly percent
 used − `reserve_percent` × (1 − e): the reserve is whole just after the
 reset and gone at it, so the week ends spent. M ≥ `min_calls` runs one

@@ -1,6 +1,6 @@
 """Quota pacer (spec 3 r64 section 8): releases judge calls each tick up to
-the week's unused pace-line allowance, under a 5-hour-window ceiling and a
-per-tick cap, and runs one cycle with that many.
+the week's unused pace-line allowance, under a 5-hour-window ceiling (on
+plans that have one) and a per-tick cap, and runs one cycle with that many.
 
     uv run python tools/quota_pacer.py --deck D [--dry-run] [--now ISO]
                                        [--usage-file PATH]
@@ -16,6 +16,7 @@ reserve is whole just after the reset and gone at it. Calls M =
 floor(min(allowance / points_per_call,
           (session_ceiling_percent - 5h percent used) / session_points_per_call,
           max_calls_per_tick)).
+A plan without a five_hour window drops the middle term.
 
 Runs only for a deck whose judge is on the cli transport. `--require-measured`
 refuses a deck whose `pacer` block does not set both per-call figures.
@@ -99,7 +100,7 @@ class Window:
 @dataclass(frozen=True)
 class Reading:
     read_at: datetime
-    five_hour: Window
+    five_hour: Window | None   # absent on plans without a session window
     seven_day: Window
 
 
@@ -108,7 +109,7 @@ class Tick:
     weekly_used: float
     weekly_elapsed: float   # percent of the weekly window elapsed: the pace line
     reserve: float          # reserve_percent tapered by the weekly window's remaining fraction
-    session_used: float
+    session_used: float | None   # None: no five_hour window
     allowance: float        # weekly percentage points
     calls: int              # M
 
@@ -162,7 +163,8 @@ def parse_reading(text: str) -> Reading:
     read_at = _parse_time(data.get("read_at"), "usage file read_at")
     limits = {limit.get("kind"): limit for limit in data.get("rateLimits") or []
               if isinstance(limit, dict)}
-    return Reading(read_at, _window(limits, "five_hour"), _window(limits, "seven_day"))
+    return Reading(read_at, _window(limits, "five_hour") if "five_hour" in limits else None,
+                   _window(limits, "seven_day"))
 
 
 def _window(limits: dict[Any, dict], kind: str) -> Window:
@@ -205,13 +207,14 @@ def plan_tick(reading: Reading, cfg: PacerConfig, now: datetime) -> Tick:
     elapsed = elapsed_fraction(weekly.resets_at, now, WEEK)
     reserve = cfg.reserve_percent * (1 - elapsed)
     allowance = 100 * elapsed - weekly.percent_used - reserve
-    headroom = cfg.session_ceiling_percent - reading.five_hour.percent_used
-    bound = min(allowance / cfg.points_per_call,
-                headroom / cfg.session_points_per_call,
-                cfg.max_calls_per_tick)
-    calls = max(0, math.floor(bound + _EPSILON))
-    return Tick(weekly.percent_used, 100 * elapsed, reserve, reading.five_hour.percent_used,
-                allowance, calls)
+    bounds = [allowance / cfg.points_per_call, cfg.max_calls_per_tick]
+    session_used = None
+    if reading.five_hour is not None:
+        session_used = reading.five_hour.percent_used
+        bounds.append((cfg.session_ceiling_percent - session_used)
+                      / cfg.session_points_per_call)
+    calls = max(0, math.floor(min(bounds) + _EPSILON))
+    return Tick(weekly.percent_used, 100 * elapsed, reserve, session_used, allowance, calls)
 
 
 def decide(calls: int, cfg: PacerConfig) -> str:
@@ -229,9 +232,10 @@ def run_command(deck: Path, calls: int) -> list[str]:
 
 
 def log_line(now: datetime, tick: Tick, action: str) -> str:
+    session = "" if tick.session_used is None else f" · 5h {tick.session_used:.1f}% used"
     return (f"{now.isoformat(timespec='seconds')} weekly {tick.weekly_used:.1f}% used"
             f" / {tick.weekly_elapsed:.1f}% elapsed · reserve {tick.reserve:.2f}"
-            f" · 5h {tick.session_used:.1f}% used"
+            f"{session}"
             f" · allowance {tick.allowance:.2f} pts · M {tick.calls} · {action}")
 
 

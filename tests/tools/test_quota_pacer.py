@@ -30,7 +30,8 @@ def reading(*, weekly_used, weekly_resets_in, session_used=2.0,
             session_resets_in=timedelta(hours=3), read_at=NOW):
     return qp.Reading(
         read_at=read_at,
-        five_hour=qp.Window("five_hour", session_used, read_at + session_resets_in),
+        five_hour=(None if session_used is None else
+                   qp.Window("five_hour", session_used, read_at + session_resets_in)),
         seven_day=qp.Window("seven_day", weekly_used, read_at + weekly_resets_in))
 
 
@@ -146,6 +147,13 @@ def test_the_five_hour_window_at_its_ceiling_releases_nothing():
     assert qp.plan_tick(r, CFG, NOW).calls == 0
 
 
+def test_without_a_five_hour_window_the_weekly_allowance_and_the_cap_bound():
+    r = reading(weekly_used=20, weekly_resets_in=timedelta(days=3.5), session_used=None)
+    assert qp.plan_tick(r, CFG, NOW).calls == 40         # the per-tick cap
+    assert qp.plan_tick(r, PacerConfig(max_calls_per_tick=1000), NOW).calls == 450  # 22.5 / 0.05
+    assert qp.plan_tick(r, CFG, NOW).session_used is None
+
+
 def test_the_per_tick_cap_binds():
     r = reading(weekly_used=0, weekly_resets_in=timedelta(days=3.5), session_used=0)
     assert qp.plan_tick(r, PacerConfig(max_calls_per_tick=7), NOW).calls == 7
@@ -179,12 +187,16 @@ def test_the_probe_file_parses_both_windows():
     assert r.five_hour.percent_used == 2.0
 
 
-@pytest.mark.parametrize("kinds,missing", [(("five_hour",), "seven_day"),
-                                           (("seven_day",), "five_hour"),
-                                           ((), "five_hour")])
-def test_a_missing_window_is_refused(kinds, missing):
-    with pytest.raises(qp.PacerError, match=missing):
+@pytest.mark.parametrize("kinds", [("five_hour",), ()])
+def test_a_missing_weekly_window_is_refused(kinds):
+    with pytest.raises(qp.PacerError, match="seven_day"):
         qp.parse_reading(probe_json(kinds=kinds))
+
+
+def test_a_missing_five_hour_window_is_read_as_none():
+    r = qp.parse_reading(probe_json(kinds=("seven_day",)))
+    assert r.five_hour is None
+    assert r.seven_day.percent_used == 52.0
 
 
 def test_a_weekly_window_without_a_reset_is_refused():
@@ -263,6 +275,14 @@ def test_the_log_line_carries_the_tick_numbers():
     assert qp.log_line(NOW, tick, "run") == (
         "2026-10-03T12:00:00+00:00 weekly 20.0% used / 50.0% elapsed"
         " · reserve 7.50 · 5h 2.5% used · allowance 22.50 pts · M 40 · run")
+
+
+def test_the_log_line_without_a_five_hour_window_omits_the_figure():
+    tick = qp.plan_tick(reading(weekly_used=20, weekly_resets_in=timedelta(days=3.5),
+                                session_used=None), CFG, NOW)
+    assert qp.log_line(NOW, tick, "run") == (
+        "2026-10-03T12:00:00+00:00 weekly 20.0% used / 50.0% elapsed"
+        " · reserve 7.50 · allowance 22.50 pts · M 40 · run")
 
 
 # --- main, with the probe and the cycle injected ----------------------------
