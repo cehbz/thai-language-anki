@@ -85,17 +85,18 @@ still run against them.
 ## Sentence drafting: the judge on the subscription (2026-10-04)
 
 The live judge runs on the cli transport (Sonnet 5.5, `--safe-mode`)
-and the quota pacer (spec 3 r64, `tools/quota_pacer.py`, launchd agent
-`com.ceh.thai-syllabus.pacer`, hourly, log `~/decks/thai-ff/work/pacer.log`)
+and the quota pacer (spec 3 r64, `tools/quota_pacer.py`, systemd timer
+`thai-syllabus-pacer@thai-ff`, hourly, log `~/decks/thai-ff/work/pacer.log`)
 releases judge calls against the week's unused allowance. Its first
 tick (allowance 8.15 points, 40 calls) adopted 12 sentences. Reports:
 .superpowers/sdd/2026-10-03-quota-pacer/task-1..3-report.md.
 
-- **`points_per_call` 0.015 and `session_points_per_call` 0.05 are
-  upper bounds**, not measurements: the usage probe reads whole
-  percentage points, and 50 calls moved the weekly window by 0 and the
-  5-hour window by 1. Tighten them from the pacer log once a few ticks
+- **`points_per_call` 0.015 is an upper bound**, not a measurement:
+  the usage probe reads whole percentage points, and 50 calls moved the
+  weekly window by 0. Tighten it from the pacer log once a few ticks
   have run (compare the probe before and after a 40-call tick).
+  `session_points_per_call` 0.05 is also an upper bound (50 calls moved
+  the 5-hour window by 1) and applies only on a plan with that window.
 - **Drafting asks are unpaced.** `--judge-asks` caps judge calls only;
   a drafting ask at the CLI's default model (Opus 5.5 with thinking,
   48 to 152 s, 5k to 17k output tokens) spends about ten safe-mode
