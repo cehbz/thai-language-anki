@@ -319,9 +319,11 @@ class Runner:
         self.blocked = tuple(blocked)
         self.calls = []
         self.usage_path = None
+        self.probe_env = None
 
     def probe(self, cmd, *, env, cwd, timeout):
         self.calls.append(("probe", cmd, timeout))
+        self.probe_env = env
         if self.raises:
             raise self.raises
         self.usage_path = Path(env[qp.USAGE_ENV])
@@ -512,6 +514,36 @@ def test_main_refuses_when_claude_cannot_start(deck, capsys):
     runner = Runner(raises=FileNotFoundError(2, "No such file or directory", "claude"))
     assert run_main(deck, runner) == 1
     assert "claude" in error_line(capsys)
+
+
+def test_with_secrets_claude_set_the_probe_runs_with_its_token(tmp_path):
+    """Spec 3 r75: the probe's claude is given the token `secrets.claude`
+    references as CLAUDE_CODE_OAUTH_TOKEN, beside the usage-file variable."""
+    token = tmp_path / "claude-oauth-token"
+    token.write_text("sk-ant-oat-t0ken\n")
+    token.chmod(0o600)
+    deck = write_deck(tmp_path, secrets={"claude": str(token)})
+    runner = Runner(usage=probe_json(weekly=90))
+    assert run_main(deck, runner) == 3
+    assert runner.probe_env.get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat-t0ken"
+    assert runner.probe_env.get(qp.USAGE_ENV) == str(runner.usage_path)
+
+
+def test_without_secrets_claude_the_probe_is_given_no_token(deck, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    runner = Runner(usage=probe_json(weekly=90))
+    assert run_main(deck, runner) == 3
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in runner.probe_env
+
+
+def test_a_secrets_claude_naming_a_missing_file_fails_the_tick_before_its_probe(
+        tmp_path, capsys):
+    deck = write_deck(tmp_path, secrets={"claude": "/nowhere/claude-oauth-token"})
+    runner = Runner(usage=probe_json(weekly=90))
+    assert run_main(deck, runner) == 1
+    line = error_line(capsys)
+    assert "secrets.claude" in line and "/nowhere/claude-oauth-token" in line
+    assert runner.calls == []
 
 
 def test_the_real_probe_runner_reports_claude_missing_from_path(deck, tmp_path, monkeypatch,

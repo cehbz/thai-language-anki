@@ -30,6 +30,8 @@ from typing import Any, Callable
 
 _log = logging.getLogger(__name__)
 
+OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
 
 def strip_fences(text: str) -> str:
     """A markdown code fence around `text`, ```` ``` ```` or ```` ```json ````,
@@ -247,7 +249,10 @@ class ClaudeCliTransport:
     there are attachments and none (`--tools ""`) otherwise, so it cannot
     run commands. Attachments are linked (or copied) into a fresh temp dir
     passed as `--add-dir` with `--allowedTools Read`, named in the prompt,
-    and the temp dir is removed afterwards.
+    and the temp dir is removed afterwards. With `oauth_token` set, claude
+    runs with it as `CLAUDE_CODE_OAUTH_TOKEN` in that call's environment
+    alone; unset, claude inherits the environment and the host's login
+    (spec 3 r75).
     """
     model: str | None = None
     effort: str | None = None
@@ -256,6 +261,8 @@ class ClaudeCliTransport:
     safe_mode: bool = True
     binary: str = "claude"
     runner: Callable[..., Any] = field(default=subprocess.run)
+    # a Claude Code long-lived OAuth token (`secrets.claude`, spec 3 r75)
+    oauth_token: str | None = field(default=None, repr=False)
 
     def complete(self, prompt: str, attachments: Sequence[Path] = (), *,
                  params: RequestParams | None = None) -> Completion:
@@ -286,8 +293,12 @@ class ClaudeCliTransport:
         cmd += ["--tools", "Read" if scope_dir else ""]
         if scope_dir:
             cmd += ["--allowedTools", "Read", "--add-dir", scope_dir]
+        kwargs: dict[str, Any] = {}
+        if self.oauth_token:
+            kwargs["env"] = {**os.environ, OAUTH_TOKEN_ENV: self.oauth_token}
         try:
-            proc = self.runner(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            proc = self.runner(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                               **kwargs)
         except OSError as e:
             raise TransportError(f"cannot run `{self.binary} -p`: {e}") from e
         finally:

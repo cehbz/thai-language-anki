@@ -4,7 +4,8 @@ a deck directory's curated files plus db-backed ports (spec 1/2).
 
 Secrets resolve lazily (spec 3 section 5): each secret-backed backend
 (pexels, forvo, tts, the illustrator's generator, the judge's and the
-drafter's api transports) is wrapped in `_Lazy`,
+drafter's transports: api ones for `secrets.anthropic`, cli ones for
+`secrets.claude`, spec 3 r75) is wrapped in `_Lazy`,
 which builds the real backend -- and so calls `SecretStore.get()` -- at
 its first `cache_key`/`fetch`/`complete` call, so a roster entry nobody
 asks costs no file or 1Password read.
@@ -159,7 +160,8 @@ def _claude_transport(cfg: ProvidersConfig, secrets) -> _Lazy | None:
     kind = cfg.judge.transport
     if kind == "cli":
         return _Lazy(lambda: ClaudeCliTransport(model=cfg.judge.model or None,
-                                                effort=cfg.judge.effort))
+                                                effort=cfg.judge.effort,
+                                                oauth_token=secrets.get("claude")))
     if kind == "api":
         return _Lazy(lambda: ClaudeApiTransport(
             api_key=secrets.get("anthropic") or "", model=cfg.judge.model,
@@ -181,7 +183,8 @@ def _drafter_transport(cfg: ProvidersConfig, secrets) -> _Lazy:
             thinking=cfg.judge.thinking, effort=cfg.judge.effort,
             max_tokens=cfg.judge.max_tokens))
     return _Lazy(lambda: ClaudeCliTransport(model=cfg.drafter.model,
-                                            effort=cfg.drafter.effort))
+                                            effort=cfg.drafter.effort,
+                                            oauth_token=secrets.get("claude")))
 
 
 def _drafter_model(cfg: ProvidersConfig) -> str:

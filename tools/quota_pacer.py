@@ -8,7 +8,9 @@ plans that have one) and a per-tick cap, and runs one cycle with that many.
 The plan's windows come from the usage-probe mod (tools/claude-mods/
 usage-probe): one trivial `claude -p` turn with the mod loaded writes
 `$.session.usage()`'s rateLimits to the file THAI_SYLLABUS_USAGE_OUT
-names. `--usage-file` reads such a file instead of probing.
+names. `--usage-file` reads such a file instead of probing. With
+providers.yaml `secrets.claude` set, the probe's claude is given that
+token as CLAUDE_CODE_OAUTH_TOKEN (spec 3 r75).
 
 Allowance (weekly percentage points) = elapsed fraction e of the weekly
 window x 100 - weekly percent used - reserve_percent x (1 - e): the
@@ -70,6 +72,7 @@ from thai_syllabus.compile import blocked_guids, blocked_path
 from thai_syllabus.curated import (AnkiConfig, CuratedValidationError, PacerConfig,
                                    ProvidersConfig, load_providers_config)
 from thai_syllabus.secrets import SecretError, resolve_secret
+from thai_syllabus.transport import OAUTH_TOKEN_ENV
 
 REPO = Path(__file__).resolve().parent.parent
 MOD_DIR = REPO / "tools" / "claude-mods" / "usage-probe"
@@ -267,12 +270,16 @@ def _subprocess_cycle(cmd: list[str], *, cwd: Path) -> int:
     return subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL).returncode
 
 
-def probe(cfg: PacerConfig, now: datetime, runner: ProbeRunner) -> Reading:
+def probe(cfg: PacerConfig, now: datetime, runner: ProbeRunner,
+          oauth_token: str | None = None) -> Reading:
     """One trivial turn with the usage-probe mod loaded, in a scratch
-    directory so no project settings or hooks join it."""
+    directory so no project settings or hooks join it; `oauth_token`,
+    when given, is its claude's CLAUDE_CODE_OAUTH_TOKEN (spec 3 r75)."""
     with tempfile.TemporaryDirectory(prefix="quota-pacer-") as scratch:
         out = Path(scratch) / "usage.json"
         env = {**os.environ, USAGE_ENV: str(out)}
+        if oauth_token:
+            env[OAUTH_TOKEN_ENV] = oauth_token
         command = probe_command(cfg, MOD_DIR)
         try:
             result = runner(command, env=env, cwd=Path(scratch),
@@ -539,6 +546,15 @@ def _subprocess_capture(cmd: list[str], *, cwd: Path) -> ProbeResult:
     return ProbeResult(done.returncode, done.stdout, done.stderr)
 
 
+def _claude_token(providers: ProvidersConfig) -> str | None:
+    """The token `secrets.claude` references, None when unset; a reference
+    that does not resolve is a PacerError (spec 3 r75)."""
+    try:
+        return providers.secret_store().get("claude")
+    except SecretError as exc:
+        raise PacerError(str(exc)) from None
+
+
 def main(argv: list[str] | None = None, *, probe_runner: ProbeRunner = _subprocess_probe,
          cycle_runner: CycleRunner = _subprocess_cycle,
          compile_runner: CompileRunner = _subprocess_capture,
@@ -563,7 +579,7 @@ def main(argv: list[str] | None = None, *, probe_runner: ProbeRunner = _subproce
             raise PacerError(str(exc)) from None
         cfg = check_config(providers, args.require_measured, pacer_keys_set(providers_yaml))
         reading = (load_reading(args.usage_file, now) if args.usage_file
-                   else probe(cfg, now, probe_runner))
+                   else probe(cfg, now, probe_runner, _claude_token(providers)))
     except PacerError as exc:
         print(f"{datetime.now().astimezone().isoformat(timespec='seconds')} error: {exc}",
               file=sys.stderr, flush=True)

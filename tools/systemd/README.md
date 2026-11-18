@@ -18,6 +18,13 @@ systemctl --user daemon-reload
 systemctl --user enable --now thai-syllabus-pacer@thai-ff.timer thai-syllabus-review@thai-ff.service
 ```
 
+The deck's `claude -p` calls (the cli judge, the cli drafter, the pacer's
+usage probe) authenticate with a long-lived OAuth token rather than the
+host's claude.ai login (spec 3 r75). Run `claude setup-token`, store the
+token it prints in an owner-only (mode 600) file, name that file in
+providers.yaml `secrets.claude` (`claude: ~/.config/claude-oauth-token`
+under `secrets:`), then log the host out (`/logout` in `claude`).
+
 Each tick syncs the deck's own Anki collection with AnkiWeb (providers.yaml
 `anki`, default `~/decks/<deck>/anki/collection.anki2`) and harvests reviews, flags
 and ReviewNotes from it; after a tick that changed the deck the pacer

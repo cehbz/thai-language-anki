@@ -567,12 +567,64 @@ def test_build_assessor_building_the_roster_reads_no_secret_files(cfg, db, media
 
 
 def test_judge_backend_cli_transport_never_touches_a_secret(cfg, db, media_store, monkeypatch):
+    """With no `secrets.claude`, the cli judge's ask reads no secret and
+    its claude inherits the process environment (spec 3 r75)."""
     cfg2 = ProvidersConfig(secrets=cfg.secrets, judge=JudgeConfig(transport="cli", model="m"))
     calls = _track_reads(monkeypatch)
+    envs: list = []
+    _patch_cli(monkeypatch, _env_recording_cli_runner(envs))
     assessor = build_assessor(cfg2, db, media_store)
     judge = assessor._backends["judge"]
     assert judge.transport == "cli"
+    judge.complete("ask", [])
     assert calls == []
+    assert envs == [None]
+
+
+def _env_recording_cli_runner(envs: list, result: str = '{"value": true}'):
+    """A `claude -p` runner that records the `env` each call was given
+    (None when the call inherits the process environment)."""
+    import subprocess
+
+    def runner(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return subprocess.CompletedProcess(cmd, 0, _cli_reply(result), "")
+    return runner
+
+
+def _claude_token_cfg(cfg, secret_paths, tmp_path):
+    return ProvidersConfig(
+        secrets={**{n: str(p) for n, p in secret_paths.items()},
+                 "claude": str(_secret_file(tmp_path, "claude", "sk-ant-oat-t0ken\n"))},
+        imgfetch_path="curl", audiofetch_path="curl",
+        judge=JudgeConfig(transport="cli", model="m"))
+
+
+def test_a_cli_judges_first_ask_resolves_secrets_claude_into_its_env(
+        cfg, db, media_store, secret_paths, tmp_path, monkeypatch):
+    """Spec 3 r75: the cli judge's claude runs with the token
+    `secrets.claude` references, read at its first ask and no sooner."""
+    from thai_syllabus.transport import OAUTH_TOKEN_ENV
+    calls = _track_reads(monkeypatch)
+    envs: list = []
+    _patch_cli(monkeypatch, _env_recording_cli_runner(envs))
+    judge = build_assessor(_claude_token_cfg(cfg, secret_paths, tmp_path),
+                           db, media_store)._backends["judge"]
+    assert calls == []
+    judge.complete("ask", [])
+    assert calls == ["claude"]
+    assert (envs[0] or {}).get(OAUTH_TOKEN_ENV) == "sk-ant-oat-t0ken"
+
+
+def test_a_cli_drafters_first_ask_carries_the_secrets_claude_token(
+        cfg, db, media_store, secret_paths, tmp_path, monkeypatch):
+    """Spec 3 r75: the cli drafter's claude runs with the same token."""
+    from thai_syllabus.transport import OAUTH_TOKEN_ENV
+    envs: list = []
+    _patch_cli(monkeypatch, _env_recording_cli_runner(envs, result="an entry"))
+    provider = build_provider(_claude_token_cfg(cfg, secret_paths, tmp_path), db, media_store)
+    provider.ask("llm-entry", Question(subject="s", provides="entry", params={"prompt": "d"}))
+    assert (envs[0] or {}).get(OAUTH_TOKEN_ENV) == "sk-ant-oat-t0ken"
 
 
 def test_judge_backend_carries_price_and_resolves_media_paths(db, media_store, secret_paths):

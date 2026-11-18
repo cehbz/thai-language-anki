@@ -4,12 +4,14 @@ subprocess, no real anthropic import -- everything injected.
 """
 import base64
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from thai_syllabus.transport import (
+    OAUTH_TOKEN_ENV,
     ClaudeApiTransport,
     ClaudeBatchTransport,
     ClaudeCliTransport,
@@ -162,6 +164,32 @@ def test_cli_transport_without_attachments_offers_no_tools():
     runner = _Runner()
     ClaudeCliTransport(runner=runner).complete("q")
     assert _flag(runner.calls[0], "--tools") == ""
+
+
+def test_cli_transport_with_an_oauth_token_runs_claude_with_it_in_the_env_alone(monkeypatch):
+    monkeypatch.setenv("THAI_SYLLABUS_TEST_INHERITED", "kept")
+    monkeypatch.delenv(OAUTH_TOKEN_ENV, raising=False)
+    before = dict(os.environ)
+    runner = _Runner()
+    ClaudeCliTransport(oauth_token="sk-ant-oat-t0ken", runner=runner).complete("q")
+    env = runner.kwargs.get("env", {})
+    assert env.get(OAUTH_TOKEN_ENV) == "sk-ant-oat-t0ken"
+    assert env.get("THAI_SYLLABUS_TEST_INHERITED") == "kept"
+    assert dict(os.environ) == before
+
+
+def test_cli_transport_without_an_oauth_token_passes_no_env():
+    runner = _Runner()
+    ClaudeCliTransport(runner=runner).complete("q")
+    assert "env" not in runner.kwargs
+
+
+def test_cli_transport_keeps_its_oauth_token_out_of_argv_and_repr():
+    runner = _Runner()
+    t = ClaudeCliTransport(oauth_token="sk-ant-oat-t0ken", runner=runner)
+    t.complete("q")
+    assert not any("sk-ant-oat-t0ken" in arg for arg in runner.calls[0])
+    assert "sk-ant-oat-t0ken" not in repr(t)
 
 
 def test_cli_transport_raises_on_missing_binary():

@@ -1,6 +1,6 @@
 # Spec 3: Ports, attempts, and the sourcing run
 
-Revision 71, proposed 2026-10-20 against principles r8 and architecture
+Revision 75, proposed 2026-11-18 against principles r8 and architecture
 r7. Revision process: docs/principles.md.
 
 Revision log:
@@ -236,6 +236,7 @@ Revision log:
 - r72 2026-10-22: the grapheme pass adopts data/thai_vowels.yaml (vowel signs, diacritics, tone marks) after the consonants, exactly as it adopts them: the table names each row's keyword and gloss, the keyword is the vocabulary Word whose `thai` matches, else a closure Word, and the recited name is `name-<keyword id>` (category `Letter names`, no Target, its meaning naming the grapheme's kind: "recited name of the letter ก", "… of the vowel sign ◌ั", "… of the diacritic ◌็", "… of the tone mark ◌่"); a vowel sign's or ็'s row waits while its keyword has no settled reading (logged, counted `adoption_skipped`; a minted closure keyword is kept so the evidence pass reads its form, and the row adopts on a later run) and is skipped when the reading does not carry the sign's sound (spec 1 r37); the glyph cell draws a combining mark on the dotted circle ◌ (U+25CC), its key and origin the bare symbol. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r72).
 - r73 2026-10-22: data/thai_vowels.yaml gains the eleven composite vowels the deck's vocabulary gives a keyword (◌อ, เ◌า, เ◌ีย, ◌ัว, เ◌ือ, เ◌อ, แ◌ะ, โ◌ะ, เ◌าะ, เ◌อะ, ฤๅ; spec 1 r38), each with its recited name, sound, keyword and gloss, adopted by the grapheme pass as any vowel sign; เ◌ะ, เ◌ียะ, เ◌ือะ and ◌ัวะ are left out, no deck word spelled with one carrying its sound; the glyph cell draws a composite as written, its ◌ the symbol's own. User ruling 2026-10-22. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r73).
 - r74 2026-11-06: the pacer's `five_hour` window is optional: a plan without one drops the session term from the calls bound, and a missing `seven_day` stays an error. User decision 2026-11-06. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r74).
+- r75 2026-11-18: `secrets.claude` (§8) references a Claude Code long-lived OAuth token, given as `CLAUDE_CODE_OAUTH_TOKEN` in the environment of every `claude -p` the deck runs (the cli judge, the cli drafter, the pacer's usage probe), so the deck's host needs no claude.ai login; unset, the CLI uses the host's own login. User decision 2026-11-18. Evidence: KB thai-language-anki/revision-evidence-spec-3 (spec 3 r75).
 
 Scope: the Provide and Assess ports, every backend's contract (cost, cache
 key, authority), the attempt per need kind, the derivations over the record
@@ -369,7 +370,8 @@ every request, the judge's or the role's (r63), with no session kept, no
 stdin, no tool but Read (none without attachments), and `--safe-mode`
 (the CLI otherwise loads the user's CLAUDE.md, skills, hooks, plugins and
 MCP servers into every call, about ten times the judge prompt's own
-input); it reads the
+input) and, with `secrets.claude` set, the token it references as
+`CLAUDE_CODE_OAUTH_TOKEN` in that call's environment (§8, r75); it reads the
 reply's result text, usage tokens and answering model, and a reply flagged
 `is_error` or not a JSON object is a transport error, its `result` the
 reason (on a non-zero exit too).
@@ -1189,7 +1191,16 @@ client-credentials access token once per process, through
 bearer on every search (Openverse's
 registered tier: 100 requests a minute, 10,000 a day, against 20 and
 200 anonymous, per its throttling documentation); unset, searches are
-anonymous. `search_proxy`
+anonymous. `secrets.claude` names a reference to a Claude Code
+long-lived OAuth token (`claude setup-token`); when set, each `claude -p`
+the deck runs, the cli judge's and cli drafter's and the pacer's usage
+probe, is given it as `CLAUDE_CODE_OAUTH_TOKEN` in that call's
+environment alone, so the deck's host needs no claude.ai login (r75);
+unset, the CLI uses the host's own login. A reference that does not
+resolve (no file, one readable beyond its owner or not readable, an empty
+one) is refused at its first use, naming `secrets.claude` and the path:
+the pacer's tick exits 1 before its probe, and a run stops at its first
+judge or drafting ask. `search_proxy`
 is the HTTP forward proxy Openverse searches and its token request go
 through (Openverse refuses a Thai egress); no other request uses it. The provenance prior
 lives in rulebook.yaml (a judgement, not a route); rulebook.yaml
