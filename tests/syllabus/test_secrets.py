@@ -2,6 +2,7 @@
 thai_syllabus.secrets import path (spec 3 section 5: SecretStore is "the
 one carry-over module", ported not cross-imported).
 """
+import os
 import subprocess
 
 import pytest
@@ -74,6 +75,18 @@ def test_empty_file_is_refused(tmp_path):
     path = _key_file(tmp_path, text="\n")
     with pytest.raises(SecretError):
         resolve_secret(str(path), name="forvo")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_a_file_its_owner_cannot_read_is_refused_by_name(tmp_path):
+    path = _key_file(tmp_path, mode=0o000)
+    try:
+        with pytest.raises(SecretError) as err:
+            resolve_secret(str(path), name="forvo")
+    finally:
+        path.chmod(0o600)
+    assert "secrets.forvo" in str(err.value)
+    assert str(path) in str(err.value)
 
 
 def test_inline_literal_is_refused(tmp_path):

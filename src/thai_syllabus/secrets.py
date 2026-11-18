@@ -54,7 +54,10 @@ def _read_file(spec: str, *, name: str) -> str:
         raise SecretError(
             f"secrets.{name}: {path} is readable beyond its owner "
             f"(mode {mode:03o}); chmod 600 it")
-    value = path.read_text(encoding="utf-8").strip()
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SecretError(f"secrets.{name}: cannot read {path}: {exc.strerror}") from exc
     if not value:
         raise SecretError(f"secrets.{name}: {path} is empty")
     return value
